@@ -1,0 +1,6 @@
+# TODO: Add DDP only after the single-process training loop is correct.
+name: ddp
+device: cuda
+distributed: true
+backend: nccl
+precision: float64

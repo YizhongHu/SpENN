@@ -1,0 +1,14 @@
+# TODO: Implement signed-log combination of determinant and Pfaffian readouts.
+_target_: spenn.nn.wavefunction.SpENNWavefunction
+name: spenn_det_pf
+description: SpechtMP encoder with determinant plus Pfaffian readout.
+encoder: ${encoder}
+spechtmp: ${spechtmp}
+readout:
+  _target_: spenn.nn.readout.sum_readout.SumReadout
+  readouts:
+    - _target_: spenn.nn.readout.determinant.DeterminantReadout
+    - _target_: spenn.nn.readout.pfaffian.PfaffianReadout
+  implementation_status: pending
+cusp:
+  enabled: false

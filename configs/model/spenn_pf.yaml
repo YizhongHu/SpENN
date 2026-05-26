@@ -1,0 +1,10 @@
+# TODO: Implement SpENNWavefunction, encoder, SpechtMP, Pfaffian readout, and cusp.
+_target_: spenn.nn.wavefunction.SpENNWavefunction
+name: spenn_pf
+description: SpechtMP encoder with Pfaffian readout.
+encoder: ${encoder}
+spechtmp: ${spechtmp}
+readout: ${readout}
+cusp:
+  _target_: spenn.nn.encoding.cusp.ElectronElectronCusp
+  enabled: false

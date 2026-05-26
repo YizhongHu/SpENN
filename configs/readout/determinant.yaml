@@ -1,0 +1,5 @@
+# TODO: Implement after the Pfaffian prototype passes antisymmetry tests.
+_target_: spenn.nn.readout.determinant.DeterminantReadout
+name: determinant
+num_determinants: 1
+implementation_status: pending

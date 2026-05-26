@@ -1,0 +1,8 @@
+# TODO: Implement Hamiltonian as a black-box caller of the model.
+_target_: spenn.physics.hamiltonian.ElectronicHamiltonian
+name: electronic
+kinetic:
+  method: autograd_laplacian
+potential:
+  type: electronic_or_toy
+implementation_status: pending

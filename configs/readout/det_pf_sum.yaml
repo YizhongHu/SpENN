@@ -1,0 +1,8 @@
+# TODO: Implement stable signed-log summation for mixed readouts later.
+_target_: spenn.nn.readout.sum_readout.SumReadout
+name: det_pf_sum
+learn_weights: true
+readouts:
+  - _target_: spenn.nn.readout.determinant.DeterminantReadout
+  - _target_: spenn.nn.readout.pfaffian.PfaffianReadout
+implementation_status: pending

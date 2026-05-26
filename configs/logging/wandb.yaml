@@ -1,0 +1,8 @@
+# TODO: Import wandb only inside an explicit enabled logging path and only on rank 0.
+enabled: false
+project: spenn
+entity: null
+name: null
+tags: []
+log_model: false
+implementation_status: pending_optional

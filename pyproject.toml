@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spenn"
+version = "0.0.0"
+description = "Specht-module equivariant neural network scaffolding for fermionic wavefunctions."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "hydra-core",
+  "numpy",
+  "omegaconf",
+]
+
+[project.optional-dependencies]
+cpu = [
+  "torch",
+]
+cu126 = [
+  "torch",
+]
+cu128 = [
+  "torch",
+]
+test = [
+  "pytest",
+]
+wandb = [
+  "wandb",
+]
+
+[dependency-groups]
+dev = [
+  "pytest",
+]
+
+[tool.uv]
+python-preference = "only-managed"
+default-groups = ["dev"]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu126" },
+    { extra = "cu128" },
+  ],
+]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu126", extra = "cu126" },
+  { index = "pytorch-cu128", extra = "cu128" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.setuptools.packages.find]
+include = ["spenn*"]

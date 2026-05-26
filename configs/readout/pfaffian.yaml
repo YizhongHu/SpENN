@@ -1,0 +1,7 @@
+# TODO: Implement differentiable PyTorch Pfaffian with exact skew-kernel enforcement.
+_target_: spenn.nn.readout.pfaffian.PfaffianReadout
+name: pfaffian
+num_pfaffians: 1
+use_symmetric_gates: true
+allow_odd_electron_bordered: true
+implementation_status: pending

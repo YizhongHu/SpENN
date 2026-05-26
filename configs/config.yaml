@@ -1,0 +1,17 @@
+# Root Hydra config for the SpENN skeleton.
+# TODO: Wire these groups to concrete implementations after Phase 1 Skeleton.
+defaults:
+  - model: spenn_pf
+  - encoder: basic
+  - spechtmp: M3
+  - readout: pfaffian
+  - hamiltonian: electronic
+  - sampler: metropolis
+  - trainer: vmc
+  - logging: wandb
+  - hardware: single_gpu
+  - _self_
+
+seed: 1234
+dtype: float64
+implementation_status: skeleton_only

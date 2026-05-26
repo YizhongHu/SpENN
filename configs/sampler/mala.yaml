@@ -1,0 +1,8 @@
+# TODO: Add MALA only after basic Metropolis is tested.
+_target_: spenn.sampling.mala.MALASampler
+name: mala
+n_walkers: 1024
+step_size: 0.01
+warmup_steps: 100
+steps_per_iter: 10
+implementation_status: later_placeholder

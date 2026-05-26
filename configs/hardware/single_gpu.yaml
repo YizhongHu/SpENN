@@ -1,0 +1,5 @@
+# TODO: Keep single-process walker batching as the first scaling path.
+name: single_gpu
+device: cuda
+distributed: false
+precision: float64

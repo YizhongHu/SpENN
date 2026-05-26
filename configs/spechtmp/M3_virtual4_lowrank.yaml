@@ -1,0 +1,9 @@
+# TODO: Low-rank virtual order 4 is Phase 3 and must stay explicit opt-in.
+_target_: spenn.nn.spechtmp.layer.SpechtMP
+M: 3
+M_virtual: 4
+virtual4:
+  enabled: true
+  method: lowrank_branch_down
+  rank: 16
+implementation_status: phase3_placeholder
