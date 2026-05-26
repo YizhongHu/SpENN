@@ -583,9 +583,10 @@ trainer
 PyTorch remains the core runtime and autograd backend for model evaluation,
 local-energy computation, and training.
 
-Optional packages must enter through explicit wrappers or interfaces. They must
-not pollute runtime core imports, and core modules should remain usable without
-installing optional scientific, JAX, C++, or symbolic packages.
+Optional packages must enter through explicit wrappers in their owning packages
+or through tests. They must not pollute runtime core imports, and core modules
+should remain usable without installing optional scientific, JAX, C++, or
+symbolic packages.
 
 Package roles:
 
@@ -663,13 +664,6 @@ spenn/
     registry.py
     types.py
 
-    interfaces/
-      __init__.py
-      pyscf.py          # optional wrapper, not a core runtime import
-      pfapack.py        # optional validation adapter, not training path
-      netket.py         # optional JAX prototype adapter
-      deepqmc.py        # optional backend-experiment adapter
-
     utils/
       tensor_utils.py
       index_utils.py
@@ -680,7 +674,6 @@ spenn/
 
     reps/
       __init__.py
-      partitions.py
       permutations.py
       specht.py
       young.py
@@ -696,6 +689,7 @@ spenn/
 
     data_structures/
       __init__.py
+      partitions.py
       feature_dict.py
       subset_index.py
       irrep_tensor.py
@@ -711,7 +705,7 @@ spenn/
       spechtmp/
         __init__.py
         layer.py
-        intertwiner.py
+        fuser.py
         brancher.py
         lowrank_virtual.py
       readout/
@@ -776,9 +770,10 @@ spenn/
           local_energy.json
 ```
 
-The `interfaces/` modules are optional wrappers/adapters and must not be
-imported by core runtime modules at package import time. They are locations for
-explicit integrations, validation utilities, or prototype bridges only.
+Optional integrations must not be imported by core runtime modules at package
+import time. PySCF-style system conversion belongs with data or physics code,
+Pfaffian reference checks belong in tests, and backend experiments should live
+behind explicit experimental entrypoints.
 
 ---
 
@@ -821,7 +816,7 @@ Suggested classes:
 @dataclass(frozen=True)
 class SpechtBasis:
     order: int
-    partition: tuple[int, ...]
+    partition: Partition
     dim: int
     basis_name: str
 
@@ -830,8 +825,8 @@ class SpechtBasis:
 class FusionMap:
     source_orders: tuple[int, int]
     target_order: int
-    source_irreps: tuple[tuple[int, ...], tuple[int, ...]]
-    target_irrep: tuple[int, ...]
+    source_irreps: tuple[Partition, Partition]
+    target_irrep: Partition
     path_index: int
     tensor: torch.Tensor
 
@@ -840,8 +835,8 @@ class FusionMap:
 class BranchMap:
     source_order: int
     target_order: int
-    source_irrep: tuple[int, ...]
-    target_irrep: tuple[int, ...]
+    source_irrep: Partition
+    target_irrep: Partition
     path_index: int
     tensor: torch.Tensor
 ```
@@ -861,6 +856,9 @@ A logical feature layout is:
 features[order][irrep] -> tensor
 ```
 
+`FeatureDict` stores canonical `Partition` keys internally. Tuple/list/string/int
+partition specs are accepted by `get`, `set`, and `has` for convenience.
+
 A good tensor convention is:
 
 ```text
@@ -872,9 +870,9 @@ order 2:
   features[2][(1,1)]     : [batch, n, n, C, 1]
 
 order 3:
-  features[3][(3)]       : [batch, n, n, n, C, 1]
-  features[3][(2,1)]     : [batch, n, n, n, C, 2, mult]
-  features[3][(1,1,1)]   : [batch, n, n, n, C, 1]
+  features[3][(3)]       : [batch, n, n, n, C, 1, 1]
+  features[3][(2,1)]     : [batch, n, n, n, C, 2, 2]
+  features[3][(1,1,1)]   : [batch, n, n, n, C, 1, 1]
 ```
 
 The exact shape can change, but the external API should hide those details.
@@ -883,13 +881,13 @@ Suggested API:
 
 ```python
 class FeatureDict:
-    def get(self, order: int, irrep: tuple[int, ...]) -> torch.Tensor:
+    def get(self, order: int, irrep: PartitionLike) -> torch.Tensor:
         ...
 
-    def set(self, order: int, irrep: tuple[int, ...], value: torch.Tensor) -> None:
+    def set(self, order: int, irrep: PartitionLike, value: torch.Tensor) -> None:
         ...
 
-    def has(self, order: int, irrep: tuple[int, ...]) -> bool:
+    def has(self, order: int, irrep: PartitionLike) -> bool:
         ...
 
     def items(self):
@@ -1035,16 +1033,16 @@ class SpechtBrancher(nn.Module):
 
 ```python
 class SpechtMPLayer(nn.Module):
-    def __init__(self, intertwiner, brancher, activation, residual=True, norm=None):
+    def __init__(self, fuser, brancher, activation, residual=True, norm=None):
         super().__init__()
-        self.intertwiner = intertwiner
+        self.fuser = fuser
         self.brancher = brancher
         self.activation = activation
         self.residual = residual
         self.norm = norm
 
     def forward(self, features: FeatureDict) -> FeatureDict:
-        messages = self.intertwiner(features)
+        messages = self.fuser(features)
         features = self.brancher(messages, residual=features if self.residual else None)
         features = self.activation(features)
         if self.norm is not None:

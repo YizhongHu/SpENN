@@ -24,6 +24,9 @@ cu126 = [
 cu128 = [
   "torch",
 ]
+cu130 = [
+  "torch",
+]
 test = [
   "pytest",
 ]
@@ -44,6 +47,7 @@ conflicts = [
     { extra = "cpu" },
     { extra = "cu126" },
     { extra = "cu128" },
+    { extra = "cu130" }
   ],
 ]
 
@@ -52,6 +56,7 @@ torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu126", extra = "cu126" },
   { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
 ]
 
 [[tool.uv.index]]
@@ -67,6 +72,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.setuptools.packages.find]

@@ -1,8 +1,0 @@
-# TODO: Implement batched Metropolis sampling independent of model internals.
-_target_: spenn.sampling.metropolis.MetropolisSampler
-name: metropolis
-n_walkers: 1024
-step_size: 0.05
-warmup_steps: 100
-steps_per_iter: 10
-implementation_status: pending

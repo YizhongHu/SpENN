@@ -33,7 +33,7 @@ Source of truth: `spenn_project_instructions.md`. This file is a documentation-o
 - [x] Use only these recommendation statuses in the survey table: `adopt`, `optional`, `reference only`, and `avoid`.
 - [x] Prefer direct PyTorch implementations for differentiable training paths unless a package cleanly supports PyTorch tensors and autograd.
 - [x] Treat JAX and C++ projects as references unless concrete integration is justified by measurable value.
-- [x] Design `spenn/interfaces/` boundaries before importing optional packages anywhere in the package.
+- [x] Keep optional package integrations out of core runtime imports until their owning packages or tests implement them.
 - [x] Keep optional integrations out of core runtime imports; all optional packages must enter through explicit wrappers/adapters.
 - [x] Plan a later PySCF wrapper for molecule/system conversion and reference data, while keeping the first harmonic-trap milestone independent of PySCF.
 - [x] Use SciPy/SymPy only as optional offline/dev/test utilities for linear algebra, exact combinatorics, permutations, partitions, and sanity checks.
@@ -272,7 +272,7 @@ Strategy: approximation modules are separate from the original/general SpechtMP 
 - [ ] The roadmap states PyTorch remains the primary runtime.
 - [ ] The roadmap states JAX/C++ projects are references unless concrete integration is justified.
 - [ ] The roadmap states `pfapack` is a validation/reference backend, not the default differentiable training path.
-- [ ] The project instructions list optional interface locations under `spenn/interfaces/`.
+- [ ] The project instructions route optional integrations to owning packages or tests instead of empty interface placeholders.
 - [ ] The project instructions state normal tests do not require optional packages.
 - [ ] The project instructions state runtime Specht logic lives in `spenn/reps/`.
 - [ ] The project instructions state SpechtMP does not own Sage/passagemath generation logic.

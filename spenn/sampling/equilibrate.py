@@ -1,1 +1,11 @@
-"""Placeholder for future sampler warmup and equilibration helpers."""
+"""Sampler warmup and equilibration helpers."""
+
+from __future__ import annotations
+
+from spenn.data_structures.batch import Walkers
+
+
+def warmup(model, sampler, walkers: Walkers, n_steps: int):
+    """Run a warmup phase using the sampler."""
+
+    return sampler.sample(model, walkers, n_steps)

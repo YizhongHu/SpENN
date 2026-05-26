@@ -1,6 +1,5 @@
 # scripts TODO
 
-- Keep entrypoints Hydra-compatible.
-- Later, instantiate model, Hamiltonian, sampler, loss, trainer, and logging.
-- Add debug commands for equivariance and local-energy checks after those APIs exist.
-- Do not start real training or sampling from skeleton placeholders.
+- Keep `train.py`, `debug_equivariance.py`, and `debug_local_energy.py` Hydra-compatible.
+- Instantiate only the config sections each entrypoint needs.
+- Keep optional logging and future standalone eval/sample workflows out of scripts until the corresponding runtime paths are implemented.

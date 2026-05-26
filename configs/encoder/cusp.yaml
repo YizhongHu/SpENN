@@ -1,6 +1,0 @@
-# TODO: Keep electron-electron cusp as a separate log-amplitude contribution.
-_target_: spenn.nn.encoding.cusp.ElectronElectronCusp
-enabled: true
-same_spin_coefficient: null
-opposite_spin_coefficient: null
-implementation_status: pending
