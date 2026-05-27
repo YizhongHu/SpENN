@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
 from spenn.physics.kinetic import LogAbsKineticEnergy
 from spenn.physics.potential import ElectronicPotential
 from spenn.physics.systems import ElectronicSystem
@@ -37,7 +37,13 @@ class ElectronicHamiltonian(nn.Module):
         return self.potential(batch)
 
     def local_energy(self, model, batch: ElectronBatch) -> torch.Tensor:
-        return torch.nan_to_num(self.kinetic(model, batch) + self.potential_energy(batch))
+        kinetic = self.kinetic(model, batch)
+        potential = self.potential_energy(batch)
+        assert kinetic.shape == (batch.batch_size,)
+        assert potential.shape == (batch.batch_size,)
+        output = torch.nan_to_num(kinetic + potential)
+        assert output.shape == (batch.batch_size,)
+        return output
 
     def forward(self, model, batch: ElectronBatch) -> torch.Tensor:
         return self.local_energy(model, batch)

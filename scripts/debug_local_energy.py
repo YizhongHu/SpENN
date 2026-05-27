@@ -10,7 +10,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
 
 
 def load_config(argv: list[str] | None = None):
@@ -35,7 +35,7 @@ def main() -> None:
     loss, metrics = loss_fn(
         model,
         hamiltonian,
-        ElectronBatch(positions=batch.positions, spins=batch.spins, system=batch.aux.get("system")),
+        ElectronBatch(positions=batch.positions, system=batch.aux.get("system")),
     )
     print(
         OmegaConf.to_yaml(

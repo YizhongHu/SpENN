@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
 from spenn.physics.systems import ElectronicSystem
 from spenn.utils.tensor_utils import pairwise_distances
 
@@ -13,15 +13,21 @@ from spenn.utils.tensor_utils import pairwise_distances
 def harmonic_trap_potential(positions: torch.Tensor, omega: float = 1.0) -> torch.Tensor:
     """Harmonic confinement potential for each walker."""
 
-    return 0.5 * (omega**2) * positions.square().sum(dim=(1, 2))
+    assert positions.ndim == 3
+    output = 0.5 * (omega**2) * positions.square().sum(dim=(1, 2))
+    assert output.shape == (positions.shape[0],)
+    return output
 
 
 def electron_electron_repulsion(positions: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """Coulomb repulsion summed over unique electron pairs."""
 
     distances = pairwise_distances(positions, eps=eps).squeeze(-1)
+    assert distances.shape == (positions.shape[0], positions.shape[1], positions.shape[1])
     tri = torch.triu(torch.ones_like(distances, dtype=torch.bool), diagonal=1)
-    return distances.reciprocal().masked_fill(~tri, 0.0).sum(dim=(1, 2))
+    output = distances.reciprocal().masked_fill(~tri, 0.0).sum(dim=(1, 2))
+    assert output.shape == (positions.shape[0],)
+    return output
 
 
 def electron_nuclear_attraction(
@@ -36,9 +42,15 @@ def electron_nuclear_attraction(
         nuclear_positions = nuclear_positions.unsqueeze(0).expand(positions.shape[0], -1, -1)
     if nuclear_charges.ndim == 1:
         nuclear_charges = nuclear_charges.unsqueeze(0).expand(positions.shape[0], -1)
+    assert positions.ndim == 3
+    assert nuclear_positions.shape[0] == positions.shape[0]
+    assert nuclear_positions.shape[-1] == positions.shape[-1]
+    assert nuclear_charges.shape == nuclear_positions.shape[:2]
     disp = positions.unsqueeze(2) - nuclear_positions.unsqueeze(1)
     dist = torch.linalg.norm(disp, dim=-1).clamp_min(eps)
-    return -(nuclear_charges.unsqueeze(1) / dist).sum(dim=(1, 2))
+    output = -(nuclear_charges.unsqueeze(1) / dist).sum(dim=(1, 2))
+    assert output.shape == (positions.shape[0],)
+    return output
 
 
 class ElectronicPotential(nn.Module):
@@ -63,4 +75,6 @@ class ElectronicPotential(nn.Module):
                 eps=self.eps,
             )
         harmonic = harmonic_trap_potential(batch.positions, omega=system.harmonic_omega)
-        return harmonic + repulsion + attraction
+        output = harmonic + repulsion + attraction
+        assert output.shape == (batch.batch_size,)
+        return output

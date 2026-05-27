@@ -7,19 +7,17 @@ from itertools import combinations
 import pytest
 import torch
 
-from spenn.data_structures import all_ordered_tuples, all_pairs, all_subsets, all_triples
-from spenn.data_structures.batch import ElectronBatch, WavefunctionOutput, validate_output
+from spenn.data import all_ordered_tuples, all_pairs, all_subsets, all_triples
+from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput, validate_output
 
 
 def test_electron_batch_accepts_higher_rank_sample_shape() -> None:
     positions = torch.zeros(2, 3, 4, 5)
-    spins = torch.zeros(2, 3, 4)
     nuclear_positions = torch.zeros(2, 3, 7, 5)
     nuclear_charges = torch.ones(2, 3, 7)
 
     batch = ElectronBatch(
         positions=positions,
-        spins=spins,
         nuclear_positions=nuclear_positions,
         nuclear_charges=nuclear_charges,
         aux={"tag": "multi"},
@@ -44,7 +42,6 @@ def test_electron_batch_rejects_mismatched_nuclear_counts() -> None:
 def test_electron_batch_flatten_samples_preserves_metadata() -> None:
     batch = ElectronBatch(
         positions=torch.arange(2 * 3 * 4 * 5, dtype=torch.float64).reshape(2, 3, 4, 5),
-        spins=torch.zeros(2, 3, 4),
         nuclear_positions=torch.zeros(2, 3, 7, 5),
         nuclear_charges=torch.ones(2, 3, 7),
         aux={"tag": "multi"},
@@ -53,10 +50,32 @@ def test_electron_batch_flatten_samples_preserves_metadata() -> None:
     flat = batch.flatten_samples()
 
     assert flat.positions.shape == (6, 4, 5)
-    assert flat.spins is not None and flat.spins.shape == (6, 4)
     assert flat.nuclear_positions is not None and flat.nuclear_positions.shape == (6, 7, 5)
     assert flat.nuclear_charges is not None and flat.nuclear_charges.shape == (6, 7)
     assert flat.aux == {"tag": "multi"}
+
+
+def test_spin_tensors_are_validated_and_preserved() -> None:
+    positions = torch.zeros(2, 3, 4, 5)
+    spins = torch.tensor([[[1.0, -1.0, 1.0, -1.0]] * 3] * 2)
+    batch = ElectronBatch(positions=positions, spins=spins)
+
+    assert batch.spins is not None
+    assert batch.spins.shape == (2, 3, 4)
+    flat = batch.flatten_samples()
+    assert flat.spins is not None
+    assert flat.spins.shape == (6, 4)
+    assert flat.to(dtype=torch.float32).spins is not None
+    assert flat.to(dtype=torch.float32).spins.dtype == torch.float32
+
+    walkers = Walkers(positions=torch.zeros(6, 4, 5), spins=flat.spins)
+    assert walkers.spins is not None
+    assert torch.equal(walkers.spins, flat.spins)
+
+    with pytest.raises(ValueError, match="exactly"):
+        ElectronBatch(positions=torch.zeros(2, 4, 3), spins=torch.zeros(2, 4))
+    with pytest.raises(ValueError, match="shape"):
+        Walkers(positions=torch.zeros(2, 4, 3), spins=torch.ones(2, 3))
 
 
 def test_wavefunction_output_accepts_exact_nodes_and_sample_shapes() -> None:

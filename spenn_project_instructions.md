@@ -1,5 +1,9 @@
 # SpENN Project Implementation Instructions
 
+## Notice
+
+This document is OUTDATED and should be used for BACKGROUND ONLY. Reference the instructions.md in the individual subfolders for implementation details.
+
 This document describes a proposed PyTorch project structure for implementing **SpENN**: a Specht-module equivariant neural network for fermionic wavefunction modeling, with plug-and-play encoding, SpechtMP, determinant/Pfaffian readouts, VMC training, Hamiltonian evaluation, Monte Carlo sampling, Hydra configs, and optional WandB logging.
 
 The goal is to keep the code modular enough that the mathematical pieces can be changed frequently without rewriting the Hamiltonian, sampler, or trainer.
@@ -679,7 +683,7 @@ spenn/
       young.py
       character_tables.py
       irreps.py
-      branching.py
+      branch.py
       fusion.py
       fourier.py
       cached_maps.py
@@ -687,7 +691,7 @@ spenn/
         sage_specht.py
         passagemath_specht.py
 
-    data_structures/
+    data/
       __init__.py
       partitions.py
       feature_dict.py
@@ -846,7 +850,7 @@ but just in case a higher-order map is requested, there should be machinery that
 
 ---
 
-### 3.2 `data_structures/`: feature containers
+### 3.2 `data/`: feature containers
 
 Avoid passing unstructured nested dictionaries everywhere. Use a disciplined `FeatureDict` wrapper.
 
@@ -945,7 +949,8 @@ Do not make the encoder responsible for Hamiltonian or sampling logic.
 
 ### 4.2 Electron-electron cusp factor
 
-For practicality, implement e-e cusps as a separate modular factor. Do not bury them deep inside SpechtMP.
+For practicality, implement cusps as separate modular ansatz factors under
+`spenn.nn.cusp`. Do not bury them deep inside SpechtMP or the physics package.
 
 Use a separate module:
 
@@ -962,7 +967,8 @@ Then the wavefunction can do:
 out.logabs = out.logabs + cusp_log
 ```
 
-We will initially not implement proton-electron cusps, but it may be a later addition, so make sure to leave room for that expansion to happen.
+Electron-electron and electron-nucleus cusps are the active analytic modules;
+future nuclear-feature cusps should keep using the `spenn.nn.cusp` namespace.
 
 ---
 
@@ -1433,7 +1439,7 @@ readout:
   use_symmetric_gates: true
 
 cusp:
-  _target_: spenn.nn.encoding.cusp.ElectronElectronCusp
+  _target_: spenn.nn.cusp.ElectronElectronCusp
   enabled: true
 ```
 

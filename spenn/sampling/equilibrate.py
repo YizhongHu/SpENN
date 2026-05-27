@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spenn.data_structures.batch import Walkers
+from spenn.data.batch import Walkers
 
 
 def warmup(model, sampler, walkers: Walkers, n_steps: int):

@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch, WavefunctionOutput
-from spenn.data_structures.feature_dict import FeatureDict
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.feature_dict import FeatureDict
 from spenn.nn.readout.pfaffian import signed_logsumexp_outputs
 
 

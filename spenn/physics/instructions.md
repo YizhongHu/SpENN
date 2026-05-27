@@ -14,7 +14,6 @@ physics/
   local_energy.py
   kinetic.py
   potential.py
-  cusp.py
 ```
 
 ---
@@ -103,7 +102,6 @@ batch.positions  # Tensor shape [batch, n_electrons, dim]
 Potentially later:
 
 ```python
-batch.spins
 batch.nuclei
 batch.charges
 ```
@@ -366,43 +364,11 @@ The Hamiltonian must not mutate walkers or run MC steps.
 
 ---
 
-## 8. `physics/cusp.py`
+## 8. Cusps
 
-Responsibilities:
-
-- Implement cusp factors or cusp-related helper functions.
-- For now, prioritize electron-electron cusp.
-- Keep cusp logic modular so it can be attached to the wavefunction or used as a feature.
-
-A simple electron-electron Jastrow/cusp factor can be added to the log amplitude:
-
-\[
-\log |\psi(X)| = \log |\psi_{NN}(X)| + J_{ee}(X).
-\]
-
-A common schematic form is
-
-\[
-J_{ee}(X)=\sum_{i<j} u(r_{ij}).
-\]
-
-The exact cusp coefficient depends on spin and convention. For early code, implement the class but allow coefficients to be configured explicitly.
-
-Suggested class:
-
-```python
-class ElectronElectronCusp(torch.nn.Module):
-    def __init__(self, same_spin_coeff: float, opposite_spin_coeff: float | None = None):
-        super().__init__()
-        self.same_spin_coeff = same_spin_coeff
-        self.opposite_spin_coeff = opposite_spin_coeff
-
-    def forward(self, positions: torch.Tensor, spins=None) -> torch.Tensor:
-        """Return cusp/Jastrow log factor with shape [batch]."""
-        ...
-```
-
-The cusp module may also live under `nn/encoding/cusp.py` if it is used directly in the model. The `physics/cusp.py` version should contain reusable formulas and tests.
+Cusp factors are trainable ansatz modules and live in `spenn.nn.cusp`. The
+physics package should not export a cusp module; it owns Hamiltonian, kinetic,
+potential, and local-energy terms only.
 
 ---
 
@@ -416,7 +382,6 @@ from .hamiltonian import ElectronicHamiltonian
 from .local_energy import LocalEnergy
 from .kinetic import KineticEnergy
 from .potential import CoulombPotential
-from .cusp import ElectronElectronCusp
 ```
 
 ---

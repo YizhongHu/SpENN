@@ -29,6 +29,7 @@ cu130 = [
 ]
 test = [
   "pytest",
+  "typeguard>=4",
 ]
 wandb = [
   "wandb",
@@ -37,6 +38,7 @@ wandb = [
 [dependency-groups]
 dev = [
   "pytest",
+  "typeguard>=4",
 ]
 
 [tool.uv]

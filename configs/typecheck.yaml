@@ -1,0 +1,16 @@
+package: spenn
+
+modes:
+  tests: opt_in
+  scripts: opt_in
+  training: opt_in_debug_only
+  deployment: disabled
+
+commands:
+  tests: uv run pytest --typeguard-packages=spenn -q
+  debug_equivariance: uv run python scripts/typechecked.py scripts/debug_equivariance.py -- sampler.n_walkers=4
+  train_smoke: uv run python scripts/typechecked.py scripts/train.py -- trainer.max_steps=1 sampler.n_walkers=4
+
+notes:
+  - Normal test, train, and debug commands do not install the Typeguard import hook.
+  - Runtime type checking is intended for debugging and CI smoke checks, not production training.

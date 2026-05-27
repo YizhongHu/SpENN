@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
 from spenn.physics.kinetic import kinetic_energy_from_logabs
 from spenn.physics.potential import ElectronicPotential
 

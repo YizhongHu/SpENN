@@ -10,7 +10,8 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
+from spenn.data.partitions import Par
 
 
 def load_config(argv: list[str] | None = None):
@@ -29,23 +30,22 @@ def main() -> None:
     encoder = instantiate(cfg.model.encoder).to(device=device, dtype=dtype)
     sampler = instantiate(cfg.sampler)
     walkers = sampler.initialize(system=system, device=device)
-    batch = ElectronBatch(positions=walkers.positions, spins=walkers.spins, system=walkers.aux.get("system"))
+    batch = ElectronBatch(positions=walkers.positions, system=walkers.aux.get("system"))
     flipped = ElectronBatch(
         positions=batch.positions.flip(dims=(1,)),
-        spins=None if batch.spins is None else batch.spins.flip(dims=(1,)),
         system=batch.system,
     )
     original = encoder(batch)
     permuted = encoder(flipped)
-    original_s = original.get(2, (2))
-    original_a = original.get(2, (1, 1))
-    permuted_s = permuted.get(2, (2)).flip(dims=(1, 2))
-    permuted_a = permuted.get(2, (1, 1)).flip(dims=(1, 2))
+    original_s = original.get(Par("S"))
+    original_a = original.get(Par("A"))
+    permuted_s = permuted.get(Par("S")).flip(dims=(2, 3))
+    permuted_a = permuted.get(Par("A")).flip(dims=(2, 3))
     ok = (
         torch.allclose(original_s, permuted_s)
         and torch.allclose(original_a, permuted_a)
-        and torch.allclose(original_s, original_s.transpose(1, 2))
-        and torch.allclose(original_a, -original_a.transpose(1, 2))
+        and torch.allclose(original_s, original_s.transpose(2, 3))
+        and torch.allclose(original_a, -original_a.transpose(2, 3))
     )
     print(OmegaConf.to_yaml({"entrypoint": "debug_equivariance", "status": "ok" if ok else "failed"}))
 

@@ -6,14 +6,14 @@ from collections.abc import Mapping
 
 from torch import nn
 
-from spenn.data_structures.feature_dict import FeatureDict
-from spenn.data_structures.partitions import Partition, PartitionLike
+from spenn.data.feature_dict import FeatureDict
+from spenn.data.partitions import Partition
 
 
 class FeatureChannelMixer(nn.Module):
     """Apply a learned channel mixing to every stored feature tensor."""
 
-    def __init__(self, channels: Mapping[int, Mapping[PartitionLike, int]] | None = None) -> None:
+    def __init__(self, channels: Mapping[int, Mapping[Partition, int]] | None = None) -> None:
         super().__init__()
         self.channels = channels or {}
         self.mixers = nn.ModuleDict()

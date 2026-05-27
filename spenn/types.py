@@ -6,7 +6,7 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only import
     import torch
-    from spenn.data_structures.partitions import Partition
+    from spenn.data.partitions import Partition
     from torch import Tensor
 else:  # pragma: no cover - keep import lightweight when torch is absent
     Partition = Any

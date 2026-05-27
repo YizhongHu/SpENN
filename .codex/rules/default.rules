@@ -1,0 +1,31 @@
+# Allow project test commands.
+allow(["uv", "run", "pytest", "-q"])
+allow(["uv", "run", "pytest", "--typeguard-packages=spenn", "-q"])
+allow(["uv", "run", "python", "scripts/typechecked.py"])
+allow(["uv", "run", "python", "-m", "compileall", "spenn", "scripts"])
+
+# Allow harmless inspection commands.
+allow(["git", "status"])
+allow(["git", "diff"])
+allow(["git", "log"])
+allow(["ls"])
+allow(["pwd"])
+allow(["cat"])
+allow(["sed"])
+allow(["grep"])
+allow(["find"])
+
+# Prompt for dependency changes.
+prompt(["uv", "add"])
+prompt(["uv", "remove"])
+prompt(["uv", "sync"])
+prompt(["pip"])
+prompt(["python", "-m", "pip"])
+
+# Deny obviously dangerous commands.
+deny(["rm", "-rf"])
+deny(["sudo"])
+deny(["chmod", "-R"])
+deny(["chown", "-R"])
+deny(["curl"])
+deny(["wget"])

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
 from spenn.physics.systems import ElectronicSystem
 from spenn.training.metrics import gradient_norm, parameter_norm
 
@@ -124,7 +124,6 @@ class VMCTrainer:
         self.walkers = self.sampler.sample(self.model, self.walkers, getattr(self.sampler, "steps_per_iter", 1))
         batch = ElectronBatch(
             positions=self.walkers.positions,
-            spins=self.walkers.spins,
             system=self.walkers.aux.get("system"),
             aux=dict(self.walkers.aux),
         )

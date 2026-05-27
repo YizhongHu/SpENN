@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch, WavefunctionOutput
-from spenn.nn.encoding.cusp import ElectronElectronCusp
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.nn.cusp import Cusp
 
 
 class SpENNWavefunction(nn.Module):
     """Compose encoder, SpechtMP, readout, and optional cusp."""
 
-    def __init__(self, encoder, spechtmp, readout, cusp: ElectronElectronCusp | None = None, **_: object) -> None:
+    def __init__(self, encoder, spechtmp, readout, cusp: Cusp | None = None, **_: object) -> None:
         super().__init__()
         self.encoder = encoder
         self.spechtmp = spechtmp

@@ -5,8 +5,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch, WavefunctionOutput
-from spenn.data_structures.feature_dict import FeatureDict
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.feature_dict import FeatureDict
+from spenn.data.irrep_tensor import scalar_channels_last
+from spenn.data.partitions import Par
 
 
 class DeterminantReadout(nn.Module):
@@ -24,19 +26,24 @@ class DeterminantReadout(nn.Module):
             self.add_module("projection", self._projection)
 
     def build_orbital_matrix(self, features: FeatureDict, batch: ElectronBatch) -> torch.Tensor:
-        h = features.get(1, (1))
+        h = features.get(Par("H"))
         if h is None:
             raise KeyError("DeterminantReadout requires one-body features at features[1][(1)]")
         self._ensure_projection(batch.n_electrons)
         self._projection = self._projection.to(device=h.device, dtype=h.dtype)
-        matrix = self._projection(h)
+        h_channels_last = scalar_channels_last(h)
+        assert h_channels_last.shape[:2] == (batch.batch_size, batch.n_electrons)
+        matrix = self._projection(h_channels_last)
         if matrix.shape[-1] != batch.n_electrons:
             raise ValueError(
                 f"DeterminantReadout expects a square matrix with size {batch.n_electrons}, got {matrix.shape[-1]}"
             )
+        assert matrix.shape == (batch.batch_size, batch.n_electrons, batch.n_electrons)
         return matrix
 
     def forward(self, features: FeatureDict, batch: ElectronBatch) -> WavefunctionOutput:
         matrix = self.build_orbital_matrix(features, batch)
         sign, logabs = torch.linalg.slogdet(matrix)
+        assert logabs.shape == (batch.batch_size,)
+        assert sign.shape == (batch.batch_size,)
         return WavefunctionOutput(logabs=logabs, sign=sign, aux={"A": matrix})

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch
+from spenn.data.batch import ElectronBatch
 
 
 class VMCLoss(nn.Module):

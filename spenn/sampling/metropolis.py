@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import torch
 from torch import nn
 
-from spenn.data_structures.batch import ElectronBatch, Walkers
+from spenn.data.batch import ElectronBatch, Walkers
 from spenn.physics.systems import ElectronicSystem
 from spenn.sampling.moves import GaussianMove
 
@@ -50,14 +48,13 @@ class MetropolisSampler(nn.Module):
         positions = self.initial_scale * torch.randn(
             n_walkers, system.n_electrons, system.spatial_dim, device=device, dtype=dtype
         )
-        spins = None
-        return Walkers(positions=positions, spins=spins, aux={"system": system})
+        return Walkers(positions=positions, aux={"system": system})
 
     def _evaluate(self, model, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
         batch = ElectronBatch(
             positions=walkers.positions,
-            spins=walkers.spins,
             system=walkers.aux.get("system"),
+            spins=walkers.spins,
             aux=dict(walkers.aux),
         )
         with torch.no_grad():
@@ -81,7 +78,7 @@ class MetropolisSampler(nn.Module):
         logabs = torch.where(accepted, proposed_logabs, current_logabs)
         sign = torch.where(accepted, proposed_sign, current_sign)
         self.acceptance_rate = accepted.to(dtype=torch.float32).mean().item()
-        return Walkers(positions=positions, spins=walkers.spins, logabs=logabs, sign=sign, aux={**walkers.aux, "accepted": accepted})
+        return Walkers(positions=positions, logabs=logabs, sign=sign, spins=walkers.spins, aux={**walkers.aux, "accepted": accepted})
 
     def sample(self, model, walkers: Walkers, n_steps: int) -> Walkers:
         for _ in range(n_steps):

@@ -106,10 +106,8 @@ import torch
 @dataclass
 class Walkers:
     positions: torch.Tensor  # [n_walkers, n_electrons, dim]
-    spins: torch.Tensor | None = None
     logabs: torch.Tensor | None = None  # [n_walkers]
     sign: torch.Tensor | None = None    # [n_walkers]
-    phase: torch.Tensor | None = None
     aux: dict = field(default_factory=dict)
 
     def to(self, device=None, dtype=None): ...
