@@ -29,7 +29,8 @@ class UpdateHead(nn.Module):
         Channel specification by body order. For example, ``[0, 32, 32]``
         creates 32 output channels for order-1 and order-2 feature updates.
     activation : torch.nn.Module or None, optional
-        Irrep-aware activation module reserved for the future implementation.
+        Optional irrep-aware activation. The default ``None`` keeps update-head
+        outputs linear; residual state updates are handled by `SpechtMPLayer`.
     **_ : object
         Ignored compatibility keyword arguments.
     """

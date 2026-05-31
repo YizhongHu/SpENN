@@ -8,11 +8,33 @@ from torch import nn
 
 from spenn.data import BranchDict, FeatureDict, MessageDict, Par, TensorProductDict
 from spenn.data.batch import ElectronBatch
-from spenn.nn.activations import TensorProductActivation
+from spenn.nn.activations import ActivationByType, ElementwiseFeatureActivation, NormGateActivation
 from spenn.nn.encoding import BaseEncoder, ElectronPairEncoder
 from spenn.nn.spechtmp import MessageHead, SpechtMP, SpechtMPLayer, UpdateHead
-from spenn.nn.update import RawUpdate, ResidualUpdate
+from spenn.nn.update import ResidualUpdate
 from spenn.reps import BranchMap, FusionMap
+
+
+def _message_activation() -> ActivationByType:
+    return ActivationByType(
+        symmetric=ElementwiseFeatureActivation(nn.Sigmoid()),
+        antisymmetric=ElementwiseFeatureActivation(nn.Tanh()),
+        tensor=NormGateActivation(nn.Sigmoid()),
+    )
+
+
+def _spechtmp_layer(
+    channels: object | None = None,
+    activation: nn.Module | None = None,
+    update: ResidualUpdate | None = None,
+) -> SpechtMPLayer:
+    return SpechtMPLayer(
+        fusion_map=FusionMap(M=2, M_virtual=2),
+        message_head=MessageHead(M=2, M_virtual=2, channels=channels, activation=activation),
+        branch_map=BranchMap(M=2, M_virtual=2),
+        update_head=UpdateHead(M=2, channels=channels),
+        update=ResidualUpdate() if update is None else update,
+    )
 
 
 def test_tensor_product_dict_stores_and_validates_blocks() -> None:
@@ -74,20 +96,28 @@ def test_branch_dict_stores_and_validates_blocks() -> None:
 def test_scaffold_imports_and_constructors_match_config_surface() -> None:
     fusion_map = FusionMap(M=2, M_virtual=2, maps={})
     branch_map = BranchMap(M=2, M_virtual=2, maps={})
+    message_activation = nn.Identity()
     message_head = MessageHead(
         M=2,
         M_virtual=2,
         channels={"order1": {"(1)": 4}},
-        activation=nn.Identity(),
+        activation=message_activation,
     )
     update_head = UpdateHead(M=2, channels={"order1": {"(1)": 4}}, activation=nn.Identity())
+    update = ResidualUpdate()
     layer = SpechtMPLayer(
         fusion_map=fusion_map,
         message_head=message_head,
         branch_map=branch_map,
         update_head=update_head,
+        update=update,
     )
-    stack = SpechtMP(M=2, M_virtual=2, num_layers=2, channels={"order1": {"(1)": 4}})
+    stack = SpechtMP(
+        layers=[
+            _spechtmp_layer(channels={"order1": {"(1)": 4}}, activation=_message_activation()),
+            _spechtmp_layer(channels={"order1": {"(1)": 4}}, activation=_message_activation()),
+        ]
+    )
     encoder = ElectronPairEncoder(
         name="basic",
         max_order=2,
@@ -97,9 +127,13 @@ def test_scaffold_imports_and_constructors_match_config_surface() -> None:
     assert isinstance(layer, SpechtMPLayer)
     assert len(stack.layers) == 2
     assert layer.update_head is update_head
+    assert layer.update is update
+    assert layer.message_head.activation is message_activation
     assert all(isinstance(stack_layer.update_head, UpdateHead) for stack_layer in stack.layers)
-    assert isinstance(layer.update, RawUpdate)
-    assert all(isinstance(stack_layer.update, RawUpdate) for stack_layer in stack.layers)
+    assert isinstance(layer.update, ResidualUpdate)
+    assert all(isinstance(stack_layer.update, ResidualUpdate) for stack_layer in stack.layers)
+    assert all(stack_layer.update_head.activation is None for stack_layer in stack.layers)
+    assert all(isinstance(stack_layer.message_head.activation, ActivationByType) for stack_layer in stack.layers)
     assert encoder.output_keys() == (Par("H"), Par("S"), Par("A"))
 
 
@@ -120,30 +154,47 @@ def test_stale_branching_exports_are_removed() -> None:
     assert not hasattr(reps, "BranchingMap")
 
 
-def test_tensor_product_activation_scaffold_uses_two_modules() -> None:
+def test_activation_by_type_routes_scalar_and_tensor_blocks() -> None:
     scalar_activation = nn.Tanh()
-    tensor_activation = nn.Identity()
-    activation = TensorProductActivation(
-        scalar_activation=scalar_activation,
-        tensor_activation=tensor_activation,
+    antisymmetric_activation = nn.Tanh()
+    tensor_activation = nn.Sigmoid()
+    activation = ActivationByType(
+        symmetric=ElementwiseFeatureActivation(scalar_activation),
+        antisymmetric=ElementwiseFeatureActivation(antisymmetric_activation),
+        tensor=NormGateActivation(tensor_activation),
+    )
+    features = FeatureDict(
+        {
+            Par("S"): torch.ones(1, 1, 2, 2, 1, 1),
+            Par("A"): 2.0 * torch.ones(1, 1, 2, 2, 1, 1),
+            Par("V"): 3.0 * torch.ones(1, 1, 2, 2, 2, 2, 2),
+        }
     )
 
-    assert activation.scalar_activation is scalar_activation
-    assert activation.tensor_activation is tensor_activation
-    with pytest.raises(NotImplementedError, match="TensorProductActivation.forward"):
-        activation(FeatureDict())
+    assert activation.symmetric.activation is scalar_activation
+    assert activation.antisymmetric.activation is antisymmetric_activation
+    assert activation.tensor.activation is tensor_activation
+    activated = activation(features)
+    assert torch.allclose(activated.get(Par("S")), torch.tanh(features.get(Par("S"))))
+    assert torch.allclose(activated.get(Par("A")), torch.tanh(features.get(Par("A"))))
+    assert activated.get(Par("V")).shape == features.get(Par("V")).shape
 
 
 def test_spechtmp_accepts_explicit_update_module() -> None:
     update = ResidualUpdate()
-    update_head = UpdateHead()
-    layer = SpechtMPLayer(update_head=update_head, update=update)
-    stack = SpechtMP(num_layers=2, update_head=update_head, update=update)
+    update_head = UpdateHead(M=2)
+    layer = SpechtMPLayer(
+        fusion_map=FusionMap(M=2, M_virtual=2),
+        message_head=MessageHead(M=2, M_virtual=2, activation=_message_activation()),
+        branch_map=BranchMap(M=2, M_virtual=2),
+        update_head=update_head,
+        update=update,
+    )
+    stack = SpechtMP(layers=[layer])
 
     assert layer.update_head is update_head
     assert layer.update is update
-    assert all(stack_layer.update_head is update_head for stack_layer in stack.layers)
-    assert all(stack_layer.update is update for stack_layer in stack.layers)
+    assert stack.layers[0] is layer
 
 
 def test_scaffold_boundaries_raise_not_implemented() -> None:
@@ -173,7 +224,16 @@ def test_scaffold_boundaries_raise_not_implemented() -> None:
         BaseEncoder().output_keys()
     with pytest.raises(NotImplementedError, match="BaseEncoder.forward"):
         BaseEncoder()(batch)
-    assert len(SpechtMP()(features)) == 0
+    assert len(SpechtMP(layers=())(features)) == 0
+    with pytest.raises(TypeError):
+        SpechtMP()
+    with pytest.raises(TypeError):
+        SpechtMPLayer(
+            fusion_map=FusionMap(),
+            message_head=MessageHead(),
+            branch_map=BranchMap(),
+            update_head=UpdateHead(),
+        )
 
 
 def test_scaffolds_reject_unsupported_orders() -> None:
@@ -185,7 +245,5 @@ def test_scaffolds_reject_unsupported_orders() -> None:
         MessageHead(M=3)
     with pytest.raises(ValueError, match="M <= 2"):
         UpdateHead(M=3)
-    with pytest.raises(ValueError, match="M <= 2"):
-        SpechtMP(M_virtual=3)
     with pytest.raises(ValueError, match="max_order <= 2"):
         ElectronPairEncoder(max_order=3)

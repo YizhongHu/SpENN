@@ -1,7 +1,15 @@
 # Allow project test commands.
-allow(["uv", "run", "pytest", "-q"])
-allow(["uv", "run", "pytest", "--typeguard-packages=spenn", "-q"])
-allow(["uv", "run", "python", "scripts/typechecked.py"])
+prefix_rule(
+    pattern = ["uv", "run", "pytest", "*"],
+    decision = "allow",
+    description = "Allow running tests with pytest, including typeguard checks.",
+
+)
+prefix_rule(
+    pattern = ["uv", "run", "pytest", "scripts/*"],
+    decision = "allow",
+    description = "Allow running tests in the scripts directory with pytest, including typeguard checks.",
+)
 allow(["uv", "run", "python", "-m", "compileall", "spenn", "scripts"])
 
 # Allow harmless inspection commands.
@@ -21,9 +29,9 @@ prompt(["uv", "remove"])
 prompt(["uv", "sync"])
 prompt(["pip"])
 prompt(["python", "-m", "pip"])
+prompt(["rm", "-rf"])
 
 # Deny obviously dangerous commands.
-deny(["rm", "-rf"])
 deny(["sudo"])
 deny(["chmod", "-R"])
 deny(["chown", "-R"])

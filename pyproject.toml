@@ -37,6 +37,7 @@ wandb = [
 
 [dependency-groups]
 dev = [
+  "matplotlib>=3.10.9",
   "pytest",
   "typeguard>=4",
 ]
@@ -83,3 +84,8 @@ explicit = true
 
 [tool.setuptools.packages.find]
 include = ["spenn*"]
+
+[tool.pytest.ini_options]
+markers = [
+  "integration: end-to-end tests that exercise scripts, configs, or generated artifacts",
+]

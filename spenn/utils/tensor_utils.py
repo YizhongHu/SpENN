@@ -72,7 +72,9 @@ def pairwise_distances(positions: torch.Tensor, eps: float = 1e-12) -> torch.Ten
     positions : torch.Tensor
         Tensor of shape ``[batch, n_electrons, spatial_dim]``.
     eps : float, optional
-        Minimum distance value used for numerical safety.
+        Positive distance floor used for numerical safety. When positive, the
+        distance is computed as ``sqrt(||r_i - r_j||^2 + eps^2)`` so second
+        derivatives remain finite at coincident coordinates.
 
     Returns
     -------
@@ -80,10 +82,14 @@ def pairwise_distances(positions: torch.Tensor, eps: float = 1e-12) -> torch.Ten
         Pairwise distances with shape ``[batch, n_electrons, n_electrons, 1]``.
     """
 
+    if positions.ndim != 3:
+        raise ValueError(f"positions must have shape [batch, n_electrons, spatial_dim], got {tuple(positions.shape)}")
     disp = pairwise_displacements(positions)
-    dist = torch.linalg.norm(disp, dim=-1, keepdim=True)
+    squared = disp.square().sum(dim=-1, keepdim=True)
     if eps:
-        dist = dist.clamp_min(eps)
+        squared = squared + float(eps) ** 2
+    dist = torch.sqrt(squared)
+    assert dist.shape == (*positions.shape[:2], positions.shape[1], 1)
     return dist
 
 

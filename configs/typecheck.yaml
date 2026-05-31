@@ -10,6 +10,8 @@ commands:
   tests: uv run pytest --typeguard-packages=spenn -q
   debug_equivariance: uv run python scripts/typechecked.py scripts/debug_equivariance.py -- sampler.n_walkers=4
   train_smoke: uv run python scripts/typechecked.py scripts/train.py -- trainer.max_steps=1 sampler.n_walkers=4
+  hooke_exact_debug: uv run python scripts/typechecked.py experiments/hooke/run_exact.py -- --config debug_singlet --run-id typecheck_hooke_exact
+  hooke_spenn_debug: uv run python scripts/typechecked.py experiments/hooke/run_spenn.py -- --config spenn_singlet_debug --run-id typecheck_hooke_spenn training.vmc_steps=1 trainer.max_steps=1 sampler.n_walkers=4
 
 notes:
   - Normal test, train, and debug commands do not install the Typeguard import hook.

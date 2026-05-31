@@ -24,4 +24,4 @@ class LocalEnergyCalculator(nn.Module):
         return self.potential(batch)
 
     def forward(self, model, batch: ElectronBatch) -> torch.Tensor:
-        return torch.nan_to_num(self.kinetic(model, batch) + self.potential_energy(batch))
+        return self.kinetic(model, batch) + self.potential_energy(batch)

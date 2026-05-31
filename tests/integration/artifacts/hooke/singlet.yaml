@@ -1,0 +1,55 @@
+experiment_name: hooke_exact_singlet_integration
+run_mode: integration
+sector: singlet
+run_id: null
+seed: 3
+dtype: float64
+device: cpu
+output_root: outputs/integration_tests
+
+system:
+  name: hooke_singlet
+  n_electrons: 2
+  spatial_dim: 3
+  harmonic_omega: 0.5
+  exact_energy: 2.0
+
+model:
+  _target_: experiments.hooke.analytic.HookeExactWavefunction
+  sector: singlet
+  node_axis: 2
+  cusp: analytic
+  readout: analytic_symmetric
+
+sampler:
+  name: metropolis
+  n_walkers: 16
+  warmup_steps: 4
+  production_blocks: 2
+  steps_per_block: 2
+  step_size: 0.9
+  move_all: true
+  initial_scale: 1.4
+
+diagnostics:
+  cusp_points: 8
+  radial_points: 12
+  histogram_bins: 8
+  symmetry_samples: 16
+
+artifacts:
+  write_plot_data: false
+
+validation:
+  preflight_energy_tolerance: 1.0e-8
+  sample_energy_tolerance: 1.0e-7
+
+tracking:
+  tags:
+    - integration_test
+    - hooke
+    - singlet
+    - opposite_spin
+    - analytic_cusp
+    - exact_wavefunction
+    - metropolis

@@ -1425,13 +1425,43 @@ encoder:
       "(1,1,1)": 16
 
 spechtmp:
-  _target_: spenn.nn.spechtmp.SpechtMP
-  num_layers: 4
-  M: 3
-  M_virtual: 3
-  residual: true
-  activation:
-    _target_: spenn.nn.activations.TensorProductActivation
+  _target_: spenn.nn.spechtmp.layer.SpechtMP
+  layers:
+    - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
+      fusion_map:
+        _target_: spenn.reps.fusion.FusionMap
+        M: 2
+        M_virtual: 2
+      message_head:
+        _target_: spenn.nn.spechtmp.message_head.MessageHead
+        M: 2
+        M_virtual: 2
+        channels: [0, 32, 32]
+        include_linear: true
+        activation:
+          _target_: spenn.nn.activations.ActivationByType
+          symmetric:
+            _target_: spenn.nn.activations.ElementwiseFeatureActivation
+            activation:
+              _target_: torch.nn.Sigmoid
+          antisymmetric:
+            _target_: spenn.nn.activations.ElementwiseFeatureActivation
+            activation:
+              _target_: torch.nn.Tanh
+          tensor:
+            _target_: spenn.nn.activations.NormGateActivation
+            activation:
+              _target_: torch.nn.Sigmoid
+      branch_map:
+        _target_: spenn.reps.branch.BranchMap
+        M: 2
+        M_virtual: 2
+      update_head:
+        _target_: spenn.nn.spechtmp.update_head.UpdateHead
+        M: 2
+        channels: [0, 32, 32]
+      update:
+        _target_: spenn.nn.update.ResidualUpdate
 
 readout:
   _target_: spenn.nn.readout.PfaffianReadout

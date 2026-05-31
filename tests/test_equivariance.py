@@ -7,8 +7,10 @@ import torch
 
 from spenn.data import FeatureDict, MessageDict, Par
 from spenn.data.batch import ElectronBatch
+from spenn.nn.activations import ActivationByType, ElementwiseFeatureActivation, NormGateActivation
 from spenn.nn.encoding import ElectronPairEncoder
-from spenn.nn.spechtmp import MessageHead, SpechtMP, UpdateHead
+from spenn.nn.spechtmp import MessageHead, SpechtMP, SpechtMPLayer, UpdateHead
+from spenn.nn.update import ResidualUpdate
 from spenn.reps import BranchMap, FusionMap
 
 
@@ -60,6 +62,29 @@ def _permute_features(features: FeatureDict, permutation: torch.Tensor) -> Featu
     )
 
 
+def _message_activation() -> ActivationByType:
+    return ActivationByType(
+        symmetric=ElementwiseFeatureActivation(torch.nn.Sigmoid()),
+        antisymmetric=ElementwiseFeatureActivation(torch.nn.Tanh()),
+        tensor=NormGateActivation(torch.nn.Sigmoid()),
+    )
+
+
+def _spechtmp_stack(num_layers: int) -> SpechtMP:
+    return SpechtMP(
+        layers=[
+            SpechtMPLayer(
+                fusion_map=FusionMap(M=2, M_virtual=2),
+                message_head=MessageHead(M=2, M_virtual=2, channels=[0, 2, 2], activation=_message_activation()),
+                branch_map=BranchMap(M=2, M_virtual=2),
+                update_head=UpdateHead(M=2, channels=[0, 2, 2]),
+                update=ResidualUpdate(),
+            )
+            for _ in range(num_layers)
+        ]
+    )
+
+
 def _reduced_pair_values(tensor: torch.Tensor, target, *sources) -> torch.Tensor:
     source_start = 3 + target.order
     source_stop = source_start + sum(source.order for source in sources)
@@ -76,7 +101,7 @@ def test_encoder_pair_features_have_phase1_symmetry_contract() -> None:
 def test_spechtmp_stack_preserves_pair_symmetry_classes() -> None:
     torch.manual_seed(0)
     features = ElectronPairEncoder(channels=[0, 2, 2])(_batch())
-    stack = SpechtMP(num_layers=2, channels=[0, 2, 2]).to(dtype=torch.float64)
+    stack = _spechtmp_stack(num_layers=2).to(dtype=torch.float64)
 
     output = stack(features)
 
@@ -86,7 +111,7 @@ def test_spechtmp_stack_preserves_pair_symmetry_classes() -> None:
 def test_spechtmp_stack_is_equivariant_under_fixed_transposition() -> None:
     torch.manual_seed(0)
     encoder = ElectronPairEncoder(channels=[0, 2, 2])
-    stack = SpechtMP(num_layers=1, channels=[0, 2, 2]).to(dtype=torch.float64)
+    stack = _spechtmp_stack(num_layers=1).to(dtype=torch.float64)
     batch = _batch()
     permutation = torch.tensor([1, 0, 2])
 
@@ -137,5 +162,3 @@ def test_phase1_boundaries_reject_orders_above_m2() -> None:
         MessageHead(M=3)
     with pytest.raises(ValueError, match="M <= 2"):
         UpdateHead(M=3)
-    with pytest.raises(ValueError, match="M <= 2"):
-        SpechtMP(M_virtual=3)

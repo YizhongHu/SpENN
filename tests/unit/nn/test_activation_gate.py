@@ -7,7 +7,13 @@ import torch
 from torch import nn
 
 from spenn.data import FeatureDict, Par
-from spenn.nn.activations import ActivationByIrrep, ActivationByType, GatedActivation
+from spenn.nn.activations import (
+    ActivationByIrrep,
+    ActivationByType,
+    ElementwiseFeatureActivation,
+    GatedActivation,
+    NormGateActivation,
+)
 from spenn.nn.gate import GateActivate, GateUpdate, ScalarGateActivate, ScalarGateUpdate
 
 
@@ -76,6 +82,40 @@ def test_activation_by_irrep_routes_exact_partition_keys() -> None:
 def test_activation_by_irrep_rejects_missing_partition() -> None:
     with pytest.raises(KeyError, match="Missing activation module"):
         ActivationByIrrep({ORDER1: ScaleActivation(1.0)})(_features())
+
+
+def test_activation_by_type_uses_explicit_parity_safe_nonlinearities() -> None:
+    features = _features()
+
+    activated = ActivationByType(
+        symmetric=ElementwiseFeatureActivation(nn.Sigmoid()),
+        antisymmetric=ElementwiseFeatureActivation(nn.Tanh()),
+        tensor=NormGateActivation(nn.Sigmoid()),
+    )(features)
+
+    assert torch.allclose(activated.get(ORDER1), torch.sigmoid(features.get(ORDER1)))
+    assert torch.allclose(activated.get(ORDER2_SYM), torch.sigmoid(features.get(ORDER2_SYM)))
+    assert torch.allclose(activated.get(ORDER2_SIGN), torch.tanh(features.get(ORDER2_SIGN)))
+    assert activated.get(ORDER3_TENSOR).shape == features.get(ORDER3_TENSOR).shape
+
+
+def test_norm_gate_activation_scales_tensor_by_sigmoid_norm() -> None:
+    tensor = torch.ones(1, 1, 2, 2, 2, 2, 2)
+    features = FeatureDict({ORDER3_TENSOR: tensor})
+
+    activated = NormGateActivation(nn.Sigmoid(), eps=0.0)(features)
+
+    expected_gate = torch.sigmoid(torch.sqrt(tensor.square().sum(dim=(-2, -1), keepdim=True)))
+    assert torch.allclose(activated.get(ORDER3_TENSOR), expected_gate * tensor)
+
+
+def test_elementwise_feature_activation_preserves_shapes() -> None:
+    features = _scalar_features(2.0)
+
+    activated = ElementwiseFeatureActivation(nn.Tanh())(features)
+
+    assert activated.get(ORDER1).shape == features.get(ORDER1).shape
+    assert torch.allclose(activated.get(ORDER1), torch.tanh(features.get(ORDER1)))
 
 
 def test_gate_templates_raise_not_implemented() -> None:

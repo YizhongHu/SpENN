@@ -262,9 +262,9 @@ class Walkers:
                 raise ValueError("Walkers.spins must have shape [batch, n_electrons]")
             if not torch.all((self.spins == 1) | (self.spins == -1)):
                 raise ValueError("Walkers.spins entries must be exactly +1 or -1")
-        if self.logabs is not None and self.logabs.shape[0] != self.positions.shape[0]:
+        if self.logabs is not None and tuple(self.logabs.shape) != (self.positions.shape[0],):
             raise ValueError("Walkers.logabs must have shape [batch]")
-        if self.sign is not None and self.sign.shape[0] != self.positions.shape[0]:
+        if self.sign is not None and tuple(self.sign.shape) != (self.positions.shape[0],):
             raise ValueError("Walkers.sign must have shape [batch]")
 
     @property
@@ -328,6 +328,114 @@ class Walkers:
             sign=None if self.sign is None else self.sign.to(device=device, dtype=dtype),
             spins=None if self.spins is None else self.spins.to(device=device, dtype=dtype),
         )
+
+    def clone(self) -> "Walkers":
+        """Return a walker state with independent tensor storage.
+
+        Returns
+        -------
+        Walkers
+            Cloned walker state. Tensor fields are cloned, while auxiliary
+            metadata is shallow-copied.
+        """
+
+        return replace(
+            self,
+            positions=self.positions.clone(),
+            logabs=None if self.logabs is None else self.logabs.clone(),
+            sign=None if self.sign is None else self.sign.clone(),
+            spins=None if self.spins is None else self.spins.clone(),
+            aux=dict(self.aux),
+        )
+
+    def detach(self) -> "Walkers":
+        """Return a walker state detached from autograd graphs.
+
+        Returns
+        -------
+        Walkers
+            Detached walker state with the same values and shallow-copied
+            auxiliary metadata.
+        """
+
+        return replace(
+            self,
+            positions=self.positions.detach(),
+            logabs=None if self.logabs is None else self.logabs.detach(),
+            sign=None if self.sign is None else self.sign.detach(),
+            spins=None if self.spins is None else self.spins.detach(),
+            aux=dict(self.aux),
+        )
+
+    def with_positions(self, positions: torch.Tensor, *, invalidate_cache: bool = True) -> "Walkers":
+        """Return walker state using replacement positions.
+
+        Parameters
+        ----------
+        positions : torch.Tensor
+            Replacement positions with shape ``[batch, n_electrons,
+            spatial_dim]``.
+        invalidate_cache : bool, optional
+            Whether to clear cached wavefunction values. This should usually
+            remain ``True`` whenever positions change.
+
+        Returns
+        -------
+        Walkers
+            Walker state with replacement positions.
+        """
+
+        positions = positions if isinstance(positions, torch.Tensor) else torch.as_tensor(positions)
+        if tuple(positions.shape) != tuple(self.positions.shape):
+            raise ValueError(f"Replacement positions must have shape {tuple(self.positions.shape)}, got {tuple(positions.shape)}")
+        return replace(
+            self,
+            positions=positions,
+            logabs=None if invalidate_cache else self.logabs,
+            sign=None if invalidate_cache else self.sign,
+            aux=dict(self.aux),
+        )
+
+    def make_batch(self) -> ElectronBatch:
+        """Return an electron batch view of the walker state.
+
+        Returns
+        -------
+        ElectronBatch
+            Batch carrying positions, spins, system metadata, and auxiliary
+            metadata from the walkers.
+        """
+
+        return ElectronBatch(
+            positions=self.positions,
+            system=self.aux.get("system"),
+            spins=self.spins,
+            aux=dict(self.aux),
+        )
+
+    def update_cache(self, model) -> "Walkers":
+        """Evaluate a model and store detached wavefunction values.
+
+        Parameters
+        ----------
+        model : callable
+            Wavefunction callable returning either `WavefunctionOutput` or a
+            tensor of log absolute values.
+
+        Returns
+        -------
+        Walkers
+            Walker state with cached ``logabs`` and ``sign`` values.
+        """
+
+        output = model(self.make_batch())
+        logabs = output.logabs if hasattr(output, "logabs") else output
+        sign = output.sign if hasattr(output, "sign") else torch.ones_like(logabs)
+        if logabs.shape != (self.batch_size,):
+            raise ValueError(f"Model logabs must have shape [{self.batch_size}], got {tuple(logabs.shape)}")
+        if sign.shape != (self.batch_size,):
+            raise ValueError(f"Model sign must have shape [{self.batch_size}], got {tuple(sign.shape)}")
+        return replace(self, logabs=logabs.detach(), sign=sign.detach(), aux=dict(self.aux))
 
 
 @dataclass

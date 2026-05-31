@@ -10,27 +10,91 @@ import torch
 
 @dataclass
 class ElectronicSystem:
-    """Minimal electronic or toy system description."""
+    """Describe a fixed electronic or toy system.
+
+    Parameters
+    ----------
+    n_electrons : int, optional
+        Number of electrons in each configuration.
+    spatial_dim : int, optional
+        Spatial dimension of each electron coordinate.
+    nuclear_positions : torch.Tensor or None, optional
+        Nuclear coordinates with shape ``[n_nuclei, spatial_dim]``.
+    nuclear_charges : torch.Tensor or None, optional
+        Nuclear charges with shape ``[n_nuclei]``.
+    harmonic_omega : float or None, optional
+        Harmonic trap frequency. If ``None``, no trap contribution is added.
+    include_electron_electron : bool, optional
+        Whether to include Coulomb electron-electron repulsion for systems
+        without nuclei. Molecular systems with nuclei keep electron-electron
+        repulsion regardless of this flag for backward compatibility.
+    n_up, n_down : int or None, optional
+        Spin partition metadata.
+    device : torch.device, str, or None, optional
+        Preferred device for initialized tensors.
+    dtype : torch.dtype, str, or None, optional
+        Preferred floating-point dtype.
+    name : str, optional
+        Human-readable system name.
+    exact_energy : float or None, optional
+        Known benchmark energy, when available.
+    aux : dict or None, optional
+        Additional metadata.
+    """
 
     n_electrons: int = 2
     spatial_dim: int = 3
     nuclear_positions: torch.Tensor | None = None
     nuclear_charges: torch.Tensor | None = None
-    harmonic_omega: float = 1.0
+    harmonic_omega: float | None = 1.0
+    include_electron_electron: bool = False
+    n_up: int | None = None
+    n_down: int | None = None
     device: torch.device | str | None = None
     dtype: torch.dtype | str | None = torch.float64
     name: str = "toy"
+    exact_energy: float | None = None
     aux: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if self.n_electrons <= 0:
+            raise ValueError("ElectronicSystem.n_electrons must be positive")
+        if self.spatial_dim <= 0:
+            raise ValueError("ElectronicSystem.spatial_dim must be positive")
+        if self.n_up is not None and self.n_down is not None and self.n_up + self.n_down != self.n_electrons:
+            raise ValueError("ElectronicSystem.n_up + n_down must equal n_electrons")
         if self.nuclear_positions is not None and not isinstance(self.nuclear_positions, torch.Tensor):
             self.nuclear_positions = torch.as_tensor(self.nuclear_positions, dtype=torch.float64)
         if self.nuclear_charges is not None and not isinstance(self.nuclear_charges, torch.Tensor):
             self.nuclear_charges = torch.as_tensor(self.nuclear_charges, dtype=torch.float64)
         if isinstance(self.dtype, str):
             self.dtype = getattr(torch, self.dtype)
+        if self.nuclear_positions is not None:
+            if self.nuclear_positions.ndim != 2 or self.nuclear_positions.shape[-1] != self.spatial_dim:
+                raise ValueError("ElectronicSystem.nuclear_positions must have shape [n_nuclei, spatial_dim]")
+        if self.nuclear_charges is not None:
+            if self.nuclear_charges.ndim != 1:
+                raise ValueError("ElectronicSystem.nuclear_charges must have shape [n_nuclei]")
+        if self.nuclear_positions is not None and self.nuclear_charges is not None:
+            if self.nuclear_positions.shape[0] != self.nuclear_charges.shape[0]:
+                raise ValueError("ElectronicSystem nuclear positions and charges must agree on n_nuclei")
 
     def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> "ElectronicSystem":
+        """Move tensor metadata to a new device or dtype.
+
+        Parameters
+        ----------
+        device : torch.device, str, or None, optional
+            Target device. If ``None``, the existing device metadata is kept.
+        dtype : torch.dtype or None, optional
+            Target dtype for tensor metadata.
+
+        Returns
+        -------
+        ElectronicSystem
+            System with tensor fields moved to the requested target.
+        """
+
         return replace(
             self,
             nuclear_positions=None if self.nuclear_positions is None else self.nuclear_positions.to(device=device, dtype=dtype),
@@ -41,4 +105,75 @@ class ElectronicSystem:
 
     @property
     def is_toy_harmonic(self) -> bool:
+        """Return whether the system has no nuclear metadata.
+
+        Returns
+        -------
+        bool
+            ``True`` when nuclear positions or charges are absent.
+        """
+
         return self.nuclear_positions is None or self.nuclear_charges is None
+
+
+def make_hooke_system(
+    sector: str = "singlet",
+    *,
+    dtype: torch.dtype | str | None = torch.float64,
+    device: torch.device | str | None = None,
+) -> ElectronicSystem:
+    """Return a two-electron Hooke benchmark system.
+
+    Parameters
+    ----------
+    sector : {"singlet", "triplet"}, optional
+        Analytic benchmark sector to construct. The singlet uses
+        ``omega = 1 / 2`` and exact energy ``2``. The same-spin triplet uses
+        ``omega = 1 / 4`` and exact energy ``5 / 4``.
+    dtype : torch.dtype, str, or None, optional
+        Preferred dtype metadata for the system.
+    device : torch.device, str, or None, optional
+        Preferred device metadata for initialized tensors.
+
+    Returns
+    -------
+    ElectronicSystem
+        Hooke atom benchmark system with harmonic confinement and
+        electron-electron repulsion enabled.
+
+    Raises
+    ------
+    ValueError
+        If `sector` is unknown.
+    """
+
+    normalized = sector.lower().replace("-", "_")
+    if normalized in {"singlet", "opposite_spin", "opposite_spin_singlet"}:
+        return ElectronicSystem(
+            name="hooke_singlet",
+            n_electrons=2,
+            spatial_dim=3,
+            harmonic_omega=0.5,
+            include_electron_electron=True,
+            n_up=1,
+            n_down=1,
+            exact_energy=2.0,
+            dtype=dtype,
+            device=device,
+            aux={"sector": "singlet", "cusp_slope": 0.5},
+        )
+    if normalized in {"triplet", "same_spin", "same_spin_triplet"}:
+        return ElectronicSystem(
+            name="hooke_triplet",
+            n_electrons=2,
+            spatial_dim=3,
+            harmonic_omega=0.25,
+            include_electron_electron=True,
+            n_up=2,
+            n_down=0,
+            exact_energy=1.25,
+            dtype=dtype,
+            device=device,
+            aux={"sector": "triplet", "cusp_slope": 0.25, "node_axis": "z"},
+        )
+    raise ValueError(f"Unknown Hooke sector: {sector!r}")

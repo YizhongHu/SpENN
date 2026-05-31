@@ -7,6 +7,7 @@ from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.losses.vmc import VMCLoss
+from spenn.nn.cusp import ElectronElectronCusp
 from spenn.physics.hamiltonian import ElectronicHamiltonian
 from spenn.physics.kinetic import kinetic_energy_from_logabs
 from spenn.physics.potential import (
@@ -36,12 +37,38 @@ class TrainableGaussianOutputModel(nn.Module):
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
+class CuspGaussianOutputModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.alpha = nn.Parameter(torch.tensor(0.1, dtype=torch.float64))
+        self.cusp = ElectronElectronCusp(
+            same_spin_coefficient=0.25,
+            opposite_spin_coefficient=0.5,
+            range_parameter=0.5,
+            eps=1.0e-12,
+        )
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        logabs = self.cusp(batch) - self.alpha * batch.positions.square().sum(dim=(1, 2))
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
 class FixedHamiltonian:
     def __init__(self, values: torch.Tensor) -> None:
         self.values = values
 
     def local_energy(self, model, batch: ElectronBatch) -> torch.Tensor:
         return self.values
+
+
+class FixedLogAbsModel(nn.Module):
+    def __init__(self, values: torch.Tensor) -> None:
+        super().__init__()
+        self.logabs = nn.Parameter(values.clone())
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        logabs = self.logabs[: batch.batch_size]
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
 def test_potential_terms_match_direct_hand_calculations() -> None:
@@ -133,13 +160,35 @@ def test_local_energy_accepts_wavefunction_output_and_preserves_parameter_gradie
     assert torch.isfinite(model.alpha.grad)
 
 
-def test_vmc_loss_returns_mean_energy_and_detached_metrics() -> None:
+def test_cusp_local_energy_has_finite_second_derivatives_with_pair_diagonal() -> None:
+    system = ElectronicSystem(n_electrons=2, spatial_dim=3, harmonic_omega=0.5, include_electron_electron=True)
+    batch = ElectronBatch(
+        positions=torch.tensor([[[0.25, -0.1, 0.3], [-0.35, 0.4, -0.2]]], dtype=torch.float64),
+        system=system,
+        spins=torch.tensor([[1.0, 1.0]], dtype=torch.float64),
+    )
+    model = CuspGaussianOutputModel()
+    hamiltonian = ElectronicHamiltonian(system=system)
+
+    local_energy = hamiltonian.local_energy(model, batch)
+    local_energy.mean().backward()
+
+    assert local_energy.shape == (1,)
+    assert torch.all(torch.isfinite(local_energy))
+    assert model.alpha.grad is not None
+    assert torch.isfinite(model.alpha.grad)
+
+
+def test_vmc_loss_returns_score_function_objective_and_detached_metrics() -> None:
     local_energy = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64, requires_grad=True)
+    logabs = torch.tensor([0.0, 1.0, 2.0], dtype=torch.float64)
     batch = ElectronBatch(positions=torch.zeros(3, 2, 1, dtype=torch.float64))
+    model = FixedLogAbsModel(logabs)
 
-    loss, metrics = VMCLoss()(model=nn.Identity(), hamiltonian=FixedHamiltonian(local_energy), batch=batch)
+    loss, metrics = VMCLoss()(model=model, hamiltonian=FixedHamiltonian(local_energy), batch=batch)
+    expected_loss = 2.0 * ((local_energy.detach() - local_energy.detach().mean()) * logabs).mean()
 
-    assert torch.equal(loss, local_energy.mean())
+    assert torch.equal(loss, expected_loss)
     assert torch.equal(metrics["energy"], torch.tensor(3.0, dtype=torch.float64))
     assert torch.equal(metrics["variance"], torch.tensor(8.0 / 3.0, dtype=torch.float64))
     assert not metrics["energy"].requires_grad

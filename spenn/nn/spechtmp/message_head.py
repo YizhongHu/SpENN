@@ -27,7 +27,8 @@ class MessageHead(nn.Module):
         Channel specification by body order. For example, ``[0, 32, 32]``
         creates 32 output channels for order-1 and order-2 messages.
     activation : torch.nn.Module or None, optional
-        Irrep-aware activation module reserved for the future implementation.
+        Optional irrep-aware activation module. If ``None``, messages remain
+        linear after aggregation.
     include_linear : bool, optional
         Whether the future message head should include the learned linear term
         from persistent features.
@@ -161,7 +162,7 @@ class MessageHead(nn.Module):
         if isinstance(activated, MessageDict):
             return activated
         if isinstance(activated, FeatureDict):
-            return MessageDict(activated.to_dict())
+            return MessageDict({partition: tensor for partition, tensor in activated.flat_items()})
         raise TypeError("MessageHead activation must return a MessageDict or FeatureDict")
 
 

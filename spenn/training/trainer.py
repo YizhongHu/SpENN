@@ -53,6 +53,8 @@ class VMCTrainer:
         Legacy config-like object. Values from `cfg` are used when present.
     max_steps, log_every, checkpoint_every : int or None, optional
         Training-loop settings used to build `TrainerConfig`.
+    grad_clip : float or None, optional
+        Maximum gradient norm. When ``None``, gradients are not clipped.
     system : ElectronicSystem or None, optional
         System passed to the sampler when walkers are initialized.
     walkers : object or None, optional
@@ -76,6 +78,7 @@ class VMCTrainer:
         max_steps: int | None = None,
         log_every: int | None = None,
         checkpoint_every: int | None = None,
+        grad_clip: float | None = None,
         system: ElectronicSystem | None = None,
         walkers=None,
         device=None,
@@ -92,12 +95,14 @@ class VMCTrainer:
             max_steps = getattr(cfg, "max_steps", max_steps)
             log_every = getattr(cfg, "log_every", log_every)
             checkpoint_every = getattr(cfg, "checkpoint_every", checkpoint_every)
+            grad_clip = getattr(cfg, "grad_clip", grad_clip)
         self.cfg = TrainerConfig(
             max_steps=TrainerConfig.max_steps if max_steps is None else max_steps,
             log_every=TrainerConfig.log_every if log_every is None else log_every,
             checkpoint_every=TrainerConfig.checkpoint_every if checkpoint_every is None else checkpoint_every,
         )
         self.system = system or getattr(sampler, "system", None)
+        self.grad_clip = None if grad_clip is None else float(grad_clip)
         try:
             default_device = next(model.parameters()).device
         except StopIteration:
@@ -125,11 +130,14 @@ class VMCTrainer:
         batch = ElectronBatch(
             positions=self.walkers.positions,
             system=self.walkers.aux.get("system"),
+            spins=self.walkers.spins,
             aux=dict(self.walkers.aux),
         )
         loss, metrics = self.loss(self.model, self.hamiltonian, batch)
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if self.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
         self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()

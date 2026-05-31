@@ -8,3 +8,4 @@ __pycache__/
 outputs/
 wandb/
 .vscode/
+experiments/*/figures/

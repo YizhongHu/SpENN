@@ -15,15 +15,33 @@ def _extract_logabs(output: WavefunctionOutput | torch.Tensor) -> torch.Tensor:
 
 
 def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
-    """Return the Laplacian of ``log|psi|`` for a batched electron configuration."""
+    """Return the Laplacian of ``log|psi|``.
 
+    Parameters
+    ----------
+    model : callable
+        Wavefunction model returning either `WavefunctionOutput` or a tensor of
+        log absolute values.
+    batch : ElectronBatch
+        Electron batch with positions shaped ``[batch, n_electrons,
+        spatial_dim]`` after flattening.
+
+    Returns
+    -------
+    torch.Tensor
+        Laplacian values with shape ``[batch]``.
+    """
+
+    batch = batch.flatten_samples()
     positions = batch.positions.detach().clone().requires_grad_(True)
-    assert positions.ndim == 3
+    if positions.ndim != 3:
+        raise ValueError("batch.positions must flatten to [batch, n_electrons, spatial_dim]")
     probe_batch = ElectronBatch(
         positions=positions,
         system=batch.system,
         nuclear_positions=batch.nuclear_positions,
         nuclear_charges=batch.nuclear_charges,
+        spins=batch.spins,
         aux=dict(batch.aux),
     )
     output = model(probe_batch)
@@ -41,15 +59,33 @@ def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
 
 
 def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
-    """Return the local kinetic energy from the log-amplitude."""
+    """Return local kinetic energy from the log-amplitude.
 
+    Parameters
+    ----------
+    model : callable
+        Wavefunction model returning either `WavefunctionOutput` or a tensor of
+        log absolute values.
+    batch : ElectronBatch
+        Electron batch with positions shaped ``[batch, n_electrons,
+        spatial_dim]`` after flattening.
+
+    Returns
+    -------
+    torch.Tensor
+        Kinetic local-energy contribution with shape ``[batch]``.
+    """
+
+    batch = batch.flatten_samples()
     positions = batch.positions.detach().clone().requires_grad_(True)
-    assert positions.ndim == 3
+    if positions.ndim != 3:
+        raise ValueError("batch.positions must flatten to [batch, n_electrons, spatial_dim]")
     probe_batch = ElectronBatch(
         positions=positions,
         system=batch.system,
         nuclear_positions=batch.nuclear_positions,
         nuclear_charges=batch.nuclear_charges,
+        spins=batch.spins,
         aux=dict(batch.aux),
     )
     output = model(probe_batch)
@@ -62,13 +98,28 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     for idx in range(flat_grad.shape[1]):
         second = torch.autograd.grad(flat_grad[:, idx].sum(), positions, create_graph=True, retain_graph=True)[0]
         laplacian = laplacian + second.reshape(second.shape[0], -1)[:, idx]
-    output = torch.nan_to_num(-0.5 * (laplacian + flat_grad.pow(2).sum(dim=1)))
+    output = -0.5 * (laplacian + flat_grad.pow(2).sum(dim=1))
     assert output.shape == (batch.batch_size,)
     return output
 
 
 class LogAbsKineticEnergy(nn.Module):
-    """Autograd kinetic-energy module for models returning ``log|psi|``."""
+    """Autograd kinetic-energy module for log-amplitude models."""
 
     def forward(self, model, batch: ElectronBatch) -> torch.Tensor:
+        """Return local kinetic energy.
+
+        Parameters
+        ----------
+        model : callable
+            Wavefunction model returning log absolute values.
+        batch : ElectronBatch
+            Electron batch to evaluate.
+
+        Returns
+        -------
+        torch.Tensor
+            Kinetic local-energy contribution with shape ``[batch]``.
+        """
+
         return kinetic_energy_from_logabs(model, batch)

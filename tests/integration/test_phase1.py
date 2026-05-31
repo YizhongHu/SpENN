@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import torch
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
@@ -15,6 +13,7 @@ from spenn.nn.readout.pfaffian import PfaffianReadout
 from spenn.nn.wavefunction import SpENNWavefunction
 from spenn.physics.hamiltonian import ElectronicHamiltonian
 from spenn.physics.systems import ElectronicSystem
+from tests.helpers import ROOT
 
 
 class PairDifferenceEncoder(nn.Module):
@@ -55,13 +54,19 @@ def _set_unit_readout_weights(readout: PfaffianReadout) -> None:
 
 
 def test_hydra_phase1_cpu_config_smoke_runs_forward_loss_and_optimizer_instantiation() -> None:
-    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    config_dir = ROOT / "configs"
     overrides = [
         "device=cpu",
         "dtype=float64",
         "model.encoder.channels=[0,2,2]",
-        "model.spechtmp.num_layers=1",
-        "model.spechtmp.channels=[0,2,2]",
+        "model.spechtmp.layers.0.message_head.channels=[0,2,2]",
+        "model.spechtmp.layers.0.update_head.channels=[0,2,2]",
+        "model.spechtmp.layers.1.message_head.channels=[0,2,2]",
+        "model.spechtmp.layers.1.update_head.channels=[0,2,2]",
+        "model.spechtmp.layers.2.message_head.channels=[0,2,2]",
+        "model.spechtmp.layers.2.update_head.channels=[0,2,2]",
+        "model.spechtmp.layers.3.message_head.channels=[0,2,2]",
+        "model.spechtmp.layers.3.update_head.channels=[0,2,2]",
         "sampler.n_walkers=4",
         "sampler.steps_per_iter=1",
         "sampler.warmup_steps=0",

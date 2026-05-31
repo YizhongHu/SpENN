@@ -4,63 +4,100 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import torch
 from torch import nn
 
-from spenn.data.feature_dict import FeatureDict
+from spenn.data.feature_dict import FeatureDict, MessageDict
 from spenn.data.partitions import Partition
 
 
-class TensorProductActivation(nn.Module):
-    """Scaffold scalar and normed-tensor activations for Specht features.
+class ElementwiseFeatureActivation(nn.Module):
+    """Apply a tensor activation independently to every feature block.
 
     Parameters
     ----------
-    scalar_activation : torch.nn.Module or None, optional
-        Activation applied to scalar irrep channels.
-    tensor_activation : torch.nn.Module or None, optional
-        Activation applied to non-scalar tensor channels after the future
-        normed-activation decomposition.
+    activation : torch.nn.Module
+        Elementwise activation called on each tensor value.
     **_ : object
         Ignored compatibility keyword arguments.
-
-    Notes
-    -----
-    The concrete equivariant activation rule is intentionally not implemented
-    in this scaffold. The future implementation should route scalar irreps
-    through `scalar_activation` and normed non-scalar irreps through
-    `tensor_activation`.
     """
 
-    def __init__(
-        self,
-        scalar_activation: nn.Module | None = None,
-        tensor_activation: nn.Module | None = None,
-        **_: object,
-    ) -> None:
+    def __init__(self, activation: nn.Module, **_: object) -> None:
         super().__init__()
-        self.scalar_activation = scalar_activation
-        self.tensor_activation = tensor_activation
+        self.activation = activation
 
-    def forward(self, features: FeatureDict) -> FeatureDict:
-        """Apply the future tensor-product activation rule.
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
+        """Return feature blocks after elementwise activation.
 
         Parameters
         ----------
-        features : FeatureDict
-            Feature blocks to activate.
+        features : FeatureDict or MessageDict
+            Feature or message blocks to activate.
 
         Returns
         -------
         FeatureDict
-            Activated feature blocks.
-
-        Raises
-        ------
-        NotImplementedError
-            Always raised until the normed activation rule is implemented.
+            Activated feature blocks with the same keys and shapes.
         """
 
-        raise NotImplementedError("TensorProductActivation.forward is a scaffold pending normed activation math")
+        output = FeatureDict()
+        for partition, tensor in features.flat_items():
+            activated = self.activation(tensor)
+            if activated.shape != tensor.shape:
+                raise ValueError(
+                    f"Activation for partition {partition} must preserve shape {tuple(tensor.shape)}, "
+                    f"got {tuple(activated.shape)}"
+                )
+            output.set(partition, activated)
+        return output
+
+
+class NormGateActivation(nn.Module):
+    """Scale tensor irreps by a smooth activation of their irrep-coordinate norm.
+
+    Parameters
+    ----------
+    activation : torch.nn.Module or None, optional
+        Scalar gate activation applied to the local irrep-coordinate norm. If
+        ``None``, :class:`torch.nn.Sigmoid` is used.
+    eps : float, optional
+        Positive smoothing constant under the square root.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(self, activation: nn.Module | None = None, eps: float = 1.0e-12, **_: object) -> None:
+        super().__init__()
+        self.activation = activation if activation is not None else nn.Sigmoid()
+        self.eps = float(eps)
+
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
+        """Return norm-gated feature blocks.
+
+        Parameters
+        ----------
+        features : FeatureDict or MessageDict
+            Feature or message blocks to activate.
+
+        Returns
+        -------
+        FeatureDict
+            Feature blocks scaled by invariant gates with matching shapes.
+        """
+
+        output = FeatureDict()
+        for partition, tensor in features.flat_items():
+            norm = torch.sqrt(tensor.square().sum(dim=(-2, -1), keepdim=True) + self.eps * self.eps)
+            gate = self.activation(norm)
+            if gate.shape != norm.shape:
+                raise ValueError(
+                    f"Norm gate for partition {partition} must preserve norm shape {tuple(norm.shape)}, "
+                    f"got {tuple(gate.shape)}"
+                )
+            activated = gate * tensor
+            assert activated.shape == tensor.shape
+            output.set(partition, activated)
+        return output
 
 
 class ActivationByType(nn.Module):
@@ -91,13 +128,13 @@ class ActivationByType(nn.Module):
         self.antisymmetric = antisymmetric
         self.tensor = tensor
 
-    def forward(self, features: FeatureDict) -> FeatureDict:
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
         """Apply type-specific activations to each irrep independently.
 
         Parameters
         ----------
-        features : FeatureDict
-            Feature blocks to activate.
+        features : FeatureDict or MessageDict
+            Feature or message blocks to activate.
 
         Returns
         -------
@@ -228,6 +265,7 @@ def _irrep_key(partition: Partition) -> str:
 __all__ = [
     "ActivationByIrrep",
     "ActivationByType",
+    "ElementwiseFeatureActivation",
     "GatedActivation",
-    "TensorProductActivation",
+    "NormGateActivation",
 ]

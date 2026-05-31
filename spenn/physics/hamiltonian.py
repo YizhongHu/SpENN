@@ -41,7 +41,7 @@ class ElectronicHamiltonian(nn.Module):
         potential = self.potential_energy(batch)
         assert kinetic.shape == (batch.batch_size,)
         assert potential.shape == (batch.batch_size,)
-        output = torch.nan_to_num(kinetic + potential)
+        output = kinetic + potential
         assert output.shape == (batch.batch_size,)
         return output
 

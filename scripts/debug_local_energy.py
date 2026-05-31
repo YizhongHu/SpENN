@@ -35,7 +35,7 @@ def main() -> None:
     loss, metrics = loss_fn(
         model,
         hamiltonian,
-        ElectronBatch(positions=batch.positions, system=batch.aux.get("system")),
+        ElectronBatch(positions=batch.positions, system=batch.aux.get("system"), spins=batch.spins),
     )
     print(
         OmegaConf.to_yaml(

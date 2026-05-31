@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 from spenn.data import FeatureDict, MessageDict, Par
-from spenn.nn.spechtmp import MessageHead, SpechtMP, UpdateHead
+from spenn.nn.activations import ActivationByType, ElementwiseFeatureActivation, NormGateActivation
+from spenn.nn.spechtmp import MessageHead, SpechtMP, SpechtMPLayer, UpdateHead
+from spenn.nn.update import ResidualUpdate
 from spenn.reps import BranchMap, FusionMap
 
 
@@ -20,6 +23,28 @@ def _features(dtype: torch.dtype = torch.float64) -> FeatureDict:
         dtype=dtype,
     ).unsqueeze(-1).unsqueeze(-1)
     return FeatureDict({Par("H"): h, Par("S"): s, Par("A"): a})
+
+
+def _message_activation() -> ActivationByType:
+    return ActivationByType(
+        symmetric=ElementwiseFeatureActivation(nn.Sigmoid()),
+        antisymmetric=ElementwiseFeatureActivation(nn.Tanh()),
+        tensor=NormGateActivation(nn.Sigmoid()),
+    )
+
+
+def _spechtmp_stack() -> SpechtMP:
+    return SpechtMP(
+        layers=[
+            SpechtMPLayer(
+                fusion_map=FusionMap(M=2, M_virtual=2),
+                message_head=MessageHead(M=2, M_virtual=2, channels=[0, 2, 2], activation=_message_activation()),
+                branch_map=BranchMap(M=2, M_virtual=2),
+                update_head=UpdateHead(M=2, channels=[0, 2, 2]),
+                update=ResidualUpdate(),
+            )
+        ]
+    )
 
 
 def test_message_head_mixes_fusion_routes_and_linear_features() -> None:
@@ -86,7 +111,7 @@ def test_update_head_mixes_branch_routes_into_feature_updates() -> None:
 
 def test_spechtmp_runs_fusion_message_branch_update_pipeline() -> None:
     features = _features()
-    stack = SpechtMP(num_layers=1, channels=[0, 2, 2]).to(dtype=torch.float64)
+    stack = _spechtmp_stack().to(dtype=torch.float64)
 
     output = stack(features)
 
