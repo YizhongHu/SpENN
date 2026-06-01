@@ -12,7 +12,16 @@ from spenn.data.partitions import Par
 
 
 class DeterminantReadout(nn.Module):
-    """Construct a square orbital matrix from order-1 features and take its determinant."""
+    """Construct a square orbital matrix and take its determinant.
+
+    Parameters
+    ----------
+    num_orbitals : int or None, optional
+        Number of projected orbital columns. If ``None``, use the electron
+        count from the runtime batch.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
 
     def __init__(self, num_orbitals: int | None = None, **_: object) -> None:
         super().__init__()
@@ -26,6 +35,23 @@ class DeterminantReadout(nn.Module):
             self.add_module("projection", self._projection)
 
     def build_orbital_matrix(self, features: FeatureDict, batch: ElectronBatch) -> torch.Tensor:
+        """Build the determinant orbital matrix.
+
+        Parameters
+        ----------
+        features : FeatureDict
+            Feature dictionary containing one-body scalar features at
+            ``Par("H")``.
+        batch : ElectronBatch
+            Electron batch used for shape checks.
+
+        Returns
+        -------
+        torch.Tensor
+            Square orbital matrix with shape ``[batch, n_electrons,
+            n_electrons]``.
+        """
+
         h = features.get(Par("H"))
         if h is None:
             raise KeyError("DeterminantReadout requires one-body features at features[1][(1)]")
@@ -42,6 +68,22 @@ class DeterminantReadout(nn.Module):
         return matrix
 
     def forward(self, features: FeatureDict, batch: ElectronBatch) -> WavefunctionOutput:
+        """Return a signed-log determinant readout.
+
+        Parameters
+        ----------
+        features : FeatureDict
+            SpENN features used to build the orbital matrix.
+        batch : ElectronBatch
+            Electron batch with positions shaped ``[batch, n_electrons,
+            spatial_dim]`` after sample flattening.
+
+        Returns
+        -------
+        WavefunctionOutput
+            Signed-log wavefunction output with shape ``[batch]``.
+        """
+
         matrix = self.build_orbital_matrix(features, batch)
         sign, logabs = torch.linalg.slogdet(matrix)
         assert logabs.shape == (batch.batch_size,)

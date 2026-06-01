@@ -1,4 +1,5 @@
 .venv/
+.venv-gpu/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -8,4 +9,7 @@ __pycache__/
 outputs/
 wandb/
 .vscode/
-experiments/*/figures/
+docs/_build/
+docs/api/generated/
+design_document/
+experiments/*/slurm/logs/

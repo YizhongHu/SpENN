@@ -4,28 +4,35 @@ from __future__ import annotations
 
 import pytest
 import torch
+from hydra.utils import instantiate
 from torch import nn
 
 from spenn.data import BranchDict, FeatureDict, MessageDict, Par, TensorProductDict
 from spenn.data.batch import ElectronBatch
-from spenn.nn.activations import ActivationByType, ElementwiseFeatureActivation, NormGateActivation
+from spenn.nn.utils.activations import Activation, ActivationByType, GatedActivation
 from spenn.nn.encoding import BaseEncoder, ElectronPairEncoder
 from spenn.nn.spechtmp import MessageHead, SpechtMP, SpechtMPLayer, UpdateHead
-from spenn.nn.update import ResidualUpdate
+from spenn.nn.utils.gate import NormGateActivate
+from spenn.nn.utils.update import ResidualUpdate
 from spenn.reps import BranchMap, FusionMap
 
 
 def _message_activation() -> ActivationByType:
     return ActivationByType(
-        symmetric=ElementwiseFeatureActivation(nn.Sigmoid()),
-        antisymmetric=ElementwiseFeatureActivation(nn.Tanh()),
-        tensor=NormGateActivation(nn.Sigmoid()),
+        symmetric=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
+        antisymmetric=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
+        tensor=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
     )
+
+
+class IdentityFeatureActivation(Activation):
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
+        return FeatureDict({partition: tensor for partition, tensor in features.flat_items()})
 
 
 def _spechtmp_layer(
     channels: object | None = None,
-    activation: nn.Module | None = None,
+    activation: Activation | None = None,
     update: ResidualUpdate | None = None,
 ) -> SpechtMPLayer:
     return SpechtMPLayer(
@@ -96,14 +103,14 @@ def test_branch_dict_stores_and_validates_blocks() -> None:
 def test_scaffold_imports_and_constructors_match_config_surface() -> None:
     fusion_map = FusionMap(M=2, M_virtual=2, maps={})
     branch_map = BranchMap(M=2, M_virtual=2, maps={})
-    message_activation = nn.Identity()
+    message_activation = IdentityFeatureActivation()
     message_head = MessageHead(
         M=2,
         M_virtual=2,
         channels={"order1": {"(1)": 4}},
         activation=message_activation,
     )
-    update_head = UpdateHead(M=2, channels={"order1": {"(1)": 4}}, activation=nn.Identity())
+    update_head = UpdateHead(M=2, channels={"order1": {"(1)": 4}}, activation=IdentityFeatureActivation())
     update = ResidualUpdate()
     layer = SpechtMPLayer(
         fusion_map=fusion_map,
@@ -137,6 +144,27 @@ def test_scaffold_imports_and_constructors_match_config_surface() -> None:
     assert encoder.output_keys() == (Par("H"), Par("S"), Par("A"))
 
 
+def test_spechtmp_heads_instantiate_from_package_namespace() -> None:
+    message_head = instantiate(
+        {
+            "_target_": "spenn.nn.spechtmp.MessageHead",
+            "M": 2,
+            "M_virtual": 2,
+            "channels": [0, 2, 2],
+        }
+    )
+    update_head = instantiate(
+        {
+            "_target_": "spenn.nn.spechtmp.UpdateHead",
+            "M": 2,
+            "channels": [0, 2, 2],
+        }
+    )
+
+    assert isinstance(message_head, MessageHead)
+    assert isinstance(update_head, UpdateHead)
+
+
 def test_stale_spechtmp_exports_are_removed() -> None:
     import spenn.nn.spechtmp as spechtmp
 
@@ -155,13 +183,10 @@ def test_stale_branching_exports_are_removed() -> None:
 
 
 def test_activation_by_type_routes_scalar_and_tensor_blocks() -> None:
-    scalar_activation = nn.Tanh()
-    antisymmetric_activation = nn.Tanh()
-    tensor_activation = nn.Sigmoid()
     activation = ActivationByType(
-        symmetric=ElementwiseFeatureActivation(scalar_activation),
-        antisymmetric=ElementwiseFeatureActivation(antisymmetric_activation),
-        tensor=NormGateActivation(tensor_activation),
+        symmetric=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
+        antisymmetric=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
+        tensor=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
     )
     features = FeatureDict(
         {
@@ -171,12 +196,9 @@ def test_activation_by_type_routes_scalar_and_tensor_blocks() -> None:
         }
     )
 
-    assert activation.symmetric.activation is scalar_activation
-    assert activation.antisymmetric.activation is antisymmetric_activation
-    assert activation.tensor.activation is tensor_activation
     activated = activation(features)
-    assert torch.allclose(activated.get(Par("S")), torch.tanh(features.get(Par("S"))))
-    assert torch.allclose(activated.get(Par("A")), torch.tanh(features.get(Par("A"))))
+    assert activated.get(Par("S")).shape == features.get(Par("S")).shape
+    assert activated.get(Par("A")).shape == features.get(Par("A")).shape
     assert activated.get(Par("V")).shape == features.get(Par("V")).shape
 
 

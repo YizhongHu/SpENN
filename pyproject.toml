@@ -41,6 +41,10 @@ dev = [
   "pytest",
   "typeguard>=4",
 ]
+docs = [
+  "numpydoc>=1.7",
+  "sphinx>=7.2,<8",
+]
 
 [tool.uv]
 python-preference = "only-managed"
@@ -87,5 +91,6 @@ include = ["spenn*"]
 
 [tool.pytest.ini_options]
 markers = [
-  "integration: end-to-end tests that exercise scripts, configs, or generated artifacts",
+  "integration: end-to-end tests that exercise entrypoints, configs, or generated artifacts",
 ]
+addopts = "--typeguard-packages=spenn"

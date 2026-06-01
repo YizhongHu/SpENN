@@ -7,42 +7,101 @@ dtype: float64
 device: cpu
 output_root: outputs/integration_tests
 
+run:
+  mode: evaluate
+  name: hooke_${sector}
+  id: ${run_id}
+  output_root: ${output_root}
+  id_prefix: hooke_exact_${sector}
+  energy_prefix: energy
+
 system:
+  _target_: spenn.physics.systems.ElectronicSystem
   name: hooke_triplet
   n_electrons: 2
   spatial_dim: 3
   harmonic_omega: 0.25
+  include_electron_electron: true
+  n_up: 2
+  n_down: 0
   exact_energy: 1.25
+  dtype: ${dtype}
+  aux:
+    sector: triplet
+    cusp_slope: 0.25
+    node_axis: z
 
 model:
   _target_: experiments.hooke.analytic.HookeExactWavefunction
-  sector: triplet
+  sector: ${sector}
   node_axis: 2
-  cusp: analytic
-  readout: analytic_antisymmetric_z
+
+hamiltonian:
+  _target_: spenn.physics.hamiltonian.ElectronicHamiltonian
+  name: electronic
+  kinetic:
+    _target_: spenn.physics.kinetic.LogAbsKineticEnergy
+  potential:
+    _target_: spenn.physics.potential.ElectronicPotential
+    eps: 1.0e-12
 
 sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
   name: metropolis
+  move:
+    _target_: spenn.sampling.moves.GaussianMove
+    step_size: 1.1
+    move_all: true
   n_walkers: 16
   warmup_steps: 4
   production_blocks: 2
   steps_per_block: 2
-  step_size: 1.1
-  move_all: true
+  steps_per_iter: 2
   initial_scale: 2.0
+  dtype: ${dtype}
 
 diagnostics:
-  cusp_points: 8
-  radial_points: 12
-  histogram_bins: 8
-  symmetry_samples: 16
+  local_energy_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: local_energy
+    bins: 8
+    table_name: local_energy_histogram
+  r12_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: r12
+    bins: 8
+    table_name: r12_histogram
+  cusp:
+    _target_: spenn.diagnostics.CuspSlopeDiagnostic
+    sector: ${sector}
+    node_axis: ${model.node_axis}
+    n_points: 8
+    metric_prefix: cusp
+    value_column: factored_logabs
+    table_name: cusp_diagnostic_plot
+  radial:
+    _target_: spenn.diagnostics.RadialCutDiagnostic
+    sector: ${sector}
+    node_axis: ${model.node_axis}
+    n_points: 12
+    table_name: wavefunction_radial_cut
+  exchange:
+    _target_: spenn.diagnostics.ExchangeSymmetryDiagnostic
+    sector: ${sector}
+    exchange_mode: particle_antisymmetric
+    node_axis: ${model.node_axis}
+    n_samples: 16
+    metric_prefix: symmetry
 
 artifacts:
   write_plot_data: false
+  write_checkpoint: true
 
 validation:
   preflight_energy_tolerance: 1.0e-8
   sample_energy_tolerance: 1.0e-7
+  exchange_error_tolerance: 1.0e-8
+  sign_flip_min: 1.0
 
 tracking:
   tags:

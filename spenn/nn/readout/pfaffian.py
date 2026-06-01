@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.feature_dict import FeatureDict
@@ -39,7 +41,20 @@ def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:
 
 
 def pfaffian(matrix: torch.Tensor) -> torch.Tensor:
-    """Compute Pfaffians for ``[batch, n, n]`` or ``[n, n]`` tensors."""
+    """Compute Pfaffians for skew-symmetric matrices.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Skew-symmetric matrix with shape ``[n, n]`` or batched matrices with
+        shape ``[batch, n, n]``.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar Pfaffian for an unbatched input, or one Pfaffian per batch item
+        with shape ``[batch]``.
+    """
 
     if matrix.ndim == 2:
         assert matrix.shape[-1] == matrix.shape[-2]
@@ -53,7 +68,22 @@ def pfaffian(matrix: torch.Tensor) -> torch.Tensor:
 
 
 def pfaffian_logabs_sign(matrix: torch.Tensor, eps: float = 1e-12) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return signed-log representation of a Pfaffian."""
+    """Return the signed-log representation of a Pfaffian.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Skew-symmetric matrix with shape ``[n, n]`` or batched matrices with
+        shape ``[batch, n, n]``.
+    eps : float, optional
+        Positive floor for the squared Pfaffian magnitude.
+
+    Returns
+    -------
+    tuple of torch.Tensor
+        Log absolute value and sign tensors. For batched inputs both have shape
+        ``[batch]``.
+    """
 
     value = pfaffian(matrix)
     sign = torch.sign(value)
@@ -67,7 +97,24 @@ def signed_logsumexp_outputs(
     weights: torch.Tensor | None = None,
     eps: float = 1e-12,
 ) -> WavefunctionOutput:
-    """Combine signed-log outputs by evaluating the signed sum in real space."""
+    """Combine signed-log wavefunction outputs.
+
+    Parameters
+    ----------
+    outputs : sequence of WavefunctionOutput
+        Component signed-log outputs with matching ``logabs`` and ``sign``
+        shapes.
+    weights : torch.Tensor or None, optional
+        Mixture weights with shape ``[n_outputs]``. If ``None``, uniform
+        weights are used.
+    eps : float, optional
+        Positive floor for the squared signed sum magnitude.
+
+    Returns
+    -------
+    WavefunctionOutput
+        Signed-log output representing the weighted real-space sum.
+    """
 
     if not outputs:
         raise ValueError("Need at least one output to combine")
@@ -89,7 +136,29 @@ def signed_logsumexp_outputs(
 
 
 class PfaffianReadout(nn.Module):
-    """Build one or more skew kernels and convert them into a signed-log output."""
+    """Build skew kernels and convert them into a signed-log output.
+
+    Parameters
+    ----------
+    num_pfaffians : int, optional
+        Number of Pfaffian components to combine.
+    use_symmetric_gates : bool, optional
+        Whether to multiply antisymmetric carrier entries by symmetric gates.
+    allow_odd_electron_bordered : bool, optional
+        Whether odd-electron systems use a bordered skew matrix.
+    learn_weights : bool, optional
+        Whether multiple Pfaffian components use trainable mixture weights.
+    eps : float, optional
+        Positive floor used in signed-log conversion.
+    envelope_coefficient : float, optional
+        Nonnegative coefficient for the harmonic one-body envelope
+        ``-envelope_coefficient * sum_i |r_i|^2`` added to the log-amplitude.
+    trainable_envelope : bool, optional
+        Whether to optimize `envelope_coefficient` through a positive softplus
+        parameterization.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
 
     def __init__(
         self,
@@ -98,6 +167,8 @@ class PfaffianReadout(nn.Module):
         allow_odd_electron_bordered: bool = True,
         learn_weights: bool = True,
         eps: float = 1e-12,
+        envelope_coefficient: float = 0.0,
+        trainable_envelope: bool = False,
         **_: object,
     ) -> None:
         super().__init__()
@@ -114,6 +185,7 @@ class PfaffianReadout(nn.Module):
             self.weight_logits = nn.Parameter(torch.zeros(num_pfaffians))
         else:
             self.register_buffer("weight_logits", torch.zeros(num_pfaffians), persistent=False)
+        _configure_envelope(self, envelope_coefficient, trainable=trainable_envelope)
 
     def _ensure_heads(self, features: FeatureDict) -> None:
         if self._built:
@@ -138,7 +210,23 @@ class PfaffianReadout(nn.Module):
         self._built = True
 
     def build_skew_kernel(self, features: FeatureDict, batch: ElectronBatch) -> torch.Tensor:
-        """Construct one or more skew kernels."""
+        """Construct one or more Pfaffian skew kernels.
+
+        Parameters
+        ----------
+        features : FeatureDict
+            Feature dictionary containing pair-antisymmetric carrier features,
+            optional pair-symmetric gates, and optional one-body features.
+        batch : ElectronBatch
+            Flattened electron batch used for shape checks and odd-electron
+            bordered kernels.
+
+        Returns
+        -------
+        torch.Tensor
+            Skew kernel with shape ``[batch, n, n]`` for one component, or
+            ``[batch, num_pfaffians, n, n]`` for multiple components.
+        """
 
         self._ensure_heads(features)
         carrier = features.get(Par("A"))
@@ -190,11 +278,29 @@ class PfaffianReadout(nn.Module):
         return output
 
     def forward(self, features: FeatureDict, batch: ElectronBatch) -> WavefunctionOutput:
+        """Return a signed-log Pfaffian readout.
+
+        Parameters
+        ----------
+        features : FeatureDict
+            SpENN features used to build the skew kernels.
+        batch : ElectronBatch
+            Electron batch with positions shaped ``[batch, n_electrons,
+            spatial_dim]`` after sample flattening.
+
+        Returns
+        -------
+        WavefunctionOutput
+            Signed-log wavefunction output with shape ``[batch]``.
+        """
+
         kernels = self.build_skew_kernel(features, batch)
         if kernels.ndim == 3:
             logabs, sign = pfaffian_logabs_sign(kernels, eps=self.eps)
+            envelope = _harmonic_envelope(self, batch)
+            logabs = logabs + envelope
             assert logabs.shape == sign.shape == (batch.batch_size,)
-            return WavefunctionOutput(logabs=logabs, sign=sign, aux={"K": kernels, "pfaffians": pfaffian(kernels)})
+            return WavefunctionOutput(logabs=logabs, sign=sign, aux={"K": kernels, "pfaffians": pfaffian(kernels), "envelope": envelope})
 
         outputs = []
         for idx in range(kernels.shape[1]):
@@ -202,6 +308,43 @@ class PfaffianReadout(nn.Module):
             outputs.append(WavefunctionOutput(logabs=logabs, sign=sign, aux={"K": kernels[:, idx]}))
         weights = torch.softmax(self.weight_logits, dim=0) if self.learn_weights else None
         out = signed_logsumexp_outputs(outputs, weights=weights, eps=self.eps)
+        envelope = _harmonic_envelope(self, batch)
+        out = WavefunctionOutput(logabs=out.logabs + envelope, sign=out.sign, aux=dict(out.aux))
         assert out.logabs.shape == out.sign.shape == (batch.batch_size,)
         out.aux["K"] = kernels
+        out.aux["envelope"] = envelope
         return out
+
+
+def _configure_envelope(module: nn.Module, coefficient: float, *, trainable: bool) -> None:
+    if coefficient < 0.0:
+        raise ValueError(f"envelope_coefficient must be nonnegative, got {coefficient}")
+    if trainable:
+        raw = _inverse_softplus(float(coefficient))
+        module.register_parameter("envelope_raw", nn.Parameter(torch.tensor(raw, dtype=torch.float64)))
+        module.register_buffer("envelope_coefficient", torch.empty(0, dtype=torch.float64), persistent=False)
+    else:
+        module.register_parameter("envelope_raw", None)
+        module.register_buffer("envelope_coefficient", torch.tensor(float(coefficient), dtype=torch.float64))
+
+
+def _inverse_softplus(value: float) -> float:
+    if value == 0.0:
+        return -50.0
+    return math.log(math.expm1(value))
+
+
+def _current_envelope_coefficient(module: nn.Module, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    raw = getattr(module, "envelope_raw", None)
+    if raw is not None:
+        return F.softplus(raw).to(device=device, dtype=dtype)
+    return module.envelope_coefficient.to(device=device, dtype=dtype)
+
+
+def _harmonic_envelope(module: nn.Module, batch: ElectronBatch) -> torch.Tensor:
+    coefficient = _current_envelope_coefficient(module, dtype=batch.dtype, device=batch.device)
+    radius_squared = batch.positions.square().sum(dim=(1, 2))
+    assert radius_squared.shape == (batch.batch_size,)
+    output = -coefficient * radius_squared
+    assert output.shape == (batch.batch_size,)
+    return output

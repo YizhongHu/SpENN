@@ -10,6 +10,7 @@ from torch import nn
 
 from spenn.data.feature_dict import BranchDict, FeatureDict
 from spenn.data.partitions import Par, Partition, as_partition
+from spenn.nn.utils.activations import Activation
 
 
 class UpdateHead(nn.Module):
@@ -28,7 +29,7 @@ class UpdateHead(nn.Module):
     channels : mapping or None, optional
         Channel specification by body order. For example, ``[0, 32, 32]``
         creates 32 output channels for order-1 and order-2 feature updates.
-    activation : torch.nn.Module or None, optional
+    activation : Activation or None, optional
         Optional irrep-aware activation. The default ``None`` keeps update-head
         outputs linear; residual state updates are handled by `SpechtMPLayer`.
     **_ : object
@@ -39,7 +40,7 @@ class UpdateHead(nn.Module):
         self,
         M: int = 2,
         channels: object | None = None,
-        activation: nn.Module | None = None,
+        activation: Activation | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -70,7 +71,7 @@ class UpdateHead(nn.Module):
         Returns
         -------
         FeatureDict
-            Feature updates consumed by a final :class:`spenn.nn.update.Update`
+            Feature updates consumed by a final :class:`spenn.nn.utils.update.Update`
             rule.
 
         """

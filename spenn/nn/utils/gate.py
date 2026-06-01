@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import torch
 from torch import nn
 
-from spenn.data.feature_dict import FeatureDict
+from spenn.data.feature_dict import FeatureDict, MessageDict
 from spenn.data.partitions import Par
 
 
@@ -62,12 +63,12 @@ class GateActivate(nn.Module):
         super().__init__()
         self.activation = activation
 
-    def forward(self, features: FeatureDict) -> FeatureDict:
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
         """Compute gates for feature activations.
 
         Parameters
         ----------
-        features : FeatureDict
+        features : FeatureDict or MessageDict
             Feature blocks to gate.
 
         Returns
@@ -140,12 +141,12 @@ class ScalarGateActivate(GateActivate):
         Ignored compatibility keyword arguments.
     """
 
-    def forward(self, features: FeatureDict) -> FeatureDict:
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
         """Return the activated scalar feature gate.
 
         Parameters
         ----------
-        features : FeatureDict
+        features : FeatureDict or MessageDict
             Feature blocks to gate.
 
         Returns
@@ -163,7 +164,70 @@ class ScalarGateActivate(GateActivate):
         return FeatureDict({Par("H"): self.activation(feature)})
 
 
-def _scalar_component(features: FeatureDict, name: str):
+class NormGateActivate(GateActivate):
+    """Gate features by smooth functions of irrep-coordinate norms.
+
+    The norm is computed over the transforming irrep-coordinate ``alpha`` axis
+    while preserving batch, channel, ordered-tuple, and multiplicity/Fourier
+    ``beta`` axes. The returned gate has shape ``[..., 1, beta]`` for each
+    feature block and is projected onto the full permutation-safe block by
+    :class:`spenn.nn.utils.activations.GatedActivation`.
+
+    Parameters
+    ----------
+    activation : torch.nn.Module
+        Scalar activation applied to each local norm.
+    eps : float, optional
+        Positive lower bound used when ``normalize=True``.
+    normalize : bool, optional
+        If ``True``, return ``activation(norm) / max(norm, eps)``. If
+        ``False``, return ``activation(norm)``. For smoothness at zero with
+        ``normalize=False``, use an activation satisfying ``activation(0) == 0``.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(
+        self,
+        activation: nn.Module,
+        eps: float = 1.0e-12,
+        normalize: bool = True,
+        **_: object,
+    ) -> None:
+        super().__init__(activation)
+        self.eps = float(eps)
+        self.normalize = bool(normalize)
+
+    def forward(self, features: FeatureDict | MessageDict) -> FeatureDict:
+        """Return norm-derived gates for every feature block.
+
+        Parameters
+        ----------
+        features : FeatureDict or MessageDict
+            Feature or message blocks to gate.
+
+        Returns
+        -------
+        FeatureDict
+            Gate tensors keyed like `features`.
+        """
+
+        gates = FeatureDict()
+        for partition, tensor in features.flat_items():
+            norm = torch.linalg.vector_norm(tensor, dim=-2, keepdim=True)
+            gate = self.activation(norm)
+            if gate.shape != norm.shape:
+                raise ValueError(
+                    f"Norm gate for partition {partition} must preserve norm shape {tuple(norm.shape)}, "
+                    f"got {tuple(gate.shape)}"
+                )
+            if self.normalize:
+                gate = gate / norm.clamp_min(self.eps)
+            gates.set(partition, gate)
+        return gates
+
+
+def _scalar_component(features: FeatureDict | MessageDict, name: str):
     tensor = features.get(Par("H"))
     if tensor is None:
         raise KeyError(f"Missing scalar (1) component in {name}")
@@ -173,6 +237,7 @@ def _scalar_component(features: FeatureDict, name: str):
 __all__ = [
     "GateActivate",
     "GateUpdate",
+    "NormGateActivate",
     "ScalarGateActivate",
     "ScalarGateUpdate",
 ]

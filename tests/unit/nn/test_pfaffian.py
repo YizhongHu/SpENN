@@ -122,3 +122,18 @@ def test_pfaffian_readout_is_antisymmetric_under_electron_swap() -> None:
     assert torch.all(torch.isfinite(original.logabs))
     assert torch.allclose(original.logabs, swapped.logabs)
     assert torch.equal(original.sign, -swapped.sign)
+
+
+def test_pfaffian_readout_harmonic_envelope_preserves_antisymmetric_sign() -> None:
+    coefficient = 0.25
+    positions = torch.tensor([[[0.0], [2.0]]], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions)
+    features = _features_from_positions(positions)
+    readout = PfaffianReadout(envelope_coefficient=coefficient)
+    readout.build_skew_kernel(features, batch)
+    _set_unit_readout_weights(readout)
+
+    output = readout(features, batch)
+
+    assert torch.equal(output.sign, torch.tensor([-1.0], dtype=torch.float64))
+    assert torch.allclose(output.logabs, torch.log(torch.tensor([2.0], dtype=torch.float64)) - coefficient * positions.square().sum())

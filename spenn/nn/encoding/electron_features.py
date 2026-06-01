@@ -11,7 +11,7 @@ from spenn.data.batch import ElectronBatch
 from spenn.data.feature_dict import FeatureDict
 from spenn.data.partitions import Par, Partition
 from spenn.nn.encoding.base import BaseEncoder
-from spenn.nn.mlp import MLP
+from spenn.nn.utils.mlp import MLP
 
 
 class ElectronPairEncoder(BaseEncoder):

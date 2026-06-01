@@ -1,18 +1,17 @@
 package: spenn
 
 modes:
-  tests: opt_in
-  scripts: opt_in
+  tests: default
+  entrypoints: opt_in
   training: opt_in_debug_only
   deployment: disabled
 
 commands:
-  tests: uv run pytest --typeguard-packages=spenn -q
-  debug_equivariance: uv run python scripts/typechecked.py scripts/debug_equivariance.py -- sampler.n_walkers=4
-  train_smoke: uv run python scripts/typechecked.py scripts/train.py -- trainer.max_steps=1 sampler.n_walkers=4
-  hooke_exact_debug: uv run python scripts/typechecked.py experiments/hooke/run_exact.py -- --config debug_singlet --run-id typecheck_hooke_exact
-  hooke_spenn_debug: uv run python scripts/typechecked.py experiments/hooke/run_spenn.py -- --config spenn_singlet_debug --run-id typecheck_hooke_spenn training.vmc_steps=1 trainer.max_steps=1 sampler.n_walkers=4
+  tests: uv run pytest -q
+  train_smoke: uv run python typechecked.py train.py -- --config=config.yaml training.vmc_steps=1 sampler.n_walkers=4 sampler.warmup_steps=1 sampler.production_blocks=1 sampler.steps_per_block=1 diagnostics.radial.n_points=8 diagnostics.cusp.n_points=4 diagnostics.exchange.n_samples=8 artifacts.write_checkpoint=false
+  hooke_exact_debug: uv run python typechecked.py experiments/hooke/run_exact.py -- --config singlet --run-id typecheck_hooke_exact
+  hooke_spenn_debug: uv run python typechecked.py experiments/hooke/run_spenn.py -- --config singlet_spenn --run-id typecheck_hooke_spenn training.vmc_steps=1 trainer.max_steps=1 sampler.n_walkers=4
 
 notes:
-  - Normal test, train, and debug commands do not install the Typeguard import hook.
-  - Runtime type checking is intended for debugging and CI smoke checks, not production training.
+  - Pytest installs the Typeguard import hook for the spenn package by default through pyproject.toml.
+  - Runtime type checking for entrypoints remains opt-in through typechecked.py so production training stays fast.

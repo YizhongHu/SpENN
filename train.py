@@ -9,7 +9,7 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -34,7 +34,8 @@ def load_config(argv: list[str] | None = None) -> tuple[DictConfig, list[str]]:
     overrides = list(args.overrides)
     dotlist = [override for override in overrides if "=" in override]
     if args.config is not None:
-        cfg = OmegaConf.load(args.config)
+        config_path = _resolve_config_path(args.config)
+        cfg = OmegaConf.load(config_path)
         if dotlist:
             cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(dotlist))
         return cfg, overrides
@@ -63,6 +64,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--config-name", default="config", help="Hydra config name used when --config is omitted.")
     parser.add_argument("overrides", nargs="*", help="Hydra dotlist overrides.")
     return parser.parse_args(argv)
+
+
+def _resolve_config_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    candidate = ROOT / "configs" / path
+    if candidate.exists():
+        return candidate
+    return path
 
 
 if __name__ == "__main__":

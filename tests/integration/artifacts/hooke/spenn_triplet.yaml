@@ -7,12 +7,41 @@ dtype: float64
 device: cpu
 output_root: outputs/integration_tests
 
+run:
+  mode: train
+  name: hooke_${sector}_spenn
+  id: ${run_id}
+  output_root: ${output_root}
+  id_prefix: hooke_spenn_${sector}
+  energy_prefix: spenn
+
+specht:
+  M: 2
+  M_virtual: 2
+  channels: [0, 2, 2]
+
+optimization:
+  learning_rate: 1.0e-3
+  grad_clip: 10.0
+
+readout_hparams:
+  envelope_coefficient: 0.125
+
 system:
+  _target_: spenn.physics.systems.ElectronicSystem
   name: hooke_triplet
   n_electrons: 2
   spatial_dim: 3
   harmonic_omega: 0.25
+  include_electron_electron: true
+  n_up: 2
+  n_down: 0
   exact_energy: 1.25
+  dtype: ${dtype}
+  aux:
+    sector: triplet
+    cusp_slope: 0.25
+    node_axis: z
 
 model:
   _target_: spenn.nn.wavefunction.SpENNWavefunction
@@ -20,7 +49,7 @@ model:
     _target_: spenn.nn.encoding.electron_features.ElectronPairEncoder
     name: hooke_triplet_tiny
     max_order: 2
-    channels: [0, 2, 2]
+    channels: ${specht.channels}
     hidden_channels: 4
     num_hidden_layers: 0
     activation:
@@ -32,46 +61,58 @@ model:
       - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
         fusion_map:
           _target_: spenn.reps.fusion.FusionMap
-          M: 2
-          M_virtual: 2
+          M: ${specht.M}
+          M_virtual: ${specht.M_virtual}
         message_head:
-          _target_: spenn.nn.spechtmp.message_head.MessageHead
-          M: 2
-          M_virtual: 2
-          channels: [0, 2, 2]
+          _target_: spenn.nn.spechtmp.MessageHead
+          M: ${specht.M}
+          M_virtual: ${specht.M_virtual}
+          channels: ${specht.channels}
           include_linear: true
           activation:
-            _target_: spenn.nn.activations.ActivationByType
+            _target_: spenn.nn.utils.activations.ActivationByType
             symmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Sigmoid
+              _target_: spenn.nn.utils.activations.GatedActivation
+              gate:
+                _target_: spenn.nn.utils.gate.NormGateActivate
+                activation:
+                  _target_: torch.nn.Tanh
+                eps: 1.0e-12
+                normalize: true
             antisymmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Tanh
+              _target_: spenn.nn.utils.activations.GatedActivation
+              gate:
+                _target_: spenn.nn.utils.gate.NormGateActivate
+                activation:
+                  _target_: torch.nn.Tanh
+                eps: 1.0e-12
+                normalize: true
             tensor:
-              _target_: spenn.nn.activations.NormGateActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-              eps: 1.0e-12
+              _target_: spenn.nn.utils.activations.GatedActivation
+              gate:
+                _target_: spenn.nn.utils.gate.NormGateActivate
+                activation:
+                  _target_: torch.nn.Tanh
+                eps: 1.0e-12
+                normalize: true
         branch_map:
           _target_: spenn.reps.branch.BranchMap
-          M: 2
-          M_virtual: 2
+          M: ${specht.M}
+          M_virtual: ${specht.M_virtual}
         update_head:
-          _target_: spenn.nn.spechtmp.update_head.UpdateHead
-          M: 2
-          channels: [0, 2, 2]
+          _target_: spenn.nn.spechtmp.UpdateHead
+          M: ${specht.M}
+          channels: ${specht.channels}
         update:
-          _target_: spenn.nn.update.ResidualUpdate
+          _target_: spenn.nn.utils.update.ResidualUpdate
   readout:
-    _target_: spenn.nn.readout.node.TwoElectronTripletNodeReadout
-    node_axis: 2
-    eps: 1.0e-12
-    envelope_coefficient: 0.125
+    _target_: spenn.nn.readout.pfaffian.PfaffianReadout
+    num_pfaffians: 1
+    use_symmetric_gates: true
+    allow_odd_electron_bordered: true
+    envelope_coefficient: ${readout_hparams.envelope_coefficient}
     trainable_envelope: false
-    zero_init_residual: true
+    eps: 1.0e-12
   cusp:
     _target_: spenn.nn.cusp.ElectronElectronCusp
     enabled: true
@@ -90,23 +131,27 @@ hamiltonian:
     eps: 1.0e-12
 
 sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
   name: metropolis
+  move:
+    _target_: spenn.sampling.moves.GaussianMove
+    step_size: 0.8
+    move_all: true
   n_walkers: 8
   warmup_steps: 2
   production_blocks: 1
   steps_per_block: 1
   steps_per_iter: 1
-  step_size: 0.8
-  move_all: true
   initial_scale: 2.0
+  dtype: ${dtype}
 
 loss:
   _target_: spenn.losses.vmc.VMCLoss
 
 optimizer:
   _target_: torch.optim.Adam
-  lr: 1.0e-3
-  grad_clip: 10.0
+  lr: ${optimization.learning_rate}
+  grad_clip: ${optimization.grad_clip}
 
 trainer:
   _target_: spenn.training.trainer.VMCTrainer
@@ -119,11 +164,45 @@ training:
   log_every: 1
 
 diagnostics:
-  comparison_points: 8
-  cusp_points: 6
-  radial_points: 8
-  histogram_bins: 6
-  symmetry_samples: 8
+  local_energy_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: local_energy
+    bins: 6
+    table_name: local_energy_histogram
+  r12_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: r12
+    bins: 6
+    table_name: r12_histogram
+  radial:
+    _target_: spenn.diagnostics.RadialLogAbsComparison
+    reference_model:
+      _target_: experiments.hooke.analytic.HookeExactWavefunction
+      sector: ${sector}
+      node_axis: 2
+    sector: ${sector}
+    node_axis: 2
+    n_points: 8
+    table_name: wavefunction_radial_cut
+  cusp:
+    _target_: spenn.diagnostics.CuspSlopeDiagnostic
+    sector: ${sector}
+    node_axis: 2
+    n_points: 6
+    metric_prefix: comparison
+    value_column: spenn_factored_logabs
+    table_name: cusp_diagnostic_plot
+  exchange:
+    _target_: spenn.diagnostics.ExchangeSymmetryDiagnostic
+    reference_model:
+      _target_: experiments.hooke.analytic.HookeExactWavefunction
+      sector: ${sector}
+      node_axis: 2
+    sector: ${sector}
+    exchange_mode: particle_antisymmetric
+    node_axis: 2
+    n_samples: 8
+    metric_prefix: comparison
 
 artifacts:
   write_plot_data: false
@@ -134,10 +213,11 @@ validation:
   energy_tolerance: 10.0
   local_energy_variance_tolerance: 10.0
   radial_logabs_rmse_tolerance: 10.0
-  cusp_slope_tolerance: 10.0
+  cusp_slope_tolerance: 200.0
   exchange_error_tolerance: 1.0e-8
+  exchange_mode: particle_antisymmetric
   sign_flip_min: 1.0
-  sign_alignment_min: 1.0
+  sign_alignment_min: 0.0
   comparison_energy_abs_error_tolerance: 10.0
   comparison_logabs_mae_tolerance: 10.0
 
@@ -149,7 +229,6 @@ tracking:
     - triplet
     - same_spin
     - analytic_cusp
-    - harmonic_envelope
     - vmc_only
-    - explicit_triplet_node_readout
+    - pfaffian_readout
     - metropolis

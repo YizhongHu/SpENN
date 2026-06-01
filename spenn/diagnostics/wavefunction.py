@@ -281,6 +281,13 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         Cartesian nodal axis for reference triplet signs.
     reference_model : torch.nn.Module or None, optional
         Optional reference model for sign-alignment diagnostics.
+    exchange_mode : {"auto", "spatial_singlet", "particle_antisymmetric"}, optional
+        Exchange contract. ``"spatial_singlet"`` swaps coordinates but keeps
+        spin labels fixed and expects a symmetric signed wavefunction.
+        ``"particle_antisymmetric"`` swaps coordinates and spin labels
+        together and expects an antisymmetric signed wavefunction.
+        ``"auto"`` uses ``"spatial_singlet"`` for singlets and
+        ``"particle_antisymmetric"`` for triplets.
     metric_prefix : str, optional
         Metric namespace.
     **_ : object
@@ -293,6 +300,7 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         n_samples: int = 128,
         node_axis: int = 2,
         reference_model: nn.Module | None = None,
+        exchange_mode: str = "auto",
         metric_prefix: str = "comparison",
         **_: object,
     ) -> None:
@@ -301,6 +309,7 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         self.n_samples = int(n_samples)
         self.node_axis = int(node_axis)
         self.reference_model = reference_model
+        self.exchange_mode = _normalize_exchange_mode(exchange_mode)
         self.metric_prefix = metric_prefix
 
     def forward(self, context: DiagnosticContext) -> DiagnosticResult:
@@ -320,7 +329,11 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         positions = torch.randn(self.n_samples, 2, 3, device=context.device, dtype=context.dtype)
         spins = spin_labels(context.system, n_walkers=self.n_samples, device=context.device, dtype=context.dtype)
         batch = ElectronBatch(positions=positions, system=context.system, spins=spins)
-        swapped_spins = spins if self.sector == "singlet" or spins is None else spins[:, [1, 0]]
+        exchange_mode = self.exchange_mode
+        if exchange_mode == "auto":
+            exchange_mode = "spatial_singlet" if self.sector == "singlet" else "particle_antisymmetric"
+        swap_spins = exchange_mode == "particle_antisymmetric"
+        swapped_spins = spins[:, [1, 0]] if swap_spins and spins is not None else spins
         swapped = ElectronBatch(positions=positions[:, [1, 0]], system=context.system, spins=swapped_spins)
         with torch.no_grad():
             out = context.model(batch)
@@ -328,15 +341,30 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         logabs_error = (out.logabs - swap_out.logabs).abs()
         antisym_mean_key = "antisym_error_mean" if self.metric_prefix == "symmetry" else "antisymmetry_error_mean"
         antisym_max_key = "antisym_error_max" if self.metric_prefix == "symmetry" else "antisymmetry_error_max"
-        if self.sector == "singlet":
+        if exchange_mode == "spatial_singlet":
+            psi = out.sign * torch.exp(out.logabs)
+            swap_psi = swap_out.sign * torch.exp(swap_out.logabs)
+            denom = psi.abs() + swap_psi.abs()
+            symmetry_error = (psi - swap_psi).abs() / denom.clamp_min(torch.finfo(context.dtype).eps)
+            sign_match = out.sign == swap_out.sign
+            sign_alignment = torch.tensor(1.0, device=context.device, dtype=context.dtype)
+            if self.reference_model is not None:
+                reference = self.reference_model.to(device=context.device, dtype=context.dtype)
+                with torch.no_grad():
+                    exact = reference(batch)
+                raw_alignment = (out.sign == exact.sign).to(torch.float64).mean()
+                sign_alignment = torch.maximum(raw_alignment, 1.0 - raw_alignment)
             return DiagnosticResult(
                 metrics={
                     f"{self.metric_prefix}/swap_logabs_error_mean": float(logabs_error.mean().item()),
                     f"{self.metric_prefix}/swap_logabs_error_max": float(logabs_error.max().item()),
+                    f"{self.metric_prefix}/symmetry_error_mean": float(symmetry_error.mean().item()),
+                    f"{self.metric_prefix}/symmetry_error_max": float(symmetry_error.max().item()),
                     f"{self.metric_prefix}/{antisym_mean_key}": float("nan"),
                     f"{self.metric_prefix}/{antisym_max_key}": float("nan"),
                     f"{self.metric_prefix}/sign_flip_accuracy": float("nan"),
-                    f"{self.metric_prefix}/sign_alignment_accuracy": 1.0,
+                    f"{self.metric_prefix}/sign_match_accuracy": float(sign_match.to(torch.float64).mean().item()),
+                    f"{self.metric_prefix}/sign_alignment_accuracy": float(sign_alignment.item()),
                 }
             )
         psi = out.sign * torch.exp(out.logabs)
@@ -361,6 +389,16 @@ class ExchangeSymmetryDiagnostic(nn.Module):
                 f"{self.metric_prefix}/sign_alignment_accuracy": float(sign_alignment.item()),
             }
         )
+
+
+def _normalize_exchange_mode(value: str) -> str:
+    normalized = value.lower().replace("-", "_")
+    if normalized in {"auto", "spatial_singlet", "particle_antisymmetric"}:
+        return normalized
+    raise ValueError(
+        "exchange_mode must be 'auto', 'spatial_singlet', or "
+        f"'particle_antisymmetric', got {value!r}"
+    )
 
 
 def pair_distance(positions: torch.Tensor) -> torch.Tensor:

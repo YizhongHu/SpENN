@@ -7,10 +7,11 @@ import torch
 
 from spenn.data import FeatureDict, MessageDict, Par
 from spenn.data.batch import ElectronBatch
-from spenn.nn.activations import ActivationByType, ElementwiseFeatureActivation, NormGateActivation
+from spenn.nn.utils.activations import ActivationByType, GatedActivation
 from spenn.nn.encoding import ElectronPairEncoder
 from spenn.nn.spechtmp import MessageHead, SpechtMP, SpechtMPLayer, UpdateHead
-from spenn.nn.update import ResidualUpdate
+from spenn.nn.utils.gate import NormGateActivate
+from spenn.nn.utils.update import ResidualUpdate
 from spenn.reps import BranchMap, FusionMap
 
 
@@ -63,10 +64,11 @@ def _permute_features(features: FeatureDict, permutation: torch.Tensor) -> Featu
 
 
 def _message_activation() -> ActivationByType:
+    activation = GatedActivation(NormGateActivate(torch.nn.Tanh(), normalize=True))
     return ActivationByType(
-        symmetric=ElementwiseFeatureActivation(torch.nn.Sigmoid()),
-        antisymmetric=ElementwiseFeatureActivation(torch.nn.Tanh()),
-        tensor=NormGateActivation(torch.nn.Sigmoid()),
+        symmetric=activation,
+        antisymmetric=GatedActivation(NormGateActivate(torch.nn.Tanh(), normalize=True)),
+        tensor=GatedActivation(NormGateActivate(torch.nn.Tanh(), normalize=True)),
     )
 
 

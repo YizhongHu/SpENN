@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from spenn.data import FeatureDict, Par, Partition
-from spenn.nn.update import CompositeUpdate, GatedUpdate, RawUpdate, ResidualUpdate, Update, UpdateByIrrep, UpdateByType
+from spenn.nn.utils.update import CompositeUpdate, GatedUpdate, RawUpdate, ResidualUpdate, Update, UpdateByIrrep, UpdateByType
 
 
 ORDER1 = Par("H")

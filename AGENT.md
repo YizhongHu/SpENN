@@ -6,6 +6,8 @@
 - This repo uses `uv` to manage python packages. Most commands (including `pytest`) needs to be run with `uv`. Use `uv` to run if possible for reproducibility.
 - If it may be necessary to install a new package, stop and inquire instead of proceeding
   with alternatives.
+- Do not use `uv run --nosync`. If `uv` environment needs to change, let `uv lock` update for
+  reproducibility.
 
 ## Conventions
 - NumpyDoc is used for documentation
@@ -17,8 +19,11 @@
 - Each folder under root contains `instructions.md`. This states the detailed design of everything in the current directory. Reference this for
   implementation details.
 
-## Subagents
-- Spawn subagents for reading, editing, testing, and debugging if possible to do parallel.
+## Tools
+- Always encouraged to spawn subagents to go faster for reading, editing, testing, 
+running, and debugging if possible to do parallel.
+- Always encouraged to initiate slurm runs for parallizability. Keep slurm logs around
+for reproducibility.
 
 ## Best Practises
 - Use existing libraries if possible

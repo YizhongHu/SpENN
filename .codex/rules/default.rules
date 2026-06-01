@@ -1,39 +1,183 @@
 # Allow project test commands.
 prefix_rule(
-    pattern = ["uv", "run", "pytest", "*"],
+    pattern = ["uv", "run", "pytest"],
     decision = "allow",
-    description = "Allow running tests with pytest, including typeguard checks.",
+    justification = "Allow running pytest.",
+)
 
-)
 prefix_rule(
-    pattern = ["uv", "run", "pytest", "scripts/*"],
+    pattern = ["uv", "run", "python", "-m", "compileall", "spenn", "scripts"],
     decision = "allow",
-    description = "Allow running tests in the scripts directory with pytest, including typeguard checks.",
+    justification = "Allow compileall checks for spenn and scripts.",
 )
-allow(["uv", "run", "python", "-m", "compileall", "spenn", "scripts"])
 
 # Allow harmless inspection commands.
-allow(["git", "status"])
-allow(["git", "diff"])
-allow(["git", "log"])
-allow(["ls"])
-allow(["pwd"])
-allow(["cat"])
-allow(["sed"])
-allow(["grep"])
-allow(["find"])
+prefix_rule(
+    pattern = ["git", "status"],
+    decision = "allow",
+    justification = "Allow git status.",
+)
+
+prefix_rule(
+    pattern = ["git", "diff"],
+    decision = "allow",
+    justification = "Allow git diff.",
+)
+
+prefix_rule(
+    pattern = ["git", "log"],
+    decision = "allow",
+    justification = "Allow git log.",
+)
+
+prefix_rule(
+    pattern = ["ls"],
+    decision = "allow",
+    justification = "Allow ls.",
+)
+
+prefix_rule(
+    pattern = ["pwd"],
+    decision = "allow",
+    justification = "Allow pwd.",
+)
+
+prefix_rule(
+    pattern = ["cat"],
+    decision = "allow",
+    justification = "Allow cat.",
+)
+
+prefix_rule(
+    pattern = ["sed"],
+    decision = "allow",
+    justification = "Allow sed.",
+)
+
+prefix_rule(
+    pattern = ["grep"],
+    decision = "allow",
+    justification = "Allow grep.",
+)
+
+prefix_rule(
+    pattern = ["find"],
+    decision = "allow",
+    justification = "Allow find.",
+)
 
 # Prompt for dependency changes.
-prompt(["uv", "add"])
-prompt(["uv", "remove"])
-prompt(["uv", "sync"])
-prompt(["pip"])
-prompt(["python", "-m", "pip"])
-prompt(["rm", "-rf"])
+prefix_rule(
+    pattern = ["uv", "add"],
+    decision = "prompt",
+    justification = "Prompt before adding dependencies.",
+)
+
+prefix_rule(
+    pattern = ["uv", "remove"],
+    decision = "prompt",
+    justification = "Prompt before removing dependencies.",
+)
+
+prefix_rule(
+    pattern = ["uv", "sync"],
+    decision = "prompt",
+    justification = "Prompt before syncing dependencies.",
+)
+
+prefix_rule(
+    pattern = ["pip"],
+    decision = "prompt",
+    justification = "Prompt before pip commands.",
+)
+
+prefix_rule(
+    pattern = ["python", "-m", "pip"],
+    decision = "prompt",
+    justification = "Prompt before python -m pip commands.",
+)
+
+prefix_rule(
+    pattern = ["rm", "-rf"],
+    decision = "prompt",
+    justification = "Prompt before recursive force deletion.",
+)
 
 # Deny obviously dangerous commands.
-deny(["sudo"])
-deny(["chmod", "-R"])
-deny(["chown", "-R"])
-deny(["curl"])
-deny(["wget"])
+prefix_rule(
+    pattern = ["sudo"],
+    decision = "forbidden",
+    justification = "Forbid sudo.",
+)
+
+prefix_rule(
+    pattern = ["chmod", "-R"],
+    decision = "forbidden",
+    justification = "Forbid recursive chmod.",
+)
+
+prefix_rule(
+    pattern = ["chown", "-R"],
+    decision = "forbidden",
+    justification = "Forbid recursive chown.",
+)
+
+prefix_rule(
+    pattern = ["curl"],
+    decision = "forbidden",
+    justification = "Forbid curl.",
+)
+
+prefix_rule(
+    pattern = ["wget"],
+    decision = "forbidden",
+    justification = "Forbid wget.",
+)
+
+# Read-only git commands.
+prefix_rule(pattern = ["git", "status"], decision = "allow")
+prefix_rule(pattern = ["git", "diff"], decision = "allow")
+prefix_rule(pattern = ["git", "log"], decision = "allow")
+prefix_rule(pattern = ["git", "show"], decision = "allow")
+prefix_rule(pattern = ["git", "branch"], decision = "allow")
+prefix_rule(pattern = ["git", "remote", "-v"], decision = "allow")
+prefix_rule(pattern = ["git", "rev-parse"], decision = "allow")
+prefix_rule(pattern = ["git", "ls-files"], decision = "allow")
+prefix_rule(pattern = ["git", "ls-tree"], decision = "allow")
+prefix_rule(pattern = ["git", "grep"], decision = "allow")
+prefix_rule(pattern = ["git", "blame"], decision = "allow")
+prefix_rule(pattern = ["git", "describe"], decision = "allow")
+prefix_rule(pattern = ["git", "tag"], decision = "allow")
+prefix_rule(pattern = ["git", "submodule", "status"], decision = "allow")
+prefix_rule(pattern = ["git", "config", "--get"], decision = "allow")
+prefix_rule(pattern = ["git", "config", "--list"], decision = "allow")
+
+# Read-only GitHub CLI commands.
+prefix_rule(pattern = ["gh", "auth", "status"], decision = "allow")
+prefix_rule(pattern = ["gh", "repo", "view"], decision = "allow")
+prefix_rule(pattern = ["gh", "repo", "list"], decision = "allow")
+prefix_rule(pattern = ["gh", "issue", "view"], decision = "allow")
+prefix_rule(pattern = ["gh", "issue", "list"], decision = "allow")
+prefix_rule(pattern = ["gh", "pr", "view"], decision = "allow")
+prefix_rule(pattern = ["gh", "pr", "list"], decision = "allow")
+prefix_rule(pattern = ["gh", "release", "view"], decision = "allow")
+prefix_rule(pattern = ["gh", "release", "list"], decision = "allow")
+prefix_rule(pattern = ["gh", "run", "view"], decision = "allow")
+prefix_rule(pattern = ["gh", "run", "list"], decision = "allow")
+prefix_rule(pattern = ["gh", "workflow", "view"], decision = "allow")
+prefix_rule(pattern = ["gh", "workflow", "list"], decision = "allow")
+prefix_rule(pattern = ["gh", "api"], decision = "prompt")
+
+# Prompt for git commands that may change local state or contact remotes.
+prefix_rule(pattern = ["git", "fetch"], decision = "prompt")
+prefix_rule(pattern = ["git", "pull"], decision = "prompt")
+prefix_rule(pattern = ["git", "push"], decision = "prompt")
+prefix_rule(pattern = ["git", "checkout"], decision = "prompt")
+prefix_rule(pattern = ["git", "switch"], decision = "prompt")
+prefix_rule(pattern = ["git", "restore"], decision = "prompt")
+prefix_rule(pattern = ["git", "add"], decision = "prompt")
+prefix_rule(pattern = ["git", "commit"], decision = "prompt")
+prefix_rule(pattern = ["git", "merge"], decision = "prompt")
+prefix_rule(pattern = ["git", "rebase"], decision = "prompt")1
+prefix_rule(pattern = ["git", "reset"], decision = "prompt")
+prefix_rule(pattern = ["git", "clean"], decision = "prompt")

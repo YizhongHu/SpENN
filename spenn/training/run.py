@@ -100,7 +100,7 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
             output_dir / "checkpoints" / "final_model.pt",
         )
     summary = {
-        "entrypoint": "scripts/train.py",
+        "entrypoint": "train.py",
         "status": "ok",
         "mode": mode,
         "run_id": run_id,
@@ -111,7 +111,7 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
     }
     write_json(output_dir / "artifacts" / "summary.json", summary)
     return {
-        "entrypoint": "scripts/train.py",
+        "entrypoint": "train.py",
         "status": "ok",
         "mode": mode,
         "run_id": run_id,

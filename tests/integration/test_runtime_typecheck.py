@@ -16,14 +16,14 @@ def test_typecheck_policy_documents_required_modes_and_commands() -> None:
 
     assert policy.package == "spenn"
     assert dict(policy.modes) == {
-        "tests": "opt_in",
-        "scripts": "opt_in",
+        "tests": "default",
+        "entrypoints": "opt_in",
         "training": "opt_in_debug_only",
         "deployment": "disabled",
     }
-    assert "--typeguard-packages=spenn" in policy.commands.tests
-    assert "scripts/typechecked.py" in policy.commands.debug_equivariance
-    assert "scripts/typechecked.py" in policy.commands.train_smoke
+    assert "pytest" in policy.commands.tests
+    assert "--typeguard-packages=spenn" not in policy.commands.tests
+    assert "typechecked.py" in policy.commands.train_smoke
     assert "experiments/hooke/run_exact.py" in policy.commands.hooke_exact_debug
 
 
@@ -36,7 +36,7 @@ def test_typechecked_runner_executes_script_after_installing_hook(tmp_path: Path
     )
 
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "typechecked.py"), str(script)],
+        [sys.executable, str(ROOT / "typechecked.py"), str(script)],
         cwd=ROOT,
         text=True,
         capture_output=True,

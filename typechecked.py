@@ -13,12 +13,12 @@ from typeguard import install_import_hook
 def main() -> None:
     """Install the Typeguard import hook and run a target script."""
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent
     policy = OmegaConf.load(root / "configs" / "typecheck.yaml")
     package = str(policy.get("package", "spenn"))
     args = sys.argv[1:]
     if not args:
-        raise SystemExit("Usage: python scripts/typechecked.py <script.py> [-- script-args...]")
+        raise SystemExit("Usage: python typechecked.py <script.py> [-- script-args...]")
     if "--" in args:
         separator = args.index("--")
         target = args[:separator]
@@ -27,7 +27,7 @@ def main() -> None:
         target = args
         forwarded = []
     if len(target) != 1:
-        raise SystemExit("Usage: python scripts/typechecked.py <script.py> [-- script-args...]")
+        raise SystemExit("Usage: python typechecked.py <script.py> [-- script-args...]")
 
     script = Path(target[0])
     if not script.is_absolute():

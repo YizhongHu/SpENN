@@ -8,12 +8,42 @@ from experiments.hooke.analytic import HookeExactWavefunction, hooke_spin_labels
 from spenn.data.batch import ElectronBatch
 from spenn.physics.hamiltonian import ElectronicHamiltonian
 from spenn.physics.potential import ElectronicPotential
-from spenn.physics.systems import ElectronicSystem, make_hooke_system
+from spenn.physics.systems import ElectronicSystem
+
+
+def _hooke_singlet_system() -> ElectronicSystem:
+    return ElectronicSystem(
+        name="hooke_singlet",
+        n_electrons=2,
+        spatial_dim=3,
+        harmonic_omega=0.5,
+        include_electron_electron=True,
+        n_up=1,
+        n_down=1,
+        exact_energy=2.0,
+        dtype=torch.float64,
+        aux={"sector": "singlet", "cusp_slope": 0.5},
+    )
+
+
+def _hooke_triplet_system() -> ElectronicSystem:
+    return ElectronicSystem(
+        name="hooke_triplet",
+        n_electrons=2,
+        spatial_dim=3,
+        harmonic_omega=0.25,
+        include_electron_electron=True,
+        n_up=2,
+        n_down=0,
+        exact_energy=1.25,
+        dtype=torch.float64,
+        aux={"sector": "triplet", "cusp_slope": 0.25, "node_axis": "z"},
+    )
 
 
 def test_hooke_potential_includes_coulomb_repulsion_only_when_enabled() -> None:
     positions = torch.tensor([[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]], dtype=torch.float64)
-    hooke = make_hooke_system("singlet", dtype=torch.float64)
+    hooke = _hooke_singlet_system()
     toy = ElectronicSystem(n_electrons=2, spatial_dim=3, harmonic_omega=0.5, dtype=torch.float64)
 
     hooke_value = ElectronicPotential(system=hooke)(ElectronBatch(positions=positions, system=hooke))
@@ -24,7 +54,7 @@ def test_hooke_potential_includes_coulomb_repulsion_only_when_enabled() -> None:
 
 
 def test_exact_hooke_singlet_has_constant_local_energy() -> None:
-    system = make_hooke_system("singlet", dtype=torch.float64)
+    system = _hooke_singlet_system()
     model = HookeExactWavefunction("singlet")
     hamiltonian = ElectronicHamiltonian(system=system)
     positions = torch.tensor(
@@ -47,7 +77,7 @@ def test_exact_hooke_singlet_has_constant_local_energy() -> None:
 
 
 def test_exact_hooke_triplet_has_constant_local_energy_and_antisymmetry() -> None:
-    system = make_hooke_system("triplet", dtype=torch.float64)
+    system = _hooke_triplet_system()
     model = HookeExactWavefunction("triplet")
     hamiltonian = ElectronicHamiltonian(system=system)
     positions = torch.tensor(

@@ -6,9 +6,10 @@ import torch
 from torch import nn
 
 from spenn.data import FeatureDict, MessageDict, Par
-from spenn.nn.activations import ActivationByType, ElementwiseFeatureActivation, NormGateActivation
+from spenn.nn.utils.activations import ActivationByType, GatedActivation
 from spenn.nn.spechtmp import MessageHead, SpechtMP, SpechtMPLayer, UpdateHead
-from spenn.nn.update import ResidualUpdate
+from spenn.nn.utils.gate import NormGateActivate
+from spenn.nn.utils.update import ResidualUpdate
 from spenn.reps import BranchMap, FusionMap
 
 
@@ -27,9 +28,9 @@ def _features(dtype: torch.dtype = torch.float64) -> FeatureDict:
 
 def _message_activation() -> ActivationByType:
     return ActivationByType(
-        symmetric=ElementwiseFeatureActivation(nn.Sigmoid()),
-        antisymmetric=ElementwiseFeatureActivation(nn.Tanh()),
-        tensor=NormGateActivation(nn.Sigmoid()),
+        symmetric=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
+        antisymmetric=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
+        tensor=GatedActivation(NormGateActivate(nn.Tanh(), normalize=True)),
     )
 
 

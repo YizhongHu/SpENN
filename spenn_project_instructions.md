@@ -717,9 +717,13 @@ spenn/
         determinant.py
         pfaffian.py
         sum_readout.py
+      utils/
+        __init__.py
+        activations.py
+        gate.py
+        mlp.py
+        update.py
       wavefunction.py
-      activations.py
-      channel_mixing.py
 
     physics/
       __init__.py
@@ -1381,7 +1385,7 @@ class VMCTrainer:
             ...
 ```
 
-Hydra should instantiate everything in `scripts/train.py`.
+Hydra should instantiate everything in the root `train.py` entrypoint.
 
 ---
 
@@ -1433,35 +1437,47 @@ spechtmp:
         M: 2
         M_virtual: 2
       message_head:
-        _target_: spenn.nn.spechtmp.message_head.MessageHead
+        _target_: spenn.nn.spechtmp.MessageHead
         M: 2
         M_virtual: 2
         channels: [0, 32, 32]
         include_linear: true
         activation:
-          _target_: spenn.nn.activations.ActivationByType
+          _target_: spenn.nn.utils.activations.ActivationByType
           symmetric:
-            _target_: spenn.nn.activations.ElementwiseFeatureActivation
-            activation:
-              _target_: torch.nn.Sigmoid
+            _target_: spenn.nn.utils.activations.GatedActivation
+            gate:
+              _target_: spenn.nn.utils.gate.NormGateActivate
+              activation:
+                _target_: torch.nn.Tanh
+              eps: 1.0e-12
+              normalize: true
           antisymmetric:
-            _target_: spenn.nn.activations.ElementwiseFeatureActivation
-            activation:
-              _target_: torch.nn.Tanh
+            _target_: spenn.nn.utils.activations.GatedActivation
+            gate:
+              _target_: spenn.nn.utils.gate.NormGateActivate
+              activation:
+                _target_: torch.nn.Tanh
+              eps: 1.0e-12
+              normalize: true
           tensor:
-            _target_: spenn.nn.activations.NormGateActivation
-            activation:
-              _target_: torch.nn.Sigmoid
+            _target_: spenn.nn.utils.activations.GatedActivation
+            gate:
+              _target_: spenn.nn.utils.gate.NormGateActivate
+              activation:
+                _target_: torch.nn.Tanh
+              eps: 1.0e-12
+              normalize: true
       branch_map:
         _target_: spenn.reps.branch.BranchMap
         M: 2
         M_virtual: 2
       update_head:
-        _target_: spenn.nn.spechtmp.update_head.UpdateHead
+        _target_: spenn.nn.spechtmp.UpdateHead
         M: 2
         channels: [0, 32, 32]
       update:
-        _target_: spenn.nn.update.ResidualUpdate
+        _target_: spenn.nn.utils.update.ResidualUpdate
 
 readout:
   _target_: spenn.nn.readout.PfaffianReadout

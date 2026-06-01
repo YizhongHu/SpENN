@@ -45,11 +45,9 @@ def test_hooke_spenn_writes_comparison_artifacts_without_plot_data(sector: str) 
     assert math.isfinite(float(metrics["comparison/cusp_slope_error"]))
     assert abs(float(metrics["comparison/cusp_slope_error"])) <= cfg.validation.cusp_slope_tolerance
     assert float(metrics["comparison/sign_alignment_accuracy"]) >= cfg.validation.sign_alignment_min
-    if sector == "singlet":
-        assert float(metrics["comparison/swap_logabs_error_max"]) <= cfg.validation.exchange_error_tolerance
-    else:
-        assert float(metrics["comparison/antisymmetry_error_max"]) <= cfg.validation.exchange_error_tolerance
-        assert float(metrics["comparison/sign_flip_accuracy"]) >= cfg.validation.sign_flip_min
+    assert summary_artifact["config"]["diagnostics"]["exchange"]["exchange_mode"] == "particle_antisymmetric"
+    assert float(metrics["comparison/antisymmetry_error_max"]) <= cfg.validation.exchange_error_tolerance
+    assert float(metrics["comparison/sign_flip_accuracy"]) >= cfg.validation.sign_flip_min
 
     comparison_metrics = Path(summary["output_dir"]) / "metrics" / "comparison_metrics.csv"
     assert comparison_metrics.exists()

@@ -9,7 +9,7 @@ from spenn.physics.potential import (
     electron_nuclear_attraction,
     harmonic_trap_potential,
 )
-from spenn.physics.systems import ElectronicSystem, make_hooke_system
+from spenn.physics.systems import ElectronicSystem
 
 __all__ = [
     "ElectronicHamiltonian",
@@ -22,5 +22,4 @@ __all__ = [
     "electron_nuclear_attraction",
     "harmonic_trap_potential",
     "kinetic_energy_from_logabs",
-    "make_hooke_system",
 ]

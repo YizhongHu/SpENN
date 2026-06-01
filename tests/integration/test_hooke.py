@@ -29,3 +29,13 @@ def test_exact_hooke_run_writes_integration_artifacts_without_plot_data(sector: 
     assert summary_artifact["config"]["run_mode"] == "integration"
     assert summary_artifact["config"]["artifacts"]["write_plot_data"] is False
     assert "integration_test" in summary_artifact["config"]["tracking"]["tags"]
+    metrics = summary_artifact["metrics"]
+    exchange_mode = summary_artifact["config"]["diagnostics"]["exchange"]["exchange_mode"]
+    if sector == "singlet":
+        assert exchange_mode == "spatial_singlet"
+        assert float(metrics["symmetry/symmetry_error_max"]) <= cfg.validation.exchange_error_tolerance
+        assert float(metrics["symmetry/sign_match_accuracy"]) >= cfg.validation.sign_match_min
+    else:
+        assert exchange_mode == "particle_antisymmetric"
+        assert float(metrics["symmetry/antisym_error_max"]) <= cfg.validation.exchange_error_tolerance
+        assert float(metrics["symmetry/sign_flip_accuracy"]) >= cfg.validation.sign_flip_min

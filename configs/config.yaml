@@ -1,180 +1,176 @@
-seed: 1234
+experiment_name: hooke_spenn_singlet
+run_mode: debug
+sector: singlet
+run_id: null
+seed: 5
 dtype: float64
-device: cuda
+device: cpu
+output_root: outputs
+
+specht:
+  M: 2
+  M_virtual: 2
+  channels: [0, 16, 16]
+
+optimization:
+  learning_rate: 2.0e-3
+  grad_clip: 10.0
+
+readout_hparams:
+  envelope_coefficient: 0.25
+
+run:
+  mode: train
+  name: hooke_${sector}_spenn
+  id: ${run_id}
+  output_root: ${output_root}
+  id_prefix: hooke_spenn_${sector}
+  energy_prefix: spenn
+  model_path: model.spenn
 
 system:
   _target_: spenn.physics.systems.ElectronicSystem
-  name: toy
+  name: hooke_singlet
   n_electrons: 2
   spatial_dim: 3
-  harmonic_omega: 1.0
+  harmonic_omega: 0.5
+  include_electron_electron: true
+  n_up: 1
+  n_down: 1
+  exact_energy: 2.0
   dtype: ${dtype}
+  aux:
+    sector: singlet
+    cusp_slope: 0.5
 
 model:
-  _target_: spenn.nn.wavefunction.SpENNWavefunction
-  encoder:
-    _target_: spenn.nn.encoding.electron_features.ElectronPairEncoder
-    name: basic
-    max_order: 2
-    channels: [0, 32, 32]
-    activation:
-      _target_: torch.nn.Tanh
-  spechtmp:
-    _target_: spenn.nn.spechtmp.layer.SpechtMP
-    layers:
-      - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
-        fusion_map:
-          _target_: spenn.reps.fusion.FusionMap
-          M: 2
-          M_virtual: 2
-        message_head:
-          _target_: spenn.nn.spechtmp.message_head.MessageHead
-          M: 2
-          M_virtual: 2
-          channels: [0, 32, 32]
-          include_linear: true
-          activation:
-            _target_: spenn.nn.activations.ActivationByType
-            symmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-            antisymmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Tanh
-            tensor:
-              _target_: spenn.nn.activations.NormGateActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-              eps: 1.0e-12
-        branch_map:
-          _target_: spenn.reps.branch.BranchMap
-          M: 2
-          M_virtual: 2
-        update_head:
-          _target_: spenn.nn.spechtmp.update_head.UpdateHead
-          M: 2
-          channels: [0, 32, 32]
-        update:
-          _target_: spenn.nn.update.ResidualUpdate
-      - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
-        fusion_map:
-          _target_: spenn.reps.fusion.FusionMap
-          M: 2
-          M_virtual: 2
-        message_head:
-          _target_: spenn.nn.spechtmp.message_head.MessageHead
-          M: 2
-          M_virtual: 2
-          channels: [0, 32, 32]
-          include_linear: true
-          activation:
-            _target_: spenn.nn.activations.ActivationByType
-            symmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-            antisymmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Tanh
-            tensor:
-              _target_: spenn.nn.activations.NormGateActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-              eps: 1.0e-12
-        branch_map:
-          _target_: spenn.reps.branch.BranchMap
-          M: 2
-          M_virtual: 2
-        update_head:
-          _target_: spenn.nn.spechtmp.update_head.UpdateHead
-          M: 2
-          channels: [0, 32, 32]
-        update:
-          _target_: spenn.nn.update.ResidualUpdate
-      - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
-        fusion_map:
-          _target_: spenn.reps.fusion.FusionMap
-          M: 2
-          M_virtual: 2
-        message_head:
-          _target_: spenn.nn.spechtmp.message_head.MessageHead
-          M: 2
-          M_virtual: 2
-          channels: [0, 32, 32]
-          include_linear: true
-          activation:
-            _target_: spenn.nn.activations.ActivationByType
-            symmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-            antisymmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Tanh
-            tensor:
-              _target_: spenn.nn.activations.NormGateActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-              eps: 1.0e-12
-        branch_map:
-          _target_: spenn.reps.branch.BranchMap
-          M: 2
-          M_virtual: 2
-        update_head:
-          _target_: spenn.nn.spechtmp.update_head.UpdateHead
-          M: 2
-          channels: [0, 32, 32]
-        update:
-          _target_: spenn.nn.update.ResidualUpdate
-      - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
-        fusion_map:
-          _target_: spenn.reps.fusion.FusionMap
-          M: 2
-          M_virtual: 2
-        message_head:
-          _target_: spenn.nn.spechtmp.message_head.MessageHead
-          M: 2
-          M_virtual: 2
-          channels: [0, 32, 32]
-          include_linear: true
-          activation:
-            _target_: spenn.nn.activations.ActivationByType
-            symmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-            antisymmetric:
-              _target_: spenn.nn.activations.ElementwiseFeatureActivation
-              activation:
-                _target_: torch.nn.Tanh
-            tensor:
-              _target_: spenn.nn.activations.NormGateActivation
-              activation:
-                _target_: torch.nn.Sigmoid
-              eps: 1.0e-12
-        branch_map:
-          _target_: spenn.reps.branch.BranchMap
-          M: 2
-          M_virtual: 2
-        update_head:
-          _target_: spenn.nn.spechtmp.update_head.UpdateHead
-          M: 2
-          channels: [0, 32, 32]
-        update:
-          _target_: spenn.nn.update.ResidualUpdate
-  readout:
-    _target_: spenn.nn.readout.pfaffian.PfaffianReadout
-    name: pfaffian
-    num_pfaffians: 1
-    use_symmetric_gates: true
-    allow_odd_electron_bordered: true
-  cusp:
-    _target_: spenn.nn.cusp.ElectronElectronCusp
-    enabled: false
+  node_axis: 2
+  spenn:
+    _target_: spenn.nn.wavefunction.SpENNWavefunction
+    encoder:
+      _target_: spenn.nn.encoding.electron_features.ElectronPairEncoder
+      name: hooke_singlet_debug
+      max_order: 2
+      channels: ${specht.channels}
+      hidden_channels: 32
+      num_hidden_layers: 2
+      activation:
+        _target_: torch.nn.Tanh
+      include_spins: true
+    spechtmp:
+      _target_: spenn.nn.spechtmp.layer.SpechtMP
+      layers:
+        - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
+          fusion_map:
+            _target_: spenn.reps.fusion.FusionMap
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+          message_head:
+            _target_: spenn.nn.spechtmp.MessageHead
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+            channels: ${specht.channels}
+            include_linear: true
+            activation:
+              _target_: spenn.nn.utils.activations.ActivationByType
+              symmetric:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+              antisymmetric:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+              tensor:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+          branch_map:
+            _target_: spenn.reps.branch.BranchMap
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+          update_head:
+            _target_: spenn.nn.spechtmp.UpdateHead
+            M: ${specht.M}
+            channels: ${specht.channels}
+          update:
+            _target_: spenn.nn.utils.update.ResidualUpdate
+        - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
+          fusion_map:
+            _target_: spenn.reps.fusion.FusionMap
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+          message_head:
+            _target_: spenn.nn.spechtmp.MessageHead
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+            channels: ${specht.channels}
+            include_linear: true
+            activation:
+              _target_: spenn.nn.utils.activations.ActivationByType
+              symmetric:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+              antisymmetric:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+              tensor:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+          branch_map:
+            _target_: spenn.reps.branch.BranchMap
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+          update_head:
+            _target_: spenn.nn.spechtmp.UpdateHead
+            M: ${specht.M}
+            channels: ${specht.channels}
+          update:
+            _target_: spenn.nn.utils.update.ResidualUpdate
+    readout:
+      _target_: spenn.nn.readout.pfaffian.PfaffianReadout
+      num_pfaffians: 1
+      use_symmetric_gates: true
+      allow_odd_electron_bordered: true
+      envelope_coefficient: ${readout_hparams.envelope_coefficient}
+      trainable_envelope: false
+      eps: 1.0e-12
+    cusp:
+      _target_: spenn.nn.cusp.ElectronElectronCusp
+      enabled: true
+      same_spin_coefficient: 0.25
+      opposite_spin_coefficient: 0.5
+      same_range_parameter: 0.25
+      opposite_range_parameter: 0.5
+      trainable_range: false
+      eps: 1.0e-12
 
 hamiltonian:
   _target_: spenn.physics.hamiltonian.ElectronicHamiltonian
@@ -190,22 +186,99 @@ sampler:
   name: metropolis
   move:
     _target_: spenn.sampling.moves.GaussianMove
-    step_size: 0.05
+    step_size: 0.65
     move_all: true
-  n_walkers: 1024
-  warmup_steps: 100
-  steps_per_iter: 10
-  initial_scale: 1.0
+  n_walkers: 32
+  warmup_steps: 8
+  production_blocks: 3
+  steps_per_block: 2
+  steps_per_iter: 2
+  initial_scale: 1.4
+  dtype: ${dtype}
+
+optimizer:
+  _target_: torch.optim.Adam
+  lr: ${optimization.learning_rate}
+  grad_clip: ${optimization.grad_clip}
 
 loss:
   _target_: spenn.losses.vmc.VMCLoss
 
-optimizer:
-  _target_: torch.optim.Adam
-  lr: 0.0001
-
 trainer:
   _target_: spenn.training.trainer.VMCTrainer
-  max_steps: 1000
-  log_every: 10
-  checkpoint_every: 100
+  max_steps: ${training.vmc_steps}
+  log_every: ${training.log_every}
+  checkpoint_every: 10
+
+training:
+  vmc_steps: 40
+  log_every: 5
+
+diagnostics:
+  local_energy_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: local_energy
+    bins: 32
+    table_name: local_energy_histogram
+  r12_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: r12
+    bins: 32
+    table_name: r12_histogram
+  radial:
+    _target_: spenn.diagnostics.RadialLogAbsComparison
+    reference_model:
+      _target_: experiments.hooke.analytic.HookeExactWavefunction
+      sector: ${sector}
+      node_axis: ${model.node_axis}
+    sector: ${sector}
+    node_axis: ${model.node_axis}
+    n_points: 64
+    table_name: wavefunction_radial_cut
+  cusp:
+    _target_: spenn.diagnostics.CuspSlopeDiagnostic
+    sector: ${sector}
+    node_axis: ${model.node_axis}
+    n_points: 16
+    metric_prefix: comparison
+    value_column: spenn_factored_logabs
+    table_name: cusp_diagnostic_plot
+  exchange:
+    _target_: spenn.diagnostics.ExchangeSymmetryDiagnostic
+    reference_model:
+      _target_: experiments.hooke.analytic.HookeExactWavefunction
+      sector: ${sector}
+      node_axis: ${model.node_axis}
+    sector: ${sector}
+    exchange_mode: particle_antisymmetric
+    node_axis: ${model.node_axis}
+    n_samples: 128
+    metric_prefix: comparison
+
+artifacts:
+  write_plot_data: true
+  write_checkpoint: true
+
+validation:
+  energy_tolerance: 0.75
+  local_energy_variance_tolerance: 0.25
+  radial_logabs_rmse_tolerance: 0.25
+  cusp_slope_tolerance: 0.35
+  exchange_error_tolerance: 1.0e-8
+  exchange_mode: particle_antisymmetric
+  sign_flip_min: 1.0
+  sign_alignment_min: 0.0
+
+tracking:
+  tags:
+    - hooke
+    - spenn
+    - singlet
+    - opposite_spin
+    - analytic_cusp
+    - harmonic_envelope
+    - vmc_only
+    - pfaffian_readout
+    - spin_features
+    - exact_comparison
+    - metropolis

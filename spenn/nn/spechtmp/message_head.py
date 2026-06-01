@@ -10,6 +10,7 @@ from torch import nn
 
 from spenn.data.feature_dict import FeatureDict, MessageDict, TensorProductDict
 from spenn.data.partitions import Par, Partition, as_partition
+from spenn.nn.utils.activations import Activation
 
 
 class MessageHead(nn.Module):
@@ -26,7 +27,7 @@ class MessageHead(nn.Module):
     channels : mapping or None, optional
         Channel specification by body order. For example, ``[0, 32, 32]``
         creates 32 output channels for order-1 and order-2 messages.
-    activation : torch.nn.Module or None, optional
+    activation : Activation or None, optional
         Optional irrep-aware activation module. If ``None``, messages remain
         linear after aggregation.
     include_linear : bool, optional
@@ -41,7 +42,7 @@ class MessageHead(nn.Module):
         M: int = 2,
         M_virtual: int = 2,
         channels: object | None = None,
-        activation: nn.Module | None = None,
+        activation: Activation | None = None,
         include_linear: bool = True,
         **_: Any,
     ) -> None:

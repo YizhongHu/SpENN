@@ -7,7 +7,7 @@ from torch import nn
 
 from spenn.data import FeatureDict
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.nn.cusp import ElectronElectronCusp, NuclearCusp, NuclearFeatureCusp
+from spenn.nn.cusp import Cusp, ElectronElectronCusp, NuclearCusp, NuclearFeatureCusp
 from spenn.nn.wavefunction import SpENNWavefunction
 from spenn.physics.systems import ElectronicSystem
 
@@ -22,6 +22,11 @@ class ConstantReadout(nn.Module):
         logabs = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
         sign = torch.tensor([-1.0, 1.0], device=batch.device, dtype=batch.dtype)[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=sign)
+
+
+class BadShapeCusp(Cusp):
+    def forward(self, batch: ElectronBatch) -> torch.Tensor:
+        return torch.zeros(batch.batch_size, 1, device=batch.device, dtype=batch.dtype)
 
 
 def test_spinless_electron_electron_cusp_matches_rational_option_a_formula() -> None:
@@ -178,3 +183,15 @@ def test_wavefunction_cusp_adds_only_to_logabs_and_preserves_sign() -> None:
 
     assert torch.allclose(output.logabs, cusp(batch))
     assert torch.equal(output.sign, torch.tensor([-1.0, 1.0], dtype=torch.float64))
+
+
+def test_wavefunction_cusp_shape_must_match_readout_logabs() -> None:
+    batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
+    model = SpENNWavefunction(encoder=EmptyEncoder(), spechtmp=nn.Identity(), readout=ConstantReadout(), cusp=BadShapeCusp())
+
+    try:
+        model(batch)
+    except ValueError as exc:
+        assert "cusp output" in str(exc).lower()
+    else:
+        raise AssertionError("Expected mismatched cusp shape to raise ValueError")
