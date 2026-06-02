@@ -1,4 +1,4 @@
-experiment_name: hooke_exact_singlet_debug
+experiment_name: hooke_exact_singlet
 run_mode: debug
 sector: singlet
 run_id: null
@@ -16,9 +16,19 @@ run:
   energy_prefix: energy
 
 system:
-  _target_: spenn.physics.systems.make_hooke_system
-  sector: ${sector}
+  _target_: spenn.physics.systems.ElectronicSystem
+  name: hooke_singlet
+  n_electrons: 2
+  spatial_dim: 3
+  harmonic_omega: 0.5
+  include_electron_electron: true
+  n_up: 1
+  n_down: 1
+  exact_energy: 2.0
   dtype: ${dtype}
+  aux:
+    sector: singlet
+    cusp_slope: 0.5
 
 model:
   _target_: experiments.hooke.analytic.HookeExactWavefunction
@@ -77,6 +87,7 @@ diagnostics:
   exchange:
     _target_: spenn.diagnostics.ExchangeSymmetryDiagnostic
     sector: ${sector}
+    exchange_mode: spatial_singlet
     node_axis: ${model.node_axis}
     n_samples: 128
     metric_prefix: symmetry
@@ -88,6 +99,8 @@ artifacts:
 validation:
   preflight_energy_tolerance: 1.0e-8
   sample_energy_tolerance: 1.0e-7
+  exchange_error_tolerance: 1.0e-8
+  sign_match_min: 1.0
 
 tracking:
   tags:

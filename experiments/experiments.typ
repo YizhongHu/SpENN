@@ -5,6 +5,7 @@ This experiment is a minimal two-electron benchmark for SpENN-QMC. The system is
 We use this experiment to test whether the implementation can learn correlation, enforce electron-electron cusps, preserve the correct exchange symmetry, and produce stable VMC estimates.
 
 #let bx = $bold(x)$
+#let by = $bold(y)$
 #let bq = $bold(q)$
 #let br = $bold(r)$
 #let bz = $bold(z)$
@@ -117,9 +118,9 @@ The three Cartesian choices
 
 $
 x_1 - x_2,
-qquad
+quad
 y_1 - y_2,
-qquad
+quad
 z_1 - z_2
 $
 
@@ -287,7 +288,7 @@ $
 and the local-energy variance is
 
 $
-Var(E_"loc")
+"Var"(E_"loc")
 =
 (1)/(N) sum_(k=1)^N
 (E_"loc" (R_k) - overline(E))^2.
@@ -405,11 +406,11 @@ Report:
 
 $
 overline(E),
-qquad
+quad
 E_"exact",
-qquad
+quad
 overline(E) - E_"exact",
-qquad
+quad
 abs(overline(E) - E_"exact").
 $
 
@@ -492,11 +493,11 @@ Also track simple distributional statistics such as
 
 $
 bb(E)[r_(12)],
-qquad
-Var(r_(12)),
-qquad
+quad
+"Var"(r_(12)),
+quad
 min r_(12),
-qquad
+quad
 max r_(12).
 $
 
@@ -524,7 +525,7 @@ This plot should show variational energy minimization. It should not show superv
 Plot
 
 $
-Var(E_"loc")
+"Var"(E_"loc")
 $
 
 against training step.

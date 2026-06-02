@@ -1,4 +1,4 @@
-experiment_name: hooke_exact_triplet_debug
+experiment_name: hooke_exact_triplet
 run_mode: debug
 sector: triplet
 run_id: null
@@ -16,9 +16,20 @@ run:
   energy_prefix: energy
 
 system:
-  _target_: spenn.physics.systems.make_hooke_system
-  sector: ${sector}
+  _target_: spenn.physics.systems.ElectronicSystem
+  name: hooke_triplet
+  n_electrons: 2
+  spatial_dim: 3
+  harmonic_omega: 0.25
+  include_electron_electron: true
+  n_up: 2
+  n_down: 0
+  exact_energy: 1.25
   dtype: ${dtype}
+  aux:
+    sector: triplet
+    cusp_slope: 0.25
+    node_axis: z
 
 model:
   _target_: experiments.hooke.analytic.HookeExactWavefunction
@@ -77,6 +88,7 @@ diagnostics:
   exchange:
     _target_: spenn.diagnostics.ExchangeSymmetryDiagnostic
     sector: ${sector}
+    exchange_mode: particle_antisymmetric
     node_axis: ${model.node_axis}
     n_samples: 128
     metric_prefix: symmetry
@@ -88,6 +100,8 @@ artifacts:
 validation:
   preflight_energy_tolerance: 1.0e-8
   sample_energy_tolerance: 1.0e-7
+  exchange_error_tolerance: 1.0e-8
+  sign_flip_min: 1.0
 
 tracking:
   tags:

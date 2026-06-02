@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --job-name=hooke_cpu_smoke
+#SBATCH -p sapphire,kozinsky,seas_compute
+#SBATCH --mem=16g
+#SBATCH --time=01:00:00
+#SBATCH -c 8
+#SBATCH -o experiments/hooke/slurm/logs/%x-%j.out
+#SBATCH -e experiments/hooke/slurm/logs/%x-%j.err
+
+set -o errexit -o nounset -o pipefail
+
+cd /n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/spenn
+
+module load gcc/12.2.0-fasrc01
+module load mpich/4.1-fasrc01
+module load cmake
+
+source experiments/hooke/slurm/uv_env.sh cpu
+
+date
+hostname
+
+uv sync --extra "${SPENN_UV_EXTRA}"
+uv run --extra "${SPENN_UV_EXTRA}" pytest tests/integration/test_hooke.py tests/integration/test_hooke_spenn.py -q
+
+date

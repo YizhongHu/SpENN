@@ -1,4 +1,4 @@
-experiment_name: hooke_spenn_triplet_debug
+experiment_name: hooke_spenn_triplet
 run_mode: debug
 sector: triplet
 run_id: null
@@ -6,6 +6,18 @@ seed: 3
 dtype: float64
 device: cpu
 output_root: outputs
+
+specht:
+  M: 2
+  M_virtual: 2
+  channels: [0, 16, 16]
+
+optimization:
+  learning_rate: 2.0e-3
+  grad_clip: 10.0
+
+readout_hparams:
+  envelope_coefficient: 0.125
 
 run:
   mode: train
@@ -17,9 +29,20 @@ run:
   model_path: model.spenn
 
 system:
-  _target_: spenn.physics.systems.make_hooke_system
-  sector: ${sector}
+  _target_: spenn.physics.systems.ElectronicSystem
+  name: hooke_triplet
+  n_electrons: 2
+  spatial_dim: 3
+  harmonic_omega: 0.25
+  include_electron_electron: true
+  n_up: 2
+  n_down: 0
+  exact_energy: 1.25
   dtype: ${dtype}
+  aux:
+    sector: triplet
+    cusp_slope: 0.25
+    node_axis: z
 
 model:
   node_axis: 2
@@ -29,7 +52,7 @@ model:
       _target_: spenn.nn.encoding.electron_features.ElectronPairEncoder
       name: hooke_triplet_debug
       max_order: 2
-      channels: [0, 16, 16]
+      channels: ${specht.channels}
       hidden_channels: 32
       num_hidden_layers: 2
       activation:
@@ -41,82 +64,105 @@ model:
         - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
           fusion_map:
             _target_: spenn.reps.fusion.FusionMap
-            M: 2
-            M_virtual: 2
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
           message_head:
-            _target_: spenn.nn.spechtmp.message_head.MessageHead
-            M: 2
-            M_virtual: 2
-            channels: [0, 16, 16]
+            _target_: spenn.nn.spechtmp.MessageHead
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+            channels: ${specht.channels}
             include_linear: true
             activation:
-              _target_: spenn.nn.activations.ActivationByType
+              _target_: spenn.nn.utils.activations.ActivationByType
               symmetric:
-                _target_: spenn.nn.activations.ElementwiseFeatureActivation
-                activation:
-                  _target_: torch.nn.Sigmoid
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
               antisymmetric:
-                _target_: spenn.nn.activations.ElementwiseFeatureActivation
-                activation:
-                  _target_: torch.nn.Tanh
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
               tensor:
-                _target_: spenn.nn.activations.NormGateActivation
-                activation:
-                  _target_: torch.nn.Sigmoid
-                eps: 1.0e-12
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
           branch_map:
             _target_: spenn.reps.branch.BranchMap
-            M: 2
-            M_virtual: 2
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
           update_head:
-            _target_: spenn.nn.spechtmp.update_head.UpdateHead
-            M: 2
-            channels: [0, 16, 16]
+            _target_: spenn.nn.spechtmp.UpdateHead
+            M: ${specht.M}
+            channels: ${specht.channels}
           update:
-            _target_: spenn.nn.update.ResidualUpdate
+            _target_: spenn.nn.utils.update.ResidualUpdate
         - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
           fusion_map:
             _target_: spenn.reps.fusion.FusionMap
-            M: 2
-            M_virtual: 2
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
           message_head:
-            _target_: spenn.nn.spechtmp.message_head.MessageHead
-            M: 2
-            M_virtual: 2
-            channels: [0, 16, 16]
+            _target_: spenn.nn.spechtmp.MessageHead
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+            channels: ${specht.channels}
             include_linear: true
             activation:
-              _target_: spenn.nn.activations.ActivationByType
+              _target_: spenn.nn.utils.activations.ActivationByType
               symmetric:
-                _target_: spenn.nn.activations.ElementwiseFeatureActivation
-                activation:
-                  _target_: torch.nn.Sigmoid
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
               antisymmetric:
-                _target_: spenn.nn.activations.ElementwiseFeatureActivation
-                activation:
-                  _target_: torch.nn.Tanh
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
               tensor:
-                _target_: spenn.nn.activations.NormGateActivation
-                activation:
-                  _target_: torch.nn.Sigmoid
-                eps: 1.0e-12
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
           branch_map:
             _target_: spenn.reps.branch.BranchMap
-            M: 2
-            M_virtual: 2
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
           update_head:
-            _target_: spenn.nn.spechtmp.update_head.UpdateHead
-            M: 2
-            channels: [0, 16, 16]
+            _target_: spenn.nn.spechtmp.UpdateHead
+            M: ${specht.M}
+            channels: ${specht.channels}
           update:
-            _target_: spenn.nn.update.ResidualUpdate
+            _target_: spenn.nn.utils.update.ResidualUpdate
     readout:
-      _target_: spenn.nn.readout.node.TwoElectronTripletNodeReadout
-      node_axis: 2
-      eps: 1.0e-12
-      envelope_coefficient: 0.125
+      _target_: spenn.nn.readout.pfaffian.PfaffianReadout
+      num_pfaffians: 1
+      use_symmetric_gates: true
+      allow_odd_electron_bordered: true
+      envelope_coefficient: ${readout_hparams.envelope_coefficient}
       trainable_envelope: false
-      zero_init_residual: true
+      eps: 1.0e-12
     cusp:
       _target_: spenn.nn.cusp.ElectronElectronCusp
       enabled: true
@@ -153,8 +199,8 @@ sampler:
 
 optimizer:
   _target_: torch.optim.Adam
-  lr: 2.0e-3
-  grad_clip: 10.0
+  lr: ${optimization.learning_rate}
+  grad_clip: ${optimization.grad_clip}
 
 loss:
   _target_: spenn.losses.vmc.VMCLoss
@@ -205,6 +251,7 @@ diagnostics:
       sector: ${sector}
       node_axis: ${model.node_axis}
     sector: ${sector}
+    exchange_mode: particle_antisymmetric
     node_axis: ${model.node_axis}
     n_samples: 128
     metric_prefix: comparison
@@ -219,8 +266,9 @@ validation:
   radial_logabs_rmse_tolerance: 0.25
   cusp_slope_tolerance: 0.35
   exchange_error_tolerance: 1.0e-8
+  exchange_mode: particle_antisymmetric
   sign_flip_min: 1.0
-  sign_alignment_min: 0.95
+  sign_alignment_min: 0.0
 
 tracking:
   tags:
@@ -229,8 +277,7 @@ tracking:
     - triplet
     - same_spin
     - analytic_cusp
-    - harmonic_envelope
     - vmc_only
-    - explicit_triplet_node_readout
+    - pfaffian_readout
     - exact_comparison
     - metropolis

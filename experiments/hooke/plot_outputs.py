@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 from pathlib import Path
 
@@ -35,6 +36,7 @@ def main() -> None:
     }
     for sector, run_dir in runs.items():
         generate_sector_figures(sector, run_dir=run_dir, figure_dir=args.figure_dir)
+    generate_summary_figures(runs, figure_dir=args.figure_dir)
     print(f"wrote figures to {args.figure_dir}")
 
 
@@ -133,6 +135,52 @@ def generate_sector_figures(sector: str, *, run_dir: Path, figure_dir: Path) -> 
     _symmetry_plot(sector_dir / f"hooke_{sector}_exchange_symmetry_error", sector=sector, metrics=metrics)
 
 
+def generate_summary_figures(runs: dict[str, Path], *, figure_dir: Path) -> None:
+    """Generate compact cross-sector Hooke report figures.
+
+    Parameters
+    ----------
+    runs : dict
+        Mapping from report labels to run artifact directories.
+    figure_dir : pathlib.Path
+        Destination directory for figure files.
+    """
+
+    summary_dir = figure_dir / "summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    singlet = _summary_metrics(runs["singlet_spenn"])
+    triplet = _summary_metrics(runs["triplet_spenn"])
+    _bar_plot(
+        summary_dir / "hooke_spenn_energy_abs_error",
+        title="Hooke SpENN: energy absolute error",
+        names=["singlet", "triplet"],
+        values=[
+            _metric_any(singlet, ("comparison/energy_abs_error",)),
+            _metric_any(triplet, ("comparison/energy_abs_error",)),
+        ],
+        y_label="|E - E_exact|",
+        log_y=True,
+    )
+    _bar_plot(
+        summary_dir / "hooke_spenn_exchange_error",
+        title="Hooke SpENN: exchange symmetry error",
+        names=["singlet antisym max", "triplet antisym max"],
+        values=[
+            _metric_any(singlet, ("comparison/antisymmetry_error_max",)),
+            _metric_any(triplet, ("comparison/antisymmetry_error_max",)),
+        ],
+        y_label="max error",
+        log_y=True,
+    )
+    _shape_comparison_plot(
+        summary_dir / "hooke_spenn_wavefunction_shape_comparison",
+        runs={
+            "singlet": runs["singlet_spenn"],
+            "triplet": runs["triplet_spenn"],
+        },
+    )
+
+
 def _line_plot(
     stem: Path,
     *,
@@ -172,21 +220,38 @@ def _histogram_plot(stem: Path, *, title: str, hist: list[dict[str, float]], x_l
     _save(fig, stem)
 
 
+def _bar_plot(
+    stem: Path,
+    *,
+    title: str,
+    names: list[str],
+    values: list[float],
+    y_label: str,
+    log_y: bool = False,
+) -> None:
+    fig, ax = plt.subplots(figsize=(6.2, 4.0), constrained_layout=True)
+    plotted = [max(abs(value), 1.0e-16) for value in values] if log_y else values
+    ax.bar(names, plotted, color=["#4c78a8", "#f58518"], alpha=0.86)
+    ax.set_title(title)
+    ax.set_ylabel(y_label)
+    if log_y:
+        ax.set_yscale("log")
+    ax.grid(True, axis="y", alpha=0.25)
+    _save(fig, stem)
+
+
 def _symmetry_plot(stem: Path, *, sector: str, metrics: dict[str, float]) -> None:
-    base_sector = "singlet" if sector.startswith("singlet") else "triplet"
-    if base_sector == "singlet":
+    if "comparison/antisymmetry_error_max" in metrics or "symmetry/antisym_error_max" in metrics:
+        names = ["antisym mean", "antisym max"]
+        values = [
+            _metric_any(metrics, ("symmetry/antisym_error_mean", "comparison/antisymmetry_error_mean")),
+            _metric_any(metrics, ("symmetry/antisym_error_max", "comparison/antisymmetry_error_max")),
+        ]
+    else:
         names = ["swap mean", "swap max"]
         values = [
             _metric_any(metrics, ("symmetry/swap_logabs_error_mean", "comparison/swap_logabs_error_mean")),
             _metric_any(metrics, ("symmetry/swap_logabs_error_max", "comparison/swap_logabs_error_max")),
-        ]
-    else:
-        names = ["swap mean", "swap max", "antisym mean", "antisym max"]
-        values = [
-            _metric_any(metrics, ("symmetry/swap_logabs_error_mean", "comparison/swap_logabs_error_mean")),
-            _metric_any(metrics, ("symmetry/swap_logabs_error_max", "comparison/swap_logabs_error_max")),
-            _metric_any(metrics, ("symmetry/antisym_error_mean", "comparison/antisymmetry_error_mean")),
-            _metric_any(metrics, ("symmetry/antisym_error_max", "comparison/antisymmetry_error_max")),
         ]
     fig, ax = plt.subplots(figsize=(7.2, 4.4), constrained_layout=True)
     ax.bar(names, values, color="#7a5195", alpha=0.86)
@@ -196,10 +261,31 @@ def _symmetry_plot(stem: Path, *, sector: str, metrics: dict[str, float]) -> Non
     _save(fig, stem)
 
 
+def _shape_comparison_plot(stem: Path, *, runs: dict[str, Path]) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.2), constrained_layout=True, sharey=False)
+    for ax, sector in zip(axes, ("singlet", "triplet"), strict=True):
+        rows = _read_csv(runs[sector] / "plots" / "wavefunction_radial_cut.csv")
+        r12 = _column(rows, "r12")
+        ax.plot(r12, _column(rows, "exact_logabs_centered"), linewidth=2.2, label="exact")
+        ax.plot(r12, _column(rows, "spenn_logabs_centered"), linestyle="--", linewidth=2.2, label="SpENN")
+        ax.set_title(f"{sector}: radial shape")
+        ax.set_xlabel("r12")
+        ax.set_ylabel("centered logabs")
+        ax.grid(True, alpha=0.25)
+        ax.legend(frameon=False)
+    _save(fig, stem)
+
+
 def _read_csv(path: Path) -> list[dict[str, float]]:
     with path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         return [{key: float(value) for key, value in row.items()} for row in reader]
+
+
+def _summary_metrics(run_dir: Path) -> dict[str, float]:
+    with (run_dir / "artifacts" / "summary.json").open("r", encoding="utf-8") as handle:
+        summary = json.load(handle)
+    return {key: float(value) for key, value in summary["metrics"].items() if isinstance(value, int | float)}
 
 
 def _column(rows: list[dict[str, float]], key: str) -> list[float]:

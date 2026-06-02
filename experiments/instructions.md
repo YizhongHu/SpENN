@@ -217,16 +217,18 @@ symmetry/antisym_error_max
 symmetry/sign_flip_accuracy
 ```
 
-For the singlet benchmark, check:
+For the exact singlet spatial benchmark, check:
 
 ```text
 logabs_psi(r1, r2) == logabs_psi(r2, r1)
 ```
 
-For the triplet benchmark, check:
+For the exact triplet and all SpENN singlet/triplet models, check particle
+antisymmetry. In the SpENN network, spins are part of the particle features and
+permute with the particle positions:
 
 ```text
-psi(r1, r2) + psi(r2, r1) ~= 0
+psi((r1, s1), (r2, s2)) + psi((r2, s2), (r1, s1)) ~= 0
 ```
 
 If the implementation outputs sign and log-amplitude separately, verify both sign behavior and log-amplitude behavior away from exact nodal surfaces.
@@ -500,10 +502,10 @@ experiments/hooke/
   analytic.py
   run_exact.py
   run_spenn.py
-  configs/debug_singlet.yaml
-  configs/debug_triplet.yaml
-  configs/spenn_singlet_debug.yaml
-  configs/spenn_triplet_debug.yaml
+  configs/singlet.yaml
+  configs/triplet.yaml
+  configs/singlet_spenn.yaml
+  configs/triplet_spenn.yaml
 ```
 
 Use the exact-wavefunction runs as preflight checks before training learned
@@ -517,10 +519,10 @@ use OmegaConf interpolation for run ids, output roots, sectors, and repeated
 model settings.
 
 ```bash
-uv run python experiments/hooke/run_exact.py --config debug_singlet
-uv run python experiments/hooke/run_exact.py --config debug_triplet
-uv run python experiments/hooke/run_spenn.py --config spenn_singlet_debug
-uv run python experiments/hooke/run_spenn.py --config spenn_triplet_debug
+uv run --extra cpu python experiments/hooke/run_exact.py --config singlet
+uv run --extra cpu python experiments/hooke/run_exact.py --config triplet
+uv run --extra cpu python experiments/hooke/run_spenn.py --config singlet_spenn
+uv run --extra cpu python experiments/hooke/run_spenn.py --config triplet_spenn
 ```
 
 The run script writes reproducible local artifacts to:
@@ -547,7 +549,8 @@ full-coordinate Gaussian factor
 `exp(-(r1^2 + r2^2) / 8)`, matching the relative-coordinate factor
 `exp(-r12^2 / 16)` after fixing the center of mass.
 
-The learned Hooke comparison uses two benchmark-specific readouts: a positive
-exchange-symmetric two-electron readout for the nodeless singlet and an
-explicit two-electron Cartesian node readout for the triplet. These are intended
-for the Hooke sanity check, not as general singlet or excited-state readouts.
+The learned Hooke comparison should use the Pfaffian readout for both SpENN
+singlet and triplet configs. SpENN exchange diagnostics move spin labels with
+particle positions, so particle antisymmetry is enforced by the readout. The
+exact singlet remains a spatial analytic reference for energy and radial-shape
+diagnostics rather than a different SpENN exchange contract.

@@ -1,12 +1,9 @@
-# TODO for the user alone
-- [x] create `.python-version`
-- [x] Change the FeatureDict format to `[batch, channel, n, n, n, a, a]` where a is the irrep subindex.
-- [x] Go forward with the docs change
+# TODO for the user alone before phase 1a completes
 - [ ] Write new tests for `nn/` and `rep/`
-- [ ] Review `physics/instructions.md` and `sampling/instructions.md`
-- [ ] Change `instructions.md` so that it matches the current state and intention of the directories
-- [x] Remove extraneous `instruction.md` and `TODO.md` files
-- [x] Change `ElectronEncoder` conventions to match the `Partition` change
-- [x] Consider what we do about spins (I think we do not consider it for now)
-- [x] Change Branching -> branch
-- [ ] Think about how to structure IrrepTensor
+- [ ] Clean up extraneous instructions and md files.
+- [ ] Build structure for real space vector states
+- [ ] start tracking with wandb.
+- [ ] figure out a way to track experiements
+- [ ] hand check every instruction 
+- [ ] inspect equivariance tests
+- [ ] Atoms runs

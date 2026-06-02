@@ -16,9 +16,9 @@ if str(ROOT) not in sys.path:
 from experiments.hooke.runner import HookeScriptSpec, resolve_config_path, run_generated_config  # noqa: E402
 
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
-DEFAULT_CONFIG = CONFIG_DIR / "debug_singlet.yaml"
+DEFAULT_CONFIG = CONFIG_DIR / "singlet.yaml"
 DEFAULT_RUN_ID_PREFIX = "hooke_exact"
-TRAIN_ENTRYPOINT = ROOT / "scripts" / "train.py"
+TRAIN_ENTRYPOINT = ROOT / "train.py"
 
 
 def main() -> None:
@@ -57,7 +57,7 @@ def run(
     cfg : omegaconf.DictConfig
         Exact Hooke config template from ``experiments/hooke/configs``.
     forwarded_overrides : list of str or None, optional
-        Dotlist overrides recorded and forwarded to ``scripts/train.py``.
+        Dotlist overrides recorded and forwarded to ``train.py``.
     run_id : str or None, optional
         Run id override. Stored as the top-level ``run_id`` config value.
     output_root : str, pathlib.Path, or None, optional
@@ -113,7 +113,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--sector", choices=("singlet", "triplet"), default=None)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-root", default=None)
-    parser.add_argument("forwarded", nargs="*", help="Dotlist overrides recorded and forwarded to scripts/train.py.")
+    parser.add_argument("forwarded", nargs="*", help="Dotlist overrides recorded and forwarded to train.py.")
     return parser.parse_args()
 
 

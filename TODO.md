@@ -149,7 +149,7 @@ Strategy: implement hard-coded fuser/brancher behavior for `M = 2`, preserve the
 - [ ] Start with mean local energy as the first simple objective.
 - [ ] Leave room for the covariance-gradient estimator API.
 - [ ] Implement `VMCTrainer` to connect model, sampler, Hamiltonian, loss, optimizer, scheduler, checkpoints, and logging.
-- [ ] Instantiate components through Hydra in `scripts/train.py`.
+- [ ] Instantiate components through Hydra in `train.py`.
 - [ ] Track energy, variance, acceptance rate, step size, loss, grad norm, parameter norm, and local-energy histogram.
 - [ ] Gate WandB logging behind config and rank checks.
 

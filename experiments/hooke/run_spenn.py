@@ -16,9 +16,9 @@ if str(ROOT) not in sys.path:
 from experiments.hooke.runner import HookeScriptSpec, resolve_config_path, run_generated_config  # noqa: E402
 
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
-DEFAULT_CONFIG = CONFIG_DIR / "spenn_triplet_debug.yaml"
+DEFAULT_CONFIG = CONFIG_DIR / "triplet_spenn.yaml"
 DEFAULT_RUN_ID_PREFIX = "hooke_spenn"
-TRAIN_ENTRYPOINT = ROOT / "scripts" / "train.py"
+TRAIN_ENTRYPOINT = ROOT / "train.py"
 
 
 def main() -> None:
@@ -54,7 +54,7 @@ def run(
     cfg : omegaconf.DictConfig
         SpENN Hooke config template from ``experiments/hooke/configs``.
     forwarded_overrides : list of str or None, optional
-        Dotlist overrides recorded and forwarded to ``scripts/train.py``.
+        Dotlist overrides recorded and forwarded to ``train.py``.
     run_id : str or None, optional
         Run id override. Stored as the top-level ``run_id`` config value.
     output_root : str, pathlib.Path, or None, optional
@@ -94,7 +94,7 @@ def _summary_from_artifact(output_dir: str | Path) -> dict[str, object]:
         and abs(metrics["comparison/cusp_slope_error"]) <= float(validation.get("cusp_slope_tolerance", 10.0))
         and metrics["comparison/sign_alignment_accuracy"] >= float(validation.get("sign_alignment_min", 0.0))
         and metrics["spenn/local_energy/variance"] <= float(validation.get("local_energy_variance_tolerance", float("inf")))
-        and _exchange_reached(str(cfg["sector"]), metrics, validation)
+        and _exchange_reached(metrics, validation)
     )
     return {
         "entrypoint": "experiments/hooke/run_spenn.py",
@@ -113,10 +113,17 @@ def _summary_from_artifact(output_dir: str | Path) -> dict[str, object]:
     }
 
 
-def _exchange_reached(sector: str, metrics: dict[str, float], validation: dict[str, object]) -> bool:
+def _exchange_reached(metrics: dict[str, float], validation: dict[str, object]) -> bool:
     tolerance = float(validation.get("exchange_error_tolerance", 1.0e-8))
-    if sector == "singlet":
-        return float(metrics["comparison/swap_logabs_error_max"]) <= tolerance
+    expected = str(validation.get("exchange_mode", "particle_antisymmetric"))
+    if expected == "spatial_singlet":
+        return (
+            float(metrics["comparison/symmetry_error_max"]) <= tolerance
+            and float(metrics.get("comparison/sign_match_accuracy", 1.0))
+            >= float(validation.get("sign_match_min", 1.0))
+        )
+    if expected != "particle_antisymmetric":
+        raise ValueError(f"Unsupported validation.exchange_mode: {expected!r}")
     return (
         float(metrics["comparison/antisymmetry_error_max"]) <= tolerance
         and float(metrics["comparison/sign_flip_accuracy"]) >= float(validation.get("sign_flip_min", 1.0))
@@ -128,7 +135,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Hooke config template path or name.")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-root", default=None)
-    parser.add_argument("forwarded", nargs="*", help="Dotlist overrides recorded and forwarded to scripts/train.py.")
+    parser.add_argument("forwarded", nargs="*", help="Dotlist overrides recorded and forwarded to train.py.")
     return parser.parse_args()
 
 
