@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -13,6 +14,12 @@ from spenn.nn.spechtmp.update_head import UpdateHead
 from spenn.nn.utils.update import Update
 from spenn.reps.branch import BranchMap
 from spenn.reps.fusion import FusionMap
+
+
+_DEPRECATION_MESSAGE = (
+    "Legacy SpechtMP components are deprecated by the PR #3 real-space scaffold; "
+    "use spenn.nn.real_space.RealSpechtMPLayer instead."
+)
 
 
 class SpechtMPLayer(nn.Module):
@@ -47,6 +54,7 @@ class SpechtMPLayer(nn.Module):
         **_: Any,
     ) -> None:
         super().__init__()
+        warnings.warn(_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
         self.fusion_map = fusion_map
         self.message_head = message_head
         self.branch_map = branch_map
@@ -95,6 +103,7 @@ class SpechtMP(nn.Module):
         **_: Any,
     ) -> None:
         super().__init__()
+        warnings.warn(_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
         self.layers = nn.ModuleList(layers)
 
     def forward(self, features: FeatureDict) -> FeatureDict:

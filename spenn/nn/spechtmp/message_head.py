@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -11,6 +12,12 @@ from torch import nn
 from spenn.data.feature_dict import FeatureDict, MessageDict, TensorProductDict
 from spenn.data.partitions import Par, Partition, as_partition
 from spenn.nn.utils.activations import Activation
+
+
+_DEPRECATION_MESSAGE = (
+    "Legacy SpechtMP components are deprecated by the PR #3 real-space scaffold; "
+    "use spenn.nn.real_space.RealSpechtMPLayer instead."
+)
 
 
 class MessageHead(nn.Module):
@@ -47,6 +54,7 @@ class MessageHead(nn.Module):
         **_: Any,
     ) -> None:
         super().__init__()
+        warnings.warn(_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
         if M > 2 or M_virtual > 2:
             raise ValueError("MessageHead scaffold only supports M <= 2 and M_virtual <= 2")
         self.M = M
