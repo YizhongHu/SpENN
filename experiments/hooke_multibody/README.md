@@ -28,7 +28,8 @@ uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config benc
 The benchmark spin scan is a fixed-sector scan over `configs/benchmark.yaml`
 partitions, currently `(n_up, n_down) = (3, 0)`, `(2, 1)`, `(1, 2)`, and
 `(0, 3)`. Each sector is a separate VMC run; the scan summary reports the
-lowest sampled VMC energy.
+lowest sampled VMC energy. Scan parents can also be processed and plotted;
+`plot_outputs.py` writes a fixed-sector energy/variance/acceptance figure.
 
 To process a saved run into comparison-ready CSV/JSON:
 
@@ -51,8 +52,12 @@ same time stamp.
 The generic training stack writes config, summary, checkpoint, metrics CSVs,
 and plot-data CSVs. Multibody diagnostics currently include all-pair distance
 histograms, one-body radial density, spin-resolved cusp slope estimates, and
-particle-token antisymmetry checks. Figures generated from saved CSVs are
-written under `experiments/hooke_multibody/figures/spenn/`.
+particle-token antisymmetry checks. Production sampler health includes
+acceptance, proposal scale, pair-distance summaries, local-energy sample count,
+autocorrelation time, and effective sample size when enough sequential blocks
+are available. `process_outputs.py` also promotes local-energy and pair-distance
+sample tables into `data/`. Figures generated from saved CSVs are written under
+`experiments/hooke_multibody/figures/spenn/`.
 
 ## Version Notes
 

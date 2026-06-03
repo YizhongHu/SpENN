@@ -34,7 +34,8 @@ estimates until an independent reference pipeline is added.
 `configs/benchmark.yaml`, currently `(3, 0)`, `(2, 1)`, `(1, 2)`, and `(0, 3)`.
 It trains each sector separately with VMC and records the lowest sampled VMC
 energy as the scan best candidate. The scan does not optimize or mix spin
-sectors during one run.
+sectors during one run. Scan parents have their own processed CSV/JSON output
+and fixed-sector energy/variance/acceptance figure.
 
 ## Data and Plots
 
@@ -43,6 +44,9 @@ summaries record `run.time` in `HH-MM-SS` format, and generated run ids include
 that timestamp. `process_outputs.py` writes processed CSV/JSON under the saved
 run directory, while `plot_outputs.py` reads saved metrics and plot CSVs and
 writes PNGs under `experiments/hooke_multibody/figures/spenn/`.
+Sampler-health outputs include acceptance, proposal scale, pair-distance
+summaries, local-energy sample count, autocorrelation time, and effective
+sample size when enough sequential production blocks are present.
 
 ## Slurm
 

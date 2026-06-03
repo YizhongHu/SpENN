@@ -12,6 +12,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from spenn.data.batch import ElectronBatch, Walkers
 from spenn.diagnostics.base import DiagnosticContext, DiagnosticResult
+from spenn.diagnostics.statistics import effective_sample_size, integrated_autocorrelation_time
 from spenn.diagnostics.wavefunction import all_pair_distances
 from spenn.training.artifacts import (
     git_metadata,
@@ -226,6 +227,8 @@ def _production(
         )
     local_energy = torch.cat(all_local_energy)
     pair_distance = torch.cat(all_pair_distance)
+    local_energy_by_block = torch.stack(all_local_energy)
+    pair_distance_by_block = _stack_pair_distances(all_pair_distance, n_walkers=local_energy_by_block.shape[1])
     return {
         "sampler": sampler,
         "walkers": walkers,
@@ -236,10 +239,14 @@ def _production(
             cfg,
             local_energy,
             pair_distance,
+            local_energy_by_block=local_energy_by_block,
             exact_energy=getattr(system, "exact_energy", None),
             sampler=sampler,
         ),
-        "tables": {},
+        "tables": {
+            "local_energy_samples": _local_energy_sample_rows(local_energy_by_block),
+            "pair_distance_samples": _pair_distance_sample_rows(pair_distance_by_block),
+        },
     }
 
 
@@ -250,6 +257,7 @@ def _final_metrics(
     *,
     exact_energy: float | None,
     sampler: Any,
+    local_energy_by_block: torch.Tensor | None = None,
 ) -> dict[str, float]:
     mean = local_energy.mean()
     std = local_energy.std(unbiased=False)
@@ -265,7 +273,18 @@ def _final_metrics(
         "sampler/min_pair_distance": float(pair_distance.min().item()),
         "sampler/max_pair_distance": float(pair_distance.max().item()),
         "sampler/equilibration_steps": float(OmegaConf.select(cfg, "sampler.warmup_steps", default=0)),
+        "sampler/local_energy_sample_count": float(local_energy.numel()),
     }
+    if local_energy_by_block is not None:
+        if local_energy_by_block.ndim != 2:
+            raise ValueError(
+                "local_energy_by_block must have shape [blocks, walkers], "
+                f"got {tuple(local_energy_by_block.shape)}"
+            )
+        metrics["sampler/local_energy_autocorrelation_time"] = integrated_autocorrelation_time(
+            local_energy_by_block
+        )
+        metrics["sampler/local_energy_effective_sample_size"] = effective_sample_size(local_energy_by_block)
     if prefix == "spenn":
         metrics.update(
             {
@@ -306,6 +325,60 @@ def _energy_row(
 ) -> dict[str, object]:
     metrics = _final_metrics(cfg, local_energy, pair_distance, exact_energy=exact_energy, sampler=sampler)
     return {"step": block, **metrics}
+
+
+def _stack_pair_distances(pair_distances: list[torch.Tensor], *, n_walkers: int) -> torch.Tensor:
+    stacked = []
+    for block_distances in pair_distances:
+        if block_distances.ndim != 1:
+            raise ValueError(f"pair distances must be flat, got {tuple(block_distances.shape)}")
+        if block_distances.numel() % n_walkers != 0:
+            raise ValueError(
+                "flat pair-distance count must be divisible by n_walkers, "
+                f"got {block_distances.numel()} and {n_walkers}"
+            )
+        stacked.append(block_distances.reshape(n_walkers, -1))
+    return torch.stack(stacked)
+
+
+def _local_energy_sample_rows(local_energy_by_block: torch.Tensor) -> list[dict[str, object]]:
+    if local_energy_by_block.ndim != 2:
+        raise ValueError(
+            "local_energy_by_block must have shape [blocks, walkers], "
+            f"got {tuple(local_energy_by_block.shape)}"
+        )
+    rows = []
+    for block in range(local_energy_by_block.shape[0]):
+        for walker in range(local_energy_by_block.shape[1]):
+            rows.append(
+                {
+                    "block": block,
+                    "walker": walker,
+                    "local_energy": float(local_energy_by_block[block, walker].item()),
+                }
+            )
+    return rows
+
+
+def _pair_distance_sample_rows(pair_distance_by_block: torch.Tensor) -> list[dict[str, object]]:
+    if pair_distance_by_block.ndim != 3:
+        raise ValueError(
+            "pair_distance_by_block must have shape [blocks, walkers, pairs], "
+            f"got {tuple(pair_distance_by_block.shape)}"
+        )
+    rows = []
+    for block in range(pair_distance_by_block.shape[0]):
+        for walker in range(pair_distance_by_block.shape[1]):
+            for pair in range(pair_distance_by_block.shape[2]):
+                rows.append(
+                    {
+                        "block": block,
+                        "walker": walker,
+                        "pair": pair,
+                        "pair_distance": float(pair_distance_by_block[block, walker, pair].item()),
+                    }
+                )
+    return rows
 
 
 def _local_energy(model: torch.nn.Module, hamiltonian: Any, walkers: Walkers) -> torch.Tensor:

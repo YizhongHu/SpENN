@@ -13,6 +13,8 @@ DATA_EXPORTS = {
     "energy_trace.csv": Path("metrics/energy_trace.csv"),
     "sampler_metrics.csv": Path("metrics/sampler_metrics.csv"),
     "train_metrics.csv": Path("metrics/train_metrics.csv"),
+    "local_energy_samples.csv": Path("plots/local_energy_samples.csv"),
+    "pair_distance_samples.csv": Path("plots/pair_distance_samples.csv"),
     "local_energy_histogram.csv": Path("plots/local_energy_histogram.csv"),
     "pair_distance_histogram.csv": Path("plots/pair_distance_histogram.csv"),
     "radial_density.csv": Path("plots/radial_density.csv"),
@@ -61,6 +63,8 @@ def process_run(
 
     target = output_dir or spenn_run
     spenn_summary = _load_summary(spenn_run)
+    if spenn_summary.get("mode") == "spin_scan":
+        return _process_spin_scan(spenn_run, target, spenn_summary)
     metrics = spenn_summary["metrics"]
     row = {
         "run_id": spenn_summary["run_id"],
@@ -84,6 +88,24 @@ def process_run(
         row["reference_available"] = processed["reference_available"]
     write_csv(target / "data" / "spenn_observables.csv", [row])
     processed["data_files"] = _export_data_tables(spenn_run, target / "data")
+    write_json(target / "artifacts" / "processed_summary.json", processed)
+    return processed
+
+
+def _process_spin_scan(
+    scan_run: Path,
+    target: Path,
+    summary: dict[str, object],
+) -> dict[str, object]:
+    processed: dict[str, object] = {
+        "spenn_run": str(scan_run),
+        "mode": "spin_scan",
+        "run_id": summary["run_id"],
+        "run_time": summary.get("run_time", ""),
+        "best_run": summary.get("best_run", {}),
+        "reference_available": False,
+    }
+    processed["data_files"] = _export_data_tables(scan_run, target / "data")
     write_json(target / "artifacts" / "processed_summary.json", processed)
     return processed
 

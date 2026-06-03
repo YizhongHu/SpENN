@@ -45,6 +45,9 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert math.isfinite(float(metrics["spenn/local_energy/variance"]))
     assert math.isfinite(float(metrics["sampler/mean_pair_distance"]))
     assert float(metrics["sampler/min_pair_distance"]) > 0.0
+    assert float(metrics["sampler/local_energy_sample_count"]) == 4.0
+    assert "sampler/local_energy_autocorrelation_time" in metrics
+    assert "sampler/local_energy_effective_sample_size" in metrics
     assert math.isfinite(float(metrics["radial_density/mean_radius"]))
     assert "cusp/same_count" in metrics
     assert "cusp/opposite_count" in metrics
@@ -55,6 +58,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     run_dir = Path(summary["output_dir"])
     assert _csv_row_count(run_dir / "plots" / "pair_distance_histogram.csv") == 8
     assert _csv_row_count(run_dir / "plots" / "radial_density.csv") == 8
+    assert _csv_row_count(run_dir / "plots" / "local_energy_samples.csv") == 4
+    assert _csv_row_count(run_dir / "plots" / "pair_distance_samples.csv") == 12
     assert _csv_row_count(run_dir / "plots" / "cusp_slope_by_spin.csv") == 3
     assert _csv_row_count(run_dir / "plots" / "particle_antisymmetry.csv") == 2
 
@@ -63,6 +68,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
         "spenn_observables.csv",
         "energy_trace.csv",
         "sampler_metrics.csv",
+        "local_energy_samples.csv",
+        "pair_distance_samples.csv",
         "pair_distance_histogram.csv",
         "radial_density.csv",
         "cusp_slope_by_spin.csv",
@@ -97,6 +104,16 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     assert _csv_row_count(run_dir / "metrics" / "spin_scan_summary.csv") == 2
     assert summary["best_run"]["run_id"] in {run["run_id"] for run in summary["runs"]}
     assert {run["run_time"] for run in summary["runs"]} == {summary["run_time"]}
+
+    processed = process_run(run_dir)
+    assert processed["mode"] == "spin_scan"
+    assert (run_dir / "data" / "spin_scan_summary.csv").exists()
+    assert (run_dir / "artifacts" / "processed_summary.json").exists()
+
+    figures = plot_run(run_dir, figure_root=run_dir / "figures")
+    assert len(figures) == 1
+    assert figures[0].name.endswith("_spin_scan_energy.png")
+    assert figures[0].exists()
 
 
 def _csv_row_count(path: Path) -> int:

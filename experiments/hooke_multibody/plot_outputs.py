@@ -57,6 +57,12 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
+    scan_rows = _read_csv(run_dir / "metrics" / "spin_scan_summary.csv")
+    if scan_rows:
+        path = output_dir / f"{run_id}_spin_scan_energy.png"
+        if _plot_spin_scan(plt, scan_rows, path):
+            written.append(path)
+
     energy_rows = _read_csv(run_dir / "metrics" / "train_metrics.csv") or _read_csv(run_dir / "metrics" / "energy_trace.csv")
     if energy_rows:
         path = output_dir / f"{run_id}_energy_trace.png"
@@ -68,6 +74,12 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
         acceptance_path = output_dir / f"{run_id}_acceptance_rate.png"
         if _plot_line(plt, energy_rows, "step", "sampler/acceptance_rate", acceptance_path, "Sampler acceptance"):
             written.append(acceptance_path)
+
+    local_energy_rows = _read_csv(run_dir / "plots" / "local_energy_histogram.csv")
+    if local_energy_rows:
+        path = output_dir / f"{run_id}_local_energy_histogram.png"
+        if _plot_histogram(plt, local_energy_rows, path, "Local-energy histogram", "local energy", "count"):
+            written.append(path)
 
     pair_rows = _read_csv(run_dir / "plots" / "pair_distance_histogram.csv")
     if pair_rows:
@@ -201,6 +213,49 @@ def _plot_antisymmetry(plt, rows: list[dict[str, str]], path: Path) -> bool:
     plt.savefig(path, dpi=160)
     plt.close()
     return True
+
+
+def _plot_spin_scan(plt, rows: list[dict[str, str]], path: Path) -> bool:
+    records = []
+    for row in rows:
+        energy = _to_float(row.get("energy_mean", ""))
+        variance = _to_float(row.get("local_energy_variance", ""))
+        acceptance = _to_float(row.get("acceptance_rate", ""))
+        if energy is None:
+            continue
+        label = f"{row.get('n_up', '?')}/{row.get('n_down', '?')}"
+        records.append((label, energy, variance, acceptance))
+    if not records:
+        return False
+    best_index = min(range(len(records)), key=lambda index: records[index][1])
+    labels = [record[0] for record in records]
+    energies = [record[1] for record in records]
+    variances = [record[2] for record in records]
+    acceptance_rates = [record[3] for record in records]
+    colors = ["#4c78a8"] * len(records)
+    colors[best_index] = "#f58518"
+    x = list(range(len(records)))
+    fig, axes = plt.subplots(3, 1, figsize=(5.4, 6.8), sharex=True)
+    axes[0].bar(x, energies, color=colors, alpha=0.86)
+    axes[0].set_ylabel("energy")
+    axes[0].set_title("Fixed spin-sector scan")
+    _plot_optional_bar(axes[1], x, variances, colors, "variance")
+    _plot_optional_bar(axes[2], x, acceptance_rates, colors, "acceptance")
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(labels)
+    axes[2].set_xlabel("n_up/n_down")
+    for axis in axes:
+        axis.grid(True, axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return True
+
+
+def _plot_optional_bar(axis, x: list[int], values: list[float | None], colors: list[str], ylabel: str) -> None:
+    plotted = [float("nan") if value is None else value for value in values]
+    axis.bar(x, plotted, color=colors, alpha=0.86)
+    axis.set_ylabel(ylabel)
 
 
 def _numeric_pairs(rows: list[dict[str, str]], x_key: str, y_key: str) -> list[tuple[float, float]]:
