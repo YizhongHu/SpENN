@@ -546,6 +546,8 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
         n_configs = min(self.n_configurations, positions.shape[0])
         rows: list[dict[str, object]] = []
         errors_by_relation: dict[str, list[float]] = {"same": [], "opposite": []}
+        cusp_errors_by_relation: dict[str, list[float]] = {"same": [], "opposite": []}
+        cusp_module = _model_cusp(context.model)
         r = torch.linspace(self.r_min, self.r_max, self.n_points, device=context.device, dtype=context.dtype)
         for config_index in range(n_configs):
             for i, j in _pair_indices(positions.shape[1]):
@@ -565,8 +567,15 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
                     if relation == "same" and self.factor_same_spin_node:
                         logabs = logabs - torch.log(r.clamp_min(torch.finfo(context.dtype).tiny))
                     slope = linear_slope(r, logabs)
+                    cusp_slope = float("nan")
+                    cusp_error = float("nan")
+                    if cusp_module is not None:
+                        cusp_slope = linear_slope(r, cusp_module(batch))
+                        cusp_error = cusp_slope - target
                 error = slope - target
                 errors_by_relation[relation].append(error)
+                if cusp_module is not None:
+                    cusp_errors_by_relation[relation].append(cusp_error)
                 rows.append(
                     {
                         "configuration": config_index,
@@ -576,6 +585,8 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
                         "measured_slope": slope,
                         "target_slope": target,
                         "slope_error": error,
+                        "cusp_only_slope": cusp_slope,
+                        "cusp_only_slope_error": cusp_error,
                     }
                 )
         metrics: dict[str, float] = {}
@@ -588,6 +599,15 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
             else:
                 metrics[f"{self.metric_prefix}/{relation}_mean_error"] = float("nan")
                 metrics[f"{self.metric_prefix}/{relation}_max_abs_error"] = float("nan")
+            cusp_errors = cusp_errors_by_relation[relation]
+            metrics[f"{self.metric_prefix}/cusp_only_{relation}_count"] = float(len(cusp_errors))
+            if cusp_errors:
+                cusp_values = torch.tensor(cusp_errors, dtype=torch.float64)
+                metrics[f"{self.metric_prefix}/cusp_only_{relation}_mean_error"] = float(cusp_values.mean().item())
+                metrics[f"{self.metric_prefix}/cusp_only_{relation}_max_abs_error"] = float(cusp_values.abs().max().item())
+            else:
+                metrics[f"{self.metric_prefix}/cusp_only_{relation}_mean_error"] = float("nan")
+                metrics[f"{self.metric_prefix}/cusp_only_{relation}_max_abs_error"] = float("nan")
         return DiagnosticResult(metrics=metrics, tables={self.table_name: rows})
 
 
@@ -855,6 +875,11 @@ def spin_labels(system: object, *, n_walkers: int, device: torch.device | str | 
     if n_electrons is not None and spins.numel() != int(n_electrons):
         raise ValueError("System spin partition must match n_electrons")
     return spins.unsqueeze(0).expand(n_walkers, -1).clone()
+
+
+def _model_cusp(model: nn.Module) -> nn.Module | None:
+    cusp = getattr(model, "cusp", None)
+    return cusp if isinstance(cusp, nn.Module) else None
 
 
 def _context_values(context: DiagnosticContext, name: str) -> torch.Tensor:

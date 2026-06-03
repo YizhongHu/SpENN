@@ -128,6 +128,24 @@ def test_spin_resolved_cusp_diagnostic_groups_same_and_opposite_spin_pairs() -> 
     assert relations == {"same", "opposite"}
     assert result.metrics["cusp/same_count"] == 1.0
     assert result.metrics["cusp/opposite_count"] == 1.0
+    assert result.metrics["cusp/cusp_only_same_count"] == 0.0
+    assert math.isnan(result.metrics["cusp/cusp_only_same_mean_error"])
+
+
+def test_spin_resolved_cusp_diagnostic_reports_cusp_only_slopes_separately() -> None:
+    positions = torch.zeros(2, 2, 3, dtype=torch.float64)
+    spins = torch.tensor([[1.0, 1.0], [1.0, -1.0]], dtype=torch.float64)
+    context = _context(model=BadFullWavefunctionWithAnalyticCusp(), positions=positions, spins=spins, n_up=1, n_down=1)
+
+    result = SpinResolvedCuspSlopeDiagnostic(n_points=8, n_configurations=2, r_max=1.0e-6)(context)
+
+    assert abs(result.metrics["cusp/cusp_only_same_mean_error"]) < 1.0e-5
+    assert abs(result.metrics["cusp/cusp_only_opposite_mean_error"]) < 1.0e-5
+    assert abs(result.metrics["cusp/same_mean_error"]) > 1.0
+    assert abs(result.metrics["cusp/opposite_mean_error"]) > 1.0
+    row = result.tables["cusp_slope_by_spin"][0]
+    assert "cusp_only_slope" in row
+    assert "cusp_only_slope_error" in row
 
 
 def test_spin_resolved_cusp_diagnostic_keeps_stable_keys_for_absent_relations() -> None:
@@ -178,6 +196,32 @@ class SpinResolvedCuspToyModel(nn.Module):
         opposite_logabs = 0.5 * distance
         logabs = torch.where(same_spin, same_logabs, opposite_logabs)
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
+class AnalyticToyCusp(nn.Module):
+    def forward(self, batch: ElectronBatch) -> torch.Tensor:
+        flat = batch.flatten_samples()
+        distance = torch.linalg.norm(flat.positions[:, 0] - flat.positions[:, 1], dim=-1)
+        same_spin = flat.spins[:, 0] == flat.spins[:, 1]
+        return torch.where(same_spin, 0.25 * distance, 0.5 * distance)
+
+
+class BadFullWavefunctionWithAnalyticCusp(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cusp = AnalyticToyCusp()
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        flat = batch.flatten_samples()
+        distance = torch.linalg.norm(flat.positions[:, 0] - flat.positions[:, 1], dim=-1)
+        full_logabs = self.cusp(flat) + 10.0 * distance
+        same_spin = flat.spins[:, 0] == flat.spins[:, 1]
+        full_logabs = torch.where(
+            same_spin,
+            full_logabs + torch.log(distance.clamp_min(torch.finfo(flat.dtype).tiny)),
+            full_logabs,
+        )
+        return WavefunctionOutput(logabs=full_logabs, sign=torch.ones_like(full_logabs))
 
 
 class VandermondeModel(nn.Module):

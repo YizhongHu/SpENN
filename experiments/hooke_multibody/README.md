@@ -56,7 +56,9 @@ particle-token antisymmetry checks. Production sampler health includes
 acceptance, proposal scale, pair-distance summaries, local-energy sample count,
 autocorrelation time, and effective sample size when enough sequential blocks
 are available. `process_outputs.py` also promotes local-energy and pair-distance
-sample tables into `data/`. Figures generated from saved CSVs are written under
+sample tables into `data/`. Cusp diagnostics report both full-wavefunction
+short-range slopes and analytic cusp-module-only slopes when the model exposes a
+`cusp` module. Figures generated from saved CSVs are written under
 `experiments/hooke_multibody/figures/spenn/`.
 `process_outputs.py` writes `data/energy_plausibility.csv` for both single runs
 and scan parents. Until a reference is added, that table records

@@ -58,22 +58,25 @@ not converged VMC evidence.
 
 | run | sector | energy | sem | variance | acceptance |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `hooke_multibody_spenn_09-47-27_316dd9d9` | `N=3, up=2, down=1` | 4.72118557 | 0.08647394 | 0.05982194 | 0.625 |
+| `hooke_multibody_spenn_10-32-38_5a3e8a55` | `N=3, up=2, down=1` | 4.72118557 | 0.08647394 | 0.05982194 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up3_down0` | `N=3, up=3, down=0` | 4.59707710 | 0.08134876 | 0.02647048 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up2_down1` | `N=3, up=2, down=1` | 4.03680492 | 0.16581581 | 0.10997953 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up1_down2` | `N=3, up=1, down=2` | 4.45998269 | 0.12493563 | 0.06243565 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up0_down3` | `N=3, up=0, down=3` | 4.71338838 | 0.12463252 | 0.06213306 | 0.625 |
 
 The smoke run had particle-token antisymmetry error below `6e-16` and sign-flip
-accuracy `1.0`. Its spin-resolved cusp slope estimates were poor
-(`same_mean_error=-84.30`, `opposite_mean_error=-1.21`), so cusp behavior should
-be treated as an open diagnostic/model issue rather than a passed physics check.
+accuracy `1.0`. The analytic cusp module itself had small short-range slope
+errors (`cusp_only_same_mean_error=-9.49e-4`,
+`cusp_only_opposite_mean_error=4.71e-3`). The full untrained wavefunction still
+had poor short-range slopes (`same_mean_error=-84.30`,
+`opposite_mean_error=-1.21`), so full cusp behavior should be treated as an open
+model/training issue rather than a passed physics check.
 
 Generated figures:
 
-- `figures/spenn/hooke_multibody_spenn_09-47-27_316dd9d9_energy_trace.png`
-- `figures/spenn/hooke_multibody_spenn_09-47-27_316dd9d9_cusp_slope_by_spin.png`
-- `figures/spenn/hooke_multibody_spenn_09-47-27_316dd9d9_particle_antisymmetry.png`
+- `figures/spenn/hooke_multibody_spenn_10-32-38_5a3e8a55_energy_trace.png`
+- `figures/spenn/hooke_multibody_spenn_10-32-38_5a3e8a55_cusp_slope_by_spin.png`
+- `figures/spenn/hooke_multibody_spenn_10-32-38_5a3e8a55_particle_antisymmetry.png`
 - `figures/spenn/hooke_multibody_spin_scan_10-03-43_514cbd97_spin_scan_energy.png`
 
 ## Slurm

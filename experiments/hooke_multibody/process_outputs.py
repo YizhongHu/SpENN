@@ -90,6 +90,10 @@ def process_run(
         "local_energy_variance": metrics.get("spenn/local_energy/variance", ""),
         "acceptance_rate": metrics.get("sampler/acceptance_rate", ""),
         "mean_pair_distance": metrics.get("sampler/mean_pair_distance", ""),
+        "cusp_only_same_mean_error": metrics.get("cusp/cusp_only_same_mean_error", ""),
+        "cusp_only_opposite_mean_error": metrics.get("cusp/cusp_only_opposite_mean_error", ""),
+        "full_same_mean_error": metrics.get("cusp/same_mean_error", ""),
+        "full_opposite_mean_error": metrics.get("cusp/opposite_mean_error", ""),
         "reference_available": False,
     }
     processed: dict[str, object] = {

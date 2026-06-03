@@ -158,6 +158,7 @@ def _plot_histogram(
 def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
     labels: list[str] = []
     measured: list[float] = []
+    cusp_only: list[float | None] = []
     target: list[float] = []
     colors: list[str] = []
     for row in rows:
@@ -167,6 +168,7 @@ def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
             continue
         labels.append(f"{row.get('pair_i', '?')}-{row.get('pair_j', '?')}\n{row.get('spin_relation', '')}")
         measured.append(slope)
+        cusp_only.append(_to_float(row.get("cusp_only_slope", "")))
         target.append(target_slope)
         colors.append("#4c78a8" if row.get("spin_relation") == "same" else "#f58518")
     if not measured:
@@ -174,6 +176,16 @@ def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
     x = list(range(len(measured)))
     plt.figure(figsize=(max(5.0, 0.6 * len(measured)), 3.4))
     plt.bar(x, measured, color=colors, alpha=0.82, label="measured")
+    finite_cusp = [(index, value) for index, value in enumerate(cusp_only) if value is not None]
+    if finite_cusp:
+        plt.scatter(
+            [index for index, _ in finite_cusp],
+            [value for _, value in finite_cusp],
+            color="#54a24b",
+            marker="s",
+            label="cusp only",
+            zorder=3,
+        )
     plt.scatter(x, target, color="black", marker="x", label="target", zorder=3)
     plt.xticks(x, labels, rotation=45, ha="right")
     plt.ylabel("slope")

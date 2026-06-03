@@ -52,6 +52,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert math.isfinite(float(metrics["radial_density/mean_radius"]))
     assert "cusp/same_count" in metrics
     assert "cusp/opposite_count" in metrics
+    assert abs(float(metrics["cusp/cusp_only_same_mean_error"])) < 5.0e-2
+    assert abs(float(metrics["cusp/cusp_only_opposite_mean_error"])) < 5.0e-2
     assert "antisymmetry/antisymmetry_error_max" in metrics
     assert "exact/energy" not in metrics
     assert "comparison/energy_abs_error" not in metrics
