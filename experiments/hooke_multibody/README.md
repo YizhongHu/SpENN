@@ -47,6 +47,9 @@ Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the
 same time stamp.
 
+For the current smoke-scale sanity snapshot and embedded figures, see
+[`report.md`](report.md).
+
 ## Outputs
 
 The generic training stack writes config, summary, checkpoint, metrics CSVs,
@@ -68,10 +71,10 @@ and scan parents. Until a reference is added, that table records
 
 ## Version Notes
 
-Scaffold provenance recorded on 2026-06-03:
+Scaffold artifact provenance recorded on 2026-06-03:
 
 ```text
-base git commit: 64fb489
+artifact base git commit: 64fb489
 python: 3.14.5
 torch: 2.12.0+cpu
 local cuda available: false
@@ -122,8 +125,7 @@ The CPU script runs the multibody integration smoke test with the `cpu` uv
 extra. The GPU script uses `.venv-gpu`, the `cu126` uv extra, checks CUDA, and
 runs the smoke SpENN config on `device=cuda`.
 
-Current controller status on 2026-06-03: `sbatch --test-only` for both scripts
-failed with:
+On 2026-06-03, `sbatch --test-only` for both scripts failed with:
 
 ```text
 allocation failure: Unable to contact slurm controller (connect failure)

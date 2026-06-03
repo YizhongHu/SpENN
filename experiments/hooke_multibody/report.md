@@ -32,10 +32,10 @@ estimates until an independent reference pipeline is added.
 
 `run_spenn.py --config benchmark --scan-spins` runs fixed spin sectors from
 `configs/benchmark.yaml`, currently `(3, 0)`, `(2, 1)`, `(1, 2)`, and `(0, 3)`.
-It trains each sector separately with VMC and records the lowest sampled VMC
-energy as the scan best candidate. The scan does not optimize or mix spin
-sectors during one run. Scan parents have their own processed CSV/JSON output
-and fixed-sector energy/variance/acceptance figure.
+It trains each sector separately with VMC and records the lowest sampled value
+in this smoke scan as the scan best candidate. The scan does not optimize or
+mix spin sectors during one run. Scan parents have their own processed CSV/JSON
+output and fixed-sector energy/variance/acceptance figure.
 
 ## Data and Plots
 
@@ -71,22 +71,48 @@ accuracy `1.0`. The analytic cusp module itself had small short-range slope
 errors (`cusp_only_same_mean_error=-9.49e-4`,
 `cusp_only_opposite_mean_error=-5.05e-3`). With the float64 Pfaffian readout
 floor lowered to `1e-30`, the two-sided full-wavefunction slope errors were
-small for this smoke run (`same_mean_error=-4.26e-3`,
+diagnostic-scale for this smoke run (`same_mean_error=-4.26e-3`,
 `opposite_mean_error=-9.94e-2`). The remaining smooth-factor residual slopes
 were `-3.31e-3` for the same-spin pair and `-9.43e-2` averaged over
 opposite-spin pairs. These are smoke diagnostics, not convergence claims.
 
-Generated figures:
+## Figure Gallery
 
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_acceptance_rate.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_energy_trace.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_local_energy_variance.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_local_energy_histogram.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_pair_distance_histogram.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_radial_density.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_particle_antisymmetry.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_cusp_slope_by_spin.png`
-- `figures/spenn/hooke_multibody_spin_scan_10-03-43_514cbd97_spin_scan_energy.png`
+Smoke energy trace:
+
+![Smoke energy trace](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_energy_trace.png)
+
+Local-energy variance:
+
+![Local-energy variance](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_local_energy_variance.png)
+
+Sampler acceptance:
+
+![Sampler acceptance](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_acceptance_rate.png)
+
+Local-energy histogram:
+
+![Local-energy histogram](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_local_energy_histogram.png)
+
+Pair-distance histogram:
+
+![Pair-distance histogram](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_pair_distance_histogram.png)
+
+Radial density:
+
+![Radial density](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_radial_density.png)
+
+Spin-resolved cusp slopes:
+
+![Spin-resolved cusp slopes](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_cusp_slope_by_spin.png)
+
+Particle-token antisymmetry:
+
+![Particle-token antisymmetry](figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_particle_antisymmetry.png)
+
+Fixed-sector spin scan:
+
+![Fixed-sector spin scan](figures/spenn/hooke_multibody_spin_scan_10-03-43_514cbd97_spin_scan_energy.png)
 
 ## Slurm
 
