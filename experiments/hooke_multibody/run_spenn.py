@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.hooke.runner import HookeScriptSpec, run_generated_config  # noqa: E402
-from spenn.training.artifacts import make_output_dir, make_run_id, run_time_stamp, write_json  # noqa: E402
+from experiments.hooke.runner import HookeScriptSpec, configured_run_id, run_generated_config  # noqa: E402
+from spenn.training.artifacts import git_metadata, make_output_dir, make_run_id, run_time_stamp, write_json  # noqa: E402
 from spenn.training.artifacts import write_config_artifacts  # noqa: E402
 
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
@@ -151,7 +151,7 @@ def run_spin_scan(
     dotlist = [override for override in forwarded if "=" in override]
     base_cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(dotlist)) if dotlist else cfg
     run_time = str(OmegaConf.select(base_cfg, "run.time", default=run_time_stamp()))
-    scan_id = run_id or make_run_id("hooke_multibody_spin_scan", run_time=run_time)
+    scan_id = run_id or configured_run_id(base_cfg) or make_run_id("hooke_multibody_spin_scan", run_time=run_time)
     output_root_path = Path(str(output_root or OmegaConf.select(base_cfg, "output_root", default="outputs")))
     scan_cfg = OmegaConf.merge(
         base_cfg,
@@ -192,6 +192,7 @@ def run_spin_scan(
                 "run_id": summary["run_id"],
                 "output_dir": summary["output_dir"],
                 "run_time": summary["run_time"],
+                "n_electrons": summary["n_electrons"],
                 "n_up": n_up,
                 "n_down": n_down,
                 "energy_mean": summary["energy_mean"],
@@ -209,7 +210,7 @@ def run_spin_scan(
     )
     scan_artifact_cfg = OmegaConf.create(OmegaConf.to_container(scan_cfg, resolve=False))
     OmegaConf.resolve(scan_artifact_cfg)
-    write_config_artifacts(output_dir, scan_artifact_cfg, forwarded)
+    write_config_artifacts(output_dir, scan_artifact_cfg, _scan_parent_overrides(forwarded, scan_id, run_time, output_root_path))
     _write_csv(output_dir / "metrics" / "spin_scan_summary.csv", rows)
     payload = {
         "entrypoint": "experiments/hooke_multibody/run_spenn.py",
@@ -218,6 +219,7 @@ def run_spin_scan(
         "run_id": scan_id,
         "run_time": run_time,
         "output_dir": str(output_dir),
+        "git": git_metadata(),
         "config": OmegaConf.to_container(scan_artifact_cfg, resolve=True),
         "best_run": best,
         "runs": summaries,
@@ -264,6 +266,24 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _scan_parent_overrides(
+    forwarded_overrides: list[str],
+    scan_id: str,
+    run_time: str,
+    output_root: Path,
+) -> list[str]:
+    derived = [
+        f"run_id={scan_id}",
+        f"run.time={run_time}",
+        f"output_root={output_root}",
+    ]
+    recorded = list(forwarded_overrides)
+    for override in derived:
+        if override not in recorded:
+            recorded.append(override)
+    return recorded
 
 
 def _resolve_template_path(path: Path) -> Path:

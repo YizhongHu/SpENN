@@ -121,6 +121,27 @@ def resolve_config_path(path: Path, config_dir: Path) -> Path:
     return path
 
 
+def configured_run_id(cfg: DictConfig) -> str | None:
+    """Return a non-empty run id configured on either supported key.
+
+    Parameters
+    ----------
+    cfg : omegaconf.DictConfig
+        Config that may contain top-level ``run_id`` or nested ``run.id``.
+
+    Returns
+    -------
+    str or None
+        Configured run id, or ``None`` when both fields are absent or blank.
+    """
+
+    for key in ("run_id", "run.id"):
+        value = OmegaConf.select(cfg, key, default=None)
+        if value is not None and str(value) not in {"", "None", "null"}:
+            return str(value)
+    return None
+
+
 def _generated_overrides(
     cfg: DictConfig,
     spec: HookeScriptSpec,
@@ -135,9 +156,7 @@ def _generated_overrides(
         selected_run_time = run_time_stamp()
     selected_run_id = run_id
     if selected_run_id is None:
-        selected_run_id = OmegaConf.select(merged, "run_id", default=None)
-    if selected_run_id is None:
-        selected_run_id = OmegaConf.select(merged, "run.id", default=None)
+        selected_run_id = configured_run_id(merged)
     if selected_run_id is None:
         selected_run_id = _new_run_id(spec.run_id_prefix, str(selected_run_time))
     generated = [*dotlist, f"run.time={selected_run_time}", f"run_id={selected_run_id}"]
@@ -177,4 +196,4 @@ def _write_generated_config(cfg: DictConfig, spec: HookeScriptSpec) -> Path:
     return path
 
 
-__all__ = ["HookeScriptSpec", "resolve_config_path", "run_generated_config"]
+__all__ = ["HookeScriptSpec", "configured_run_id", "resolve_config_path", "run_generated_config"]

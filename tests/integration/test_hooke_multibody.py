@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import re
 from pathlib import Path
@@ -11,6 +12,8 @@ import pytest
 
 from experiments.hooke_multibody.plot_outputs import _to_float, plot_run
 from experiments.hooke_multibody.process_outputs import process_run
+from experiments.hooke_multibody.run_reference import DEFAULT_CONFIG as HOOKE_MULTIBODY_REFERENCE_CONFIG
+from experiments.hooke_multibody.run_reference import run as run_reference
 from experiments.hooke_multibody.run_spenn import load_config, run, run_spin_scan
 from tests.helpers import (
     HOOKE_MULTIBODY_INTEGRATION_ARTIFACTS,
@@ -103,7 +106,6 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
 def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts() -> None:
     cfg = load_config(HOOKE_MULTIBODY_INTEGRATION_ARTIFACTS / "smoke.yaml")
     cfg.scan = {"spin_partitions": [[2, 1], [1, 2]]}
-    cfg.run_id = "integration_hooke_multibody_spin_scan"
 
     summary = run_spin_scan(
         cfg,
@@ -113,21 +115,27 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
             "training.vmc_steps=1",
             "trainer.max_steps=1",
         ],
-        run_id="integration_hooke_multibody_spin_scan",
     )
 
     run_dir = Path(summary["output_dir"])
     assert summary["mode"] == "spin_scan"
+    assert summary["run_id"] == "integration_hooke_multibody_spin_scan"
     assert re.fullmatch(r"\d{2}-\d{2}-\d{2}", summary["run_time"])
     assert (run_dir / ".hydra" / "config.yaml").exists()
     assert (run_dir / ".hydra" / "overrides.yaml").exists()
     assert (run_dir / "metrics" / "spin_scan_summary.csv").exists()
     assert _csv_row_count(run_dir / "metrics" / "spin_scan_summary.csv") == 2
     assert summary["best_run"]["run_id"] in {run["run_id"] for run in summary["runs"]}
+    assert summary["best_run"]["n_electrons"] == 3
     assert {run["run_time"] for run in summary["runs"]} == {summary["run_time"]}
     assert summary["config"]["sampler"]["n_walkers"] == 5
     assert summary["config"]["training"]["vmc_steps"] == 1
     assert all(run["run_id"].endswith(f"up{run['n_up']}_down{run['n_down']}") for run in summary["runs"])
+    recorded_overrides = (run_dir / ".hydra" / "overrides.yaml").read_text(encoding="utf-8")
+    assert "run_id=integration_hooke_multibody_spin_scan" in recorded_overrides
+    assert f"run.time={summary['run_time']}" in recorded_overrides
+    scan_rows = _csv_rows(run_dir / "metrics" / "spin_scan_summary.csv")
+    assert {row["n_electrons"] for row in scan_rows} == {"3"}
 
     processed = process_run(run_dir)
     assert processed["mode"] == "spin_scan"
@@ -136,6 +144,7 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     assert (run_dir / "artifacts" / "processed_summary.json").exists()
     plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
     assert len(plausibility_rows) == 2
+    assert {row["n_electrons"] for row in plausibility_rows} == {"3"}
     assert {row["specht_M"] for row in plausibility_rows} == {"2"}
     assert {row["reference_method"] for row in plausibility_rows} == {"none"}
 
@@ -143,6 +152,22 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     assert len(figures) == 1
     assert figures[0].name.endswith("_spin_scan_energy.png")
     assert figures[0].exists()
+
+
+@pytest.mark.integration
+def test_hooke_multibody_reference_summary_records_config_and_git() -> None:
+    cfg = load_config(HOOKE_MULTIBODY_REFERENCE_CONFIG)
+    cfg.run = {"id": "integration_hooke_multibody_reference"}
+
+    summary = run_reference(cfg)
+    artifact = _summary_json(Path(summary["output_dir"]))
+
+    assert summary["run_id"] == "integration_hooke_multibody_reference"
+    assert artifact["run_id"] == summary["run_id"]
+    assert artifact["config"]["run"]["id"] == "integration_hooke_multibody_reference"
+    assert artifact["config"]["run_id"] == "integration_hooke_multibody_reference"
+    assert "git_commit" in artifact["git"]
+    assert "dirty_git_state" in artifact["git"]
 
 
 def test_hooke_multibody_plot_numeric_parser_rejects_nonfinite_values() -> None:
@@ -160,3 +185,8 @@ def _csv_row_count(path: Path) -> int:
 def _csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _summary_json(run_dir: Path) -> dict[str, object]:
+    with (run_dir / "artifacts" / "summary.json").open("r", encoding="utf-8") as handle:
+        return json.load(handle)

@@ -102,7 +102,7 @@ Current focused verification:
   -q --typeguard-packages=spenn
 ```
 
-Result: `27 passed in 39.91s`.
+Result: `28 passed in 40.36s`.
 
 The Pfaffian readout floor is set explicitly in `configs/spenn.yaml` through
 `readout_hparams.eps`. The multibody templates use a small float64 floor

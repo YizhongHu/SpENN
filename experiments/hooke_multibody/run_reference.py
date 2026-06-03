@@ -12,8 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.hooke.runner import resolve_config_path  # noqa: E402
+from experiments.hooke.runner import configured_run_id, resolve_config_path  # noqa: E402
 from spenn.training.artifacts import (  # noqa: E402
+    git_metadata,
     make_output_dir,
     make_run_id,
     run_time_stamp,
@@ -71,8 +72,8 @@ def run(
     """
 
     run_time = str(OmegaConf.select(cfg, "run.time", default=run_time_stamp()))
-    selected_run_id = run_id or str(OmegaConf.select(cfg, "run_id", default=""))
-    if not selected_run_id or selected_run_id == "None":
+    selected_run_id = run_id or configured_run_id(cfg)
+    if selected_run_id is None:
         selected_run_id = make_run_id("hooke_multibody_reference", run_time=run_time)
     selected_root = Path(str(output_root or OmegaConf.select(cfg, "output_root", default="outputs")))
     cfg = OmegaConf.merge(
@@ -102,6 +103,8 @@ def run(
         "run_id": selected_run_id,
         "run_time": run_time,
         "output_dir": str(output_dir),
+        "git": git_metadata(),
+        "config": OmegaConf.to_container(cfg, resolve=True),
         "reference_available": row["reference_available"],
         "method": row["method"],
     }
