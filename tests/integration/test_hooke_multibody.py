@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.hooke_multibody.plot_outputs import plot_run
+from experiments.hooke_multibody.plot_outputs import _to_float, plot_run
 from experiments.hooke_multibody.process_outputs import process_run
 from experiments.hooke_multibody.run_spenn import load_config, run, run_spin_scan
 from tests.helpers import (
@@ -137,6 +137,13 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     assert len(figures) == 1
     assert figures[0].name.endswith("_spin_scan_energy.png")
     assert figures[0].exists()
+
+
+def test_hooke_multibody_plot_numeric_parser_rejects_nonfinite_values() -> None:
+    assert _to_float("nan") is None
+    assert _to_float("inf") is None
+    assert _to_float("-inf") is None
+    assert _to_float("1.25") == 1.25
 
 
 def _csv_row_count(path: Path) -> int:
