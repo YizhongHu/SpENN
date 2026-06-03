@@ -78,9 +78,14 @@ opposite-spin pairs. These are smoke diagnostics, not convergence claims.
 
 Generated figures:
 
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_acceptance_rate.png`
 - `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_energy_trace.png`
-- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_cusp_slope_by_spin.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_local_energy_variance.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_local_energy_histogram.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_pair_distance_histogram.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_radial_density.png`
 - `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_particle_antisymmetry.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_cusp_slope_by_spin.png`
 - `figures/spenn/hooke_multibody_spin_scan_10-03-43_514cbd97_spin_scan_energy.png`
 
 ## Slurm
