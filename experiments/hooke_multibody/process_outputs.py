@@ -94,6 +94,8 @@ def process_run(
         "cusp_only_opposite_mean_error": metrics.get("cusp/cusp_only_opposite_mean_error", ""),
         "full_same_mean_error": metrics.get("cusp/same_mean_error", ""),
         "full_opposite_mean_error": metrics.get("cusp/opposite_mean_error", ""),
+        "smooth_residual_same_mean_slope": metrics.get("cusp/smooth_residual_same_mean_slope", ""),
+        "smooth_residual_opposite_mean_slope": metrics.get("cusp/smooth_residual_opposite_mean_slope", ""),
         "reference_available": False,
     }
     processed: dict[str, object] = {

@@ -58,7 +58,9 @@ autocorrelation time, and effective sample size when enough sequential blocks
 are available. `process_outputs.py` also promotes local-energy and pair-distance
 sample tables into `data/`. Cusp diagnostics report both full-wavefunction
 short-range slopes and analytic cusp-module-only slopes when the model exposes a
-`cusp` module. Figures generated from saved CSVs are written under
+`cusp` module. The full-wavefunction fit uses a two-sided pair-separation
+average to cancel smooth odd terms before estimating the radial cusp slope.
+Figures generated from saved CSVs are written under
 `experiments/hooke_multibody/figures/spenn/`.
 `process_outputs.py` writes `data/energy_plausibility.csv` for both single runs
 and scan parents. Until a reference is added, that table records
@@ -100,7 +102,12 @@ Current focused verification:
   -q --typeguard-packages=spenn
 ```
 
-Result: `24 passed in 42.62s`.
+Result: `27 passed in 39.91s`.
+
+The Pfaffian readout floor is set explicitly in `configs/spenn.yaml` through
+`readout_hparams.eps`. The multibody templates use a small float64 floor
+(`1e-30`) so same-spin cusp diagnostics near antisymmetric nodes are not
+dominated by log-amplitude clamping.
 
 ## Slurm
 

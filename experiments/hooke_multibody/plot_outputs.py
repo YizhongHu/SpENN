@@ -160,6 +160,7 @@ def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
     labels: list[str] = []
     measured: list[float] = []
     cusp_only: list[float | None] = []
+    smooth_residual: list[float | None] = []
     target: list[float] = []
     colors: list[str] = []
     for row in rows:
@@ -170,6 +171,7 @@ def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
         labels.append(f"{row.get('pair_i', '?')}-{row.get('pair_j', '?')}\n{row.get('spin_relation', '')}")
         measured.append(slope)
         cusp_only.append(_to_float(row.get("cusp_only_slope", "")))
+        smooth_residual.append(_to_float(row.get("smooth_residual_slope", "")))
         target.append(target_slope)
         colors.append("#4c78a8" if row.get("spin_relation") == "same" else "#f58518")
     if not measured:
@@ -187,7 +189,18 @@ def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
             label="cusp only",
             zorder=3,
         )
+    finite_residual = [(index, value) for index, value in enumerate(smooth_residual) if value is not None]
+    if finite_residual:
+        plt.scatter(
+            [index for index, _ in finite_residual],
+            [value for _, value in finite_residual],
+            color="#b279a2",
+            marker="D",
+            label="smooth residual",
+            zorder=3,
+        )
     plt.scatter(x, target, color="black", marker="x", label="target", zorder=3)
+    plt.axhline(0.0, color="#6b7280", linewidth=0.8, alpha=0.5)
     plt.xticks(x, labels, rotation=45, ha="right")
     plt.ylabel("slope")
     plt.title("Spin-resolved cusp slopes")

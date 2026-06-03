@@ -148,6 +148,27 @@ def test_spin_resolved_cusp_diagnostic_reports_cusp_only_slopes_separately() -> 
     assert "cusp_only_slope_error" in row
 
 
+def test_spin_resolved_cusp_diagnostic_averages_opposite_directions() -> None:
+    positions = torch.zeros(2, 2, 3, dtype=torch.float64)
+    spins = torch.tensor([[1.0, 1.0], [1.0, -1.0]], dtype=torch.float64)
+    context = _context(model=OddSmoothWithAnalyticCusp(), positions=positions, spins=spins, n_up=1, n_down=1)
+
+    one_sided = SpinResolvedCuspSlopeDiagnostic(
+        n_points=8,
+        n_configurations=2,
+        average_opposite_directions=False,
+    )(context)
+    averaged = SpinResolvedCuspSlopeDiagnostic(n_points=8, n_configurations=2)(context)
+
+    assert abs(one_sided.metrics["cusp/same_mean_error"]) > 1.0
+    assert abs(one_sided.metrics["cusp/opposite_mean_error"]) > 1.0
+    assert abs(averaged.metrics["cusp/same_mean_error"]) < 1.0e-10
+    assert abs(averaged.metrics["cusp/opposite_mean_error"]) < 1.0e-10
+    assert abs(averaged.metrics["cusp/smooth_residual_same_mean_slope"]) < 1.0e-10
+    assert abs(averaged.metrics["cusp/smooth_residual_opposite_mean_slope"]) < 1.0e-10
+    assert "smooth_residual_slope" in averaged.tables["cusp_slope_by_spin"][0]
+
+
 def test_spin_resolved_cusp_diagnostic_keeps_stable_keys_for_absent_relations() -> None:
     positions = torch.zeros(1, 3, 3, dtype=torch.float64)
     spins = torch.tensor([[1.0, 1.0, 1.0]], dtype=torch.float64)
@@ -215,6 +236,25 @@ class BadFullWavefunctionWithAnalyticCusp(nn.Module):
         flat = batch.flatten_samples()
         distance = torch.linalg.norm(flat.positions[:, 0] - flat.positions[:, 1], dim=-1)
         full_logabs = self.cusp(flat) + 10.0 * distance
+        same_spin = flat.spins[:, 0] == flat.spins[:, 1]
+        full_logabs = torch.where(
+            same_spin,
+            full_logabs + torch.log(distance.clamp_min(torch.finfo(flat.dtype).tiny)),
+            full_logabs,
+        )
+        return WavefunctionOutput(logabs=full_logabs, sign=torch.ones_like(full_logabs))
+
+
+class OddSmoothWithAnalyticCusp(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cusp = AnalyticToyCusp()
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        flat = batch.flatten_samples()
+        distance = torch.linalg.norm(flat.positions[:, 0] - flat.positions[:, 1], dim=-1)
+        odd_relative_coordinate = flat.positions[:, 0, 0] - flat.positions[:, 1, 0]
+        full_logabs = self.cusp(flat) + 10.0 * odd_relative_coordinate
         same_spin = flat.spins[:, 0] == flat.spins[:, 1]
         full_logabs = torch.where(
             same_spin,

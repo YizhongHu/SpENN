@@ -39,6 +39,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert summary_artifact["config"]["system"]["n_electrons"] == 3
     assert summary_artifact["config"]["system"]["n_up"] == 2
     assert summary_artifact["config"]["system"]["n_down"] == 1
+    assert summary_artifact["config"]["diagnostics"]["cusp"]["average_opposite_directions"] is True
+    assert summary_artifact["config"]["model"]["spenn"]["readout"]["eps"] == 1.0e-30
     assert "integration_test" in summary_artifact["config"]["tracking"]["tags"]
 
     metrics = summary_artifact["metrics"]
@@ -54,6 +56,10 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert "cusp/opposite_count" in metrics
     assert abs(float(metrics["cusp/cusp_only_same_mean_error"])) < 5.0e-2
     assert abs(float(metrics["cusp/cusp_only_opposite_mean_error"])) < 5.0e-2
+    assert abs(float(metrics["cusp/same_mean_error"])) < 5.0e-2
+    assert abs(float(metrics["cusp/opposite_mean_error"])) < 2.5e-1
+    assert math.isfinite(float(metrics["cusp/smooth_residual_same_mean_slope"]))
+    assert math.isfinite(float(metrics["cusp/smooth_residual_opposite_mean_slope"]))
     assert "antisymmetry/antisymmetry_error_max" in metrics
     assert "exact/energy" not in metrics
     assert "comparison/energy_abs_error" not in metrics

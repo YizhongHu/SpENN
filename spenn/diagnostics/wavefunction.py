@@ -479,6 +479,10 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
         Target cusp slopes.
     factor_same_spin_node : bool, optional
         Whether to subtract ``log(r)`` for same-spin fits.
+    average_opposite_directions : bool, optional
+        Whether to average log-amplitudes from opposite pair-separation
+        directions before fitting. This cancels smooth odd terms in the local
+        relative coordinate and isolates the radial cusp contribution.
     metric_prefix : str, optional
         Metric namespace.
     table_name : str, optional
@@ -497,6 +501,7 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
         same_spin_target: float = 0.25,
         opposite_spin_target: float = 0.5,
         factor_same_spin_node: bool = True,
+        average_opposite_directions: bool = True,
         metric_prefix: str = "cusp",
         table_name: str = "cusp_slope_by_spin",
         **_: object,
@@ -510,6 +515,7 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
         self.same_spin_target = float(same_spin_target)
         self.opposite_spin_target = float(opposite_spin_target)
         self.factor_same_spin_node = bool(factor_same_spin_node)
+        self.average_opposite_directions = bool(average_opposite_directions)
         self.metric_prefix = metric_prefix
         self.table_name = table_name
 
@@ -547,6 +553,7 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
         rows: list[dict[str, object]] = []
         errors_by_relation: dict[str, list[float]] = {"same": [], "opposite": []}
         cusp_errors_by_relation: dict[str, list[float]] = {"same": [], "opposite": []}
+        residual_slopes_by_relation: dict[str, list[float]] = {"same": [], "opposite": []}
         cusp_module = _model_cusp(context.model)
         r = torch.linspace(self.r_min, self.r_max, self.n_points, device=context.device, dtype=context.dtype)
         for config_index in range(n_configs):
@@ -563,19 +570,42 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
                     system=context.system,
                 )
                 with torch.no_grad():
-                    logabs = context.model(batch).logabs
-                    if relation == "same" and self.factor_same_spin_node:
-                        logabs = logabs - torch.log(r.clamp_min(torch.finfo(context.dtype).tiny))
+                    logabs = self._factored_pair_logabs(context.model, batch, r, relation, context.dtype)
+                    if self.average_opposite_directions:
+                        reverse_batch = _pair_radial_batch(
+                            positions[config_index],
+                            spins[config_index],
+                            i,
+                            j,
+                            r,
+                            axis=self.axis,
+                            system=context.system,
+                            direction=-1.0,
+                        )
+                        reverse_logabs = self._factored_pair_logabs(
+                            context.model,
+                            reverse_batch,
+                            r,
+                            relation,
+                            context.dtype,
+                        )
+                        logabs = 0.5 * (logabs + reverse_logabs)
                     slope = linear_slope(r, logabs)
                     cusp_slope = float("nan")
                     cusp_error = float("nan")
+                    residual_slope = float("nan")
                     if cusp_module is not None:
-                        cusp_slope = linear_slope(r, cusp_module(batch))
+                        cusp_values = cusp_module(batch)
+                        if self.average_opposite_directions:
+                            cusp_values = 0.5 * (cusp_values + cusp_module(reverse_batch))
+                        cusp_slope = linear_slope(r, cusp_values)
                         cusp_error = cusp_slope - target
+                        residual_slope = linear_slope(r, logabs - cusp_values)
                 error = slope - target
                 errors_by_relation[relation].append(error)
                 if cusp_module is not None:
                     cusp_errors_by_relation[relation].append(cusp_error)
+                    residual_slopes_by_relation[relation].append(residual_slope)
                 rows.append(
                     {
                         "configuration": config_index,
@@ -587,6 +617,7 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
                         "slope_error": error,
                         "cusp_only_slope": cusp_slope,
                         "cusp_only_slope_error": cusp_error,
+                        "smooth_residual_slope": residual_slope,
                     }
                 )
         metrics: dict[str, float] = {}
@@ -608,7 +639,34 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
             else:
                 metrics[f"{self.metric_prefix}/cusp_only_{relation}_mean_error"] = float("nan")
                 metrics[f"{self.metric_prefix}/cusp_only_{relation}_max_abs_error"] = float("nan")
+            residual_slopes = residual_slopes_by_relation[relation]
+            if residual_slopes:
+                residual_values = torch.tensor(residual_slopes, dtype=torch.float64)
+                metrics[f"{self.metric_prefix}/smooth_residual_{relation}_mean_slope"] = float(
+                    residual_values.mean().item()
+                )
+                metrics[f"{self.metric_prefix}/smooth_residual_{relation}_max_abs_slope"] = float(
+                    residual_values.abs().max().item()
+                )
+            else:
+                metrics[f"{self.metric_prefix}/smooth_residual_{relation}_mean_slope"] = float("nan")
+                metrics[f"{self.metric_prefix}/smooth_residual_{relation}_max_abs_slope"] = float("nan")
         return DiagnosticResult(metrics=metrics, tables={self.table_name: rows})
+
+    def _factored_pair_logabs(
+        self,
+        model: nn.Module,
+        batch: ElectronBatch,
+        r: torch.Tensor,
+        relation: str,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        output = model(batch).logabs
+        if output.shape != r.shape:
+            raise ValueError(f"Pair radial logabs must have shape {tuple(r.shape)}, got {tuple(output.shape)}")
+        if relation == "same" and self.factor_same_spin_node:
+            output = output - torch.log(r.clamp_min(torch.finfo(dtype).tiny))
+        return output
 
 
 class ParticleAntisymmetryDiagnostic(nn.Module):
@@ -903,13 +961,15 @@ def _pair_radial_batch(
     *,
     axis: int,
     system: object,
+    direction: float = 1.0,
 ) -> ElectronBatch:
     positions = base_positions.unsqueeze(0).expand(r.numel(), -1, -1).clone()
     center = 0.5 * (base_positions[i] + base_positions[j])
     positions[:, i, :] = center
     positions[:, j, :] = center
-    positions[:, i, axis] = center[axis] + 0.5 * r
-    positions[:, j, axis] = center[axis] - 0.5 * r
+    signed_r = float(direction) * r
+    positions[:, i, axis] = center[axis] + 0.5 * signed_r
+    positions[:, j, axis] = center[axis] - 0.5 * signed_r
     expanded_spins = spins.unsqueeze(0).expand(r.numel(), -1).clone()
     return ElectronBatch(positions=positions, system=system, spins=expanded_spins)
 

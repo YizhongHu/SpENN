@@ -23,6 +23,7 @@ optimization:
 
 readout_hparams:
   envelope_coefficient: 0.25
+  eps: 1.0e-30
 
 run:
   mode: train
@@ -120,7 +121,7 @@ model:
       allow_odd_electron_bordered: true
       envelope_coefficient: ${readout_hparams.envelope_coefficient}
       trainable_envelope: false
-      eps: 1.0e-12
+      eps: ${readout_hparams.eps}
     cusp:
       _target_: spenn.nn.cusp.ElectronElectronCusp
       enabled: true
@@ -197,6 +198,7 @@ diagnostics:
     same_spin_target: 0.25
     opposite_spin_target: 0.5
     factor_same_spin_node: true
+    average_opposite_directions: true
     metric_prefix: cusp
     table_name: cusp_slope_by_spin
   antisymmetry:

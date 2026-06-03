@@ -49,6 +49,8 @@ summaries, local-energy sample count, autocorrelation time, and effective
 sample size when enough sequential production blocks are present.
 `energy_plausibility.csv` is the canonical energy table for now. Because no
 reference is available, its reference and delta columns are intentionally blank.
+Cusp plots report a two-sided direction-averaged full-wavefunction slope, the
+analytic cusp-module-only slope, and the residual smooth-factor slope.
 
 ## Local Sanity Snapshot
 
@@ -58,7 +60,7 @@ not converged VMC evidence.
 
 | run | sector | energy | sem | variance | acceptance |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `hooke_multibody_spenn_10-32-38_5a3e8a55` | `N=3, up=2, down=1` | 4.72118557 | 0.08647394 | 0.05982194 | 0.625 |
+| `hooke_multibody_spenn_15-23-38_b88e8f03` | `N=3, up=2, down=1` | 4.72118557 | 0.08647394 | 0.05982194 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up3_down0` | `N=3, up=3, down=0` | 4.59707710 | 0.08134876 | 0.02647048 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up2_down1` | `N=3, up=2, down=1` | 4.03680492 | 0.16581581 | 0.10997953 | 0.625 |
 | `hooke_multibody_spin_scan_10-03-43_514cbd97_up1_down2` | `N=3, up=1, down=2` | 4.45998269 | 0.12493563 | 0.06243565 | 0.625 |
@@ -67,16 +69,18 @@ not converged VMC evidence.
 The smoke run had particle-token antisymmetry error below `6e-16` and sign-flip
 accuracy `1.0`. The analytic cusp module itself had small short-range slope
 errors (`cusp_only_same_mean_error=-9.49e-4`,
-`cusp_only_opposite_mean_error=4.71e-3`). The full untrained wavefunction still
-had poor short-range slopes (`same_mean_error=-84.30`,
-`opposite_mean_error=-1.21`), so full cusp behavior should be treated as an open
-model/training issue rather than a passed physics check.
+`cusp_only_opposite_mean_error=-5.05e-3`). With the float64 Pfaffian readout
+floor lowered to `1e-30`, the two-sided full-wavefunction slope errors were
+small for this smoke run (`same_mean_error=-4.26e-3`,
+`opposite_mean_error=-9.94e-2`). The remaining smooth-factor residual slopes
+were `-3.31e-3` for the same-spin pair and `-9.43e-2` averaged over
+opposite-spin pairs. These are smoke diagnostics, not convergence claims.
 
 Generated figures:
 
-- `figures/spenn/hooke_multibody_spenn_10-32-38_5a3e8a55_energy_trace.png`
-- `figures/spenn/hooke_multibody_spenn_10-32-38_5a3e8a55_cusp_slope_by_spin.png`
-- `figures/spenn/hooke_multibody_spenn_10-32-38_5a3e8a55_particle_antisymmetry.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_energy_trace.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_cusp_slope_by_spin.png`
+- `figures/spenn/hooke_multibody_spenn_15-23-38_b88e8f03_particle_antisymmetry.png`
 - `figures/spenn/hooke_multibody_spin_scan_10-03-43_514cbd97_spin_scan_energy.png`
 
 ## Slurm
