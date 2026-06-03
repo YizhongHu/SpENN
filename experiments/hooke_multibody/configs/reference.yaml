@@ -1,0 +1,21 @@
+experiment_name: hooke_multibody_reference
+run_mode: reference
+run_id: null
+output_root: outputs
+
+reference:
+  available: false
+  method: none
+  note: No analytic or independent high-accuracy multibody Hooke reference is configured yet.
+
+system:
+  n_electrons: 3
+  n_up: 2
+  n_down: 1
+  harmonic_omega: 0.5
+
+tracking:
+  tags:
+    - hooke_multibody
+    - reference_placeholder
+    - no_numeric_reference

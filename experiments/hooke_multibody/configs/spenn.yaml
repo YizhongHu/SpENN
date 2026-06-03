@@ -1,0 +1,227 @@
+experiment_name: hooke_multibody_spenn
+run_mode: debug
+sector: multibody_ground_state
+run_id: null
+seed: 7
+dtype: float64
+device: cpu
+output_root: outputs
+
+n_electrons: 3
+n_up: 2
+n_down: 1
+omega: 0.5
+
+specht:
+  M: 2
+  M_virtual: 2
+  channels: [0, 8, 8]
+
+optimization:
+  learning_rate: 2.0e-3
+  grad_clip: 10.0
+
+readout_hparams:
+  envelope_coefficient: 0.25
+
+run:
+  mode: train
+  name: hooke_multibody_N${n_electrons}_up${n_up}_down${n_down}_spenn
+  id: ${run_id}
+  output_root: ${output_root}
+  id_prefix: hooke_multibody_N${n_electrons}_up${n_up}_down${n_down}
+  energy_prefix: spenn
+  model_path: model.spenn
+
+system:
+  _target_: spenn.physics.systems.ElectronicSystem
+  name: hooke_multibody_N${n_electrons}_up${n_up}_down${n_down}
+  n_electrons: ${n_electrons}
+  spatial_dim: 3
+  harmonic_omega: ${omega}
+  include_electron_electron: true
+  n_up: ${n_up}
+  n_down: ${n_down}
+  exact_energy: null
+  dtype: ${dtype}
+  aux:
+    sector: multibody_ground_state
+    reference_available: false
+    cusp_same_slope: 0.25
+    cusp_opposite_slope: 0.5
+
+model:
+  spenn:
+    _target_: spenn.nn.wavefunction.SpENNWavefunction
+    encoder:
+      _target_: spenn.nn.encoding.electron_features.ElectronPairEncoder
+      name: hooke_multibody_encoder
+      max_order: 2
+      channels: ${specht.channels}
+      hidden_channels: 16
+      num_hidden_layers: 1
+      activation:
+        _target_: torch.nn.Tanh
+      include_spins: true
+    spechtmp:
+      _target_: spenn.nn.spechtmp.layer.SpechtMP
+      layers:
+        - _target_: spenn.nn.spechtmp.layer.SpechtMPLayer
+          fusion_map:
+            _target_: spenn.reps.fusion.FusionMap
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+          message_head:
+            _target_: spenn.nn.spechtmp.MessageHead
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+            channels: ${specht.channels}
+            include_linear: true
+            activation:
+              _target_: spenn.nn.utils.activations.ActivationByType
+              symmetric:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+              antisymmetric:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+              tensor:
+                _target_: spenn.nn.utils.activations.GatedActivation
+                gate:
+                  _target_: spenn.nn.utils.gate.NormGateActivate
+                  activation:
+                    _target_: torch.nn.Tanh
+                  eps: 1.0e-12
+                  normalize: true
+          branch_map:
+            _target_: spenn.reps.branch.BranchMap
+            M: ${specht.M}
+            M_virtual: ${specht.M_virtual}
+          update_head:
+            _target_: spenn.nn.spechtmp.UpdateHead
+            M: ${specht.M}
+            channels: ${specht.channels}
+          update:
+            _target_: spenn.nn.utils.update.ResidualUpdate
+    readout:
+      _target_: spenn.nn.readout.pfaffian.PfaffianReadout
+      num_pfaffians: 1
+      use_symmetric_gates: true
+      allow_odd_electron_bordered: true
+      envelope_coefficient: ${readout_hparams.envelope_coefficient}
+      trainable_envelope: false
+      eps: 1.0e-12
+    cusp:
+      _target_: spenn.nn.cusp.ElectronElectronCusp
+      enabled: true
+      same_spin_coefficient: 0.25
+      opposite_spin_coefficient: 0.5
+      same_range_parameter: 0.25
+      opposite_range_parameter: 0.5
+      trainable_range: false
+      eps: 1.0e-12
+
+hamiltonian:
+  _target_: spenn.physics.hamiltonian.ElectronicHamiltonian
+  name: electronic
+  kinetic:
+    _target_: spenn.physics.kinetic.LogAbsKineticEnergy
+  potential:
+    _target_: spenn.physics.potential.ElectronicPotential
+    eps: 1.0e-12
+
+sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
+  name: metropolis
+  move:
+    _target_: spenn.sampling.moves.GaussianMove
+    step_size: 0.5
+    move_all: true
+  n_walkers: 16
+  warmup_steps: 4
+  production_blocks: 2
+  steps_per_block: 1
+  steps_per_iter: 1
+  initial_scale: 1.2
+  dtype: ${dtype}
+
+optimizer:
+  _target_: torch.optim.Adam
+  lr: ${optimization.learning_rate}
+  grad_clip: ${optimization.grad_clip}
+
+loss:
+  _target_: spenn.losses.vmc.VMCLoss
+
+trainer:
+  _target_: spenn.training.trainer.VMCTrainer
+  max_steps: ${training.vmc_steps}
+  log_every: ${training.log_every}
+  checkpoint_every: 10
+
+training:
+  vmc_steps: 8
+  log_every: 2
+
+diagnostics:
+  local_energy_histogram:
+    _target_: spenn.diagnostics.HistogramDiagnostic
+    values: local_energy
+    bins: 16
+    table_name: local_energy_histogram
+  pair_distance_histogram:
+    _target_: spenn.diagnostics.PairDistanceHistogramDiagnostic
+    bins: 16
+    table_name: pair_distance_histogram
+  radial_density:
+    _target_: spenn.diagnostics.RadialDensityDiagnostic
+    bins: 16
+    table_name: radial_density
+  cusp:
+    _target_: spenn.diagnostics.SpinResolvedCuspSlopeDiagnostic
+    n_points: 6
+    n_configurations: 2
+    axis: 0
+    r_min: 1.0e-4
+    r_max: 2.0e-2
+    same_spin_target: 0.25
+    opposite_spin_target: 0.5
+    factor_same_spin_node: true
+    metric_prefix: cusp
+    table_name: cusp_slope_by_spin
+  antisymmetry:
+    _target_: spenn.diagnostics.ParticleAntisymmetryDiagnostic
+    n_samples: 8
+    max_transpositions: 3
+    metric_prefix: antisymmetry
+    table_name: particle_antisymmetry
+
+artifacts:
+  write_plot_data: true
+  write_checkpoint: true
+
+validation:
+  reference_available: false
+  acceptance_min: 0.0
+  acceptance_max: 1.0
+
+tracking:
+  tags:
+    - hooke_multibody
+    - spenn
+    - vmc_only
+    - no_numeric_reference
+    - pfaffian_readout
+    - particle_token_antisymmetry
+    - spin_features
+    - metropolis

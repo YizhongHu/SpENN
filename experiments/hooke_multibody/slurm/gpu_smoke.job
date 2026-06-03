@@ -1,0 +1,44 @@
+#!/bin/bash
+#SBATCH --job-name=hooke_multibody_gpu_smoke
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH -p kozinsky_gpu,seas_gpu
+#SBATCH --mem=16g
+#SBATCH --time=00:45:00
+#SBATCH -c 4
+#SBATCH -o experiments/hooke_multibody/slurm/logs/%x-%j.out
+#SBATCH -e experiments/hooke_multibody/slurm/logs/%x-%j.err
+
+set -o errexit -o nounset -o pipefail
+
+cd /n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/spenn
+
+module load gcc/12.2.0-fasrc01
+module load mpich/4.1-fasrc01
+module load cmake
+
+source experiments/hooke_multibody/slurm/uv_env.sh gpu
+
+date
+hostname
+nvidia-smi
+
+uv sync --extra "${SPENN_UV_EXTRA}"
+uv run --extra "${SPENN_UV_EXTRA}" python - <<'PY'
+import torch
+
+print("torch", torch.__version__)
+print("cuda_available", torch.cuda.is_available())
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA is not available on this worker")
+print("cuda_device", torch.cuda.get_device_name(0))
+PY
+
+uv run --extra "${SPENN_UV_EXTRA}" python experiments/hooke_multibody/run_spenn.py \
+  --config smoke \
+  --run-id slurm_gpu_hooke_multibody_${SLURM_JOB_ID} \
+  --output-root outputs/slurm_gpu \
+  device=cuda \
+  artifacts.write_checkpoint=false
+
+date

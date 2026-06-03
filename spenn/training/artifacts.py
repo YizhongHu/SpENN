@@ -14,13 +14,28 @@ from omegaconf import DictConfig, OmegaConf
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def make_run_id(prefix: str = "run") -> str:
+def run_time_stamp() -> str:
+    """Return the current wall-clock time stamp.
+
+    Returns
+    -------
+    str
+        Local wall-clock time formatted as ``HH-MM-SS``.
+    """
+
+    return datetime.now().strftime("%H-%M-%S")
+
+
+def make_run_id(prefix: str = "run", run_time: str | None = None) -> str:
     """Return a timestamped run identifier.
 
     Parameters
     ----------
     prefix : str, optional
         Human-readable run id prefix.
+    run_time : str or None, optional
+        Time stamp formatted as ``HH-MM-SS``. When ``None``, the current local
+        time is used.
 
     Returns
     -------
@@ -28,7 +43,8 @@ def make_run_id(prefix: str = "run") -> str:
         Run identifier suitable for artifact directory names.
     """
 
-    return f"{prefix}_{datetime.now().strftime('%H%M%S')}_{uuid4().hex[:8]}"
+    selected_time = run_time_stamp() if run_time is None else str(run_time)
+    return f"{prefix}_{selected_time}_{uuid4().hex[:8]}"
 
 
 def make_output_dir(output_root: Path, *, run_name: str, run_id: str, include_plots: bool = True) -> Path:

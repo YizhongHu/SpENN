@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from omegaconf import DictConfig, OmegaConf
 
+from spenn.training.artifacts import run_time_stamp
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -122,14 +124,17 @@ def _generated_overrides(
     dotlist: list[str],
 ) -> list[str]:
     merged = OmegaConf.merge(cfg, OmegaConf.from_dotlist(dotlist)) if dotlist else cfg
+    selected_run_time = OmegaConf.select(merged, "run.time", default=None)
+    if selected_run_time is None:
+        selected_run_time = run_time_stamp()
     selected_run_id = run_id
     if selected_run_id is None:
         selected_run_id = OmegaConf.select(merged, "run_id", default=None)
     if selected_run_id is None:
         selected_run_id = OmegaConf.select(merged, "run.id", default=None)
     if selected_run_id is None:
-        selected_run_id = _new_run_id(spec.run_id_prefix)
-    generated = [*dotlist, f"run_id={selected_run_id}"]
+        selected_run_id = _new_run_id(spec.run_id_prefix, str(selected_run_time))
+    generated = [*dotlist, f"run.time={selected_run_time}", f"run_id={selected_run_id}"]
     if output_root is not None:
         generated.append(f"output_root={output_root}")
     return generated
@@ -149,8 +154,9 @@ def _load_config(cfg_or_path: DictConfig | Path | str) -> DictConfig:
     return OmegaConf.load(Path(cfg_or_path))
 
 
-def _new_run_id(prefix: str) -> str:
-    return f"{prefix}_{datetime.now().strftime('%H%M%S')}_{uuid4().hex[:8]}"
+def _new_run_id(prefix: str, run_time: str | None = None) -> str:
+    selected_time = run_time_stamp() if run_time is None else str(run_time)
+    return f"{prefix}_{selected_time}_{uuid4().hex[:8]}"
 
 
 def _write_generated_config(cfg: DictConfig, spec: HookeScriptSpec) -> Path:

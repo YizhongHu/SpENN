@@ -12,12 +12,13 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from spenn.data.batch import ElectronBatch, Walkers
 from spenn.diagnostics.base import DiagnosticContext, DiagnosticResult
-from spenn.diagnostics.wavefunction import pair_distance
+from spenn.diagnostics.wavefunction import all_pair_distances
 from spenn.training.artifacts import (
     git_metadata,
     make_output_dir,
     make_run_id,
     normalize_rows,
+    run_time_stamp,
     write_config_artifacts,
     write_csv,
     write_json,
@@ -46,6 +47,7 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
     device = _resolve_device(str(cfg.get("device", "cpu")))
     mode = str(OmegaConf.select(cfg, "run.mode", default="train"))
     run_id = str(OmegaConf.select(cfg, "run.id", default=cfg.get("run_id")))
+    run_time = str(OmegaConf.select(cfg, "run.time"))
     output_root = Path(str(OmegaConf.select(cfg, "run.output_root", default=cfg.get("output_root", "outputs"))))
     run_name = str(OmegaConf.select(cfg, "run.name", default=cfg.get("experiment_name", "spenn_run")))
     write_plot_data = bool(OmegaConf.select(cfg, "artifacts.write_plot_data", default=True))
@@ -104,6 +106,7 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
         "status": "ok",
         "mode": mode,
         "run_id": run_id,
+        "run_time": run_time,
         "output_dir": str(output_dir),
         "git": git_metadata(),
         "config": OmegaConf.to_container(cfg, resolve=True),
@@ -115,6 +118,7 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
         "status": "ok",
         "mode": mode,
         "run_id": run_id,
+        "run_time": run_time,
         "output_dir": str(output_dir),
         "final_metrics": final_metrics,
     }
@@ -122,17 +126,20 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
 
 def _prepare_config(cfg: DictConfig) -> DictConfig:
     cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    run_time = OmegaConf.select(cfg, "run.time", default=None)
+    if run_time is None:
+        run_time = run_time_stamp()
     run_id = OmegaConf.select(cfg, "run_id", default=None)
     if run_id is None:
         run_id = OmegaConf.select(cfg, "run.id", default=None)
     if run_id is None:
-        run_id = make_run_id(str(OmegaConf.select(cfg, "run.id_prefix", default="run")))
+        run_id = make_run_id(str(OmegaConf.select(cfg, "run.id_prefix", default="run")), run_time=str(run_time))
     output_root = OmegaConf.select(cfg, "output_root", default=None)
     if output_root is None:
         output_root = OmegaConf.select(cfg, "run.output_root", default=None)
     if output_root is None:
         output_root = "outputs"
-    cfg = OmegaConf.merge(cfg, {"run_id": str(run_id), "output_root": str(output_root)})
+    cfg = OmegaConf.merge(cfg, {"run": {"time": str(run_time)}, "run_id": str(run_id), "output_root": str(output_root)})
     OmegaConf.resolve(cfg)
     return cfg
 
@@ -200,23 +207,38 @@ def _production(
     steps_per_block = int(OmegaConf.select(cfg, "sampler.steps_per_block", default=getattr(sampler, "steps_per_iter", 1)))
     energy_rows: list[dict[str, object]] = []
     all_local_energy: list[torch.Tensor] = []
-    all_r12: list[torch.Tensor] = []
+    all_pair_distance: list[torch.Tensor] = []
     for block in range(blocks):
         walkers = sampler.sample(model, walkers, steps_per_block)
         local_energy = _local_energy(model, hamiltonian, walkers).detach()
-        r12 = pair_distance(walkers.positions).detach()
+        pair_distances = all_pair_distances(walkers.positions).detach()
         all_local_energy.append(local_energy.cpu())
-        all_r12.append(r12.cpu())
-        energy_rows.append(_energy_row(cfg, block, local_energy, exact_energy=getattr(system, "exact_energy", None), sampler=sampler, r12=r12))
+        all_pair_distance.append(pair_distances.cpu())
+        energy_rows.append(
+            _energy_row(
+                cfg,
+                block,
+                local_energy,
+                exact_energy=getattr(system, "exact_energy", None),
+                sampler=sampler,
+                pair_distance=pair_distances,
+            )
+        )
     local_energy = torch.cat(all_local_energy)
-    r12 = torch.cat(all_r12)
+    pair_distance = torch.cat(all_pair_distance)
     return {
         "sampler": sampler,
         "walkers": walkers,
         "local_energy": local_energy,
-        "pair_distance": r12,
+        "pair_distance": pair_distance,
         "energy_rows": energy_rows,
-        "metrics": _final_metrics(cfg, local_energy, r12, exact_energy=getattr(system, "exact_energy", None), sampler=sampler),
+        "metrics": _final_metrics(
+            cfg,
+            local_energy,
+            pair_distance,
+            exact_energy=getattr(system, "exact_energy", None),
+            sampler=sampler,
+        ),
         "tables": {},
     }
 
@@ -224,7 +246,7 @@ def _production(
 def _final_metrics(
     cfg: DictConfig,
     local_energy: torch.Tensor,
-    r12: torch.Tensor,
+    pair_distance: torch.Tensor,
     *,
     exact_energy: float | None,
     sampler: Any,
@@ -236,8 +258,12 @@ def _final_metrics(
     metrics = {
         "sampler/acceptance_rate": float(getattr(sampler, "acceptance_rate", 0.0)),
         "sampler/proposal_scale": float(getattr(getattr(sampler, "move", None), "step_size", float("nan"))),
-        "sampler/mean_r12": float(r12.mean().item()),
-        "sampler/std_r12": float(r12.std(unbiased=False).item()),
+        "sampler/mean_r12": float(pair_distance.mean().item()),
+        "sampler/std_r12": float(pair_distance.std(unbiased=False).item()),
+        "sampler/mean_pair_distance": float(pair_distance.mean().item()),
+        "sampler/std_pair_distance": float(pair_distance.std(unbiased=False).item()),
+        "sampler/min_pair_distance": float(pair_distance.min().item()),
+        "sampler/max_pair_distance": float(pair_distance.max().item()),
         "sampler/equilibration_steps": float(OmegaConf.select(cfg, "sampler.warmup_steps", default=0)),
     }
     if prefix == "spenn":
@@ -276,9 +302,9 @@ def _energy_row(
     *,
     exact_energy: float | None,
     sampler: Any,
-    r12: torch.Tensor,
+    pair_distance: torch.Tensor,
 ) -> dict[str, object]:
-    metrics = _final_metrics(cfg, local_energy, r12, exact_energy=exact_energy, sampler=sampler)
+    metrics = _final_metrics(cfg, local_energy, pair_distance, exact_energy=exact_energy, sampler=sampler)
     return {"step": block, **metrics}
 
 

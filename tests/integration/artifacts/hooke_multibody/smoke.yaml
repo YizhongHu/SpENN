@@ -1,0 +1,13 @@
+inherits: smoke
+run_mode: integration
+
+artifacts:
+  write_plot_data: true
+  write_checkpoint: false
+
+tracking:
+  tags:
+    - hooke_multibody
+    - smoke
+    - integration_test
+    - vmc_only

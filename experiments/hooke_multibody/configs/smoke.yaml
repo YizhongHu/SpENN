@@ -1,0 +1,56 @@
+inherits: spenn
+experiment_name: hooke_multibody_smoke
+run_mode: smoke
+
+seed: 11
+
+specht:
+  channels: [0, 4, 4]
+
+model:
+  spenn:
+    encoder:
+      hidden_channels: 8
+      num_hidden_layers: 1
+
+sampler:
+  n_walkers: 4
+  warmup_steps: 1
+  production_blocks: 1
+  steps_per_block: 1
+  steps_per_iter: 1
+  initial_scale: 1.0
+
+training:
+  vmc_steps: 1
+  log_every: 1
+
+trainer:
+  max_steps: ${training.vmc_steps}
+  log_every: ${training.log_every}
+  checkpoint_every: 10
+
+diagnostics:
+  local_energy_histogram:
+    bins: 8
+  pair_distance_histogram:
+    bins: 8
+  radial_density:
+    bins: 8
+  cusp:
+    n_points: 4
+    n_configurations: 1
+  antisymmetry:
+    n_samples: 4
+    max_transpositions: 2
+
+artifacts:
+  write_plot_data: true
+  write_checkpoint: false
+
+tracking:
+  tags:
+    - hooke_multibody
+    - smoke
+    - integration_test
+    - vmc_only

@@ -7,6 +7,7 @@ from torch import nn
 
 from spenn.data.batch import ElectronBatch
 from spenn.diagnostics.base import DiagnosticContext, DiagnosticResult
+from spenn.utils.tensor_utils import pairwise_distances
 
 
 class HistogramDiagnostic:
@@ -45,6 +46,76 @@ class HistogramDiagnostic:
 
         values = _context_values(context, self.values)
         return DiagnosticResult(tables={self.table_name: histogram_rows(values, self.bins)})
+
+
+class PairDistanceHistogramDiagnostic(HistogramDiagnostic):
+    """Build a histogram from all unique electron-pair distances.
+
+    Parameters
+    ----------
+    bins : int, optional
+        Number of histogram bins.
+    table_name : str or None, optional
+        Output table name. If ``None``, ``"pair_distance_histogram"`` is used.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(self, bins: int = 32, table_name: str | None = None, **_: object) -> None:
+        super().__init__(values="pair_distance", bins=bins, table_name=table_name or "pair_distance_histogram", **_)
+
+
+class RadialDensityDiagnostic(nn.Module):
+    """Build a one-body radial-density histogram from final walkers.
+
+    Parameters
+    ----------
+    bins : int, optional
+        Number of radial bins.
+    table_name : str, optional
+        Output table name.
+    metric_prefix : str, optional
+        Prefix for emitted radial scalar metrics.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(
+        self,
+        bins: int = 32,
+        table_name: str = "radial_density",
+        metric_prefix: str = "radial_density",
+        **_: object,
+    ) -> None:
+        super().__init__()
+        self.bins = int(bins)
+        self.table_name = table_name
+        self.metric_prefix = metric_prefix
+
+    def forward(self, context: DiagnosticContext) -> DiagnosticResult:
+        """Return radial-density metrics and table rows.
+
+        Parameters
+        ----------
+        context : DiagnosticContext
+            Runtime diagnostic context.
+
+        Returns
+        -------
+        DiagnosticResult
+            Mean radius metric and histogram rows.
+        """
+
+        radii = torch.linalg.vector_norm(context.walkers.positions.detach(), dim=-1).flatten()
+        rows = histogram_rows(radii, self.bins)
+        total = max(float(radii.numel()), 1.0)
+        for row in rows:
+            width = float(row["bin_right"]) - float(row["bin_left"])
+            row["probability_density"] = 0.0 if width <= 0 else float(row["count"]) / (total * width)
+        return DiagnosticResult(
+            metrics={f"{self.metric_prefix}/mean_radius": float(radii.mean().item())},
+            tables={self.table_name: rows},
+        )
 
 
 class RadialCutDiagnostic(nn.Module):
@@ -391,6 +462,232 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         )
 
 
+class SpinResolvedCuspSlopeDiagnostic(nn.Module):
+    """Estimate short-range cusp slopes for same- and opposite-spin pairs.
+
+    Parameters
+    ----------
+    n_points : int, optional
+        Number of radial points used in each local fit.
+    n_configurations : int, optional
+        Number of final walker configurations to use as pair centers.
+    axis : int, optional
+        Cartesian axis along which pair separations are varied.
+    r_min, r_max : float, optional
+        Short-range radial fit interval.
+    same_spin_target, opposite_spin_target : float, optional
+        Target cusp slopes.
+    factor_same_spin_node : bool, optional
+        Whether to subtract ``log(r)`` for same-spin fits.
+    metric_prefix : str, optional
+        Metric namespace.
+    table_name : str, optional
+        Output table name.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(
+        self,
+        n_points: int = 8,
+        n_configurations: int = 4,
+        axis: int = 0,
+        r_min: float = 1.0e-4,
+        r_max: float = 2.0e-2,
+        same_spin_target: float = 0.25,
+        opposite_spin_target: float = 0.5,
+        factor_same_spin_node: bool = True,
+        metric_prefix: str = "cusp",
+        table_name: str = "cusp_slope_by_spin",
+        **_: object,
+    ) -> None:
+        super().__init__()
+        self.n_points = int(n_points)
+        self.n_configurations = int(n_configurations)
+        self.axis = int(axis)
+        self.r_min = float(r_min)
+        self.r_max = float(r_max)
+        self.same_spin_target = float(same_spin_target)
+        self.opposite_spin_target = float(opposite_spin_target)
+        self.factor_same_spin_node = bool(factor_same_spin_node)
+        self.metric_prefix = metric_prefix
+        self.table_name = table_name
+
+    def forward(self, context: DiagnosticContext) -> DiagnosticResult:
+        """Return spin-resolved cusp fit metrics and rows.
+
+        Parameters
+        ----------
+        context : DiagnosticContext
+            Runtime diagnostic context.
+
+        Returns
+        -------
+        DiagnosticResult
+            Mean and maximum slope errors plus per-pair fit rows.
+        """
+
+        positions = context.walkers.positions.detach()
+        spins = context.walkers.spins
+        if spins is None:
+            spins = spin_labels(
+                context.system,
+                n_walkers=positions.shape[0],
+                device=context.device,
+                dtype=context.dtype,
+            )
+        if spins is None:
+            raise ValueError("SpinResolvedCuspSlopeDiagnostic requires spin labels")
+        if positions.ndim != 3:
+            raise ValueError(
+                "walker positions must have shape [batch, n_electrons, dim], "
+                f"got {tuple(positions.shape)}"
+            )
+        n_configs = min(self.n_configurations, positions.shape[0])
+        rows: list[dict[str, object]] = []
+        errors_by_relation: dict[str, list[float]] = {"same": [], "opposite": []}
+        r = torch.linspace(self.r_min, self.r_max, self.n_points, device=context.device, dtype=context.dtype)
+        for config_index in range(n_configs):
+            for i, j in _pair_indices(positions.shape[1]):
+                relation = "same" if bool(spins[config_index, i] == spins[config_index, j]) else "opposite"
+                target = self.same_spin_target if relation == "same" else self.opposite_spin_target
+                batch = _pair_radial_batch(
+                    positions[config_index],
+                    spins[config_index],
+                    i,
+                    j,
+                    r,
+                    axis=self.axis,
+                    system=context.system,
+                )
+                with torch.no_grad():
+                    logabs = context.model(batch).logabs
+                    if relation == "same" and self.factor_same_spin_node:
+                        logabs = logabs - torch.log(r.clamp_min(torch.finfo(context.dtype).tiny))
+                    slope = linear_slope(r, logabs)
+                error = slope - target
+                errors_by_relation[relation].append(error)
+                rows.append(
+                    {
+                        "configuration": config_index,
+                        "pair_i": i,
+                        "pair_j": j,
+                        "spin_relation": relation,
+                        "measured_slope": slope,
+                        "target_slope": target,
+                        "slope_error": error,
+                    }
+                )
+        metrics: dict[str, float] = {}
+        for relation, errors in errors_by_relation.items():
+            if errors:
+                values = torch.tensor(errors, dtype=torch.float64)
+                metrics[f"{self.metric_prefix}/{relation}_mean_error"] = float(values.mean().item())
+                metrics[f"{self.metric_prefix}/{relation}_max_abs_error"] = float(values.abs().max().item())
+        return DiagnosticResult(metrics=metrics, tables={self.table_name: rows})
+
+
+class ParticleAntisymmetryDiagnostic(nn.Module):
+    """Check particle-token antisymmetry for selected transpositions.
+
+    Parameters
+    ----------
+    n_samples : int, optional
+        Number of final walker configurations to check.
+    max_transpositions : int, optional
+        Maximum number of pair transpositions to evaluate.
+    metric_prefix : str, optional
+        Metric namespace.
+    table_name : str, optional
+        Output table name.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(
+        self,
+        n_samples: int = 32,
+        max_transpositions: int = 6,
+        metric_prefix: str = "antisymmetry",
+        table_name: str = "particle_antisymmetry",
+        **_: object,
+    ) -> None:
+        super().__init__()
+        self.n_samples = int(n_samples)
+        self.max_transpositions = int(max_transpositions)
+        self.metric_prefix = metric_prefix
+        self.table_name = table_name
+
+    def forward(self, context: DiagnosticContext) -> DiagnosticResult:
+        """Return particle-token antisymmetry metrics and rows.
+
+        Parameters
+        ----------
+        context : DiagnosticContext
+            Runtime diagnostic context.
+
+        Returns
+        -------
+        DiagnosticResult
+            Antisymmetry error metrics and CSV rows.
+        """
+
+        positions = context.walkers.positions.detach()[: self.n_samples]
+        spins = None if context.walkers.spins is None else context.walkers.spins.detach()[: self.n_samples]
+        pairs = _pair_indices(positions.shape[1])[: self.max_transpositions]
+        rows: list[dict[str, object]] = []
+        all_errors: list[torch.Tensor] = []
+        all_logabs_errors: list[torch.Tensor] = []
+        all_sign_flips: list[torch.Tensor] = []
+        with torch.no_grad():
+            original = context.model(ElectronBatch(positions=positions, system=context.system, spins=spins))
+            original_psi = original.sign * torch.exp(original.logabs)
+            for i, j in pairs:
+                permutation = torch.arange(positions.shape[1], device=positions.device)
+                permutation[i], permutation[j] = permutation[j].clone(), permutation[i].clone()
+                swapped_spins = None if spins is None else spins.index_select(1, permutation)
+                swapped = context.model(
+                    ElectronBatch(
+                        positions=positions.index_select(1, permutation),
+                        system=context.system,
+                        spins=swapped_spins,
+                    )
+                )
+                swapped_psi = swapped.sign * torch.exp(swapped.logabs)
+                denom = original_psi.abs() + swapped_psi.abs()
+                error = (original_psi + swapped_psi).abs() / denom.clamp_min(torch.finfo(context.dtype).eps)
+                logabs_error = (original.logabs - swapped.logabs).abs()
+                sign_flip = original.sign == -swapped.sign
+                all_errors.append(error)
+                all_logabs_errors.append(logabs_error)
+                all_sign_flips.append(sign_flip.to(torch.float64))
+                rows.append(
+                    {
+                        "pair_i": i,
+                        "pair_j": j,
+                        "antisymmetry_error_mean": float(error.mean().item()),
+                        "antisymmetry_error_max": float(error.max().item()),
+                        "swap_logabs_error_mean": float(logabs_error.mean().item()),
+                        "sign_flip_accuracy": float(sign_flip.to(torch.float64).mean().item()),
+                    }
+                )
+        if not all_errors:
+            return DiagnosticResult(tables={self.table_name: rows})
+        errors = torch.cat(all_errors)
+        logabs_errors = torch.cat(all_logabs_errors)
+        sign_flips = torch.cat(all_sign_flips)
+        return DiagnosticResult(
+            metrics={
+                f"{self.metric_prefix}/antisymmetry_error_mean": float(errors.mean().item()),
+                f"{self.metric_prefix}/antisymmetry_error_max": float(errors.max().item()),
+                f"{self.metric_prefix}/swap_logabs_error_mean": float(logabs_errors.mean().item()),
+                f"{self.metric_prefix}/swap_logabs_error_max": float(logabs_errors.max().item()),
+                f"{self.metric_prefix}/sign_flip_accuracy": float(sign_flips.mean().item()),
+            },
+            tables={self.table_name: rows},
+        )
+
+
 def _normalize_exchange_mode(value: str) -> str:
     normalized = value.lower().replace("-", "_")
     if normalized in {"auto", "spatial_singlet", "particle_antisymmetric"}:
@@ -418,6 +715,34 @@ def pair_distance(positions: torch.Tensor) -> torch.Tensor:
     if positions.ndim != 3 or positions.shape[1] != 2:
         raise ValueError(f"positions must have shape [batch, 2, spatial_dim], got {tuple(positions.shape)}")
     return torch.linalg.norm(positions[:, 0] - positions[:, 1], dim=-1)
+
+
+def all_pair_distances(positions: torch.Tensor, eps: float = 0.0) -> torch.Tensor:
+    """Return flattened upper-triangle electron-pair distances.
+
+    Parameters
+    ----------
+    positions : torch.Tensor
+        Coordinate tensor with shape ``[batch, n_electrons, spatial_dim]``.
+    eps : float, optional
+        Distance floor passed to :func:`spenn.utils.tensor_utils.pairwise_distances`.
+
+    Returns
+    -------
+    torch.Tensor
+        Distances for all unique pairs with shape ``[batch * n_pairs]``.
+    """
+
+    if positions.ndim != 3:
+        raise ValueError(f"positions must have shape [batch, n_electrons, spatial_dim], got {tuple(positions.shape)}")
+    n_electrons = positions.shape[1]
+    if n_electrons < 2:
+        raise ValueError("all_pair_distances requires at least two electrons")
+    distances = pairwise_distances(positions, eps=eps).squeeze(-1)
+    pair_index = torch.triu_indices(n_electrons, n_electrons, offset=1, device=positions.device)
+    output = distances[:, pair_index[0], pair_index[1]].reshape(-1)
+    assert output.shape == (positions.shape[0] * pair_index.shape[1],)
+    return output
 
 
 def histogram_rows(values: torch.Tensor, bins: int) -> list[dict[str, float]]:
@@ -534,6 +859,30 @@ def _context_values(context: DiagnosticContext, name: str) -> torch.Tensor:
     if name in {"r12", "pair_distance"}:
         return context.pair_distance
     raise KeyError(f"Unknown diagnostic tensor: {name!r}")
+
+
+def _pair_indices(n_electrons: int) -> list[tuple[int, int]]:
+    return [(i, j) for i in range(n_electrons) for j in range(i + 1, n_electrons)]
+
+
+def _pair_radial_batch(
+    base_positions: torch.Tensor,
+    spins: torch.Tensor,
+    i: int,
+    j: int,
+    r: torch.Tensor,
+    *,
+    axis: int,
+    system: object,
+) -> ElectronBatch:
+    positions = base_positions.unsqueeze(0).expand(r.numel(), -1, -1).clone()
+    center = 0.5 * (base_positions[i] + base_positions[j])
+    positions[:, i, :] = center
+    positions[:, j, :] = center
+    positions[:, i, axis] = center[axis] + 0.5 * r
+    positions[:, j, axis] = center[axis] - 0.5 * r
+    expanded_spins = spins.unsqueeze(0).expand(r.numel(), -1).clone()
+    return ElectronBatch(positions=positions, system=system, spins=expanded_spins)
 
 
 def _radial_batch(
