@@ -58,6 +58,9 @@ autocorrelation time, and effective sample size when enough sequential blocks
 are available. `process_outputs.py` also promotes local-energy and pair-distance
 sample tables into `data/`. Figures generated from saved CSVs are written under
 `experiments/hooke_multibody/figures/spenn/`.
+`process_outputs.py` writes `data/energy_plausibility.csv` for both single runs
+and scan parents. Until a reference is added, that table records
+`reference_available=false` and leaves reference/delta columns blank.
 
 ## Version Notes
 
@@ -82,7 +85,20 @@ Local verification used the CPU uv environment through `.venv/bin/python`:
   -q --typeguard-packages=spenn
 ```
 
-Result: `16 passed in 84.59s`.
+Current focused verification:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/unit/diagnostics/test_statistics.py \
+  tests/unit/diagnostics/test_multibody_wavefunction.py \
+  tests/unit/training/test_run_metadata.py \
+  tests/integration/test_hooke.py \
+  tests/integration/test_hooke_spenn.py \
+  tests/integration/test_hooke_multibody.py \
+  -q --typeguard-packages=spenn
+```
+
+Result: `24 passed in 42.62s`.
 
 ## Slurm
 

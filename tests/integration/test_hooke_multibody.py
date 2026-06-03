@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import math
 import re
 from pathlib import Path
@@ -68,6 +69,7 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
         "spenn_observables.csv",
         "energy_trace.csv",
         "sampler_metrics.csv",
+        "energy_plausibility.csv",
         "local_energy_samples.csv",
         "pair_distance_samples.csv",
         "pair_distance_histogram.csv",
@@ -77,6 +79,12 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     ]:
         assert (run_dir / "data" / name).exists(), f"missing processed data file: {name}"
     assert "pair_distance_histogram.csv" in processed["data_files"]
+    plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
+    assert len(plausibility_rows) == 1
+    assert plausibility_rows[0]["n_electrons"] == "3"
+    assert plausibility_rows[0]["specht_M"] == "2"
+    assert plausibility_rows[0]["reference_available"] == "False"
+    assert plausibility_rows[0]["reference_method"] == "none"
 
     figures = plot_run(run_dir, figure_root=run_dir / "figures")
     assert figures
@@ -91,7 +99,12 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
 
     summary = run_spin_scan(
         cfg,
-        forwarded_overrides=["run_id=integration_hooke_multibody_spin_scan"],
+        forwarded_overrides=[
+            "run_id=integration_hooke_multibody_spin_scan",
+            "sampler.n_walkers=5",
+            "training.vmc_steps=1",
+            "trainer.max_steps=1",
+        ],
         run_id="integration_hooke_multibody_spin_scan",
     )
 
@@ -104,11 +117,19 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     assert _csv_row_count(run_dir / "metrics" / "spin_scan_summary.csv") == 2
     assert summary["best_run"]["run_id"] in {run["run_id"] for run in summary["runs"]}
     assert {run["run_time"] for run in summary["runs"]} == {summary["run_time"]}
+    assert summary["config"]["sampler"]["n_walkers"] == 5
+    assert summary["config"]["training"]["vmc_steps"] == 1
+    assert all(run["run_id"].endswith(f"up{run['n_up']}_down{run['n_down']}") for run in summary["runs"])
 
     processed = process_run(run_dir)
     assert processed["mode"] == "spin_scan"
     assert (run_dir / "data" / "spin_scan_summary.csv").exists()
+    assert (run_dir / "data" / "energy_plausibility.csv").exists()
     assert (run_dir / "artifacts" / "processed_summary.json").exists()
+    plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
+    assert len(plausibility_rows) == 2
+    assert {row["specht_M"] for row in plausibility_rows} == {"2"}
+    assert {row["reference_method"] for row in plausibility_rows} == {"none"}
 
     figures = plot_run(run_dir, figure_root=run_dir / "figures")
     assert len(figures) == 1
@@ -119,3 +140,8 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
 def _csv_row_count(path: Path) -> int:
     with path.open("r", encoding="utf-8") as handle:
         return max(sum(1 for _ in handle) - 1, 0)
+
+
+def _csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))

@@ -22,6 +22,23 @@ DATA_EXPORTS = {
     "particle_antisymmetry.csv": Path("plots/particle_antisymmetry.csv"),
     "spin_scan_summary.csv": Path("metrics/spin_scan_summary.csv"),
 }
+ENERGY_PLAUSIBILITY_COLUMNS = [
+    "run_id",
+    "run_time",
+    "n_electrons",
+    "specht_M",
+    "n_up",
+    "n_down",
+    "energy_mean",
+    "energy_sem",
+    "local_energy_variance",
+    "acceptance_rate",
+    "reference_available",
+    "reference_method",
+    "reference_energy",
+    "energy_delta",
+    "energy_abs_delta",
+]
 
 
 def main() -> None:
@@ -87,7 +104,10 @@ def process_run(
         processed["reference_available"] = bool(reference_summary.get("reference_available", False))
         row["reference_available"] = processed["reference_available"]
     write_csv(target / "data" / "spenn_observables.csv", [row])
+    plausibility_rows = [_plausibility_row_from_run_summary(spenn_summary)]
+    write_csv(target / "data" / "energy_plausibility.csv", plausibility_rows)
     processed["data_files"] = _export_data_tables(spenn_run, target / "data")
+    processed["data_files"]["energy_plausibility.csv"] = str(target / "data" / "energy_plausibility.csv")
     write_json(target / "artifacts" / "processed_summary.json", processed)
     return processed
 
@@ -105,9 +125,79 @@ def _process_spin_scan(
         "best_run": summary.get("best_run", {}),
         "reference_available": False,
     }
+    plausibility_rows = [_plausibility_row_from_scan_run(run, summary) for run in summary.get("runs", [])]
+    write_csv(target / "data" / "energy_plausibility.csv", plausibility_rows)
     processed["data_files"] = _export_data_tables(scan_run, target / "data")
+    processed["data_files"]["energy_plausibility.csv"] = str(target / "data" / "energy_plausibility.csv")
     write_json(target / "artifacts" / "processed_summary.json", processed)
     return processed
+
+
+def _plausibility_row_from_run_summary(summary: dict[str, object]) -> dict[str, object]:
+    cfg = summary["config"]
+    metrics = summary["metrics"]
+    system = cfg["system"]
+    specht = cfg.get("specht", {})
+    reference_available = bool(cfg.get("validation", {}).get("reference_available", False))
+    reference_energy = metrics.get("exact/energy", "")
+    energy_mean = metrics.get("spenn/energy/mean", "")
+    energy_delta = _energy_delta(energy_mean, reference_energy)
+    return _ordered_plausibility_row(
+        {
+            "run_id": summary["run_id"],
+            "run_time": summary.get("run_time", ""),
+            "n_electrons": system.get("n_electrons", ""),
+            "specht_M": specht.get("M", ""),
+            "n_up": system.get("n_up", ""),
+            "n_down": system.get("n_down", ""),
+            "energy_mean": energy_mean,
+            "energy_sem": metrics.get("spenn/energy/sem", ""),
+            "local_energy_variance": metrics.get("spenn/local_energy/variance", ""),
+            "acceptance_rate": metrics.get("sampler/acceptance_rate", ""),
+            "reference_available": reference_available,
+            "reference_method": "configured_exact" if reference_available else "none",
+            "reference_energy": reference_energy,
+            "energy_delta": energy_delta,
+            "energy_abs_delta": "" if energy_delta == "" else abs(float(energy_delta)),
+        }
+    )
+
+
+def _plausibility_row_from_scan_run(run: object, summary: dict[str, object]) -> dict[str, object]:
+    if not isinstance(run, dict):
+        raise TypeError(f"scan run summary must be a mapping, got {type(run).__name__}")
+    cfg = summary.get("config", {})
+    specht = cfg.get("specht", {}) if isinstance(cfg, dict) else {}
+    energy_mean = run.get("energy_mean", "")
+    return _ordered_plausibility_row(
+        {
+            "run_id": run.get("run_id", ""),
+            "run_time": run.get("run_time", summary.get("run_time", "")),
+            "n_electrons": run.get("n_electrons", ""),
+            "specht_M": specht.get("M", ""),
+            "n_up": run.get("n_up", ""),
+            "n_down": run.get("n_down", ""),
+            "energy_mean": energy_mean,
+            "energy_sem": run.get("energy_sem", ""),
+            "local_energy_variance": run.get("local_energy_variance", ""),
+            "acceptance_rate": run.get("acceptance_rate", ""),
+            "reference_available": False,
+            "reference_method": "none",
+            "reference_energy": "",
+            "energy_delta": "",
+            "energy_abs_delta": "",
+        }
+    )
+
+
+def _ordered_plausibility_row(row: dict[str, object]) -> dict[str, object]:
+    return {column: row.get(column, "") for column in ENERGY_PLAUSIBILITY_COLUMNS}
+
+
+def _energy_delta(energy_mean: object, reference_energy: object) -> float | str:
+    if energy_mean == "" or reference_energy == "":
+        return ""
+    return float(energy_mean) - float(reference_energy)
 
 
 def _export_data_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:

@@ -42,6 +42,7 @@ def run_generated_config(
     run_id: str | None = None,
     output_root: str | Path | None = None,
     forwarded_overrides: list[str] | None = None,
+    apply_forwarded_overrides: bool = True,
 ) -> dict[str, object]:
     """Generate a config, execute the script, and return its summary.
 
@@ -57,6 +58,11 @@ def run_generated_config(
         Output root to apply as the top-level ``output_root`` override.
     forwarded_overrides : list of str or None, optional
         Dotlist overrides to merge and pass through for artifact recording.
+    apply_forwarded_overrides : bool, optional
+        Whether to apply dotlist overrides before writing the generated config.
+        Set this to ``False`` only when the caller has already merged those
+        overrides into ``cfg_or_path`` and wants them recorded without applying
+        them a second time.
 
     Returns
     -------
@@ -66,7 +72,7 @@ def run_generated_config(
 
     forwarded = list(forwarded_overrides or [])
     cfg = _load_config(cfg_or_path)
-    dotlist = [override for override in forwarded if "=" in override]
+    dotlist = [override for override in forwarded if "=" in override] if apply_forwarded_overrides else []
     generated_overrides = _generated_overrides(cfg, spec, run_id=run_id, output_root=output_root, dotlist=dotlist)
     if generated_overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(generated_overrides))

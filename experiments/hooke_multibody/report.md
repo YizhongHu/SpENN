@@ -47,6 +47,34 @@ writes PNGs under `experiments/hooke_multibody/figures/spenn/`.
 Sampler-health outputs include acceptance, proposal scale, pair-distance
 summaries, local-energy sample count, autocorrelation time, and effective
 sample size when enough sequential production blocks are present.
+`energy_plausibility.csv` is the canonical energy table for now. Because no
+reference is available, its reference and delta columns are intentionally blank.
+
+## Local Sanity Snapshot
+
+The following local CPU artifacts were generated on 2026-06-03 under
+`outputs/codex_hooke_multibody/`. They are smoke-scale checks of the workflow,
+not converged VMC evidence.
+
+| run | sector | energy | sem | variance | acceptance |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `hooke_multibody_spenn_09-47-27_316dd9d9` | `N=3, up=2, down=1` | 4.72118557 | 0.08647394 | 0.05982194 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up3_down0` | `N=3, up=3, down=0` | 4.59707710 | 0.08134876 | 0.02647048 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up2_down1` | `N=3, up=2, down=1` | 4.03680492 | 0.16581581 | 0.10997953 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up1_down2` | `N=3, up=1, down=2` | 4.45998269 | 0.12493563 | 0.06243565 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up0_down3` | `N=3, up=0, down=3` | 4.71338838 | 0.12463252 | 0.06213306 | 0.625 |
+
+The smoke run had particle-token antisymmetry error below `6e-16` and sign-flip
+accuracy `1.0`. Its spin-resolved cusp slope estimates were poor
+(`same_mean_error=-84.30`, `opposite_mean_error=-1.21`), so cusp behavior should
+be treated as an open diagnostic/model issue rather than a passed physics check.
+
+Generated figures:
+
+- `figures/spenn/hooke_multibody_spenn_09-47-27_316dd9d9_energy_trace.png`
+- `figures/spenn/hooke_multibody_spenn_09-47-27_316dd9d9_cusp_slope_by_spin.png`
+- `figures/spenn/hooke_multibody_spenn_09-47-27_316dd9d9_particle_antisymmetry.png`
+- `figures/spenn/hooke_multibody_spin_scan_10-03-43_514cbd97_spin_scan_energy.png`
 
 ## Slurm
 

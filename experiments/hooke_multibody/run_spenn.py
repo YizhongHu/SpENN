@@ -81,6 +81,7 @@ def run(
     forwarded_overrides: list[str] | None = None,
     run_id: str | None = None,
     output_root: str | Path | None = None,
+    apply_forwarded_overrides: bool = True,
 ) -> dict[str, object]:
     """Generate a config, run SpENN training, and summarize the result.
 
@@ -94,6 +95,10 @@ def run(
         Run id override.
     output_root : str, pathlib.Path, or None, optional
         Output root override.
+    apply_forwarded_overrides : bool, optional
+        Whether to apply forwarded dotlist overrides in the generated child
+        config. Scan children pass ``False`` because scan-level code has
+        already merged the overrides before applying each spin partition.
 
     Returns
     -------
@@ -111,6 +116,7 @@ def run(
         run_id=run_id,
         output_root=output_root,
         forwarded_overrides=forwarded_overrides,
+        apply_forwarded_overrides=apply_forwarded_overrides,
     )
     return _summary_from_artifact(generic["output_dir"])
 
@@ -141,18 +147,21 @@ def run_spin_scan(
         Spin-scan summary.
     """
 
-    run_time = run_time_stamp()
+    forwarded = list(forwarded_overrides or [])
+    dotlist = [override for override in forwarded if "=" in override]
+    base_cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(dotlist)) if dotlist else cfg
+    run_time = str(OmegaConf.select(base_cfg, "run.time", default=run_time_stamp()))
     scan_id = run_id or make_run_id("hooke_multibody_spin_scan", run_time=run_time)
-    output_root_path = Path(str(output_root or OmegaConf.select(cfg, "output_root", default="outputs")))
+    output_root_path = Path(str(output_root or OmegaConf.select(base_cfg, "output_root", default="outputs")))
     scan_cfg = OmegaConf.merge(
-        cfg,
+        base_cfg,
         {
             "run": {"time": run_time},
             "run_id": scan_id,
             "output_root": str(output_root_path),
         },
     )
-    partitions = OmegaConf.select(cfg, "scan.spin_partitions", default=None)
+    partitions = OmegaConf.select(scan_cfg, "scan.spin_partitions", default=None)
     if not partitions:
         raise ValueError("scan.spin_partitions must contain at least one [n_up, n_down] pair")
     rows: list[dict[str, object]] = []
@@ -172,9 +181,10 @@ def run_spin_scan(
         )
         summary = run(
             child_cfg,
-            forwarded_overrides=forwarded_overrides,
+            forwarded_overrides=forwarded,
             run_id=child_run_id,
             output_root=output_root,
+            apply_forwarded_overrides=False,
         )
         summaries.append(summary)
         rows.append(
@@ -185,6 +195,7 @@ def run_spin_scan(
                 "n_up": n_up,
                 "n_down": n_down,
                 "energy_mean": summary["energy_mean"],
+                "energy_sem": summary["energy_sem"],
                 "local_energy_variance": summary["local_energy_variance"],
                 "acceptance_rate": summary["acceptance_rate"],
             }
@@ -198,7 +209,7 @@ def run_spin_scan(
     )
     scan_artifact_cfg = OmegaConf.create(OmegaConf.to_container(scan_cfg, resolve=False))
     OmegaConf.resolve(scan_artifact_cfg)
-    write_config_artifacts(output_dir, scan_artifact_cfg, forwarded_overrides or [])
+    write_config_artifacts(output_dir, scan_artifact_cfg, forwarded)
     _write_csv(output_dir / "metrics" / "spin_scan_summary.csv", rows)
     payload = {
         "entrypoint": "experiments/hooke_multibody/run_spenn.py",
@@ -238,6 +249,7 @@ def _summary_from_artifact(output_dir: str | Path) -> dict[str, object]:
         "omega": cfg["system"]["harmonic_omega"],
         "reference_available": False,
         "energy_mean": energy,
+        "energy_sem": metrics["spenn/energy/sem"],
         "local_energy_variance": metrics["spenn/local_energy/variance"],
         "acceptance_rate": acceptance,
         "mean_pair_distance": metrics["sampler/mean_pair_distance"],
