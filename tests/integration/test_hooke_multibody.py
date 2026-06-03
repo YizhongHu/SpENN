@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import math
 import re
+from pathlib import Path
 
 import pytest
 
-from experiments.hooke_multibody.run_spenn import load_config, run
+from experiments.hooke_multibody.plot_outputs import plot_run
+from experiments.hooke_multibody.process_outputs import process_run
+from experiments.hooke_multibody.run_spenn import load_config, run, run_spin_scan
 from tests.helpers import (
     HOOKE_MULTIBODY_INTEGRATION_ARTIFACTS,
     assert_hooke_multibody_run_artifacts,
@@ -42,5 +45,60 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert math.isfinite(float(metrics["spenn/local_energy/variance"]))
     assert math.isfinite(float(metrics["sampler/mean_pair_distance"]))
     assert float(metrics["sampler/min_pair_distance"]) > 0.0
+    assert math.isfinite(float(metrics["radial_density/mean_radius"]))
+    assert "cusp/same_count" in metrics
+    assert "cusp/opposite_count" in metrics
+    assert "antisymmetry/antisymmetry_error_max" in metrics
     assert "exact/energy" not in metrics
     assert "comparison/energy_abs_error" not in metrics
+
+    run_dir = Path(summary["output_dir"])
+    assert _csv_row_count(run_dir / "plots" / "pair_distance_histogram.csv") == 8
+    assert _csv_row_count(run_dir / "plots" / "radial_density.csv") == 8
+    assert _csv_row_count(run_dir / "plots" / "cusp_slope_by_spin.csv") == 3
+    assert _csv_row_count(run_dir / "plots" / "particle_antisymmetry.csv") == 2
+
+    processed = process_run(run_dir)
+    for name in [
+        "spenn_observables.csv",
+        "energy_trace.csv",
+        "sampler_metrics.csv",
+        "pair_distance_histogram.csv",
+        "radial_density.csv",
+        "cusp_slope_by_spin.csv",
+        "particle_antisymmetry.csv",
+    ]:
+        assert (run_dir / "data" / name).exists(), f"missing processed data file: {name}"
+    assert "pair_distance_histogram.csv" in processed["data_files"]
+
+    figures = plot_run(run_dir, figure_root=run_dir / "figures")
+    assert figures
+    assert all(path.exists() for path in figures)
+
+
+@pytest.mark.integration
+def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts() -> None:
+    cfg = load_config(HOOKE_MULTIBODY_INTEGRATION_ARTIFACTS / "smoke.yaml")
+    cfg.scan = {"spin_partitions": [[2, 1], [1, 2]]}
+    cfg.run_id = "integration_hooke_multibody_spin_scan"
+
+    summary = run_spin_scan(
+        cfg,
+        forwarded_overrides=["run_id=integration_hooke_multibody_spin_scan"],
+        run_id="integration_hooke_multibody_spin_scan",
+    )
+
+    run_dir = Path(summary["output_dir"])
+    assert summary["mode"] == "spin_scan"
+    assert re.fullmatch(r"\d{2}-\d{2}-\d{2}", summary["run_time"])
+    assert (run_dir / ".hydra" / "config.yaml").exists()
+    assert (run_dir / ".hydra" / "overrides.yaml").exists()
+    assert (run_dir / "metrics" / "spin_scan_summary.csv").exists()
+    assert _csv_row_count(run_dir / "metrics" / "spin_scan_summary.csv") == 2
+    assert summary["best_run"]["run_id"] in {run["run_id"] for run in summary["runs"]}
+    assert {run["run_time"] for run in summary["runs"]} == {summary["run_time"]}
+
+
+def _csv_row_count(path: Path) -> int:
+    with path.open("r", encoding="utf-8") as handle:
+        return max(sum(1 for _ in handle) - 1, 0)

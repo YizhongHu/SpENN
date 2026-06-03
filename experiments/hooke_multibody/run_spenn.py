@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from experiments.hooke.runner import HookeScriptSpec, run_generated_config  # noqa: E402
 from spenn.training.artifacts import make_output_dir, make_run_id, run_time_stamp, write_json  # noqa: E402
+from spenn.training.artifacts import write_config_artifacts  # noqa: E402
 
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 DEFAULT_CONFIG = CONFIG_DIR / "spenn.yaml"
@@ -142,6 +143,15 @@ def run_spin_scan(
 
     run_time = run_time_stamp()
     scan_id = run_id or make_run_id("hooke_multibody_spin_scan", run_time=run_time)
+    output_root_path = Path(str(output_root or OmegaConf.select(cfg, "output_root", default="outputs")))
+    scan_cfg = OmegaConf.merge(
+        cfg,
+        {
+            "run": {"time": run_time},
+            "run_id": scan_id,
+            "output_root": str(output_root_path),
+        },
+    )
     partitions = OmegaConf.select(cfg, "scan.spin_partitions", default=None)
     if not partitions:
         raise ValueError("scan.spin_partitions must contain at least one [n_up, n_down] pair")
@@ -151,12 +161,13 @@ def run_spin_scan(
         n_up, n_down = int(partition[0]), int(partition[1])
         child_run_id = f"{scan_id}_up{n_up}_down{n_down}"
         child_cfg = OmegaConf.merge(
-            cfg,
+            scan_cfg,
             {
                 "n_electrons": n_up + n_down,
                 "n_up": n_up,
                 "n_down": n_down,
                 "run_id": child_run_id,
+                "run": {"time": run_time},
             },
         )
         summary = run(
@@ -170,6 +181,7 @@ def run_spin_scan(
             {
                 "run_id": summary["run_id"],
                 "output_dir": summary["output_dir"],
+                "run_time": summary["run_time"],
                 "n_up": n_up,
                 "n_down": n_down,
                 "energy_mean": summary["energy_mean"],
@@ -179,11 +191,14 @@ def run_spin_scan(
         )
     best = min(rows, key=lambda row: float(row["energy_mean"]))
     output_dir = make_output_dir(
-        Path(str(output_root or OmegaConf.select(cfg, "output_root", default="outputs"))),
+        output_root_path,
         run_name="hooke_multibody_spin_scan",
         run_id=scan_id,
         include_plots=False,
     )
+    scan_artifact_cfg = OmegaConf.create(OmegaConf.to_container(scan_cfg, resolve=False))
+    OmegaConf.resolve(scan_artifact_cfg)
+    write_config_artifacts(output_dir, scan_artifact_cfg, forwarded_overrides or [])
     _write_csv(output_dir / "metrics" / "spin_scan_summary.csv", rows)
     payload = {
         "entrypoint": "experiments/hooke_multibody/run_spenn.py",
@@ -192,6 +207,7 @@ def run_spin_scan(
         "run_id": scan_id,
         "run_time": run_time,
         "output_dir": str(output_dir),
+        "config": OmegaConf.to_container(scan_artifact_cfg, resolve=True),
         "best_run": best,
         "runs": summaries,
     }

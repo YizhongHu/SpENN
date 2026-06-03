@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 from spenn.training.artifacts import write_csv, write_json
+
+DATA_EXPORTS = {
+    "energy_trace.csv": Path("metrics/energy_trace.csv"),
+    "sampler_metrics.csv": Path("metrics/sampler_metrics.csv"),
+    "train_metrics.csv": Path("metrics/train_metrics.csv"),
+    "local_energy_histogram.csv": Path("plots/local_energy_histogram.csv"),
+    "pair_distance_histogram.csv": Path("plots/pair_distance_histogram.csv"),
+    "radial_density.csv": Path("plots/radial_density.csv"),
+    "cusp_slope_by_spin.csv": Path("plots/cusp_slope_by_spin.csv"),
+    "particle_antisymmetry.csv": Path("plots/particle_antisymmetry.csv"),
+    "spin_scan_summary.csv": Path("metrics/spin_scan_summary.csv"),
+}
 
 
 def main() -> None:
@@ -70,8 +83,22 @@ def process_run(
         processed["reference_available"] = bool(reference_summary.get("reference_available", False))
         row["reference_available"] = processed["reference_available"]
     write_csv(target / "data" / "spenn_observables.csv", [row])
+    processed["data_files"] = _export_data_tables(spenn_run, target / "data")
     write_json(target / "artifacts" / "processed_summary.json", processed)
     return processed
+
+
+def _export_data_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
+    exported: dict[str, str] = {}
+    for name, relative_source in DATA_EXPORTS.items():
+        source = run_dir / relative_source
+        if not source.exists():
+            continue
+        destination = data_dir / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        exported[name] = str(destination)
+    return exported
 
 
 def _load_summary(run_dir: Path) -> dict[str, object]:

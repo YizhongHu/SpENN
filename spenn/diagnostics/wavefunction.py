@@ -524,7 +524,7 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
         Returns
         -------
         DiagnosticResult
-            Mean and maximum slope errors plus per-pair fit rows.
+            Pair counts, mean and maximum slope errors, and per-pair fit rows.
         """
 
         positions = context.walkers.positions.detach()
@@ -580,10 +580,14 @@ class SpinResolvedCuspSlopeDiagnostic(nn.Module):
                 )
         metrics: dict[str, float] = {}
         for relation, errors in errors_by_relation.items():
+            metrics[f"{self.metric_prefix}/{relation}_count"] = float(len(errors))
             if errors:
                 values = torch.tensor(errors, dtype=torch.float64)
                 metrics[f"{self.metric_prefix}/{relation}_mean_error"] = float(values.mean().item())
                 metrics[f"{self.metric_prefix}/{relation}_max_abs_error"] = float(values.abs().max().item())
+            else:
+                metrics[f"{self.metric_prefix}/{relation}_mean_error"] = float("nan")
+                metrics[f"{self.metric_prefix}/{relation}_max_abs_error"] = float("nan")
         return DiagnosticResult(metrics=metrics, tables={self.table_name: rows})
 
 

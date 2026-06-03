@@ -1,13 +1,18 @@
 # Hooke Multibody
 
 This experiment extends the two-electron Hooke benchmark to an `N`-electron
-harmonic Coulomb trap. The default scaffold is a small `N=3` VMC-only SpENN run
-with particle-token antisymmetry: positions and spin labels permute together.
+harmonic Coulomb trap. The current scaffold is intentionally small: `N=3`,
+SpENN training only, and VMC energy minimization only. It is not a supervised
+fit to an exact wavefunction.
 
 No analytic or independent high-accuracy multibody reference is configured yet.
 The reported energy is therefore a VMC estimate, not an exact-error benchmark.
 Reference metadata lives in `configs/reference.yaml` until an external
 reference pipeline is added.
+
+Antisymmetry is tested with the particle-token convention: an electron exchange
+permutes position and spin label together. It does not swap coordinates while
+holding fixed spin labels in place.
 
 ## Reproduce
 
@@ -18,6 +23,17 @@ uv sync --extra cpu
 uv run --extra cpu python experiments/hooke_multibody/run_reference.py --config reference
 uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config smoke
 uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config benchmark --scan-spins
+```
+
+The benchmark spin scan is a fixed-sector scan over `configs/benchmark.yaml`
+partitions, currently `(n_up, n_down) = (3, 0)`, `(2, 1)`, `(1, 2)`, and
+`(0, 3)`. Each sector is a separate VMC run; the scan summary reports the
+lowest sampled VMC energy.
+
+To process a saved run into comparison-ready CSV/JSON:
+
+```bash
+uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
 
 To plot a saved run:
@@ -36,7 +52,7 @@ The generic training stack writes config, summary, checkpoint, metrics CSVs,
 and plot-data CSVs. Multibody diagnostics currently include all-pair distance
 histograms, one-body radial density, spin-resolved cusp slope estimates, and
 particle-token antisymmetry checks. Figures generated from saved CSVs are
-written under `experiments/hooke_multibody/figures/`.
+written under `experiments/hooke_multibody/figures/spenn/`.
 
 ## Version Notes
 
@@ -71,3 +87,16 @@ Cluster smoke checks live in `experiments/hooke_multibody/slurm/`.
 sbatch experiments/hooke_multibody/slurm/cpu_smoke.job
 sbatch experiments/hooke_multibody/slurm/gpu_smoke.job
 ```
+
+The CPU script runs the multibody integration smoke test with the `cpu` uv
+extra. The GPU script uses `.venv-gpu`, the `cu126` uv extra, checks CUDA, and
+runs the smoke SpENN config on `device=cuda`.
+
+Current controller status on 2026-06-03: `sbatch --test-only` for both scripts
+failed with:
+
+```text
+allocation failure: Unable to contact slurm controller (connect failure)
+```
+
+No controller-backed Slurm smoke job was accepted from this checkout.

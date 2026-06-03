@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 from omegaconf import OmegaConf
@@ -46,6 +48,19 @@ def test_all_pair_distances_flattens_upper_triangle_for_three_electrons() -> Non
     expected = torch.tensor([5.0, 12.0, torch.sqrt(torch.tensor(73.0, dtype=torch.float64))])
     assert distances.shape == (3,)
     assert torch.allclose(distances, expected)
+
+
+def test_all_pair_distances_preserves_float32_dtype() -> None:
+    positions = torch.tensor(
+        [[[0.0, 0.0], [1.0, 0.0], [0.0, 2.0]]],
+        dtype=torch.float32,
+    )
+
+    distances = all_pair_distances(positions)
+
+    assert distances.dtype == torch.float32
+    assert distances.device == positions.device
+    assert distances.shape == (3,)
 
 
 def test_all_pair_distances_rejects_single_electron_inputs() -> None:
@@ -111,6 +126,22 @@ def test_spin_resolved_cusp_diagnostic_groups_same_and_opposite_spin_pairs() -> 
     assert abs(result.metrics["cusp/opposite_mean_error"]) < 1.0e-10
     relations = {row["spin_relation"] for row in result.tables["cusp_slope_by_spin"]}
     assert relations == {"same", "opposite"}
+    assert result.metrics["cusp/same_count"] == 1.0
+    assert result.metrics["cusp/opposite_count"] == 1.0
+
+
+def test_spin_resolved_cusp_diagnostic_keeps_stable_keys_for_absent_relations() -> None:
+    positions = torch.zeros(1, 3, 3, dtype=torch.float64)
+    spins = torch.tensor([[1.0, 1.0, 1.0]], dtype=torch.float64)
+    context = _context(model=SpinResolvedCuspToyModel(), positions=positions, spins=spins, n_up=3, n_down=0)
+
+    result = SpinResolvedCuspSlopeDiagnostic(n_points=8, n_configurations=1)(context)
+
+    assert result.metrics["cusp/same_count"] == 3.0
+    assert result.metrics["cusp/opposite_count"] == 0.0
+    assert math.isfinite(result.metrics["cusp/same_mean_error"])
+    assert math.isnan(result.metrics["cusp/opposite_mean_error"])
+    assert math.isnan(result.metrics["cusp/opposite_max_abs_error"])
 
 
 def test_particle_antisymmetry_diagnostic_checks_token_transpositions() -> None:
