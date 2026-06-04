@@ -28,6 +28,27 @@ No numeric multibody reference is configured yet. SpENN is not trained against
 any exact or reference wavefunction. Energy tables should be interpreted as VMC
 estimates until an independent reference pipeline is added.
 
+`configs/reference.yaml` and `run_reference.py` currently write metadata-only
+artifacts with `reference_available=false`. This keeps the run/comparison
+interface reproducible without claiming a high-accuracy `N=3` reference that is
+not yet implemented.
+
+## Configuration Snapshot
+
+The smoke and benchmark runs inherit from `configs/spenn.yaml`. The default
+physical system is `N=3`, `omega=0.5`, and the fixed spin sector
+`n_up=2, n_down=1`. The model is
+`SpENNWavefunction(exp(J_ee) * PfaffianReadout(SpechtMP(ElectronPairEncoder)))`.
+The encoder includes spin labels as particle-token features, SpechtMP uses
+explicit gate-based activations, and the readout is Pfaffian-based with odd
+electron bordering enabled for `N=3`.
+
+Training uses `VMCLoss` with Adam and Metropolis walkers only. There is no
+supervised exact/reference loss in the config, and `system.exact_energy` is
+`null`. The smoke template reduces channels, walkers, production blocks, and
+VMC steps to keep CI/runtime checks cheap; the benchmark template increases
+those values slightly and enables the fixed-sector spin scan.
+
 ## Spin Scan
 
 `run_spenn.py --config benchmark --scan-spins` runs fixed spin sectors from
@@ -51,6 +72,28 @@ sample size when enough sequential production blocks are present.
 reference is available, its reference and delta columns are intentionally blank.
 Cusp plots report a two-sided direction-averaged full-wavefunction slope, the
 analytic cusp-module-only slope, and the residual smooth-factor slope.
+
+## Reproduction
+
+Run from the repository root with the CPU uv extra:
+
+```bash
+uv sync --extra cpu
+uv run --extra cpu python experiments/hooke_multibody/run_reference.py --config reference
+uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config smoke
+uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config benchmark --scan-spins
+```
+
+Process and plot a saved SpENN run or scan parent with:
+
+```bash
+uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<run-name>/<run-id>
+uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<run-name>/<run-id>
+```
+
+All `run_*.py` files are wrappers around reusable training/artifact utilities;
+they do not instantiate core Hamiltonian, sampler, model, optimizer, loss, or
+trainer objects directly.
 
 ## Local Sanity Snapshot
 

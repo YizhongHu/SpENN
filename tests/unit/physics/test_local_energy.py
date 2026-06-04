@@ -142,6 +142,45 @@ def test_harmonic_oscillator_ground_state_has_constant_local_energy() -> None:
     assert torch.allclose(local_energy, expected)
 
 
+def test_three_electron_hooke_local_energy_matches_gaussian_formula() -> None:
+    omega = 0.5
+    alpha = 0.2
+    system = ElectronicSystem(
+        n_electrons=3,
+        spatial_dim=3,
+        harmonic_omega=omega,
+        include_electron_electron=True,
+        n_up=2,
+        n_down=1,
+    )
+    positions = torch.tensor(
+        [
+            [[0.25, -0.50, 0.75], [1.25, 0.50, -0.25], [-0.75, 0.10, 0.40]],
+            [[-1.00, 0.25, 0.50], [0.30, -0.80, 1.10], [0.90, 0.70, -0.60]],
+        ],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(
+        positions=positions,
+        system=system,
+        spins=torch.tensor([[1.0, 1.0, -1.0], [1.0, 1.0, -1.0]], dtype=torch.float64),
+    )
+    hamiltonian = ElectronicHamiltonian(system=system)
+
+    local_energy = hamiltonian.local_energy(GaussianTensorModel(alpha=alpha), batch)
+
+    squared_radius = positions.square().sum(dim=(1, 2))
+    kinetic = alpha * system.n_electrons * system.spatial_dim - 2.0 * alpha**2 * squared_radius
+    harmonic = 0.5 * omega**2 * squared_radius
+    repulsion = sum(
+        torch.linalg.norm(positions[:, i] - positions[:, j], dim=-1).reciprocal()
+        for i, j in ((0, 1), (0, 2), (1, 2))
+    )
+    expected = kinetic + harmonic + repulsion
+    assert local_energy.shape == (2,)
+    assert torch.allclose(local_energy, expected, atol=1.0e-12)
+
+
 def test_local_energy_accepts_wavefunction_output_and_preserves_parameter_gradients() -> None:
     system = ElectronicSystem(n_electrons=2, spatial_dim=2, harmonic_omega=1.0)
     batch = ElectronBatch(
