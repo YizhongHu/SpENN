@@ -79,6 +79,7 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     for name in [
         "spenn_observables.csv",
         "energy_trace.csv",
+        "eval_metrics.csv",
         "sampler_metrics.csv",
         "energy_plausibility.csv",
         "local_energy_samples.csv",
@@ -90,6 +91,12 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     ]:
         assert (run_dir / "data" / name).exists(), f"missing processed data file: {name}"
     assert "pair_distance_histogram.csv" in processed["data_files"]
+    eval_rows = _csv_rows(run_dir / "data" / "eval_metrics.csv")
+    assert len(eval_rows) == 1
+    assert math.isfinite(float(eval_rows[0]["spenn/energy/mean"]))
+    assert math.isfinite(float(eval_rows[0]["spenn/local_energy/variance"]))
+    assert "exact/energy" not in eval_rows[0]
+    assert "comparison/energy_abs_error" not in eval_rows[0]
     plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
     assert len(plausibility_rows) == 1
     assert plausibility_rows[0]["n_electrons"] == "3"

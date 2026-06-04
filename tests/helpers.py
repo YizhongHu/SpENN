@@ -92,6 +92,7 @@ def assert_hooke_run_artifacts(output_dir: str | Path, *, expect_plot_data: bool
         run_dir / "artifacts" / "summary.json",
         run_dir / "checkpoints" / "final_model.pt",
         run_dir / "metrics" / "energy_trace.csv",
+        run_dir / "metrics" / "eval_metrics.csv",
         run_dir / "metrics" / "sampler_metrics.csv",
         run_dir / "metrics" / "train_metrics.csv",
     ]
@@ -142,6 +143,7 @@ def assert_hooke_multibody_run_artifacts(
         run_dir / ".hydra" / "overrides.yaml",
         run_dir / "artifacts" / "summary.json",
         run_dir / "metrics" / "energy_trace.csv",
+        run_dir / "metrics" / "eval_metrics.csv",
         run_dir / "metrics" / "sampler_metrics.csv",
         run_dir / "metrics" / "train_metrics.csv",
     ]

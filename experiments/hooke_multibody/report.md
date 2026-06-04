@@ -70,7 +70,9 @@ run directory, while `plot_outputs.py` reads saved metrics and plot CSVs and
 writes PNGs under `experiments/hooke_multibody/figures/spenn/`.
 Sampler-health outputs include acceptance, proposal scale, pair-distance
 summaries, local-energy sample count, autocorrelation time, and effective
-sample size when enough sequential production blocks are present.
+sample size when enough sequential production blocks are present. Final
+production/evaluation metrics are written to `metrics/eval_metrics.csv` and
+promoted into processed `data/eval_metrics.csv`.
 `energy_plausibility.csv` is the canonical energy table for now. Because no
 high-accuracy reference is available, its exact-reference and delta columns are
 intentionally blank. If a Gaussian Hartree baseline run is supplied during

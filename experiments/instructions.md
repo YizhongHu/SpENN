@@ -396,6 +396,7 @@ final_model.pt
 best_energy_model.pt
 best_variance_model.pt
 train_metrics.csv
+eval_metrics.csv
 sampler_metrics.csv
 energy_trace.csv
 local_energy_histogram.png
@@ -533,6 +534,7 @@ outputs/YYYY-MM-DD/hooke_<sector>/<run_id>/
   .hydra/overrides.yaml
   checkpoints/final_model.pt
   metrics/energy_trace.csv
+  metrics/eval_metrics.csv
   metrics/train_metrics.csv
   metrics/sampler_metrics.csv
   metrics/comparison_metrics.csv

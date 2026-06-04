@@ -86,6 +86,7 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
         tables.update(result.tables)
 
     write_csv(output_dir / "metrics" / "energy_trace.csv", normalize_rows(production["energy_rows"]))
+    write_csv(output_dir / "metrics" / "eval_metrics.csv", [final_metrics])
     write_csv(output_dir / "metrics" / "train_metrics.csv", normalize_rows(train_rows) if train_rows else [final_metrics])
     write_csv(output_dir / "metrics" / "sampler_metrics.csv", [_sampler_metrics(final_metrics)])
     if any(key.startswith("comparison/") for key in final_metrics):

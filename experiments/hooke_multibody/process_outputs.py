@@ -11,6 +11,7 @@ from spenn.training.artifacts import write_csv, write_json
 
 DATA_EXPORTS = {
     "energy_trace.csv": Path("metrics/energy_trace.csv"),
+    "eval_metrics.csv": Path("metrics/eval_metrics.csv"),
     "sampler_metrics.csv": Path("metrics/sampler_metrics.csv"),
     "train_metrics.csv": Path("metrics/train_metrics.csv"),
     "local_energy_samples.csv": Path("plots/local_energy_samples.csv"),

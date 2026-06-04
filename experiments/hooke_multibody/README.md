@@ -68,17 +68,18 @@ and embedded baseline-aware figures, see [`report.md`](report.md).
 
 ## Outputs
 
-The generic training stack writes config, summary, checkpoint, metrics CSVs,
-and plot-data CSVs. Multibody diagnostics currently include all-pair distance
-histograms, one-body radial density, spin-resolved cusp slope estimates, and
-particle-token antisymmetry checks. Production sampler health includes
-acceptance, proposal scale, pair-distance summaries, local-energy sample count,
-autocorrelation time, and effective sample size when enough sequential blocks
-are available. `process_outputs.py` also promotes local-energy and pair-distance
-sample tables into `data/`. Cusp diagnostics report both full-wavefunction
-short-range slopes and analytic cusp-module-only slopes when the model exposes a
-`cusp` module. The full-wavefunction fit uses a two-sided pair-separation
-average to cancel smooth odd terms before estimating the radial cusp slope.
+The generic training stack writes config, summary, checkpoint, energy trace,
+training metrics, final evaluation metrics, sampler metrics, and plot-data
+CSVs. Multibody diagnostics currently include all-pair distance histograms,
+one-body radial density, spin-resolved cusp slope estimates, and particle-token
+antisymmetry checks. Production sampler health includes acceptance, proposal
+scale, pair-distance summaries, local-energy sample count, autocorrelation
+time, and effective sample size when enough sequential blocks are available.
+`process_outputs.py` also promotes local-energy and pair-distance sample tables
+into `data/`. Cusp diagnostics report both full-wavefunction short-range slopes
+and analytic cusp-module-only slopes when the model exposes a `cusp` module.
+The full-wavefunction fit uses a two-sided pair-separation average to cancel
+smooth odd terms before estimating the radial cusp slope.
 Figures generated from saved CSVs are written under
 `experiments/hooke_multibody/figures/spenn/`.
 `process_outputs.py` writes `data/energy_plausibility.csv` for both single runs
