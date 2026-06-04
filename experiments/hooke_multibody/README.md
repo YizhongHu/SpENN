@@ -157,38 +157,28 @@ The CPU script runs the multibody integration smoke test with the `cpu` uv
 extra. The GPU script uses `.venv-gpu`, the `cu126` uv extra, checks CUDA, and
 runs the smoke SpENN config on `device=cuda`.
 
-On 2026-06-03, `sbatch --test-only` and real `sbatch --parsable`
-submission attempts for both scripts failed at controller contact. The
-dry-run error was:
+Earlier 2026-06-03 attempts failed at controller contact from a restricted
+command context, with errors such as:
 
 ```text
 allocation failure: Unable to contact slurm controller (connect failure)
-```
-
-The real submission error was:
-
-```text
 sbatch: error: Batch job submission failed: Unable to contact slurm controller (connect failure)
-```
-
-A later retry also printed:
-
-```text
 sbatch: error: Failed to lookup user homedir to load slurm defaults.
 ```
 
-before the same controller-contact failure.
-
-On 2026-06-04 from `holy8a29105.rc.fas.harvard.edu`, `scontrol ping`
-reported:
+On 2026-06-04, rerunning Slurm commands outside that sandbox from
+`holy8a29105.rc.fas.harvard.edu` reported:
 
 ```text
-Slurmctld(primary) at holy-slurm02 is DOWN
+Slurmctld(primary) at holy-slurm02 is UP
 ```
 
-The same bounded retry pattern with `timeout 30s sbatch --test-only ...`
-produced no controller response before timing out. Because Slurm was not
-available, the reference wrapper, smoke SpENN wrapper, processing step, and
-plotting step were rerun locally with `uv run --extra cpu`.
+Both smoke scripts passed `sbatch --test-only` and real submissions completed:
 
-No controller-backed Slurm smoke job was accepted from this checkout.
+| job | script | partition | node | state | exit | elapsed |
+| --- | --- | --- | --- | --- | --- | --- |
+| `19037263` | `slurm/cpu_smoke.job` | `kozinsky` | `holy8a29105` | `COMPLETED` | `0:0` | `00:02:02` |
+| `19037272` | `slurm/gpu_smoke.job` | `seas_gpu` | `holygpu8a16103` | `COMPLETED` | `0:0` | `00:01:33` |
+
+The CPU log reports `9 passed in 104.10s`; the GPU log reports CUDA available
+on an NVIDIA H200 and a successful Hooke multibody smoke run.

@@ -203,15 +203,15 @@ Fixed-sector spin scan:
 uv extra. `slurm/gpu_smoke.job` uses `.venv-gpu`, the `cu126` uv extra, checks
 CUDA, and runs the smoke config on `device=cuda`.
 
-As of 2026-06-03, both `sbatch --test-only` and real `sbatch --parsable`
-submission attempts failed for the CPU and GPU smoke scripts because the login
-node could not contact the Slurm controller. The real submission error was
-`sbatch: error: Batch job submission failed: Unable to contact slurm controller
-(connect failure)`. A later retry also printed `sbatch: error: Failed to
-lookup user homedir to load slurm defaults.` before the same controller-contact
-failure. The latest bounded retry with `timeout 90s sbatch --test-only ...`
-produced no controller response before timing out. The scripts are present, but
-no controller-backed Slurm smoke job was accepted from this checkout.
+Earlier 2026-06-03 attempts failed at Slurm controller contact from a restricted
+command context. On 2026-06-04, rerunning outside that sandbox from
+`holy8a29105.rc.fas.harvard.edu` reported `Slurmctld(primary) at holy-slurm02
+is UP`. Both smoke scripts passed `sbatch --test-only` and real submissions
+completed: CPU job `19037263` on `kozinsky` finished `COMPLETED` with exit
+`0:0` in `00:02:02`, and GPU job `19037272` on `seas_gpu` finished
+`COMPLETED` with exit `0:0` in `00:01:33`. The CPU log reports
+`9 passed in 104.10s`; the GPU log reports CUDA available on an NVIDIA H200 and
+a successful Hooke multibody smoke run.
 
 ## Known Limitations
 
