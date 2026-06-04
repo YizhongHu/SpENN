@@ -21,6 +21,16 @@ system:
   harmonic_omega: 0.5
 
 tracking:
+  wandb:
+    enabled: false
+    project: spenn
+    entity: null
+    mode: offline
+    group: ${experiment_name}
+    name: ${run_id}
+    id: ${run_id}
+    job_type: reference
+    resume: allow
   tags:
     - hooke_multibody
     - reference_placeholder

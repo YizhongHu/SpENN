@@ -12,4 +12,5 @@ wandb/
 docs/_build/
 docs/api/generated/
 design_document/
-experiments/*/slurm/logs/
+experiments/*/slurm/logs/*
+!experiments/hooke_multibody/slurm/logs/.gitkeep

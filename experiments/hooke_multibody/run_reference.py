@@ -27,6 +27,7 @@ from spenn.training.artifacts import (  # noqa: E402
     write_csv,
     write_json,
 )
+from spenn.training.tracking import build_tracker  # noqa: E402
 
 CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 DEFAULT_CONFIG = CONFIG_DIR / "reference.yaml"
@@ -93,26 +94,32 @@ def run(
         include_plots=False,
     )
     write_config_artifacts(output_dir, cfg, forwarded_overrides or [])
-    row, tables = _reference_outputs(cfg)
-    write_csv(output_dir / "data" / "reference_observables.csv", [row])
-    for name, rows in tables.items():
-        write_csv(output_dir / "data" / name, rows)
-    summary = {
-        "entrypoint": "experiments/hooke_multibody/run_reference.py",
-        "status": "ok",
-        "run_id": selected_run_id,
-        "run_time": run_time,
-        "output_dir": str(output_dir),
-        "git": git_metadata(),
-        "config": OmegaConf.to_container(cfg, resolve=True),
-        "reference_available": row["reference_available"],
-        "method": row["method"],
-        "baseline_available": row.get("baseline_available", False),
-        "baseline_method": row.get("baseline_method", ""),
-        "baseline_energy": row.get("baseline_energy", ""),
-    }
-    write_json(output_dir / "artifacts" / "summary.json", summary)
-    return summary
+    git = git_metadata()
+    tracker = build_tracker(cfg, output_dir=output_dir, git=git)
+    try:
+        row, tables = _reference_outputs(cfg)
+        write_csv(output_dir / "data" / "reference_observables.csv", [row])
+        for name, rows in tables.items():
+            write_csv(output_dir / "data" / name, rows)
+        tracker.log_metrics(row)
+        summary = {
+            "entrypoint": "experiments/hooke_multibody/run_reference.py",
+            "status": "ok",
+            "run_id": selected_run_id,
+            "run_time": run_time,
+            "output_dir": str(output_dir),
+            "git": git,
+            "config": OmegaConf.to_container(cfg, resolve=True),
+            "reference_available": row["reference_available"],
+            "method": row["method"],
+            "baseline_available": row.get("baseline_available", False),
+            "baseline_method": row.get("baseline_method", ""),
+            "baseline_energy": row.get("baseline_energy", ""),
+        }
+        write_json(output_dir / "artifacts" / "summary.json", summary)
+        return summary
+    finally:
+        tracker.finish()
 
 
 def _reference_outputs(cfg: DictConfig) -> tuple[dict[str, object], dict[str, list[dict[str, float]]]]:

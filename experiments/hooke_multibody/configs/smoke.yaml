@@ -14,12 +14,14 @@ model:
       num_hidden_layers: 1
 
 sampler:
-  n_walkers: 4
-  warmup_steps: 1
-  production_blocks: 1
-  steps_per_block: 1
+  n_walkers: 16
+  warmup_steps: 2
+  production_blocks: 2
+  steps_per_block: 2
   steps_per_iter: 1
   initial_scale: 1.0
+  move:
+    step_size: 0.2
 
 training:
   vmc_steps: 1

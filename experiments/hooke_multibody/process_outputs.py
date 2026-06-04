@@ -142,7 +142,7 @@ def process_run(
     write_csv(target / "data" / "spenn_observables.csv", [row])
     plausibility_rows = [_plausibility_row_from_run_summary(spenn_summary, reference_summary=reference_summary)]
     write_csv(target / "data" / "energy_plausibility.csv", plausibility_rows)
-    processed["data_files"] = _export_data_tables(spenn_run, target / "data")
+    processed["data_files"] = _export_data_tables(spenn_run, target / "data", summary=spenn_summary)
     processed["data_files"]["energy_plausibility.csv"] = str(target / "data" / "energy_plausibility.csv")
     write_json(target / "artifacts" / "processed_summary.json", processed)
     return processed
@@ -186,7 +186,7 @@ def _process_spin_scan(
         for run in summary.get("runs", [])
     ]
     write_csv(target / "data" / "energy_plausibility.csv", plausibility_rows)
-    processed["data_files"] = _export_data_tables(scan_run, target / "data")
+    processed["data_files"] = _export_data_tables(scan_run, target / "data", summary=summary)
     processed["data_files"]["energy_plausibility.csv"] = str(target / "data" / "energy_plausibility.csv")
     write_json(target / "artifacts" / "processed_summary.json", processed)
     return processed
@@ -351,7 +351,7 @@ def _system_value_available(value: object) -> bool:
     return value is not None and value != ""
 
 
-def _export_data_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
+def _export_data_tables(run_dir: Path, data_dir: Path, *, summary: dict[str, object]) -> dict[str, str]:
     exported: dict[str, str] = {}
     for name, relative_source in DATA_EXPORTS.items():
         source = run_dir / relative_source
@@ -361,6 +361,11 @@ def _export_data_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
         exported[name] = str(destination)
+    metrics = summary.get("metrics", {})
+    if "eval_metrics.csv" not in exported and isinstance(metrics, dict) and metrics:
+        destination = data_dir / "eval_metrics.csv"
+        write_csv(destination, [metrics])
+        exported["eval_metrics.csv"] = str(destination)
     return exported
 
 

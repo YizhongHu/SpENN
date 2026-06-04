@@ -24,6 +24,7 @@ from spenn.training.artifacts import (
     write_csv,
     write_json,
 )
+from spenn.training.tracking import build_tracker
 
 
 def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None) -> dict[str, object]:
@@ -54,76 +55,85 @@ def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None)
     write_plot_data = bool(OmegaConf.select(cfg, "artifacts.write_plot_data", default=True))
     output_dir = make_output_dir(output_root, run_name=run_name, run_id=run_id, include_plots=write_plot_data)
     write_config_artifacts(output_dir, cfg, forwarded_overrides or [])
+    git = git_metadata()
+    tracker = build_tracker(cfg, output_dir=output_dir, git=git)
 
-    system = instantiate(cfg.system).to(device=device, dtype=dtype)
-    model = instantiate(_model_cfg(cfg)).to(device=device, dtype=dtype)
-    hamiltonian = instantiate(cfg.hamiltonian, _partial_=True)(system=system)
+    try:
+        system = instantiate(cfg.system).to(device=device, dtype=dtype)
+        model = instantiate(_model_cfg(cfg)).to(device=device, dtype=dtype)
+        hamiltonian = instantiate(cfg.hamiltonian, _partial_=True)(system=system)
 
-    train_rows: list[dict[str, object]] = []
-    if mode == "train":
-        train_rows = _train(cfg, model=model, hamiltonian=hamiltonian, system=system, dtype=dtype, device=device)
-    elif mode != "evaluate":
-        raise ValueError(f"Unsupported run.mode: {mode!r}")
+        train_rows: list[dict[str, object]] = []
+        if mode == "train":
+            train_rows = _train(cfg, model=model, hamiltonian=hamiltonian, system=system, dtype=dtype, device=device)
+        elif mode != "evaluate":
+            raise ValueError(f"Unsupported run.mode: {mode!r}")
 
-    production = _production(cfg, model=model, hamiltonian=hamiltonian, system=system, dtype=dtype, device=device)
-    final_metrics = dict(production["metrics"])
-    tables: dict[str, list[dict[str, object]]] = dict(production["tables"])
-    context = DiagnosticContext(
-        cfg=cfg,
-        model=model,
-        hamiltonian=hamiltonian,
-        system=system,
-        sampler=production["sampler"],
-        walkers=production["walkers"],
-        local_energy=production["local_energy"],
-        pair_distance=production["pair_distance"],
-        dtype=dtype,
-        device=device,
-    )
-    for diagnostic in _diagnostics(cfg):
-        result = _call_diagnostic(diagnostic, context)
-        final_metrics.update(result.metrics)
-        tables.update(result.tables)
-
-    write_csv(output_dir / "metrics" / "energy_trace.csv", normalize_rows(production["energy_rows"]))
-    write_csv(output_dir / "metrics" / "eval_metrics.csv", [final_metrics])
-    write_csv(output_dir / "metrics" / "train_metrics.csv", normalize_rows(train_rows) if train_rows else [final_metrics])
-    write_csv(output_dir / "metrics" / "sampler_metrics.csv", [_sampler_metrics(final_metrics)])
-    if any(key.startswith("comparison/") for key in final_metrics):
-        write_csv(output_dir / "metrics" / "comparison_metrics.csv", [final_metrics])
-    if write_plot_data:
-        for name, rows in tables.items():
-            write_csv(output_dir / "plots" / f"{name}.csv", rows)
-    if bool(OmegaConf.select(cfg, "artifacts.write_checkpoint", default=True)):
-        torch.save(
-            {
-                "model_state_dict": model.state_dict(),
-                "exact_energy": getattr(system, "exact_energy", None),
-                "config": OmegaConf.to_container(cfg, resolve=True),
-            },
-            output_dir / "checkpoints" / "final_model.pt",
+        production = _production(cfg, model=model, hamiltonian=hamiltonian, system=system, dtype=dtype, device=device)
+        final_metrics = dict(production["metrics"])
+        tables: dict[str, list[dict[str, object]]] = dict(production["tables"])
+        context = DiagnosticContext(
+            cfg=cfg,
+            model=model,
+            hamiltonian=hamiltonian,
+            system=system,
+            sampler=production["sampler"],
+            walkers=production["walkers"],
+            local_energy=production["local_energy"],
+            pair_distance=production["pair_distance"],
+            dtype=dtype,
+            device=device,
         )
-    summary = {
-        "entrypoint": "train.py",
-        "status": "ok",
-        "mode": mode,
-        "run_id": run_id,
-        "run_time": run_time,
-        "output_dir": str(output_dir),
-        "git": git_metadata(),
-        "config": OmegaConf.to_container(cfg, resolve=True),
-        "metrics": final_metrics,
-    }
-    write_json(output_dir / "artifacts" / "summary.json", summary)
-    return {
-        "entrypoint": "train.py",
-        "status": "ok",
-        "mode": mode,
-        "run_id": run_id,
-        "run_time": run_time,
-        "output_dir": str(output_dir),
-        "final_metrics": final_metrics,
-    }
+        for diagnostic in _diagnostics(cfg):
+            result = _call_diagnostic(diagnostic, context)
+            final_metrics.update(result.metrics)
+            tables.update(result.tables)
+
+        tracker.log_rows(train_rows)
+        tracker.log_rows(production["energy_rows"])
+        tracker.log_metrics(final_metrics)
+
+        write_csv(output_dir / "metrics" / "energy_trace.csv", normalize_rows(production["energy_rows"]))
+        write_csv(output_dir / "metrics" / "eval_metrics.csv", [final_metrics])
+        write_csv(output_dir / "metrics" / "train_metrics.csv", normalize_rows(train_rows) if train_rows else [final_metrics])
+        write_csv(output_dir / "metrics" / "sampler_metrics.csv", [_sampler_metrics(final_metrics)])
+        if any(key.startswith("comparison/") for key in final_metrics):
+            write_csv(output_dir / "metrics" / "comparison_metrics.csv", [final_metrics])
+        if write_plot_data:
+            for name, rows in tables.items():
+                write_csv(output_dir / "plots" / f"{name}.csv", rows)
+        if bool(OmegaConf.select(cfg, "artifacts.write_checkpoint", default=True)):
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "exact_energy": getattr(system, "exact_energy", None),
+                    "config": OmegaConf.to_container(cfg, resolve=True),
+                },
+                output_dir / "checkpoints" / "final_model.pt",
+            )
+        summary = {
+            "entrypoint": "train.py",
+            "status": "ok",
+            "mode": mode,
+            "run_id": run_id,
+            "run_time": run_time,
+            "output_dir": str(output_dir),
+            "git": git,
+            "config": OmegaConf.to_container(cfg, resolve=True),
+            "metrics": final_metrics,
+        }
+        write_json(output_dir / "artifacts" / "summary.json", summary)
+        return {
+            "entrypoint": "train.py",
+            "status": "ok",
+            "mode": mode,
+            "run_id": run_id,
+            "run_time": run_time,
+            "output_dir": str(output_dir),
+            "final_metrics": final_metrics,
+        }
+    finally:
+        tracker.finish()
 
 
 def _prepare_config(cfg: DictConfig) -> DictConfig:

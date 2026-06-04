@@ -73,6 +73,8 @@ summaries, local-energy sample count, autocorrelation time, and effective
 sample size when enough sequential production blocks are present. Final
 production/evaluation metrics are written to `metrics/eval_metrics.csv` and
 promoted into processed `data/eval_metrics.csv`.
+The wrapper success gate requires the final acceptance rate to stay in the
+configured sampler-health range, currently `0.3 <= acceptance_rate <= 0.7`.
 `energy_plausibility.csv` is the canonical energy table for now. Because no
 high-accuracy reference is available, its exact-reference and delta columns are
 intentionally blank. If a Gaussian Hartree baseline run is supplied during
@@ -117,6 +119,9 @@ processing.
 All `run_*.py` files are wrappers around reusable training/artifact utilities;
 they do not instantiate core Hamiltonian, sampler, model, optimizer, loss, or
 trainer objects directly.
+Local CSV/JSON/checkpoint artifacts are always written. W&B tracking is
+available through `tracking.wandb.*` config fields and is disabled by default
+for smoke and CI runs.
 
 ## Local Sanity Snapshot
 
@@ -201,8 +206,9 @@ node could not contact the Slurm controller. The real submission error was
 `sbatch: error: Batch job submission failed: Unable to contact slurm controller
 (connect failure)`. A later retry also printed `sbatch: error: Failed to
 lookup user homedir to load slurm defaults.` before the same controller-contact
-failure. The scripts are present, but no controller-backed Slurm smoke job was
-accepted from this checkout.
+failure. The latest bounded retry with `timeout 90s sbatch --test-only ...`
+produced no controller response before timing out. The scripts are present, but
+no controller-backed Slurm smoke job was accepted from this checkout.
 
 ## Known Limitations
 

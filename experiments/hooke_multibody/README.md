@@ -67,6 +67,11 @@ Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the
 same time stamp.
 
+Local CSV/JSON/checkpoint artifacts are always written. W&B tracking is
+config-driven and disabled by default; enable it with
+`tracking.wandb.enabled=true` and install the optional `wandb` extra when using
+that path.
+
 For the current smoke-scale sanity snapshot, Gaussian Hartree baseline offsets,
 and embedded baseline-aware figures, see [`report.md`](report.md).
 
@@ -79,6 +84,8 @@ one-body radial density, spin-resolved cusp slope estimates, and particle-token
 antisymmetry checks. Production sampler health includes acceptance, proposal
 scale, pair-distance summaries, local-energy sample count, autocorrelation
 time, and effective sample size when enough sequential blocks are available.
+The wrapper success gate requires the final acceptance rate to stay in the
+configured sampler-health range, currently `0.3 <= acceptance_rate <= 0.7`.
 `process_outputs.py` also promotes local-energy and pair-distance sample tables
 into `data/`. Cusp diagnostics report both full-wavefunction short-range slopes
 and analytic cusp-module-only slopes when the model exposes a `cusp` module.
@@ -170,5 +177,8 @@ sbatch: error: Failed to lookup user homedir to load slurm defaults.
 ```
 
 before the same controller-contact failure.
+
+The latest bounded retry with `timeout 90s sbatch --test-only ...` produced no
+controller response before timing out.
 
 No controller-backed Slurm smoke job was accepted from this checkout.

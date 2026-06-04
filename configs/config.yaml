@@ -270,6 +270,16 @@ validation:
   sign_alignment_min: 0.0
 
 tracking:
+  wandb:
+    enabled: false
+    project: spenn
+    entity: null
+    mode: offline
+    group: ${experiment_name}
+    name: ${run_id}
+    id: ${run_id}
+    job_type: ${run.mode}
+    resume: allow
   tags:
     - hooke
     - spenn

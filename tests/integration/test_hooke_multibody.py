@@ -44,6 +44,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp(tmp_path: Path) -
     assert summary_artifact["config"]["system"]["n_down"] == 1
     assert summary_artifact["config"]["diagnostics"]["cusp"]["average_opposite_directions"] is True
     assert summary_artifact["config"]["model"]["spenn"]["readout"]["eps"] == 1.0e-30
+    assert summary_artifact["config"]["validation"]["acceptance_min"] == 0.3
+    assert summary_artifact["config"]["validation"]["acceptance_max"] == 0.7
     assert "integration_test" in summary_artifact["config"]["tracking"]["tags"]
 
     metrics = summary_artifact["metrics"]
@@ -51,7 +53,7 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp(tmp_path: Path) -
     assert math.isfinite(float(metrics["spenn/local_energy/variance"]))
     assert math.isfinite(float(metrics["sampler/mean_pair_distance"]))
     assert float(metrics["sampler/min_pair_distance"]) > 0.0
-    assert float(metrics["sampler/local_energy_sample_count"]) == 4.0
+    assert float(metrics["sampler/local_energy_sample_count"]) == 32.0
     assert "sampler/local_energy_autocorrelation_time" in metrics
     assert "sampler/local_energy_effective_sample_size" in metrics
     assert math.isfinite(float(metrics["radial_density/mean_radius"]))
@@ -70,8 +72,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp(tmp_path: Path) -
     run_dir = Path(summary["output_dir"])
     assert _csv_row_count(run_dir / "plots" / "pair_distance_histogram.csv") == 8
     assert _csv_row_count(run_dir / "plots" / "radial_density.csv") == 8
-    assert _csv_row_count(run_dir / "plots" / "local_energy_samples.csv") == 4
-    assert _csv_row_count(run_dir / "plots" / "pair_distance_samples.csv") == 12
+    assert _csv_row_count(run_dir / "plots" / "local_energy_samples.csv") == 32
+    assert _csv_row_count(run_dir / "plots" / "pair_distance_samples.csv") == 96
     assert _csv_row_count(run_dir / "plots" / "cusp_slope_by_spin.csv") == 3
     assert _csv_row_count(run_dir / "plots" / "particle_antisymmetry.csv") == 2
 
@@ -97,6 +99,13 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp(tmp_path: Path) -
     assert math.isfinite(float(eval_rows[0]["spenn/local_energy/variance"]))
     assert "exact/energy" not in eval_rows[0]
     assert "comparison/energy_abs_error" not in eval_rows[0]
+    (run_dir / "metrics" / "eval_metrics.csv").unlink()
+    legacy_processed_dir = tmp_path / "legacy_eval_metrics"
+    legacy_processed = process_run(run_dir, output_dir=legacy_processed_dir)
+    assert "eval_metrics.csv" in legacy_processed["data_files"]
+    legacy_eval_rows = _csv_rows(legacy_processed_dir / "data" / "eval_metrics.csv")
+    assert math.isfinite(float(legacy_eval_rows[0]["spenn/energy/mean"]))
+    assert math.isfinite(float(legacy_eval_rows[0]["spenn/local_energy/variance"]))
     plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
     assert len(plausibility_rows) == 1
     assert plausibility_rows[0]["n_electrons"] == "3"
