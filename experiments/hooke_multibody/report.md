@@ -120,10 +120,12 @@ Fixed-sector spin scan:
 uv extra. `slurm/gpu_smoke.job` uses `.venv-gpu`, the `cu126` uv extra, checks
 CUDA, and runs the smoke config on `device=cuda`.
 
-As of 2026-06-03, `sbatch --test-only` for both Slurm scripts failed with
-`allocation failure: Unable to contact slurm controller (connect failure)`.
-The scripts are present, but no controller-backed Slurm smoke job was accepted
-from this checkout.
+As of 2026-06-03, both `sbatch --test-only` and real `sbatch --parsable`
+submission attempts failed for the CPU and GPU smoke scripts because the login
+node could not contact the Slurm controller. The real submission error was
+`sbatch: error: Batch job submission failed: Unable to contact slurm controller
+(connect failure)`. The scripts are present, but no controller-backed Slurm
+smoke job was accepted from this checkout.
 
 ## Known Limitations
 

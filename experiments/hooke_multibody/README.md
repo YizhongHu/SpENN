@@ -125,10 +125,18 @@ The CPU script runs the multibody integration smoke test with the `cpu` uv
 extra. The GPU script uses `.venv-gpu`, the `cu126` uv extra, checks CUDA, and
 runs the smoke SpENN config on `device=cuda`.
 
-On 2026-06-03, `sbatch --test-only` for both scripts failed with:
+On 2026-06-03, `sbatch --test-only` and real `sbatch --parsable`
+submission attempts for both scripts failed at controller contact. The
+dry-run error was:
 
 ```text
 allocation failure: Unable to contact slurm controller (connect failure)
+```
+
+The real submission error was:
+
+```text
+sbatch: error: Batch job submission failed: Unable to contact slurm controller (connect failure)
 ```
 
 No controller-backed Slurm smoke job was accepted from this checkout.
