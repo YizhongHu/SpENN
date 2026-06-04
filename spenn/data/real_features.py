@@ -3,38 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
 
 import torch
 
+from spenn.data.base import ConcatenatedState as BaseConcatenatedState
+from spenn.data.base import SpechtMPState
 from spenn.data.permutation import Permutation
-
-
-@runtime_checkable
-class SpechtMPState(Protocol):
-    """Protocol for objects carrying a permutation action.
-
-    Methods
-    -------
-    permute(permutation)
-        Return the state transformed by `permutation`.
-    """
-
-    def permute(self, permutation: Permutation) -> object:
-        """Return a permuted copy of the state.
-
-        Parameters
-        ----------
-        permutation : Permutation
-            Permutation acting on particle-label axes.
-
-        Returns
-        -------
-        object
-            Permuted state.
-        """
-
-        ...
 
 
 def _validate_real_tensor(tensor: torch.Tensor, *, order: int) -> None:
@@ -249,9 +223,8 @@ class RealMessage(RealTensors):
     """Store real-space message tensor blocks."""
 
 
-@dataclass(frozen=True)
-class ConcatenatedState:
-    """Store feature and optional message states together.
+class RealConcatenatedState(BaseConcatenatedState):
+    """Store real-space feature and optional message states together.
 
     Parameters
     ----------
@@ -261,16 +234,22 @@ class ConcatenatedState:
         Optional message state.
     """
 
-    features: RealFeature = field(default_factory=RealFeature)
-    messages: RealMessage | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.features, RealFeature):
+    def __init__(self, features: RealFeature | None = None, messages: RealMessage | None = None) -> None:
+        features = RealFeature() if features is None else features
+        if not isinstance(features, RealFeature):
             raise TypeError("ConcatenatedState.features must be a RealFeature")
-        if self.messages is not None and not isinstance(self.messages, RealMessage):
+        if messages is not None and not isinstance(messages, RealMessage):
             raise TypeError("ConcatenatedState.messages must be a RealMessage or None")
+        data: tuple[SpechtMPState, ...]
+        if messages is None:
+            data = (features,)
+        else:
+            data = (features, messages)
+        super().__init__(data=data)
+        object.__setattr__(self, "features", features)
+        object.__setattr__(self, "messages", messages)
 
-    def permute(self, permutation: Permutation) -> "ConcatenatedState":
+    def permute(self, permutation: Permutation) -> "RealConcatenatedState":
         """Return a copy transformed by an active permutation.
 
         Parameters
@@ -280,9 +259,20 @@ class ConcatenatedState:
 
         Returns
         -------
-        ConcatenatedState
+        RealConcatenatedState
             New state with permuted feature and message blocks.
         """
 
         messages = None if self.messages is None else self.messages.permute(permutation)
-        return ConcatenatedState(features=self.features.permute(permutation), messages=messages)
+        return RealConcatenatedState(features=self.features.permute(permutation), messages=messages)
+
+
+ConcatenatedState = RealConcatenatedState
+
+__all__ = [
+    "ConcatenatedState",
+    "RealConcatenatedState",
+    "RealFeature",
+    "RealMessage",
+    "RealTensors",
+]

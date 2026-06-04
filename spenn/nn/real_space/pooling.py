@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from torch import nn
-
+from spenn.data.base import EquivariantMap
 from spenn.data.real_features import RealFeature, RealMessage
 
 
-class Pooling(nn.Module):
+class Pooling(EquivariantMap):
     """Pool real-space messages into feature proposals.
 
     Parameters

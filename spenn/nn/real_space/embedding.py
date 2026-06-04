@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from torch import nn
-
+from spenn.data.base import EquivariantMap
 from spenn.data.batch import ElectronBatch
 from spenn.data.real_features import RealFeature
 
 
-class Embedding(nn.Module):
+class Embedding(EquivariantMap):
     """Embed electron batches into real-space Specht features.
 
     Parameters

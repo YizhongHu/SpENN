@@ -8,11 +8,12 @@ from typing import Any
 
 import torch
 
+from spenn.data.irrep_features import IrrepFeature, IrrepMessage
 from spenn.data.irrep_tensor import validate_branch_tensor, validate_irrep_tensor, validate_tensor_product_tensor
 from spenn.data.partitions import Partition
 
 
-class FeatureDict(MutableMapping[Partition, torch.Tensor]):
+class FeatureDict(IrrepFeature):
     """Store persistent Specht feature tensors.
 
     `FeatureDict` represents the persistent layer state ``x``. The key is a
@@ -670,7 +671,7 @@ class BranchDict(MutableMapping[Partition, dict[Partition, torch.Tensor]]):
         return deepcopy(self._data)
 
 
-class MessageDict(MutableMapping[Partition, torch.Tensor]):
+class MessageDict(IrrepMessage):
     """Store aggregated Specht messages.
 
     `MessageDict` represents the aggregated message state ``m`` passed from the

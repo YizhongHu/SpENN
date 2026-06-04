@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import torch
 
+from spenn.data.base import ConcatenatedState
+from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
-from spenn.data.real_features import ConcatenatedState, RealFeature, RealMessage
+from spenn.data.real_features import RealConcatenatedState, RealFeature, RealMessage
 from spenn.testing import assert_tree_allclose
 
 
@@ -50,8 +52,8 @@ def test_real_feature_permute_matches_axis_indexing() -> None:
     assert torch.equal(permuted[1][:, :, permutation.apply_index(0)], feature[1][:, :, 0])
 
 
-def test_real_message_and_concatenated_state_permute() -> None:
-    state = ConcatenatedState(features=_feature(), messages=_message())
+def test_real_message_and_real_concatenated_state_permute() -> None:
+    state = RealConcatenatedState(features=_feature(), messages=_message())
     permutation = Permutation((1, 2, 0))
 
     permuted = state.permute(permutation)
@@ -60,6 +62,31 @@ def test_real_message_and_concatenated_state_permute() -> None:
     assert isinstance(permuted.messages, RealMessage)
     assert_tree_allclose(permuted.features, state.features.permute(permutation))
     assert_tree_allclose(permuted.messages, state.messages.permute(permutation))
+
+
+def test_generic_concatenated_state_permute() -> None:
+    state = ConcatenatedState((_feature(), _message()))
+    permutation = Permutation((1, 2, 0))
+
+    permuted = state.permute(permutation)
+
+    assert isinstance(permuted, ConcatenatedState)
+    assert_tree_allclose(permuted[0], state[0].permute(permutation))
+    assert_tree_allclose(permuted[1], state[1].permute(permutation))
+
+
+def test_electron_batch_permute_moves_electron_axis() -> None:
+    batch = ElectronBatch(
+        positions=torch.arange(2 * 3 * 2, dtype=torch.float64).reshape(2, 3, 2),
+        spins=torch.tensor([[1.0, -1.0, 1.0], [-1.0, 1.0, -1.0]]),
+    )
+    permutation = Permutation((2, 0, 1))
+
+    permuted = batch.permute(permutation)
+
+    index = torch.tensor(permutation.inverse().image)
+    assert torch.equal(permuted.positions, batch.positions.index_select(-2, index))
+    assert torch.equal(permuted.spins, batch.spins.index_select(-1, index))
 
 
 def test_real_state_permutation_composition() -> None:

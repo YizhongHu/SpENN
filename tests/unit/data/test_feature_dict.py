@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data import FeatureDict, IrrepTensor, Par, Partition, as_partition, normalize_partition
+from spenn.data import FeatureDict, IrrepFeature, IrrepMessage, IrrepTensor, IrrepTensors, Par, Partition, as_partition, normalize_partition
 
 
 def test_partition_canonicalizes_equality_and_hashing() -> None:
@@ -71,6 +71,27 @@ def test_feature_dict_stores_partition_keys() -> None:
     flat_partition, flat_tensor = next(features.flat_items())
     assert flat_partition == partition
     assert flat_tensor is tensor
+    assert isinstance(features, IrrepFeature)
+    assert isinstance(features, IrrepTensors)
+
+
+def test_irrep_message_container_uses_feature_dict_api() -> None:
+    tensor = torch.ones(1, 3, 2, 2, 1, 1)
+    messages = IrrepMessage({Par("A"): tensor})
+
+    assert messages.get(Par("A")) is tensor
+    assert messages.has(Par("A"))
+    messages.validate(batch_size=1, n_electrons=2)
+
+
+def test_irrep_tensors_require_common_channel_count() -> None:
+    with pytest.raises(ValueError, match="channel count"):
+        IrrepFeature(
+            {
+                Par("H"): torch.zeros(1, 2, 3, 1, 1),
+                Par("S"): torch.zeros(1, 3, 3, 3, 1, 1),
+            }
+        )
 
 
 def test_feature_dict_setitem_to_dict_and_supported_validation_use_partitions() -> None:

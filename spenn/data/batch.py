@@ -8,6 +8,8 @@ from typing import Any
 
 import torch
 
+from spenn.data.permutation import Permutation
+
 def _coerce_optional_tensor(value: Any | None, *, dtype: torch.dtype | None = None) -> torch.Tensor | None:
     if value is None:
         return None
@@ -222,6 +224,31 @@ class ElectronBatch:
             nuclear_charges=nuclear_charges,
             spins=spins,
         )
+
+    def permute(self, permutation: Permutation) -> "ElectronBatch":
+        """Return a copy with electron-indexed fields permuted.
+
+        Parameters
+        ----------
+        permutation : Permutation
+            Particle-label permutation acting on the electron axis.
+
+        Returns
+        -------
+        ElectronBatch
+            Batch with positions and spin labels transformed by the active
+            permutation convention.
+        """
+
+        if len(permutation) != self.n_electrons:
+            raise ValueError(
+                f"Permutation of size {len(permutation)} is incompatible with "
+                f"{self.n_electrons} electrons"
+            )
+        index = torch.tensor(permutation.inverse().image, device=self.positions.device, dtype=torch.long)
+        positions = self.positions.index_select(-2, index)
+        spins = None if self.spins is None else self.spins.index_select(-1, index)
+        return replace(self, positions=positions, spins=spins)
 
 
 @dataclass

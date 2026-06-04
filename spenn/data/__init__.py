@@ -2,8 +2,8 @@
 
 from spenn.data.feature_dict import BranchDict, FeatureDict, MessageDict, TensorProductDict
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
-from spenn.data.equivariant_map import EquivariantMap
-from spenn.data.irrep_features import IrrepFeature, IrrepMessage
+from spenn.data.base import ConcatenatedState, EquivariantMap, SpechtMPState
+from spenn.data.irrep_features import IrrepFeature, IrrepMessage, IrrepTensors
 from spenn.data.irrep_tensor import IrrepTensor
 from spenn.data.partitions import (
     Par,
@@ -18,7 +18,7 @@ from spenn.data.partitions import (
     validate_partition,
 )
 from spenn.data.permutation import Permutation
-from spenn.data.real_features import ConcatenatedState, RealFeature, RealMessage, RealTensors, SpechtMPState
+from spenn.data.real_features import RealConcatenatedState, RealFeature, RealMessage, RealTensors
 from spenn.data.subset_index import (
     all_ordered_tuples,
     all_pairs,
@@ -37,11 +37,13 @@ __all__ = [
     "IrrepFeature",
     "IrrepMessage",
     "IrrepTensor",
+    "IrrepTensors",
     "MessageDict",
     "Par",
     "Partition",
     "Permutation",
     "RealFeature",
+    "RealConcatenatedState",
     "RealMessage",
     "RealTensors",
     "SpechtMPState",

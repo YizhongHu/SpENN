@@ -1,8 +1,6 @@
-"""Real-space permutation actions for ordered electron axes."""
+"""Real-space permutation action utilities."""
 
 from __future__ import annotations
-
-import torch
 
 from spenn.data.permutation import Permutation
 
@@ -24,27 +22,4 @@ def as_permutation(value: Permutation | tuple[int, ...] | list[int]) -> Permutat
     return value if isinstance(value, Permutation) else Permutation(tuple(value))
 
 
-def permute_axis(tensor: torch.Tensor, permutation: Permutation | tuple[int, ...] | list[int], axis: int) -> torch.Tensor:
-    """Permute one tensor axis.
-
-    Parameters
-    ----------
-    tensor : torch.Tensor
-        Tensor to permute.
-    permutation : Permutation or sequence of int
-        Axis permutation.
-    axis : int
-        Axis to permute.
-
-    Returns
-    -------
-    torch.Tensor
-        Tensor with `axis` re-indexed by `permutation`.
-    """
-
-    normalized = as_permutation(permutation)
-    index = torch.tensor(normalized.inverse().image, dtype=torch.long, device=tensor.device)
-    return torch.index_select(tensor, int(axis), index)
-
-
-__all__ = ["Permutation", "as_permutation", "permute_axis"]
+__all__ = ["Permutation", "as_permutation"]

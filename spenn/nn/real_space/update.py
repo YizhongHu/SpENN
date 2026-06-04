@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from torch import nn
-
+from spenn.data.base import EquivariantMap
 from spenn.data.real_features import RealFeature, RealMessage
 
 
-class MessageUpdate(nn.Module):
+class MessageUpdate(EquivariantMap):
     """Merge real-space message proposals with optional previous messages.
 
     Parameters
@@ -45,7 +44,7 @@ class MessageUpdate(nn.Module):
         return old.add(proposal)
 
 
-class FeatureUpdate(nn.Module):
+class FeatureUpdate(EquivariantMap):
     """Merge real-space feature proposals with persistent features.
 
     Parameters
@@ -81,24 +80,24 @@ class FeatureUpdate(nn.Module):
         return old.add(proposal)
 
 
-class RealToIrrepMessageUpdate(nn.Module):
+class RealToIrrepMessageUpdate(EquivariantMap):
     """Run a message update through temporary irrep-space coordinates.
 
     Parameters
     ----------
-    fourier : torch.nn.Module or None, optional
+    fourier : EquivariantMap or None, optional
         Module mapping real messages to temporary irrep-space messages.
-    irrep_update : torch.nn.Module or None, optional
+    irrep_update : EquivariantMap or None, optional
         Irrep-space update taking ``(old_hat, proposal_hat)``.
-    inverse_fourier : torch.nn.Module or None, optional
+    inverse_fourier : EquivariantMap or None, optional
         Module reconstructing :class:`RealMessage` objects.
     """
 
     def __init__(
         self,
-        fourier: nn.Module | None = None,
-        irrep_update: nn.Module | None = None,
-        inverse_fourier: nn.Module | None = None,
+        fourier: EquivariantMap | None = None,
+        irrep_update: EquivariantMap | None = None,
+        inverse_fourier: EquivariantMap | None = None,
     ) -> None:
         super().__init__()
         self.fourier = fourier
@@ -139,24 +138,24 @@ class RealToIrrepMessageUpdate(nn.Module):
         return updated
 
 
-class RealToIrrepFeatureUpdate(nn.Module):
+class RealToIrrepFeatureUpdate(EquivariantMap):
     """Run a feature update through temporary irrep-space coordinates.
 
     Parameters
     ----------
-    fourier : torch.nn.Module or None, optional
+    fourier : EquivariantMap or None, optional
         Module mapping real features to temporary irrep-space features.
-    irrep_update : torch.nn.Module or None, optional
+    irrep_update : EquivariantMap or None, optional
         Irrep-space update taking ``(old_hat, proposal_hat)``.
-    inverse_fourier : torch.nn.Module or None, optional
+    inverse_fourier : EquivariantMap or None, optional
         Module reconstructing :class:`RealFeature` objects.
     """
 
     def __init__(
         self,
-        fourier: nn.Module | None = None,
-        irrep_update: nn.Module | None = None,
-        inverse_fourier: nn.Module | None = None,
+        fourier: EquivariantMap | None = None,
+        irrep_update: EquivariantMap | None = None,
+        inverse_fourier: EquivariantMap | None = None,
     ) -> None:
         super().__init__()
         self.fourier = fourier

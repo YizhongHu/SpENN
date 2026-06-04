@@ -5,10 +5,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.data.base import EquivariantMap
 from spenn.data.permutation import Permutation
 from spenn.data.real_features import RealFeature
-from spenn.testing import assert_equivariant, assert_tree_allclose, permute_tree
+from spenn.testing import assert_equivariant
 
 
 def _feature() -> RealFeature:
@@ -19,19 +19,6 @@ def _feature() -> RealFeature:
             torch.arange(1 * 2 * 3 * 3, dtype=torch.float64).reshape(1, 2, 3, 3),
         ]
     )
-
-
-def test_permute_tree_handles_nested_structures() -> None:
-    permutation = Permutation((1, 2, 0))
-    tensor = torch.arange(1 * 1 * 3, dtype=torch.float64).reshape(1, 1, 3)
-    value = {"feature": _feature(), "items": [tensor, (tensor,)]}
-
-    permuted = permute_tree(value, permutation)
-
-    assert_tree_allclose(permuted["feature"], value["feature"].permute(permutation))
-    index = list(permutation.inverse().image)
-    assert torch.equal(permuted["items"][0], tensor[:, :, index])
-    assert torch.equal(permuted["items"][1][0], tensor[:, :, index])
 
 
 def test_assert_equivariant_accepts_identity_module() -> None:

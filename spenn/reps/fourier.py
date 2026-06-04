@@ -1,115 +1,117 @@
-"""Fourier transforms between ordered tuples and Specht coordinates."""
+"""Fourier maps between ordered real tensors and Specht coordinates."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
-import torch
-from torch import nn
-
+from spenn.data.base import EquivariantMap
+from spenn.data.irrep_features import IrrepTensors
 from spenn.data.partitions import Partition
+from spenn.data.real_features import RealTensors
 
 
-class FourierTransform(nn.Module):
-    """Base placeholder for fixed Specht Fourier transforms.
+class FourierTransform(EquivariantMap):
+    """Map real ordered-tuple tensors into temporary irrep coordinates.
 
     Parameters
     ----------
-    partition : Partition or None, optional
-        Target Specht partition for the transform.
+    partitions : iterable of Partition or None, optional
+        Irrep partitions requested by the transform.
     maps : object or None, optional
-        Optional fixed map payload reserved for generated fixtures.
+        Optional fixed projection maps reserved for generated fixtures.
     **_ : object
         Ignored compatibility keyword arguments.
     """
 
-    def __init__(self, partition: Partition | None = None, maps: object | None = None, **_: Any) -> None:
+    def __init__(
+        self,
+        partitions: Iterable[Partition] | None = None,
+        maps: object | None = None,
+        **_: Any,
+    ) -> None:
         super().__init__()
-        self.partition = partition
+        self.partitions = None if partitions is None else tuple(partitions)
         self.maps = maps
 
-    def forward(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Apply the fixed Fourier transform.
+    def forward(self, tensors: RealTensors) -> IrrepTensors:
+        """Project real ordered-tuple tensors to irrep-space tensors.
 
         Parameters
         ----------
-        tensor : torch.Tensor
-            Tensor to transform.
+        tensors : RealTensors
+            Ordered real-space tensor blocks.
 
         Returns
         -------
-        torch.Tensor
-            Transformed tensor.
+        IrrepTensors
+            Temporary irrep-space tensor blocks.
 
         Raises
         ------
         NotImplementedError
-            Always raised until generated Fourier fixtures are wired in.
+            Always raised until fixed Fourier maps are implemented.
         """
 
         raise NotImplementedError("FourierTransform.forward is not implemented yet")
 
 
+class InverseFourierTransform(EquivariantMap):
+    """Map temporary irrep coordinates back into real ordered-tuple tensors.
+
+    Parameters
+    ----------
+    partitions : iterable of Partition or None, optional
+        Irrep partitions reconstructed by the transform.
+    maps : object or None, optional
+        Optional fixed inverse maps reserved for generated fixtures.
+    **_ : object
+        Ignored compatibility keyword arguments.
+    """
+
+    def __init__(
+        self,
+        partitions: Iterable[Partition] | None = None,
+        maps: object | None = None,
+        **_: Any,
+    ) -> None:
+        super().__init__()
+        self.partitions = None if partitions is None else tuple(partitions)
+        self.maps = maps
+
+    def forward(self, tensors: IrrepTensors) -> RealTensors:
+        """Reconstruct ordered real-space tensors from irrep-space tensors.
+
+        Parameters
+        ----------
+        tensors : IrrepTensors
+            Temporary irrep-space tensor blocks.
+
+        Returns
+        -------
+        RealTensors
+            Ordered real-space tensor blocks.
+
+        Raises
+        ------
+        NotImplementedError
+            Always raised until fixed inverse Fourier maps are implemented.
+        """
+
+        raise NotImplementedError("InverseFourierTransform.forward is not implemented yet")
+
+
 class TupleToSpechtFourier(FourierTransform):
-    """Placeholder transform from ordered-tuple values to Specht coordinates."""
+    """Compatibility name for :class:`FourierTransform`."""
 
 
-class SpechtToTupleFourier(FourierTransform):
-    """Placeholder transform from Specht coordinates to ordered-tuple values."""
-
-
-def tuple_to_specht(tensor: torch.Tensor, partition: Partition) -> torch.Tensor:
-    """Project ordered-tuple values to Specht coordinates.
-
-    Parameters
-    ----------
-    tensor : torch.Tensor
-        Ordered-tuple tensor.
-    partition : Partition
-        Target Specht partition.
-
-    Returns
-    -------
-    torch.Tensor
-        Specht-coordinate tensor.
-
-    Raises
-    ------
-    NotImplementedError
-        Always raised until fixed Fourier maps are implemented.
-    """
-
-    raise NotImplementedError("tuple_to_specht is not implemented yet")
-
-
-def specht_to_tuple(tensor: torch.Tensor, partition: Partition) -> torch.Tensor:
-    """Reconstruct ordered-tuple values from Specht coordinates.
-
-    Parameters
-    ----------
-    tensor : torch.Tensor
-        Specht-coordinate tensor.
-    partition : Partition
-        Source Specht partition.
-
-    Returns
-    -------
-    torch.Tensor
-        Ordered-tuple tensor.
-
-    Raises
-    ------
-    NotImplementedError
-        Always raised until fixed Fourier maps are implemented.
-    """
-
-    raise NotImplementedError("specht_to_tuple is not implemented yet")
+class SpechtToTupleFourier(InverseFourierTransform):
+    """Compatibility name for :class:`InverseFourierTransform`."""
 
 
 __all__ = [
     "FourierTransform",
+    "InverseFourierTransform",
     "SpechtToTupleFourier",
     "TupleToSpechtFourier",
-    "specht_to_tuple",
-    "tuple_to_specht",
 ]

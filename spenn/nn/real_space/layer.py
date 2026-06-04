@@ -6,25 +6,26 @@ from typing import Any
 
 from torch import nn
 
-from spenn.data.real_features import ConcatenatedState, RealFeature, RealMessage
+from spenn.data.base import EquivariantMap
+from spenn.data.real_features import RealConcatenatedState, RealFeature, RealMessage
 
 
-class RealSpechtMPLayer(nn.Module):
+class RealSpechtMPLayer(EquivariantMap):
     """Compose one real-space SpechtMP message-passing layer.
 
     Parameters
     ----------
-    convolution : torch.nn.Module or None, optional
+    convolution : EquivariantMap or None, optional
         Module mapping :class:`RealFeature` to :class:`RealMessage`.
-    pooling : torch.nn.Module or None, optional
+    pooling : EquivariantMap or None, optional
         Module mapping :class:`RealMessage` to :class:`RealFeature`.
-    message_activation : torch.nn.Module or None, optional
+    message_activation : EquivariantMap or None, optional
         Module mapping :class:`RealMessage` to :class:`RealMessage`.
-    feature_activation : torch.nn.Module or None, optional
+    feature_activation : EquivariantMap or None, optional
         Module mapping :class:`RealFeature` to :class:`RealFeature`.
-    message_update : torch.nn.Module or None, optional
+    message_update : EquivariantMap or None, optional
         Module taking ``(old, proposal)`` real-space messages.
-    feature_update : torch.nn.Module or None, optional
+    feature_update : EquivariantMap or None, optional
         Module taking ``(old, proposal)`` real-space features.
     **_ : object
         Ignored compatibility keyword arguments.
@@ -32,15 +33,25 @@ class RealSpechtMPLayer(nn.Module):
 
     def __init__(
         self,
-        convolution: nn.Module | None = None,
-        pooling: nn.Module | None = None,
-        message_activation: nn.Module | None = None,
-        feature_activation: nn.Module | None = None,
-        message_update: nn.Module | None = None,
-        feature_update: nn.Module | None = None,
+        convolution: EquivariantMap | None = None,
+        pooling: EquivariantMap | None = None,
+        message_activation: EquivariantMap | None = None,
+        feature_activation: EquivariantMap | None = None,
+        message_update: EquivariantMap | None = None,
+        feature_update: EquivariantMap | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
+        for name, component in {
+            "convolution": convolution,
+            "pooling": pooling,
+            "message_activation": message_activation,
+            "feature_activation": feature_activation,
+            "message_update": message_update,
+            "feature_update": feature_update,
+        }.items():
+            if component is not None and not isinstance(component, EquivariantMap):
+                raise TypeError(f"RealSpechtMPLayer {name} must be an EquivariantMap")
         self.convolution = convolution
         self.pooling = pooling
         self.message_activation = message_activation
@@ -48,17 +59,17 @@ class RealSpechtMPLayer(nn.Module):
         self.message_update = message_update
         self.feature_update = feature_update
 
-    def forward(self, state: ConcatenatedState) -> ConcatenatedState:
+    def forward(self, state: RealConcatenatedState) -> RealConcatenatedState:
         """Return one real-space SpechtMP state update.
 
         Parameters
         ----------
-        state : ConcatenatedState
+        state : RealConcatenatedState
             Real-space feature/message state entering the layer.
 
         Returns
         -------
-        ConcatenatedState
+        RealConcatenatedState
             Updated state with real-space features and messages replaced.
 
         Raises
@@ -99,7 +110,7 @@ class RealSpechtMPLayer(nn.Module):
         if not isinstance(features, RealFeature):
             raise TypeError("RealSpechtMPLayer feature_update must return a RealFeature")
 
-        return ConcatenatedState(features=features, messages=messages)
+        return RealConcatenatedState(features=features, messages=messages)
 
     def _required(self, name: str) -> nn.Module:
         component = getattr(self, name)

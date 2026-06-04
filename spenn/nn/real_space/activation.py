@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from torch import nn
 
+from spenn.data.base import EquivariantMap
 from spenn.data.real_features import RealFeature, RealMessage
 
 
-class SpechtMessageActivation(nn.Module):
+class SpechtMessageActivation(EquivariantMap):
     """Apply an optional activation to real-space messages.
 
     Parameters
@@ -47,7 +48,7 @@ class SpechtMessageActivation(nn.Module):
         return activated
 
 
-class SpechtFeatureActivation(nn.Module):
+class SpechtFeatureActivation(EquivariantMap):
     """Apply an optional activation to real-space features.
 
     Parameters
