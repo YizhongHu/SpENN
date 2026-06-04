@@ -32,17 +32,20 @@ partitions, currently `(n_up, n_down) = (3, 0)`, `(2, 1)`, `(1, 2)`, and
 lowest sampled VMC energy. Scan parents can also be processed and plotted;
 `plot_outputs.py` writes a fixed-sector energy/variance/acceptance figure.
 
-To process a saved run into comparison-ready CSV/JSON:
+To process a saved run into comparison-ready CSV/JSON without a baseline:
 
 ```bash
 uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
 
-To include the Gaussian Hartree baseline columns and reference density tables,
-pass the saved reference run as well:
+For the baseline-aware flow, run the reference wrapper first, then process the
+saved SpENN run or scan parent with the saved reference run, then regenerate
+plots:
 
 ```bash
+uv run --extra cpu python experiments/hooke_multibody/run_reference.py --config reference
 uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id> --reference-run outputs/YYYY-MM-DD/hooke_multibody_reference/<reference-run-id>
+uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id>
 ```
 
 To plot a saved run:
@@ -51,17 +54,17 @@ To plot a saved run:
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
 
-If baseline CSVs were copied into `data/`, the energy, pair-distance, and
-radial-density figures include Gaussian Hartree comparison overlays. For spin
-scan parents, the energy figure includes the same baseline line when the
-processed scan rows have baseline columns.
+If baseline CSVs were copied into `data/` before plotting, the energy,
+pair-distance, and radial-density figures include Gaussian Hartree comparison
+overlays. For spin scan parents, the energy figure includes the same baseline
+line when the processed scan rows have baseline columns.
 
 Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the
 same time stamp.
 
-For the current smoke-scale sanity snapshot and embedded figures, see
-[`report.md`](report.md).
+For the current smoke-scale sanity snapshot, Gaussian Hartree baseline offsets,
+and embedded baseline-aware figures, see [`report.md`](report.md).
 
 ## Outputs
 

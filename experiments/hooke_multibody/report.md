@@ -90,18 +90,20 @@ uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config smok
 uv run --extra cpu python experiments/hooke_multibody/run_spenn.py --config benchmark --scan-spins
 ```
 
-Process and plot a saved SpENN run or scan parent with:
+Process and plot a saved SpENN run or scan parent without a baseline with:
 
 ```bash
 uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<run-name>/<run-id>
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
 
-To attach the Gaussian Hartree baseline during processing, pass the saved
-reference run:
+For the baseline-aware flow, run the reference wrapper first, process the saved
+SpENN run or scan parent with that reference run, then regenerate plots:
 
 ```bash
+uv run --extra cpu python experiments/hooke_multibody/run_reference.py --config reference
 uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id> --reference-run outputs/YYYY-MM-DD/hooke_multibody_reference/<reference-run-id>
+uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id>
 ```
 
 When those baseline CSVs are present, `plot_outputs.py` overlays the baseline
@@ -118,13 +120,18 @@ The following local CPU artifacts were generated on 2026-06-03 under
 `outputs/codex_hooke_multibody/`. They are smoke-scale checks of the workflow,
 not converged VMC evidence.
 
-| run | sector | energy | sem | variance | acceptance |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `hooke_multibody_spenn_15-23-38_b88e8f03` | `N=3, up=2, down=1` | 4.72118557 | 0.08647394 | 0.05982194 | 0.625 |
-| `hooke_multibody_spin_scan_10-03-43_514cbd97_up3_down0` | `N=3, up=3, down=0` | 4.59707710 | 0.08134876 | 0.02647048 | 0.625 |
-| `hooke_multibody_spin_scan_10-03-43_514cbd97_up2_down1` | `N=3, up=2, down=1` | 4.03680492 | 0.16581581 | 0.10997953 | 0.625 |
-| `hooke_multibody_spin_scan_10-03-43_514cbd97_up1_down2` | `N=3, up=1, down=2` | 4.45998269 | 0.12493563 | 0.06243565 | 0.625 |
-| `hooke_multibody_spin_scan_10-03-43_514cbd97_up0_down3` | `N=3, up=0, down=3` | 4.71338838 | 0.12463252 | 0.06213306 | 0.625 |
+The Gaussian Hartree baseline for `N=3`, `omega=0.5` has
+`alpha=0.1822844261592677` and energy `3.80847536`. The `delta GH` column is
+`energy - baseline_energy`; it is a baseline offset, not an exact-reference
+error.
+
+| run | sector | energy | delta GH | sem | variance | acceptance |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `hooke_multibody_spenn_15-23-38_b88e8f03` | `N=3, up=2, down=1` | 4.72118557 | 0.91271021 | 0.08647394 | 0.05982194 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up3_down0` | `N=3, up=3, down=0` | 4.59707710 | 0.78860173 | 0.08134876 | 0.02647048 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up2_down1` | `N=3, up=2, down=1` | 4.03680492 | 0.22832956 | 0.16581581 | 0.10997953 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up1_down2` | `N=3, up=1, down=2` | 4.45998269 | 0.65150733 | 0.12493563 | 0.06243565 | 0.625 |
+| `hooke_multibody_spin_scan_10-03-43_514cbd97_up0_down3` | `N=3, up=0, down=3` | 4.71338838 | 0.90491302 | 0.12463252 | 0.06213306 | 0.625 |
 
 The smoke run had particle-token antisymmetry error below `6e-16` and sign-flip
 accuracy `1.0`. The analytic cusp module itself had small short-range slope
@@ -137,6 +144,10 @@ were `-3.31e-3` for the same-spin pair and `-9.43e-2` averaged over
 opposite-spin pairs. These are smoke diagnostics, not convergence claims.
 
 ## Figure Gallery
+
+The energy, pair-distance, radial-density, and fixed-sector scan figures below
+were regenerated after baseline-aware processing. They include Gaussian Hartree
+overlays where the corresponding baseline CSV is available.
 
 Smoke energy trace:
 
