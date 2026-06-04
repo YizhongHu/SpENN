@@ -267,10 +267,7 @@ class RealConcatenatedState(BaseConcatenatedState):
         return RealConcatenatedState(features=self.features.permute(permutation), messages=messages)
 
 
-ConcatenatedState = RealConcatenatedState
-
 __all__ = [
-    "ConcatenatedState",
     "RealConcatenatedState",
     "RealFeature",
     "RealMessage",

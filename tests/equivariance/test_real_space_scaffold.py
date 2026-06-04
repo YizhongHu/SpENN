@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.base import EquivariantMap
+from spenn.data.base import ConcatenatedState, EquivariantMap
 from spenn.data.batch import ElectronBatch
 from spenn.data.irrep_features import IrrepFeature, IrrepMessage, IrrepTensors
 from spenn.data.partitions import Par
@@ -68,6 +68,8 @@ def test_real_space_scaffold_imports() -> None:
     assert RealSpechtMPLayer.__name__ == "RealSpechtMPLayer"
     assert RealFeature().__class__.__name__ == "RealFeature"
     assert RealMessage().__class__.__name__ == "RealMessage"
+    assert ConcatenatedState.__name__ == "ConcatenatedState"
+    assert ConcatenatedState is not RealConcatenatedState
     assert RealConcatenatedState().__class__.__name__ == "RealConcatenatedState"
     assert isinstance(IrrepFeature(), IrrepTensors)
     assert isinstance(IrrepMessage(), IrrepTensors)

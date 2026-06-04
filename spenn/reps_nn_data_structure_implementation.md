@@ -1052,7 +1052,7 @@ A\times A.
 
 # 13. Current file responsibilities
 
-## `data/feature_dict.py`
+## `data/irrep_features.py`
 
 Should contain:
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from torch import nn
 
 from spenn.data.batch import ElectronBatch
-from spenn.data.feature_dict import FeatureDict
+from spenn.data.irrep_features import FeatureDict
 from spenn.data.partitions import Partition
 
 

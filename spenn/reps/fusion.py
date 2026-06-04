@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from spenn.data.feature_dict import FeatureDict, TensorProductDict
+from spenn.data.irrep_features import FeatureDict, TensorProductDict
 from spenn.data.partitions import Par, Partition
 
 

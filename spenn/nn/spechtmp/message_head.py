@@ -9,7 +9,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from spenn.data.feature_dict import FeatureDict, MessageDict, TensorProductDict
+from spenn.data.irrep_features import FeatureDict, MessageDict, TensorProductDict
 from spenn.data.partitions import Par, Partition, as_partition
 from spenn.nn.utils.activations import Activation
 

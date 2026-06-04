@@ -86,7 +86,7 @@ def _assert_featuredict_close(left: FeatureDict, right: FeatureDict) -> None:
         assert torch.allclose(tensor, right.get(partition), atol=1.0e-10, rtol=1.0e-10)
 
 
-def _assert_equivariant(module: nn.Module, features: FeatureDict) -> None:
+def _check_gate_equivariance(module: nn.Module, features: FeatureDict) -> None:
     original = module(features)
     for permutation in PERMUTATIONS:
         transformed = module(_permute_features(features, permutation))
@@ -205,7 +205,7 @@ def test_activation_by_irrep_rejects_missing_partition() -> None:
 
 @pytest.mark.parametrize("normalize", [True, False])
 def test_norm_gate_activate_is_equivariant(normalize: bool) -> None:
-    _assert_equivariant(NormGateActivate(nn.Tanh(), eps=1.0e-12, normalize=normalize), _features())
+    _check_gate_equivariance(NormGateActivate(nn.Tanh(), eps=1.0e-12, normalize=normalize), _features())
 
 
 def test_norm_gate_activate_normalize_true_matches_expected_local_norm_gate() -> None:
@@ -240,7 +240,7 @@ def test_gated_activation_with_norm_gate_is_equivariant_and_preserves_contracts(
 
     activated = module(features)
 
-    _assert_equivariant(module, features)
+    _check_gate_equivariance(module, features)
     _assert_pair_symmetry_contract(activated)
     for partition, tensor in features.flat_items():
         value = activated.get(partition)
@@ -298,7 +298,7 @@ def test_activation_by_type_with_gated_norm_activations_is_equivariant() -> None
         tensor=_norm_activation(),
     )
 
-    _assert_equivariant(module, _features())
+    _check_gate_equivariance(module, _features())
     _assert_pair_symmetry_contract(module(_features()))
 
 
@@ -312,7 +312,7 @@ def test_activation_by_irrep_with_gated_norm_activations_is_equivariant() -> Non
         }
     )
 
-    _assert_equivariant(module, _features())
+    _check_gate_equivariance(module, _features())
     _assert_pair_symmetry_contract(module(_features()))
 
 
@@ -339,7 +339,7 @@ def test_scalar_gate_update_is_equivariant_and_uses_scalar_update_component() ->
 def test_scalar_gate_activate_is_equivariant_and_uses_scalar_feature_component() -> None:
     gate = ScalarGateActivate(nn.Identity())
 
-    _assert_equivariant(gate, _scalar_features(2.0))
+    _check_gate_equivariance(gate, _scalar_features(2.0))
     assert torch.equal(gate(_scalar_features(2.0)).get(ORDER1), _scalar_features(2.0).get(ORDER1))
 
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from torch import nn
 
-from spenn.data.feature_dict import FeatureDict
+from spenn.data.irrep_features import FeatureDict
 from spenn.nn.spechtmp.message_head import MessageHead
 from spenn.nn.spechtmp.update_head import UpdateHead
 from spenn.nn.utils.update import Update

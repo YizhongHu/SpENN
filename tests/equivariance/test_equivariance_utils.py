@@ -1,14 +1,12 @@
-"""Tests for generic equivariance testing helpers."""
+"""Tests for equivariance checks on SpechtMP maps."""
 
 from __future__ import annotations
 
 import torch
-from torch import nn
 
 from spenn.data.base import EquivariantMap
 from spenn.data.permutation import Permutation
 from spenn.data.real_features import RealFeature
-from spenn.testing import assert_equivariant
 
 
 def _feature() -> RealFeature:
@@ -21,10 +19,6 @@ def _feature() -> RealFeature:
     )
 
 
-def test_assert_equivariant_accepts_identity_module() -> None:
-    assert_equivariant(nn.Identity(), _feature(), Permutation((2, 0, 1)))
-
-
 class IdentityEquivariantMap(EquivariantMap):
     """Identity map for checking the base equivariance method."""
 
@@ -34,7 +28,23 @@ class IdentityEquivariantMap(EquivariantMap):
         return input
 
 
-def test_equivariant_map_is_equivariant_delegates_to_helper() -> None:
+class LabelWeightedMap(EquivariantMap):
+    """Apply fixed label weights to make a non-equivariant map."""
+
+    def forward(self, input: RealFeature) -> RealFeature:
+        """Return features with label-dependent order-one scaling."""
+
+        weights = torch.tensor([1.0, 2.0, 4.0], dtype=input[1].dtype, device=input[1].device).reshape(1, 1, 3)
+        return RealFeature([input[0].clone(), input[1] * weights, input[2].clone()])
+
+
+def test_equivariant_map_is_equivariant_accepts_identity_map() -> None:
     module = IdentityEquivariantMap()
 
     assert module.is_equivariant(_feature(), Permutation((1, 2, 0)))
+
+
+def test_equivariant_map_is_equivariant_rejects_label_dependent_map() -> None:
+    module = LabelWeightedMap()
+
+    assert not module.is_equivariant(_feature(), Permutation((1, 2, 0)))

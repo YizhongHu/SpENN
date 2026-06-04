@@ -1,9 +1,16 @@
 """Data-structure namespace for feature and tensor containers."""
 
-from spenn.data.feature_dict import BranchDict, FeatureDict, MessageDict, TensorProductDict
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.data.base import ConcatenatedState, EquivariantMap, SpechtMPState
-from spenn.data.irrep_features import IrrepFeature, IrrepMessage, IrrepTensors
+from spenn.data.irrep_features import (
+    BranchDict,
+    FeatureDict,
+    IrrepFeature,
+    IrrepMessage,
+    IrrepTensors,
+    MessageDict,
+    TensorProductDict,
+)
 from spenn.data.irrep_tensor import IrrepTensor
 from spenn.data.partitions import (
     Par,

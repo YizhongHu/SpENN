@@ -57,7 +57,7 @@ def test_normalize_partition_accepts_boundary_specs() -> None:
     assert as_partition((1, 1)) == Par("A")
 
 
-def test_feature_dict_stores_partition_keys() -> None:
+def test_irrep_feature_stores_partition_keys() -> None:
     tensor = torch.ones(1, 3, 2, 2, 1, 1)
     features = FeatureDict()
 
@@ -75,7 +75,7 @@ def test_feature_dict_stores_partition_keys() -> None:
     assert isinstance(features, IrrepTensors)
 
 
-def test_irrep_message_container_uses_feature_dict_api() -> None:
+def test_irrep_message_container_uses_irrep_feature_api() -> None:
     tensor = torch.ones(1, 3, 2, 2, 1, 1)
     messages = IrrepMessage({Par("A"): tensor})
 
@@ -94,7 +94,7 @@ def test_irrep_tensors_require_common_channel_count() -> None:
         )
 
 
-def test_feature_dict_setitem_to_dict_and_supported_validation_use_partitions() -> None:
+def test_irrep_feature_setitem_to_dict_and_supported_validation_use_partitions() -> None:
     tensor = torch.ones(1, 3, 2, 2, 1, 1)
     partition = Par("S")
     features = FeatureDict({partition: tensor})
@@ -106,7 +106,7 @@ def test_feature_dict_setitem_to_dict_and_supported_validation_use_partitions() 
         features.validate(supported=[Par("A")])
 
 
-def test_feature_dict_add_and_magic_add_sum_matching_keys() -> None:
+def test_irrep_feature_add_and_magic_add_sum_matching_keys() -> None:
     partition = Par("H")
     left = FeatureDict({partition: torch.ones(2, 3, 4, 1, 1)})
     right = FeatureDict({partition: 2.0 * torch.ones(2, 3, 4, 1, 1)})

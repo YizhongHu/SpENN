@@ -694,7 +694,7 @@ spenn/
     data/
       __init__.py
       partitions.py
-      feature_dict.py
+      irrep_features.py
       subset_index.py
       irrep_tensor.py
 

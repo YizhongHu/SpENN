@@ -8,7 +8,6 @@ from spenn.data.base import ConcatenatedState
 from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
 from spenn.data.real_features import RealConcatenatedState, RealFeature, RealMessage
-from spenn.testing import assert_tree_allclose
 
 
 def _feature() -> RealFeature:
@@ -37,7 +36,7 @@ def test_real_feature_identity_returns_equal_new_state() -> None:
 
     assert permuted is not feature
     assert permuted.data is not feature.data
-    assert_tree_allclose(permuted, feature)
+    torch.testing.assert_close(permuted.data, feature.data)
 
 
 def test_real_feature_permute_matches_axis_indexing() -> None:
@@ -60,8 +59,10 @@ def test_real_message_and_real_concatenated_state_permute() -> None:
 
     assert isinstance(permuted.features, RealFeature)
     assert isinstance(permuted.messages, RealMessage)
-    assert_tree_allclose(permuted.features, state.features.permute(permutation))
-    assert_tree_allclose(permuted.messages, state.messages.permute(permutation))
+    assert state.messages is not None
+    assert permuted.messages is not None
+    torch.testing.assert_close(permuted.features.data, state.features.permute(permutation).data)
+    torch.testing.assert_close(permuted.messages.data, state.messages.permute(permutation).data)
 
 
 def test_generic_concatenated_state_permute() -> None:
@@ -71,8 +72,14 @@ def test_generic_concatenated_state_permute() -> None:
     permuted = state.permute(permutation)
 
     assert isinstance(permuted, ConcatenatedState)
-    assert_tree_allclose(permuted[0], state[0].permute(permutation))
-    assert_tree_allclose(permuted[1], state[1].permute(permutation))
+    expected_feature = state[0].permute(permutation)
+    expected_message = state[1].permute(permutation)
+    assert isinstance(permuted[0], RealFeature)
+    assert isinstance(permuted[1], RealMessage)
+    assert isinstance(expected_feature, RealFeature)
+    assert isinstance(expected_message, RealMessage)
+    torch.testing.assert_close(permuted[0].data, expected_feature.data)
+    torch.testing.assert_close(permuted[1].data, expected_message.data)
 
 
 def test_electron_batch_permute_moves_electron_axis() -> None:
@@ -97,7 +104,7 @@ def test_real_state_permutation_composition() -> None:
     sequential = feature.permute(first).permute(second)
     composed = feature.permute(second.compose(first))
 
-    assert_tree_allclose(sequential, composed)
+    torch.testing.assert_close(sequential.data, composed.data)
 
 
 def test_permutation_does_not_mutate_original_tensors() -> None:

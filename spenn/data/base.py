@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, fields, is_dataclass
+from typing import Any
 from typing import Protocol, runtime_checkable
 
+import torch
 from torch import nn
 
 from spenn.data.permutation import Permutation
@@ -32,7 +35,7 @@ class SpechtMPState(Protocol):
 
 
 @dataclass(frozen=True)
-class ConcatenatedState:
+class ConcatenatedState(SpechtMPState):
     """Bundle multiple SpechtMP states into one permutable state.
 
     Parameters
@@ -106,13 +109,68 @@ class EquivariantMap(nn.Module):
     ) -> bool:
         """Return whether the module passes one equivariance check."""
 
-        from spenn.testing.equivariance import assert_equivariant
-
         try:
-            assert_equivariant(self, input, permutation, atol=atol, rtol=rtol)
+            original_output = self(input)
+            if not isinstance(original_output, SpechtMPState):
+                raise TypeError("EquivariantMap outputs must implement SpechtMPState")
+            transformed_output = self(input.permute(permutation))
+            expected_output = original_output.permute(permutation)
+            _assert_allclose(transformed_output, expected_output, atol=atol, rtol=rtol)
         except AssertionError:
             return False
         return True
+
+
+def _assert_allclose(actual: Any, expected: Any, *, atol: float, rtol: float) -> None:
+    """Assert equality or tensor closeness across state containers."""
+
+    if isinstance(actual, torch.Tensor) or isinstance(expected, torch.Tensor):
+        if not isinstance(actual, torch.Tensor) or not isinstance(expected, torch.Tensor):
+            raise AssertionError(f"Tensor type mismatch: {type(actual)!r} != {type(expected)!r}")
+        torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+        return
+    if actual is None or expected is None:
+        if actual is not expected:
+            raise AssertionError(f"None mismatch: {actual!r} != {expected!r}")
+        return
+    if is_dataclass(actual) or is_dataclass(expected):
+        if type(actual) is not type(expected):
+            raise AssertionError(f"Dataclass type mismatch: {type(actual)!r} != {type(expected)!r}")
+        for field in fields(actual):
+            if field.init:
+                _assert_allclose(
+                    getattr(actual, field.name),
+                    getattr(expected, field.name),
+                    atol=atol,
+                    rtol=rtol,
+                )
+        return
+    if isinstance(actual, Mapping) or isinstance(expected, Mapping):
+        if type(actual) is not type(expected):
+            raise AssertionError(f"Mapping type mismatch: {type(actual)!r} != {type(expected)!r}")
+        if actual.keys() != expected.keys():
+            raise AssertionError(f"Mapping keys differ: {actual.keys()} != {expected.keys()}")
+        for key in actual:
+            _assert_allclose(actual[key], expected[key], atol=atol, rtol=rtol)
+        return
+    if isinstance(actual, tuple) or isinstance(expected, tuple):
+        if type(actual) is not type(expected) or len(actual) != len(expected):
+            raise AssertionError(f"Tuple structure mismatch: {actual!r} != {expected!r}")
+        for actual_item, expected_item in zip(actual, expected):
+            _assert_allclose(actual_item, expected_item, atol=atol, rtol=rtol)
+        return
+    if (
+        (isinstance(actual, Sequence) or isinstance(expected, Sequence))
+        and not isinstance(actual, (str, bytes, bytearray))
+        and not isinstance(expected, (str, bytes, bytearray))
+    ):
+        if type(actual) is not type(expected) or len(actual) != len(expected):
+            raise AssertionError(f"Sequence structure mismatch: {actual!r} != {expected!r}")
+        for actual_item, expected_item in zip(actual, expected):
+            _assert_allclose(actual_item, expected_item, atol=atol, rtol=rtol)
+        return
+    if actual != expected:
+        raise AssertionError(f"Values differ: {actual!r} != {expected!r}")
 
 
 __all__ = ["ConcatenatedState", "EquivariantMap", "SpechtMPState"]

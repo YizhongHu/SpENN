@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.feature_dict import FeatureDict
+from spenn.data.irrep_features import FeatureDict
 from spenn.data.irrep_tensor import scalar_channels_last
 from spenn.data.partitions import Par
 
