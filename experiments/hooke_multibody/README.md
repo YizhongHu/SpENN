@@ -69,8 +69,8 @@ same time stamp.
 
 Local CSV/JSON/checkpoint artifacts are always written. W&B tracking is
 config-driven and disabled by default; enable it with
-`tracking.wandb.enabled=true` and install the optional `wandb` extra when using
-that path.
+`tracking.wandb.enabled=true` and include the optional extra, for example
+`uv run --extra cpu --extra wandb python experiments/hooke_multibody/run_spenn.py --config smoke tracking.wandb.enabled=true`.
 
 For the current smoke-scale sanity snapshot, Gaussian Hartree baseline offsets,
 and embedded baseline-aware figures, see [`report.md`](report.md).
