@@ -15,8 +15,9 @@ from spenn.nn.utils.activations import Activation
 
 
 _DEPRECATION_MESSAGE = (
-    "Legacy SpechtMP components are deprecated by the PR #3 real-space scaffold; "
-    "use spenn.nn.real_space.RealSpechtMPLayer instead."
+    "This module implements the legacy irrep-first SpechtMP path. "
+    "New real-space restructure work should use "
+    "spenn.nn.real_space.RealSpechtMPLayer instead."
 )
 
 

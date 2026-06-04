@@ -78,6 +78,15 @@ readout, batched Metropolis sampling, and an autograd-based local-energy path.
 The active Hydra configuration lives in `configs/config.yaml` as one
 constructor-oriented file.
 
+The real-space SpechtMP restructure is scaffolded in parallel under
+`spenn.data`, `spenn.reps`, `spenn.nn.real_space`, and `spenn.testing`.
+Persistent state uses ordered real tuple containers, while irrep/Specht
+coordinates are reserved for temporary Fourier, activation, and gated-update
+wrappers. Math-heavy real-space implementations such as embedding,
+convolution, Fourier maps, generic tuple-path enumeration, and irrep matrices
+intentionally raise `NotImplementedError` until the equivariance contracts are
+approved.
+
 ## Documentation
 
 Documentation sources live under `docs/` and use Sphinx with NumPy-style
