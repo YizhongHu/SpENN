@@ -22,7 +22,7 @@ from tests.helpers import (
 
 
 @pytest.mark.integration
-def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
+def test_hooke_multibody_smoke_writes_artifacts_with_timestamp(tmp_path: Path) -> None:
     cfg = load_config(HOOKE_MULTIBODY_INTEGRATION_ARTIFACTS / "smoke.yaml")
     cfg.run_id = "integration_hooke_multibody_smoke"
 
@@ -100,6 +100,8 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
     assert len(plausibility_rows) == 1
     assert plausibility_rows[0]["n_electrons"] == "3"
+    assert plausibility_rows[0]["harmonic_omega"] == "0.5"
+    assert plausibility_rows[0]["spatial_dim"] == "3"
     assert plausibility_rows[0]["specht_M"] == "2"
     assert plausibility_rows[0]["reference_available"] == "False"
     assert plausibility_rows[0]["reference_method"] == "none"
@@ -118,6 +120,37 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert baseline_rows[0]["baseline_method"] == "gaussian_hartree_variational"
     assert math.isfinite(float(baseline_rows[0]["baseline_energy"]))
     assert math.isfinite(float(baseline_rows[0]["energy_minus_baseline"]))
+    reference_table_names = [
+        "reference_observables.csv",
+        "reference_radial_density.csv",
+        "reference_pair_distance_density.csv",
+    ]
+    assert all((run_dir / "data" / name).exists() for name in reference_table_names)
+
+    mismatched_reference_cfg = load_config(HOOKE_MULTIBODY_REFERENCE_CONFIG)
+    mismatched_reference_cfg.run = {"id": "integration_hooke_multibody_mismatched_baseline"}
+    mismatched_reference_cfg.system.harmonic_omega = 0.7
+    mismatched_reference_summary = run_reference(mismatched_reference_cfg)
+    in_place_mismatched_processed = process_run(
+        run_dir,
+        reference_run=Path(mismatched_reference_summary["output_dir"]),
+    )
+    assert in_place_mismatched_processed["baseline_available"] is False
+    assert "reference_data_files" not in in_place_mismatched_processed
+    assert all(not (run_dir / "data" / name).exists() for name in reference_table_names)
+
+    mismatch_dir = tmp_path / "mismatched_reference_processing"
+    mismatched_processed = process_run(
+        run_dir,
+        reference_run=Path(mismatched_reference_summary["output_dir"]),
+        output_dir=mismatch_dir,
+    )
+    assert mismatched_processed["baseline_available"] is False
+    assert "reference_data_files" not in mismatched_processed
+    assert all(not (mismatch_dir / "data" / name).exists() for name in reference_table_names)
+    mismatched_rows = _csv_rows(mismatch_dir / "data" / "energy_plausibility.csv")
+    assert mismatched_rows[0]["baseline_available"] == "False"
+    assert mismatched_rows[0]["baseline_energy"] == ""
 
     figures = plot_run(run_dir, figure_root=run_dir / "figures")
     assert figures
@@ -167,6 +200,8 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
     assert len(plausibility_rows) == 2
     assert {row["n_electrons"] for row in plausibility_rows} == {"3"}
+    assert {row["harmonic_omega"] for row in plausibility_rows} == {"0.5"}
+    assert {row["spatial_dim"] for row in plausibility_rows} == {"3"}
     assert {row["specht_M"] for row in plausibility_rows} == {"2"}
     assert {row["reference_method"] for row in plausibility_rows} == {"none"}
     assert {row["baseline_available"] for row in plausibility_rows} == {"False"}
@@ -217,9 +252,13 @@ def test_hooke_multibody_reference_summary_records_config_and_git() -> None:
     assert artifact["run_id"] == summary["run_id"]
     assert artifact["config"]["run"]["id"] == "integration_hooke_multibody_reference"
     assert artifact["config"]["run_id"] == "integration_hooke_multibody_reference"
+    assert artifact["config"]["system"]["harmonic_omega"] == 0.5
+    assert artifact["config"]["system"]["spatial_dim"] == 3
     assert artifact["reference_available"] is False
     assert artifact["baseline_available"] is True
-    assert (Path(summary["output_dir"]) / "data" / "reference_observables.csv").exists()
+    reference_rows = _csv_rows(Path(summary["output_dir"]) / "data" / "reference_observables.csv")
+    assert reference_rows[0]["harmonic_omega"] == "0.5"
+    assert reference_rows[0]["spatial_dim"] == "3"
     assert (Path(summary["output_dir"]) / "data" / "reference_radial_density.csv").exists()
     assert (Path(summary["output_dir"]) / "data" / "reference_pair_distance_density.csv").exists()
     assert "git_commit" in artifact["git"]
@@ -233,18 +272,46 @@ def test_hooke_multibody_plot_numeric_parser_rejects_nonfinite_values() -> None:
     assert _to_float("1.25") == 1.25
 
 
-def test_hooke_multibody_baseline_comparison_requires_matching_electron_count() -> None:
+@pytest.mark.parametrize(
+    "system",
+    [
+        {"n_electrons": 4, "harmonic_omega": 0.5, "spatial_dim": 3},
+        {"n_electrons": 3, "harmonic_omega": 0.7, "spatial_dim": 3},
+        {"n_electrons": 3, "harmonic_omega": 0.5, "spatial_dim": 2},
+    ],
+)
+def test_hooke_multibody_baseline_comparison_requires_matching_system(system: dict[str, object]) -> None:
     reference_summary = {
         "baseline_available": True,
         "baseline_method": "gaussian_hartree_variational",
         "baseline_energy": 3.8,
-        "config": {"system": {"n_electrons": 4}},
+        "config": {"system": {"n_electrons": 3, "harmonic_omega": 0.5, "spatial_dim": 3}},
     }
 
-    result = _baseline_comparison(4.1, reference_summary, n_electrons=3)
+    result = _baseline_comparison(4.1, reference_summary, system=system)
 
     assert result["baseline_available"] is False
     assert result["baseline_energy"] == ""
+
+
+def test_hooke_multibody_baseline_comparison_accepts_matching_system_and_legacy_n() -> None:
+    reference_summary = {
+        "baseline_available": True,
+        "baseline_method": "gaussian_hartree_variational",
+        "baseline_energy": 3.8,
+        "config": {"system": {"n_electrons": 3, "harmonic_omega": 0.5, "spatial_dim": 3}},
+    }
+
+    result = _baseline_comparison(
+        4.1,
+        reference_summary,
+        system={"n_electrons": 3, "harmonic_omega": 0.5, "spatial_dim": 3},
+    )
+    legacy_result = _baseline_comparison(4.1, reference_summary, n_electrons=3)
+
+    assert result["baseline_available"] is True
+    assert result["energy_minus_baseline"] == pytest.approx(0.3)
+    assert legacy_result["baseline_available"] is True
 
 
 def test_hooke_multibody_spin_scan_plot_draws_baseline_line(tmp_path: Path) -> None:

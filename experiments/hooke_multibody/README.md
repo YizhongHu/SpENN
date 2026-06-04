@@ -48,16 +48,20 @@ uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id>
 ```
 
+Baseline columns and overlay CSVs are only attached when the reference run
+matches the SpENN run's `system.n_electrons`, `system.harmonic_omega`, and
+`system.spatial_dim`.
+
 To plot a saved run:
 
 ```bash
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
 
-If baseline CSVs were copied into `data/` before plotting, the energy,
-pair-distance, and radial-density figures include Gaussian Hartree comparison
-overlays. For spin scan parents, the energy figure includes the same baseline
-line when the processed scan rows have baseline columns.
+If metadata-compatible baseline CSVs were copied into `data/` before plotting,
+the energy, pair-distance, and radial-density figures include Gaussian Hartree
+comparison overlays. For spin scan parents, the energy figure includes the same
+baseline line when the processed scan rows have baseline columns.
 
 Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the
@@ -85,8 +89,8 @@ Figures generated from saved CSVs are written under
 `process_outputs.py` writes `data/energy_plausibility.csv` for both single runs
 and scan parents. Until a high-accuracy reference is added, exact-reference
 columns record `reference_available=false` and leave reference/delta columns
-blank. When a Gaussian Hartree baseline run is passed as `--reference-run`,
-separate baseline columns record `baseline_energy` and
+blank. When a metadata-compatible Gaussian Hartree baseline run is passed as
+`--reference-run`, separate baseline columns record `baseline_energy` and
 `energy_minus_baseline`.
 
 ## Version Notes

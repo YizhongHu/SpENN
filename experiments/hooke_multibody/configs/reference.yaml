@@ -17,6 +17,7 @@ system:
   n_electrons: 3
   n_up: 2
   n_down: 1
+  spatial_dim: 3
   harmonic_omega: 0.5
 
 tracking:

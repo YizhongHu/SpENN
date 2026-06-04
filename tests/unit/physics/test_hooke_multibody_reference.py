@@ -57,6 +57,7 @@ def test_gaussian_hartree_reference_optimizes_alpha_locally() -> None:
     assert reference.total_energy < high_energy
     assert reference.as_row()["baseline_method"] == "gaussian_hartree_variational"
     assert reference.as_row()["baseline_high_accuracy"] is False
+    assert reference.as_row()["spatial_dim"] == 3
 
 
 def test_gaussian_hartree_reference_recovers_one_electron_oscillator_limit() -> None:
@@ -93,6 +94,7 @@ def test_gaussian_density_rows_are_normalized_on_large_grid() -> None:
         ({"n_electrons": 0, "n_up": 0, "n_down": 0, "harmonic_omega": 0.5}, "n_electrons"),
         ({"n_electrons": 3, "n_up": 3, "n_down": 1, "harmonic_omega": 0.5}, r"n_up \+ n_down"),
         ({"n_electrons": 3, "n_up": 2, "n_down": 1, "harmonic_omega": -0.5}, "harmonic_omega"),
+        ({"n_electrons": 3, "n_up": 2, "n_down": 1, "harmonic_omega": 0.5, "spatial_dim": 2}, "spatial_dim"),
         ({"n_electrons": 3, "n_up": 2, "n_down": 1, "harmonic_omega": 0.5, "alpha": 0.0}, "alpha"),
     ],
 )

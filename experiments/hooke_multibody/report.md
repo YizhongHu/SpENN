@@ -77,9 +77,10 @@ promoted into processed `data/eval_metrics.csv`.
 high-accuracy reference is available, its exact-reference and delta columns are
 intentionally blank. If a Gaussian Hartree baseline run is supplied during
 processing, separate baseline columns record the baseline energy and SpENN
-offset from that baseline. Cusp plots report a two-sided direction-averaged
-full-wavefunction slope, the analytic cusp-module-only slope, and the residual
-smooth-factor slope.
+offset from that baseline only when `system.n_electrons`,
+`system.harmonic_omega`, and `system.spatial_dim` match. Cusp plots report a
+two-sided direction-averaged full-wavefunction slope, the analytic
+cusp-module-only slope, and the residual smooth-factor slope.
 
 ## Reproduction
 
@@ -108,9 +109,10 @@ uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id>
 ```
 
-When those baseline CSVs are present, `plot_outputs.py` overlays the baseline
-energy and density curves on the relevant SpENN figures. Spin-scan parent
-figures also include the baseline energy line after baseline-aware processing.
+When metadata-compatible baseline CSVs are present, `plot_outputs.py` overlays
+the baseline energy and density curves on the relevant SpENN figures. Spin-scan
+parent figures also include the baseline energy line after baseline-aware
+processing.
 
 All `run_*.py` files are wrappers around reusable training/artifact utilities;
 they do not instantiate core Hamiltonian, sampler, model, optimizer, loss, or
@@ -122,7 +124,7 @@ The following local CPU artifacts were generated on 2026-06-03 under
 `outputs/codex_hooke_multibody/`. They are smoke-scale checks of the workflow,
 not converged VMC evidence.
 
-The Gaussian Hartree baseline for `N=3`, `omega=0.5` has
+The Gaussian Hartree baseline for `N=3`, `omega=0.5`, `spatial_dim=3` has
 `alpha=0.1822844261592677` and energy `3.80847536`. The `delta GH` column is
 `energy - baseline_energy`; it is a baseline offset, not an exact-reference
 error.

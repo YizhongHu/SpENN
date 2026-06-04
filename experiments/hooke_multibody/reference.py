@@ -19,6 +19,8 @@ class GaussianHartreeReference:
         the counts are recorded for comparison tables.
     harmonic_omega : float
         Harmonic trap frequency.
+    spatial_dim : int
+        Spatial dimension supported by the analytic Coulomb formula.
     alpha : float
         Gaussian log-amplitude coefficient in ``log|psi| = -alpha * R^2``.
     kinetic_energy, harmonic_energy, coulomb_energy, total_energy : float
@@ -29,6 +31,7 @@ class GaussianHartreeReference:
     n_up: int
     n_down: int
     harmonic_omega: float
+    spatial_dim: int
     alpha: float
     kinetic_energy: float
     harmonic_energy: float
@@ -51,6 +54,7 @@ class GaussianHartreeReference:
             "n_electrons": self.n_electrons,
             "n_up": self.n_up,
             "n_down": self.n_down,
+            "spatial_dim": self.spatial_dim,
             "harmonic_omega": self.harmonic_omega,
             "gaussian_alpha": self.alpha,
             "baseline_kinetic_energy": self.kinetic_energy,
@@ -66,6 +70,7 @@ def gaussian_hartree_reference(
     n_up: int,
     n_down: int,
     harmonic_omega: float,
+    spatial_dim: int = 3,
     alpha: float | None = None,
 ) -> GaussianHartreeReference:
     """Return a variational Gaussian Hartree baseline.
@@ -78,6 +83,8 @@ def gaussian_hartree_reference(
         Spin-sector counts. They must sum to ``n_electrons``.
     harmonic_omega : float
         Harmonic trap frequency.
+    spatial_dim : int, optional
+        Spatial dimension. The current Coulomb formula supports only ``3``.
     alpha : float or None, optional
         Gaussian coefficient. If ``None``, the coefficient minimizing the
         Gaussian Hartree energy is selected.
@@ -90,7 +97,11 @@ def gaussian_hartree_reference(
 
     _check_system_counts(n_electrons, n_up, n_down)
     selected_alpha = (
-        optimal_gaussian_hartree_alpha(n_electrons=n_electrons, harmonic_omega=harmonic_omega)
+        optimal_gaussian_hartree_alpha(
+            n_electrons=n_electrons,
+            harmonic_omega=harmonic_omega,
+            spatial_dim=spatial_dim,
+        )
         if alpha is None
         else float(alpha)
     )
@@ -98,12 +109,14 @@ def gaussian_hartree_reference(
         n_electrons=n_electrons,
         harmonic_omega=harmonic_omega,
         alpha=selected_alpha,
+        spatial_dim=spatial_dim,
     )
     return GaussianHartreeReference(
         n_electrons=n_electrons,
         n_up=n_up,
         n_down=n_down,
         harmonic_omega=float(harmonic_omega),
+        spatial_dim=int(spatial_dim),
         alpha=selected_alpha,
         kinetic_energy=components["kinetic_energy"],
         harmonic_energy=components["harmonic_energy"],

@@ -120,6 +120,7 @@ def _reference_outputs(cfg: DictConfig) -> tuple[dict[str, object], dict[str, li
     n_electrons = int(OmegaConf.select(cfg, "system.n_electrons", default=3))
     n_up = int(OmegaConf.select(cfg, "system.n_up", default=2))
     n_down = int(OmegaConf.select(cfg, "system.n_down", default=1))
+    spatial_dim = int(OmegaConf.select(cfg, "system.spatial_dim", default=3))
     harmonic_omega = float(OmegaConf.select(cfg, "system.harmonic_omega", default=0.5))
     row: dict[str, object] = {
         "reference_available": bool(OmegaConf.select(cfg, "reference.available", default=False)),
@@ -127,6 +128,7 @@ def _reference_outputs(cfg: DictConfig) -> tuple[dict[str, object], dict[str, li
         "n_electrons": n_electrons,
         "n_up": n_up,
         "n_down": n_down,
+        "spatial_dim": spatial_dim,
         "harmonic_omega": harmonic_omega,
         "baseline_available": False,
         "baseline_method": "",
@@ -143,6 +145,7 @@ def _reference_outputs(cfg: DictConfig) -> tuple[dict[str, object], dict[str, li
         n_up=n_up,
         n_down=n_down,
         harmonic_omega=harmonic_omega,
+        spatial_dim=spatial_dim,
         alpha=None if alpha is None else float(alpha),
     )
     row.update(baseline.as_row())
