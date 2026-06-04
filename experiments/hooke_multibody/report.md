@@ -119,9 +119,11 @@ processing.
 All `run_*.py` files are wrappers around reusable training/artifact utilities;
 they do not instantiate core Hamiltonian, sampler, model, optimizer, loss, or
 trainer objects directly.
-Local CSV/JSON/checkpoint artifacts are always written. W&B tracking is
-available through `tracking.wandb.*` config fields and is disabled by default
-for smoke and CI runs. To enable it, include the optional extra, for example
+Local CSV/JSON artifacts are always written. Checkpoints are controlled by
+`artifacts.write_checkpoint`; smoke runs disable them, while the base SpENN
+template enables them. W&B tracking is available through `tracking.wandb.*`
+config fields and is disabled by default for smoke and CI runs. To enable it,
+include the optional extra, for example
 `uv run --extra cpu --extra wandb python experiments/hooke_multibody/run_spenn.py --config smoke tracking.wandb.enabled=true`.
 
 ## Local Sanity Snapshot

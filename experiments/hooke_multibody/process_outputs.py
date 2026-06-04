@@ -94,6 +94,7 @@ def process_run(
 
     target = output_dir or spenn_run
     spenn_summary = _load_summary(spenn_run)
+    _copy_source_summary(spenn_summary, target)
     reference_summary = _load_summary(reference_run) if reference_run is not None else None
     if spenn_summary.get("mode") == "spin_scan":
         return _process_spin_scan(
@@ -380,6 +381,20 @@ def _export_reference_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
         shutil.copyfile(source, destination)
         exported[name] = str(destination)
     return exported
+
+
+def _copy_source_summary(summary: dict[str, object], target: Path) -> None:
+    """Copy the source run summary into a processed-output directory.
+
+    Parameters
+    ----------
+    summary : dict
+        Source ``artifacts/summary.json`` content.
+    target : pathlib.Path
+        Processed-output directory.
+    """
+
+    write_json(target / "artifacts" / "summary.json", summary)
 
 
 def _clear_reference_tables(data_dir: Path) -> None:

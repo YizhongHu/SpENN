@@ -106,6 +106,9 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp(tmp_path: Path) -
     legacy_eval_rows = _csv_rows(legacy_processed_dir / "data" / "eval_metrics.csv")
     assert math.isfinite(float(legacy_eval_rows[0]["spenn/energy/mean"]))
     assert math.isfinite(float(legacy_eval_rows[0]["spenn/local_energy/variance"]))
+    legacy_figures = plot_run(legacy_processed_dir, figure_root=legacy_processed_dir / "figures")
+    assert legacy_figures
+    assert all(path.exists() for path in legacy_figures)
     plausibility_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
     assert len(plausibility_rows) == 1
     assert plausibility_rows[0]["n_electrons"] == "3"

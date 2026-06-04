@@ -67,8 +67,9 @@ Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the
 same time stamp.
 
-Local CSV/JSON/checkpoint artifacts are always written. W&B tracking is
-config-driven and disabled by default; enable it with
+Local CSV/JSON artifacts are always written. Checkpoints are controlled by
+`artifacts.write_checkpoint`; smoke runs disable them, while the base SpENN
+template enables them. W&B tracking is config-driven and disabled by default; enable it with
 `tracking.wandb.enabled=true` and include the optional extra, for example
 `uv run --extra cpu --extra wandb python experiments/hooke_multibody/run_spenn.py --config smoke tracking.wandb.enabled=true`.
 
@@ -111,10 +112,10 @@ torch: 2.12.0+cpu
 local cuda available: false
 ```
 
-Local verification used the CPU uv environment through `.venv/bin/python`:
+Local verification used the CPU uv environment:
 
 ```bash
-.venv/bin/python -m pytest \
+uv run --extra cpu python -m pytest \
   tests/unit/diagnostics/test_multibody_wavefunction.py \
   tests/unit/training/test_run_metadata.py \
   tests/integration/test_hooke.py \
@@ -126,7 +127,7 @@ Local verification used the CPU uv environment through `.venv/bin/python`:
 Current focused verification:
 
 ```bash
-.venv/bin/python -m pytest \
+uv run --extra cpu python -m pytest \
   tests/unit/diagnostics/test_statistics.py \
   tests/unit/diagnostics/test_multibody_wavefunction.py \
   tests/unit/training/test_run_metadata.py \
@@ -178,7 +179,16 @@ sbatch: error: Failed to lookup user homedir to load slurm defaults.
 
 before the same controller-contact failure.
 
-The latest bounded retry with `timeout 90s sbatch --test-only ...` produced no
-controller response before timing out.
+On 2026-06-04 from `holy8a29105.rc.fas.harvard.edu`, `scontrol ping`
+reported:
+
+```text
+Slurmctld(primary) at holy-slurm02 is DOWN
+```
+
+The same bounded retry pattern with `timeout 30s sbatch --test-only ...`
+produced no controller response before timing out. Because Slurm was not
+available, the reference wrapper, smoke SpENN wrapper, processing step, and
+plotting step were rerun locally with `uv run --extra cpu`.
 
 No controller-backed Slurm smoke job was accepted from this checkout.

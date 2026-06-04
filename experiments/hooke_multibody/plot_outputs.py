@@ -59,13 +59,23 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
-    scan_rows = _read_csv(run_dir / "metrics" / "spin_scan_summary.csv")
+    scan_rows = _read_first_csv(
+        run_dir,
+        Path("metrics/spin_scan_summary.csv"),
+        Path("data/spin_scan_summary.csv"),
+    )
     if scan_rows:
         path = output_dir / f"{run_id}_spin_scan_energy.png"
         if _plot_spin_scan(plt, scan_rows, path, baseline=baseline_energy):
             written.append(path)
 
-    energy_rows = _read_csv(run_dir / "metrics" / "train_metrics.csv") or _read_csv(run_dir / "metrics" / "energy_trace.csv")
+    energy_rows = _read_first_csv(
+        run_dir,
+        Path("metrics/train_metrics.csv"),
+        Path("data/train_metrics.csv"),
+        Path("metrics/energy_trace.csv"),
+        Path("data/energy_trace.csv"),
+    )
     if energy_rows:
         path = output_dir / f"{run_id}_energy_trace.png"
         if _plot_line(plt, energy_rows, "step", "spenn/energy/mean", path, "VMC energy", baseline=baseline_energy):
@@ -77,13 +87,21 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
         if _plot_line(plt, energy_rows, "step", "sampler/acceptance_rate", acceptance_path, "Sampler acceptance"):
             written.append(acceptance_path)
 
-    local_energy_rows = _read_csv(run_dir / "plots" / "local_energy_histogram.csv")
+    local_energy_rows = _read_first_csv(
+        run_dir,
+        Path("plots/local_energy_histogram.csv"),
+        Path("data/local_energy_histogram.csv"),
+    )
     if local_energy_rows:
         path = output_dir / f"{run_id}_local_energy_histogram.png"
         if _plot_histogram(plt, local_energy_rows, path, "Local-energy histogram", "local energy", "count"):
             written.append(path)
 
-    pair_rows = _read_csv(run_dir / "plots" / "pair_distance_histogram.csv")
+    pair_rows = _read_first_csv(
+        run_dir,
+        Path("plots/pair_distance_histogram.csv"),
+        Path("data/pair_distance_histogram.csv"),
+    )
     if pair_rows:
         reference_pair_rows = _read_csv(run_dir / "data" / "reference_pair_distance_density.csv")
         path = output_dir / f"{run_id}_pair_distance_histogram.png"
@@ -100,7 +118,7 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
         ):
             written.append(path)
 
-    radial_rows = _read_csv(run_dir / "plots" / "radial_density.csv")
+    radial_rows = _read_first_csv(run_dir, Path("plots/radial_density.csv"), Path("data/radial_density.csv"))
     if radial_rows:
         reference_radial_rows = _read_csv(run_dir / "data" / "reference_radial_density.csv")
         path = output_dir / f"{run_id}_radial_density.png"
@@ -116,13 +134,17 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
         ):
             written.append(path)
 
-    cusp_rows = _read_csv(run_dir / "plots" / "cusp_slope_by_spin.csv")
+    cusp_rows = _read_first_csv(run_dir, Path("plots/cusp_slope_by_spin.csv"), Path("data/cusp_slope_by_spin.csv"))
     if cusp_rows:
         path = output_dir / f"{run_id}_cusp_slope_by_spin.png"
         if _plot_cusp(plt, cusp_rows, path):
             written.append(path)
 
-    antisymmetry_rows = _read_csv(run_dir / "plots" / "particle_antisymmetry.csv")
+    antisymmetry_rows = _read_first_csv(
+        run_dir,
+        Path("plots/particle_antisymmetry.csv"),
+        Path("data/particle_antisymmetry.csv"),
+    )
     if antisymmetry_rows:
         path = output_dir / f"{run_id}_particle_antisymmetry.png"
         if _plot_antisymmetry(plt, antisymmetry_rows, path):
@@ -401,6 +423,29 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return []
     with path.open("r", newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _read_first_csv(run_dir: Path, *relative_paths: Path) -> list[dict[str, str]]:
+    """Read the first available CSV from raw or processed artifacts.
+
+    Parameters
+    ----------
+    run_dir : pathlib.Path
+        Run or processed-output directory.
+    *relative_paths : pathlib.Path
+        Candidate paths, in priority order, relative to ``run_dir``.
+
+    Returns
+    -------
+    list of dict
+        CSV rows, or an empty list if no candidate exists.
+    """
+
+    for relative_path in relative_paths:
+        rows = _read_csv(run_dir / relative_path)
+        if rows:
+            return rows
+    return []
 
 
 def _parse_args() -> argparse.Namespace:

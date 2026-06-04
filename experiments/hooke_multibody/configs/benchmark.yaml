@@ -1,4 +1,4 @@
-inherits: spenn
+inherits: smoke
 experiment_name: hooke_multibody_benchmark
 run_mode: benchmark
 
@@ -8,17 +8,6 @@ scan:
     - [2, 1]
     - [1, 2]
     - [0, 3]
-
-sampler:
-  n_walkers: 24
-  warmup_steps: 8
-  production_blocks: 3
-  steps_per_block: 2
-  steps_per_iter: 2
-
-training:
-  vmc_steps: 24
-  log_every: 4
 
 tracking:
   tags:

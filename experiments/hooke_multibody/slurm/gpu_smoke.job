@@ -6,8 +6,8 @@
 #SBATCH --mem=16g
 #SBATCH --time=00:45:00
 #SBATCH -c 4
-#SBATCH -o experiments/hooke_multibody/slurm/logs/%x-%j.out
-#SBATCH -e experiments/hooke_multibody/slurm/logs/%x-%j.err
+#SBATCH -o /n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/spenn/experiments/hooke_multibody/slurm/logs/%x-%j.out
+#SBATCH -e /n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/spenn/experiments/hooke_multibody/slurm/logs/%x-%j.err
 
 set -o errexit -o nounset -o pipefail
 
