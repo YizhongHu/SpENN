@@ -22,6 +22,11 @@ DATA_EXPORTS = {
     "particle_antisymmetry.csv": Path("plots/particle_antisymmetry.csv"),
     "spin_scan_summary.csv": Path("metrics/spin_scan_summary.csv"),
 }
+REFERENCE_DATA_EXPORTS = {
+    "reference_observables.csv": Path("data/reference_observables.csv"),
+    "reference_radial_density.csv": Path("data/reference_radial_density.csv"),
+    "reference_pair_distance_density.csv": Path("data/reference_pair_distance_density.csv"),
+}
 ENERGY_PLAUSIBILITY_COLUMNS = [
     "run_id",
     "run_time",
@@ -38,6 +43,11 @@ ENERGY_PLAUSIBILITY_COLUMNS = [
     "reference_energy",
     "energy_delta",
     "energy_abs_delta",
+    "baseline_available",
+    "baseline_method",
+    "baseline_energy",
+    "energy_minus_baseline",
+    "energy_abs_minus_baseline",
 ]
 
 
@@ -83,6 +93,8 @@ def process_run(
     if spenn_summary.get("mode") == "spin_scan":
         return _process_spin_scan(spenn_run, target, spenn_summary)
     metrics = spenn_summary["metrics"]
+    reference_summary = _load_summary(reference_run) if reference_run is not None else None
+    baseline = _baseline_comparison(metrics.get("spenn/energy/mean", ""), reference_summary)
     row = {
         "run_id": spenn_summary["run_id"],
         "run_time": spenn_summary.get("run_time", ""),
@@ -97,20 +109,22 @@ def process_run(
         "smooth_residual_same_mean_slope": metrics.get("cusp/smooth_residual_same_mean_slope", ""),
         "smooth_residual_opposite_mean_slope": metrics.get("cusp/smooth_residual_opposite_mean_slope", ""),
         "reference_available": False,
+        **baseline,
     }
     processed: dict[str, object] = {
         "spenn_run": str(spenn_run),
         "spenn_observables": row,
         "reference_run": None,
         "reference_available": False,
+        "baseline_available": baseline["baseline_available"],
     }
-    if reference_run is not None:
-        reference_summary = _load_summary(reference_run)
+    if reference_run is not None and reference_summary is not None:
         processed["reference_run"] = str(reference_run)
         processed["reference_available"] = bool(reference_summary.get("reference_available", False))
         row["reference_available"] = processed["reference_available"]
+        processed["reference_data_files"] = _export_reference_tables(reference_run, target / "data")
     write_csv(target / "data" / "spenn_observables.csv", [row])
-    plausibility_rows = [_plausibility_row_from_run_summary(spenn_summary)]
+    plausibility_rows = [_plausibility_row_from_run_summary(spenn_summary, reference_summary=reference_summary)]
     write_csv(target / "data" / "energy_plausibility.csv", plausibility_rows)
     processed["data_files"] = _export_data_tables(spenn_run, target / "data")
     processed["data_files"]["energy_plausibility.csv"] = str(target / "data" / "energy_plausibility.csv")
@@ -139,7 +153,11 @@ def _process_spin_scan(
     return processed
 
 
-def _plausibility_row_from_run_summary(summary: dict[str, object]) -> dict[str, object]:
+def _plausibility_row_from_run_summary(
+    summary: dict[str, object],
+    *,
+    reference_summary: dict[str, object] | None = None,
+) -> dict[str, object]:
     cfg = summary["config"]
     metrics = summary["metrics"]
     system = cfg["system"]
@@ -148,6 +166,7 @@ def _plausibility_row_from_run_summary(summary: dict[str, object]) -> dict[str, 
     reference_energy = metrics.get("exact/energy", "")
     energy_mean = metrics.get("spenn/energy/mean", "")
     energy_delta = _energy_delta(energy_mean, reference_energy)
+    baseline = _baseline_comparison(energy_mean, reference_summary)
     return _ordered_plausibility_row(
         {
             "run_id": summary["run_id"],
@@ -165,6 +184,7 @@ def _plausibility_row_from_run_summary(summary: dict[str, object]) -> dict[str, 
             "reference_energy": reference_energy,
             "energy_delta": energy_delta,
             "energy_abs_delta": "" if energy_delta == "" else abs(float(energy_delta)),
+            **baseline,
         }
     )
 
@@ -192,6 +212,11 @@ def _plausibility_row_from_scan_run(run: object, summary: dict[str, object]) -> 
             "reference_energy": "",
             "energy_delta": "",
             "energy_abs_delta": "",
+            "baseline_available": False,
+            "baseline_method": "",
+            "baseline_energy": "",
+            "energy_minus_baseline": "",
+            "energy_abs_minus_baseline": "",
         }
     )
 
@@ -206,9 +231,45 @@ def _energy_delta(energy_mean: object, reference_energy: object) -> float | str:
     return float(energy_mean) - float(reference_energy)
 
 
+def _baseline_comparison(
+    energy_mean: object,
+    reference_summary: dict[str, object] | None,
+) -> dict[str, object]:
+    if reference_summary is None or not bool(reference_summary.get("baseline_available", False)):
+        return {
+            "baseline_available": False,
+            "baseline_method": "",
+            "baseline_energy": "",
+            "energy_minus_baseline": "",
+            "energy_abs_minus_baseline": "",
+        }
+    baseline_energy = reference_summary.get("baseline_energy", "")
+    delta = "" if energy_mean == "" or baseline_energy == "" else float(energy_mean) - float(baseline_energy)
+    return {
+        "baseline_available": True,
+        "baseline_method": reference_summary.get("baseline_method", ""),
+        "baseline_energy": baseline_energy,
+        "energy_minus_baseline": delta,
+        "energy_abs_minus_baseline": "" if delta == "" else abs(float(delta)),
+    }
+
+
 def _export_data_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
     exported: dict[str, str] = {}
     for name, relative_source in DATA_EXPORTS.items():
+        source = run_dir / relative_source
+        if not source.exists():
+            continue
+        destination = data_dir / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        exported[name] = str(destination)
+    return exported
+
+
+def _export_reference_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
+    exported: dict[str, str] = {}
+    for name, relative_source in REFERENCE_DATA_EXPORTS.items():
         source = run_dir / relative_source
         if not source.exists():
             continue

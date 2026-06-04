@@ -5,8 +5,13 @@ output_root: outputs
 
 reference:
   available: false
-  method: none
-  note: No analytic or independent high-accuracy multibody Hooke reference is configured yet.
+  method: gaussian_hartree_variational
+  high_accuracy: false
+  note: Independent Gaussian Hartree variational baseline; not an exact or high-accuracy multibody reference.
+  gaussian:
+    alpha: null
+    bins: 64
+    r_max: 6.0
 
 system:
   n_electrons: 3

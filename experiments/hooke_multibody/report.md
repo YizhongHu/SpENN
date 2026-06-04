@@ -24,14 +24,17 @@ checks permute the two together.
 
 ## Reference
 
-No numeric multibody reference is configured yet. SpENN is not trained against
-any exact or reference wavefunction. Energy tables should be interpreted as VMC
-estimates until an independent reference pipeline is added.
+No numeric high-accuracy multibody reference is configured yet. SpENN is not
+trained against any exact or reference wavefunction. Energy tables should be
+interpreted as VMC estimates until an independent high-accuracy reference
+pipeline is added.
 
-`configs/reference.yaml` and `run_reference.py` currently write metadata-only
-artifacts with `reference_available=false`. This keeps the run/comparison
-interface reproducible without claiming a high-accuracy `N=3` reference that is
-not yet implemented.
+`configs/reference.yaml` and `run_reference.py` currently write a deterministic
+Gaussian Hartree variational baseline with closed-form energy and density
+tables. This keeps the run/comparison interface reproducible without claiming a
+high-accuracy `N=3` reference that is not yet implemented. The baseline leaves
+`reference_available=false` and records comparison quantities in separate
+baseline columns.
 
 ## Configuration Snapshot
 
@@ -69,9 +72,12 @@ Sampler-health outputs include acceptance, proposal scale, pair-distance
 summaries, local-energy sample count, autocorrelation time, and effective
 sample size when enough sequential production blocks are present.
 `energy_plausibility.csv` is the canonical energy table for now. Because no
-reference is available, its reference and delta columns are intentionally blank.
-Cusp plots report a two-sided direction-averaged full-wavefunction slope, the
-analytic cusp-module-only slope, and the residual smooth-factor slope.
+high-accuracy reference is available, its exact-reference and delta columns are
+intentionally blank. If a Gaussian Hartree baseline run is supplied during
+processing, separate baseline columns record the baseline energy and SpENN
+offset from that baseline. Cusp plots report a two-sided direction-averaged
+full-wavefunction slope, the analytic cusp-module-only slope, and the residual
+smooth-factor slope.
 
 ## Reproduction
 
@@ -90,6 +96,16 @@ Process and plot a saved SpENN run or scan parent with:
 uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<run-name>/<run-id>
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
+
+To attach the Gaussian Hartree baseline during processing, pass the saved
+reference run:
+
+```bash
+uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id> --reference-run outputs/YYYY-MM-DD/hooke_multibody_reference/<reference-run-id>
+```
+
+When those baseline CSVs are present, `plot_outputs.py` overlays the baseline
+energy and density curves on the relevant SpENN figures.
 
 All `run_*.py` files are wrappers around reusable training/artifact utilities;
 they do not instantiate core Hamiltonian, sampler, model, optimizer, loss, or
@@ -167,8 +183,10 @@ As of 2026-06-03, both `sbatch --test-only` and real `sbatch --parsable`
 submission attempts failed for the CPU and GPU smoke scripts because the login
 node could not contact the Slurm controller. The real submission error was
 `sbatch: error: Batch job submission failed: Unable to contact slurm controller
-(connect failure)`. The scripts are present, but no controller-backed Slurm
-smoke job was accepted from this checkout.
+(connect failure)`. A later retry also printed `sbatch: error: Failed to
+lookup user homedir to load slurm defaults.` before the same controller-contact
+failure. The scripts are present, but no controller-backed Slurm smoke job was
+accepted from this checkout.
 
 ## Known Limitations
 

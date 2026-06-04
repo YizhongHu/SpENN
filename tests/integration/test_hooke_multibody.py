@@ -96,6 +96,21 @@ def test_hooke_multibody_smoke_writes_artifacts_with_timestamp() -> None:
     assert plausibility_rows[0]["specht_M"] == "2"
     assert plausibility_rows[0]["reference_available"] == "False"
     assert plausibility_rows[0]["reference_method"] == "none"
+    assert plausibility_rows[0]["baseline_available"] == "False"
+
+    reference_cfg = load_config(HOOKE_MULTIBODY_REFERENCE_CONFIG)
+    reference_cfg.run = {"id": "integration_hooke_multibody_baseline_for_processing"}
+    reference_summary = run_reference(reference_cfg)
+    processed_with_reference = process_run(run_dir, reference_run=Path(reference_summary["output_dir"]))
+    assert processed_with_reference["baseline_available"] is True
+    assert (run_dir / "data" / "reference_observables.csv").exists()
+    assert (run_dir / "data" / "reference_radial_density.csv").exists()
+    assert (run_dir / "data" / "reference_pair_distance_density.csv").exists()
+    baseline_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
+    assert baseline_rows[0]["baseline_available"] == "True"
+    assert baseline_rows[0]["baseline_method"] == "gaussian_hartree_variational"
+    assert math.isfinite(float(baseline_rows[0]["baseline_energy"]))
+    assert math.isfinite(float(baseline_rows[0]["energy_minus_baseline"]))
 
     figures = plot_run(run_dir, figure_root=run_dir / "figures")
     assert figures
@@ -163,9 +178,18 @@ def test_hooke_multibody_reference_summary_records_config_and_git() -> None:
     artifact = _summary_json(Path(summary["output_dir"]))
 
     assert summary["run_id"] == "integration_hooke_multibody_reference"
+    assert summary["reference_available"] is False
+    assert summary["baseline_available"] is True
+    assert summary["baseline_method"] == "gaussian_hartree_variational"
+    assert math.isfinite(float(summary["baseline_energy"]))
     assert artifact["run_id"] == summary["run_id"]
     assert artifact["config"]["run"]["id"] == "integration_hooke_multibody_reference"
     assert artifact["config"]["run_id"] == "integration_hooke_multibody_reference"
+    assert artifact["reference_available"] is False
+    assert artifact["baseline_available"] is True
+    assert (Path(summary["output_dir"]) / "data" / "reference_observables.csv").exists()
+    assert (Path(summary["output_dir"]) / "data" / "reference_radial_density.csv").exists()
+    assert (Path(summary["output_dir"]) / "data" / "reference_pair_distance_density.csv").exists()
     assert "git_commit" in artifact["git"]
     assert "dirty_git_state" in artifact["git"]
 

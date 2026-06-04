@@ -1,4 +1,4 @@
-"""Write Hooke multibody reference metadata artifacts."""
+"""Write Hooke multibody reference and baseline artifacts."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.hooke.runner import configured_run_id, resolve_config_path  # noqa: E402
+from experiments.hooke_multibody.reference import (  # noqa: E402
+    gaussian_hartree_reference,
+    gaussian_pair_distance_density_rows,
+    gaussian_radial_density_rows,
+)
 from spenn.training.artifacts import (  # noqa: E402
     git_metadata,
     make_output_dir,
@@ -28,7 +33,7 @@ DEFAULT_CONFIG = CONFIG_DIR / "reference.yaml"
 
 
 def main() -> None:
-    """Write a reference-placeholder run and print its summary.
+    """Write a reference or baseline run and print its summary.
 
     Returns
     -------
@@ -52,7 +57,7 @@ def run(
     run_id: str | None = None,
     output_root: str | Path | None = None,
 ) -> dict[str, object]:
-    """Write metadata-only reference artifacts.
+    """Write reference or baseline artifacts.
 
     Parameters
     ----------
@@ -88,15 +93,10 @@ def run(
         include_plots=False,
     )
     write_config_artifacts(output_dir, cfg, forwarded_overrides or [])
-    row = {
-        "reference_available": bool(OmegaConf.select(cfg, "reference.available", default=False)),
-        "method": str(OmegaConf.select(cfg, "reference.method", default="none")),
-        "n_electrons": int(OmegaConf.select(cfg, "system.n_electrons", default=3)),
-        "n_up": int(OmegaConf.select(cfg, "system.n_up", default=2)),
-        "n_down": int(OmegaConf.select(cfg, "system.n_down", default=1)),
-        "harmonic_omega": float(OmegaConf.select(cfg, "system.harmonic_omega", default=0.5)),
-    }
+    row, tables = _reference_outputs(cfg)
     write_csv(output_dir / "data" / "reference_observables.csv", [row])
+    for name, rows in tables.items():
+        write_csv(output_dir / "data" / name, rows)
     summary = {
         "entrypoint": "experiments/hooke_multibody/run_reference.py",
         "status": "ok",
@@ -107,9 +107,55 @@ def run(
         "config": OmegaConf.to_container(cfg, resolve=True),
         "reference_available": row["reference_available"],
         "method": row["method"],
+        "baseline_available": row.get("baseline_available", False),
+        "baseline_method": row.get("baseline_method", ""),
+        "baseline_energy": row.get("baseline_energy", ""),
     }
     write_json(output_dir / "artifacts" / "summary.json", summary)
     return summary
+
+
+def _reference_outputs(cfg: DictConfig) -> tuple[dict[str, object], dict[str, list[dict[str, float]]]]:
+    method = str(OmegaConf.select(cfg, "reference.method", default="none"))
+    n_electrons = int(OmegaConf.select(cfg, "system.n_electrons", default=3))
+    n_up = int(OmegaConf.select(cfg, "system.n_up", default=2))
+    n_down = int(OmegaConf.select(cfg, "system.n_down", default=1))
+    harmonic_omega = float(OmegaConf.select(cfg, "system.harmonic_omega", default=0.5))
+    row: dict[str, object] = {
+        "reference_available": bool(OmegaConf.select(cfg, "reference.available", default=False)),
+        "method": method,
+        "n_electrons": n_electrons,
+        "n_up": n_up,
+        "n_down": n_down,
+        "harmonic_omega": harmonic_omega,
+        "baseline_available": False,
+        "baseline_method": "",
+        "baseline_high_accuracy": False,
+        "baseline_energy": "",
+    }
+    if method == "none":
+        return row, {}
+    if method != "gaussian_hartree_variational":
+        raise ValueError(f"Unsupported Hooke multibody reference method: {method!r}")
+    alpha = OmegaConf.select(cfg, "reference.gaussian.alpha", default=None)
+    baseline = gaussian_hartree_reference(
+        n_electrons=n_electrons,
+        n_up=n_up,
+        n_down=n_down,
+        harmonic_omega=harmonic_omega,
+        alpha=None if alpha is None else float(alpha),
+    )
+    row.update(baseline.as_row())
+    bins = int(OmegaConf.select(cfg, "reference.gaussian.bins", default=64))
+    r_max = float(OmegaConf.select(cfg, "reference.gaussian.r_max", default=6.0))
+    return row, {
+        "reference_radial_density.csv": gaussian_radial_density_rows(alpha=baseline.alpha, bins=bins, r_max=r_max),
+        "reference_pair_distance_density.csv": gaussian_pair_distance_density_rows(
+            alpha=baseline.alpha,
+            bins=bins,
+            r_max=r_max,
+        ),
+    }
 
 
 def _parse_args() -> argparse.Namespace:

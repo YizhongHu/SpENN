@@ -7,8 +7,9 @@ fit to an exact wavefunction.
 
 No analytic or independent high-accuracy multibody reference is configured yet.
 The reported energy is therefore a VMC estimate, not an exact-error benchmark.
-Reference metadata lives in `configs/reference.yaml` until an external
-reference pipeline is added.
+`configs/reference.yaml` currently provides a deterministic Gaussian Hartree
+variational baseline with closed-form energy and density tables. It is useful
+for post-training comparison plumbing, but it is not a high-accuracy reference.
 
 Antisymmetry is tested with the particle-token convention: an electron exchange
 permutes position and spin label together. It does not swap coordinates while
@@ -37,11 +38,21 @@ To process a saved run into comparison-ready CSV/JSON:
 uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
 
+To include the Gaussian Hartree baseline columns and reference density tables,
+pass the saved reference run as well:
+
+```bash
+uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn-run outputs/YYYY-MM-DD/<spenn-run-name>/<spenn-run-id> --reference-run outputs/YYYY-MM-DD/hooke_multibody_reference/<reference-run-id>
+```
+
 To plot a saved run:
 
 ```bash
 uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outputs/YYYY-MM-DD/<run-name>/<run-id>
 ```
+
+If baseline CSVs were copied into `data/`, the energy, pair-distance, and
+radial-density figures include Gaussian Hartree comparison overlays.
 
 Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the
@@ -66,8 +77,11 @@ average to cancel smooth odd terms before estimating the radial cusp slope.
 Figures generated from saved CSVs are written under
 `experiments/hooke_multibody/figures/spenn/`.
 `process_outputs.py` writes `data/energy_plausibility.csv` for both single runs
-and scan parents. Until a reference is added, that table records
-`reference_available=false` and leaves reference/delta columns blank.
+and scan parents. Until a high-accuracy reference is added, exact-reference
+columns record `reference_available=false` and leave reference/delta columns
+blank. When a Gaussian Hartree baseline run is passed as `--reference-run`,
+separate baseline columns record `baseline_energy` and
+`energy_minus_baseline`.
 
 ## Version Notes
 
@@ -138,5 +152,13 @@ The real submission error was:
 ```text
 sbatch: error: Batch job submission failed: Unable to contact slurm controller (connect failure)
 ```
+
+A later retry also printed:
+
+```text
+sbatch: error: Failed to lookup user homedir to load slurm defaults.
+```
+
+before the same controller-contact failure.
 
 No controller-backed Slurm smoke job was accepted from this checkout.

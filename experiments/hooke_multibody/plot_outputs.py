@@ -54,6 +54,7 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
     with (run_dir / "artifacts" / "summary.json").open("r", encoding="utf-8") as handle:
         summary = json.load(handle)
     run_id = str(summary["run_id"])
+    baseline_energy = _baseline_energy(run_dir)
     output_dir = figure_root / "spenn"
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -67,7 +68,7 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
     energy_rows = _read_csv(run_dir / "metrics" / "train_metrics.csv") or _read_csv(run_dir / "metrics" / "energy_trace.csv")
     if energy_rows:
         path = output_dir / f"{run_id}_energy_trace.png"
-        if _plot_line(plt, energy_rows, "step", "spenn/energy/mean", path, "VMC energy"):
+        if _plot_line(plt, energy_rows, "step", "spenn/energy/mean", path, "VMC energy", baseline=baseline_energy):
             written.append(path)
         variance_path = output_dir / f"{run_id}_local_energy_variance.png"
         if _plot_line(plt, energy_rows, "step", "spenn/local_energy/variance", variance_path, "Local-energy variance"):
@@ -84,14 +85,35 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
 
     pair_rows = _read_csv(run_dir / "plots" / "pair_distance_histogram.csv")
     if pair_rows:
+        reference_pair_rows = _read_csv(run_dir / "data" / "reference_pair_distance_density.csv")
         path = output_dir / f"{run_id}_pair_distance_histogram.png"
-        if _plot_histogram(plt, pair_rows, path, "Pair-distance histogram", "pair distance", "count"):
+        if _plot_histogram(
+            plt,
+            pair_rows,
+            path,
+            "Pair-distance histogram",
+            "pair distance",
+            "count",
+            overlay_rows=reference_pair_rows,
+            overlay_label="Gaussian Hartree",
+            normalize_counts=bool(reference_pair_rows),
+        ):
             written.append(path)
 
     radial_rows = _read_csv(run_dir / "plots" / "radial_density.csv")
     if radial_rows:
+        reference_radial_rows = _read_csv(run_dir / "data" / "reference_radial_density.csv")
         path = output_dir / f"{run_id}_radial_density.png"
-        if _plot_histogram(plt, radial_rows, path, "One-body radial density", "radius", "probability_density"):
+        if _plot_histogram(
+            plt,
+            radial_rows,
+            path,
+            "One-body radial density",
+            "radius",
+            "probability_density",
+            overlay_rows=reference_radial_rows,
+            overlay_label="Gaussian Hartree",
+        ):
             written.append(path)
 
     cusp_rows = _read_csv(run_dir / "plots" / "cusp_slope_by_spin.csv")
@@ -108,13 +130,25 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
     return written
 
 
-def _plot_line(plt, rows: list[dict[str, str]], x_key: str, y_key: str, path: Path, title: str) -> bool:
+def _plot_line(
+    plt,
+    rows: list[dict[str, str]],
+    x_key: str,
+    y_key: str,
+    path: Path,
+    title: str,
+    *,
+    baseline: float | None = None,
+) -> bool:
     pairs = _numeric_pairs(rows, x_key, y_key)
     if not pairs:
         return False
     x, y = zip(*pairs, strict=True)
     plt.figure(figsize=(5.0, 3.2))
     plt.plot(x, y, marker="o", linewidth=1.5)
+    if baseline is not None:
+        plt.axhline(baseline, color="black", linestyle="--", linewidth=1.0, label="Gaussian Hartree")
+        plt.legend(frameon=False)
     plt.xlabel(x_key)
     plt.ylabel(y_key)
     plt.title(title)
@@ -132,28 +166,75 @@ def _plot_histogram(
     title: str,
     x_label: str,
     y_key: str,
+    *,
+    overlay_rows: list[dict[str, str]] | None = None,
+    overlay_label: str | None = None,
+    normalize_counts: bool = False,
 ) -> bool:
     bars = []
+    total_count = _total_count(rows) if normalize_counts else 1.0
     for row in rows:
         left = _to_float(row.get("bin_left", ""))
         right = _to_float(row.get("bin_right", ""))
         value = _to_float(row.get(y_key, ""))
         if left is None or right is None or value is None:
             continue
-        bars.append((0.5 * (left + right), right - left, value))
+        width = right - left
+        if normalize_counts:
+            value = 0.0 if width <= 0.0 or total_count <= 0.0 else value / (total_count * width)
+        bars.append((0.5 * (left + right), width, value))
     if not bars:
         return False
     centers, widths, values = zip(*bars, strict=True)
     plt.figure(figsize=(5.0, 3.2))
-    plt.bar(centers, values, width=widths, align="center", alpha=0.82)
+    plt.bar(
+        centers,
+        values,
+        width=widths,
+        align="center",
+        alpha=0.72 if overlay_rows else 0.82,
+        label="SpENN" if overlay_rows else None,
+    )
+    overlay = _density_overlay(overlay_rows or [])
+    if overlay:
+        overlay_x, overlay_y = zip(*overlay, strict=True)
+        plt.plot(overlay_x, overlay_y, color="black", linewidth=1.4, label=overlay_label or "baseline")
+        plt.legend(frameon=False)
     plt.xlabel(x_label)
-    plt.ylabel(y_key)
+    plt.ylabel("probability_density" if normalize_counts else y_key)
     plt.title(title)
     plt.grid(True, axis="y", alpha=0.25)
     plt.tight_layout()
     plt.savefig(path, dpi=160)
     plt.close()
     return True
+
+
+def _baseline_energy(run_dir: Path) -> float | None:
+    for row in _read_csv(run_dir / "data" / "energy_plausibility.csv"):
+        value = _to_float(row.get("baseline_energy", ""))
+        if value is not None:
+            return value
+    return None
+
+
+def _total_count(rows: list[dict[str, str]]) -> float:
+    total = 0.0
+    for row in rows:
+        count = _to_float(row.get("count", ""))
+        if count is not None:
+            total += count
+    return total
+
+
+def _density_overlay(rows: list[dict[str, str]]) -> list[tuple[float, float]]:
+    overlay = []
+    for row in rows:
+        radius = _to_float(row.get("radius", ""))
+        density = _to_float(row.get("probability_density", ""))
+        if radius is not None and density is not None:
+            overlay.append((radius, density))
+    return overlay
 
 
 def _plot_cusp(plt, rows: list[dict[str, str]], path: Path) -> bool:
