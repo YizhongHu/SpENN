@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from experiments.hooke_multibody.plot_outputs import _to_float, plot_run
-from experiments.hooke_multibody.process_outputs import process_run
+from experiments.hooke_multibody.plot_outputs import _plot_spin_scan, _to_float, plot_run
+from experiments.hooke_multibody.process_outputs import _baseline_comparison, process_run
 from experiments.hooke_multibody.run_reference import DEFAULT_CONFIG as HOOKE_MULTIBODY_REFERENCE_CONFIG
 from experiments.hooke_multibody.run_reference import run as run_reference
 from experiments.hooke_multibody.run_spenn import load_config, run, run_spin_scan
@@ -162,11 +162,36 @@ def test_hooke_multibody_spin_scan_uses_one_timestamp_and_writes_scan_artifacts(
     assert {row["n_electrons"] for row in plausibility_rows} == {"3"}
     assert {row["specht_M"] for row in plausibility_rows} == {"2"}
     assert {row["reference_method"] for row in plausibility_rows} == {"none"}
+    assert {row["baseline_available"] for row in plausibility_rows} == {"False"}
 
     figures = plot_run(run_dir, figure_root=run_dir / "figures")
     assert len(figures) == 1
     assert figures[0].name.endswith("_spin_scan_energy.png")
     assert figures[0].exists()
+
+    reference_cfg = load_config(HOOKE_MULTIBODY_REFERENCE_CONFIG)
+    reference_cfg.run = {"id": "integration_hooke_multibody_spin_scan_baseline"}
+    reference_summary = run_reference(reference_cfg)
+    processed_with_reference = process_run(run_dir, reference_run=Path(reference_summary["output_dir"]))
+    assert processed_with_reference["baseline_available"] is True
+    assert (run_dir / "data" / "reference_observables.csv").exists()
+    assert (run_dir / "data" / "reference_radial_density.csv").exists()
+    assert (run_dir / "data" / "reference_pair_distance_density.csv").exists()
+    baseline_rows = _csv_rows(run_dir / "data" / "energy_plausibility.csv")
+    assert len(baseline_rows) == 2
+    assert {row["baseline_available"] for row in baseline_rows} == {"True"}
+    assert {row["baseline_method"] for row in baseline_rows} == {"gaussian_hartree_variational"}
+    for row in baseline_rows:
+        baseline_energy = float(row["baseline_energy"])
+        energy_mean = float(row["energy_mean"])
+        energy_minus_baseline = float(row["energy_minus_baseline"])
+        assert math.isfinite(baseline_energy)
+        assert math.isfinite(float(row["energy_abs_minus_baseline"]))
+        assert energy_minus_baseline == pytest.approx(energy_mean - baseline_energy)
+    figures_with_baseline = plot_run(run_dir, figure_root=run_dir / "figures_with_baseline")
+    assert len(figures_with_baseline) == 1
+    assert figures_with_baseline[0].name.endswith("_spin_scan_energy.png")
+    assert figures_with_baseline[0].exists()
 
 
 @pytest.mark.integration
@@ -201,6 +226,38 @@ def test_hooke_multibody_plot_numeric_parser_rejects_nonfinite_values() -> None:
     assert _to_float("1.25") == 1.25
 
 
+def test_hooke_multibody_baseline_comparison_requires_matching_electron_count() -> None:
+    reference_summary = {
+        "baseline_available": True,
+        "baseline_method": "gaussian_hartree_variational",
+        "baseline_energy": 3.8,
+        "config": {"system": {"n_electrons": 4}},
+    }
+
+    result = _baseline_comparison(4.1, reference_summary, n_electrons=3)
+
+    assert result["baseline_available"] is False
+    assert result["baseline_energy"] == ""
+
+
+def test_hooke_multibody_spin_scan_plot_draws_baseline_line(tmp_path: Path) -> None:
+    fake_plt = _FakePyplot()
+
+    written = _plot_spin_scan(
+        fake_plt,
+        [
+            {"n_up": "2", "n_down": "1", "energy_mean": "4.0", "local_energy_variance": "0.1", "acceptance_rate": "0.5"},
+            {"n_up": "1", "n_down": "2", "energy_mean": "4.2", "local_energy_variance": "0.2", "acceptance_rate": "0.6"},
+        ],
+        tmp_path / "scan.png",
+        baseline=3.8,
+    )
+
+    assert written is True
+    assert (tmp_path / "scan.png").exists()
+    assert fake_plt.axes[0].horizontal_lines == [{"y": 3.8, "label": "Gaussian Hartree"}]
+
+
 def _csv_row_count(path: Path) -> int:
     with path.open("r", encoding="utf-8") as handle:
         return max(sum(1 for _ in handle) - 1, 0)
@@ -214,3 +271,54 @@ def _csv_rows(path: Path) -> list[dict[str, str]]:
 def _summary_json(run_dir: Path) -> dict[str, object]:
     with (run_dir / "artifacts" / "summary.json").open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+class _FakeAxis:
+    def __init__(self) -> None:
+        self.horizontal_lines: list[dict[str, object]] = []
+
+    def bar(self, *args, **kwargs) -> None:
+        return None
+
+    def axhline(self, y: float, **kwargs) -> None:
+        self.horizontal_lines.append({"y": y, "label": kwargs.get("label")})
+
+    def legend(self, **kwargs) -> None:
+        return None
+
+    def set_ylabel(self, value: str) -> None:
+        return None
+
+    def set_title(self, value: str) -> None:
+        return None
+
+    def set_xticks(self, value: list[int]) -> None:
+        return None
+
+    def set_xticklabels(self, value: list[str]) -> None:
+        return None
+
+    def set_xlabel(self, value: str) -> None:
+        return None
+
+    def grid(self, *args, **kwargs) -> None:
+        return None
+
+
+class _FakeFigure:
+    def tight_layout(self) -> None:
+        return None
+
+    def savefig(self, path: Path, **kwargs) -> None:
+        path.write_bytes(b"fake png")
+
+
+class _FakePyplot:
+    def __init__(self) -> None:
+        self.axes = [_FakeAxis(), _FakeAxis(), _FakeAxis()]
+
+    def subplots(self, *args, **kwargs) -> tuple[_FakeFigure, list[_FakeAxis]]:
+        return _FakeFigure(), self.axes
+
+    def close(self, figure: _FakeFigure) -> None:
+        return None

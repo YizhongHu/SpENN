@@ -62,7 +62,7 @@ def plot_run(run_dir: Path, *, figure_root: Path = FIGURE_ROOT) -> list[Path]:
     scan_rows = _read_csv(run_dir / "metrics" / "spin_scan_summary.csv")
     if scan_rows:
         path = output_dir / f"{run_id}_spin_scan_energy.png"
-        if _plot_spin_scan(plt, scan_rows, path):
+        if _plot_spin_scan(plt, scan_rows, path, baseline=baseline_energy):
             written.append(path)
 
     energy_rows = _read_csv(run_dir / "metrics" / "train_metrics.csv") or _read_csv(run_dir / "metrics" / "energy_trace.csv")
@@ -322,7 +322,13 @@ def _plot_antisymmetry(plt, rows: list[dict[str, str]], path: Path) -> bool:
     return True
 
 
-def _plot_spin_scan(plt, rows: list[dict[str, str]], path: Path) -> bool:
+def _plot_spin_scan(
+    plt,
+    rows: list[dict[str, str]],
+    path: Path,
+    *,
+    baseline: float | None = None,
+) -> bool:
     records = []
     for row in rows:
         energy = _to_float(row.get("energy_mean", ""))
@@ -344,6 +350,9 @@ def _plot_spin_scan(plt, rows: list[dict[str, str]], path: Path) -> bool:
     x = list(range(len(records)))
     fig, axes = plt.subplots(3, 1, figsize=(5.4, 6.8), sharex=True)
     axes[0].bar(x, energies, color=colors, alpha=0.86)
+    if baseline is not None:
+        axes[0].axhline(baseline, color="black", linestyle="--", linewidth=1.0, label="Gaussian Hartree")
+        axes[0].legend(frameon=False)
     axes[0].set_ylabel("energy")
     axes[0].set_title("Fixed spin-sector scan")
     _plot_optional_bar(axes[1], x, variances, colors, "variance")

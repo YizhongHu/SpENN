@@ -52,7 +52,9 @@ uv run --extra cpu python experiments/hooke_multibody/plot_outputs.py --run outp
 ```
 
 If baseline CSVs were copied into `data/`, the energy, pair-distance, and
-radial-density figures include Gaussian Hartree comparison overlays.
+radial-density figures include Gaussian Hartree comparison overlays. For spin
+scan parents, the energy figure includes the same baseline line when the
+processed scan rows have baseline columns.
 
 Run artifacts are written under `outputs/YYYY-MM-DD/`. Each generated config
 records `run.time` in `HH-MM-SS` format, and auto-generated run ids include the

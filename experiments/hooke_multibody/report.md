@@ -105,7 +105,8 @@ uv run --extra cpu python experiments/hooke_multibody/process_outputs.py --spenn
 ```
 
 When those baseline CSVs are present, `plot_outputs.py` overlays the baseline
-energy and density curves on the relevant SpENN figures.
+energy and density curves on the relevant SpENN figures. Spin-scan parent
+figures also include the baseline energy line after baseline-aware processing.
 
 All `run_*.py` files are wrappers around reusable training/artifact utilities;
 they do not instantiate core Hamiltonian, sampler, model, optimizer, loss, or

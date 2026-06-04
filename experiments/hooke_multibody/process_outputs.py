@@ -90,10 +90,16 @@ def process_run(
 
     target = output_dir or spenn_run
     spenn_summary = _load_summary(spenn_run)
-    if spenn_summary.get("mode") == "spin_scan":
-        return _process_spin_scan(spenn_run, target, spenn_summary)
-    metrics = spenn_summary["metrics"]
     reference_summary = _load_summary(reference_run) if reference_run is not None else None
+    if spenn_summary.get("mode") == "spin_scan":
+        return _process_spin_scan(
+            spenn_run,
+            target,
+            spenn_summary,
+            reference_run=reference_run,
+            reference_summary=reference_summary,
+        )
+    metrics = spenn_summary["metrics"]
     baseline = _baseline_comparison(metrics.get("spenn/energy/mean", ""), reference_summary)
     row = {
         "run_id": spenn_summary["run_id"],
@@ -136,16 +142,34 @@ def _process_spin_scan(
     scan_run: Path,
     target: Path,
     summary: dict[str, object],
+    *,
+    reference_run: Path | None = None,
+    reference_summary: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    best_run = summary.get("best_run", {})
+    baseline = _baseline_comparison(
+        best_run.get("energy_mean", "") if isinstance(best_run, dict) else "",
+        reference_summary,
+        n_electrons=best_run.get("n_electrons", None) if isinstance(best_run, dict) else None,
+    )
     processed: dict[str, object] = {
         "spenn_run": str(scan_run),
         "mode": "spin_scan",
         "run_id": summary["run_id"],
         "run_time": summary.get("run_time", ""),
-        "best_run": summary.get("best_run", {}),
+        "best_run": best_run,
+        "reference_run": None,
         "reference_available": False,
+        "baseline_available": baseline["baseline_available"],
     }
-    plausibility_rows = [_plausibility_row_from_scan_run(run, summary) for run in summary.get("runs", [])]
+    if reference_run is not None and reference_summary is not None:
+        processed["reference_run"] = str(reference_run)
+        processed["reference_available"] = bool(reference_summary.get("reference_available", False))
+        processed["reference_data_files"] = _export_reference_tables(reference_run, target / "data")
+    plausibility_rows = [
+        _plausibility_row_from_scan_run(run, summary, reference_summary=reference_summary)
+        for run in summary.get("runs", [])
+    ]
     write_csv(target / "data" / "energy_plausibility.csv", plausibility_rows)
     processed["data_files"] = _export_data_tables(scan_run, target / "data")
     processed["data_files"]["energy_plausibility.csv"] = str(target / "data" / "energy_plausibility.csv")
@@ -189,12 +213,18 @@ def _plausibility_row_from_run_summary(
     )
 
 
-def _plausibility_row_from_scan_run(run: object, summary: dict[str, object]) -> dict[str, object]:
+def _plausibility_row_from_scan_run(
+    run: object,
+    summary: dict[str, object],
+    *,
+    reference_summary: dict[str, object] | None = None,
+) -> dict[str, object]:
     if not isinstance(run, dict):
         raise TypeError(f"scan run summary must be a mapping, got {type(run).__name__}")
     cfg = summary.get("config", {})
     specht = cfg.get("specht", {}) if isinstance(cfg, dict) else {}
     energy_mean = run.get("energy_mean", "")
+    baseline = _baseline_comparison(energy_mean, reference_summary, n_electrons=run.get("n_electrons", None))
     return _ordered_plausibility_row(
         {
             "run_id": run.get("run_id", ""),
@@ -212,11 +242,7 @@ def _plausibility_row_from_scan_run(run: object, summary: dict[str, object]) -> 
             "reference_energy": "",
             "energy_delta": "",
             "energy_abs_delta": "",
-            "baseline_available": False,
-            "baseline_method": "",
-            "baseline_energy": "",
-            "energy_minus_baseline": "",
-            "energy_abs_minus_baseline": "",
+            **baseline,
         }
     )
 
@@ -234,15 +260,13 @@ def _energy_delta(energy_mean: object, reference_energy: object) -> float | str:
 def _baseline_comparison(
     energy_mean: object,
     reference_summary: dict[str, object] | None,
+    *,
+    n_electrons: object | None = None,
 ) -> dict[str, object]:
     if reference_summary is None or not bool(reference_summary.get("baseline_available", False)):
-        return {
-            "baseline_available": False,
-            "baseline_method": "",
-            "baseline_energy": "",
-            "energy_minus_baseline": "",
-            "energy_abs_minus_baseline": "",
-        }
+        return _blank_baseline_comparison()
+    if n_electrons is not None and not _reference_matches_n_electrons(reference_summary, n_electrons):
+        return _blank_baseline_comparison()
     baseline_energy = reference_summary.get("baseline_energy", "")
     delta = "" if energy_mean == "" or baseline_energy == "" else float(energy_mean) - float(baseline_energy)
     return {
@@ -252,6 +276,25 @@ def _baseline_comparison(
         "energy_minus_baseline": delta,
         "energy_abs_minus_baseline": "" if delta == "" else abs(float(delta)),
     }
+
+
+def _blank_baseline_comparison() -> dict[str, object]:
+    return {
+        "baseline_available": False,
+        "baseline_method": "",
+        "baseline_energy": "",
+        "energy_minus_baseline": "",
+        "energy_abs_minus_baseline": "",
+    }
+
+
+def _reference_matches_n_electrons(reference_summary: dict[str, object], n_electrons: object) -> bool:
+    cfg = reference_summary.get("config", {})
+    system = cfg.get("system", {}) if isinstance(cfg, dict) else {}
+    reference_n = system.get("n_electrons", None)
+    if reference_n is None:
+        return True
+    return int(reference_n) == int(n_electrons)
 
 
 def _export_data_tables(run_dir: Path, data_dir: Path) -> dict[str, str]:
