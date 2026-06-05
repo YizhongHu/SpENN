@@ -1,16 +1,6 @@
 # Allow project test commands.
-prefix_rule(
-    pattern = ["uv", "run", "pytest"],
-    decision = "allow",
-    justification = "Allow running pytest.",
-)
-
-prefix_rule(
-    pattern = ["uv", "run", "python", "-m", "compileall", "spenn", "scripts"],
-    decision = "allow",
-    justification = "Allow compileall checks for spenn and scripts.",
-)
-
+prefix_rule(pattern = ["uv", "run", "pytest"], decision = "allow")
+prefix_rule(pattern = ["uv", "run", "python", "-m", "compileall"], decision = "allow")
 # Allow harmless inspection commands.
 prefix_rule(
     pattern = ["git", "status"],
@@ -178,6 +168,6 @@ prefix_rule(pattern = ["git", "restore"], decision = "prompt")
 prefix_rule(pattern = ["git", "add"], decision = "prompt")
 prefix_rule(pattern = ["git", "commit"], decision = "prompt")
 prefix_rule(pattern = ["git", "merge"], decision = "prompt")
-prefix_rule(pattern = ["git", "rebase"], decision = "prompt")1
+prefix_rule(pattern = ["git", "rebase"], decision = "prompt")
 prefix_rule(pattern = ["git", "reset"], decision = "prompt")
 prefix_rule(pattern = ["git", "clean"], decision = "prompt")

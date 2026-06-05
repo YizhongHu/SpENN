@@ -4,13 +4,6 @@ This experiment is a minimal two-electron benchmark for SpENN-QMC. The system is
 
 We use this experiment to test whether the implementation can learn correlation, enforce electron-electron cusps, preserve the correct exchange symmetry, and produce stable VMC estimates.
 
-#let bx = $bold(x)$
-#let by = $bold(y)$
-#let bq = $bold(q)$
-#let br = $bold(r)$
-#let bz = $bold(z)$
-#let bm = $bold(m)$
-
 === Hamiltonian
 
 The Hamiltonian is
@@ -51,7 +44,7 @@ H
 + (1)/(r_(12)).
 $
 
-The exact ground-state energy is`
+The exact ground-state energy is
 
 $
 E_0 = 2.
@@ -664,7 +657,7 @@ Codex should follow these requirements:
 
 + Use a file structure similar to the existing `hooke_pair` / `hooke` experiment.
 + Reuse as much code as possible from the pair experiment.
-+ Use `run\_\*.py` files only as launch and data-processing scripts.
++ Use `run_*.py` files only as launch and data-processing scripts.
 + Train SpENN separately using VMC energy minimization only.
 + Do not train SpENN against the exact solution.
 + Compare to the exact solution only during post-training data processing.
@@ -788,65 +781,6 @@ $
 
 The spin or particle-state convention must be explicit. If spin labels are part of the particle state, then particle permutations move positions and spin labels together, and the wavefunction should be fully antisymmetric under permutation of particle tokens.
 
-=== SpENN feature pipeline
-
-This experiment should use the updated design:
-
-$
-"mix in real tuple space, activate in local irrep space".
-$
-
-The persistent hidden state should be ordered tuple features
-
-$
-bq_I^c,  |I| <= M.
-$
-
-For this experiment, keep
-
-$
-M <= 3
-$
-
-unless there is a specific reason to go higher.
-
-Linear equivariant transport should happen in ordered tuple space using real-space fusion and pooling maps. Specht projections should be used for activation, not as the persistent hidden-state representation.
-
-The layer structure should conceptually be
-
-$
-bq
--> bq_"lin"
--> P bq_"lin"
--> Gamma_(m, lambda)
--> P^(-1)
--> bq_"next".
-$
-
-For each support orbit $"Ord"(I)$, gather all orderings of $I$, project to local Specht irreps, apply irrep-wise activation, and reconstruct to ordered tuple space.
-
-For $m = 2$, this means
-
-$
-s_(i j) = (1)/(2) (bq_(i j) + bq_(j i)),
-$
-
-$
-a_(i j) = (1)/(2) (bq_(i j) - bq_(j i)).
-$
-
-The symmetric and antisymmetric components should be activated separately and then reconstructed:
-
-$
-bq_(i j) = s_(i j) + a_(i j),
-$
-
-$
-bq_(j i) = s_(i j) - a_(i j).
-$
-
-Do not activate $bq_(i j)$ and $bq_(j i)$ independently if using representation-aware activation.
-
 === Training objective
 
 Training must use VMC energy minimization only.
@@ -916,7 +850,7 @@ Each run should write reusable data artifacts, not only figures.
 
 Recommended outputs:
 
-```text
+```
 metrics/train_metrics.csv
 metrics/sampler_metrics.csv
 metrics/eval_metrics.csv
@@ -925,7 +859,7 @@ data/spenn_observables.csv
 data/pair_distance_histogram.csv
 data/radial_density.csv
 data/local_energy_samples.csv
-plots/*.png
+plots/\*.png
 report.md
 ```
 

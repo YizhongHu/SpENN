@@ -20,10 +20,12 @@
   implementation details.
 
 ## Tools
-- Always encouraged to spawn subagents to go faster for reading, editing, testing, 
-running, and debugging if possible to do parallel.
-- Always encouraged to initiate slurm runs for parallizability. Keep slurm logs around
+- You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing, 
+running, and debugging tasks. 
+- You are allowed to autonomously spawn agents for the purposes stated above.
+- You are strongly encouraged to autonomously initiate slurm runs for parallizability. Keep slurm logs around
 for reproducibility.
+- You are allowed to autonomously submit slurm jobs for efficiency.
 
 ## Best Practises
 - Use existing libraries if possible
@@ -34,3 +36,11 @@ for reproducibility.
 - Functions that manipulate data should be closer to data rather than 
   being defined only where it is needed
 - If a config or file or function or class is no longer used, remove it.
+
+## Branches
+
+Codex may push only to branches named `codex/**`.
+
+Codex must not push to `main`, merge PRs, or force-push unless the user explicitly asks.
+
+Codex should respond to PR review comments by adding commits to the existing PR branch.
