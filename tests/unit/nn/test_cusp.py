@@ -5,20 +5,18 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import FeatureDict
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.nn.cusp import Cusp, ElectronElectronCusp, NuclearCusp, NuclearFeatureCusp
-from spenn.nn.wavefunction import SpENNWavefunction
+from spenn.data import ElectronBatch, RealFeature, WavefunctionOutput
+from spenn.nn import Cusp, ElectronElectronCusp, NuclearCusp, NuclearFeatureCusp, SpENNWaveFunction
 from spenn.physics.systems import ElectronicSystem
 
 
 class EmptyEncoder(nn.Module):
-    def forward(self, batch: ElectronBatch) -> FeatureDict:
-        return FeatureDict()
+    def forward(self, batch: ElectronBatch) -> RealFeature:
+        return RealFeature()
 
 
 class ConstantReadout(nn.Module):
-    def forward(self, features: FeatureDict, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
         sign = torch.tensor([-1.0, 1.0], device=batch.device, dtype=batch.dtype)[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=sign)
@@ -177,7 +175,7 @@ def test_wavefunction_cusp_adds_only_to_logabs_and_preserves_sign() -> None:
     positions = torch.tensor([[[0.0], [2.0]], [[1.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
     cusp = ElectronElectronCusp(coefficient=0.25, range_parameter=0.5, eps=0.0)
-    model = SpENNWavefunction(encoder=EmptyEncoder(), spechtmp=nn.Identity(), readout=ConstantReadout(), cusp=cusp)
+    model = SpENNWaveFunction(embedding=EmptyEncoder(), layers=[nn.Identity()], readout=ConstantReadout(), cusp=cusp)
 
     output = model(batch)
 
@@ -187,7 +185,12 @@ def test_wavefunction_cusp_adds_only_to_logabs_and_preserves_sign() -> None:
 
 def test_wavefunction_cusp_shape_must_match_readout_logabs() -> None:
     batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
-    model = SpENNWavefunction(encoder=EmptyEncoder(), spechtmp=nn.Identity(), readout=ConstantReadout(), cusp=BadShapeCusp())
+    model = SpENNWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=ConstantReadout(),
+        cusp=BadShapeCusp(),
+    )
 
     try:
         model(batch)

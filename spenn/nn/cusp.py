@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from spenn.data.batch import ElectronBatch
+from spenn.data import ElectronBatch
 from spenn.utils.tensor_utils import pairwise_distances
 
 

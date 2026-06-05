@@ -1,6 +1,7 @@
 # Specht-module Equivariant Neural Network (SpENN)
 
-Project plans are in `spenn_project_instructions.md`.
+The active SpENN core scaffold is documented in the PR brief and the package
+docstrings under `spenn/data`, `spenn/reps`, `spenn/nn`, and `spenn/testing`.
 
 ## Quick Start
 
@@ -23,20 +24,18 @@ uv sync --extra cu126
 
 Use `cu128` or `cu130` instead if that is the CUDA Torch build you want.
 
-Run the generic Hydra training entrypoint with:
+The legacy Hooke experiment configs were removed from this restructuring
+branch. Core tests remain the active validation target:
 
 ```bash
-uv run python train.py
+uv run pytest -q
 ```
 
-After `uv sync`, a quick CPU smoke run is:
+For a syntax-only check:
 
 ```bash
-uv run python train.py --config=config.yaml training.vmc_steps=1 sampler.n_walkers=4 sampler.warmup_steps=1 sampler.production_blocks=1 sampler.steps_per_block=1 diagnostics.radial.n_points=8 diagnostics.cusp.n_points=4 diagnostics.exchange.n_samples=8 artifacts.write_checkpoint=false
+uv run python -m compileall spenn train.py typechecked.py
 ```
-
-Use the same command with a CUDA environment and append `device=cuda` for a GPU
-smoke run.
 
 ## Checks After Changes
 
@@ -47,18 +46,9 @@ uv run python -m compileall spenn train.py typechecked.py
 uv run pytest -q
 ```
 
-For changes that touch typed public APIs, data containers, or entrypoints, also
-run the opt-in entrypoint runtime type check:
-
-```bash
-uv run python typechecked.py train.py -- --config=config.yaml training.vmc_steps=1 sampler.n_walkers=4 sampler.warmup_steps=1 sampler.production_blocks=1 sampler.steps_per_block=1 diagnostics.radial.n_points=8 diagnostics.cusp.n_points=4 diagnostics.exchange.n_samples=8 artifacts.write_checkpoint=false
-```
-
 ## Runtime Type Checking
 
-Pytest installs Typeguard instrumentation for `spenn` by default. Entrypoint
-runtime type checking is opt-in so normal training stays fast. The policy is
-tracked in `configs/typecheck.yaml`.
+Pytest installs Typeguard instrumentation for `spenn` by default.
 
 Run tests with Typeguard instrumentation for `spenn`:
 
@@ -66,17 +56,65 @@ Run tests with Typeguard instrumentation for `spenn`:
 uv run pytest -q
 ```
 
-Run an entrypoint with the Typeguard import hook installed before `spenn` is
-imported:
+Equivariance checks are runtime checks on `spenn.nn.EquivariantMap`. When
+enabled, small systems are checked against every particle permutation; larger
+systems are checked against adjacent transpositions and reversal. Tests force
+checks with `check_probability=1.0`.
 
-```bash
-uv run python typechecked.py train.py -- --config=config.yaml training.vmc_steps=1 sampler.n_walkers=4 sampler.warmup_steps=1 sampler.production_blocks=1 sampler.steps_per_block=1 diagnostics.radial.n_points=8 diagnostics.cusp.n_points=4 diagnostics.exchange.n_samples=8 artifacts.write_checkpoint=false
-```
+Tensor state validation is also runtime-checkable. `RealFeature`,
+`RealInteraction`, `RealUpdate`, `IrrepInteraction`, `IrrepFeature`, and
+`IrrepUpdate` expose `validate()` methods. `EquivariantMap` can call these on
+input and output trees with `tensor_validation_check=True` and
+`validation_probability`.
 
-Phase 1 currently supports the hard-coded `M = 2` prototype with a Pfaffian
-readout, batched Metropolis sampling, and an autograd-based local-energy path.
-The active Hydra configuration lives in `configs/config.yaml` as one
-constructor-oriented file.
+Exact testing strategy:
+
+- Permutation convention and algebra:
+  `spenn.data.Permutation`, `spenn.data.indices.permute_tuple_axes`, and
+  `tests/equivariance/test_permutation.py`.
+- State actions:
+  `spenn.data.EquivariantState`, `RealFeature`, `RealInteraction`,
+  `RealUpdate`, `WavefunctionOutput`, and tests in
+  `tests/equivariance/test_equivariant_state.py`,
+  `tests/equivariance/test_real_feature.py`,
+  `tests/equivariance/test_real_interaction.py`, and
+  `tests/equivariance/test_real_update.py`.
+- Runtime module checks:
+  `spenn.nn.EquivariantMap`,
+  `spenn.testing.equivariance.assert_equivariant`,
+  `assert_equivariant_all`, and `equivariance_permutations`, with coverage in
+  `tests/equivariance/test_equivariant_map.py`.
+- Tensor shape checks:
+  `RealFeature`, `RealInteraction`, and `RealUpdate` are dense order-indexed
+  lists of tensors. Index 0 is reserved for zero-order data and must have zero
+  channels; use `spenn.data.zero_block` to construct that sentinel. Irrep
+  tensors are keyed directly by `Partition`, whose `order` defines the tuple
+  order. Validation coverage lives in
+  `tests/unit/data/test_tensor_validation.py`.
+- Layer-level checks:
+  `spenn.nn.Update` and `spenn.nn.SpENNLayer`, with forced runtime checks in
+  `tests/equivariance/test_update.py` and
+  `tests/equivariance/test_spenn_layer_scaffold.py`.
+- Virtual-support combinatorics:
+  `spenn.reps.paths.enumerate_virtual_paths` and
+  `validate_virtual_path`, with coverage in
+  `tests/equivariance/test_virtual_paths.py`.
+
+For `n_particles <= 5`, the runtime schedule is exhaustive over all
+permutations. Larger-particle tests use deterministic random inputs and random
+permutations in addition to the runtime generator schedule.
+
+The new core scaffold is direct, not a compatibility layer:
+
+- `spenn.data`: `RealFeature`, `RealInteraction`, `IrrepInteraction`,
+  `IrrepFeature`, `IrrepUpdate`, `RealUpdate`, `ElectronBatch`, and
+  `WavefunctionOutput`.
+- `spenn.reps`: virtual path enumeration plus Fourier transform placeholders.
+  Specht representation fixtures should use the orthogonal basis convention
+  recorded by `spenn.reps.SpechtIrrep`.
+- `spenn.nn`: `EquivariantMap`, `EquivariantMixing`, `SpechtActivation`,
+  `Update`, `SpENNLayer`, `SpENNWaveFunction`, and `PfaffianReadout`.
+- `spenn.testing`: reusable runtime equivariance assertions.
 
 ## Documentation
 

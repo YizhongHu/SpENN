@@ -1,1 +1,1 @@
-"""Placeholder for Specht basis construction and metadata."""
+"""Placeholder for orthogonal-basis Specht construction and metadata."""

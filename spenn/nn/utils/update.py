@@ -1,309 +1,69 @@
-"""Feature-state update modules for SpechtMP."""
+"""Reusable real-space update strategy modules."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import torch
 
-from torch import nn
+from spenn.data import RealFeature, RealUpdate
+from spenn.nn.equivariant_map import EquivariantMap
 
-from spenn.data.feature_dict import FeatureDict
-from spenn.data.partitions import Partition
 
+class ReplaceUpdate(EquivariantMap):
+    """Replace persistent real features with a real update proposal."""
 
-class Update(nn.Module):
-    """Template for applying proposed feature updates.
+    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+        """Return the update proposal as the next real feature state."""
 
-    `Update` modules combine an incoming persistent feature state ``x`` with
-    proposed branch updates ``dx``.
-    """
+        _validate_matching_blocks(x, u)
+        return RealFeature([tensor.clone() for tensor in u.blocks])
 
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Apply proposed updates to a feature state.
 
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state.
-        updates : FeatureDict
-            Proposed feature updates.
+class ResidualUpdate(EquivariantMap):
+    """Add a scaled real update proposal to persistent features."""
 
-        Returns
-        -------
-        FeatureDict
-            Next persistent feature state.
+    def __init__(self, step: float = 1.0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.step = float(step)
 
-        Raises
-        ------
-        NotImplementedError
-            Always raised by the template class.
-        """
+    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+        """Return ``x + step * u`` blockwise."""
 
-        raise NotImplementedError("Update.forward must be implemented by subclasses")
+        _validate_matching_blocks(x, u)
+        return RealFeature([left + self.step * right for left, right in zip(x.blocks, u.blocks)])
 
 
-class RawUpdate(Update):
-    """Replace the feature state with proposed updates."""
+class NormGatedUpdate(EquivariantMap):
+    """Gate a residual update by an equivariant per-tuple update norm."""
 
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Return proposed updates as the next feature state.
+    def __init__(self, step: float = 1.0, eps: float = 1.0e-12, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.step = float(step)
+        self.eps = float(eps)
 
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state. This argument is ignored.
-        updates : FeatureDict
-            Proposed feature updates.
+    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+        """Return a norm-gated residual update."""
 
-        Returns
-        -------
-        FeatureDict
-            The proposed updates.
-        """
-
-        return updates
-
-
-class ResidualUpdate(Update):
-    """Add proposed updates to the current feature state."""
-
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Return the residual feature update ``features + updates``.
-
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state.
-        updates : FeatureDict
-            Proposed feature updates.
-
-        Returns
-        -------
-        FeatureDict
-            Keywise residual sum.
-        """
-
-        return features.add(updates)
-
-
-class CompositeUpdate(Update):
-    """Chain two feature-state update rules.
-
-    Parameters
-    ----------
-    first : Update
-        Outer update rule ``f1``.
-    second : Update
-        Inner update rule ``f2``.
-    **_ : object
-        Ignored compatibility keyword arguments.
-
-    Notes
-    -----
-    The chained rule is ``f(x, dx) = f1(f2(x, dx), dx)``.
-    """
-
-    def __init__(self, first: Update, second: Update, **_: object) -> None:
-        super().__init__()
-        self.first = first
-        self.second = second
-
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Apply the inner rule followed by the outer rule.
-
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state.
-        updates : FeatureDict
-            Proposed feature updates.
-
-        Returns
-        -------
-        FeatureDict
-            Result of ``first(second(features, updates), updates)``.
-        """
-
-        return self.first(self.second(features, updates), updates)
-
-
-class GatedUpdate(Update):
-    """Apply a gate-delta update rule.
-
-    Parameters
-    ----------
-    gate : torch.nn.Module
-        Module called as ``gate(features, updates)``. It must return a
-        :class:`FeatureDict` with the same keys as `updates` and tensors
-        broadcast-compatible with the corresponding update tensors.
-    **_ : object
-        Ignored compatibility keyword arguments.
-    """
-
-    def __init__(self, gate: nn.Module, **_: object) -> None:
-        super().__init__()
-        self.gate = gate
-
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Return ``features + gate(features, updates) * updates``.
-
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state.
-        updates : FeatureDict
-            Proposed feature updates.
-
-        Returns
-        -------
-        FeatureDict
-            Gated residual feature state.
-
-        Raises
-        ------
-        KeyError
-            If the gate omits an update key.
-        """
-
-        gates = self.gate(features, updates)
-        gated_updates = FeatureDict()
-        for partition, tensor in updates.flat_items():
-            gate_tensor = gates.get(partition)
-            if gate_tensor is None:
-                raise KeyError(f"Missing gate for update key {partition}")
-            gated_updates.set(partition, gate_tensor * tensor)
-        return features.add(gated_updates)
-
-
-class UpdateByType(Update):
-    """Route update behavior by Specht partition type.
-
-    Parameters
-    ----------
-    symmetric : Update
-        Update module for one-row partitions ``(order,)``.
-    antisymmetric : Update
-        Update module for sign partitions ``(1, ..., 1)`` with order greater
-        than one.
-    tensor : Update
-        Update module for all remaining tensor irreps.
-    **_ : object
-        Ignored compatibility keyword arguments.
-    """
-
-    def __init__(
-        self,
-        symmetric: Update,
-        antisymmetric: Update,
-        tensor: Update,
-        **_: object,
-    ) -> None:
-        super().__init__()
-        self.symmetric = symmetric
-        self.antisymmetric = antisymmetric
-        self.tensor = tensor
-
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Apply type-specific update modules to each irrep independently.
-
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state.
-        updates : FeatureDict
-            Proposed feature updates.
-
-        Returns
-        -------
-        FeatureDict
-            Combined next feature state.
-        """
-
-        output = FeatureDict()
-        for partition, update_tensor in updates.flat_items():
-            module = self._module_for(partition)
-            _merge_single(output, module(_single_feature(features, partition), FeatureDict({partition: update_tensor})))
-        return output
-
-    def _module_for(self, partition: Partition) -> Update:
-        if partition.parts == (partition.order,):
-            return self.symmetric
-        if partition.order > 1 and partition.parts == (1,) * partition.order:
-            return self.antisymmetric
-        return self.tensor
-
-
-class UpdateByIrrep(Update):
-    """Route update behavior by exact partition key.
-
-    Parameters
-    ----------
-    updates_by_irrep : mapping
-        Mapping from :class:`Partition` keys to update modules.
-    **_ : object
-        Ignored compatibility keyword arguments.
-    """
-
-    def __init__(self, updates_by_irrep: Mapping[Partition, Update], **_: object) -> None:
-        super().__init__()
-        modules: dict[Partition, Update] = {}
-        for partition, update in updates_by_irrep.items():
-            modules[partition] = update
-        self.updates_by_irrep = nn.ModuleDict({_irrep_key(partition): update for partition, update in modules.items()})
-        self._key_by_partition = {partition: _irrep_key(partition) for partition in modules}
-
-    def forward(self, features: FeatureDict, updates: FeatureDict) -> FeatureDict:
-        """Apply irrep-specific update modules to each irrep independently.
-
-        Parameters
-        ----------
-        features : FeatureDict
-            Current persistent feature state.
-        updates : FeatureDict
-            Proposed feature updates.
-
-        Returns
-        -------
-        FeatureDict
-            Combined next feature state.
-
-        Raises
-        ------
-        KeyError
-            If no update module is registered for an update partition.
-        """
-
-        output = FeatureDict()
-        for partition, update_tensor in updates.flat_items():
-            module_key = self._key_by_partition.get(partition)
-            if module_key is None:
-                raise KeyError(f"Missing update module for partition {partition}")
-            module = self.updates_by_irrep[module_key]
-            _merge_single(output, module(_single_feature(features, partition), FeatureDict({partition: update_tensor})))
-        return output
-
-
-def _single_feature(features: FeatureDict, partition: Partition) -> FeatureDict:
-    tensor = features.get(partition)
-    if tensor is None:
-        return FeatureDict()
-    return FeatureDict({partition: tensor})
-
-
-def _merge_single(output: FeatureDict, value: FeatureDict) -> None:
-    for partition, tensor in value.flat_items():
-        output.set(partition, tensor)
-
-
-def _irrep_key(partition: Partition) -> str:
-    return f"{partition.order}:{','.join(str(part) for part in partition.parts)}"
-
-
-__all__ = [
-    "CompositeUpdate",
-    "GatedUpdate",
-    "RawUpdate",
-    "ResidualUpdate",
-    "Update",
-    "UpdateByIrrep",
-    "UpdateByType",
-]
+        _validate_matching_blocks(x, u)
+        output = []
+        for feature, update in zip(x.blocks, u.blocks):
+            if update.shape[1] == 0:
+                output.append(feature.clone())
+                continue
+            norm = update.square().mean(dim=1, keepdim=True).clamp_min(self.eps).sqrt()
+            gate = torch.sigmoid(norm)
+            output.append(feature + self.step * gate * update)
+        return RealFeature(output)
+
+
+def _validate_matching_blocks(x: RealFeature, u: RealUpdate) -> None:
+    if len(x.blocks) != len(u.blocks):
+        raise ValueError("Real update strategies require matching body-order blocks")
+    for order, (feature, update) in enumerate(zip(x.blocks, u.blocks)):
+        if feature.shape != update.shape:
+            raise ValueError(
+                f"Order-{order} feature shape {tuple(feature.shape)} does not match "
+                f"update shape {tuple(update.shape)}"
+            )
+
+
+__all__ = ["NormGatedUpdate", "ReplaceUpdate", "ResidualUpdate"]

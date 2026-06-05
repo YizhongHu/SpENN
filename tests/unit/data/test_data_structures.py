@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from spenn.data import all_ordered_tuples, all_pairs, all_subsets, all_triples
-from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput, validate_output
+from spenn.data import ElectronBatch, Walkers, WavefunctionOutput, validate_output
 
 
 def test_electron_batch_accepts_higher_rank_sample_shape() -> None:

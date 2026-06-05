@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.losses.vmc import VMCLoss
+from spenn.data import ElectronBatch, WavefunctionOutput
+from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
 from spenn.physics.hamiltonian import ElectronicHamiltonian
 from spenn.physics.kinetic import kinetic_energy_from_logabs

@@ -74,6 +74,28 @@ class Partition:
         object.__setattr__(self, "order", order)
         object.__setattr__(self, "parts", canonical_parts)
 
+    @property
+    def key(self) -> str:
+        """Return a stable module-safe key for this partition.
+
+        Returns
+        -------
+        str
+            String key suitable for use in ``torch.nn.ModuleDict``.
+        """
+
+        return "p" + "_".join(str(part) for part in self.parts)
+
+    def is_symmetric(self) -> bool:
+        """Return whether this partition labels the symmetric irrep."""
+
+        return self.parts == (self.order,)
+
+    def is_antisymmetric(self) -> bool:
+        """Return whether this partition labels the antisymmetric irrep."""
+
+        return self.parts == (1,) * self.order
+
 
 _PartitionSpec: TypeAlias = Partition | tuple[int, ...] | list[int] | str | int
 
@@ -142,26 +164,23 @@ def normalize_partition(order: int, spec: _PartitionSpec) -> Partition:
     return as_partition(spec, order, name="Partition")
 
 
-def normalize_partition_keys(supported: Iterable[tuple[int, Partition]]) -> set[tuple[int, Partition]]:
-    """Validate and normalize ``(order, partition)`` keys.
+def normalize_partition_keys(supported: Iterable[Partition]) -> set[Partition]:
+    """Validate and normalize partition keys.
 
     Parameters
     ----------
-    supported : iterable of tuple
-        Candidate feature keys.
+    supported : iterable of Partition
+        Candidate partition keys.
 
     Returns
     -------
-    set of tuple
-        Checked ``(order, partition)`` key set.
+    set of Partition
+        Checked partition key set.
     """
 
-    normalized: set[tuple[int, Partition]] = set()
-    for order, partition in supported:
-        normalized_order = _coerce_int(order, "order")
-        if partition.order != normalized_order:
-            raise ValueError(f"partition key order mismatch: expected {normalized_order}, got {partition.order}")
-        normalized.add((normalized_order, partition))
+    normalized: set[Partition] = set()
+    for partition in supported:
+        normalized.add(as_partition(partition))
     return normalized
 
 

@@ -1,31 +1,14 @@
 """Utility neural-network modules used by SpENN components."""
 
-from spenn.nn.utils.activations import (
-    Activation,
-    ActivationByIrrep,
-    ActivationByType,
-    GatedActivation,
-)
-from spenn.nn.utils.gate import GateActivate, GateUpdate, NormGateActivate, ScalarGateActivate, ScalarGateUpdate
+from spenn.nn.utils.activations import ActivationByIrrep, ActivationByType
 from spenn.nn.utils.mlp import MLP
-from spenn.nn.utils.update import CompositeUpdate, GatedUpdate, RawUpdate, ResidualUpdate, Update, UpdateByIrrep, UpdateByType
+from spenn.nn.utils.update import NormGatedUpdate, ReplaceUpdate, ResidualUpdate
 
 __all__ = [
     "ActivationByIrrep",
     "ActivationByType",
-    "Activation",
-    "CompositeUpdate",
-    "GateActivate",
-    "GateUpdate",
-    "GatedActivation",
-    "GatedUpdate",
     "MLP",
-    "NormGateActivate",
-    "RawUpdate",
+    "NormGatedUpdate",
+    "ReplaceUpdate",
     "ResidualUpdate",
-    "ScalarGateActivate",
-    "ScalarGateUpdate",
-    "Update",
-    "UpdateByIrrep",
-    "UpdateByType",
 ]

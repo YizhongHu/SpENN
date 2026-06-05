@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch
+from spenn.data import ElectronBatch
 from spenn.physics.systems import ElectronicSystem
 from spenn.utils.tensor_utils import pairwise_distances
 

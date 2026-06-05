@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from spenn.data import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.physics.systems import ElectronicSystem
 from spenn.sampling.metropolis import MetropolisSampler
 from spenn.sampling.moves import GaussianMove

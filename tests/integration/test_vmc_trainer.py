@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
-from spenn.losses.vmc import VMCLoss
+from spenn.data import ElectronBatch, Walkers, WavefunctionOutput
+from spenn.losses import VMCLoss
 from spenn.physics.hamiltonian import ElectronicHamiltonian
 from spenn.physics.systems import ElectronicSystem
 from spenn.sampling.metropolis import MetropolisSampler

@@ -1,9 +1,17 @@
-"""Representation-theoretic machinery namespace.
+"""Representation-theoretic machinery namespace."""
 
-This package will contain fixed, non-learned Specht and symmetric-group maps.
-"""
+from spenn.reps.fourier import FourierTransform, InverseFourierTransform
+from spenn.reps.irreps import IrrepMetadata, SpechtIrrep, irrep_dimension, specht_irrep
+from spenn.reps.paths import VirtualPath, enumerate_virtual_paths, validate_virtual_path
 
-from spenn.reps.branch import BranchMap
-from spenn.reps.fusion import FusionMap
-
-__all__ = ["BranchMap", "FusionMap"]
+__all__ = [
+    "FourierTransform",
+    "InverseFourierTransform",
+    "IrrepMetadata",
+    "SpechtIrrep",
+    "VirtualPath",
+    "enumerate_virtual_paths",
+    "irrep_dimension",
+    "specht_irrep",
+    "validate_virtual_path",
+]

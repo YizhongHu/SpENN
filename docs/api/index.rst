@@ -13,9 +13,7 @@ package.
    spenn.diagnostics
    spenn.losses
    spenn.nn
-   spenn.nn.encoding
    spenn.nn.readout
-   spenn.nn.spechtmp
    spenn.nn.utils
    spenn.physics
    spenn.reps

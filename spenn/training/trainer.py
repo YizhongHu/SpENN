@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from spenn.data.batch import ElectronBatch
+from spenn.data import ElectronBatch
 from spenn.physics.systems import ElectronicSystem
 from spenn.training.metrics import gradient_norm, parameter_norm
 

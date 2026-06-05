@@ -13,6 +13,6 @@ else:  # pragma: no cover - keep import lightweight when torch is absent
     Tensor = Any
 
 TensorDict = dict[str, Tensor]
-FeatureKey = tuple[int, Partition]
+FeatureKey = Partition
 
 __all__ = ["FeatureKey", "Tensor", "TensorDict"]
