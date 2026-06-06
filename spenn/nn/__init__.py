@@ -1,26 +1,37 @@
 """Neural-network component namespace for SpENN."""
 
-from spenn.nn.cusp import Cusp, ElectronElectronCusp, NuclearCusp, NuclearFeatureCusp
+from spenn.nn.activation import Activation, ActivationByIrrep, ActivationByType
+from spenn.nn.cusp import Cusp, ElectronElectronCusp, NuclearCusp
 from spenn.nn.embedding import Embedding
-from spenn.nn.equivariant_map import EquivariantMap
 from spenn.nn.equivariant_mixing import EquivariantMixing
-from spenn.nn.specht_activation import SpechtActivation
+from spenn.nn.mlp import MLP
+from spenn.nn.path_aggregation import PathAggregation
 from spenn.nn.spenn_layer import SpENNLayer
 from spenn.nn.spenn_wave_function import SpENNWaveFunction
-from spenn.nn.update import Update
-from spenn.nn.utils.mlp import MLP
+from spenn.nn.update import (
+    ChannelMappedUpdate,
+    NormGatedUpdate,
+    ReplaceUpdate,
+    ResidualUpdate,
+    Update,
+)
 
 __all__ = [
+    "Activation",
+    "ActivationByIrrep",
+    "ActivationByType",
     "Cusp",
+    "ChannelMappedUpdate",
     "ElectronElectronCusp",
     "Embedding",
-    "EquivariantMap",
     "EquivariantMixing",
     "MLP",
+    "NormGatedUpdate",
     "NuclearCusp",
-    "NuclearFeatureCusp",
+    "PathAggregation",
+    "ReplaceUpdate",
+    "ResidualUpdate",
     "SpENNLayer",
     "SpENNWaveFunction",
-    "SpechtActivation",
     "Update",
 ]

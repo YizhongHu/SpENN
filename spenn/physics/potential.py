@@ -5,9 +5,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch
+from spenn.data.batch import ElectronBatch, pairwise_distances
 from spenn.physics.systems import ElectronicSystem
-from spenn.utils.tensor_utils import pairwise_distances
 
 
 def harmonic_trap_potential(positions: torch.Tensor, omega: float = 1.0) -> torch.Tensor:
@@ -111,11 +110,9 @@ class ElectronicPotential(nn.Module):
         Default system metadata used when a batch does not provide a system.
     eps : float, optional
         Distance floor for Coulomb terms.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
-    def __init__(self, system: ElectronicSystem | None = None, eps: float = 1e-12, **_: object) -> None:
+    def __init__(self, system: ElectronicSystem | None = None, eps: float = 1e-12) -> None:
         super().__init__()
         self.system = system
         self.eps = eps

@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, Walkers
+from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.physics.systems import ElectronicSystem
 from spenn.sampling.moves import GaussianMove
 
@@ -18,9 +18,8 @@ class MetropolisSampler(nn.Module):
     name : str, optional
         Human-readable sampler name.
     move : torch.nn.Module or None, optional
-        Proposal kernel. Kernels may expose ``propose(walkers, model=None)``
-        returning proposed positions and a proposal log-ratio, or the legacy
-        ``forward(positions)`` interface for symmetric proposals.
+        Proposal kernel exposing ``propose(walkers)`` and returning proposed
+        positions plus a proposal log-ratio.
     n_walkers : int, optional
         Default number of walkers to initialize.
     warmup_steps : int, optional
@@ -37,8 +36,6 @@ class MetropolisSampler(nn.Module):
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
         Floating-point dtype for initialized walkers.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -53,7 +50,6 @@ class MetropolisSampler(nn.Module):
         spatial_dim: int = 3,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
-        **_: object,
     ) -> None:
         super().__init__()
         self.name = name
@@ -104,8 +100,10 @@ class MetropolisSampler(nn.Module):
         batch = walkers.make_batch()
         with torch.no_grad():
             output = model(batch)
-        logabs = output.logabs if hasattr(output, "logabs") else output
-        sign = output.sign if hasattr(output, "sign") else torch.ones_like(logabs)
+        if not isinstance(output, WavefunctionOutput):
+            raise TypeError(f"Wavefunction model must return WavefunctionOutput, got {type(output)!r}")
+        logabs = output.logabs
+        sign = output.sign
         if logabs.shape != (walkers.batch_size,):
             raise ValueError(f"Model logabs must have shape [{walkers.batch_size}], got {tuple(logabs.shape)}")
         if sign.shape != (walkers.batch_size,):
@@ -113,11 +111,10 @@ class MetropolisSampler(nn.Module):
         return logabs, sign
 
     def _propose(self, model, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
-        if hasattr(self.move, "propose"):
-            proposals, log_q_ratio = self.move.propose(walkers, model=model)
-        else:
-            proposals = self.move(walkers.positions)
-            log_q_ratio = torch.zeros(walkers.batch_size, device=walkers.device, dtype=walkers.dtype)
+        del model
+        if not hasattr(self.move, "propose"):
+            raise TypeError("MetropolisSampler move must expose propose(walkers)")
+        proposals, log_q_ratio = self.move.propose(walkers)
         if proposals.shape != walkers.positions.shape:
             raise ValueError(f"Proposal positions must have shape {tuple(walkers.positions.shape)}, got {tuple(proposals.shape)}")
         if log_q_ratio.shape != (walkers.batch_size,):
@@ -130,7 +127,7 @@ class MetropolisSampler(nn.Module):
         Parameters
         ----------
         model : callable
-            Wavefunction model returning log absolute values.
+            Wavefunction model returning `WavefunctionOutput`.
         walkers : Walkers
             Current walker state.
 
@@ -181,7 +178,7 @@ class MetropolisSampler(nn.Module):
         Parameters
         ----------
         model : callable
-            Wavefunction model returning log absolute values.
+            Wavefunction model returning `WavefunctionOutput`.
         walkers : Walkers
             Current walker state.
         n_steps : int or None, optional

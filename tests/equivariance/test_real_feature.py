@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from itertools import permutations
-
 import torch
 
-from spenn.data import Permutation, RealFeature, zero_block
+from spenn.data.indices import permute_tuple_axes
+from spenn.data.permutation import Permutation, all_permutations
+from spenn.data.real import RealFeature, zero_block
 
 
 def _feature() -> RealFeature:
@@ -38,9 +38,14 @@ def test_real_feature_permute_matches_active_axis_indexing() -> None:
 
     permuted = feature.permute(permutation)
 
-    index = torch.tensor(permutation.inverse().image)
-    torch.testing.assert_close(permuted.blocks[1], feature.blocks[1].index_select(2, index))
-    torch.testing.assert_close(permuted.blocks[2], feature.blocks[2].index_select(2, index).index_select(3, index))
+    torch.testing.assert_close(
+        permuted.blocks[1],
+        permute_tuple_axes(feature.blocks[1], permutation, axis_start=2, order=1),
+    )
+    torch.testing.assert_close(
+        permuted.blocks[2],
+        permute_tuple_axes(feature.blocks[2], permutation, axis_start=2, order=2),
+    )
 
 
 def test_real_feature_permute_all_small_permutations_and_orders() -> None:
@@ -59,16 +64,20 @@ def test_real_feature_permute_all_small_permutations_and_orders() -> None:
                 ),
             ]
         )
-        for image in permutations(range(n_particles)):
-            permutation = Permutation(tuple(image))
+        for permutation in all_permutations(n_particles):
             permuted = feature.permute(permutation)
-            index = torch.tensor(permutation.inverse().image)
             torch.testing.assert_close(permuted.blocks[0], feature.blocks[0])
-            torch.testing.assert_close(permuted.blocks[1], feature.blocks[1].index_select(2, index))
-            torch.testing.assert_close(permuted.blocks[2], feature.blocks[2].index_select(2, index).index_select(3, index))
+            torch.testing.assert_close(
+                permuted.blocks[1],
+                permute_tuple_axes(feature.blocks[1], permutation, axis_start=2, order=1),
+            )
+            torch.testing.assert_close(
+                permuted.blocks[2],
+                permute_tuple_axes(feature.blocks[2], permutation, axis_start=2, order=2),
+            )
             torch.testing.assert_close(
                 permuted.blocks[3],
-                feature.blocks[3].index_select(2, index).index_select(3, index).index_select(4, index),
+                permute_tuple_axes(feature.blocks[3], permutation, axis_start=2, order=3),
             )
 
 
@@ -81,9 +90,9 @@ def test_real_feature_group_action_all_small_permutations() -> None:
                 torch.randn(2, 3, n_particles, n_particles, dtype=torch.float64),
             ]
         )
-        all_permutations = [Permutation(tuple(image)) for image in permutations(range(n_particles))]
-        for first in all_permutations:
-            for second in all_permutations:
+        permutation_group = all_permutations(n_particles)
+        for first in permutation_group:
+            for second in permutation_group:
                 sequential = feature.permute(first).permute(second)
                 composed = feature.permute(second.compose(first))
                 torch.testing.assert_close(sequential.blocks[2], composed.blocks[2])
@@ -101,7 +110,12 @@ def test_real_feature_random_larger_permutations() -> None:
     )
     for _ in range(25):
         permutation = Permutation(tuple(torch.randperm(n_particles, generator=generator).tolist()))
-        index = torch.tensor(permutation.inverse().image)
         permuted = feature.permute(permutation)
-        torch.testing.assert_close(permuted.blocks[1], feature.blocks[1].index_select(2, index))
-        torch.testing.assert_close(permuted.blocks[2], feature.blocks[2].index_select(2, index).index_select(3, index))
+        torch.testing.assert_close(
+            permuted.blocks[1],
+            permute_tuple_axes(feature.blocks[1], permutation, axis_start=2, order=1),
+        )
+        torch.testing.assert_close(
+            permuted.blocks[2],
+            permute_tuple_axes(feature.blocks[2], permutation, axis_start=2, order=2),
+        )

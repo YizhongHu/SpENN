@@ -1,4 +1,9 @@
-"""Differentiable Pfaffian readout for real tuple features."""
+"""Differentiable Pfaffian readout for real tuple features.
+
+All readouts in the new SpENN core consume :class:`spenn.data.real.RealFeature`.
+Readout-specific Fourier transforms should happen inside a component readout
+before it contributes to the final wavefunction.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from spenn.data import ElectronBatch, RealFeature, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.real import RealFeature
 
 
 def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:
@@ -82,6 +88,9 @@ class PfaffianReadout(nn.Module):
         Positive floor for signed-log conversion.
     envelope_coefficient : float, optional
         Harmonic envelope coefficient added to ``logabs``.
+    trainable : bool, optional
+        Whether pair and odd-electron border readout weights are trainable.
+        The default keeps them as fixed buffers for scaffold determinism.
     trainable_envelope : bool, optional
         Whether to optimize the envelope coefficient through a softplus
         parameterization.
@@ -93,13 +102,17 @@ class PfaffianReadout(nn.Module):
         allow_odd_electron_bordered: bool = True,
         eps: float = 1.0e-12,
         envelope_coefficient: float = 0.0,
+        trainable: bool = False,
         trainable_envelope: bool = False,
     ) -> None:
         super().__init__()
         self.allow_odd_electron_bordered = bool(allow_odd_electron_bordered)
         self.eps = float(eps)
-        self.channel_weights: nn.Parameter | None = None
-        self.border_weights: nn.Parameter | None = None
+        self.trainable = bool(trainable)
+        self.register_parameter("channel_weights", None)
+        self.register_parameter("border_weights", None)
+        self.register_buffer("channel_weight_buffer", None, persistent=False)
+        self.register_buffer("border_weight_buffer", None, persistent=False)
         _configure_envelope(self, envelope_coefficient, trainable=trainable_envelope)
 
     def build_skew_kernel(self, features: RealFeature, batch: ElectronBatch | None = None) -> torch.Tensor:
@@ -139,6 +152,8 @@ class PfaffianReadout(nn.Module):
             one_body = features.blocks[1]
             if one_body.shape[0] != kernel.shape[0] or one_body.shape[-1] != kernel.shape[-1]:
                 raise ValueError("Order-1 border block must match order-2 batch and particle axes")
+            if one_body.shape[1] == 0:
+                raise KeyError("Odd-electron Pfaffian requires a nonempty order-1 RealFeature border block")
             border_weights = self._ensure_border_weights(one_body.shape[1], device=one_body.device, dtype=one_body.dtype)
             border = (one_body * border_weights.view(1, -1, 1)).sum(dim=1)
             bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1] + 1, kernel.shape[2] + 1)
@@ -161,16 +176,52 @@ class PfaffianReadout(nn.Module):
         )
 
     def _ensure_pair_weights(self, channels: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        if self.channel_weights is None:
-            initial = torch.full((channels,), 1.0 / max(channels, 1), device=device, dtype=dtype)
-            self.channel_weights = nn.Parameter(initial)
-        return self.channel_weights.to(device=device, dtype=dtype)
+        return _ensure_readout_weights(
+            self,
+            channels,
+            parameter_name="channel_weights",
+            buffer_name="channel_weight_buffer",
+            device=device,
+            dtype=dtype,
+        )
 
     def _ensure_border_weights(self, channels: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        if self.border_weights is None:
-            initial = torch.full((channels,), 1.0 / max(channels, 1), device=device, dtype=dtype)
-            self.border_weights = nn.Parameter(initial)
-        return self.border_weights.to(device=device, dtype=dtype)
+        return _ensure_readout_weights(
+            self,
+            channels,
+            parameter_name="border_weights",
+            buffer_name="border_weight_buffer",
+            device=device,
+            dtype=dtype,
+        )
+
+
+def _ensure_readout_weights(
+    module: "PfaffianReadout",
+    channels: int,
+    *,
+    parameter_name: str,
+    buffer_name: str,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    initial = torch.full((channels,), 1.0 / max(channels, 1), device=device, dtype=dtype)
+    if module.trainable:
+        weight = getattr(module, parameter_name)
+        if weight is None:
+            setattr(module, parameter_name, nn.Parameter(initial))
+            weight = getattr(module, parameter_name)
+        elif tuple(weight.shape) != (channels,):
+            raise ValueError(f"{parameter_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
+        return weight.to(device=device, dtype=dtype)
+
+    weight = getattr(module, buffer_name)
+    if weight is None:
+        setattr(module, buffer_name, initial)
+        weight = getattr(module, buffer_name)
+    elif tuple(weight.shape) != (channels,):
+        raise ValueError(f"{buffer_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
+    return weight.to(device=device, dtype=dtype)
 
 
 def _configure_envelope(module: nn.Module, coefficient: float, *, trainable: bool) -> None:

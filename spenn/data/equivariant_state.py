@@ -7,9 +7,9 @@ objects implement this convention in their ``permute`` method.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from spenn.data.permutation import Permutation
 
@@ -75,4 +75,87 @@ class ConcatenatedState(EquivariantState):
         return ConcatenatedState(tuple(state.permute(permutation) for state in self.data))
 
 
-__all__ = ["ConcatenatedState", "EquivariantState"]
+def permute_tree(obj: Any, permutation: Permutation) -> Any:
+    """Apply a particle permutation to every equivariant object in a tree."""
+
+    permute = getattr(obj, "permute", None)
+    if callable(permute):
+        return permute(permutation)
+    if isinstance(obj, Mapping):
+        return type(obj)((key, permute_tree(value, permutation)) for key, value in obj.items())
+    if isinstance(obj, tuple):
+        return type(obj)(permute_tree(value, permutation) for value in obj)
+    if isinstance(obj, list):
+        return [permute_tree(value, permutation) for value in obj]
+    return obj
+
+
+def validate_tree(obj: Any) -> None:
+    """Call ``validate`` on every validating object in a nested tree.
+
+    Parameters
+    ----------
+    obj : object
+        Tree containing mappings, sequences, and leaves that may expose a
+        callable ``validate`` method.
+    """
+
+    validate = getattr(obj, "validate", None)
+    if callable(validate):
+        validate()
+        return
+    if isinstance(obj, Mapping):
+        for value in obj.values():
+            validate_tree(value)
+        return
+    if _is_sequence(obj):
+        for value in obj:
+            validate_tree(value)
+
+
+def infer_particle_count(obj: Any) -> int | None:
+    """Infer a shared particle count from an input tree."""
+
+    counts = _collect_particle_counts(obj)
+    if not counts:
+        return None
+    first = counts[0]
+    for count in counts[1:]:
+        if count != first:
+            raise ValueError(f"Equivariant inputs disagree on particle count: {counts}")
+    return first
+
+
+def _collect_particle_counts(obj: Any) -> list[int]:
+    if obj is None:
+        return []
+    n_particles = getattr(obj, "n_particles", None)
+    if n_particles is not None:
+        return [int(n_particles)]
+    n_electrons = getattr(obj, "n_electrons", None)
+    if n_electrons is not None:
+        return [int(n_electrons)]
+    if isinstance(obj, Mapping):
+        counts: list[int] = []
+        for value in obj.values():
+            counts.extend(_collect_particle_counts(value))
+        return counts
+    if _is_sequence(obj):
+        counts = []
+        for value in obj:
+            counts.extend(_collect_particle_counts(value))
+        return counts
+    return []
+
+
+def _is_sequence(obj: Any) -> bool:
+    return isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray))
+
+
+__all__ = [
+    "ConcatenatedState",
+    "EquivariantState",
+    "infer_particle_count",
+    "permute_tree",
+    "validate_tree",
+]

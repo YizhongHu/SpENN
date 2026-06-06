@@ -4,17 +4,19 @@ from __future__ import annotations
 
 from torch import nn
 
-from spenn.data import RealFeature
-from spenn.nn.equivariant_map import EquivariantMap
+from spenn.data.real import RealFeature
+from spenn.data.equivariant_map import EquivariantMap
 
 
 class SpENNLayer(EquivariantMap):
-    """Compose mixing, Fourier, activation, inverse Fourier, and update maps.
+    """Compose mixing, Fourier, activation, path aggregation, and update maps.
 
     Parameters
     ----------
-    mixing, fourier, activation, inverse_fourier, update : torch.nn.Module
-        Layer components implementing the new SpENN pipeline.
+    mixing, fourier, activation, path_aggregation, inverse_fourier, update : torch.nn.Module
+        Layer components implementing the new SpENN pipeline. The activation
+        keeps the path axis visible, while `path_aggregation` converts the
+        activated irrep interaction to an irrep feature update.
     bilinear_mixing : bool, optional
         If ``True``, call ``mixing(x, x)``. Otherwise call ``mixing(x)``.
     **kwargs : object
@@ -27,6 +29,7 @@ class SpENNLayer(EquivariantMap):
         mixing: nn.Module,
         fourier: nn.Module,
         activation: nn.Module,
+        path_aggregation: nn.Module,
         inverse_fourier: nn.Module,
         update: nn.Module,
         bilinear_mixing: bool = False,
@@ -36,6 +39,7 @@ class SpENNLayer(EquivariantMap):
         self.mixing = mixing
         self.fourier = fourier
         self.activation = activation
+        self.path_aggregation = path_aggregation
         self.inverse_fourier = inverse_fourier
         self.update = update
         self.bilinear_mixing = bool(bilinear_mixing)
@@ -45,7 +49,8 @@ class SpENNLayer(EquivariantMap):
 
         interaction = self.mixing(x, x) if self.bilinear_mixing else self.mixing(x)
         irrep_interaction = self.fourier(interaction)
-        irrep_update = self.activation(irrep_interaction)
+        activated = self.activation(irrep_interaction)
+        irrep_update = self.path_aggregation(activated)
         real_update = self.inverse_fourier(irrep_update)
         return self.update(x, real_update)
 

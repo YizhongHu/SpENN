@@ -71,16 +71,13 @@ class GaussianMove(nn.Module):
         proposals[walker_idx, electron_idx] = selected + self.step_size * torch.randn_like(selected)
         return proposals
 
-    def propose(self, walkers: Walkers, model=None) -> tuple[torch.Tensor, torch.Tensor]:
+    def propose(self, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
         """Return proposed positions and proposal log-ratio.
 
         Parameters
         ----------
         walkers : Walkers
             Current walker state.
-        model : callable or None, optional
-            Unused compatibility argument for proposal kernels that need model
-            information.
 
         Returns
         -------
@@ -91,7 +88,6 @@ class GaussianMove(nn.Module):
             log-ratio is zero.
         """
 
-        del model
         proposed = self.forward(walkers.positions)
         log_q_ratio = torch.zeros(walkers.batch_size, device=walkers.device, dtype=walkers.dtype)
         return proposed, log_q_ratio

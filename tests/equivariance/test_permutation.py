@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from spenn.data import Permutation
+from spenn.data.permutation import Permutation
 
 
 def test_identity_fixes_indices_and_tuples() -> None:

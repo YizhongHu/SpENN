@@ -1,6 +1,6 @@
 """Composite readout scaffold.
 
-All readouts in the new SpENN core consume :class:`spenn.data.RealFeature`.
+All readouts in the new SpENN core consume :class:`spenn.data.real.RealFeature`.
 Readout-specific Fourier transforms should happen inside the component readout
 that needs them, before it contributes to the final signed-log sum.
 """
@@ -12,7 +12,8 @@ from collections.abc import Iterable
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, RealFeature, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.real import RealFeature
 
 
 class SumReadout(nn.Module):

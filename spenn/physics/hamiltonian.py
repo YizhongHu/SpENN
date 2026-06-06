@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch
+from spenn.data.batch import ElectronBatch
 from spenn.physics.kinetic import LogAbsKineticEnergy
 from spenn.physics.potential import ElectronicPotential
 from spenn.physics.systems import ElectronicSystem
@@ -20,7 +20,6 @@ class ElectronicHamiltonian(nn.Module):
         kinetic: nn.Module | None = None,
         potential: ElectronicPotential | None = None,
         name: str = "electronic",
-        **_: object,
     ) -> None:
         super().__init__()
         self.name = name

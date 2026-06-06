@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from itertools import permutations
-
 import torch
 
-from spenn.data import Permutation, RealUpdate, zero_block
+from spenn.data.indices import permute_tuple_axes
+from spenn.data.permutation import Permutation, all_permutations
+from spenn.data.real import RealUpdate, zero_block
 
 
 def _update() -> RealUpdate:
@@ -48,15 +48,19 @@ def test_real_update_all_small_permutations_and_orders() -> None:
                 ),
             ]
         )
-        for image in permutations(range(n_particles)):
-            permutation = Permutation(tuple(image))
-            index = torch.tensor(permutation.inverse().image)
+        for permutation in all_permutations(n_particles):
             permuted = update.permute(permutation)
-            torch.testing.assert_close(permuted.blocks[1], update.blocks[1].index_select(2, index))
-            torch.testing.assert_close(permuted.blocks[2], update.blocks[2].index_select(2, index).index_select(3, index))
+            torch.testing.assert_close(
+                permuted.blocks[1],
+                permute_tuple_axes(update.blocks[1], permutation, axis_start=2, order=1),
+            )
+            torch.testing.assert_close(
+                permuted.blocks[2],
+                permute_tuple_axes(update.blocks[2], permutation, axis_start=2, order=2),
+            )
             torch.testing.assert_close(
                 permuted.blocks[3],
-                update.blocks[3].index_select(2, index).index_select(3, index).index_select(4, index),
+                permute_tuple_axes(update.blocks[3], permutation, axis_start=2, order=3),
             )
 
 
@@ -72,7 +76,12 @@ def test_real_update_random_larger_permutations() -> None:
     )
     for _ in range(25):
         permutation = Permutation(tuple(torch.randperm(n_particles, generator=generator).tolist()))
-        index = torch.tensor(permutation.inverse().image)
         permuted = update.permute(permutation)
-        torch.testing.assert_close(permuted.blocks[1], update.blocks[1].index_select(2, index))
-        torch.testing.assert_close(permuted.blocks[2], update.blocks[2].index_select(2, index).index_select(3, index))
+        torch.testing.assert_close(
+            permuted.blocks[1],
+            permute_tuple_axes(update.blocks[1], permutation, axis_start=2, order=1),
+        )
+        torch.testing.assert_close(
+            permuted.blocks[2],
+            permute_tuple_axes(update.blocks[2], permutation, axis_start=2, order=2),
+        )

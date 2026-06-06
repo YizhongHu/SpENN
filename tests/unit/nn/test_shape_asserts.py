@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data import ElectronBatch
+from spenn.data.batch import ElectronBatch
 from spenn.nn.cusp import ElectronElectronCusp
 
 

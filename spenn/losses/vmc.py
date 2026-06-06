@@ -5,13 +5,13 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
 
 
-def _extract_logabs(output: WavefunctionOutput | torch.Tensor) -> torch.Tensor:
-    if isinstance(output, WavefunctionOutput):
-        return output.logabs
-    return output
+def _extract_logabs(output: WavefunctionOutput) -> torch.Tensor:
+    if not isinstance(output, WavefunctionOutput):
+        raise TypeError(f"Wavefunction model must return WavefunctionOutput, got {type(output)!r}")
+    return output.logabs
 
 
 class VMCLoss(nn.Module):
@@ -27,11 +27,9 @@ class VMCLoss(nn.Module):
         Multiplicative factor on the score-function objective. The default
         value ``2`` corresponds to gradients of an expectation under
         ``|psi|^2``.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
-    def __init__(self, center_energy: bool = True, scale_factor: float = 2.0, **_: object) -> None:
+    def __init__(self, center_energy: bool = True, scale_factor: float = 2.0) -> None:
         super().__init__()
         self.center_energy = center_energy
         self.scale_factor = float(scale_factor)

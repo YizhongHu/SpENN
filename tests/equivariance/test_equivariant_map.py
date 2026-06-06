@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
 import torch
+import pytest
 
-from spenn.data import Permutation, RealFeature, zero_block
-from spenn.nn import EquivariantMap
+from spenn.data import EquivariantMap
+from spenn.data.irrep import IrrepFeature, IrrepInteraction, IrrepUpdate
+from spenn.data.partition import Partition
+from spenn.data.permutation import Permutation
+from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
 from spenn.testing.equivariance import assert_equivariant, assert_equivariant_all, equivariance_permutations
 
 
@@ -47,6 +50,11 @@ class ValidatedLeaf:
 class ValidationEchoMap(EquivariantMap):
     def forward_impl(self, x: ValidatedLeaf, *, extra: ValidatedLeaf) -> dict[str, list[ValidatedLeaf]]:
         return {"output": [x, extra]}
+
+
+class ConcreteValidationMap(EquivariantMap):
+    def forward_impl(self, *states):
+        return list(states)
 
 
 def test_runtime_checker_passes_equivariant_module() -> None:
@@ -96,3 +104,20 @@ def test_runtime_tensor_validation_rejects_bad_probability_and_propagates_errors
     module = ValidationEchoMap(tensor_validation_check=True)
     with pytest.raises(ValueError, match="failed validation"):
         module(ValidatedLeaf([], "arg", fail=True), extra=ValidatedLeaf([], "kwarg"))
+
+
+def test_runtime_tensor_validation_accepts_concrete_tensor_states() -> None:
+    partition = Partition((1,))
+    states = (
+        RealFeature([zero_block(dtype=torch.float64), torch.zeros(1, 2, 3, dtype=torch.float64)]),
+        RealUpdate([zero_block(dtype=torch.float64), torch.ones(1, 2, 3, dtype=torch.float64)]),
+        RealInteraction([zero_block(paths=1, dtype=torch.float64), torch.zeros(1, 2, 1, 3, dtype=torch.float64)]),
+        IrrepInteraction({partition: torch.zeros(1, 2, 1, 3, 1, 1, dtype=torch.float64)}),
+        IrrepFeature({partition: torch.zeros(1, 2, 3, 1, 1, dtype=torch.float64)}),
+        IrrepUpdate({partition: torch.zeros(1, 2, 3, 1, 1, dtype=torch.float64)}),
+    )
+    module = ConcreteValidationMap(tensor_validation_check=True)
+
+    output = module(*states)
+
+    assert len(output) == len(states)

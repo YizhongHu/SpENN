@@ -1,6 +1,6 @@
 """Wavefunction readout namespace.
 
-Readouts consume :class:`spenn.data.RealFeature`. If a readout needs irrep
+Readouts consume :class:`spenn.data.real.RealFeature`. If a readout needs irrep
 coordinates, it should perform the required Fourier transform internally before
 evaluating the readout itself.
 """

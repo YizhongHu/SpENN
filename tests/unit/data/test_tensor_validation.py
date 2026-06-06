@@ -6,7 +6,19 @@ import pytest
 import torch
 from typeguard import TypeCheckError
 
-from spenn.data import IrrepFeature, IrrepInteraction, Partition, RealFeature, RealInteraction, RealUpdate, zero_block
+from spenn.data.irrep import IrrepFeature, IrrepInteraction
+from spenn.data.partition import Partition
+from spenn.data.real import (
+    RealFeature,
+    RealInteraction,
+    RealUpdate,
+    common_real_batch_size,
+    common_real_dtype,
+    common_real_particle_count,
+    validate_matching_real_blocks,
+    validate_real_update_geometry,
+    zero_block,
+)
 
 
 def test_real_feature_requires_order_indexed_blocks_and_zero_channels() -> None:
@@ -62,6 +74,117 @@ def test_real_tensor_validation_checks_batch_rank_and_particle_counts() -> None:
                 torch.zeros(2, 3, 1, 4, dtype=torch.float64),
                 torch.zeros(2, 3, 1, 5, 5, dtype=torch.float64),
             ]
+        )
+
+
+def test_real_update_matching_validator_is_data_owned() -> None:
+    feature = RealFeature(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.zeros(2, 3, 4, dtype=torch.float64),
+        ]
+    )
+    update = RealUpdate(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.ones(2, 3, 4, dtype=torch.float64),
+        ]
+    )
+
+    validate_matching_real_blocks(feature, update)
+
+    with pytest.raises(ValueError, match="body-order"):
+        validate_matching_real_blocks(
+            feature,
+            RealUpdate([zero_block(batch_size=2, dtype=torch.float64)]),
+        )
+    with pytest.raises(ValueError, match="Order-1"):
+        validate_matching_real_blocks(
+            feature,
+            RealUpdate(
+                [
+                    zero_block(batch_size=2, dtype=torch.float64),
+                    torch.ones(2, 3, 5, dtype=torch.float64),
+                ]
+            ),
+        )
+
+
+def test_real_update_geometry_validator_allows_channel_maps() -> None:
+    feature = RealFeature(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.zeros(2, 3, 4, dtype=torch.float64),
+        ]
+    )
+    update = RealUpdate(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.ones(2, 5, 4, dtype=torch.float64),
+        ]
+    )
+
+    validate_real_update_geometry(feature, update)
+
+    with pytest.raises(ValueError, match="tuple geometry"):
+        validate_real_update_geometry(
+            feature,
+            RealUpdate(
+                [
+                    zero_block(batch_size=2, dtype=torch.float64),
+                    torch.ones(2, 5, 5, dtype=torch.float64),
+                ]
+            ),
+        )
+
+
+def test_real_tensor_common_state_helpers_are_data_owned() -> None:
+    feature = RealFeature(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.zeros(2, 3, 4, dtype=torch.float64),
+        ]
+    )
+    update = RealUpdate(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.ones(2, 3, 4, dtype=torch.float64),
+        ]
+    )
+
+    assert common_real_particle_count(feature, update) == 4
+    assert common_real_batch_size(feature, update) == 2
+    assert common_real_dtype(feature, update) is torch.float64
+
+    with pytest.raises(ValueError, match="particle counts"):
+        common_real_particle_count(
+            feature,
+            RealUpdate(
+                [
+                    zero_block(batch_size=2, dtype=torch.float64),
+                    torch.ones(2, 3, 5, dtype=torch.float64),
+                ]
+            ),
+        )
+    with pytest.raises(ValueError, match="batch sizes"):
+        common_real_batch_size(
+            feature,
+            RealUpdate(
+                [
+                    zero_block(batch_size=3, dtype=torch.float64),
+                    torch.ones(3, 3, 4, dtype=torch.float64),
+                ]
+            ),
+        )
+    with pytest.raises(ValueError, match="dtypes"):
+        common_real_dtype(
+            feature,
+            RealUpdate(
+                [
+                    zero_block(batch_size=2, dtype=torch.float32),
+                    torch.ones(2, 3, 4, dtype=torch.float32),
+                ]
+            ),
         )
 
 

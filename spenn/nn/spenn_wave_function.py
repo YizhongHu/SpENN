@@ -6,16 +6,18 @@ from collections.abc import Iterable
 
 from torch import nn
 
-from spenn.data import ElectronBatch, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.equivariant_map import EquivariantMap
 
 
-class SpENNWaveFunction(nn.Module):
+class SpENNWaveFunction(EquivariantMap):
     """Compose embedding, SpENN layers, readout, and optional cusp.
 
     Parameters
     ----------
     embedding : torch.nn.Module
-        Module mapping :class:`ElectronBatch` to :class:`spenn.data.RealFeature`.
+        Module mapping :class:`ElectronBatch` to
+        :class:`spenn.data.real.RealFeature`.
     layers : iterable of torch.nn.Module
         Sequence of SpENN layers.
     readout : torch.nn.Module
@@ -24,6 +26,8 @@ class SpENNWaveFunction(nn.Module):
         Optional additive log-amplitude cusp. A cusp may either accept
         ``(batch, output)`` and return a full output, or accept ``batch`` and
         return an additive tensor matching ``output.logabs``.
+    **kwargs : object
+        Runtime-check options forwarded to :class:`EquivariantMap`.
     """
 
     def __init__(
@@ -33,14 +37,15 @@ class SpENNWaveFunction(nn.Module):
         layers: Iterable[nn.Module] = (),
         readout: nn.Module,
         cusp: nn.Module | None = None,
+        **kwargs,
     ) -> None:
-        super().__init__()
+        super().__init__(**kwargs)
         self.embedding = embedding
         self.layers = nn.ModuleList(tuple(layers))
         self.readout = readout
         self.cusp = cusp
 
-    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
 
         features = self.embedding(batch)

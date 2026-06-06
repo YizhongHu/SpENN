@@ -1,8 +1,9 @@
-"""Permutation helpers for real-space equivariance tests."""
+"""Permutation helpers for particle-label actions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import permutations
 
 
 @dataclass(frozen=True)
@@ -139,3 +140,75 @@ class Permutation:
                 if left_image > right_image:
                     inversions += 1
         return -1 if inversions % 2 else 1
+
+
+def all_permutations(size: int) -> tuple[Permutation, ...]:
+    """Return every permutation of ``range(size)`` in lexicographic order.
+
+    Parameters
+    ----------
+    size : int
+        Permutation size.
+
+    Returns
+    -------
+    tuple of Permutation
+        Full symmetric group in deterministic order.
+    """
+
+    _validate_size(size)
+    return tuple(Permutation(tuple(image)) for image in permutations(range(size)))
+
+
+def adjacent_transpositions(size: int) -> tuple[Permutation, ...]:
+    """Return adjacent transpositions of ``range(size)``.
+
+    Parameters
+    ----------
+    size : int
+        Permutation size.
+
+    Returns
+    -------
+    tuple of Permutation
+        Adjacent swaps ``(0 1), (1 2), ...`` in deterministic order.
+    """
+
+    _validate_size(size)
+    base = list(range(size))
+    images: list[tuple[int, ...]] = []
+    for idx in range(size - 1):
+        image = base.copy()
+        image[idx], image[idx + 1] = image[idx + 1], image[idx]
+        images.append(tuple(image))
+    return _unique_permutations(images)
+
+
+def reversal_permutation(size: int) -> Permutation:
+    """Return the reversal permutation on ``range(size)``."""
+
+    _validate_size(size)
+    return Permutation(tuple(reversed(range(size))))
+
+
+def _validate_size(size: int) -> None:
+    if size < 0:
+        raise ValueError(f"Permutation size must be nonnegative, got {size}")
+
+
+def _unique_permutations(images: list[tuple[int, ...]] | tuple[tuple[int, ...], ...]) -> tuple[Permutation, ...]:
+    seen: set[tuple[int, ...]] = set()
+    unique: list[Permutation] = []
+    for image in images:
+        if image not in seen:
+            seen.add(image)
+            unique.append(Permutation(image))
+    return tuple(unique)
+
+
+__all__ = [
+    "Permutation",
+    "adjacent_transpositions",
+    "all_permutations",
+    "reversal_permutation",
+]

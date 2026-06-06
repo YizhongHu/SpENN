@@ -5,13 +5,13 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
 
 
-def _extract_logabs(output: WavefunctionOutput | torch.Tensor) -> torch.Tensor:
-    if isinstance(output, WavefunctionOutput):
-        return output.logabs
-    return output
+def _extract_logabs(output: WavefunctionOutput) -> torch.Tensor:
+    if not isinstance(output, WavefunctionOutput):
+        raise TypeError(f"Wavefunction model must return WavefunctionOutput, got {type(output)!r}")
+    return output.logabs
 
 
 def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
@@ -20,8 +20,7 @@ def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
     Parameters
     ----------
     model : callable
-        Wavefunction model returning either `WavefunctionOutput` or a tensor of
-        log absolute values.
+        Wavefunction model returning `WavefunctionOutput`.
     batch : ElectronBatch
         Electron batch with positions shaped ``[batch, n_electrons,
         spatial_dim]`` after flattening.
@@ -64,8 +63,7 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     Parameters
     ----------
     model : callable
-        Wavefunction model returning either `WavefunctionOutput` or a tensor of
-        log absolute values.
+        Wavefunction model returning `WavefunctionOutput`.
     batch : ElectronBatch
         Electron batch with positions shaped ``[batch, n_electrons,
         spatial_dim]`` after flattening.
@@ -112,7 +110,7 @@ class LogAbsKineticEnergy(nn.Module):
         Parameters
         ----------
         model : callable
-            Wavefunction model returning log absolute values.
+            Wavefunction model returning `WavefunctionOutput`.
         batch : ElectronBatch
             Electron batch to evaluate.
 

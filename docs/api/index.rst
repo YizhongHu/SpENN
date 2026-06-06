@@ -13,10 +13,11 @@ package.
    spenn.diagnostics
    spenn.losses
    spenn.nn
+   spenn.nn.activation
+   spenn.nn.mlp
    spenn.nn.readout
-   spenn.nn.utils
+   spenn.nn.update
    spenn.physics
    spenn.reps
    spenn.sampling
    spenn.training
-   spenn.utils

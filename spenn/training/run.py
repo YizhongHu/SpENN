@@ -10,7 +10,7 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from spenn.data import ElectronBatch, Walkers
+from spenn.data.batch import ElectronBatch, Walkers
 from spenn.diagnostics.base import DiagnosticContext, DiagnosticResult
 from spenn.diagnostics.wavefunction import pair_distance
 from spenn.training.artifacts import (

@@ -5,21 +5,36 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, Walkers, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.physics.systems import ElectronicSystem
+from spenn.sampling import MALASampler
 from spenn.sampling.metropolis import MetropolisSampler
 from spenn.sampling.moves import GaussianMove
 
 
 class ShiftMove(nn.Module):
-    def forward(self, positions: torch.Tensor) -> torch.Tensor:
-        return positions + 1.0
+    def propose(self, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
+        positions = walkers.positions + 1.0
+        log_q_ratio = torch.zeros(walkers.batch_size, device=walkers.device, dtype=walkers.dtype)
+        return positions, log_q_ratio
 
 
 class NoGradLinearModel(nn.Module):
     def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
         assert not torch.is_grad_enabled()
         logabs = batch.positions.sum(dim=(1, 2))
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
+class QuadraticLogAbsModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.saw_position_grad = False
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        if torch.is_grad_enabled() and batch.positions.requires_grad:
+            self.saw_position_grad = True
+        logabs = -0.5 * batch.positions.square().sum(dim=(1, 2))
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
@@ -54,3 +69,21 @@ def test_gaussian_single_electron_move_preserves_shape_and_changes_one_electron_
     assert log_q_ratio.shape == (5,)
     assert torch.allclose(log_q_ratio, torch.zeros(5, dtype=torch.float64))
     assert torch.equal(changed.sum(dim=1), torch.ones(5, dtype=torch.int64))
+
+
+def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
+    torch.manual_seed(0)
+    model = QuadraticLogAbsModel()
+    sampler = MALASampler(step_size=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)
+    walkers = Walkers(positions=torch.zeros(4, 2, 1, dtype=torch.float64))
+
+    stepped = sampler.step(model, walkers)
+
+    assert model.saw_position_grad
+    assert stepped.positions.shape == walkers.positions.shape
+    assert stepped.logabs is not None and stepped.logabs.shape == (4,)
+    assert stepped.sign is not None and stepped.sign.shape == (4,)
+    assert stepped.aux["accepted"].shape == (4,)
+    assert stepped.aux["log_accept_ratio"].shape == (4,)
+    assert torch.isfinite(stepped.logabs).all()
+    assert 0.0 <= sampler.acceptance_rate <= 1.0

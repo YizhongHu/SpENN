@@ -6,8 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from spenn.data import ElectronBatch
-from spenn.utils.tensor_utils import pairwise_distances
+from spenn.data.batch import ElectronBatch, electron_nuclear_distances, pairwise_distances
 
 
 def rational_pair_cusp(distance: torch.Tensor, coefficient: torch.Tensor | float, range_parameter: torch.Tensor | float) -> torch.Tensor:
@@ -63,11 +62,9 @@ class Cusp(nn.Module):
     ----------
     enabled : bool, optional
         Whether this cusp contributes to the output.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
-    def __init__(self, enabled: bool = True, **_: object) -> None:
+    def __init__(self, enabled: bool = True) -> None:
         super().__init__()
         self.enabled = enabled
 
@@ -122,10 +119,7 @@ class ElectronElectronCusp(Cusp):
         Short-range coefficient for opposite-spin electron pairs.
     spinless_coefficient : float or None, optional
         Coefficient used when `ElectronBatch.spins` is absent. If ``None``,
-        `coefficient` is used when supplied, otherwise
-        `same_spin_coefficient`.
-    coefficient : float or None, optional
-        Backward-compatible alias for the spinless coefficient.
+        `same_spin_coefficient` is used.
     range_parameter : float, optional
         Default positive range parameter.
     same_range_parameter : float or None, optional
@@ -137,8 +131,6 @@ class ElectronElectronCusp(Cusp):
         parametrization.
     eps : float, optional
         Numerical distance floor and positivity offset.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -147,19 +139,17 @@ class ElectronElectronCusp(Cusp):
         same_spin_coefficient: float = 0.25,
         opposite_spin_coefficient: float = 0.5,
         spinless_coefficient: float | None = None,
-        coefficient: float | None = None,
         range_parameter: float = 1.0,
         same_range_parameter: float | None = None,
         opposite_range_parameter: float | None = None,
         trainable_range: bool = False,
         eps: float = 1e-12,
-        **_: object,
     ) -> None:
         super().__init__(enabled=enabled)
         self.same_spin_coefficient = float(same_spin_coefficient)
         self.opposite_spin_coefficient = float(opposite_spin_coefficient)
         if spinless_coefficient is None:
-            spinless_coefficient = coefficient if coefficient is not None else same_spin_coefficient
+            spinless_coefficient = same_spin_coefficient
         self.spinless_coefficient = float(spinless_coefficient)
         self.trainable_range = trainable_range
         self.eps = eps
@@ -246,8 +236,6 @@ class NuclearCusp(Cusp):
         parametrization.
     eps : float, optional
         Numerical distance floor and positivity offset.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -258,7 +246,6 @@ class NuclearCusp(Cusp):
         range_parameter: float = 1.0,
         trainable_range: bool = False,
         eps: float = 1e-12,
-        **_: object,
     ) -> None:
         super().__init__(enabled=enabled)
         self.eps = eps
@@ -304,14 +291,10 @@ class NuclearCusp(Cusp):
         nuclear_positions, nuclear_charges = self._nuclear_data(batch)
         nuclear_positions = nuclear_positions.to(device=batch.device, dtype=batch.dtype)
         nuclear_charges = nuclear_charges.to(device=batch.device, dtype=batch.dtype)
-        if nuclear_positions.ndim == 2:
-            nuclear_positions = nuclear_positions.unsqueeze(0).expand(batch.batch_size, -1, -1)
         if nuclear_charges.ndim == 1:
             nuclear_charges = nuclear_charges.unsqueeze(0).expand(batch.batch_size, -1)
-        assert nuclear_positions.shape[0] == batch.batch_size
-        assert nuclear_positions.shape[-1] == batch.spatial_dim
-        assert nuclear_charges.shape == nuclear_positions.shape[:2]
-        distances = torch.linalg.norm(batch.positions.unsqueeze(2) - nuclear_positions.unsqueeze(1), dim=-1).clamp_min(self.eps)
+        distances = electron_nuclear_distances(batch, eps=self.eps, nuclear_positions=nuclear_positions)
+        assert nuclear_charges.shape == (batch.batch_size, distances.shape[-1])
         contribution = rational_nuclear_cusp(
             distances,
             nuclear_charges.unsqueeze(1),
@@ -338,32 +321,6 @@ class NuclearCusp(Cusp):
         return positions, charges
 
 
-class NuclearFeatureCusp(Cusp):
-    """Placeholder for cusp factors using learned nuclear features.
-
-    Notes
-    -----
-    This module reserves the public API for a future model that receives
-    nuclear positions and learned atomic encodings alongside electrons.
-    """
-
-    def cusp_value(self, batch: ElectronBatch) -> torch.Tensor:
-        """Raise until nuclear-feature cusp inputs are designed.
-
-        Parameters
-        ----------
-        batch : ElectronBatch
-            Flattened electron batch.
-
-        Raises
-        ------
-        NotImplementedError
-            Always raised in this scaffold.
-        """
-
-        raise NotImplementedError("NuclearFeatureCusp is reserved for models with nuclear feature inputs")
-
-
 def _inverse_softplus(value: float) -> torch.Tensor:
     value = max(value, 1e-12)
     tensor = torch.tensor(value, dtype=torch.float64)
@@ -374,7 +331,6 @@ __all__ = [
     "Cusp",
     "ElectronElectronCusp",
     "NuclearCusp",
-    "NuclearFeatureCusp",
     "rational_nuclear_cusp",
     "rational_pair_cusp",
 ]

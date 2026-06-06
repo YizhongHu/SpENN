@@ -5,8 +5,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, RealFeature, WavefunctionOutput
-from spenn.nn import Cusp, ElectronElectronCusp, NuclearCusp, NuclearFeatureCusp, SpENNWaveFunction
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.real import RealFeature
+from spenn.nn import Cusp, ElectronElectronCusp, NuclearCusp, SpENNWaveFunction
 from spenn.physics.systems import ElectronicSystem
 
 
@@ -22,6 +23,12 @@ class ConstantReadout(nn.Module):
         return WavefunctionOutput(logabs=logabs, sign=sign)
 
 
+class AntisymmetricReadout(nn.Module):
+    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+        sign = torch.sign(batch.positions[:, 0, 0] - batch.positions[:, 1, 0])
+        return WavefunctionOutput(logabs=torch.zeros_like(sign), sign=sign)
+
+
 class BadShapeCusp(Cusp):
     def forward(self, batch: ElectronBatch) -> torch.Tensor:
         return torch.zeros(batch.batch_size, 1, device=batch.device, dtype=batch.dtype)
@@ -30,7 +37,7 @@ class BadShapeCusp(Cusp):
 def test_spinless_electron_electron_cusp_matches_rational_option_a_formula() -> None:
     positions = torch.tensor([[[0.0], [2.0]], [[1.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    cusp = ElectronElectronCusp(coefficient=0.25, range_parameter=0.5, eps=0.0)
+    cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
 
     values = cusp(batch)
 
@@ -45,7 +52,7 @@ def test_spinless_electron_electron_cusp_matches_rational_option_a_formula() -> 
 def test_electron_electron_cusp_is_permutation_invariant_and_has_short_range_slope() -> None:
     positions = torch.tensor([[[0.0], [1.0], [3.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    cusp = ElectronElectronCusp(coefficient=0.25, range_parameter=0.75, eps=0.0)
+    cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.75, eps=0.0)
 
     permuted = ElectronBatch(positions=positions[:, [2, 0, 1]])
 
@@ -152,17 +159,6 @@ def test_nuclear_cusp_trainable_range_is_positive_and_differentiable() -> None:
     assert cusp.raw_range.grad is not None
 
 
-def test_nuclear_feature_cusp_is_scaffold_only() -> None:
-    batch = ElectronBatch(positions=torch.ones(2, 1, 3, dtype=torch.float64))
-
-    try:
-        NuclearFeatureCusp()(batch)
-    except NotImplementedError as exc:
-        assert "nuclear feature" in str(exc).lower()
-    else:
-        raise AssertionError("Expected NuclearFeatureCusp to raise NotImplementedError")
-
-
 def test_disabled_cusp_returns_zero_batch_vector() -> None:
     batch = ElectronBatch(positions=torch.ones(4, 2, 3, dtype=torch.float64))
 
@@ -174,7 +170,7 @@ def test_disabled_cusp_returns_zero_batch_vector() -> None:
 def test_wavefunction_cusp_adds_only_to_logabs_and_preserves_sign() -> None:
     positions = torch.tensor([[[0.0], [2.0]], [[1.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    cusp = ElectronElectronCusp(coefficient=0.25, range_parameter=0.5, eps=0.0)
+    cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
     model = SpENNWaveFunction(embedding=EmptyEncoder(), layers=[nn.Identity()], readout=ConstantReadout(), cusp=cusp)
 
     output = model(batch)
@@ -198,3 +194,18 @@ def test_wavefunction_cusp_shape_must_match_readout_logabs() -> None:
         assert "cusp output" in str(exc).lower()
     else:
         raise AssertionError("Expected mismatched cusp shape to raise ValueError")
+
+
+def test_spenn_wavefunction_passes_runtime_sign_equivariance_check() -> None:
+    batch = ElectronBatch(positions=torch.tensor([[[0.0], [1.0]], [[2.0], [4.0]]], dtype=torch.float64))
+    model = SpENNWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=AntisymmetricReadout(),
+        equivariance_check=True,
+        check_probability=1.0,
+    )
+
+    output = model(batch)
+
+    assert output.validate() is output

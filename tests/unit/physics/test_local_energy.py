@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data import ElectronBatch, WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
 from spenn.physics.hamiltonian import ElectronicHamiltonian
@@ -18,13 +18,14 @@ from spenn.physics.potential import (
 from spenn.physics.systems import ElectronicSystem
 
 
-class GaussianTensorModel(nn.Module):
+class GaussianOutputModel(nn.Module):
     def __init__(self, alpha: float) -> None:
         super().__init__()
         self.alpha = torch.tensor(alpha, dtype=torch.float64)
 
-    def forward(self, batch: ElectronBatch) -> torch.Tensor:
-        return -self.alpha * batch.positions.square().sum(dim=(1, 2))
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        logabs = -self.alpha * batch.positions.square().sum(dim=(1, 2))
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
 class TrainableGaussianOutputModel(nn.Module):
@@ -115,7 +116,7 @@ def test_autograd_kinetic_matches_gaussian_logabs_formula() -> None:
     alpha = 0.3
     batch = ElectronBatch(positions=positions)
 
-    kinetic = kinetic_energy_from_logabs(GaussianTensorModel(alpha), batch)
+    kinetic = kinetic_energy_from_logabs(GaussianOutputModel(alpha), batch)
 
     n_electrons = positions.shape[1]
     spatial_dim = positions.shape[2]
@@ -136,7 +137,7 @@ def test_harmonic_oscillator_ground_state_has_constant_local_energy() -> None:
     batch = ElectronBatch(positions=positions, system=system)
     hamiltonian = ElectronicHamiltonian(system=system)
 
-    local_energy = hamiltonian.local_energy(GaussianTensorModel(alpha=omega / 2.0), batch)
+    local_energy = hamiltonian.local_energy(GaussianOutputModel(alpha=omega / 2.0), batch)
 
     expected = torch.full((2,), system.n_electrons * system.spatial_dim * omega / 2.0, dtype=torch.float64)
     assert torch.allclose(local_energy, expected)
