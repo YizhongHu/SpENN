@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spenn"
-version = "0.0.0"
-description = "Specht-module equivariant neural network scaffolding for fermionic wavefunctions."
+version = "0.0.1"
+description = "Specht-module equivariant neural network fermionic wavefunctions."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

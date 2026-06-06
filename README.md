@@ -158,3 +158,10 @@ Then open `docs/_build/html/index.html`, or serve them locally:
 ```bash
 uv run --extra cpu python -m http.server --directory docs/_build/html 8000
 ```
+
+## Versioning
+
+The backwards compatibility of this repository is only with respect to the behavior
+of Hydra config files. Before v1.0.0, every minor version can break backwards compatibility.
+v0.2.0 does not have to be able to reproduce a v0.1.0 config. But patches have to be
+compatible with each other. 
