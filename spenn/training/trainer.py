@@ -49,8 +49,6 @@ class VMCTrainer:
         Optional scheduler with a ``step`` method.
     logger : object or None, optional
         Optional logger with a ``log`` method.
-    cfg : object or None, optional
-        Legacy config-like object. Values from `cfg` are used when present.
     max_steps, log_every, checkpoint_every : int or None, optional
         Training-loop settings used to build `TrainerConfig`.
     grad_clip : float or None, optional
@@ -61,8 +59,6 @@ class VMCTrainer:
         Initial walker state. If ``None``, the sampler initializes walkers.
     device : torch.device, str, or None, optional
         Device used for default walker initialization.
-    **_ : object
-        Ignored keyword arguments accepted for config compatibility.
     """
 
     def __init__(
@@ -74,7 +70,6 @@ class VMCTrainer:
         optimizer,
         scheduler=None,
         logger=None,
-        cfg=None,
         max_steps: int | None = None,
         log_every: int | None = None,
         checkpoint_every: int | None = None,
@@ -82,7 +77,6 @@ class VMCTrainer:
         system: ElectronicSystem | None = None,
         walkers=None,
         device=None,
-        **_: object,
     ) -> None:
         self.model = model
         self.sampler = sampler
@@ -91,11 +85,6 @@ class VMCTrainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.logger = logger
-        if cfg is not None:
-            max_steps = getattr(cfg, "max_steps", max_steps)
-            log_every = getattr(cfg, "log_every", log_every)
-            checkpoint_every = getattr(cfg, "checkpoint_every", checkpoint_every)
-            grad_clip = getattr(cfg, "grad_clip", grad_clip)
         self.cfg = TrainerConfig(
             max_steps=TrainerConfig.max_steps if max_steps is None else max_steps,
             log_every=TrainerConfig.log_every if log_every is None else log_every,

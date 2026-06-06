@@ -2,7 +2,7 @@
 
 This file describes the responsibilities and expected interfaces for the `sampling/` package.
 
-The sampling package owns **Monte Carlo walkers and proposal/acceptance logic**. It should not know about Specht irreps, Hamiltonian internals, local-energy formulas, Hydra, or WandB. It should treat the wavefunction model as a callable black box that returns `logabs` and `sign`/`phase`.
+The sampling package owns **Monte Carlo walkers and proposal/acceptance logic**. It should not know about Specht irreps, Hamiltonian internals, local-energy formulas, Hydra, or WandB. It should treat the wavefunction model as a callable black box that returns `WavefunctionOutput`.
 
 Recommended structure:
 
@@ -11,7 +11,6 @@ sampling/
   __init__.py
   walkers.py
   metropolis.py
-  mala.py
   moves.py
   equilibrate.py
 ```
@@ -249,104 +248,7 @@ Suggested metrics:
 
 ---
 
-## 6. `sampling/mala.py`
-
-Responsibilities:
-
-- Implement Metropolis-adjusted Langevin algorithm.
-- Use gradients of `log |psi|` with respect to positions.
-
-The target is
-
-\[
-\pi(X)\propto |\psi(X)|^2.
-\]
-
-Let
-
-\[
-f(X)=\log |\psi(X)|.
-\]
-
-Then
-
-\[
-\nabla_X \log \pi(X)=2\nabla_X f(X).
-\]
-
-A common MALA proposal is
-
-\[
-X' = X + \frac{\epsilon^2}{2}\nabla_X \log \pi(X) + \epsilon \xi
-= X + \epsilon^2 \nabla_X f(X) + \epsilon \xi.
-\]
-
-The transition density is Gaussian:
-
-\[
-q(X'|X)=\mathcal N\left(X'; X+\epsilon^2\nabla f(X), \epsilon^2 I\right).
-\]
-
-The acceptance log-ratio is
-
-\[
-\log \alpha
-=
-2(f(X')-f(X))
-+
-\log q(X|X')-
-\log q(X'|X).
-\]
-
-Suggested class:
-
-```python
-class MALASampler:
-    def __init__(self, step_size: float, n_steps: int = 10):
-        self.step_size = step_size
-        self.n_steps = n_steps
-
-    def step(self, model, walkers):
-        ...
-```
-
-Unlike simple Metropolis, MALA needs gradients during proposal generation. Do not wrap the whole step in `torch.no_grad()`.
-
-Suggested helper:
-
-```python
-def logabs_and_grad(model, walkers):
-    positions = walkers.positions.detach().clone().requires_grad_(True)
-    batch = walkers.with_positions(positions).make_batch()
-    out = model(batch)
-    grad = torch.autograd.grad(out.logabs.sum(), positions)[0]
-    return out.logabs.detach(), grad.detach()
-```
-
-Gaussian log-density helper:
-
-```python
-def gaussian_log_prob(x, mean, sigma):
-    diff = x - mean
-    return -0.5 * (diff.square().sum(dim=(-1, -2)) / sigma**2)
-```
-
-Constants cancel in the proposal ratio, so they can be omitted.
-
-Implementation steps:
-
-1. Compute current `logabs` and gradient.
-2. Propose new positions.
-3. Compute proposed `logabs` and proposed gradient.
-4. Compute forward and reverse Gaussian log probabilities.
-5. Accept/reject.
-6. Cache accepted `logabs`.
-
-MALA is more complex than Metropolis. Implement Metropolis first.
-
----
-
-## 7. `sampling/equilibrate.py`
+## 6. `sampling/equilibrate.py`
 
 Responsibilities:
 
@@ -374,7 +276,7 @@ Only adapt during burn-in, not during production sampling unless explicitly conf
 
 ---
 
-## 8. `sampling/__init__.py`
+## 7. `sampling/__init__.py`
 
 Export stable public objects:
 
@@ -382,13 +284,12 @@ Export stable public objects:
 from .walkers import Walkers
 from .moves import GaussianMove
 from .metropolis import MetropolisSampler
-from .mala import MALASampler
 from .equilibrate import equilibrate
 ```
 
 ---
 
-## 9. Interaction with training loop
+## 8. Interaction with training loop
 
 The trainer should own the high-level loop:
 
@@ -408,7 +309,7 @@ The model should not know about the sampler.
 
 ---
 
-## 10. Distributed and parallel sampling
+## 9. Distributed and parallel sampling
 
 The sampling code should support batched walkers from day one:
 
@@ -423,11 +324,11 @@ For multi-GPU DDP:
 - Gradients are synchronized by DDP during training.
 - Metrics such as acceptance rate and energy should be averaged across ranks by training utilities, not inside sampler core logic.
 
-Do not add distributed dependencies inside basic sampler code. Instead expose metrics and let `utils/distributed.py` reduce them.
+Do not add distributed dependencies inside basic sampler code. Instead expose metrics and let training orchestration reduce them across ranks.
 
 ---
 
-## 11. Required tests for `sampling/`
+## 10. Required tests for `sampling/`
 
 ### Walker tests
 
@@ -457,14 +358,6 @@ Test:
 - cached logabs matches new positions after step,
 - acceptance rate is between 0 and 1.
 
-### MALA tests
-
-For the same Gaussian target, check:
-
-- gradients have correct shape,
-- proposal ratio is finite,
-- no persistent computation graphs are retained in walkers after step.
-
 ### Equilibration tests
 
 - Burn-in returns walkers with valid cache.
@@ -472,7 +365,7 @@ For the same Gaussian target, check:
 
 ---
 
-## 12. Practical implementation order
+## 11. Practical implementation order
 
 Implement in this order:
 
@@ -481,7 +374,6 @@ Implement in this order:
 3. `MetropolisSampler`
 4. sampler tests with fake Gaussian model
 5. `equilibrate`
-6. `MALASampler`
-7. distributed-friendly metrics
+6. distributed-friendly metrics
 
-Do not start with MALA. A robust random-walk Metropolis sampler is enough for early model/physics debugging.
+Do not start with MALA. Add gradient-informed proposal kernels only after the random-walk Metropolis sampler is robust.

@@ -26,8 +26,8 @@ class ElectronicSystem:
         Harmonic trap frequency. If ``None``, no trap contribution is added.
     include_electron_electron : bool, optional
         Whether to include Coulomb electron-electron repulsion for systems
-        without nuclei. Molecular systems with nuclei keep electron-electron
-        repulsion regardless of this flag for backward compatibility.
+        without nuclei. Molecular systems with nuclei always include
+        electron-electron repulsion.
     n_up, n_down : int or None, optional
         Spin partition metadata.
     device : torch.device, str, or None, optional

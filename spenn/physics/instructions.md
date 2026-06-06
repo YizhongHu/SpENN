@@ -2,7 +2,7 @@
 
 This file describes the responsibilities and expected interfaces for the `physics/` package.
 
-The physics package should contain **Hamiltonian and local-energy logic only**. It should not know about Specht irreps, SpechtMP internals, Monte Carlo proposal rules, Hydra, or WandB. The physics code should treat the wavefunction model as a callable black box that returns a wavefunction value in a stable representation.
+The physics package should contain **Hamiltonian and local-energy logic only**. It should not know about Specht irreps, SpENN layer internals, Monte Carlo proposal rules, Hydra, or WandB. The physics code should treat the wavefunction model as a callable black box that returns a wavefunction value in a stable representation.
 
 Recommended structure:
 

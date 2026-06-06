@@ -20,7 +20,6 @@ class ElectronicHamiltonian(nn.Module):
         kinetic: nn.Module | None = None,
         potential: ElectronicPotential | None = None,
         name: str = "electronic",
-        **_: object,
     ) -> None:
         super().__init__()
         self.name = name

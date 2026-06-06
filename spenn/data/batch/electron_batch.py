@@ -1,0 +1,291 @@
+"""Electron coordinate batch state."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from math import prod
+from typing import Any
+
+import torch
+
+from spenn.data.batch.base import _coerce_optional_tensor
+from spenn.data.indices import permute_particle_axis
+from spenn.data.permutation import Permutation
+
+
+@dataclass
+class ElectronBatch:
+    """Store batched electron coordinates and optional context.
+
+    Parameters
+    ----------
+    positions : torch.Tensor
+        Electron coordinates with shape
+        ``[*sample_shape, n_electrons, spatial_dim]``.
+    system : object or None, optional
+        Optional system metadata, such as electron count and nuclear data.
+    nuclear_positions : torch.Tensor or None, optional
+        Nuclear coordinates with shape ``[n_nuclei, dim]`` or
+        ``[*sample_shape, n_nuclei, dim]``.
+    nuclear_charges : torch.Tensor or None, optional
+        Nuclear charges with shape ``[n_nuclei]`` or
+        ``[*sample_shape, n_nuclei]``.
+    spins : torch.Tensor or None, optional
+        Spin labels with shape ``[*sample_shape, n_electrons]`` and entries
+        exactly equal to ``+1`` or ``-1``.
+    aux : dict, optional
+        Auxiliary metadata passed through model, sampler, or physics code.
+    """
+
+    positions: torch.Tensor
+    system: Any | None = None
+    nuclear_positions: torch.Tensor | None = None
+    nuclear_charges: torch.Tensor | None = None
+    spins: torch.Tensor | None = None
+    aux: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.positions = self.positions if isinstance(self.positions, torch.Tensor) else torch.as_tensor(self.positions)
+        self.nuclear_positions = _coerce_optional_tensor(self.nuclear_positions, dtype=self.positions.dtype)
+        self.nuclear_charges = _coerce_optional_tensor(self.nuclear_charges, dtype=self.positions.dtype)
+        self.spins = _coerce_optional_tensor(self.spins, dtype=self.positions.dtype)
+        if self.positions.ndim < 3:
+            raise ValueError(
+                "ElectronBatch.positions must have shape [*sample_shape, n_electrons, spatial_dim], "
+                f"got {tuple(self.positions.shape)}"
+            )
+        if self.spins is not None:
+            if tuple(self.spins.shape) != (*self.sample_shape, self.n_electrons):
+                raise ValueError("ElectronBatch.spins must have shape [*sample_shape, n_electrons]")
+            if not torch.all((self.spins == 1) | (self.spins == -1)):
+                raise ValueError("ElectronBatch.spins entries must be exactly +1 or -1")
+        if self.system is not None and hasattr(self.system, "n_electrons") and self.system.n_electrons is not None:
+            if self.system.n_electrons != self.n_electrons:
+                raise ValueError("ElectronBatch.positions disagree with system.n_electrons")
+        if self.nuclear_positions is not None:
+            nuclear_shape = tuple(self.nuclear_positions.shape)
+            unbatched = self.nuclear_positions.ndim == 2 and nuclear_shape[-1] == self.spatial_dim
+            sampled = (
+                self.nuclear_positions.ndim == len(self.sample_shape) + 2
+                and nuclear_shape[:-2] == self.sample_shape
+                and nuclear_shape[-1] == self.spatial_dim
+            )
+            if not (unbatched or sampled):
+                raise ValueError(
+                    "ElectronBatch.nuclear_positions must have shape [n_nuclei, dim] "
+                    "or [*sample_shape, n_nuclei, dim]"
+                )
+        if self.nuclear_charges is not None:
+            charge_shape = tuple(self.nuclear_charges.shape)
+            unbatched = self.nuclear_charges.ndim == 1
+            sampled = self.nuclear_charges.ndim == len(self.sample_shape) + 1 and charge_shape[:-1] == self.sample_shape
+            if not (unbatched or sampled):
+                raise ValueError("ElectronBatch.nuclear_charges must have shape [n_nuclei] or [*sample_shape, n_nuclei]")
+        if self.nuclear_positions is not None and self.nuclear_charges is not None:
+            if self.nuclear_positions.shape[-2] != self.nuclear_charges.shape[-1]:
+                raise ValueError("ElectronBatch.nuclear_positions and nuclear_charges must agree on n_nuclei")
+
+    def validate(self) -> "ElectronBatch":
+        """Validate this batch using the constructor invariants.
+
+        Returns
+        -------
+        ElectronBatch
+            This batch, for fluent runtime validation.
+        """
+
+        ElectronBatch(
+            positions=self.positions,
+            system=self.system,
+            nuclear_positions=self.nuclear_positions,
+            nuclear_charges=self.nuclear_charges,
+            spins=self.spins,
+            aux=self.aux,
+        )
+        return self
+
+    @property
+    def device(self) -> torch.device:
+        """Return the device of the position tensor.
+
+        Returns
+        -------
+        torch.device
+            Device on which `positions` is stored.
+        """
+
+        return self.positions.device
+
+    @property
+    def dtype(self) -> torch.dtype:
+        """Return the dtype of the position tensor.
+
+        Returns
+        -------
+        torch.dtype
+            Data type used by `positions`.
+        """
+
+        return self.positions.dtype
+
+    @property
+    def sample_shape(self) -> tuple[int, ...]:
+        """Return the sample axes before particle and coordinate axes.
+
+        Returns
+        -------
+        tuple of int
+            Leading sample shape of `positions`.
+        """
+
+        return tuple(self.positions.shape[:-2])
+
+    @property
+    def n_configurations(self) -> int:
+        """Return the flattened number of electron configurations.
+
+        Returns
+        -------
+        int
+            Product of all sample axes.
+        """
+
+        return prod(self.sample_shape)
+
+    @property
+    def batch_size(self) -> int:
+        """Return the flattened number of electron configurations.
+
+        Returns
+        -------
+        int
+            Product of all sample axes.
+        """
+
+        return self.n_configurations
+
+    @property
+    def n_electrons(self) -> int:
+        """Return the number of electrons per configuration.
+
+        Returns
+        -------
+        int
+            Size of the electron axis.
+        """
+
+        return self.positions.shape[-2]
+
+    @property
+    def spatial_dim(self) -> int:
+        """Return the spatial dimension of each electron coordinate.
+
+        Returns
+        -------
+        int
+            Size of the final coordinate axis.
+        """
+
+        return self.positions.shape[-1]
+
+    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> "ElectronBatch":
+        """Move tensor fields to a new device or dtype.
+
+        Parameters
+        ----------
+        device : torch.device, str, or None, optional
+            Target device. If ``None``, the current device is preserved.
+        dtype : torch.dtype or None, optional
+            Target floating-point dtype. If ``None``, the current dtype is
+            preserved.
+
+        Returns
+        -------
+        ElectronBatch
+            Batch with tensor fields moved to the requested device or dtype.
+        """
+
+        return replace(
+            self,
+            positions=self.positions.to(device=device, dtype=dtype),
+            nuclear_positions=None if self.nuclear_positions is None else self.nuclear_positions.to(device=device, dtype=dtype),
+            nuclear_charges=None if self.nuclear_charges is None else self.nuclear_charges.to(device=device, dtype=dtype),
+            spins=None if self.spins is None else self.spins.to(device=device, dtype=dtype),
+        )
+
+    def flatten_samples(self) -> "ElectronBatch":
+        """Return a 3D batch by flattening all sample axes.
+
+        Returns
+        -------
+        ElectronBatch
+            Batch whose tensor fields use a single leading configuration axis.
+        """
+
+        positions = self.positions.reshape(self.n_configurations, self.n_electrons, self.spatial_dim)
+        if self.nuclear_positions is None or self.nuclear_positions.ndim == 2:
+            nuclear_positions = self.nuclear_positions
+        else:
+            nuclear_positions = self.nuclear_positions.reshape(self.n_configurations, *self.nuclear_positions.shape[-2:])
+        if self.nuclear_charges is None or self.nuclear_charges.ndim == 1:
+            nuclear_charges = self.nuclear_charges
+        else:
+            nuclear_charges = self.nuclear_charges.reshape(self.n_configurations, self.nuclear_charges.shape[-1])
+        spins = None if self.spins is None else self.spins.reshape(self.n_configurations, self.n_electrons)
+        aux = {
+            key: _flatten_aux_value(value, n_configurations=self.n_configurations, n_electrons=self.n_electrons)
+            for key, value in self.aux.items()
+        }
+        return replace(
+            self,
+            positions=positions,
+            nuclear_positions=nuclear_positions,
+            nuclear_charges=nuclear_charges,
+            spins=spins,
+            aux=aux,
+        )
+
+    def permute(self, permutation: Permutation) -> "ElectronBatch":
+        """Return a copy with electron-indexed fields permuted.
+
+        Parameters
+        ----------
+        permutation : Permutation
+            Particle-label permutation acting on the electron axis.
+
+        Returns
+        -------
+        ElectronBatch
+            Batch with positions and spin labels transformed by the active
+            permutation convention.
+        """
+
+        if len(permutation) != self.n_electrons:
+            raise ValueError(
+                f"Permutation of size {len(permutation)} is incompatible with "
+                f"{self.n_electrons} electrons"
+            )
+        positions = permute_particle_axis(self.positions, permutation, axis=-2)
+        spins = None if self.spins is None else permute_particle_axis(self.spins, permutation, axis=-1)
+        aux = {
+            key: _permute_aux_value(value, permutation=permutation, n_electrons=self.n_electrons)
+            for key, value in self.aux.items()
+        }
+        return replace(self, positions=positions, spins=spins, aux=aux)
+
+
+def _flatten_aux_value(value: Any, *, n_configurations: int, n_electrons: int) -> Any:
+    if not isinstance(value, torch.Tensor) or value.ndim < 3 or int(value.shape[-2]) != n_electrons:
+        return value
+    if prod(value.shape[:-2]) != n_configurations:
+        return value
+    return value.reshape(n_configurations, n_electrons, *value.shape[-1:])
+
+
+def _permute_aux_value(value: Any, *, permutation: Permutation, n_electrons: int) -> Any:
+    if not isinstance(value, torch.Tensor) or value.ndim < 2 or int(value.shape[-2]) != n_electrons:
+        return value
+    return permute_particle_axis(value, permutation, axis=-2)
+
+
+__all__ = ["ElectronBatch"]

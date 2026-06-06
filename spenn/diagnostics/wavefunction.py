@@ -20,11 +20,9 @@ class HistogramDiagnostic:
         Number of histogram bins.
     table_name : str or None, optional
         Output table name. If ``None``, ``"{values}_histogram"`` is used.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
-    def __init__(self, values: str = "local_energy", bins: int = 32, table_name: str | None = None, **_: object) -> None:
+    def __init__(self, values: str = "local_energy", bins: int = 32, table_name: str | None = None) -> None:
         self.values = values
         self.bins = int(bins)
         self.table_name = table_name or f"{values}_histogram"
@@ -62,8 +60,6 @@ class RadialCutDiagnostic(nn.Module):
         Output table name.
     r_min, r_max : float, optional
         Radial interval.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -74,7 +70,6 @@ class RadialCutDiagnostic(nn.Module):
         table_name: str = "wavefunction_radial_cut",
         r_min: float = 5.0e-2,
         r_max: float = 6.0,
-        **_: object,
     ) -> None:
         super().__init__()
         self.sector = _normalize_sector(sector)
@@ -133,8 +128,6 @@ class RadialLogAbsComparison(nn.Module):
         Metric name for the RMSE.
     table_name : str, optional
         Output table name.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -145,7 +138,6 @@ class RadialLogAbsComparison(nn.Module):
         node_axis: int = 2,
         metric_key: str = "comparison/radial_logabs_rmse",
         table_name: str = "wavefunction_radial_cut",
-        **_: object,
     ) -> None:
         super().__init__()
         self.reference_model = reference_model
@@ -212,8 +204,6 @@ class CuspSlopeDiagnostic(nn.Module):
         Table column for the measured factored log-amplitude.
     table_name : str, optional
         Output table name.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -225,7 +215,6 @@ class CuspSlopeDiagnostic(nn.Module):
         metric_prefix: str = "comparison",
         value_column: str = "spenn_factored_logabs",
         table_name: str = "cusp_diagnostic_plot",
-        **_: object,
     ) -> None:
         super().__init__()
         self.sector = _normalize_sector(sector)
@@ -290,8 +279,6 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         ``"particle_antisymmetric"`` for triplets.
     metric_prefix : str, optional
         Metric namespace.
-    **_ : object
-        Ignored compatibility keyword arguments.
     """
 
     def __init__(
@@ -302,7 +289,6 @@ class ExchangeSymmetryDiagnostic(nn.Module):
         reference_model: nn.Module | None = None,
         exchange_mode: str = "auto",
         metric_prefix: str = "comparison",
-        **_: object,
     ) -> None:
         super().__init__()
         self.sector = _normalize_sector(sector)
