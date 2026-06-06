@@ -77,6 +77,8 @@ new scaffold documented in package docstrings.
       transforms over ordered tuple orbit coordinates.
 - [x] Added a SageMath-only irrep tensor-cache generator path for Specht
       representation fixtures.
+- [x] Added the generic Hooke scaffold launcher, lifecycle callbacks, local
+      loggers, and smoke config. This is not a physics experiment harness.
 
 ## Next Core Work
 

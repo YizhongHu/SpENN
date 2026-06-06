@@ -1,104 +1,217 @@
-"""Run artifact helpers for reproducible experiments."""
+"""Run artifact helpers for configured SpENN executions."""
 
 from __future__ import annotations
 
-import csv
 import json
+import re
 import subprocess
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Mapping
 from uuid import uuid4
 
 from omegaconf import DictConfig, OmegaConf
 
 ROOT = Path(__file__).resolve().parents[2]
+REQUIRED_RUN_DIRS = ("checkpoints", "traces", "diagnostics", "figures")
+
+
+class ArtifactManager:
+    """Own the standard artifact layout for one run.
+
+    Parameters
+    ----------
+    root : pathlib.Path or str
+        Output root. Relative paths are interpreted relative to the repository
+        root.
+    experiment : str
+        Experiment family name.
+    sector : str
+        Experiment sector or suite name.
+    run_id : str
+        Unique run identifier.
+    """
+
+    def __init__(self, root: Path | str, experiment: str, sector: str, run_id: str) -> None:
+        root_path = Path(root)
+        self.root = root_path if root_path.is_absolute() else ROOT / root_path
+        self.experiment = str(experiment)
+        self.sector = str(sector)
+        self.run_id = str(run_id)
+
+    @property
+    def run_dir(self) -> Path:
+        """Return the run directory path."""
+
+        return self.root / self.experiment / self.sector / self.run_id
+
+    def make_dirs(self) -> None:
+        """Create the run directory and standard child directories."""
+
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        for name in REQUIRED_RUN_DIRS:
+            self.path(name).mkdir(parents=True, exist_ok=True)
+
+    def path(self, *parts: str) -> Path:
+        """Return a path under this run directory."""
+
+        return self.run_dir.joinpath(*parts)
+
+
+@dataclass
+class RunMetadata:
+    """Execution metadata captured for one configured run."""
+
+    run_id: str
+    run_name: str
+    timestamp: str
+    git_commit: str
+    git_branch: str
+    dirty_worktree: bool
+    command: str | None
+    config_path: str | None
+    resolved_config_path: str
+    run_dir: str
+    device: str
+    dtype: str
+    status: str = "initialized"
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON-serializable metadata."""
+
+        data = asdict(self)
+        extra = data.pop("extra")
+        data.update(extra)
+        return data
+
+
+@dataclass
+class RunResult:
+    """Result returned by a configured runner."""
+
+    status: str
+    run_dir: Path | None = None
+    error: str | None = None
+
+
+@dataclass
+class RunContext:
+    """Runtime context shared by runners, callbacks, and loggers."""
+
+    cfg: DictConfig
+    artifact_manager: ArtifactManager
+    metadata: RunMetadata
+    callbacks: list[Any] = field(default_factory=list)
+    loggers: list[Any] = field(default_factory=list)
+
+    @property
+    def run_dir(self) -> Path:
+        """Return the active run directory."""
+
+        return self.artifact_manager.run_dir
+
+    def path(self, *parts: str) -> Path:
+        """Return a path under the active run directory."""
+
+        return self.artifact_manager.path(*parts)
+
+    def log(
+        self,
+        metrics: Mapping[str, Any],
+        *,
+        step: int | None = None,
+        namespace: str = "default",
+        event: str | None = None,
+    ) -> None:
+        """Emit a metric record to every configured logger."""
+
+        from spenn.training.metrics import LogRecord
+
+        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
+        for logger in self.loggers:
+            logger.log(record)
+
+
+def generate_run_id(run_name: str) -> str:
+    """Return a timestamped run identifier."""
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    slug = _slugify(run_name)
+    return f"{timestamp}_{slug}_{uuid4().hex[:6]}"
 
 
 def make_run_id(prefix: str = "run") -> str:
-    """Return a timestamped run identifier.
+    """Compatibility wrapper for older callers."""
 
-    Parameters
-    ----------
-    prefix : str, optional
-        Human-readable run id prefix.
-
-    Returns
-    -------
-    str
-        Run identifier suitable for artifact directory names.
-    """
-
-    return f"{prefix}_{datetime.now().strftime('%H%M%S')}_{uuid4().hex[:8]}"
+    return generate_run_id(prefix)
 
 
 def make_output_dir(output_root: Path, *, run_name: str, run_id: str, include_plots: bool = True) -> Path:
-    """Create the standard run artifact directory tree.
+    """Compatibility wrapper creating the current scaffold layout."""
 
-    Parameters
-    ----------
-    output_root : pathlib.Path
-        Root output directory, relative to the repository root unless absolute.
-    run_name : str
-        Run family name, for example ``"hooke_singlet_spenn"``.
-    run_id : str
-        Reproducible run identifier.
-    include_plots : bool, optional
-        Whether to create the ``plots`` CSV-data directory.
+    del include_plots
+    manager = ArtifactManager(output_root, run_name, "default", run_id)
+    manager.make_dirs()
+    return manager.run_dir
 
-    Returns
-    -------
-    pathlib.Path
-        Created output directory.
-    """
 
-    date = datetime.now().strftime("%Y-%m-%d")
-    path = output_root if output_root.is_absolute() else ROOT / output_root
-    path = path / date / run_name / run_id
-    children = [".hydra", "checkpoints", "metrics", "artifacts"]
-    if include_plots:
-        children.append("plots")
-    for child in children:
-        (path / child).mkdir(parents=True, exist_ok=True)
-    return path
+def build_run_metadata(
+    cfg: DictConfig,
+    *,
+    command: str | None,
+    config_path: str | None,
+) -> RunMetadata:
+    """Build metadata for a resolved run config."""
+
+    git = collect_git_metadata()
+    return RunMetadata(
+        run_id=str(OmegaConf.select(cfg, "run.run_id")),
+        run_name=str(OmegaConf.select(cfg, "experiment.run_name", default=OmegaConf.select(cfg, "experiment.name"))),
+        timestamp=datetime.now(UTC).isoformat(),
+        git_commit=str(git["git_commit"]),
+        git_branch=str(git["git_branch"]),
+        dirty_worktree=bool(git["dirty_worktree"]),
+        command=command,
+        config_path=config_path,
+        resolved_config_path=str(Path(str(OmegaConf.select(cfg, "run.dir"))) / "resolved_config.yaml"),
+        run_dir=str(OmegaConf.select(cfg, "run.dir")),
+        device=str(OmegaConf.select(cfg, "runtime.device", default="cpu")),
+        dtype=str(OmegaConf.select(cfg, "runtime.dtype", default="float64")),
+    )
+
+
+def collect_git_metadata() -> dict[str, Any]:
+    """Collect git commit, branch, and dirty-state metadata."""
+
+    status = _run_git(["git", "status", "--short", "--untracked-files=all"])
+    return {
+        "git_commit": _run_git(["git", "rev-parse", "HEAD"]),
+        "git_branch": _run_git(["git", "branch", "--show-current"]),
+        "dirty_worktree": bool(status.strip()),
+    }
+
+
+def git_metadata() -> dict[str, Any]:
+    """Compatibility wrapper returning git metadata."""
+
+    return collect_git_metadata()
 
 
 def write_config_artifacts(output_dir: Path, cfg: DictConfig, overrides: list[str]) -> None:
-    """Write resolved configuration artifacts.
+    """Write resolved configuration and overrides in the legacy location."""
 
-    Parameters
-    ----------
-    output_dir : pathlib.Path
-        Run output directory.
-    cfg : omegaconf.DictConfig
-        Resolved run configuration.
-    overrides : list of str
-        Command-line overrides to record.
-
-    Returns
-    -------
-    None
-        Config artifacts are written under ``output_dir/.hydra``.
-    """
-
-    OmegaConf.save(cfg, output_dir / ".hydra" / "config.yaml")
-    OmegaConf.save(OmegaConf.create(overrides), output_dir / ".hydra" / "overrides.yaml")
+    hydra_dir = output_dir / ".hydra"
+    hydra_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, hydra_dir / "config.yaml")
+    OmegaConf.save(OmegaConf.create(overrides), hydra_dir / "overrides.yaml")
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
-    """Write rows to a CSV artifact.
+    """Write rows to a CSV artifact."""
 
-    Parameters
-    ----------
-    path : pathlib.Path
-        Destination path.
-    rows : list of dict
-        CSV rows. The first row defines the header.
-
-    Returns
-    -------
-    None
-        The CSV file is written when rows are present.
-    """
+    import csv
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -110,56 +223,17 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
-def write_json(path: Path, payload: dict[str, object]) -> None:
-    """Write a JSON artifact.
-
-    Parameters
-    ----------
-    path : pathlib.Path
-        Destination path.
-    payload : dict
-        JSON-serializable payload.
-
-    Returns
-    -------
-    None
-        The JSON file is written.
-    """
+def write_json(path: Path, data: Mapping[str, Any]) -> None:
+    """Write a JSON artifact with stable formatting."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=True)
+        json.dump(_jsonable(data), handle, indent=2, sort_keys=True, allow_nan=False)
         handle.write("\n")
 
 
-def git_metadata() -> dict[str, str]:
-    """Collect git commit and dirty-state metadata.
-
-    Returns
-    -------
-    dict of str to str
-        Git commit hash and short dirty-state text.
-    """
-
-    return {
-        "git_commit": _run_git(["git", "rev-parse", "HEAD"]),
-        "dirty_git_state": _run_git(["git", "status", "--short", "--untracked-files=all"]),
-    }
-
-
 def normalize_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Pad rows so every CSV row has the same keys.
-
-    Parameters
-    ----------
-    rows : list of dict
-        Heterogeneous metric rows.
-
-    Returns
-    -------
-    list of dict
-        Rows with a stable union header.
-    """
+    """Pad rows so every CSV row has the same keys."""
 
     if not rows:
         return rows
@@ -167,8 +241,44 @@ def normalize_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return [{key: row.get(key, "") for key in keys} for row in rows]
 
 
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, DictConfig):
+        return OmegaConf.to_container(value, resolve=True)
+    return value
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return slug.strip("_") or "run"
+
+
 def _run_git(command: list[str]) -> str:
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     if result.returncode != 0:
-        return result.stderr.strip()
+        return ""
     return result.stdout.strip()
+
+
+__all__ = [
+    "ArtifactManager",
+    "REQUIRED_RUN_DIRS",
+    "RunContext",
+    "RunMetadata",
+    "RunResult",
+    "build_run_metadata",
+    "collect_git_metadata",
+    "generate_run_id",
+    "git_metadata",
+    "make_output_dir",
+    "make_run_id",
+    "normalize_rows",
+    "write_config_artifacts",
+    "write_csv",
+    "write_json",
+]

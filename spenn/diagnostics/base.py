@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -51,6 +52,22 @@ class DiagnosticContext:
     device: torch.device
 
 
+class Diagnostic:
+    """Base diagnostic interface for future configured diagnostics."""
+
+    name: str = "diagnostic"
+
+    def run(self, context: Any, state: object | None = None) -> "DiagnosticResult":
+        """Run this diagnostic."""
+
+        raise NotImplementedError
+
+    def __call__(self, context: Any, state: object | None = None) -> "DiagnosticResult":
+        """Delegate callable diagnostics to :meth:`run`."""
+
+        return self.run(context, state=state)
+
+
 @dataclass
 class DiagnosticResult:
     """Metrics and table rows produced by a diagnostic.
@@ -63,5 +80,8 @@ class DiagnosticResult:
         Named CSV table rows. Table names become filenames.
     """
 
-    metrics: dict[str, float] = field(default_factory=dict)
+    metrics: dict[str, float | int | str] = field(default_factory=dict)
     tables: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    name: str = ""
+    artifacts: dict[str, Path] = field(default_factory=dict)
+    passed: bool | None = None

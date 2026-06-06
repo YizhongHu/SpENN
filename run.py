@@ -1,4 +1,4 @@
-"""Command-line entrypoint for configured SpENN runs."""
+"""Alternate command-line entrypoint for configured SpENN runs."""
 
 from __future__ import annotations
 
