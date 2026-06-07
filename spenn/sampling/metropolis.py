@@ -210,6 +210,39 @@ class MetropolisSampler(nn.Module):
         walkers.aux["sample_acceptance_rate"] = self.acceptance_rate
         return walkers
 
+    def collect_samples(self, model, *, device=None) -> tuple[Walkers, dict[str, float]]:
+        """Initialize, equilibrate, and draw walkers in one self-managed call.
+
+        Convenience for evaluation runs: builds walkers from the sampler's own
+        ``n_walkers``/``n_electrons``/``spatial_dim``/``dtype``, burns in for
+        ``warmup_steps``, then advances ``steps_per_iter`` production steps.
+
+        Parameters
+        ----------
+        model : callable
+            Wavefunction model returning `WavefunctionOutput`.
+        device : torch.device, str, or None, optional
+            Target device for the walkers.
+
+        Returns
+        -------
+        tuple
+            Pair ``(walkers, stats)`` where ``walkers`` holds the final samples
+            and ``stats`` reports sampler diagnostics for logging.
+        """
+
+        walkers = self.initialize(device=device)
+        if self.warmup_steps:
+            walkers = self.sample(model, walkers, self.warmup_steps)
+        walkers = self.sample(model, walkers, self.steps_per_iter)
+        stats = {
+            "acceptance_rate": float(self.acceptance_rate),
+            "n_walkers": int(walkers.batch_size),
+            "warmup_steps": int(self.warmup_steps),
+            "steps_per_iter": int(self.steps_per_iter),
+        }
+        return walkers, stats
+
 
 def _default_spins(
     *,
