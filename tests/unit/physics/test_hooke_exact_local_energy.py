@@ -18,6 +18,7 @@ from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
 DTYPE = torch.float64
 BATCH_SIZE = 64
 ENERGY_ATOL = 1e-5
+ENERGY_RTOL = 1e-5
 VARIANCE_ATOL = 1e-8
 
 
@@ -58,7 +59,7 @@ def test_singlet_local_energy_constant_at_exact_energy() -> None:
 
     assert eloc.shape == (BATCH_SIZE,)
     assert torch.all(torch.isfinite(eloc))
-    assert torch.allclose(eloc, torch.full_like(eloc, wf.exact_energy), atol=ENERGY_ATOL)
+    assert torch.allclose(eloc, torch.full_like(eloc, wf.exact_energy), atol=ENERGY_ATOL, rtol=ENERGY_RTOL)
     assert eloc.std().item() < VARIANCE_ATOL**0.5
 
 
@@ -84,7 +85,7 @@ def test_triplet_local_energy_constant_at_exact_energy() -> None:
 
     assert eloc.shape == (BATCH_SIZE,)
     assert torch.all(torch.isfinite(eloc))
-    assert torch.allclose(eloc, torch.full_like(eloc, wf.exact_energy), atol=ENERGY_ATOL)
+    assert torch.allclose(eloc, torch.full_like(eloc, wf.exact_energy), atol=ENERGY_ATOL, rtol=ENERGY_RTOL)
     assert eloc.std().item() < VARIANCE_ATOL**0.5
 
 

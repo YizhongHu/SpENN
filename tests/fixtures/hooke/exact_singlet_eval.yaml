@@ -54,9 +54,9 @@ evaluation:
   expected_energy: ${system.exact_energy}
 
 validation:
-  energy_atol: 5.0e-3
-  energy_rtol: 5.0e-3
-  variance_max: 5.0e-3
+  energy_atol: 1.0e-4
+  energy_rtol: 1.0e-4
+  variance_max: 1.0e-6
 
 loggers:
   - _target_: spenn.logging.CSV
