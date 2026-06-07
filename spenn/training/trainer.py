@@ -5,10 +5,38 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from torch.nn.parameter import UninitializedParameter
 
 from spenn.data.batch import ElectronBatch
 from spenn.physics.systems import ElectronicSystem
-from spenn.training.metrics import gradient_norm, parameter_norm
+
+
+def _parameter_norm(model) -> torch.Tensor:
+    """Return the L2 norm of trainable initialized parameters."""
+
+    total = None
+    for param in model.parameters():
+        if not param.requires_grad:
+            continue
+        if isinstance(param, UninitializedParameter):
+            continue
+        value = param.detach().pow(2).sum()
+        total = value if total is None else total + value
+    return torch.sqrt(total) if total is not None else torch.tensor(0.0)
+
+
+def _gradient_norm(model) -> torch.Tensor:
+    """Return the L2 norm of available gradients."""
+
+    total = None
+    for param in model.parameters():
+        if param.grad is None:
+            continue
+        if isinstance(param, UninitializedParameter):
+            continue
+        value = param.grad.detach().pow(2).sum()
+        total = value if total is None else total + value
+    return torch.sqrt(total) if total is not None else torch.tensor(0.0)
 
 
 @dataclass
@@ -133,8 +161,8 @@ class VMCTrainer:
         metrics = dict(metrics)
         metrics["loss"] = loss.detach()
         metrics["acceptance_rate"] = torch.tensor(getattr(self.sampler, "acceptance_rate", 0.0))
-        metrics["grad_norm"] = gradient_norm(self.model).detach()
-        metrics["param_norm"] = parameter_norm(self.model).detach()
+        metrics["grad_norm"] = _gradient_norm(self.model).detach()
+        metrics["param_norm"] = _parameter_norm(self.model).detach()
         self._log(metrics)
         self.global_step += 1
         return metrics
