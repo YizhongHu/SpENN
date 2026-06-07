@@ -32,7 +32,7 @@ def test_evaluate_does_not_accept_callbacks_or_loggers() -> None:
     assert "loggers" not in params
 
 
-@pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])
+@pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
 def test_evaluate_config_does_not_pass_callbacks_or_loggers(fixture: str) -> None:
     cfg = OmegaConf.load(FIXTURES / fixture)
     runner_keys = set(cfg.runner.keys())
@@ -51,7 +51,7 @@ def _eval_metrics(run_root: Path) -> dict:
 
 @pytest.mark.parametrize(
     ("fixture", "exact_energy"),
-    [("exact_singlet_eval.yaml", 2.0), ("exact_triplet_eval.yaml", 1.25)],
+    [("exact_singlet.yaml", 2.0), ("exact_triplet.yaml", 1.25)],
 )
 def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_energy: float) -> None:
     config_path = FIXTURES / fixture
@@ -80,7 +80,7 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     assert "sampler.acceptance_rate" in metrics
 
 
-@pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])
+@pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
 def test_hooke_eval_runner_writes_standard_artifacts(tmp_path, fixture: str) -> None:
     config_path = FIXTURES / fixture
     cfg = OmegaConf.load(config_path)
