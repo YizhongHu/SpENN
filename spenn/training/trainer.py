@@ -138,7 +138,7 @@ class VMCTrainer:
         """
 
         self.model.train()
-        self.walkers = self.sampler.sample(self.model, self.walkers, getattr(self.sampler, "steps_per_iter", 1))
+        self.walkers = self.sampler.sample(self.model, self.walkers, getattr(self.sampler, "n_steps", 1))
         batch = ElectronBatch(
             positions=self.walkers.positions,
             system=self.walkers.aux.get("system"),

@@ -21,12 +21,14 @@ class MetropolisSampler(nn.Module):
         positions plus a proposal log-ratio.
     n_walkers : int, optional
         Default number of walkers to initialize.
-    warmup_steps : int, optional
-        Suggested warmup length for callers.
-    steps_per_iter : int, optional
-        Default number of MCMC steps per training iteration.
-    step_size : float, optional
-        Gaussian proposal step size used when `move` is ``None``.
+    burn_in : int, optional
+        Number of equilibration steps used by `collect_samples`.
+    n_steps : int, optional
+        Default number of MCMC steps per sampling call.
+    proposal_scale : float, optional
+        Gaussian proposal scale used when `move` is ``None``.
+    seed : int or None, optional
+        Optional RNG seed applied when initializing walkers.
     n_electrons : int, optional
         Number of electrons per walker.
     spatial_dim : int, optional
@@ -45,9 +47,10 @@ class MetropolisSampler(nn.Module):
         name: str = "metropolis",
         move: nn.Module | None = None,
         n_walkers: int = 1024,
-        warmup_steps: int = 100,
-        steps_per_iter: int = 10,
-        step_size: float = 0.05,
+        burn_in: int = 100,
+        n_steps: int = 10,
+        proposal_scale: float = 0.05,
+        seed: int | None = None,
         n_electrons: int = 2,
         spatial_dim: int = 3,
         n_up: int | None = None,
@@ -57,10 +60,12 @@ class MetropolisSampler(nn.Module):
     ) -> None:
         super().__init__()
         self.name = name
-        self.move = move or GaussianMove(step_size=step_size)
+        self.move = move or GaussianMove(step_size=proposal_scale)
         self.n_walkers = n_walkers
-        self.warmup_steps = warmup_steps
-        self.steps_per_iter = steps_per_iter
+        self.burn_in = burn_in
+        self.n_steps = n_steps
+        self.proposal_scale = proposal_scale
+        self.seed = seed
         self.n_electrons = n_electrons
         self.spatial_dim = spatial_dim
         self.n_up = n_up
@@ -88,6 +93,8 @@ class MetropolisSampler(nn.Module):
             spatial_dim]``.
         """
 
+        if self.seed is not None:
+            torch.manual_seed(int(self.seed))
         n_walkers = n_walkers or self.n_walkers
         positions = self.initial_scale * torch.randn(
             n_walkers, self.n_electrons, self.spatial_dim, device=device, dtype=self.dtype
@@ -188,7 +195,7 @@ class MetropolisSampler(nn.Module):
         walkers : Walkers
             Current walker state.
         n_steps : int or None, optional
-            Number of MCMC steps. If ``None``, `self.steps_per_iter` is used.
+            Number of MCMC steps. If ``None``, `self.n_steps` is used.
 
         Returns
         -------
@@ -197,7 +204,7 @@ class MetropolisSampler(nn.Module):
             acceptance rate over all steps in this call.
         """
 
-        total_steps = self.steps_per_iter if n_steps is None else n_steps
+        total_steps = self.n_steps if n_steps is None else n_steps
         if total_steps < 0:
             raise ValueError("n_steps must be non-negative")
         acceptance_sum = 0.0
@@ -215,7 +222,7 @@ class MetropolisSampler(nn.Module):
 
         Convenience for evaluation runs: builds walkers from the sampler's own
         ``n_walkers``/``n_electrons``/``spatial_dim``/``dtype``, burns in for
-        ``warmup_steps``, then advances ``steps_per_iter`` production steps.
+        ``burn_in`` steps, then advances ``n_steps`` production steps.
 
         Parameters
         ----------
@@ -232,14 +239,14 @@ class MetropolisSampler(nn.Module):
         """
 
         walkers = self.initialize(device=device)
-        if self.warmup_steps:
-            walkers = self.sample(model, walkers, self.warmup_steps)
-        walkers = self.sample(model, walkers, self.steps_per_iter)
+        if self.burn_in:
+            walkers = self.sample(model, walkers, self.burn_in)
+        walkers = self.sample(model, walkers, self.n_steps)
         stats = {
             "acceptance_rate": float(self.acceptance_rate),
             "n_walkers": int(walkers.batch_size),
-            "warmup_steps": int(self.warmup_steps),
-            "steps_per_iter": int(self.steps_per_iter),
+            "burn_in": int(self.burn_in),
+            "n_steps": int(self.n_steps),
         }
         return walkers, stats
 

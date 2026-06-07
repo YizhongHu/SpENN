@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import math
+
+import pytest
 import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy
+from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, summarize_local_energy
 from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
 from spenn.physics.kinetic import KineticEnergy, kinetic_energy_from_logabs
 from spenn.physics.potential import (
@@ -365,3 +368,106 @@ def test_triplet_sign_flips_under_particle_swap() -> None:
     out_swapped = wf(batch_swapped)
 
     assert torch.equal(out.sign, -out_swapped.sign)
+
+
+# --- summarize_local_energy ---
+
+
+def test_summarize_local_energy_all_finite() -> None:
+    eloc = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc)
+
+    assert metrics["n_samples"] == 3
+    assert metrics["n_finite_samples"] == 3
+    assert metrics["nonfinite_energy_fraction"] == 0.0
+    assert metrics["energy_mean"] == pytest.approx(3.0)
+    assert metrics["energy_variance"] == pytest.approx(8.0 / 3.0)
+    assert metrics["energy_stderr"] == pytest.approx(math.sqrt(8.0 / 3.0) / math.sqrt(3))
+    assert "expected_energy" not in metrics
+
+
+def test_summarize_local_energy_some_nonfinite() -> None:
+    eloc = torch.tensor([1.0, float("inf"), 3.0, float("nan")], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc)
+
+    assert metrics["n_samples"] == 4
+    assert metrics["n_finite_samples"] == 2
+    assert metrics["nonfinite_energy_fraction"] == pytest.approx(0.5)
+    assert metrics["energy_mean"] == pytest.approx(2.0)
+    assert math.isfinite(metrics["energy_variance"])
+
+
+def test_summarize_local_energy_all_nonfinite() -> None:
+    eloc = torch.tensor([float("inf"), float("nan")], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc)
+
+    assert metrics["n_finite_samples"] == 0
+    assert metrics["nonfinite_energy_fraction"] == 1.0
+    assert math.isnan(metrics["energy_mean"])
+    assert math.isnan(metrics["energy_variance"])
+    assert metrics["energy_stderr"] == float("inf")
+
+
+def test_summarize_local_energy_empty() -> None:
+    metrics = summarize_local_energy(torch.empty(0, dtype=torch.float64))
+
+    assert metrics["n_samples"] == 0
+    assert metrics["n_finite_samples"] == 0
+    assert math.isnan(metrics["energy_mean"])
+    assert math.isnan(metrics["energy_variance"])
+    assert metrics["energy_stderr"] == float("inf")
+    assert math.isnan(metrics["nonfinite_energy_fraction"])
+
+
+def test_summarize_local_energy_with_expected_energy() -> None:
+    eloc = torch.tensor([1.5, 2.5], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc, expected_energy=2.0)
+
+    assert metrics["expected_energy"] == 2.0
+    assert metrics["energy_error"] == pytest.approx(0.0)
+    assert metrics["abs_energy_error"] == pytest.approx(0.0)
+
+
+def test_summarize_local_energy_result_with_finite_terms() -> None:
+    result = LocalEnergyResult(
+        total=torch.tensor([2.0, 2.0], dtype=torch.float64),
+        terms={
+            "kinetic": torch.tensor([1.0, 1.0], dtype=torch.float64),
+            "trap": torch.tensor([1.0, 1.0], dtype=torch.float64),
+        },
+    )
+
+    metrics = summarize_local_energy(result)
+
+    assert metrics["terms.kinetic_mean"] == pytest.approx(1.0)
+    assert metrics["terms.kinetic_nonfinite_fraction"] == 0.0
+    assert metrics["terms.trap_mean"] == pytest.approx(1.0)
+    assert metrics["terms.trap_nonfinite_fraction"] == 0.0
+
+
+def test_summarize_local_energy_result_with_nonfinite_term_values() -> None:
+    result = LocalEnergyResult(
+        total=torch.tensor([2.0, 2.0], dtype=torch.float64),
+        terms={"kinetic": torch.tensor([1.0, float("nan")], dtype=torch.float64)},
+    )
+
+    metrics = summarize_local_energy(result)
+
+    assert metrics["terms.kinetic_mean"] == pytest.approx(1.0)
+    assert metrics["terms.kinetic_nonfinite_fraction"] == pytest.approx(0.5)
+
+
+def test_summarize_local_energy_term_with_no_finite_values() -> None:
+    result = LocalEnergyResult(
+        total=torch.tensor([2.0], dtype=torch.float64),
+        terms={"kinetic": torch.tensor([float("nan")], dtype=torch.float64)},
+    )
+
+    metrics = summarize_local_energy(result)
+
+    assert math.isnan(metrics["terms.kinetic_mean"])
+    assert metrics["terms.kinetic_nonfinite_fraction"] == 1.0

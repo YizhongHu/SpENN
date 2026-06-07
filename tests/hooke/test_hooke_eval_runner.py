@@ -7,15 +7,37 @@ and assert the logged sampled energy matches the known exact energy.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
 
+import spenn.runner as runner_module
+from spenn.physics.hamiltonian import summarize_local_energy
 from spenn.run import run_from_config
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "hooke"
+
+
+def test_evaluate_uses_summary_helper_from_physics_hamiltonian() -> None:
+    assert runner_module.summarize_local_energy is summarize_local_energy
+    assert "summarize_local_energy" not in runner_module.__all__
+
+
+def test_evaluate_does_not_accept_callbacks_or_loggers() -> None:
+    params = inspect.signature(runner_module.Evaluate.__init__).parameters
+    assert "callbacks" not in params
+    assert "loggers" not in params
+
+
+@pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])
+def test_evaluate_config_does_not_pass_callbacks_or_loggers(fixture: str) -> None:
+    cfg = OmegaConf.load(FIXTURES / fixture)
+    runner_keys = set(cfg.runner.keys())
+    assert "callbacks" not in runner_keys
+    assert "loggers" not in runner_keys
 
 
 def _eval_metrics(run_root: Path) -> dict:
@@ -44,13 +66,18 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     variance_max = float(cfg.validation.variance_max)
 
     assert metrics["expected_energy"] == pytest.approx(exact_energy)
+    assert metrics["n_finite_samples"] == metrics["n_samples"] == 512
     assert metrics["nonfinite_energy_fraction"] == 0.0
     assert metrics["abs_energy_error"] < energy_atol
     assert metrics["energy_variance"] < variance_max
-    # return_terms: true -> per-term decomposition is logged.
-    assert {"terms.kinetic_mean", "terms.harmonic_trap_mean", "terms.electron_electron_mean"} <= set(metrics)
-    # sampler diagnostics are logged.
+    # return_terms: true -> per-term decomposition is logged as terms.<name>_mean
+    # and terms.<name>_nonfinite_fraction.
+    for term in ("kinetic", "harmonic_trap", "electron_electron"):
+        assert f"terms.{term}_mean" in metrics
+        assert metrics[f"terms.{term}_nonfinite_fraction"] == 0.0
+    # sampler diagnostics are logged with sampler.* keys.
     assert metrics["sampler.n_walkers"] == 512
+    assert "sampler.acceptance_rate" in metrics
 
 
 @pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])

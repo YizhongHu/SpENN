@@ -134,7 +134,9 @@ def _instantiate_runner(context: RunContext) -> Runner:
     runner_cfg = OmegaConf.create(OmegaConf.to_container(context.cfg.runner, resolve=False))
     runner_cfg.pop("callbacks", None)
     runner_cfg.pop("loggers", None)
-    runner = instantiate(runner_cfg, callbacks=context.callbacks, loggers=context.loggers)
+    # Callbacks and loggers are owned by the RunContext; runners dispatch into
+    # ``context.callbacks`` via ``emit`` and log through ``context.log``.
+    runner = instantiate(runner_cfg)
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to spenn.runner.Runner, got {type(runner)!r}")
     return runner

@@ -13,10 +13,10 @@ class MALASampler(MetropolisSampler):
 
     The proposal is
 
-    ``X' = X + step_size**2 * grad_X log|psi(X)| + step_size * Normal(0, I)``.
+    ``X' = X + proposal_scale**2 * grad_X log|psi(X)| + proposal_scale * Normal(0, I)``.
 
     Since the VMC target has log density ``2 log|psi|``, this is the standard
-    MALA proposal with Gaussian standard deviation `step_size`.
+    MALA proposal with Gaussian standard deviation `proposal_scale`.
 
     Parameters
     ----------
@@ -24,12 +24,14 @@ class MALASampler(MetropolisSampler):
         Human-readable sampler name.
     n_walkers : int, optional
         Default number of walkers to initialize.
-    warmup_steps : int, optional
-        Suggested warmup length for callers.
-    steps_per_iter : int, optional
-        Default number of MCMC steps per training iteration.
-    step_size : float, optional
+    burn_in : int, optional
+        Number of equilibration steps used by `collect_samples`.
+    n_steps : int, optional
+        Default number of MCMC steps per sampling call.
+    proposal_scale : float, optional
         Gaussian proposal standard deviation.
+    seed : int or None, optional
+        Optional RNG seed applied when initializing walkers.
     n_electrons : int, optional
         Number of electrons per walker.
     spatial_dim : int, optional
@@ -44,34 +46,35 @@ class MALASampler(MetropolisSampler):
         self,
         name: str = "mala",
         n_walkers: int = 1024,
-        warmup_steps: int = 100,
-        steps_per_iter: int = 10,
-        step_size: float = 0.05,
+        burn_in: int = 100,
+        n_steps: int = 10,
+        proposal_scale: float = 0.05,
+        seed: int | None = None,
         n_electrons: int = 2,
         spatial_dim: int = 3,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
-        if step_size <= 0.0:
-            raise ValueError(f"step_size must be positive, got {step_size}")
+        if proposal_scale <= 0.0:
+            raise ValueError(f"proposal_scale must be positive, got {proposal_scale}")
         super().__init__(
             name=name,
             n_walkers=n_walkers,
-            warmup_steps=warmup_steps,
-            steps_per_iter=steps_per_iter,
-            step_size=step_size,
+            burn_in=burn_in,
+            n_steps=n_steps,
+            proposal_scale=proposal_scale,
+            seed=seed,
             n_electrons=n_electrons,
             spatial_dim=spatial_dim,
             initial_scale=initial_scale,
             dtype=dtype,
         )
-        self.step_size = float(step_size)
 
     def _propose(self, model, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
         current_positions = walkers.positions.detach()
         current_grad = self._logabs_gradient(model, walkers.with_positions(current_positions, invalidate_cache=True))
-        drift_scale = self.step_size * self.step_size
-        proposals = current_positions + drift_scale * current_grad + self.step_size * torch.randn_like(current_positions)
+        drift_scale = self.proposal_scale * self.proposal_scale
+        proposals = current_positions + drift_scale * current_grad + self.proposal_scale * torch.randn_like(current_positions)
         proposal_walkers = walkers.with_positions(proposals.detach(), invalidate_cache=True)
         proposal_grad = self._logabs_gradient(model, proposal_walkers)
         log_q_ratio = self._proposal_log_ratio(
@@ -109,7 +112,7 @@ class MALASampler(MetropolisSampler):
         current_grad: torch.Tensor,
         proposed_grad: torch.Tensor,
     ) -> torch.Tensor:
-        drift_scale = self.step_size * self.step_size
+        drift_scale = self.proposal_scale * self.proposal_scale
         variance = drift_scale
         forward_mean = current_positions + drift_scale * current_grad
         reverse_mean = proposed_positions + drift_scale * proposed_grad

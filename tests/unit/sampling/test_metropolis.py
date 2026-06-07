@@ -90,7 +90,7 @@ def test_gaussian_single_electron_move_preserves_shape_and_changes_one_electron_
 def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
     torch.manual_seed(0)
     model = QuadraticLogAbsModel()
-    sampler = MALASampler(step_size=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)
+    sampler = MALASampler(proposal_scale=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)
     walkers = Walkers(positions=torch.zeros(4, 2, 1, dtype=torch.float64))
 
     stepped = sampler.step(model, walkers)

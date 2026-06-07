@@ -41,7 +41,7 @@ def test_vmc_trainer_one_step_updates_parameter_and_reports_finite_metrics() -> 
     )
     model = TrainableGaussianModel(alpha=0.1)
     sampler = MetropolisSampler(
-        n_walkers=4, steps_per_iter=1, step_size=0.0, n_electrons=2, spatial_dim=2, dtype=torch.float64
+        n_walkers=4, n_steps=1, proposal_scale=0.0, n_electrons=2, spatial_dim=2, dtype=torch.float64
     )
     terms = [KineticEnergy(), HarmonicTrap(omega=1.0)]
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)

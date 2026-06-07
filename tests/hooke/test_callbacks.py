@@ -14,7 +14,7 @@ CONFIG = ROOT / "experiments" / "hooke" / "configs" / "smoke" / "scaffold.yaml"
 
 
 class RecordingCallback(Callback):
-    """Record handled event names for callback registry tests."""
+    """Record handled event names for callback dispatch tests."""
 
     def __init__(self, triggers: list[str]) -> None:
         super().__init__(triggers)
@@ -31,12 +31,13 @@ class RecordingCallback(Callback):
         self.events.append(event.name)
 
 
-def test_callback_registry_dispatches_matching_events(tmp_path: Path) -> None:
-    """Runner callback dispatch uses subscribed event names."""
+def test_callback_dispatch_matches_subscribed_events(tmp_path: Path) -> None:
+    """Runners dispatch lifecycle events to the context's callbacks by name."""
 
     callback = RecordingCallback(["run_start"])
-    runner = Scaffold(callbacks=[callback], loggers=[])
     context = _context(tmp_path)
+    context.callbacks = [callback]
+    runner = Scaffold()
 
     runner.emit("run_start", context)
     runner.emit("run_end", context)
@@ -49,8 +50,9 @@ def test_periodic_callback_filters_by_step(tmp_path: Path) -> None:
 
     callback = RecordingCallback(["step_end"])
     callback.every_n_steps = 2
-    runner = Scaffold(callbacks=[callback], loggers=[])
     context = _context(tmp_path)
+    context.callbacks = [callback]
+    runner = Scaffold()
 
     runner.emit("step_end", context, payload={"step": 0})
     runner.emit("step_end", context, payload={"step": 1})

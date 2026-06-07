@@ -26,8 +26,6 @@ runner:
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
   evaluation: ${evaluation}
-  callbacks: ${callbacks}
-  loggers: ${loggers}
 
 model:
   _target_: spenn.physics.hooke.HookeTripletExact
@@ -43,9 +41,10 @@ hamiltonian_terms:
 sampler:
   _target_: spenn.sampling.metropolis.MetropolisSampler
   n_walkers: 512
-  warmup_steps: 100
-  steps_per_iter: 50
-  step_size: 0.5
+  burn_in: 100
+  n_steps: 50
+  proposal_scale: 0.5
+  seed: ${runtime.seed}
   initial_scale: 2.0
   n_electrons: ${system.n_particles}
   spatial_dim: ${system.spatial_dim}
