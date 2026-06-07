@@ -1,48 +1,92 @@
-"""Hamiltonian interfaces."""
+"""Hamiltonian terms, local-energy results, and aggregation.
+
+A Hamiltonian is represented simply as a list of `HamiltonianTerm`s. Each term
+reports its contribution as a `LocalEnergyResult`, and the `local_energy` helper
+evaluates every term and sums their contributions, optionally returning the
+per-term decomposition.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Protocol, Sequence, runtime_checkable
+
 import torch
-from torch import nn
 
 from spenn.data.batch import ElectronBatch
-from spenn.physics.kinetic import LogAbsKineticEnergy
-from spenn.physics.potential import ElectronicPotential
-from spenn.physics.systems import ElectronicSystem
 
 
-class ElectronicHamiltonian(nn.Module):
-    """Minimal black-box Hamiltonian used for phase 1."""
+@dataclass
+class LocalEnergyResult:
+    """Container for a decomposed local-energy evaluation.
 
-    def __init__(
-        self,
-        system: ElectronicSystem | None = None,
-        kinetic: nn.Module | None = None,
-        potential: ElectronicPotential | None = None,
-        name: str = "electronic",
-    ) -> None:
-        super().__init__()
-        self.name = name
-        self.system = system or ElectronicSystem()
-        self.kinetic_module = kinetic or LogAbsKineticEnergy()
-        self.potential = potential or ElectronicPotential(system=self.system)
-        if getattr(self.potential, "system", None) is None:
-            self.potential.system = self.system
+    Parameters
+    ----------
+    total : torch.Tensor
+        Summed local energy across all contributions, shape ``[batch]``.
+    terms : dict[str, torch.Tensor]
+        Per-term local energies keyed by ``HamiltonianTerm.name``.
+    """
 
-    def kinetic(self, model, batch: ElectronBatch) -> torch.Tensor:
-        return self.kinetic_module(model, batch)
+    total: torch.Tensor
+    terms: dict[str, torch.Tensor] = field(default_factory=dict)
 
-    def potential_energy(self, batch: ElectronBatch) -> torch.Tensor:
-        return self.potential(batch)
 
-    def local_energy(self, model, batch: ElectronBatch) -> torch.Tensor:
-        kinetic = self.kinetic(model, batch)
-        potential = self.potential_energy(batch)
-        assert kinetic.shape == (batch.batch_size,)
-        assert potential.shape == (batch.batch_size,)
-        output = kinetic + potential
-        assert output.shape == (batch.batch_size,)
-        return output
+@runtime_checkable
+class HamiltonianTerm(Protocol):
+    """Protocol for a single Hamiltonian term.
 
-    def forward(self, model, batch: ElectronBatch) -> torch.Tensor:
-        return self.local_energy(model, batch)
+    A term reports its contribution to the local energy as a
+    `LocalEnergyResult` so that decompositions compose under summation.
+    """
+
+    name: str
+
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        """Return this term's local-energy contribution."""
+        ...
+
+
+def local_energy(
+    terms: Sequence[HamiltonianTerm],
+    wavefunction,
+    batch: ElectronBatch,
+    *,
+    return_terms: bool = False,
+) -> torch.Tensor | LocalEnergyResult:
+    """Evaluate the local energy of a list of Hamiltonian terms.
+
+    Parameters
+    ----------
+    terms : sequence of HamiltonianTerm
+        Ordered Hamiltonian contributions to sum.
+    wavefunction : callable
+        Wavefunction model or exact reference returning ``WavefunctionOutput``.
+    batch : ElectronBatch
+        Electron configuration batch.
+    return_terms : bool, optional
+        If ``True``, return a ``LocalEnergyResult`` carrying the merged per-term
+        decomposition; otherwise return the summed tensor directly.
+
+    Returns
+    -------
+    torch.Tensor or LocalEnergyResult
+        Summed local energy with shape ``[batch]``, or a decomposed result when
+        ``return_terms=True``.
+    """
+
+    total: torch.Tensor | None = None
+    merged: dict[str, torch.Tensor] = {}
+    for term in terms:
+        result = term.local_energy(wavefunction, batch)
+        merged.update(result.terms)
+        total = result.total if total is None else total + result.total
+    if total is None:
+        flat = batch.flatten_samples()
+        total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
+    if return_terms:
+        return LocalEnergyResult(total=total, terms=merged)
+    return total
+
+
+__all__ = ["HamiltonianTerm", "LocalEnergyResult", "local_energy"]

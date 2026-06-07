@@ -8,7 +8,6 @@ import torch
 from torch.nn.parameter import UninitializedParameter
 
 from spenn.data.batch import ElectronBatch
-from spenn.physics.systems import ElectronicSystem
 
 
 def _parameter_norm(model) -> torch.Tensor:
@@ -67,8 +66,8 @@ class VMCTrainer:
         Wavefunction model to optimize.
     sampler : object
         Sampler with ``initialize`` and ``sample`` methods.
-    hamiltonian : object
-        Hamiltonian used by `loss` to compute local energies.
+    terms : sequence of HamiltonianTerm
+        Hamiltonian terms used by `loss` to compute local energies.
     loss : callable
         Loss callable returning ``(loss, metrics)``.
     optimizer : torch.optim.Optimizer
@@ -81,8 +80,6 @@ class VMCTrainer:
         Training-loop settings used to build `TrainerConfig`.
     grad_clip : float or None, optional
         Maximum gradient norm. When ``None``, gradients are not clipped.
-    system : ElectronicSystem or None, optional
-        System passed to the sampler when walkers are initialized.
     walkers : object or None, optional
         Initial walker state. If ``None``, the sampler initializes walkers.
     device : torch.device, str, or None, optional
@@ -93,7 +90,7 @@ class VMCTrainer:
         self,
         model,
         sampler,
-        hamiltonian,
+        terms,
         loss,
         optimizer,
         scheduler=None,
@@ -102,13 +99,12 @@ class VMCTrainer:
         log_every: int | None = None,
         checkpoint_every: int | None = None,
         grad_clip: float | None = None,
-        system: ElectronicSystem | None = None,
         walkers=None,
         device=None,
     ) -> None:
         self.model = model
         self.sampler = sampler
-        self.hamiltonian = hamiltonian
+        self.terms = terms
         self.loss = loss
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -118,14 +114,13 @@ class VMCTrainer:
             log_every=TrainerConfig.log_every if log_every is None else log_every,
             checkpoint_every=TrainerConfig.checkpoint_every if checkpoint_every is None else checkpoint_every,
         )
-        self.system = system or getattr(sampler, "system", None)
         self.grad_clip = None if grad_clip is None else float(grad_clip)
         try:
             default_device = next(model.parameters()).device
         except StopIteration:
             default_device = torch.device("cpu")
         self.device = device or default_device
-        self.walkers = walkers or sampler.initialize(system=self.system, device=self.device)
+        self.walkers = walkers or sampler.initialize(device=self.device)
         self.global_step = 0
 
     def _log(self, metrics: dict) -> None:
@@ -150,7 +145,7 @@ class VMCTrainer:
             spins=self.walkers.spins,
             aux=dict(self.walkers.aux),
         )
-        loss, metrics = self.loss(self.model, self.hamiltonian, batch)
+        loss, metrics = self.loss(self.model, self.terms, batch)
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         if self.grad_clip is not None:

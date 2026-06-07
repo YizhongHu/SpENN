@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.real import RealFeature
 from spenn.nn import Cusp, ElectronElectronCusp, NuclearCusp, SpENNWaveFunction
-from spenn.physics.systems import ElectronicSystem
 
 
 class EmptyEncoder(nn.Module):
@@ -128,9 +129,7 @@ def test_nuclear_cusp_uses_batch_nuclear_data_when_constructor_data_is_absent() 
 
 
 def test_nuclear_cusp_uses_system_nuclear_data_when_batch_data_is_absent() -> None:
-    system = ElectronicSystem(
-        n_electrons=1,
-        spatial_dim=1,
+    system = SimpleNamespace(
         nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
         nuclear_charges=torch.tensor([1.5], dtype=torch.float64),
     )

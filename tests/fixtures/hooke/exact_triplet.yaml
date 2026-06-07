@@ -1,0 +1,33 @@
+runtime:
+  dtype: float64
+  device: cpu
+  seed: 1
+
+system:
+  name: hooke_pair_triplet
+  n_particles: 2
+  spatial_dim: 3
+  omega: 0.25
+  exact_energy: 1.25
+
+wavefunction:
+  _target_: spenn.physics.hooke.HookeTripletExact
+
+hamiltonian_terms:
+  - _target_: spenn.physics.kinetic.KineticEnergy
+
+  - _target_: spenn.physics.potential.HarmonicTrap
+    omega: ${system.omega}
+
+  - _target_: spenn.physics.potential.ElectronElectronInteraction
+
+test_batch:
+  batch_size: 64
+  min_pair_distance: 0.1
+  min_triplet_node_distance: 0.1
+  seed: ${runtime.seed}
+
+validation:
+  energy_atol: 1.0e-5
+  energy_rtol: 1.0e-5
+  variance_atol: 1.0e-8

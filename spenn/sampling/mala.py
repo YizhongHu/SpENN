@@ -31,9 +31,9 @@ class MALASampler(MetropolisSampler):
     step_size : float, optional
         Gaussian proposal standard deviation.
     n_electrons : int, optional
-        Default electron count used when no system is supplied.
+        Number of electrons per walker.
     spatial_dim : int, optional
-        Default spatial dimension used when no system is supplied.
+        Spatial dimension of each electron coordinate.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional

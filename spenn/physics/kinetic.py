@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.physics.hamiltonian import LocalEnergyResult
 
 
 def _extract_logabs(output: WavefunctionOutput) -> torch.Tensor:
@@ -101,23 +101,11 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     return output
 
 
-class LogAbsKineticEnergy(nn.Module):
-    """Autograd kinetic-energy module for log-amplitude models."""
+class KineticEnergy:
+    """Hamiltonian term for the quantum kinetic energy operator."""
 
-    def forward(self, model, batch: ElectronBatch) -> torch.Tensor:
-        """Return local kinetic energy.
+    name = "kinetic"
 
-        Parameters
-        ----------
-        model : callable
-            Wavefunction model returning `WavefunctionOutput`.
-        batch : ElectronBatch
-            Electron batch to evaluate.
-
-        Returns
-        -------
-        torch.Tensor
-            Kinetic local-energy contribution with shape ``[batch]``.
-        """
-
-        return kinetic_energy_from_logabs(model, batch)
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        value = kinetic_energy_from_logabs(wavefunction, batch)
+        return LocalEnergyResult(total=value, terms={self.name: value})

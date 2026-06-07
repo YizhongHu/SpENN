@@ -7,8 +7,8 @@ from torch import nn
 
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.losses import VMCLoss
-from spenn.physics.hamiltonian import ElectronicHamiltonian
-from spenn.physics.systems import ElectronicSystem
+from spenn.physics.kinetic import KineticEnergy
+from spenn.physics.potential import HarmonicTrap
 from spenn.sampling.metropolis import MetropolisSampler
 from spenn.training.trainer import VMCTrainer
 
@@ -28,7 +28,6 @@ class TrainableGaussianModel(nn.Module):
 
 
 def test_vmc_trainer_one_step_updates_parameter_and_reports_finite_metrics() -> None:
-    system = ElectronicSystem(n_electrons=2, spatial_dim=2, harmonic_omega=1.0, dtype=torch.float64)
     walkers = Walkers(
         positions=torch.tensor(
             [
@@ -39,19 +38,19 @@ def test_vmc_trainer_one_step_updates_parameter_and_reports_finite_metrics() -> 
             ],
             dtype=torch.float64,
         ),
-        aux={"system": system},
     )
     model = TrainableGaussianModel(alpha=0.1)
-    sampler = MetropolisSampler(n_walkers=4, steps_per_iter=1, step_size=0.0, dtype=torch.float64)
-    hamiltonian = ElectronicHamiltonian(system=system)
+    sampler = MetropolisSampler(
+        n_walkers=4, steps_per_iter=1, step_size=0.0, n_electrons=2, spatial_dim=2, dtype=torch.float64
+    )
+    terms = [KineticEnergy(), HarmonicTrap(omega=1.0)]
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     trainer = VMCTrainer(
         model=model,
         sampler=sampler,
-        hamiltonian=hamiltonian,
+        terms=terms,
         loss=VMCLoss(),
         optimizer=optimizer,
-        system=system,
         walkers=walkers,
         max_steps=1,
     )
