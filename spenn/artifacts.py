@@ -1,4 +1,4 @@
-"""Run artifact helpers for configured SpENN executions."""
+"""Generic run artifact helpers for configured SpENN executions."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from omegaconf import DictConfig, OmegaConf
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "traces", "diagnostics", "figures")
 
 
@@ -23,8 +23,8 @@ class ArtifactManager:
     Parameters
     ----------
     root : pathlib.Path or str
-        Output root. Relative paths are interpreted relative to the repository
-        root.
+        Output root. Relative paths are interpreted relative to the
+        repository root.
     experiment : str
         Experiment family name.
     sector : str
@@ -101,6 +101,7 @@ class RunContext:
     """Runtime context shared by runners, callbacks, and loggers."""
 
     cfg: DictConfig
+    source_cfg: DictConfig
     artifact_manager: ArtifactManager
     metadata: RunMetadata
     callbacks: list[Any] = field(default_factory=list)
@@ -122,12 +123,12 @@ class RunContext:
         metrics: Mapping[str, Any],
         *,
         step: int | None = None,
-        namespace: str = "default",
+        namespace: str = "run",
         event: str | None = None,
     ) -> None:
-        """Emit a metric record to every configured logger."""
+        """Emit one metric record to every configured logger."""
 
-        from spenn.training.metrics import LogRecord
+        from spenn.logging import LogRecord
 
         record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
         for logger in self.loggers:
@@ -140,21 +141,6 @@ def generate_run_id(run_name: str) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     slug = _slugify(run_name)
     return f"{timestamp}_{slug}_{uuid4().hex[:6]}"
-
-
-def make_run_id(prefix: str = "run") -> str:
-    """Compatibility wrapper for older callers."""
-
-    return generate_run_id(prefix)
-
-
-def make_output_dir(output_root: Path, *, run_name: str, run_id: str, include_plots: bool = True) -> Path:
-    """Compatibility wrapper creating the current scaffold layout."""
-
-    del include_plots
-    manager = ArtifactManager(output_root, run_name, "default", run_id)
-    manager.make_dirs()
-    return manager.run_dir
 
 
 def build_run_metadata(
@@ -193,36 +179,6 @@ def collect_git_metadata() -> dict[str, Any]:
     }
 
 
-def git_metadata() -> dict[str, Any]:
-    """Compatibility wrapper returning git metadata."""
-
-    return collect_git_metadata()
-
-
-def write_config_artifacts(output_dir: Path, cfg: DictConfig, overrides: list[str]) -> None:
-    """Write resolved configuration and overrides in the legacy location."""
-
-    hydra_dir = output_dir / ".hydra"
-    hydra_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, hydra_dir / "config.yaml")
-    OmegaConf.save(OmegaConf.create(overrides), hydra_dir / "overrides.yaml")
-
-
-def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
-    """Write rows to a CSV artifact."""
-
-    import csv
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        return
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def write_json(path: Path, data: Mapping[str, Any]) -> None:
     """Write a JSON artifact with stable formatting."""
 
@@ -230,15 +186,6 @@ def write_json(path: Path, data: Mapping[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(_jsonable(data), handle, indent=2, sort_keys=True, allow_nan=False)
         handle.write("\n")
-
-
-def normalize_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Pad rows so every CSV row has the same keys."""
-
-    if not rows:
-        return rows
-    keys = sorted({key for row in rows for key in row})
-    return [{key: row.get(key, "") for key in keys} for row in rows]
 
 
 def _jsonable(value: Any) -> Any:
@@ -274,11 +221,5 @@ __all__ = [
     "build_run_metadata",
     "collect_git_metadata",
     "generate_run_id",
-    "git_metadata",
-    "make_output_dir",
-    "make_run_id",
-    "normalize_rows",
-    "write_config_artifacts",
-    "write_csv",
     "write_json",
 ]

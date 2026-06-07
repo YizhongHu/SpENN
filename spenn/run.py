@@ -10,28 +10,28 @@ from typing import Sequence
 from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from spenn.runner import Runner
-from spenn.training.artifacts import (
+from spenn.artifacts import (
     ArtifactManager,
     RunContext,
     RunResult,
     build_run_metadata,
     generate_run_id,
 )
-from spenn.training.callbacks import Event
+from spenn.callback import Event
+from spenn.runner import Runner
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one configured SpENN runner from the command line."""
 
     args = parse_args(argv)
-    command = " ".join(["train.py", *(sys.argv[1:] if argv is None else argv)])
+    command = " ".join(["run.py", *(sys.argv[1:] if argv is None else argv)])
     cfg = load_config(str(args.config), args.overrides)
     return run_from_config(cfg, config_path=str(args.config), command=command)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse scaffold runner command-line arguments."""
+    """Parse configured-run command-line arguments."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="YAML config path.")
@@ -39,7 +39,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_config(config_path: str, overrides: Sequence[str]) -> DictConfig:
+def load_config(config_path: str, overrides: Sequence[str] | None = None) -> DictConfig:
     """Load a YAML config and apply OmegaConf dotlist overrides."""
 
     cfg = OmegaConf.load(config_path)
@@ -51,36 +51,43 @@ def load_config(config_path: str, overrides: Sequence[str]) -> DictConfig:
 def prepare_run_context(
     cfg: DictConfig,
     *,
-    config_path: str | None,
-    command: str | None,
+    config_path: str | None = None,
+    command: str | None = None,
 ) -> RunContext:
     """Resolve run metadata, artifact paths, callbacks, and loggers."""
 
-    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
-    run_name = str(OmegaConf.select(cfg, "experiment.run_name", default=OmegaConf.select(cfg, "experiment.name", default="spenn_run")))
-    run_id = OmegaConf.select(cfg, "run.run_id", default=None)
+    source_cfg = _rerunnable_config(cfg)
+    resolved_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    run_name = str(
+        OmegaConf.select(
+            resolved_cfg,
+            "experiment.run_name",
+            default=OmegaConf.select(resolved_cfg, "experiment.name", default="spenn_run"),
+        )
+    )
+    run_id = OmegaConf.select(resolved_cfg, "run.run_id", default=None)
     if run_id is None:
         run_id = generate_run_id(run_name)
-        OmegaConf.update(cfg, "run.run_id", run_id, merge=False)
-    experiment_name = str(OmegaConf.select(cfg, "experiment.name", default="experiment"))
-    sector = str(OmegaConf.select(cfg, "experiment.sector", default="default"))
-    root = Path(str(OmegaConf.select(cfg, "run.root", default="outputs")))
+        OmegaConf.update(resolved_cfg, "run.run_id", run_id, merge=False, force_add=True)
+    experiment_name = str(OmegaConf.select(resolved_cfg, "experiment.name", default="experiment"))
+    sector = str(OmegaConf.select(resolved_cfg, "experiment.sector", default="default"))
+    root = Path(str(OmegaConf.select(resolved_cfg, "run.root", default="outputs")))
     artifact_manager = ArtifactManager(root, experiment_name, sector, str(run_id))
-    OmegaConf.update(cfg, "run.dir", str(artifact_manager.run_dir), merge=False)
-    OmegaConf.resolve(cfg)
+    OmegaConf.update(resolved_cfg, "run.dir", str(artifact_manager.run_dir), merge=False, force_add=True)
+    OmegaConf.resolve(resolved_cfg)
     artifact_manager.make_dirs()
 
-    loggers = _instantiate_sequence(OmegaConf.select(cfg, "loggers", default=[]))
-    callbacks = _instantiate_sequence(OmegaConf.select(cfg, "callbacks", default=[]))
-    metadata = build_run_metadata(cfg, command=command, config_path=config_path)
-    context = RunContext(
-        cfg=cfg,
+    loggers = _instantiate_sequence(OmegaConf.select(resolved_cfg, "loggers", default=[]))
+    callbacks = _instantiate_sequence(OmegaConf.select(resolved_cfg, "callbacks", default=[]))
+    metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path)
+    return RunContext(
+        cfg=resolved_cfg,
+        source_cfg=source_cfg,
         artifact_manager=artifact_manager,
         metadata=metadata,
         callbacks=callbacks,
         loggers=loggers,
     )
-    return context
 
 
 def run_from_config(
@@ -113,19 +120,9 @@ def run_from_config(
             logger.finish()
 
 
-def run_config(cfg: DictConfig, *, forwarded_overrides: list[str] | None = None) -> dict[str, object]:
-    """Compatibility wrapper around :func:`run_from_config`."""
-
-    merged = cfg
-    if forwarded_overrides:
-        merged = OmegaConf.merge(cfg, OmegaConf.from_dotlist(forwarded_overrides))
-    code = run_from_config(merged)
-    return {"status": "ok" if code == 0 else "failed", "exit_code": code}
-
-
-def _instantiate_sequence(items: ListConfig | list | tuple) -> list:
+def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
     instantiated = []
-    for item in items:
+    for item in items or []:
         if isinstance(item, DictConfig) and "_target_" in item:
             instantiated.append(instantiate(item))
         else:
@@ -143,11 +140,17 @@ def _instantiate_runner(context: RunContext) -> Runner:
     return runner
 
 
+def _rerunnable_config(cfg: DictConfig) -> DictConfig:
+    snapshot = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    OmegaConf.update(snapshot, "run.run_id", None, merge=False, force_add=True)
+    OmegaConf.update(snapshot, "run.dir", None, merge=False, force_add=True)
+    return snapshot
+
+
 __all__ = [
     "load_config",
     "main",
     "parse_args",
     "prepare_run_context",
-    "run_config",
     "run_from_config",
 ]

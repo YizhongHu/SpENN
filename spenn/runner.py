@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from spenn.training.artifacts import RunContext, RunResult
-from spenn.training.callbacks import Callback, Event
-from spenn.training.metrics import Logger
+from spenn.artifacts import RunContext, RunResult
+from spenn.callback import Callback, Event
+from spenn.logging import Logger
 
 
 class Runner:
@@ -60,7 +60,7 @@ class Scaffold(Runner):
         self.emit("run_start", context)
         context.log({"scaffold_completed": True}, step=0, namespace="scaffold")
         self.emit("run_end", context)
-        return RunResult(status="completed", run_dir=context.run_dir)
+        return RunResult(status="completed")
 
 
 class Train(Runner):
