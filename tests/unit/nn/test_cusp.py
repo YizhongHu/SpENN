@@ -10,7 +10,7 @@ from torch import nn
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.real import RealFeature
 from spenn.nn import Cusp, ElectronElectronCusp, NuclearCusp, SpENNWaveFunction
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 class EmptyEncoder(nn.Module):

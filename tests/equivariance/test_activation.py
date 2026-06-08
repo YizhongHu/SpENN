@@ -10,7 +10,7 @@ from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
 from spenn.nn import ActivationByType
 from spenn.reps import specht_irrep
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 class Cube(nn.Module):

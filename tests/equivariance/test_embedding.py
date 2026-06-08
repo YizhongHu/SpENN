@@ -6,7 +6,7 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.nn import Embedding
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 def test_embedding_passes_forced_runtime_equivariance_check() -> None:
