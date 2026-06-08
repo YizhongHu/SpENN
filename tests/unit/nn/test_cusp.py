@@ -10,6 +10,7 @@ from torch import nn
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.real import RealFeature
 from spenn.nn import Cusp, ElectronElectronCusp, NuclearCusp, SpENNWaveFunction
+from spenn.testing.equivariance import assert_equivariant_all
 
 
 class EmptyEncoder(nn.Module):
@@ -201,10 +202,9 @@ def test_spenn_wavefunction_passes_runtime_sign_equivariance_check() -> None:
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=AntisymmetricReadout(),
-        equivariance_check=True,
-        check_probability=1.0,
     )
 
     output = model(batch)
 
     assert output.validate() is output
+    assert_equivariant_all(model, batch)

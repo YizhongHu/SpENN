@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data import EquivariantMap
+from spenn.equivariance import EquivariantMap
 from spenn.data.real import RealFeature, RealUpdate, zero_block
+from spenn.testing.equivariance import assert_equivariant_all
 from spenn.nn import (
     ChannelMappedUpdate,
     NormGatedUpdate,
@@ -29,12 +30,13 @@ def test_update_passes_runtime_equivariance_check() -> None:
             torch.ones(1, 3, 3, dtype=torch.float64),
         ]
     )
-    module = ChannelMappedUpdate(initial_weight=0.25, equivariance_check=True, check_probability=1.0)
+    module = ChannelMappedUpdate(initial_weight=0.25)
 
     output = module(feature, update)
 
     assert output.blocks[1].shape == feature.blocks[1].shape
     assert module.channel_maps["1"].shape == (2, 3)
+    assert_equivariant_all(module, (feature, update))
 
 
 def _feature_and_update() -> tuple[RealFeature, RealUpdate]:
@@ -58,13 +60,14 @@ def _feature_and_update() -> tuple[RealFeature, RealUpdate]:
 @pytest.mark.parametrize("module_cls", [ReplaceUpdate, ResidualUpdate, NormGatedUpdate, ChannelMappedUpdate])
 def test_update_strategy_scaffolds_are_equivariant_maps(module_cls) -> None:
     feature, update = _feature_and_update()
-    module = module_cls(equivariance_check=True, check_probability=1.0)
+    module = module_cls()
 
     output = module(feature, update)
 
     assert isinstance(module, EquivariantMap)
     assert isinstance(output, RealFeature)
     assert [tuple(block.shape) for block in output.blocks] == [tuple(block.shape) for block in feature.blocks]
+    assert_equivariant_all(module, (feature, update))
 
 
 def test_update_reuses_channel_mapped_strategy() -> None:

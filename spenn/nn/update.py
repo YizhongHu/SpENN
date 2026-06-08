@@ -12,7 +12,7 @@ from spenn.data.real import (
     validate_matching_real_blocks,
     validate_real_update_geometry,
 )
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 
 
 class Update(EquivariantMap):

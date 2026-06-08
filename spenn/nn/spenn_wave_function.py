@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 
 
 class SpENNWaveFunction(EquivariantMap):
