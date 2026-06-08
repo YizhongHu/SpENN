@@ -64,9 +64,10 @@ class TracedLabelBias(EquivariantMap):
 
 class KeyVaryingMap(EquivariantMap):
     def forward_impl(self, x: RealFeature) -> RealFeature:
-        # Trace under a key that depends on particle order -> non-equivariant key set.
+        # Trace a semantic value under a key that depends on particle order, so
+        # the recorded *key set* differs between x and sigma.x.
         peak = int(x.blocks[1][0, 0].argmax().item())
-        self.trace(f"peak_{peak}", x.blocks[1])
+        self.trace(f"peak_{peak}", x.clone())
         return x.clone()
 
 

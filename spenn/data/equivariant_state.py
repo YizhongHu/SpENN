@@ -7,9 +7,12 @@ objects implement this convention in their ``permute`` method.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+import torch
 
 from spenn.data.permutation import Permutation
 
@@ -30,6 +33,22 @@ class EquivariantState(Protocol):
         -------
         EquivariantState
             Permuted state object.
+        """
+
+        ...
+
+    def compare(
+        self,
+        other: "EquivariantState",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, float]:
+        """Compare against another state, returning ``(is_close, max_abs_error)``.
+
+        Equivariance checkers rely on this typed contract instead of inferring a
+        comparison from arbitrary tensor-tree structure. A type or structural
+        mismatch reports ``(False, inf)``.
         """
 
         ...
@@ -73,6 +92,27 @@ class ConcatenatedState(EquivariantState):
         """Return a state with every component permuted."""
 
         return ConcatenatedState(tuple(state.permute(permutation) for state in self.data))
+
+    def compare(
+        self,
+        other: "ConcatenatedState",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, float]:
+        """Compare componentwise; report ``(is_close, max_abs_error)``."""
+
+        if type(self) is not type(other) or len(self.data) != len(other.data):
+            return False, float("inf")
+        close = True
+        max_abs_error = 0.0
+        for left, right in zip(self.data, other.data):
+            entry_close, entry_error = left.compare(right, atol=atol, rtol=rtol)
+            close = close and entry_close
+            if not math.isfinite(entry_error):
+                return False, float("inf")
+            max_abs_error = max(max_abs_error, entry_error)
+        return close, max_abs_error
 
 
 def permute_tree(obj: Any, permutation: Permutation) -> Any:
@@ -152,9 +192,64 @@ def _is_sequence(obj: Any) -> bool:
     return isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray))
 
 
+def _compare_tensor_pair(x: torch.Tensor, y: torch.Tensor, *, atol: float, rtol: float) -> tuple[bool, float]:
+    if x.shape != y.shape:
+        return False, float("inf")
+    if x.numel() == 0:
+        return True, 0.0
+    error = float((x - y).abs().max().item())
+    return bool(torch.allclose(x, y, atol=atol, rtol=rtol)), error
+
+
+def compare_tensor_blocks(
+    a: Sequence[torch.Tensor],
+    b: Sequence[torch.Tensor],
+    *,
+    atol: float,
+    rtol: float,
+) -> tuple[bool, float]:
+    """Compare two ordered tensor-block sequences; return ``(is_close, max_abs_error)``."""
+
+    if len(a) != len(b):
+        return False, float("inf")
+    close = True
+    max_abs_error = 0.0
+    for x, y in zip(a, b):
+        pair_close, error = _compare_tensor_pair(x, y, atol=atol, rtol=rtol)
+        if not math.isfinite(error):
+            return False, float("inf")
+        close = close and pair_close
+        max_abs_error = max(max_abs_error, error)
+    return close, max_abs_error
+
+
+def compare_tensor_mapping(
+    a: Mapping[Any, torch.Tensor],
+    b: Mapping[Any, torch.Tensor],
+    *,
+    atol: float,
+    rtol: float,
+) -> tuple[bool, float]:
+    """Compare two keyed tensor mappings; return ``(is_close, max_abs_error)``."""
+
+    if set(a.keys()) != set(b.keys()):
+        return False, float("inf")
+    close = True
+    max_abs_error = 0.0
+    for key in a:
+        pair_close, error = _compare_tensor_pair(a[key], b[key], atol=atol, rtol=rtol)
+        if not math.isfinite(error):
+            return False, float("inf")
+        close = close and pair_close
+        max_abs_error = max(max_abs_error, error)
+    return close, max_abs_error
+
+
 __all__ = [
     "ConcatenatedState",
     "EquivariantState",
+    "compare_tensor_blocks",
+    "compare_tensor_mapping",
     "infer_particle_count",
     "permute_tree",
     "validate_tree",

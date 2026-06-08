@@ -9,9 +9,9 @@ their own ``permute`` contracts rather than generic tensor-tree inference.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Iterator, Protocol, runtime_checkable
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 
@@ -122,7 +122,7 @@ class FullModelEquivarianceChecker:
                 permuted_batch = apply_particle_permutation(batch, permutation)
                 lhs = model(permuted_batch)
                 rhs = apply_particle_permutation(output, permutation)
-                close, error = _compare(lhs, rhs, atol=self.atol, rtol=self.rtol)
+                close, error = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
                 if error > max_abs_error:
                     max_abs_error = error
                     worst = list(permutation.image)
@@ -130,9 +130,10 @@ class FullModelEquivarianceChecker:
                     failed.append(list(permutation.image))
 
         passed = not failed
+        reported_error = max_abs_error if math.isfinite(max_abs_error) else str(max_abs_error)
         metrics["n_permutations_tested"] = len(permutations)
         metrics["n_failed_permutations"] = len(failed)
-        metrics["max_abs_error"] = _safe_number(max_abs_error)
+        metrics["max_abs_error"] = reported_error
         metrics["worst_permutation"] = str(worst) if worst is not None else ""
         metrics["passed"] = passed
 
@@ -150,7 +151,7 @@ class FullModelEquivarianceChecker:
                 "permutations_tested": [list(p.image) for p in permutations],
                 "failed_permutations": failed,
                 "worst_permutation": worst,
-                "max_abs_error": _safe_number(max_abs_error),
+                "max_abs_error": reported_error,
                 "atol": self.atol,
                 "rtol": self.rtol,
                 "failures": failures,
@@ -283,7 +284,7 @@ class TraceEquivarianceChecker:
                 for key in keys_a & keys_b:
                     expected = apply_particle_permutation(trace_a[key].value, permutation)
                     actual = trace_b[key].value
-                    close, error = _compare(actual, expected, atol=self.atol, rtol=self.rtol)
+                    close, error = actual.compare(expected, atol=self.atol, rtol=self.rtol)
                     per_key_error[key] = max(per_key_error.get(key, 0.0), error)
                     if error > max_abs_error:
                         max_abs_error = error
@@ -295,7 +296,7 @@ class TraceEquivarianceChecker:
 
                 if self.compare_output:
                     expected_output = apply_particle_permutation(output_a, permutation)
-                    close, error = _compare(output_b, expected_output, atol=self.atol, rtol=self.rtol)
+                    close, error = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
                     if error > max_abs_error:
                         max_abs_error = error
                         worst_key = "output"
@@ -308,6 +309,7 @@ class TraceEquivarianceChecker:
                     failed_permutations.append(list(permutation.image))
 
         passed = not failed_keys and not missing_keys and not extra_keys and not output_failed
+        reported_error = max_abs_error if math.isfinite(max_abs_error) else str(max_abs_error)
         metrics.update(
             {
                 "n_permutations_tested": len(permutations),
@@ -317,7 +319,7 @@ class TraceEquivarianceChecker:
                 "n_failed_entries": len(failed_keys),
                 "worst_key": worst_key or "",
                 "worst_permutation": str(worst_permutation) if worst_permutation is not None else "",
-                "max_abs_error": _safe_number(max_abs_error),
+                "max_abs_error": reported_error,
                 "passed": passed,
             }
         )
@@ -346,7 +348,7 @@ class TraceEquivarianceChecker:
                     "failed_keys": sorted(failed_keys),
                     "worst_key": worst_key,
                     "worst_permutation": worst_permutation,
-                    "max_abs_error": _safe_number(max_abs_error),
+                    "max_abs_error": reported_error,
                     "atol": self.atol,
                     "rtol": self.rtol,
                     "failures": failures,
@@ -354,7 +356,11 @@ class TraceEquivarianceChecker:
                         {
                             "key": key,
                             "passed": key not in failed_keys,
-                            "max_abs_error": _safe_number(per_key_error[key]),
+                            "max_abs_error": (
+                                per_key_error[key]
+                                if math.isfinite(per_key_error[key])
+                                else str(per_key_error[key])
+                            ),
                         }
                         for key in sorted(per_key_error)
                     ],
@@ -372,55 +378,6 @@ class TraceEquivarianceChecker:
             "atol": self.atol,
             "rtol": self.rtol,
         }
-
-
-def _tree_tensors(obj: Any) -> Iterator[torch.Tensor]:
-    """Yield tensor leaves from a tensor/dataclass/mapping/sequence value."""
-
-    if isinstance(obj, torch.Tensor):
-        yield obj
-        return
-    if is_dataclass(obj) and not isinstance(obj, type):
-        for f in fields(obj):
-            yield from _tree_tensors(getattr(obj, f.name))
-        return
-    if isinstance(obj, Mapping):
-        for value in obj.values():
-            yield from _tree_tensors(value)
-        return
-    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
-        for value in obj:
-            yield from _tree_tensors(value)
-
-
-def _compare(actual: Any, expected: Any, *, atol: float, rtol: float) -> tuple[bool, float]:
-    """Compare two same-typed values; return ``(is_close, max_abs_error)``.
-
-    Structural or shape mismatch is reported as not-close with an infinite error
-    (callers sanitize for JSON via `_safe_number`).
-    """
-
-    left = list(_tree_tensors(actual))
-    right = list(_tree_tensors(expected))
-    if len(left) != len(right):
-        return False, float("inf")
-    is_close = True
-    max_abs_error = 0.0
-    for x, y in zip(left, right):
-        if x.shape != y.shape:
-            return False, float("inf")
-        if x.numel() == 0:
-            continue
-        max_abs_error = max(max_abs_error, float((x - y).abs().max().item()))
-        if not torch.allclose(x, y, atol=atol, rtol=rtol):
-            is_close = False
-    return is_close, max_abs_error
-
-
-def _safe_number(value: float) -> float | str:
-    """Return `value` if finite, else its string form (keeps JSON/CSV safe)."""
-
-    return value if math.isfinite(value) else str(value)
 
 
 __all__ = [
