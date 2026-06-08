@@ -7,7 +7,7 @@ import torch
 
 from spenn.equivariance import EquivariantMap
 from spenn.data.real import RealFeature, RealUpdate, zero_block
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 from spenn.nn import (
     ChannelMappedUpdate,
     NormGatedUpdate,

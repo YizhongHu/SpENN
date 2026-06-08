@@ -115,28 +115,19 @@ class ConcatenatedState(EquivariantState):
         return close, max_abs_error
 
 
-def permute_tree(obj: Any, permutation: Permutation) -> Any:
-    """Apply a particle permutation to every equivariant object in a tree."""
-
-    permute = getattr(obj, "permute", None)
-    if callable(permute):
-        return permute(permutation)
-    if isinstance(obj, Mapping):
-        return type(obj)((key, permute_tree(value, permutation)) for key, value in obj.items())
-    if isinstance(obj, tuple):
-        return type(obj)(permute_tree(value, permutation) for value in obj)
-    if isinstance(obj, list):
-        return [permute_tree(value, permutation) for value in obj]
-    return obj
-
-
 def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
     """Apply a particle permutation to one semantic, typed value.
 
-    Unlike `permute_tree`, this does not walk arbitrary containers: it dispatches
-    on the value's own permutation contract, requiring a ``permute`` method (any
-    `EquivariantState`). Runtime equivariance checking uses this so it never
-    infers a representation action from arbitrary tensor shapes.
+    RED BANNER:
+    Do not add a generic tree walker or any recursive container prober as a
+    replacement for this function. Particle permutation, validation, and
+    comparison are semantic typed-data actions. Values used in equivariance
+    checks must expose explicit ``.permute(...)``, ``.validate()``, and
+    ``.compare(...)`` contracts.
+
+    This dispatches on the value's own permutation contract, requiring a
+    ``permute`` method (any `EquivariantState`); it never infers a representation
+    action from arbitrary tensor shapes or container structure.
 
     Parameters
     ----------
@@ -163,29 +154,6 @@ def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
             "(no callable .permute); runtime equivariance needs semantic typed values."
         )
     return permute(permutation)
-
-
-def validate_tree(obj: Any) -> None:
-    """Call ``validate`` on every validating object in a nested tree.
-
-    Parameters
-    ----------
-    obj : object
-        Tree containing mappings, sequences, and leaves that may expose a
-        callable ``validate`` method.
-    """
-
-    validate = getattr(obj, "validate", None)
-    if callable(validate):
-        validate()
-        return
-    if isinstance(obj, Mapping):
-        for value in obj.values():
-            validate_tree(value)
-        return
-    if _is_sequence(obj):
-        for value in obj:
-            validate_tree(value)
 
 
 def infer_particle_count(obj: Any) -> int | None:
@@ -287,6 +255,4 @@ __all__ = [
     "compare_tensor_blocks",
     "compare_tensor_mapping",
     "infer_particle_count",
-    "permute_tree",
-    "validate_tree",
 ]

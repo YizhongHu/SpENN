@@ -9,7 +9,7 @@ from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
 from spenn.nn import PathAggregation
 from spenn.reps import specht_irrep
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 def test_path_aggregation_passes_forced_runtime_equivariance_check() -> None:

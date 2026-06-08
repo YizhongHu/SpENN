@@ -34,6 +34,9 @@ for reproducibility.
 
 ## Best Practices
 
+Any reintroduction of `permute_tree`, `validate_tree`, or equivalent recursive container-probing helpers is a blocker.
+These helpers erase representation semantics and are not allowed in SpENN.
+
 ### Prefer explicit ownership over local convenience
 
 Do not place helper functions wherever they are first needed. Put each helper in the module that owns the relevant concept.

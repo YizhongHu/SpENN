@@ -8,7 +8,7 @@ from spenn.data.irrep import IrrepFeature
 from spenn.data.partition import Partition
 from spenn.data.real import RealInteraction, zero_block
 from spenn.reps import FourierTransform, InverseFourierTransform
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 def test_fourier_transform_passes_forced_runtime_equivariance_check() -> None:

@@ -3,9 +3,9 @@
 `EquivariantMap` is a pure computation module plus a passive tracing wrapper.
 It does not check equivariance, permute inputs/outputs, or compare values.
 Subclasses implement :meth:`forward_impl`; :meth:`forward` runs it and, when a
-trace is active, records the output. Equivariance is verified separately by
-test-time helpers in :mod:`spenn.testing.equivariance` and, in the future, by
-trace-consuming runtime checkers.
+trace is active, records the output. Equivariance is verified separately by the
+runtime checkers in :mod:`spenn.equivariance.checks` and by pytest-only helpers
+under ``tests/``.
 """
 
 from __future__ import annotations

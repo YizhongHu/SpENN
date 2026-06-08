@@ -17,7 +17,7 @@ from spenn.nn import (
     SpENNLayer,
 )
 from spenn.reps import FourierTransform, InverseFourierTransform
-from spenn.testing.equivariance import assert_equivariant_all
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 class IdentityMixing(EquivariantMap):
