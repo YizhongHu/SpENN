@@ -130,6 +130,41 @@ def permute_tree(obj: Any, permutation: Permutation) -> Any:
     return obj
 
 
+def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
+    """Apply a particle permutation to one semantic, typed value.
+
+    Unlike `permute_tree`, this does not walk arbitrary containers: it dispatches
+    on the value's own permutation contract, requiring a ``permute`` method (any
+    `EquivariantState`). Runtime equivariance checking uses this so it never
+    infers a representation action from arbitrary tensor shapes.
+
+    Parameters
+    ----------
+    value : object
+        A particle-permutable typed value exposing ``permute(permutation)``.
+    permutation : Permutation
+        Active particle-label permutation.
+
+    Returns
+    -------
+    object
+        The permuted value.
+
+    Raises
+    ------
+    TypeError
+        If `value` does not expose a callable ``permute``.
+    """
+
+    permute = getattr(value, "permute", None)
+    if not callable(permute):
+        raise TypeError(
+            f"apply_particle_permutation: {type(value).__name__} is not particle-permutable "
+            "(no callable .permute); runtime equivariance needs semantic typed values."
+        )
+    return permute(permutation)
+
+
 def validate_tree(obj: Any) -> None:
     """Call ``validate`` on every validating object in a nested tree.
 
@@ -248,6 +283,7 @@ def compare_tensor_mapping(
 __all__ = [
     "ConcatenatedState",
     "EquivariantState",
+    "apply_particle_permutation",
     "compare_tensor_blocks",
     "compare_tensor_mapping",
     "infer_particle_count",

@@ -6,7 +6,6 @@ import math
 import random
 from dataclasses import dataclass
 from itertools import permutations
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -290,41 +289,6 @@ def select_nonidentity_permutations(
     return chosen_perms
 
 
-def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
-    """Apply a particle permutation to one semantic, typed value.
-
-    Unlike a generic tree walk, this dispatches on the value's own
-    permutation contract: the value must expose a ``permute`` method (e.g. any
-    `spenn.data.equivariant_state.EquivariantState`). It does not infer a
-    representation action from arbitrary tensor shapes.
-
-    Parameters
-    ----------
-    value : object
-        A particle-permutable typed value exposing ``permute(permutation)``.
-    permutation : Permutation
-        Active particle-label permutation.
-
-    Returns
-    -------
-    object
-        The permuted value.
-
-    Raises
-    ------
-    TypeError
-        If `value` does not expose a callable ``permute``.
-    """
-
-    permute = getattr(value, "permute", None)
-    if not callable(permute):
-        raise TypeError(
-            f"apply_particle_permutation: {type(value).__name__} is not particle-permutable "
-            "(no callable .permute); runtime equivariance needs semantic typed values."
-        )
-    return permute(permutation)
-
-
 def _validate_size(size: int) -> None:
     if size < 0:
         raise ValueError(f"Permutation size must be nonnegative, got {size}")
@@ -344,7 +308,6 @@ __all__ = [
     "Permutation",
     "adjacent_transpositions",
     "all_permutations",
-    "apply_particle_permutation",
     "count_nonidentity_permutations",
     "reversal_permutation",
     "select_nonidentity_permutations",

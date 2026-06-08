@@ -15,9 +15,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-from spenn.data.equivariant_state import infer_particle_count
+from spenn.data.equivariant_state import apply_particle_permutation, infer_particle_count
 from spenn.data.permutation import (
-    apply_particle_permutation,
     count_nonidentity_permutations,
     select_nonidentity_permutations,
 )
