@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import random
 from dataclasses import dataclass
 from itertools import permutations
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -191,6 +194,137 @@ def reversal_permutation(size: int) -> Permutation:
     return Permutation(tuple(reversed(range(size))))
 
 
+def count_nonidentity_permutations(n_particles: int) -> int:
+    """Return ``n! - 1``, the number of non-identity permutations of `n_particles`.
+
+    Parameters
+    ----------
+    n_particles : int
+        Number of particle labels.
+
+    Returns
+    -------
+    int
+        ``factorial(n_particles) - 1`` (``0`` for ``n_particles <= 1``).
+    """
+
+    _validate_size(n_particles)
+    return math.factorial(n_particles) - 1
+
+
+def select_nonidentity_permutations(
+    *,
+    n_particles: int,
+    fraction: float,
+    max_count: int,
+    seed: int | None = None,
+    step: int | None = None,
+    max_enumerable: int = 100_000,
+) -> list[Permutation]:
+    """Select a deterministic subset of distinct non-identity permutations.
+
+    The count is fixed first, then exactly that many distinct permutations are
+    sampled; sampling never determines the count::
+
+        n_available = n! - 1
+        n_to_test = min(max_count, ceil(fraction * n_available), n_available)
+
+    The ``(seed, step)`` pair seeds a local RNG, so the subset is reproducible:
+    the same ``seed`` and ``step`` yield the same subset, while a different
+    ``step`` yields a different subset when one exists. The identity is never
+    selected.
+
+    Parameters
+    ----------
+    n_particles : int
+        Number of particle labels.
+    fraction : float
+        Fraction of available non-identity permutations to target, in ``[0, 1]``.
+    max_count : int
+        Hard cap on the number of permutations (``>= 0``).
+    seed : int or None, optional
+        Base seed controlling subset selection.
+    step : int or None, optional
+        Training step, mixed into the seed so checks vary across steps.
+    max_enumerable : int, optional
+        Above this many available permutations, sample by rejection instead of
+        enumerating all ``n!`` permutations.
+
+    Returns
+    -------
+    list of Permutation
+        Distinct non-identity permutations; length is the deterministic count.
+    """
+
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError(f"fraction must be in [0, 1], got {fraction}")
+    if max_count < 0:
+        raise ValueError(f"max_count must be nonnegative, got {max_count}")
+
+    n_available = count_nonidentity_permutations(n_particles)
+    if n_available <= 0:
+        return []
+    n_to_test = min(max_count, math.ceil(fraction * n_available), n_available)
+    if n_to_test <= 0:
+        return []
+
+    rng = random.Random((0 if seed is None else int(seed)) * 1_000_003 + (0 if step is None else int(step)))
+    identity = tuple(range(n_particles))
+
+    if n_available <= max_enumerable:
+        candidates = [image for image in permutations(range(n_particles)) if image != identity]
+        rng.shuffle(candidates)
+        chosen = candidates[:n_to_test]
+        return [Permutation(image) for image in chosen]
+
+    seen: set[tuple[int, ...]] = set()
+    chosen_perms: list[Permutation] = []
+    while len(chosen_perms) < n_to_test:
+        image = list(range(n_particles))
+        rng.shuffle(image)
+        candidate = tuple(image)
+        if candidate == identity or candidate in seen:
+            continue
+        seen.add(candidate)
+        chosen_perms.append(Permutation(candidate))
+    return chosen_perms
+
+
+def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
+    """Apply a particle permutation to one semantic, typed value.
+
+    Unlike a generic tree walk, this dispatches on the value's own
+    permutation contract: the value must expose a ``permute`` method (e.g. any
+    `spenn.data.equivariant_state.EquivariantState`). It does not infer a
+    representation action from arbitrary tensor shapes.
+
+    Parameters
+    ----------
+    value : object
+        A particle-permutable typed value exposing ``permute(permutation)``.
+    permutation : Permutation
+        Active particle-label permutation.
+
+    Returns
+    -------
+    object
+        The permuted value.
+
+    Raises
+    ------
+    TypeError
+        If `value` does not expose a callable ``permute``.
+    """
+
+    permute = getattr(value, "permute", None)
+    if not callable(permute):
+        raise TypeError(
+            f"apply_particle_permutation: {type(value).__name__} is not particle-permutable "
+            "(no callable .permute); runtime equivariance needs semantic typed values."
+        )
+    return permute(permutation)
+
+
 def _validate_size(size: int) -> None:
     if size < 0:
         raise ValueError(f"Permutation size must be nonnegative, got {size}")
@@ -210,5 +344,8 @@ __all__ = [
     "Permutation",
     "adjacent_transpositions",
     "all_permutations",
+    "apply_particle_permutation",
+    "count_nonidentity_permutations",
     "reversal_permutation",
+    "select_nonidentity_permutations",
 ]

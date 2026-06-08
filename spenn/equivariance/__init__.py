@@ -1,5 +1,11 @@
-"""Equivariance infrastructure: traceable maps and passive trace recording."""
+"""Equivariance infrastructure: traceable maps, trace recording, runtime checks."""
 
+from spenn.equivariance.checks import (
+    EquivarianceCheckResult,
+    FullModelEquivarianceChecker,
+    RuntimeEquivarianceChecker,
+    TraceEquivarianceChecker,
+)
 from spenn.equivariance.map import EquivariantMap
 from spenn.equivariance.trace import (
     EquivarianceTrace,
@@ -10,8 +16,12 @@ from spenn.equivariance.trace import (
 
 __all__ = [
     "EquivariantMap",
+    "EquivarianceCheckResult",
     "EquivarianceTrace",
     "EquivarianceTraceEntry",
     "EquivarianceTraceWarning",
+    "FullModelEquivarianceChecker",
+    "RuntimeEquivarianceChecker",
+    "TraceEquivarianceChecker",
     "trace_equivariant",
 ]
