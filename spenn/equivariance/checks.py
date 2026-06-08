@@ -57,10 +57,10 @@ class RuntimeEquivarianceChecker(Protocol):
 
 
 class FullModelEquivarianceChecker:
-    """Check final-output equivariance: ``F(sigma . x) ~= sigma . F(x)``.
+    """Check final-output equivariance under particle permutations.
 
-    Calls the normal model ``forward`` and permutes the batch and output through
-    their semantic ``permute`` contracts.
+    Verifies ``F(sigma*x) ~= sigma*F(x)``: calls the normal model ``forward`` and
+    permutes the batch and output through their semantic ``permute`` contracts.
 
     Parameters
     ----------
@@ -171,12 +171,12 @@ class FullModelEquivarianceChecker:
 
 
 class TraceEquivarianceChecker:
-    """Check semantic trace equivariance: ``trace_B[key] ~= sigma . trace_A[key]``.
+    """Check semantic trace equivariance across paired model traces.
 
-    Captures two passive traces from the normal model ``forward`` (on ``x`` and
-    on ``sigma . x``) and compares matching trace entries via each recorded
-    value's own ``permute`` contract. No ``forward_impl``; no generic
-    tensor-tree permutation.
+    Verifies ``trace_B[key] ~= sigma*trace_A[key]``: captures two passive traces
+    from the normal model ``forward`` (on ``x`` and on ``sigma*x``) and compares
+    matching trace entries via each recorded value's own ``permute`` contract. No
+    ``forward_impl``; no generic tensor-tree permutation.
 
     Parameters
     ----------
