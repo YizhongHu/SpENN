@@ -65,7 +65,7 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     energy_atol = float(cfg.validation.energy_atol)
     variance_max = float(cfg.validation.variance_max)
 
-    assert metrics["expected_energy"] == pytest.approx(exact_energy)
+    assert metrics["reference_energy"] == pytest.approx(exact_energy)
     assert metrics["n_finite_samples"] == metrics["n_samples"] == 512
     assert metrics["nonfinite_energy_fraction"] == 0.0
     assert metrics["abs_energy_error"] < energy_atol

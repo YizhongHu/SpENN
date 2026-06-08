@@ -53,8 +53,6 @@ class VMCTrainer:
         Log metrics every ``log_every_n_steps`` steps.
     return_terms : bool, optional
         Whether to request and summarize the per-term local-energy decomposition.
-    expected_energy : float or None, optional
-        Known exact energy forwarded to `summarize_local_energy`.
     gradient_clip_norm : float or None, optional
         Maximum gradient norm. When ``None``, gradients are not clipped.
     """
@@ -64,13 +62,11 @@ class VMCTrainer:
         max_steps: int,
         log_every_n_steps: int = 1,
         return_terms: bool = False,
-        expected_energy: float | None = None,
         gradient_clip_norm: float | None = None,
     ) -> None:
         self.max_steps = int(max_steps)
         self.log_every_n_steps = int(log_every_n_steps)
         self.return_terms = bool(return_terms)
-        self.expected_energy = None if expected_energy is None else float(expected_energy)
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
 
     def fit(
@@ -104,7 +100,7 @@ class VMCTrainer:
             grad_norm = _gradient_norm(model)
             optimizer.step()
 
-            metrics: dict[str, Any] = summarize_local_energy(result, expected_energy=self.expected_energy)
+            metrics: dict[str, Any] = summarize_local_energy(result)
             metrics.update(summarize_logabs(output.logabs))
             metrics["loss"] = float(loss.detach().item())
             metrics["grad_norm"] = grad_norm
@@ -117,6 +113,8 @@ class VMCTrainer:
             state.batch = batch
             state.local_energy = eloc.detach()
             state.loss = loss.detach()
+            state.wavefunction_output = output
+            state.sampler_stats = dict(sampler_stats)
 
             if self.log_every_n_steps and step % self.log_every_n_steps == 0:
                 context.log(metrics, step=step, namespace="train")

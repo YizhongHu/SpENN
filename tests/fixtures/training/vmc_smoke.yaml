@@ -60,7 +60,6 @@ trainer:
   max_steps: 3
   log_every_n_steps: 1
   return_terms: true
-  expected_energy: ${system.exact_energy}
 
 loggers:
   - _target_: spenn.logging.CSV
@@ -85,6 +84,13 @@ callbacks:
   - _target_: spenn.callback.Status
     triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/status.json
+
+  - _target_: spenn.callback.ReferenceEnergy
+    triggers: [step_end]
+    every_n_steps: 1
+    reference_energy: ${system.exact_energy}
+    source_metric: energy_mean
+    namespace: reference
 
   - _target_: spenn.callback.Checkpoint
     triggers: [step_end]

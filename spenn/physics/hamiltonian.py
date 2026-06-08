@@ -108,21 +108,19 @@ def _finite_stats(values: torch.Tensor) -> tuple[float, float]:
 
 def summarize_local_energy(
     result: LocalEnergyResult | torch.Tensor,
-    *,
-    expected_energy: float | None = None,
 ) -> dict[str, Any]:
     """Summarize a sampled local energy into scalar logging metrics.
 
     Handles all-finite, partially-nonfinite, all-nonfinite, and empty inputs,
     and per-term decompositions. All returned values are Python scalars
-    suitable for CSV/JSONL logging.
+    suitable for CSV/JSONL logging. This summary is reference-free: comparison
+    against a known energy is the job of `reference_energy_metrics` (typically
+    driven by `spenn.callback.ReferenceEnergy`).
 
     Parameters
     ----------
     result : LocalEnergyResult or torch.Tensor
         Per-sample local energy, optionally with a per-term decomposition.
-    expected_energy : float or None, optional
-        Known exact energy. When given, error metrics are included.
 
     Returns
     -------
@@ -157,11 +155,6 @@ def summarize_local_energy(
         "energy_stderr": stderr,
         "energy_variance": variance,
     }
-    if expected_energy is not None:
-        expected = float(expected_energy)
-        metrics["expected_energy"] = expected
-        metrics["energy_error"] = mean - expected
-        metrics["abs_energy_error"] = abs(mean - expected)
     for name, value in terms.items():
         term_mean, term_nonfinite = _finite_stats(value)
         metrics[f"terms.{name}_mean"] = term_mean
@@ -169,4 +162,43 @@ def summarize_local_energy(
     return metrics
 
 
-__all__ = ["HamiltonianTerm", "LocalEnergyResult", "local_energy", "summarize_local_energy"]
+def reference_energy_metrics(
+    *,
+    energy_mean: float,
+    reference_energy: float,
+) -> dict[str, float]:
+    """Compare a mean energy against a known reference energy.
+
+    Kept separate from `summarize_local_energy` so the trainer and energy
+    summary never depend on benchmark reference values; reference comparison is
+    an explicit run choice (see `spenn.callback.ReferenceEnergy`).
+
+    Parameters
+    ----------
+    energy_mean : float
+        Estimated mean energy.
+    reference_energy : float
+        Known reference energy to compare against.
+
+    Returns
+    -------
+    dict
+        ``reference_energy``, ``energy_error`` (mean minus reference), and
+        ``abs_energy_error``.
+    """
+
+    error = float(energy_mean) - float(reference_energy)
+    return {
+        "reference_energy": float(reference_energy),
+        "energy_error": error,
+        "abs_energy_error": abs(error),
+    }
+
+
+__all__ = [
+    "HamiltonianTerm",
+    "LocalEnergyResult",
+    "local_energy",
+    "reference_energy_metrics",
+    "summarize_local_energy",
+]
