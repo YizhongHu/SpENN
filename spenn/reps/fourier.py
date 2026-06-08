@@ -12,7 +12,7 @@ from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition, integer_partitions
 from spenn.data.permutation import all_permutations
 from spenn.data.real import RealInteraction, RealUpdate, zero_block
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 from spenn.reps.irreps import IrrepMetadata, irrep_dimension, load_default_irrep_metadata
 
 

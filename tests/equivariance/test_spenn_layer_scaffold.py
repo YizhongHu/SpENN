@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data import EquivariantMap
+from spenn.equivariance import EquivariantMap
 from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition
 from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
@@ -17,6 +17,7 @@ from spenn.nn import (
     SpENNLayer,
 )
 from spenn.reps import FourierTransform, InverseFourierTransform
+from spenn.testing.equivariance import assert_equivariant_all
 
 
 class IdentityMixing(EquivariantMap):
@@ -80,13 +81,12 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
         update=ChannelMappedUpdate(),
-        equivariance_check=True,
-        check_probability=1.0,
     )
 
     output = layer(feature)
 
     torch.testing.assert_close(output.blocks[1], 2.0 * feature.blocks[1])
+    assert_equivariant_all(layer, feature)
 
 
 def test_spenn_layer_applies_activation_before_path_aggregation() -> None:
@@ -132,12 +132,10 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
         path_aggregation=PathAggregation(channel_out_by_order={1: 2}),
         inverse_fourier=InverseFourierTransform(partitions=(partition,)),
         update=ChannelMappedUpdate(),
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     output = layer(feature)
 
     assert output.validate() is output
     assert output.blocks[1].shape == feature.blocks[1].shape
+    assert_equivariant_all(layer, feature)

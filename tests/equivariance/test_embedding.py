@@ -6,6 +6,7 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.nn import Embedding
+from spenn.testing.equivariance import assert_equivariant_all
 
 
 def test_embedding_passes_forced_runtime_equivariance_check() -> None:
@@ -21,14 +22,12 @@ def test_embedding_passes_forced_runtime_equivariance_check() -> None:
         hidden_channels=8,
         num_hidden_layers=1,
         aux_feature_keys=("types",),
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     feature = embedding(batch)
 
     assert feature.validate() is feature
+    assert_equivariant_all(embedding, batch)
 
 
 def test_embedding_passes_runtime_equivariance_with_sample_axes() -> None:
@@ -44,11 +43,9 @@ def test_embedding_passes_runtime_equivariance_with_sample_axes() -> None:
         hidden_channels=7,
         num_hidden_layers=1,
         aux_feature_keys=("types",),
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     feature = embedding(batch)
 
     assert feature.validate() is feature
+    assert_equivariant_all(embedding, batch)

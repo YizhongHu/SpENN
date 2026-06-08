@@ -10,6 +10,7 @@ from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
 from spenn.nn import ActivationByType
 from spenn.reps import specht_irrep
+from spenn.testing.equivariance import assert_equivariant_all
 
 
 class Cube(nn.Module):
@@ -59,15 +60,13 @@ def test_activation_by_type_passes_forced_runtime_equivariance_check_on_interact
         symmetric_activation=nn.SiLU(),
         antisymmetric_activation=Cube(),
         tensor_activation=nn.Sigmoid(),
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     output = activation(interaction)
 
     assert isinstance(output, IrrepInteraction)
     assert output.validate() is output
+    assert_equivariant_all(activation, interaction)
 
 
 def test_activation_by_type_preserves_orthogonal_coordinate_action_with_paths() -> None:

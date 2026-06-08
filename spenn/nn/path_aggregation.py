@@ -10,7 +10,7 @@ from torch import nn
 
 from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition, as_partition
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 
 
 class PathAggregation(EquivariantMap):

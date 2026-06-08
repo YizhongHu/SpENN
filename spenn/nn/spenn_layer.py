@@ -5,7 +5,7 @@ from __future__ import annotations
 from torch import nn
 
 from spenn.data.real import RealFeature
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 
 
 class SpENNLayer(EquivariantMap):
