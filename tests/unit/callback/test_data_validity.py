@@ -35,8 +35,38 @@ def test_passes_on_finite_state() -> None:
     metrics = context.latest("checks/data_validity")
     assert metrics["passed"] is True
     assert metrics["local_energy_nonfinite_fraction"] == 0.0
+    assert metrics["local_energy_finite_count"] == 4
+    assert metrics["local_energy_total_count"] == 4
     assert metrics["logabs_nonfinite_fraction"] == 0.0
+    assert metrics["logabs_finite_count"] == 4
+    assert metrics["logabs_total_count"] == 4
     assert metrics["loss_is_finite"] is True
+
+
+def test_counts_disambiguate_empty_from_all_nonfinite() -> None:
+    all_nan = _finite_state()
+    all_nan.local_energy = torch.full((4,), float("nan"), dtype=torch.float64)
+    empty = _finite_state()
+    empty.local_energy = torch.empty(0, dtype=torch.float64)
+
+    nan_metrics = _handle(DataValidity(["step_end"], fail_fast=False), all_nan).latest("checks/data_validity")
+    empty_metrics = _handle(DataValidity(["step_end"], fail_fast=False), empty).latest("checks/data_validity")
+
+    # Both share fraction 1.0 but the counts tell them apart.
+    assert nan_metrics["local_energy_nonfinite_fraction"] == 1.0
+    assert empty_metrics["local_energy_nonfinite_fraction"] == 1.0
+    assert (nan_metrics["local_energy_finite_count"], nan_metrics["local_energy_total_count"]) == (0, 4)
+    assert (empty_metrics["local_energy_finite_count"], empty_metrics["local_energy_total_count"]) == (0, 0)
+
+
+def test_empty_batch_tensor_counts_as_invalid() -> None:
+    state = _finite_state()
+    state.batch = {"positions": torch.empty(0, dtype=torch.float64)}
+
+    metrics = _handle(DataValidity(["step_end"], fail_fast=False), state).latest("checks/data_validity")
+
+    assert metrics["batch_nonfinite_tensor_count"] == 1
+    assert metrics["passed"] is False
 
 
 def test_fails_on_nan_local_energy() -> None:

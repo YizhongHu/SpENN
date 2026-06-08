@@ -349,7 +349,10 @@ class DataValidity(Callback):
 
         local_energy = getattr(state, "local_energy", None)
         if local_energy is not None:
-            energy_fraction = _nonfinite_fraction(local_energy)
+            finite, total = _finite_counts(local_energy)
+            energy_fraction = _nonfinite_fraction(finite, total)
+            metrics["local_energy_finite_count"] = finite
+            metrics["local_energy_total_count"] = total
             metrics["local_energy_nonfinite_fraction"] = energy_fraction
             if energy_fraction > self.max_nonfinite_energy_fraction:
                 failures.append(
@@ -360,7 +363,10 @@ class DataValidity(Callback):
         if self.check_wavefunction_output:
             output = getattr(state, "wavefunction_output", None)
             if output is not None:
-                logabs_fraction = _nonfinite_fraction(output.logabs)
+                finite, total = _finite_counts(output.logabs)
+                logabs_fraction = _nonfinite_fraction(finite, total)
+                metrics["logabs_finite_count"] = finite
+                metrics["logabs_total_count"] = total
                 metrics["logabs_nonfinite_fraction"] = logabs_fraction
                 if logabs_fraction > self.max_nonfinite_logabs_fraction:
                     failures.append(
@@ -599,26 +605,35 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _nonfinite_fraction(tensor: torch.Tensor) -> float:
-    """Return the fraction of non-finite entries; empty tensors count as 1.0."""
+def _finite_counts(tensor: torch.Tensor) -> tuple[int, int]:
+    """Return ``(finite_count, total_count)`` for `tensor`."""
 
-    n = int(tensor.numel())
-    if n == 0:
-        return 1.0
-    n_finite = int(torch.isfinite(tensor).sum().item())
-    return float((n - n_finite) / n)
+    total = int(tensor.numel())
+    finite = int(torch.isfinite(tensor).sum().item()) if total else 0
+    return finite, total
+
+
+def _nonfinite_fraction(finite: int, total: int) -> float:
+    """Return the non-finite fraction; an empty tensor (``total == 0``) is invalid (1.0).
+
+    Empty and fully-nonfinite tensors share the fraction 1.0; the paired finite/
+    total counts logged alongside disambiguate the two cases.
+    """
+
+    return float((total - finite) / total) if total > 0 else 1.0
 
 
 def _sign_invalid_fraction(sign: torch.Tensor) -> float:
-    """Return the fraction of sign entries that are not finite ``-1``/``0``/``1``."""
+    """Return the fraction of sign entries not in the exact set ``{-1, 0, 1}``.
+
+    Wavefunction signs are treated as semantic/discrete (real tensors), so the
+    check is exact rather than tolerant. An empty tensor is invalid (1.0).
+    """
 
     n = int(sign.numel())
     if n == 0:
         return 1.0
-    magnitude = sign.abs()
-    is_unit = (magnitude - 1.0).abs() < 1.0e-6
-    is_zero = magnitude < 1.0e-12
-    valid = torch.isfinite(sign) & (is_unit | is_zero)
+    valid = torch.isfinite(sign) & ((sign == -1) | (sign == 0) | (sign == 1))
     return float(int((~valid).sum().item()) / n)
 
 
@@ -642,9 +657,17 @@ def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:
 
 
 def _nonfinite_tensor_count(obj: Any) -> int:
-    """Return the number of tensor leaves containing any non-finite value."""
+    """Return the number of tensor leaves that are empty or contain a non-finite value.
 
-    return sum(1 for tensor in _iter_tensors(obj) if not bool(torch.isfinite(tensor).all().item()))
+    Empty leaves count as invalid, matching `_nonfinite_fraction`'s treatment of
+    empty tensors.
+    """
+
+    count = 0
+    for tensor in _iter_tensors(obj):
+        if tensor.numel() == 0 or not bool(torch.isfinite(tensor).all().item()):
+            count += 1
+    return count
 
 
 __all__ = [
