@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from spenn.data.batch import WavefunctionOutput
+
 
 @dataclass
 class TrainerState:
@@ -37,6 +39,10 @@ class TrainerState:
         Most recent per-sample local energy (detached).
     loss : torch.Tensor or None, optional
         Most recent surrogate loss (detached).
+    wavefunction_output : WavefunctionOutput or None, optional
+        Most recent wavefunction output (signed-log form) for the batch.
+    sampler_stats : dict, optional
+        Most recent sampler diagnostics (e.g. acceptance rate, walker count).
     """
 
     step: int = 0
@@ -48,6 +54,8 @@ class TrainerState:
     batch: Any = None
     local_energy: Any = None
     loss: torch.Tensor | None = None
+    wavefunction_output: WavefunctionOutput | None = None
+    sampler_stats: dict[str, Any] = field(default_factory=dict)
 
 
 __all__ = ["TrainerState"]

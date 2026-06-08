@@ -10,7 +10,7 @@ import torch
 from spenn.artifacts import RunContext, RunResult
 from spenn.callback import Callback, Event
 from spenn.logging import Logger
-from spenn.physics.hamiltonian import local_energy, summarize_local_energy
+from spenn.physics.hamiltonian import local_energy, reference_energy_metrics, summarize_local_energy
 from spenn.training.optim import make_optimizer
 
 
@@ -149,7 +149,8 @@ class Evaluate(Runner):
     hamiltonian_terms : sequence
         Hamiltonian terms summed by `local_energy`.
     evaluation : Mapping or None, optional
-        Evaluation settings (``return_terms``, ``expected_energy``).
+        Evaluation settings (``return_terms``, ``reference_energy``). When
+        ``reference_energy`` is set, reference-comparison metrics are merged in.
     """
 
     def __init__(self, model, sampler, hamiltonian_terms, evaluation: Any = None) -> None:
@@ -174,12 +175,19 @@ class Evaluate(Runner):
         if isinstance(self.model, torch.nn.Module):
             self.model.eval()
         return_terms = bool(self._eval_get("return_terms", False))
-        expected_energy = self._eval_get("expected_energy", None)
+        reference_energy = self._eval_get("reference_energy", None)
 
         walkers, sampler_stats = self.sampler.collect_samples(self.model)
         result = local_energy(self.hamiltonian_terms, self.model, walkers.make_batch(), return_terms=return_terms)
 
-        metrics = summarize_local_energy(result, expected_energy=expected_energy)
+        metrics = summarize_local_energy(result)
+        if reference_energy is not None:
+            metrics.update(
+                reference_energy_metrics(
+                    energy_mean=metrics["energy_mean"],
+                    reference_energy=float(reference_energy),
+                )
+            )
         metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})
         context.log(metrics, step=0, namespace="eval")
 

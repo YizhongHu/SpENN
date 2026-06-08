@@ -11,7 +11,12 @@ from torch import nn
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, summarize_local_energy
+from spenn.physics.hamiltonian import (
+    LocalEnergyResult,
+    local_energy,
+    reference_energy_metrics,
+    summarize_local_energy,
+)
 from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
 from spenn.physics.kinetic import KineticEnergy, kinetic_energy_from_logabs
 from spenn.physics.potential import (
@@ -422,14 +427,29 @@ def test_summarize_local_energy_empty() -> None:
     assert math.isnan(metrics["nonfinite_energy_fraction"])
 
 
-def test_summarize_local_energy_with_expected_energy() -> None:
+def test_summarize_local_energy_is_reference_free() -> None:
     eloc = torch.tensor([1.5, 2.5], dtype=torch.float64)
 
-    metrics = summarize_local_energy(eloc, expected_energy=2.0)
+    metrics = summarize_local_energy(eloc)
 
-    assert metrics["expected_energy"] == 2.0
-    assert metrics["energy_error"] == pytest.approx(0.0)
-    assert metrics["abs_energy_error"] == pytest.approx(0.0)
+    assert "reference_energy" not in metrics
+    assert "energy_error" not in metrics
+    assert "abs_energy_error" not in metrics
+
+
+def test_reference_energy_metrics_computes_signed_and_absolute_error() -> None:
+    metrics = reference_energy_metrics(energy_mean=2.5, reference_energy=2.0)
+
+    assert metrics["reference_energy"] == 2.0
+    assert metrics["energy_error"] == pytest.approx(0.5)
+    assert metrics["abs_energy_error"] == pytest.approx(0.5)
+
+
+def test_reference_energy_metrics_absolute_error_is_nonnegative() -> None:
+    metrics = reference_energy_metrics(energy_mean=1.5, reference_energy=2.0)
+
+    assert metrics["energy_error"] == pytest.approx(-0.5)
+    assert metrics["abs_energy_error"] == pytest.approx(0.5)
 
 
 def test_summarize_local_energy_result_with_finite_terms() -> None:

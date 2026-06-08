@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+import random
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
+import torch
 from omegaconf import OmegaConf
 
 from spenn.artifacts import RunContext, write_json
@@ -44,7 +46,15 @@ class Callback:
     start_step : int, optional
         First eligible step for periodic callbacks.
     max_calls : int or None, optional
-        Maximum number of callback invocations.
+        Maximum number of callback invocations (counts actual executions).
+    probability : float, optional
+        Probability of running when otherwise scheduled. ``1.0`` always runs,
+        ``0.0`` never runs. Applied after the trigger/``every_n_steps``/
+        ``start_step`` checks.
+    seed : int or None, optional
+        Seed for the callback-local RNG used by `probability`. Using a local
+        RNG keeps probabilistic scheduling reproducible without perturbing
+        global PyTorch randomness.
     """
 
     def __init__(
@@ -53,11 +63,18 @@ class Callback:
         every_n_steps: int | None = None,
         start_step: int = 0,
         max_calls: int | None = None,
+        probability: float = 1.0,
+        seed: int | None = None,
     ) -> None:
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError(f"probability must be in [0, 1], got {probability}")
         self.triggers = tuple(triggers)
         self.every_n_steps = every_n_steps
         self.start_step = int(start_step)
         self.max_calls = max_calls
+        self.probability = float(probability)
+        self.seed = seed
+        self._rng = random.Random(seed)
         self.num_calls = 0
 
     def should_run(self, event: Event) -> bool:
@@ -67,12 +84,22 @@ class Callback:
             return False
         if self.max_calls is not None and self.num_calls >= self.max_calls:
             return False
-        if self.every_n_steps is None:
+        if self.every_n_steps is not None:
+            step = event.step
+            if step is None or step < self.start_step:
+                return False
+            if (step - self.start_step) % self.every_n_steps != 0:
+                return False
+        return self._draw_probability()
+
+    def _draw_probability(self) -> bool:
+        """Apply the probability gate using the callback-local RNG."""
+
+        if self.probability >= 1.0:
             return True
-        step = event.step
-        if step is None or step < self.start_step:
+        if self.probability <= 0.0:
             return False
-        return (step - self.start_step) % self.every_n_steps == 0
+        return self._rng.random() < self.probability
 
     def handle(self, event: Event) -> None:
         """Handle an event if this callback is subscribed to it."""
@@ -282,17 +309,356 @@ class Checkpoint(Callback):
         torch.save(payload, self.output_dir / "latest.pt")
 
 
+class DataValidity(Callback):
+    """Hard guardrail catching invalid training tensors at ``step_end``.
+
+    Inspects the batch, wavefunction output (``sign``/``logabs``), local energy,
+    and loss on the `TrainerState`, logging finite/validity metrics under
+    ``checks/data_validity``. In ``fail_fast`` mode a failed required check
+    raises a clear `RuntimeError` instead of silently continuing.
+    """
+
+    def __init__(
+        self,
+        triggers: Iterable[str],
+        *,
+        fail_fast: bool = False,
+        max_nonfinite_energy_fraction: float = 0.0,
+        max_nonfinite_logabs_fraction: float = 0.0,
+        check_loss: bool = True,
+        check_wavefunction_output: bool = True,
+        check_batch_tensors: bool = True,
+        strict_sign_values: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(triggers, **kwargs)
+        self.fail_fast = bool(fail_fast)
+        self.max_nonfinite_energy_fraction = float(max_nonfinite_energy_fraction)
+        self.max_nonfinite_logabs_fraction = float(max_nonfinite_logabs_fraction)
+        self.check_loss = bool(check_loss)
+        self.check_wavefunction_output = bool(check_wavefunction_output)
+        self.check_batch_tensors = bool(check_batch_tensors)
+        self.strict_sign_values = bool(strict_sign_values)
+
+    def on_step_end(self, event: Event) -> None:
+        """Validate the most recent training step's tensors."""
+
+        state = event.state
+        metrics: dict[str, Any] = {}
+        failures: list[str] = []
+
+        local_energy = getattr(state, "local_energy", None)
+        if local_energy is not None:
+            energy_fraction = _nonfinite_fraction(local_energy)
+            metrics["local_energy_nonfinite_fraction"] = energy_fraction
+            if energy_fraction > self.max_nonfinite_energy_fraction:
+                failures.append(
+                    f"local_energy_nonfinite_fraction={energy_fraction} exceeds "
+                    f"max_nonfinite_energy_fraction={self.max_nonfinite_energy_fraction}"
+                )
+
+        if self.check_wavefunction_output:
+            output = getattr(state, "wavefunction_output", None)
+            if output is not None:
+                logabs_fraction = _nonfinite_fraction(output.logabs)
+                metrics["logabs_nonfinite_fraction"] = logabs_fraction
+                if logabs_fraction > self.max_nonfinite_logabs_fraction:
+                    failures.append(
+                        f"logabs_nonfinite_fraction={logabs_fraction} exceeds "
+                        f"max_nonfinite_logabs_fraction={self.max_nonfinite_logabs_fraction}"
+                    )
+                if self.strict_sign_values:
+                    sign_fraction = _sign_invalid_fraction(output.sign)
+                    metrics["sign_invalid_fraction"] = sign_fraction
+                    if sign_fraction > 0.0:
+                        failures.append(f"sign_invalid_fraction={sign_fraction} exceeds 0.0")
+
+        if self.check_loss:
+            loss = getattr(state, "loss", None)
+            if loss is not None:
+                loss_is_finite = bool(torch.isfinite(loss).all().item())
+                metrics["loss_is_finite"] = loss_is_finite
+                if not loss_is_finite:
+                    failures.append("loss is not finite")
+
+        if self.check_batch_tensors:
+            batch = getattr(state, "batch", None)
+            if batch is not None:
+                count = _nonfinite_tensor_count(batch)
+                metrics["batch_nonfinite_tensor_count"] = count
+                if count > 0:
+                    failures.append(f"batch_nonfinite_tensor_count={count} exceeds 0")
+
+        passed = not failures
+        metrics["passed"] = passed
+        event.context.log(metrics, step=state.step, namespace="checks/data_validity")
+        if self.fail_fast and not passed:
+            raise RuntimeError(f"DataValidity failed at step {state.step}: {failures[0]}")
+
+
+class GradientStats(Callback):
+    """Track gradient health at ``step_end`` (after ``optimizer.step()``).
+
+    Reads parameter gradients from ``state.model`` and logs norm/finite metrics
+    under ``checks/gradient``. With ``check_finite`` it fails on non-finite
+    gradients, and with ``max_global_grad_norm`` it fails when the global norm
+    is exceeded. It does not require convergence or small gradients.
+    """
+
+    def __init__(
+        self,
+        triggers: Iterable[str],
+        *,
+        fail_fast: bool = False,
+        max_global_grad_norm: float | None = None,
+        check_finite: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(triggers, **kwargs)
+        self.fail_fast = bool(fail_fast)
+        self.max_global_grad_norm = None if max_global_grad_norm is None else float(max_global_grad_norm)
+        self.check_finite = bool(check_finite)
+
+    def on_step_end(self, event: Event) -> None:
+        """Summarize gradients of the model parameters."""
+
+        state = event.state
+        grads = [
+            param.grad.detach().reshape(-1)
+            for param in state.model.parameters()
+            if param.grad is not None
+        ]
+        metrics: dict[str, Any] = {
+            "n_grad_tensors": len(grads),
+            "n_grad_elements": 0,
+            "global_grad_norm": 0.0,
+            "max_abs_grad": 0.0,
+            "mean_abs_grad": 0.0,
+            "nonfinite_grad_fraction": 0.0,
+        }
+        global_norm = 0.0
+        nonfinite_fraction = 0.0
+        if grads:
+            flat = torch.cat(grads)
+            n_elements = int(flat.numel())
+            finite_mask = torch.isfinite(flat)
+            n_finite = int(finite_mask.sum().item())
+            nonfinite_fraction = float((n_elements - n_finite) / n_elements) if n_elements else 0.0
+            finite_values = flat[finite_mask]
+            global_norm = float(finite_values.norm().item()) if n_finite else 0.0
+            abs_finite = finite_values.abs()
+            metrics["n_grad_elements"] = n_elements
+            metrics["global_grad_norm"] = global_norm
+            metrics["max_abs_grad"] = float(abs_finite.max().item()) if n_finite else 0.0
+            metrics["mean_abs_grad"] = float(abs_finite.mean().item()) if n_finite else 0.0
+            metrics["nonfinite_grad_fraction"] = nonfinite_fraction
+
+        failure: str | None = None
+        if self.check_finite and nonfinite_fraction > 0.0:
+            failure = f"nonfinite_grad_fraction={nonfinite_fraction} exceeds 0.0"
+        elif self.max_global_grad_norm is not None and global_norm > self.max_global_grad_norm:
+            failure = f"global_grad_norm={global_norm} exceeds max_global_grad_norm={self.max_global_grad_norm}"
+
+        metrics["passed"] = failure is None
+        event.context.log(metrics, step=state.step, namespace="checks/gradient")
+        if self.fail_fast and failure is not None:
+            raise RuntimeError(f"GradientStats failed at step {state.step}: {failure}")
+
+
+class SamplerHealth(Callback):
+    """Expose sampler statistics under ``checks/sampler`` with optional bounds.
+
+    Reads ``state.sampler_stats`` (falling back to ``sampler.*`` keys in
+    ``state.metrics``) and logs only the stats actually available. When
+    acceptance-rate bounds are configured and violated, ``passed`` is ``False``;
+    it raises only if ``fail_fast`` is set.
+    """
+
+    def __init__(
+        self,
+        triggers: Iterable[str],
+        *,
+        fail_fast: bool = False,
+        min_acceptance_rate: float | None = None,
+        max_acceptance_rate: float | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(triggers, **kwargs)
+        self.fail_fast = bool(fail_fast)
+        self.min_acceptance_rate = None if min_acceptance_rate is None else float(min_acceptance_rate)
+        self.max_acceptance_rate = None if max_acceptance_rate is None else float(max_acceptance_rate)
+
+    def on_step_end(self, event: Event) -> None:
+        """Log available sampler diagnostics and check crude bounds."""
+
+        state = event.state
+        stats = dict(getattr(state, "sampler_stats", None) or {})
+        if not stats:
+            source = getattr(state, "metrics", None) or {}
+            prefix = "sampler."
+            stats = {key[len(prefix):]: value for key, value in source.items() if key.startswith(prefix)}
+
+        metrics: dict[str, Any] = {
+            key: stats[key] for key in ("acceptance_rate", "n_walkers", "n_steps", "burn_in") if key in stats
+        }
+
+        failure: str | None = None
+        acceptance_rate = stats.get("acceptance_rate")
+        if acceptance_rate is not None:
+            if self.min_acceptance_rate is not None and acceptance_rate < self.min_acceptance_rate:
+                failure = (
+                    f"acceptance_rate={acceptance_rate} below min_acceptance_rate={self.min_acceptance_rate}"
+                )
+            elif self.max_acceptance_rate is not None and acceptance_rate > self.max_acceptance_rate:
+                failure = (
+                    f"acceptance_rate={acceptance_rate} above max_acceptance_rate={self.max_acceptance_rate}"
+                )
+
+        metrics["passed"] = failure is None
+        event.context.log(metrics, step=state.step, namespace="checks/sampler")
+        if self.fail_fast and failure is not None:
+            raise RuntimeError(f"SamplerHealth failed at step {state.step}: {failure}")
+
+
+class RuntimeEquivariance(Callback):
+    """Schedule a checker-driven runtime equivariance check.
+
+    The callback owns *when* to run (triggers, ``every_n_steps``,
+    ``probability``); the injected ``checker`` owns *how* to check and returns a
+    `spenn.testing.runtime.CheckResult`. Its metrics are logged under
+    ``checks/<result.name>``; a failed result raises only in ``fail_fast`` mode.
+    """
+
+    def __init__(
+        self,
+        triggers: Iterable[str],
+        *,
+        checker: Any,
+        fail_fast: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(triggers, **kwargs)
+        self.checker = checker
+        self.fail_fast = bool(fail_fast)
+
+    def on_step_end(self, event: Event) -> None:
+        """Run the checker against the current state and log its result."""
+
+        state = event.state
+        result = self.checker.run(state)
+        event.context.log(result.metrics, step=state.step, namespace=f"checks/{result.name}")
+        if self.fail_fast and not result.passed:
+            raise RuntimeError(
+                f"RuntimeEquivariance check {result.name!r} failed at step {state.step}: {result.metrics}"
+            )
+
+
+class ReferenceEnergy(Callback):
+    """Log reference-energy comparison metrics from training metrics.
+
+    Reads ``state.metrics[source_metric]`` and logs ``reference_energy``,
+    ``energy_error``, and ``abs_energy_error`` under ``namespace``. Keeps
+    reference comparison an explicit run choice rather than trainer policy.
+    """
+
+    def __init__(
+        self,
+        triggers: Iterable[str],
+        *,
+        reference_energy: float,
+        source_metric: str = "energy_mean",
+        namespace: str = "reference",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(triggers, **kwargs)
+        self.reference_energy = float(reference_energy)
+        self.source_metric = source_metric
+        self.namespace = namespace
+
+    def on_step_end(self, event: Event) -> None:
+        """Compute and log reference-energy metrics for the current step."""
+
+        from spenn.physics.hamiltonian import reference_energy_metrics
+
+        state = event.state
+        if state is None or state.metrics is None:
+            return
+        if self.source_metric not in state.metrics:
+            raise KeyError(
+                f"ReferenceEnergy expected metric {self.source_metric!r} "
+                f"in TrainerState.metrics at step {state.step}."
+            )
+        metrics = reference_energy_metrics(
+            energy_mean=state.metrics[self.source_metric],
+            reference_energy=self.reference_energy,
+        )
+        event.context.log(metrics, step=state.step, namespace=self.namespace)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _nonfinite_fraction(tensor: torch.Tensor) -> float:
+    """Return the fraction of non-finite entries; empty tensors count as 1.0."""
+
+    n = int(tensor.numel())
+    if n == 0:
+        return 1.0
+    n_finite = int(torch.isfinite(tensor).sum().item())
+    return float((n - n_finite) / n)
+
+
+def _sign_invalid_fraction(sign: torch.Tensor) -> float:
+    """Return the fraction of sign entries that are not finite ``-1``/``0``/``1``."""
+
+    n = int(sign.numel())
+    if n == 0:
+        return 1.0
+    magnitude = sign.abs()
+    is_unit = (magnitude - 1.0).abs() < 1.0e-6
+    is_zero = magnitude < 1.0e-12
+    valid = torch.isfinite(sign) & (is_unit | is_zero)
+    return float(int((~valid).sum().item()) / n)
+
+
+def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:
+    """Yield every tensor leaf in a dataclass/mapping/sequence/tensor tree."""
+
+    if isinstance(obj, torch.Tensor):
+        yield obj
+        return
+    if is_dataclass(obj) and not isinstance(obj, type):
+        for f in fields(obj):
+            yield from _iter_tensors(getattr(obj, f.name))
+        return
+    if isinstance(obj, Mapping):
+        for value in obj.values():
+            yield from _iter_tensors(value)
+        return
+    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
+        for value in obj:
+            yield from _iter_tensors(value)
+
+
+def _nonfinite_tensor_count(obj: Any) -> int:
+    """Return the number of tensor leaves containing any non-finite value."""
+
+    return sum(1 for tensor in _iter_tensors(obj) if not bool(torch.isfinite(tensor).all().item()))
 
 
 __all__ = [
     "Callback",
     "Checkpoint",
     "ConfigSnapshot",
+    "DataValidity",
     "Event",
+    "GradientStats",
     "Metadata",
+    "ReferenceEnergy",
     "ReportSkeleton",
     "ResolvedConfigSnapshot",
+    "RuntimeEquivariance",
+    "SamplerHealth",
     "Status",
 ]
