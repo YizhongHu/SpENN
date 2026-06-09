@@ -29,7 +29,8 @@ class HarmonicTrap:
         if positions.ndim != 3:
             raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
         value = 0.5 * (self.omega**2) * positions.square().sum(dim=(1, 2))
-        assert value.shape == (positions.shape[0],)
+        if value.shape != (positions.shape[0],):
+            raise ValueError(f"harmonic-trap energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
@@ -54,10 +55,13 @@ class ElectronElectronInteraction:
         if positions.ndim != 3:
             raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
         distances = pairwise_distances(positions, eps=self.eps).squeeze(-1)
-        assert distances.shape == (positions.shape[0], positions.shape[1], positions.shape[1])
+        expected_distances = (positions.shape[0], positions.shape[1], positions.shape[1])
+        if distances.shape != expected_distances:
+            raise ValueError(f"pairwise distances must have shape {expected_distances}, got {tuple(distances.shape)}")
         tri = torch.triu(torch.ones_like(distances, dtype=torch.bool), diagonal=1)
         value = distances.reciprocal().masked_fill(~tri, 0.0).sum(dim=(1, 2))
-        assert value.shape == (positions.shape[0],)
+        if value.shape != (positions.shape[0],):
+            raise ValueError(f"electron-electron energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
@@ -105,7 +109,8 @@ class ElectronNucleusInteraction:
         disp = positions.unsqueeze(2) - nuclear_positions.unsqueeze(0).unsqueeze(0)
         dist = torch.linalg.norm(disp, dim=-1).clamp_min(self.eps)
         value = -(nuclear_charges.view(1, 1, -1) / dist).sum(dim=(1, 2))
-        assert value.shape == (positions.shape[0],)
+        if value.shape != (positions.shape[0],):
+            raise ValueError(f"electron-nucleus energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
