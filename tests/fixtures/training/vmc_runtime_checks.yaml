@@ -79,7 +79,7 @@ callbacks:
   max_nonfinite_logabs_fraction: 0.0
   check_loss: true
   check_wavefunction_output: true
-  check_batch_tensors: true
+  check_batch: true
   strict_sign_values: true
 - _target_: spenn.callback.GradientStats
   triggers:

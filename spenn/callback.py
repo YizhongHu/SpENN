@@ -6,10 +6,10 @@ import random
 import re
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 from omegaconf import OmegaConf
@@ -299,7 +299,7 @@ class DataValidity(Callback):
         max_nonfinite_logabs_fraction: float = 0.0,
         check_loss: bool = True,
         check_wavefunction_output: bool = True,
-        check_batch_tensors: bool = True,
+        check_batch: bool = True,
         strict_sign_values: bool = True,
         **kwargs: Any,
     ) -> None:
@@ -309,7 +309,7 @@ class DataValidity(Callback):
         self.max_nonfinite_logabs_fraction = float(max_nonfinite_logabs_fraction)
         self.check_loss = bool(check_loss)
         self.check_wavefunction_output = bool(check_wavefunction_output)
-        self.check_batch_tensors = bool(check_batch_tensors)
+        self.check_batch = bool(check_batch)
         self.strict_sign_values = bool(strict_sign_values)
 
     def on_step_end(self, event: Event) -> None:
@@ -359,13 +359,26 @@ class DataValidity(Callback):
                 if not loss_is_finite:
                     failures.append("loss is not finite")
 
-        if self.check_batch_tensors:
+        if self.check_batch:
             batch = getattr(state, "batch", None)
             if batch is not None:
-                count = _nonfinite_tensor_count(batch)
-                metrics["batch_nonfinite_tensor_count"] = count
-                if count > 0:
-                    failures.append(f"batch_nonfinite_tensor_count={count} exceeds 0")
+                validate = getattr(batch, "validate", None)
+                if not callable(validate):
+                    metrics["batch_validated"] = False
+                    failures.append(f"batch type {type(batch).__name__} does not expose validate()")
+                else:
+                    try:
+                        validate()
+                    except Exception as exc:
+                        metrics["batch_validated"] = False
+                        failures.append(f"batch.validate() failed with {type(exc).__name__}: {exc}")
+                    else:
+                        metrics["batch_validated"] = True
+
+                validity_metrics = getattr(batch, "validity_metrics", None)
+                if callable(validity_metrics):
+                    for key, value in validity_metrics().items():
+                        metrics[f"batch_{key}"] = value
 
         passed = not failures
         metrics["passed"] = passed
@@ -671,39 +684,6 @@ def _sign_invalid_fraction(sign: torch.Tensor) -> float:
         return 1.0
     valid = torch.isfinite(sign) & ((sign == -1) | (sign == 0) | (sign == 1))
     return float(int((~valid).sum().item()) / n)
-
-
-def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:
-    """Yield every tensor leaf in a dataclass/mapping/sequence/tensor tree."""
-
-    if isinstance(obj, torch.Tensor):
-        yield obj
-        return
-    if is_dataclass(obj) and not isinstance(obj, type):
-        for f in fields(obj):
-            yield from _iter_tensors(getattr(obj, f.name))
-        return
-    if isinstance(obj, Mapping):
-        for value in obj.values():
-            yield from _iter_tensors(value)
-        return
-    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
-        for value in obj:
-            yield from _iter_tensors(value)
-
-
-def _nonfinite_tensor_count(obj: Any) -> int:
-    """Return the number of tensor leaves that are empty or contain a non-finite value.
-
-    Empty leaves count as invalid, matching `_nonfinite_fraction`'s treatment of
-    empty tensors.
-    """
-
-    count = 0
-    for tensor in _iter_tensors(obj):
-        if tensor.numel() == 0 or not bool(torch.isfinite(tensor).all().item()):
-            count += 1
-    return count
 
 
 __all__ = [
