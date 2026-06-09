@@ -153,10 +153,10 @@ def test_sampler_state_dict_roundtrip_continues_same_chain() -> None:
     model = NoGradLinearModel()
     sampler = _tiny_sampler()
     sampler.collect_samples(model)
-    state = sampler.state_dict()
+    state = sampler.mcmc_state_dict()
 
     resumed = _tiny_sampler()
-    resumed.load_state_dict(state)
+    resumed.load_mcmc_state_dict(state)
 
     expected, _ = sampler.collect_samples(model)
     actual, _ = resumed.collect_samples(model)
@@ -171,6 +171,35 @@ def test_initialize_rejects_mismatched_device() -> None:
     sampler = _tiny_sampler()
     with pytest.raises(ValueError, match="reset"):
         sampler.initialize(device="meta")
+
+
+def _tiny_mala() -> MALASampler:
+    return MALASampler(
+        n_walkers=8,
+        burn_in=3,
+        n_steps=2,
+        proposal_scale=0.2,
+        seed=7,
+        n_electrons=2,
+        spatial_dim=1,
+        dtype=torch.float64,
+    )
+
+
+def test_mala_sampler_local_rng_does_not_mutate_global_state() -> None:
+    before = torch.get_rng_state()
+    _tiny_mala().collect_samples(QuadraticLogAbsModel())
+    after = torch.get_rng_state()
+
+    assert torch.equal(before, after)
+
+
+def test_mala_sampler_seed_is_reproducible_across_instances() -> None:
+    model = QuadraticLogAbsModel()
+    first, _ = _tiny_mala().collect_samples(model)
+    second, _ = _tiny_mala().collect_samples(model)
+
+    assert torch.equal(first.positions, second.positions)
 
 
 def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:

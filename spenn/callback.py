@@ -269,11 +269,12 @@ class Checkpoint(Callback):
 
         state = event.state
         sampler = getattr(state, "sampler", None)
+        sampler_mcmc_state = getattr(sampler, "mcmc_state_dict", None)
         payload = {
             "step": state.step,
             "model_state_dict": state.model.state_dict(),
             "optimizer_state_dict": state.optimizer.state_dict(),
-            "sampler_state_dict": sampler.state_dict() if hasattr(sampler, "state_dict") else None,
+            "sampler_mcmc_state": sampler_mcmc_state() if callable(sampler_mcmc_state) else None,
             "metrics": state.metrics,
         }
         self.output_dir.mkdir(parents=True, exist_ok=True)

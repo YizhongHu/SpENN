@@ -368,12 +368,13 @@ class MetropolisSampler(nn.Module):
         }
         return self._walkers, stats
 
-    def state_dict(self) -> dict[str, Any]:
+    def mcmc_state_dict(self) -> dict[str, Any]:
         """Return checkpointable Markov-chain and RNG state.
 
-        Overrides `torch.nn.Module.state_dict` to capture sampler MCMC state
-        (walkers, burn-in flag, running acceptance, and generator state) rather
-        than module parameters/buffers, of which the sampler has none.
+        This is intentionally separate from `torch.nn.Module.state_dict`, which
+        keeps its normal module-parameter semantics. MCMC state (walkers,
+        burn-in flag, running acceptance, and generator state) is persisted here
+        instead so checkpointing does not abuse the standard module API.
         """
 
         return {
@@ -384,8 +385,8 @@ class MetropolisSampler(nn.Module):
             "generator_device": str(self._generator_device),
         }
 
-    def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        """Restore Markov-chain and RNG state from `state_dict`.
+    def load_mcmc_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore Markov-chain and RNG state from `mcmc_state_dict`.
 
         Recreates the generator on the checkpointed device and restores its
         state, so a resumed run continues the same Markov chain.

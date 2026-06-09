@@ -74,7 +74,14 @@ class MALASampler(MetropolisSampler):
         current_positions = walkers.positions.detach()
         current_grad = self._logabs_gradient(model, walkers.with_positions(current_positions, invalidate_cache=True))
         drift_scale = self.proposal_scale * self.proposal_scale
-        proposals = current_positions + drift_scale * current_grad + self.proposal_scale * torch.randn_like(current_positions)
+        # Consume the sampler-owned Markov-chain RNG, never global Torch RNG.
+        noise = torch.randn(
+            current_positions.shape,
+            device=current_positions.device,
+            dtype=current_positions.dtype,
+            generator=self._generator,
+        )
+        proposals = current_positions + drift_scale * current_grad + self.proposal_scale * noise
         proposal_walkers = walkers.with_positions(proposals.detach(), invalidate_cache=True)
         proposal_grad = self._logabs_gradient(model, proposal_walkers)
         log_q_ratio = self._proposal_log_ratio(
