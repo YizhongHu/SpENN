@@ -87,26 +87,50 @@ class Train(Runner):
         first forward. If that first forward were the sampler's model
         evaluation, parameter initialization would be coupled to the sampler's
         RNG and ordering. This forces one deterministic example forward under
-        the explicit construction seed, leaving the global RNG state unchanged
-        for everything else.
+        the explicit construction seed inside an isolated RNG fork (so global
+        CPU/CUDA RNG state is unchanged for everything else).
+
+        Fails loudly: it raises if lazy parameters exist but the sampler cannot
+        provide an example batch, and if any lazy parameter remains
+        uninitialized after the materialization forward.
         """
 
         if not isinstance(self.model, torch.nn.Module):
             return
-        if not any(isinstance(p, UninitializedParameter) for p in self.model.parameters()):
+        uninitialized = [
+            name for name, param in self.model.named_parameters() if isinstance(param, UninitializedParameter)
+        ]
+        if not uninitialized:
             return
         example = getattr(self.sampler, "example_batch", None)
         if not callable(example):
-            return
+            raise RuntimeError(
+                "model has uninitialized (lazy) parameters but the sampler provides no "
+                "example_batch() to materialize them before optimizer construction; "
+                f"uninitialized parameters: {uninitialized}"
+            )
         batch = example()
-        rng_state = torch.get_rng_state()
-        try:
+        cuda_devices = sorted(
+            {
+                param.device.index
+                for param in self.model.parameters()
+                if param.device.type == "cuda" and param.device.index is not None
+            }
+        )
+        # Isolate CPU (and any model CUDA devices) RNG so construction seeding
+        # never leaks into sampler/global randomness.
+        with torch.random.fork_rng(devices=cuda_devices):
             if self.construction_seed is not None:
                 torch.manual_seed(self.construction_seed)
             with torch.no_grad():
                 self.model(batch)
-        finally:
-            torch.set_rng_state(rng_state)
+        remaining = [
+            name for name, param in self.model.named_parameters() if isinstance(param, UninitializedParameter)
+        ]
+        if remaining:
+            raise RuntimeError(
+                f"lazy parameters remain uninitialized after the materialization forward: {remaining}"
+            )
 
     def run(self, context: RunContext) -> RunResult:
         """Build the optimizer and run the configured VMC training loop."""
