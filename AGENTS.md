@@ -34,8 +34,8 @@ for reproducibility.
 
 ## Best Practices
 
-Any reintroduction of `permute_tree`, `validate_tree`, or equivalent recursive container-probing helpers is a blocker.
-These helpers erase representation semantics and are not allowed in SpENN.
+Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
+These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
 
 ### Prefer explicit ownership over local convenience
 
@@ -89,7 +89,7 @@ class MyMap(EquivariantMap):
         ...
 ```
 
-`EquivariantMap.forward` owns runtime equivariance checking. Do not wrap `forward` with decorators for equivariance checks, because that can obscure control flow and cause recursion.
+`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `spenn.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
 
 ### Separate metadata generation from model execution
 
@@ -194,8 +194,9 @@ Avoid large PRs that change state layout, path enumeration, Fourier logic, activ
 
 ## Branches
 
-Codex may push only to branches named `codex/**`.
+Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
-Codex must not push to `main`, merge PRs, or force-push unless the user explicitly asks.
+Agents must not push to branches other than these mentioned above, such as `main` or the `hooke` integration branch,
+ merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `hooke`.
 
-Codex should respond to PR review comments by adding commits to the existing PR branch.
+Agents should respond to PR review comments by adding commits to the existing PR branch.

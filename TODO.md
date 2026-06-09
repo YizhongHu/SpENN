@@ -14,7 +14,7 @@ new scaffold documented in package docstrings.
       `RealUpdate`, `EquivariantState`, `ElectronBatch`, and
       `WavefunctionOutput`.
 - [x] Added `spenn/data/indices.py` as the home for tuple-index bookkeeping.
-- [x] Added runtime-checking `spenn.data.EquivariantMap` with runtime
+- [x] Added runtime-checking `spenn.equivariance.EquivariantMap` with runtime
       equivariance assertion helpers in `spenn.equivariance.checks`.
 - [x] Added virtual-support path enumeration in `spenn/reps/paths.py`.
 - [x] Added scaffold modules for `EquivariantMixing`, `PathAggregation`,
@@ -25,8 +25,10 @@ new scaffold documented in package docstrings.
       zero-channel order-0 sentinels.
 - [x] Migrated irrep tensor states to direct `Partition -> tensor` mappings and
       added tensor `validate()` methods.
-- [x] Added optional `EquivariantMap` runtime tensor validation via
-      `tensor_validation_check`.
+- [x] Split runtime validation into a separate typed contract
+      (`spenn.data.validation`: `RuntimeValidatable`, `RuntimeValidityMetrics`);
+      typed states expose `validate()` / `validity_metrics()` independent of the
+      `EquivariantState` permutation + comparison contract.
 - [x] Added `spenn.data.real.zero_block` for reserved zero-order real tensor
       blocks.
 - [x] Recorded the orthogonal-basis convention on `spenn.reps.SpechtIrrep`.
@@ -77,10 +79,23 @@ new scaffold documented in package docstrings.
       transforms over ordered tuple orbit coordinates.
 - [x] Added a SageMath-only irrep tensor-cache generator path for Specht
       representation fixtures.
-- [x] Added the generic Hooke scaffold launcher, lifecycle callbacks, local
-      loggers, and smoke config. This is not a physics experiment harness.
+- [x] Added the generic `run.py` configured-run launcher with `Train` and
+      `Evaluate` runners, config-root `RunContext`-owned callbacks/loggers, and
+      Hooke smoke configs. This is not a physics experiment harness.
+- [x] Added a minimal VMC training loop (`VMCTrainer`, `TrainerState`) and a
+      Hooke pair smoke training run driven by `SpENNWaveFunction`.
+- [x] Added runtime-validation and training-health callbacks (`DataValidity`,
+      `GradientStats`, `SamplerHealth`, `RuntimeEquivariance`) with
+      callback-local probabilistic scheduling.
+- [x] Post-smoke cleanup: removed `Scaffold`/`Load` runners,
+      `ReferenceEnergy`/`ReportSkeleton` callbacks, and `ConcatenatedState`;
+      trimmed `Evaluate` to a minimal sampled local-energy evaluator; standard
+      run dirs are `checkpoints/`, `checks/`, and `diagnostics/`.
 
 ## Next Core Work
+
+- [ ] Introduce the PR6 `diagnostics` interface (e.g. `EnergyEvaluation` for
+      reference-energy comparison) and wire it into `Evaluate`.
 
 - [x] Expand `PfaffianReadout` tests for antisymmetry and odd-electron bordered
       kernels.
@@ -95,7 +110,8 @@ new scaffold documented in package docstrings.
 ## Validation Expectations
 
 - Use `uv` for test commands.
-- Force runtime equivariance checks in tests with `check_probability=1.0`.
+- Force runtime equivariance checks in configs/tests with `probability: 1.0` on
+  the `RuntimeEquivariance` callback.
 - Keep runtime checks opt-in for expensive training paths, but make them easy to
   enable for debugging.
 - Do not add compatibility exports for deleted names such as `SpechtMP`,
