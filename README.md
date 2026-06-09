@@ -49,20 +49,33 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
 
 ## Config ownership
 
-Top-level config blocks are reusable object definitions. They are instantiated
-only when referenced by the selected runner or by run-context setup:
+**Runners own everything they use.** Callbacks, loggers, and (for `Evaluate`)
+diagnostics live *inside* the runner config block, not at the top level:
 
-- `callbacks` and `loggers` are **run-context owned** — the run context
-  instantiates and drives them; runners dispatch into them via events/logging.
+```yaml
+runner:
+  _target_: spenn.runner.Train
+  model: ${model}
+  sampler: ${sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  optimizer_factory: ${optimizer_factory}
+  trainer: ${trainer}
+  callbacks: [...]   # runner-owned
+  loggers: [...]     # runner-owned
+```
+
+- `spenn.runner.Train` owns its `callbacks` and `loggers`.
+- `spenn.runner.Evaluate` owns its `callbacks`, `loggers`, and `diagnostics`
+  (diagnostics are Evaluate-only and are never consumed by `Train`).
 - `model`, `sampler`, `hamiltonian_terms`, `optimizer_factory`, and `trainer`
-  are **runner-wired** — they are inert unless the selected runner references
-  them explicitly (e.g. `spenn.runner.Train` takes `optimizer_factory:
-  ${optimizer_factory}` and `trainer: ${trainer}`).
-- `diagnostics` are **Evaluate-owned** and are not consumed by `Train`.
+  remain reusable top-level blocks referenced by the runner via `${...}`.
+- `loggers` and `diagnostics` are **not** top-level blocks.
 
-`optimizer_factory` is named to reflect that the configured object is a factory
-(`_partial_: true`) used to build an optimizer from model parameters, not an
-optimizer instance. `VMCTrainer` owns training-loop hyperparameters
+`run_from_config` instantiates the runner (including its callbacks/loggers) and
+mirrors them onto the `RunContext` so `context.log`, lifecycle dispatch, and
+`logger.finish()` operate on the runner's objects. `optimizer_factory` names a
+factory (`_partial_: true`) that builds an optimizer from model parameters, not
+an optimizer instance. `VMCTrainer` owns only training-loop hyperparameters
 (`max_steps`, `log_every_n_steps`, `return_terms`, `gradient_clip_norm`) and the
 loss/backward/step mechanics; it does not own callbacks, loggers, reference
 energy, or diagnostics.

@@ -17,8 +17,9 @@ from spenn.training.optim import make_optimizer
 class Runner:
     """Base runner with callback lifecycle dispatch.
 
-    Callbacks and loggers are owned by the `RunContext`; `emit` dispatches
-    lifecycle events into ``context.callbacks``.
+    Runners own their callbacks and loggers (instantiated from the runner's own
+    config block). ``run_from_config`` mirrors them onto the `RunContext` so
+    ``context.log`` and lifecycle dispatch operate on the runner's objects.
     """
 
     def __init__(
@@ -65,10 +66,9 @@ class Train(Runner):
     """Config-driven VMC training runner.
 
     Builds the optimizer, drives the configured trainer through the VMC loop,
-    and emits lifecycle events. Like `Evaluate`, it owns no callbacks/loggers
-    (the `RunContext` does) and adds no exception handling (``run_from_config``
-    owns that); it only emits events and lets the trainer log through the
-    context.
+    and emits lifecycle events. It owns its callbacks and loggers (and adds no
+    exception handling -- ``run_from_config`` owns that); it only emits events
+    and lets the trainer log through the context.
 
     Parameters
     ----------
@@ -83,10 +83,23 @@ class Train(Runner):
     trainer : object
         Trainer exposing ``fit(*, model, sampler, hamiltonian_terms, optimizer,
         context, emit) -> TrainerState``.
+    callbacks : sequence, optional
+        Lifecycle callbacks owned by this runner.
+    loggers : sequence, optional
+        Metric loggers owned by this runner.
     """
 
-    def __init__(self, model, sampler, hamiltonian_terms, optimizer_factory, trainer) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        model,
+        sampler,
+        hamiltonian_terms,
+        optimizer_factory,
+        trainer,
+        callbacks=None,
+        loggers=None,
+    ) -> None:
+        super().__init__(callbacks=callbacks, loggers=loggers)
         self.model = model
         self.sampler = sampler
         self.hamiltonian_terms = list(hamiltonian_terms)
@@ -151,14 +164,30 @@ class Evaluate(Runner):
     evaluation : Mapping or None, optional
         Evaluation settings (``return_terms``, ``reference_energy``). When
         ``reference_energy`` is set, reference-comparison metrics are merged in.
+    callbacks : sequence, optional
+        Lifecycle callbacks owned by this runner.
+    loggers : sequence, optional
+        Metric loggers owned by this runner.
+    diagnostics : sequence, optional
+        Diagnostics owned by this runner (Evaluate-only; not consumed by Train).
     """
 
-    def __init__(self, model, sampler, hamiltonian_terms, evaluation: Any = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        model,
+        sampler,
+        hamiltonian_terms,
+        evaluation: Any = None,
+        callbacks=None,
+        loggers=None,
+        diagnostics=None,
+    ) -> None:
+        super().__init__(callbacks=callbacks, loggers=loggers)
         self.model = model
         self.sampler = sampler
         self.hamiltonian_terms = list(hamiltonian_terms)
         self.evaluation = evaluation
+        self.diagnostics = list(diagnostics or [])
 
     def _eval_get(self, key: str, default: Any) -> Any:
         ev = self.evaluation

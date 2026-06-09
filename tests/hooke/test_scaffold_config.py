@@ -30,8 +30,13 @@ def test_smoke_config_prepares_generic_artifact_context(tmp_path: Path) -> None:
     assert context.cfg.run.dir == str(context.run_dir)
     assert context.source_cfg.run.run_id is None
     assert context.source_cfg.run.dir is None
-    assert [type(logger) for logger in context.loggers] == [CSV, JSONL]
-    assert [type(callback) for callback in context.callbacks] == [
+
+    # Callbacks and loggers are owned by the runner, not the run context.
+    assert context.callbacks == []
+    assert context.loggers == []
+    runner = instantiate(context.cfg.runner)
+    assert [type(logger) for logger in runner.loggers] == [CSV, JSONL]
+    assert [type(callback) for callback in runner.callbacks] == [
         ConfigSnapshot,
         ResolvedConfigSnapshot,
         Metadata,

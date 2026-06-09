@@ -26,18 +26,22 @@ def test_evaluate_uses_summary_helper_from_physics_hamiltonian() -> None:
     assert "summarize_local_energy" not in runner_module.__all__
 
 
-def test_evaluate_does_not_accept_callbacks_or_loggers() -> None:
+def test_evaluate_owns_callbacks_loggers_and_diagnostics() -> None:
     params = inspect.signature(runner_module.Evaluate.__init__).parameters
-    assert "callbacks" not in params
-    assert "loggers" not in params
+    assert "callbacks" in params
+    assert "loggers" in params
+    assert "diagnostics" in params
 
 
 @pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
-def test_evaluate_config_does_not_pass_callbacks_or_loggers(fixture: str) -> None:
+def test_evaluate_config_passes_callbacks_and_loggers_through_runner(fixture: str) -> None:
     cfg = OmegaConf.load(FIXTURES / fixture)
+    # Runner-owned: callbacks and loggers live under the runner, not top-level.
+    assert "callbacks" not in cfg
+    assert "loggers" not in cfg
     runner_keys = set(cfg.runner.keys())
-    assert "callbacks" not in runner_keys
-    assert "loggers" not in runner_keys
+    assert "callbacks" in runner_keys
+    assert "loggers" in runner_keys
 
 
 def _eval_metrics(run_root: Path) -> dict:

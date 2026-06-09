@@ -2,17 +2,14 @@ experiment:
   name: hooke_pair_smoke
   sector: pair
   run_name: hooke_pair_smoke_train
-
 run:
   root: outputs
   run_id: null
   dir: null
-
 runtime:
   seed: 0
   device: cpu
   dtype: float64
-
 system:
   name: hooke_pair
   n_particles: 2
@@ -21,7 +18,6 @@ system:
   spin:
     n_up: 1
     n_down: 1
-
 runner:
   _target_: spenn.runner.Train
   model: ${model}
@@ -29,7 +25,81 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer_factory: ${optimizer_factory}
   trainer: ${trainer}
-
+  callbacks:
+  - _target_: spenn.callback.ConfigSnapshot
+    triggers:
+    - run_start
+    output_path: ${run.dir}/config.yaml
+  - _target_: spenn.callback.ResolvedConfigSnapshot
+    triggers:
+    - run_start
+    output_path: ${run.dir}/resolved_config.yaml
+  - _target_: spenn.callback.Metadata
+    triggers:
+    - run_start
+    - run_end
+    - exception
+    output_path: ${run.dir}/metadata.json
+  - _target_: spenn.callback.Status
+    triggers:
+    - run_start
+    - run_end
+    - exception
+    output_path: ${run.dir}/status.json
+  - _target_: spenn.callback.DataValidity
+    triggers:
+    - step_end
+    every_n_steps: 1
+    fail_fast: true
+    max_nonfinite_energy_fraction: 0.0
+    max_nonfinite_logabs_fraction: 0.0
+    check_loss: true
+    check_wavefunction_output: true
+    check_batch_tensors: true
+    strict_sign_values: true
+  - _target_: spenn.callback.GradientStats
+    triggers:
+    - step_end
+    every_n_steps: 1
+    fail_fast: true
+    check_finite: true
+  - _target_: spenn.callback.SamplerHealth
+    triggers:
+    - step_end
+    every_n_steps: 1
+    fail_fast: false
+  - _target_: spenn.callback.RuntimeEquivariance
+    triggers:
+    - step_end
+    every_n_steps: 1
+    probability: 1.0
+    fail_fast: true
+    artifact_dir: ${run.dir}/checks/equivariance
+    checkers:
+    - _target_: spenn.equivariance.checks.FullModelEquivarianceChecker
+      permutation_fraction: 1.0
+      max_permutations: 1
+      seed: ${runtime.seed}
+      atol: 1.0e-06
+      rtol: 1.0e-06
+    - _target_: spenn.equivariance.checks.TraceEquivarianceChecker
+      permutation_fraction: 1.0
+      max_permutations: 1
+      seed: ${runtime.seed}
+      comparison: stepwise
+      compare_output: false
+      atol: 1.0e-06
+      rtol: 1.0e-06
+  - _target_: spenn.callback.Checkpoint
+    triggers:
+    - step_end
+    every_n_steps: 1
+    output_dir: ${run.dir}/checkpoints
+  loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn
@@ -41,37 +111,33 @@ model:
     num_hidden_layers: 1
     include_spins: true
   layers:
-    - _target_: spenn.nn.SpENNLayer
-      mixing:
-        _target_: spenn.nn.EquivariantMixing
-        max_order: 2
-        max_virtual_order: 2
-        implementation: slow
-        initial_weight: 0.5
-      fourier:
-        _target_: spenn.reps.FourierTransform
-      activation:
-        _target_: spenn.nn.ActivationByType
-        symmetric_activation:
-          _target_: torch.nn.Tanh
-      path_aggregation:
-        _target_: spenn.nn.PathAggregation
-      inverse_fourier:
-        _target_: spenn.reps.InverseFourierTransform
-      update:
-        _target_: spenn.nn.ChannelMappedUpdate
+  - _target_: spenn.nn.SpENNLayer
+    mixing:
+      _target_: spenn.nn.EquivariantMixing
+      max_order: 2
+      max_virtual_order: 2
+      implementation: slow
+      initial_weight: 0.5
+    fourier:
+      _target_: spenn.reps.FourierTransform
+    activation:
+      _target_: spenn.nn.ActivationByType
+      symmetric_activation:
+        _target_: torch.nn.Tanh
+    path_aggregation:
+      _target_: spenn.nn.PathAggregation
+    inverse_fourier:
+      _target_: spenn.reps.InverseFourierTransform
+    update:
+      _target_: spenn.nn.ChannelMappedUpdate
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     allow_odd_electron_bordered: true
-
 hamiltonian_terms:
-  - _target_: spenn.physics.kinetic.KineticEnergy
-
-  - _target_: spenn.physics.potential.HarmonicTrap
-    omega: ${system.omega}
-
-  - _target_: spenn.physics.potential.ElectronElectronInteraction
-
+- _target_: spenn.physics.kinetic.KineticEnergy
+- _target_: spenn.physics.potential.HarmonicTrap
+  omega: ${system.omega}
+- _target_: spenn.physics.potential.ElectronElectronInteraction
 sampler:
   _target_: spenn.sampling.metropolis.MetropolisSampler
   n_walkers: 16
@@ -84,88 +150,12 @@ sampler:
   n_up: ${system.spin.n_up}
   n_down: ${system.spin.n_down}
   dtype: ${runtime.dtype}
-
 optimizer_factory:
   _target_: torch.optim.Adam
   _partial_: true
   lr: 0.01
-
 trainer:
   _target_: spenn.training.trainer.VMCTrainer
   max_steps: 2
   log_every_n_steps: 1
   return_terms: true
-
-loggers:
-  - _target_: spenn.logging.CSV
-    path: ${run.dir}/metrics.csv
-
-  - _target_: spenn.logging.JSONL
-    path: ${run.dir}/metrics.jsonl
-
-callbacks:
-  - _target_: spenn.callback.ConfigSnapshot
-    triggers: [run_start]
-    output_path: ${run.dir}/config.yaml
-
-  - _target_: spenn.callback.ResolvedConfigSnapshot
-    triggers: [run_start]
-    output_path: ${run.dir}/resolved_config.yaml
-
-  - _target_: spenn.callback.Metadata
-    triggers: [run_start, run_end, exception]
-    output_path: ${run.dir}/metadata.json
-
-  - _target_: spenn.callback.Status
-    triggers: [run_start, run_end, exception]
-    output_path: ${run.dir}/status.json
-
-  - _target_: spenn.callback.DataValidity
-    triggers: [step_end]
-    every_n_steps: 1
-    fail_fast: true
-    max_nonfinite_energy_fraction: 0.0
-    max_nonfinite_logabs_fraction: 0.0
-    check_loss: true
-    check_wavefunction_output: true
-    check_batch_tensors: true
-    strict_sign_values: true
-
-  - _target_: spenn.callback.GradientStats
-    triggers: [step_end]
-    every_n_steps: 1
-    fail_fast: true
-    check_finite: true
-
-  - _target_: spenn.callback.SamplerHealth
-    triggers: [step_end]
-    every_n_steps: 1
-    fail_fast: false
-
-  - _target_: spenn.callback.RuntimeEquivariance
-    triggers: [step_end]
-    every_n_steps: 1
-    probability: 1.0
-    fail_fast: true
-    artifact_dir: ${run.dir}/checks/equivariance
-    checkers:
-      - _target_: spenn.equivariance.checks.FullModelEquivarianceChecker
-        permutation_fraction: 1.0
-        max_permutations: 1
-        seed: ${runtime.seed}
-        atol: 1.0e-6
-        rtol: 1.0e-6
-
-      - _target_: spenn.equivariance.checks.TraceEquivarianceChecker
-        permutation_fraction: 1.0
-        max_permutations: 1
-        seed: ${runtime.seed}
-        comparison: stepwise
-        compare_output: false
-        atol: 1.0e-6
-        rtol: 1.0e-6
-
-  - _target_: spenn.callback.Checkpoint
-    triggers: [step_end]
-    every_n_steps: 1
-    output_dir: ${run.dir}/checkpoints
