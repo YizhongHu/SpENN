@@ -9,12 +9,11 @@ comparison) -- there is no generic ``validate_tree`` / recursive probing.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 JsonScalar = int | float | bool | str | None
 
 
-@runtime_checkable
 class RuntimeValidatable(Protocol):
     """Typed object that validates its own runtime/schema invariants."""
 
@@ -22,7 +21,6 @@ class RuntimeValidatable(Protocol):
         ...
 
 
-@runtime_checkable
 class RuntimeValidityMetrics(Protocol):
     """Typed object that exposes JSON-safe runtime validity metrics."""
 
