@@ -40,14 +40,18 @@ class LocalEnergyResult:
 
 
 def normalize_hamiltonian_terms(
-    terms: Mapping[Any, "HamiltonianTerm"] | Sequence["HamiltonianTerm"],
+    terms: Mapping[Any, Any] | Sequence[Any],
 ) -> dict[str, "HamiltonianTerm"]:
     """Return an ordered ``{name: term}`` mapping from a dict or sequence.
 
-    A ``dict[str, HamiltonianTerm]`` is used directly: its keys are the term
-    names. A sequence falls back to the snake-case class name of each term,
-    suffixed with the term index when a class name repeats, so the resulting
-    names are always unique.
+    A ``dict[str, HamiltonianTerm]`` is used directly: its keys are the
+    explicit, authoritative term names. A sequence falls back to the snake-case
+    class name of each term, suffixed with the term index when a class name
+    repeats, so the resulting names are always unique.
+
+    Names are enforced as non-empty strings and each value must expose a
+    callable ``local_energy``; invalid specifications fail loudly here rather
+    than later during evaluation.
 
     Parameters
     ----------
@@ -65,7 +69,8 @@ def normalize_hamiltonian_terms(
         for key, term in terms.items():
             if not isinstance(key, str):
                 raise TypeError(f"hamiltonian term names must be strings, got {type(key).__name__}")
-            normalized[str(key)] = term
+            _validate_hamiltonian_term(key, term)
+            normalized[key] = term
         return normalized
 
     sequence = list(terms)
@@ -74,8 +79,21 @@ def normalize_hamiltonian_terms(
     normalized = {}
     for index, (term, base) in enumerate(zip(sequence, base_names)):
         name = base if counts[base] == 1 else f"{base}_{index}"
+        _validate_hamiltonian_term(name, term)
         normalized[name] = term
     return normalized
+
+
+def _validate_hamiltonian_term(name: str, term: object) -> None:
+    """Fail loudly on an empty term name or an invalid term specification."""
+
+    if not name or not name.strip():
+        raise ValueError("hamiltonian term names must be non-empty strings")
+    if not callable(getattr(term, "local_energy", None)):
+        raise TypeError(
+            f"hamiltonian term {name!r} ({type(term).__name__}) must expose a callable "
+            "local_energy(wavefunction, batch)"
+        )
 
 
 @runtime_checkable
@@ -218,9 +236,17 @@ def reference_energy_metrics(
 ) -> dict[str, float]:
     """Compare a mean energy against a known reference energy.
 
+    .. deprecated::
+        Transitional. Reference/exact-energy comparison belongs to the
+        evaluation-side diagnostics introduced in PR6 (``EnergyEvaluation``),
+        not to this physics module. This helper is kept only so the Hooke eval
+        smoke path keeps working until then, and is scheduled for removal when
+        PR6 diagnostics land. ``VMCTrainer`` must never call it: training
+        metrics stay VMC-native, and reference comparison stays in evaluation.
+
     Kept separate from `summarize_local_energy` so the trainer and energy
     summary never depend on benchmark reference values; reference comparison is
-    an explicit run choice (see `spenn.callback.ReferenceEnergy`).
+    an explicit run/diagnostics choice.
 
     Parameters
     ----------

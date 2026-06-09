@@ -204,6 +204,16 @@ def test_normalize_hamiltonian_terms_rejects_non_string_keys() -> None:
         normalize_hamiltonian_terms({0: KineticEnergy()})
 
 
+def test_normalize_hamiltonian_terms_rejects_empty_name() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        normalize_hamiltonian_terms({"  ": KineticEnergy()})
+
+
+def test_normalize_hamiltonian_terms_rejects_invalid_term_spec() -> None:
+    with pytest.raises(TypeError, match="local_energy"):
+        normalize_hamiltonian_terms({"bad": object()})
+
+
 # --- Local-energy helper over a list of terms ---
 
 
