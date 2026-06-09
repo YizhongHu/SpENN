@@ -25,7 +25,7 @@ from spenn.run import run_from_config
 from spenn.runner import Evaluate
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "hooke"
+FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
 
 
 def test_evaluate_uses_summary_helper_from_physics_hamiltonian() -> None:
