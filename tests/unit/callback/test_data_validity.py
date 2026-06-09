@@ -44,6 +44,24 @@ def test_passes_on_finite_state() -> None:
     assert metrics["logabs_finite_count"] == 4
     assert metrics["logabs_total_count"] == 4
     assert metrics["loss_is_finite"] is True
+    # Typed schema validation is delegated to WavefunctionOutput.validate(...).
+    assert metrics["output_validated"] is True
+
+
+def test_typed_output_validation_failure_is_reported() -> None:
+    state = _finite_state()
+    # Output has 4 samples but the batch has 3 configurations: the typed
+    # validator should reject the sample-shape/batch-size mismatch.
+    state.batch = ElectronBatch(
+        positions=torch.zeros(3, 2, 3, dtype=torch.float64),
+        spins=torch.tensor([[1.0, -1.0]] * 3, dtype=torch.float64),
+    )
+
+    context = _handle(DataValidity(["step_end"], fail_fast=False), state)
+
+    metrics = context.latest("checks/data_validity")
+    assert metrics["output_validated"] is False
+    assert metrics["passed"] is False
 
 
 def test_counts_disambiguate_empty_from_all_nonfinite() -> None:

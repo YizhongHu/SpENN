@@ -112,45 +112,28 @@ def test_compute_vmc_objective_uses_energy_metric_name() -> None:
 # --- summarize_local_energy_terms ---
 
 
-def test_summarize_local_energy_terms_names_terms_by_classname_and_index() -> None:
-    class KineticEnergy:
-        pass
+def test_summarize_local_energy_terms_names_terms_by_resolved_name() -> None:
+    terms = {"kinetic": torch.tensor([1.0, 2.0]), "harmonic_trap": torch.tensor([3.0, 5.0])}
 
-    class HarmonicTrap:
-        pass
+    metrics = summarize_local_energy_terms(terms)
 
-    terms = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 5.0])]
-    hamiltonian_terms = [KineticEnergy(), HarmonicTrap()]
-
-    metrics = summarize_local_energy_terms(terms, hamiltonian_terms)
-
-    assert metrics["energy_term_KineticEnergy_0"] == pytest.approx(1.5)
-    assert metrics["energy_term_HarmonicTrap_1"] == pytest.approx(4.0)
+    assert metrics["energy_term_kinetic"] == pytest.approx(1.5)
+    assert metrics["energy_term_harmonic_trap"] == pytest.approx(4.0)
 
 
-def test_summarize_local_energy_terms_distinguishes_repeated_classes_by_index() -> None:
-    class HarmonicTrap:
-        pass
+def test_summarize_local_energy_terms_distinguishes_terms_by_distinct_names() -> None:
+    terms = {"harmonic_trap_0": torch.tensor([1.0, 2.0]), "harmonic_trap_1": torch.tensor([3.0, 5.0])}
 
-    terms = [torch.tensor([1.0, 2.0]), torch.tensor([3.0, 5.0])]
-    hamiltonian_terms = [HarmonicTrap(), HarmonicTrap()]
+    metrics = summarize_local_energy_terms(terms)
 
-    metrics = summarize_local_energy_terms(terms, hamiltonian_terms)
-
-    assert "energy_term_HarmonicTrap_0" in metrics
-    assert "energy_term_HarmonicTrap_1" in metrics
-    assert metrics["energy_term_HarmonicTrap_0"] == pytest.approx(1.5)
-    assert metrics["energy_term_HarmonicTrap_1"] == pytest.approx(4.0)
+    assert metrics["energy_term_harmonic_trap_0"] == pytest.approx(1.5)
+    assert metrics["energy_term_harmonic_trap_1"] == pytest.approx(4.0)
 
 
 def test_summarize_local_energy_terms_reports_json_safe_health_metrics() -> None:
-    class KineticEnergy:
-        pass
+    metrics = summarize_local_energy_terms({"kinetic": torch.tensor([1.0, float("nan"), 3.0])})
 
-    terms = [torch.tensor([1.0, float("nan"), 3.0])]
-    metrics = summarize_local_energy_terms(terms, [KineticEnergy()])
-
-    prefix = "energy_term_KineticEnergy_0"
+    prefix = "energy_term_kinetic"
     assert metrics[f"{prefix}_n_finite"] == 2
     assert metrics[f"{prefix}_n_total"] == 3
     assert metrics[f"{prefix}_nonfinite_count"] == 1
@@ -158,22 +141,13 @@ def test_summarize_local_energy_terms_reports_json_safe_health_metrics() -> None
     assert all(isinstance(value, (float, int)) for value in metrics.values())
 
 
-def test_summarize_local_energy_terms_raises_on_length_mismatch() -> None:
-    class KineticEnergy:
-        pass
-
-    with pytest.raises(ValueError, match="must match"):
-        summarize_local_energy_terms([torch.tensor([1.0])], [KineticEnergy(), KineticEnergy()])
+def test_summarize_local_energy_terms_raises_when_no_finite_samples() -> None:
+    with pytest.raises(ValueError, match="no finite samples"):
+        summarize_local_energy_terms({"kinetic": torch.tensor([float("nan"), float("inf")])})
 
 
-def test_hamiltonian_term_metric_prefix_uses_class_name_and_index() -> None:
-    class ElectronElectronInteraction:
-        pass
-
-    assert (
-        hamiltonian_term_metric_prefix(ElectronElectronInteraction(), 2)
-        == "energy_term_ElectronElectronInteraction_2"
-    )
+def test_hamiltonian_term_metric_prefix_uses_resolved_name() -> None:
+    assert hamiltonian_term_metric_prefix("electron_electron") == "energy_term_electron_electron"
 
 
 # --- old public surface is gone ---

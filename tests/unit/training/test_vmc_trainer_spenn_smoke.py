@@ -98,8 +98,9 @@ def test_vmc_trainer_logs_term_metrics_when_return_terms_enabled() -> None:
     terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
     state = _fit_one_step(return_terms=True, terms=terms)
 
-    expected_classes = ("KineticEnergy", "HarmonicTrap", "ElectronElectronInteraction")
-    for index, class_name in enumerate(expected_classes):
-        prefix = f"energy_term_{class_name}_{index}"
+    # A list of terms falls back to snake-case class names for the metric keys.
+    expected_names = ("kinetic_energy", "harmonic_trap", "electron_electron_interaction")
+    for name in expected_names:
+        prefix = f"energy_term_{name}"
         assert prefix in state.metrics
         assert f"{prefix}_variance" in state.metrics

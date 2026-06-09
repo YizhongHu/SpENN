@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import re
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ import torch
 from omegaconf import OmegaConf
 
 from spenn.artifacts import RunContext, write_json
+from spenn.naming import camel_to_snake
 
 
 @dataclass
@@ -269,11 +269,12 @@ class Checkpoint(Callback):
 
         state = event.state
         sampler = getattr(state, "sampler", None)
+        sampler_mcmc_state = getattr(sampler, "mcmc_state_dict", None)
         payload = {
             "step": state.step,
             "model_state_dict": state.model.state_dict(),
             "optimizer_state_dict": state.optimizer.state_dict(),
-            "sampler_state_dict": sampler.state_dict() if hasattr(sampler, "state_dict") else None,
+            "sampler_mcmc_state": sampler_mcmc_state() if callable(sampler_mcmc_state) else None,
             "metrics": state.metrics,
         }
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -350,6 +351,33 @@ class DataValidity(Callback):
                     metrics["sign_invalid_fraction"] = sign_fraction
                     if sign_fraction > 0.0:
                         failures.append(f"sign_invalid_fraction={sign_fraction} exceeds 0.0")
+                # Schema invariants belong to the typed output object;
+                # DataValidity only decides when to check and whether to fail.
+                validate = getattr(output, "validate", None)
+                if not callable(validate):
+                    metrics["output_validated"] = False
+                    failures.append(
+                        f"wavefunction output type {type(output).__name__} does not expose validate()"
+                    )
+                else:
+                    kwargs: dict[str, Any] = {}
+                    batch = getattr(state, "batch", None)
+                    if batch is not None:
+                        sample_shape = getattr(batch, "sample_shape", None)
+                        batch_size = getattr(batch, "batch_size", None)
+                        if sample_shape is not None:
+                            kwargs["sample_shape"] = tuple(sample_shape)
+                        if batch_size is not None:
+                            kwargs["batch_size"] = int(batch_size)
+                    try:
+                        validate(**kwargs)
+                    except Exception as exc:
+                        metrics["output_validated"] = False
+                        failures.append(
+                            f"WavefunctionOutput.validate() failed with {type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        metrics["output_validated"] = True
 
         if self.check_loss:
             loss = getattr(state, "loss", None)
@@ -591,13 +619,6 @@ _DEFAULT_CHECKER_NAMES = {
 }
 
 
-def _camel_to_snake(name: str) -> str:
-    """Convert a CamelCase class name to snake_case."""
-
-    first = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first).lower()
-
-
 def _checker_base_name(checker: object) -> str:
     """Return a readable base log name for a checker."""
 
@@ -607,7 +628,7 @@ def _checker_base_name(checker: object) -> str:
     explicit = getattr(checker, "name", None)
     if explicit:
         return str(explicit)
-    snake = _camel_to_snake(class_name)
+    snake = camel_to_snake(class_name)
     for suffix in ("_equivariance_checker", "_checker"):
         if snake.endswith(suffix):
             return snake[: -len(suffix)]

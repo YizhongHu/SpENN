@@ -15,7 +15,13 @@ from spenn.data.permutation import Permutation
 
 @dataclass
 class WavefunctionOutput(EquivariantState):
-    """Store a wavefunction value in signed-log form.
+    """Store a fermionic scalar wavefunction value in signed-log form.
+
+    This represents a fermionic scalar wavefunction output. Under particle
+    permutation, ``logabs`` is invariant and ``sign`` transforms by the
+    permutation parity (see :meth:`permute`). This sign-representation contract
+    is specific to fermionic scalar outputs; a non-fermionic scalar output would
+    need a different ``permute`` implementation.
 
     Parameters
     ----------
@@ -124,9 +130,10 @@ class WavefunctionOutput(EquivariantState):
     def permute(self, permutation: Permutation) -> "WavefunctionOutput":
         """Return the output under a particle permutation.
 
-        Scalar wavefunction outputs carry no tuple-index axes, but the
-        wavefunction value transforms in the sign representation under
-        electron-label permutations.
+        Encodes the fermionic scalar-output contract: ``logabs`` is invariant
+        and ``sign`` transforms by the permutation parity
+        (``permutation.sign``). Scalar wavefunction outputs carry no tuple-index
+        axes, so only the parity factor on ``sign`` is applied.
         """
 
         return replace(

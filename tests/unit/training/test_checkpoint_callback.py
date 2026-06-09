@@ -45,7 +45,7 @@ def test_checkpoint_payload_contains_expected_keys(tmp_path) -> None:
     assert set(payload["model_state_dict"]) == set(state.model.state_dict())
     assert "optimizer_state_dict" in payload
     assert payload["metrics"] == {"loss": 0.5, "energy_mean": 1.25}
-    assert payload["sampler_state_dict"] is None
+    assert payload["sampler_mcmc_state"] is None
 
 
 def test_checkpoint_respects_every_n_steps_filter(tmp_path) -> None:
@@ -58,12 +58,17 @@ def test_checkpoint_respects_every_n_steps_filter(tmp_path) -> None:
     assert (tmp_path / "step_2.pt").exists()
 
 
-def test_checkpoint_saves_sampler_state_when_available(tmp_path) -> None:
+def test_checkpoint_saves_sampler_mcmc_state_when_available(tmp_path) -> None:
     callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
     state = _state(1)
-    state.sampler = torch.nn.Linear(1, 1)  # any module exposing state_dict()
+
+    class _SamplerWithMCMCState:
+        def mcmc_state_dict(self) -> dict:
+            return {"has_burned_in": True}
+
+    state.sampler = _SamplerWithMCMCState()
 
     callback.handle(_event(state))
 
     payload = torch.load(tmp_path / "step_1.pt", weights_only=False)
-    assert payload["sampler_state_dict"] is not None
+    assert payload["sampler_mcmc_state"] == {"has_burned_in": True}

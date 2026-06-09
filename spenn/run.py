@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import Sequence
 
@@ -84,6 +85,10 @@ def prepare_run_context(
 
     loggers = _instantiate_sequence(OmegaConf.select(resolved_cfg, "loggers", default=[]))
     callbacks = _instantiate_sequence(OmegaConf.select(resolved_cfg, "callbacks", default=[]))
+    # Fail-loud interface validation only: confirm the configured objects expose
+    # the lifecycle methods, without invoking any behavior (no handle/log/finish).
+    _validate_callbacks(callbacks)
+    _validate_loggers(loggers)
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path)
     return RunContext(
         cfg=resolved_cfg,
@@ -100,8 +105,28 @@ def run_from_config(
     *,
     config_path: str | None = None,
     command: str | None = None,
+    raise_exceptions: bool = False,
 ) -> int:
-    """Instantiate and execute the configured runner."""
+    """Instantiate and execute the configured runner.
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        Resolved run configuration.
+    config_path, command : str or None, optional
+        Provenance recorded in run metadata.
+    raise_exceptions : bool, optional
+        When ``True``, re-raise the original exception after the status update,
+        exception event, and logger teardown. The default ``False`` preserves
+        CLI-style ``return 1`` behavior; tests and debugging can set ``True`` to
+        surface the original traceback.
+
+    Returns
+    -------
+    int
+        ``0`` on success, ``1`` on a handled failure (when
+        ``raise_exceptions=False``).
+    """
 
     context = prepare_run_context(cfg, config_path=config_path, command=command)
     runner: Runner | None = None
@@ -113,16 +138,56 @@ def run_from_config(
         return 0
     except Exception as exc:
         context.metadata.status = "failed"
+        payload = {
+            "exception": exc,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "traceback": traceback.format_exc(),
+        }
         if runner is None:
-            event = Event(name="exception", context=context, payload={"exception": exc})
+            event = Event(name="exception", context=context, payload=payload)
             for callback in context.callbacks:
                 callback.handle(event)
         else:
-            runner.emit("exception", context, payload={"exception": exc})
+            runner.emit("exception", context, payload=payload)
+        if raise_exceptions:
+            raise
         return 1
     finally:
         for logger in context.loggers:
             logger.finish()
+
+
+def _validate_callbacks(callbacks: list[object]) -> None:
+    """Fail loudly if a configured callback lacks a callable ``handle(event)``.
+
+    This checks the interface shape only; callback behavior is invoked lazily
+    through normal lifecycle events, never during setup.
+    """
+
+    for index, callback in enumerate(callbacks):
+        if not callable(getattr(callback, "handle", None)):
+            raise TypeError(
+                f"callbacks[{index}]={type(callback).__name__} must expose callable handle(event)"
+            )
+
+
+def _validate_loggers(loggers: list[object]) -> None:
+    """Fail loudly if a configured logger lacks callable ``log``/``finish``.
+
+    This checks the interface shape only; logger behavior is invoked lazily when
+    records are logged and during normal run teardown, never during setup.
+    """
+
+    for index, logger in enumerate(loggers):
+        if not callable(getattr(logger, "log", None)):
+            raise TypeError(
+                f"loggers[{index}]={type(logger).__name__} must expose callable log(record)"
+            )
+        if not callable(getattr(logger, "finish", None)):
+            raise TypeError(
+                f"loggers[{index}]={type(logger).__name__} must expose callable finish()"
+            )
 
 
 def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:

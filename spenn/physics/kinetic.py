@@ -45,15 +45,18 @@ def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
     )
     output = model(probe_batch)
     logabs = _extract_logabs(output)
-    assert logabs.shape == (batch.batch_size,)
+    if logabs.shape != (batch.batch_size,):
+        raise ValueError(f"logabs must have shape {(batch.batch_size,)}, got {tuple(logabs.shape)}")
     grad = torch.autograd.grad(logabs.sum(), positions, create_graph=True)[0]
-    assert grad.shape == positions.shape
+    if grad.shape != positions.shape:
+        raise ValueError(f"logabs gradient must have shape {tuple(positions.shape)}, got {tuple(grad.shape)}")
     flat_grad = grad.reshape(grad.shape[0], -1)
     laplacian = torch.zeros(grad.shape[0], device=grad.device, dtype=grad.dtype)
     for idx in range(flat_grad.shape[1]):
         second = torch.autograd.grad(flat_grad[:, idx].sum(), positions, create_graph=True, retain_graph=True)[0]
         laplacian = laplacian + second.reshape(second.shape[0], -1)[:, idx]
-    assert laplacian.shape == (batch.batch_size,)
+    if laplacian.shape != (batch.batch_size,):
+        raise ValueError(f"laplacian must have shape {(batch.batch_size,)}, got {tuple(laplacian.shape)}")
     return laplacian
 
 
@@ -88,16 +91,19 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     )
     output = model(probe_batch)
     logabs = _extract_logabs(output)
-    assert logabs.shape == (batch.batch_size,)
+    if logabs.shape != (batch.batch_size,):
+        raise ValueError(f"logabs must have shape {(batch.batch_size,)}, got {tuple(logabs.shape)}")
     grad = torch.autograd.grad(logabs.sum(), positions, create_graph=True)[0]
-    assert grad.shape == positions.shape
+    if grad.shape != positions.shape:
+        raise ValueError(f"logabs gradient must have shape {tuple(positions.shape)}, got {tuple(grad.shape)}")
     flat_grad = grad.reshape(grad.shape[0], -1)
     laplacian = torch.zeros(grad.shape[0], device=grad.device, dtype=grad.dtype)
     for idx in range(flat_grad.shape[1]):
         second = torch.autograd.grad(flat_grad[:, idx].sum(), positions, create_graph=True, retain_graph=True)[0]
         laplacian = laplacian + second.reshape(second.shape[0], -1)[:, idx]
     output = -0.5 * (laplacian + flat_grad.pow(2).sum(dim=1))
-    assert output.shape == (batch.batch_size,)
+    if output.shape != (batch.batch_size,):
+        raise ValueError(f"kinetic local energy must have shape {(batch.batch_size,)}, got {tuple(output.shape)}")
     return output
 
 
