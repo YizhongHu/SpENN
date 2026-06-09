@@ -47,6 +47,39 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
   --out-cache spenn/cache/irreps_m3.pt
 ```
 
+## Config ownership
+
+**Runners own everything they use.** Callbacks, loggers, and (for `Evaluate`)
+diagnostics live *inside* the runner config block, not at the top level:
+
+```yaml
+runner:
+  _target_: spenn.runner.Train
+  model: ${model}
+  sampler: ${sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  optimizer_factory: ${optimizer_factory}
+  trainer: ${trainer}
+  callbacks: [...]   # runner-owned
+  loggers: [...]     # runner-owned
+```
+
+- `spenn.runner.Train` owns its `callbacks` and `loggers`.
+- `spenn.runner.Evaluate` owns its `callbacks`, `loggers`, and `diagnostics`
+  (diagnostics are Evaluate-only and are never consumed by `Train`).
+- `model`, `sampler`, `hamiltonian_terms`, `optimizer_factory`, and `trainer`
+  remain reusable top-level blocks referenced by the runner via `${...}`.
+- `loggers` and `diagnostics` are **not** top-level blocks.
+
+`run_from_config` instantiates the runner (including its callbacks/loggers) and
+mirrors them onto the `RunContext` so `context.log`, lifecycle dispatch, and
+`logger.finish()` operate on the runner's objects. `optimizer_factory` names a
+factory (`_partial_: true`) that builds an optimizer from model parameters, not
+an optimizer instance. `VMCTrainer` owns only training-loop hyperparameters
+(`max_steps`, `log_every_n_steps`, `return_terms`, `gradient_clip_norm`) and the
+loss/backward/step mechanics; it does not own callbacks, loggers, reference
+energy, or diagnostics.
+
 ## Checks After Changes
 
 After code changes, run the fast syntax and test checks:
