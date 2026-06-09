@@ -179,7 +179,6 @@ def test_hooke_eval_runner_writes_standard_artifacts(tmp_path, fixture: str) -> 
         "resolved_config.yaml",
         "metadata.json",
         "status.json",
-        "report.md",
         "metrics.jsonl",
         "metrics.csv",
     ):

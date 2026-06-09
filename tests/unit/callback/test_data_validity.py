@@ -6,14 +6,17 @@ import pytest
 import torch
 
 from spenn.callback import DataValidity
-from spenn.data.batch import WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from tests.unit.callback.support import FakeState, RecordingContext, step_event
 
 
 def _finite_state() -> FakeState:
     return FakeState(
         step=1,
-        batch={"positions": torch.zeros(4, 2, 3, dtype=torch.float64)},
+        batch=ElectronBatch(
+            positions=torch.zeros(4, 2, 3, dtype=torch.float64),
+            spins=torch.tensor([[1.0, -1.0]] * 4, dtype=torch.float64),
+        ),
         local_energy=torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64),
         loss=torch.tensor(1.5, dtype=torch.float64),
         wavefunction_output=WavefunctionOutput(
@@ -59,14 +62,20 @@ def test_counts_disambiguate_empty_from_all_nonfinite() -> None:
     assert (empty_metrics["local_energy_finite_count"], empty_metrics["local_energy_total_count"]) == (0, 0)
 
 
-def test_empty_batch_tensor_counts_as_invalid() -> None:
+def test_valid_batch_logs_typed_validity_metrics() -> None:
+    from spenn.data.batch import ElectronBatch
+
     state = _finite_state()
-    state.batch = {"positions": torch.empty(0, dtype=torch.float64)}
+    state.batch = ElectronBatch(
+        positions=torch.zeros(4, 2, 3, dtype=torch.float64),
+        spins=torch.tensor([[1.0, -1.0]] * 4, dtype=torch.float64),
+    )
 
     metrics = _handle(DataValidity(["step_end"], fail_fast=False), state).latest("checks/data_validity")
 
-    assert metrics["batch_nonfinite_tensor_count"] == 1
-    assert metrics["passed"] is False
+    assert metrics["batch_validated"] is True
+    assert metrics["batch_positions_nonfinite_fraction"] == 0.0
+    assert metrics["batch_n_electrons"] == 2
 
 
 def test_fails_on_nan_local_energy() -> None:
@@ -121,12 +130,13 @@ def test_logs_nonfinite_fractions_without_raising_when_not_fail_fast() -> None:
     assert metrics["passed"] is False
 
 
-def test_fails_on_nonfinite_batch_tensor() -> None:
+def test_batch_without_validate_method_fails() -> None:
     state = _finite_state()
+    # A plain dict is not a typed batch: it exposes no validate() contract.
     state.batch = {"positions": torch.tensor([[float("nan")]], dtype=torch.float64)}
 
     context = _handle(DataValidity(["step_end"], fail_fast=False), state)
 
     metrics = context.latest("checks/data_validity")
-    assert metrics["batch_nonfinite_tensor_count"] == 1
+    assert metrics["batch_validated"] is False
     assert metrics["passed"] is False

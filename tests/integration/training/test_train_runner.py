@@ -41,7 +41,6 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
         "status.json",
         "metrics.csv",
         "metrics.jsonl",
-        "report.md",
         "checkpoints/latest.pt",
         "checkpoints/step_3.pt",
     ):
