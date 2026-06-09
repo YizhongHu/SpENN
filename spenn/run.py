@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from spenn.artifacts import (
     ArtifactManager,
@@ -54,11 +54,11 @@ def prepare_run_context(
     config_path: str | None = None,
     command: str | None = None,
 ) -> RunContext:
-    """Resolve run metadata and artifact paths.
+    """Resolve run metadata, artifact paths, callbacks, and loggers.
 
-    Callbacks and loggers are owned by the selected runner (instantiated from
-    its own config block); ``run_from_config`` mirrors the runner's callbacks
-    and loggers onto the returned context after the runner is instantiated.
+    Callbacks and loggers are configured at the config root and owned by the
+    `RunContext`; runners dispatch into ``context.callbacks`` and log through
+    ``context.log``.
     """
 
     source_cfg = _rerunnable_config(cfg)
@@ -82,12 +82,16 @@ def prepare_run_context(
     OmegaConf.resolve(resolved_cfg)
     artifact_manager.make_dirs()
 
+    loggers = _instantiate_sequence(OmegaConf.select(resolved_cfg, "loggers", default=[]))
+    callbacks = _instantiate_sequence(OmegaConf.select(resolved_cfg, "callbacks", default=[]))
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path)
     return RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
         artifact_manager=artifact_manager,
         metadata=metadata,
+        callbacks=callbacks,
+        loggers=loggers,
     )
 
 
@@ -103,10 +107,6 @@ def run_from_config(
     runner: Runner | None = None
     try:
         runner = _instantiate_runner(context)
-        # Runners own their callbacks/loggers; mirror them onto the context so
-        # context.log, lifecycle dispatch, and logger.finish operate on them.
-        context.callbacks = list(runner.callbacks)
-        context.loggers = list(runner.loggers)
         result = runner.run(context)
         if isinstance(result, RunResult):
             context.metadata.status = result.status
@@ -125,10 +125,22 @@ def run_from_config(
             logger.finish()
 
 
+def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
+    instantiated = []
+    for item in items or []:
+        if isinstance(item, DictConfig) and "_target_" in item:
+            instantiated.append(instantiate(item))
+        else:
+            instantiated.append(item)
+    return instantiated
+
+
 def _instantiate_runner(context: RunContext) -> Runner:
     runner_cfg = OmegaConf.create(OmegaConf.to_container(context.cfg.runner, resolve=False))
-    # The runner owns its callbacks and loggers, so they are instantiated as
-    # part of the runner config (no longer top-level / run-context owned).
+    runner_cfg.pop("callbacks", None)
+    runner_cfg.pop("loggers", None)
+    # Callbacks and loggers are owned by the RunContext; runners dispatch into
+    # ``context.callbacks`` via ``emit`` and log through ``context.log``.
     runner = instantiate(runner_cfg)
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to spenn.runner.Runner, got {type(runner)!r}")
