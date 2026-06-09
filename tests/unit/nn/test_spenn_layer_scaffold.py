@@ -80,7 +80,7 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
         activation=IdentityActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
-        update=ChannelMappedUpdate(),
+        update=ChannelMappedUpdate(max_order=1, channels=2),
     )
 
     output = layer(feature)
@@ -125,13 +125,20 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             max_order=1,
             max_virtual_order=1,
             implementation="vectorized",
+            channels=2,
             initial_weight=0.5,
         ),
         fourier=FourierTransform(partitions=(partition,)),
         activation=ActivationByType(symmetric_activation=torch.nn.Tanh()),
-        path_aggregation=PathAggregation(channel_out_by_order={1: 2}),
+        path_aggregation=PathAggregation(
+            max_order=1,
+            channels=2,
+            channel_out_by_order=2,
+            path_counts_by_order={1: 1},
+            partitions=(partition,),
+        ),
         inverse_fourier=InverseFourierTransform(partitions=(partition,)),
-        update=ChannelMappedUpdate(),
+        update=ChannelMappedUpdate(max_order=1, channels=2),
     )
 
     output = layer(feature)

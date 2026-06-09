@@ -21,6 +21,38 @@ class Activation(EquivariantMap):
     """
 
 
+class GatedNormActivation(Activation):
+    """Gate every irrep block by a module applied to invariant norms.
+
+    Parameters
+    ----------
+    gate : torch.nn.Module
+        Scalar module applied to alpha-coordinate norms.
+    eps : float, optional
+        Numerical floor for the norm.
+    """
+
+    def __init__(
+        self,
+        gate: nn.Module,
+        *,
+        eps: float = 1.0e-12,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.gate = gate
+        self.eps = float(eps)
+
+    def forward_impl(self, x: IrrepFeature | IrrepInteraction) -> IrrepFeature | IrrepInteraction:
+        """Scale each irrep vector by a scalar function of ``||alpha||``."""
+
+        return type(x)({partition: self._apply(tensor) for partition, tensor in x.items()})
+
+    def _apply(self, tensor: torch.Tensor) -> torch.Tensor:
+        norm = tensor.square().sum(dim=-2, keepdim=True).clamp_min(self.eps).sqrt()
+        return tensor * self.gate(norm)
+
+
 class ActivationByType(Activation):
     """Apply equivariant activation rules by partition type.
 
@@ -152,4 +184,4 @@ class ActivationByIrrep(Activation):
         return type(x)(blocks)
 
 
-__all__ = ["Activation", "ActivationByIrrep", "ActivationByType"]
+__all__ = ["Activation", "ActivationByIrrep", "ActivationByType", "GatedNormActivation"]

@@ -8,7 +8,7 @@ from torch import nn
 
 from spenn.data.irrep import IrrepInteraction
 from spenn.data.partition import Partition
-from spenn.nn import Activation, ActivationByIrrep, ActivationByType
+from spenn.nn import Activation, ActivationByIrrep, ActivationByType, GatedNormActivation
 
 
 class Cube(nn.Module):
@@ -19,6 +19,7 @@ class Cube(nn.Module):
 def test_activation_modules_inherit_activation_template() -> None:
     assert issubclass(ActivationByType, Activation)
     assert issubclass(ActivationByIrrep, Activation)
+    assert issubclass(GatedNormActivation, Activation)
 
 
 def test_activation_by_type_preserves_path_resolved_interaction_type() -> None:
@@ -79,3 +80,20 @@ def test_activation_by_type_broadcasts_tensor_gate_over_alpha_with_paths() -> No
     gate = output / tensor
 
     torch.testing.assert_close(gate[..., 0, :], gate[..., 1, :])
+
+
+def test_gated_norm_activation_uses_configured_gate_module() -> None:
+    partition = Partition((2, 1))
+    tensor = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64).reshape(1, 1, 1, 1, 1, 1, 2, 2)
+    interaction = IrrepInteraction({partition: tensor})
+    activation = GatedNormActivation(gate=nn.Identity(), eps=0.0)
+
+    output = activation(interaction)[partition]
+    expected_gate = tensor.square().sum(dim=-2, keepdim=True).sqrt()
+
+    torch.testing.assert_close(output, tensor * expected_gate)
+
+
+def test_gated_norm_activation_requires_gate_module() -> None:
+    with pytest.raises(TypeError, match="gate"):
+        GatedNormActivation()  # type: ignore[call-arg]

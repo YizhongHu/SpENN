@@ -39,7 +39,11 @@ def test_path_aggregation_passes_forced_runtime_equivariance_check() -> None:
         }
     )
     aggregation = PathAggregation(
-        channel_out_by_order={2: 2},
+        max_order=2,
+        channels=2,
+        channel_out_by_order=2,
+        path_counts_by_order={1: 0, 2: 3},
+        partitions=(symmetric, sign),
     )
 
     output = aggregation(interaction)
@@ -64,8 +68,13 @@ def test_path_aggregation_preserves_orthogonal_coordinate_action() -> None:
     )
     permutation = Permutation((1, 2, 0))
     representation = specht_irrep(partition).representation(permutation)
-    aggregation = PathAggregation(channel_out_by_order={3: 2})
-    aggregation(IrrepInteraction({partition: tensor}))
+    aggregation = PathAggregation(
+        max_order=3,
+        channels=2,
+        channel_out_by_order=2,
+        path_counts_by_order={1: 0, 2: 0, 3: 3},
+        partitions=(partition,),
+    )
 
     transformed_input = torch.einsum("ab,...bc->...ac", representation, tensor)
     transformed_output = aggregation(IrrepInteraction({partition: transformed_input}))[partition]

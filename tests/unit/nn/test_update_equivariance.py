@@ -30,7 +30,7 @@ def test_update_passes_runtime_equivariance_check() -> None:
             torch.ones(1, 3, 3, dtype=torch.float64),
         ]
     )
-    module = ChannelMappedUpdate(initial_weight=0.25)
+    module = ChannelMappedUpdate(max_order=1, channels=2, update_channels=3, initial_weight=0.25)
 
     output = module(feature, update)
 
@@ -57,10 +57,18 @@ def _feature_and_update() -> tuple[RealFeature, RealUpdate]:
     return feature, update
 
 
-@pytest.mark.parametrize("module_cls", [ReplaceUpdate, ResidualUpdate, NormGatedUpdate, ChannelMappedUpdate])
-def test_update_strategy_scaffolds_are_equivariant_maps(module_cls) -> None:
+@pytest.mark.parametrize(
+    "module_factory",
+    [
+        ReplaceUpdate,
+        ResidualUpdate,
+        NormGatedUpdate,
+        lambda: ChannelMappedUpdate(max_order=2, channels=2),
+    ],
+)
+def test_update_strategy_scaffolds_are_equivariant_maps(module_factory) -> None:
     feature, update = _feature_and_update()
-    module = module_cls()
+    module = module_factory()
 
     output = module(feature, update)
 
@@ -93,7 +101,7 @@ def test_update_strategies_keep_real_space_shapes() -> None:
 def test_channel_mapped_update_starts_as_identity_when_channels_match() -> None:
     feature, update = _feature_and_update()
 
-    output = ChannelMappedUpdate()(feature, update)
+    output = ChannelMappedUpdate(max_order=2, channels=2)(feature, update)
 
     torch.testing.assert_close(output.blocks[1], feature.blocks[1] + update.blocks[1])
     torch.testing.assert_close(output.blocks[2], feature.blocks[2] + update.blocks[2])
@@ -112,10 +120,21 @@ def test_channel_mapped_update_allows_unequal_channels_with_shared_tuple_map() -
             torch.tensor([[[1.0, 2.0], [3.0, 4.0]]], dtype=torch.float64),
         ]
     )
-    module = ChannelMappedUpdate(step=2.0, initial_weight=0.5, identity_init=False)
+    module = ChannelMappedUpdate(
+        max_order=1,
+        channels=3,
+        update_channels=2,
+        step=2.0,
+        initial_weight=0.5,
+        identity_init=False,
+    )
 
     output = module(feature, update)
 
-    expected_mapped = torch.einsum("oc,bc...->bo...", module.channel_maps["1"], update.blocks[1])
+    expected_mapped = torch.einsum(
+        "oc,bc...->bo...",
+        module.channel_maps["1"].to(dtype=update.blocks[1].dtype),
+        update.blocks[1],
+    )
     torch.testing.assert_close(output.blocks[1], 2.0 * expected_mapped)
     assert tuple(output.blocks[1].shape) == (1, 3, 2)

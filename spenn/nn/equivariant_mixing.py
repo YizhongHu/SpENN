@@ -52,9 +52,14 @@ class EquivariantMixing(EquivariantMap):
     aggregation : {"sum", "completion_mean"}, optional
         Whether to sum over completions or average over compatible completions
         for each output tuple and path.
+    channels : int or mapping
+        Input feature channels per body order. This is architecture metadata
+        and is independent of particle count.
+    left_channels, right_channels : int, mapping, or None, optional
+        Input channels for asymmetric two-input mixing. If omitted, `channels`
+        is used for both sides.
     out_channels : int, mapping, or None, optional
-        Output channels per target order. ``None`` uses the channel count of
-        the corresponding input feature block.
+        Output channels per target order. ``None`` preserves `channels`.
     initial_weight : float, optional
         Initial value for each path weight.
     implementation : {"slow", "vectorized"}, optional
@@ -73,6 +78,9 @@ class EquivariantMixing(EquivariantMap):
         paths: PathMetadata | tuple[VirtualPath, ...] | None = None,
         output_embedding: Literal["canonical", "full"] = "canonical",
         aggregation: Aggregation = "sum",
+        channels: int | Mapping[int, int],
+        left_channels: int | Mapping[int, int] | None = None,
+        right_channels: int | Mapping[int, int] | None = None,
         out_channels: int | Mapping[int, int] | None = None,
         initial_weight: float = 1.0,
         implementation: MixingImplementation = "slow",
@@ -93,10 +101,21 @@ class EquivariantMixing(EquivariantMap):
         self.implementation: MixingImplementation = implementation
         self.output_embedding = output_embedding
         self.initial_weight = float(initial_weight)
-        if isinstance(out_channels, Mapping):
-            self.out_channels = {int(order): int(channels) for order, channels in out_channels.items()}
-        else:
-            self.out_channels = out_channels
+        self.left_channels = _normalize_channels(
+            channels if left_channels is None else left_channels,
+            max_order=self.max_order,
+            name="left_channels",
+        )
+        self.right_channels = _normalize_channels(
+            channels if right_channels is None else right_channels,
+            max_order=self.max_order,
+            name="right_channels",
+        )
+        self.out_channels = _normalize_channels(
+            channels if out_channels is None else out_channels,
+            max_order=self.max_order,
+            name="out_channels",
+        )
         if isinstance(paths, PathMetadata):
             self.paths = self._paths_from_metadata(paths)
         elif paths is None:
@@ -111,6 +130,7 @@ class EquivariantMixing(EquivariantMap):
         else:
             self.paths = tuple(paths)
         self.weights = nn.ParameterDict()
+        self._initialize_weights()
 
     def forward_impl(self, x1: RealFeature, x2: RealFeature | None = None) -> RealInteraction:
         """Mix one or two real feature states into path-resolved interactions."""
@@ -127,7 +147,7 @@ class EquivariantMixing(EquivariantMap):
         ]
         for order in range(1, self.max_order + 1):
             active_paths = self._paths_for_order(order, x1=x1, x2=x2)
-            out_channels = self._out_channels(order, x1)
+            out_channels = self._out_channels(order)
             block = torch.zeros(
                 (batch_size, out_channels, len(active_paths), *((n_particles,) * order)),
                 device=device,
@@ -244,17 +264,20 @@ class EquivariantMixing(EquivariantMap):
             and path.m2 <= self.max_order
         )
 
-    def _out_channels(self, order: int, x: RealFeature) -> int:
-        if isinstance(self.out_channels, dict):
-            try:
-                return self.out_channels[order]
-            except KeyError as exc:
-                raise KeyError(f"Missing out_channels for order {order}") from exc
-        if isinstance(self.out_channels, int):
-            return self.out_channels
-        if order >= len(x.blocks):
-            raise ValueError(f"Input feature has no order-{order} block for output-channel inference")
-        return int(x.blocks[order].shape[1])
+    def _out_channels(self, order: int) -> int:
+        return self.out_channels[order]
+
+    def _initialize_weights(self) -> None:
+        for path in self.paths:
+            key = f"g{path.global_id}"
+            if key in self.weights:
+                continue
+            shape = (
+                self.out_channels[path.m],
+                self.left_channels[path.m1],
+                self.right_channels[path.m2],
+            )
+            self.weights[key] = nn.Parameter(torch.full(shape, self.initial_weight))
 
     def _weight_for(
         self,
@@ -264,23 +287,43 @@ class EquivariantMixing(EquivariantMap):
         x2: RealFeature,
         out_channels: int,
     ) -> torch.Tensor:
-        left_channels = int(x1.blocks[path.m1].shape[1])
-        right_channels = int(x2.blocks[path.m2].shape[1])
+        left_channels = self.left_channels[path.m1]
+        right_channels = self.right_channels[path.m2]
+        _validate_feature_channels(x1, path.m1, left_channels, name="left input")
+        _validate_feature_channels(x2, path.m2, right_channels, name="right input")
         shape = (out_channels, left_channels, right_channels)
         key = f"g{path.global_id}"
         if key not in self.weights:
-            value = torch.full(
-                shape,
-                self.initial_weight,
-                device=x1.blocks[path.m1].device,
-                dtype=x1.blocks[path.m1].dtype,
-            )
-            self.weights[key] = nn.Parameter(value)
-            return self.weights[key]
+            raise RuntimeError(f"Missing eager EquivariantMixing weight for path {path.global_id}")
         weight = self.weights[key]
         if tuple(weight.shape) != shape:
             raise ValueError(f"Path {path.global_id} weight shape {tuple(weight.shape)} does not match {shape}")
-        return weight
+        return weight.to(device=x1.blocks[path.m1].device, dtype=x1.blocks[path.m1].dtype)
+
+
+def _normalize_channels(value: int | Mapping[int, int], *, max_order: int, name: str) -> dict[int, int]:
+    if isinstance(value, Mapping):
+        channels = {int(order): int(count) for order, count in value.items()}
+        missing = [order for order in range(1, max_order + 1) if order not in channels]
+        if missing:
+            raise ValueError(f"{name} is missing orders {missing}")
+    else:
+        count = int(value)
+        channels = {order: count for order in range(1, max_order + 1)}
+    for order, count in channels.items():
+        if order < 1 or order > max_order:
+            raise ValueError(f"{name} contains order {order} outside [1, {max_order}]")
+        if count <= 0:
+            raise ValueError(f"{name}[{order}] must be positive, got {count}")
+    return dict(sorted(channels.items()))
+
+
+def _validate_feature_channels(feature: RealFeature, order: int, expected: int, *, name: str) -> None:
+    if order >= len(feature.blocks):
+        raise ValueError(f"{name} has no order-{order} block")
+    actual = int(feature.blocks[order].shape[1])
+    if actual != expected:
+        raise ValueError(f"{name} order-{order} channels {actual} do not match configured {expected}")
 
 
 __all__ = ["EquivariantMixing"]

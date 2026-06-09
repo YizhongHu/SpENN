@@ -1,6 +1,6 @@
 """Neural-network component namespace for SpENN."""
 
-from spenn.nn.activation import Activation, ActivationByIrrep, ActivationByType
+from spenn.nn.activation import Activation, ActivationByIrrep, ActivationByType, GatedNormActivation
 from spenn.nn.cusp import Cusp, ElectronElectronCusp, NuclearCusp
 from spenn.nn.embedding import Embedding
 from spenn.nn.equivariant_mixing import EquivariantMixing
@@ -25,6 +25,7 @@ __all__ = [
     "ElectronElectronCusp",
     "Embedding",
     "EquivariantMixing",
+    "GatedNormActivation",
     "MLP",
     "NormGatedUpdate",
     "NuclearCusp",

@@ -21,8 +21,13 @@ def test_path_aggregation_removes_path_axis_and_selects_learned_path() -> None:
         1,
     )
     interaction = IrrepInteraction({partition: tensor})
-    module = PathAggregation(channel_out_by_order={1: 1})
-    module(interaction)
+    module = PathAggregation(
+        max_order=1,
+        channels=1,
+        channel_out_by_order={1: 1},
+        path_counts_by_order={1: 2},
+        partitions=(partition,),
+    )
 
     with torch.no_grad():
         module.weights[module.key(partition)].zero_()
@@ -54,8 +59,13 @@ def test_path_aggregation_mixes_channels_paths_and_beta_without_alpha_mixing() -
         2,
     )
     interaction = IrrepInteraction({partition: tensor})
-    module = PathAggregation(channel_out_by_order={3: 3})
-    module(interaction)
+    module = PathAggregation(
+        max_order=3,
+        channels=2,
+        channel_out_by_order=3,
+        path_counts_by_order={1: 0, 2: 0, 3: 2},
+        partitions=(partition,),
+    )
     weight = torch.arange(1, 1 + 3 * 2 * 2 * 2 * 2, dtype=torch.float64).reshape(3, 2, 2, 2, 2)
 
     with torch.no_grad():
@@ -66,31 +76,61 @@ def test_path_aggregation_mixes_channels_paths_and_beta_without_alpha_mixing() -
     torch.testing.assert_close(output, expected)
 
 
-def test_path_aggregation_requires_mapped_output_channels_for_seen_orders() -> None:
-    partition = Partition((1,))
-    tensor = torch.ones(1, 1, 1, 2, 1, 1, dtype=torch.float64)
-    module = PathAggregation(channel_out_by_order={2: 1})
+def test_path_aggregation_requires_configured_output_channels_for_all_orders() -> None:
+    with pytest.raises(ValueError, match="missing orders"):
+        PathAggregation(
+            max_order=2,
+            channels=1,
+            channel_out_by_order={2: 1},
+            path_counts_by_order={1: 1, 2: 1},
+        )
 
-    with pytest.raises(ValueError, match="missing order 1"):
-        module(IrrepInteraction({partition: tensor}))
 
-
-def test_path_aggregation_default_channels_reject_mismatched_same_order_partitions() -> None:
+def test_path_aggregation_rejects_input_channels_that_disagree_with_config() -> None:
     interaction = IrrepInteraction(
         {
             Partition((2,)): torch.ones(1, 1, 1, 2, 2, 1, 1, dtype=torch.float64),
             Partition((1, 1)): torch.ones(1, 2, 1, 2, 2, 1, 1, dtype=torch.float64),
         }
     )
+    module = PathAggregation(
+        max_order=2,
+        channels=1,
+        channel_out_by_order=1,
+        path_counts_by_order={1: 0, 2: 1},
+        partitions=(Partition((2,)), Partition((1, 1))),
+    )
 
-    with pytest.raises(ValueError, match="channel_out_by_order=None"):
-        PathAggregation()(interaction)
+    with pytest.raises(ValueError, match="input channels"):
+        module(interaction)
 
 
 def test_path_aggregation_rejects_changed_block_signature_after_initialization() -> None:
     partition = Partition((1,))
-    module = PathAggregation(channel_out_by_order={1: 1})
-    module(IrrepInteraction({partition: torch.ones(1, 1, 2, 3, 1, 1, dtype=torch.float64)}))
+    module = PathAggregation(
+        max_order=1,
+        channels=1,
+        channel_out_by_order={1: 1},
+        path_counts_by_order={1: 2},
+        partitions=(partition,),
+    )
 
     with pytest.raises(ValueError, match="expected"):
         module(IrrepInteraction({partition: torch.ones(1, 1, 3, 3, 1, 1, dtype=torch.float64)}))
+
+
+def test_path_aggregation_eagerly_creates_zero_path_weights() -> None:
+    partition = Partition((1,))
+    tensor = torch.empty(1, 1, 0, 3, 1, 1, dtype=torch.float64)
+    module = PathAggregation(
+        max_order=1,
+        channels=1,
+        channel_out_by_order=2,
+        path_counts_by_order={1: 0},
+        partitions=(partition,),
+    )
+
+    output = module(IrrepInteraction({partition: tensor}))[partition]
+
+    assert module.weights[module.key(partition)].shape == (2, 1, 1, 0, 1)
+    torch.testing.assert_close(output, torch.zeros(1, 2, 3, 1, 1, dtype=torch.float64))

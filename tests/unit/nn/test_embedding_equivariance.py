@@ -18,10 +18,11 @@ def test_embedding_passes_forced_runtime_equivariance_check() -> None:
     )
     embedding = Embedding(
         max_order=3,
+        spatial_dim=3,
         out_channels={1: 3, 2: 4, 3: 5},
         hidden_channels=8,
         num_hidden_layers=1,
-        aux_feature_keys=("types",),
+        aux_feature_channels={"types": 2},
     )
 
     feature = embedding(batch)
@@ -39,10 +40,11 @@ def test_embedding_passes_runtime_equivariance_with_sample_axes() -> None:
     )
     embedding = Embedding(
         max_order=2,
+        spatial_dim=3,
         out_channels=4,
         hidden_channels=7,
         num_hidden_layers=1,
-        aux_feature_keys=("types",),
+        aux_feature_channels={"types": 2},
     )
 
     feature = embedding(batch)
