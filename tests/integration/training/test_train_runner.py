@@ -60,13 +60,15 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     last = train_records[-1]
     for key in (
         "loss",
-        "energy_mean",
+        "energy",
         "energy_variance",
-        "n_finite_samples",
-        "nonfinite_energy_fraction",
+        "local_energy_n_finite",
+        "local_energy_finite_fraction",
         "logabs_mean",
     ):
         assert key in last, f"missing metric: {key}"
+    # The physical training estimator is logged as `energy`, never `energy_mean`.
+    assert "energy_mean" not in last
 
     # JSONL serialization with allow_nan=False would already have failed the run
     # on any non-finite value; assert finiteness directly for good measure.

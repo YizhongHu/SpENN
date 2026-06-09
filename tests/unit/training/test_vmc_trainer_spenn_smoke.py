@@ -53,5 +53,53 @@ def test_one_vmc_step_is_finite_and_vmc_native() -> None:
     assert torch.isfinite(state.local_energy).all()
     # Native VMC metrics only -- no reference/exact comparison leaks in.
     assert _FORBIDDEN_METRICS.isdisjoint(state.metrics)
-    for key in ("energy_mean", "loss", "grad_norm"):
+    for key in ("energy", "loss", "grad_norm"):
         assert key in state.metrics
+
+
+def _fit_one_step(*, return_terms: bool, terms) -> object:
+    model = build_tiny_spenn()
+    sampler = build_tiny_sampler()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    trainer = VMCTrainer(max_steps=1, log_every_n_steps=1, return_terms=return_terms)
+    return trainer.fit(
+        model=model,
+        sampler=sampler,
+        hamiltonian_terms=terms,
+        optimizer=optimizer,
+        context=_StubContext(),
+        emit=lambda name, *, state=None, payload=None: None,
+    )
+
+
+def test_vmc_trainer_uses_canonical_objective_metrics() -> None:
+    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
+    state = _fit_one_step(return_terms=False, terms=terms)
+
+    # Physical training estimator is logged as `energy`, never `energy_mean`.
+    assert "energy" in state.metrics
+    assert "energy_mean" not in state.metrics
+    for key in (
+        "loss",
+        "energy_variance",
+        "energy_std",
+        "energy_stderr",
+        "local_energy_n_finite",
+        "local_energy_n_total",
+        "local_energy_finite_fraction",
+        "local_energy_nonfinite_count",
+    ):
+        assert key in state.metrics
+    # No per-term metrics when return_terms is disabled.
+    assert not any(key.startswith("energy_term_") for key in state.metrics)
+
+
+def test_vmc_trainer_logs_term_metrics_when_return_terms_enabled() -> None:
+    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
+    state = _fit_one_step(return_terms=True, terms=terms)
+
+    expected_classes = ("KineticEnergy", "HarmonicTrap", "ElectronElectronInteraction")
+    for index, class_name in enumerate(expected_classes):
+        prefix = f"energy_term_{class_name}_{index}"
+        assert prefix in state.metrics
+        assert f"{prefix}_variance" in state.metrics
