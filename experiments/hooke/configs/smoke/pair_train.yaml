@@ -23,7 +23,7 @@ runner:
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
-  optimizer_factory: ${optimizer_factory}
+  optimizer: ${optimizer}
   trainer: ${trainer}
 model:
   _target_: spenn.nn.SpENNWaveFunction
@@ -75,7 +75,7 @@ sampler:
   n_up: ${system.spin.n_up}
   n_down: ${system.spin.n_down}
   dtype: ${runtime.dtype}
-optimizer_factory:
+optimizer:
   _target_: torch.optim.Adam
   _partial_: true
   lr: 0.01

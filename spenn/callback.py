@@ -241,36 +241,6 @@ class Status(Callback):
         )
 
 
-class ReportSkeleton(Callback):
-    """Write a human-readable scaffold report."""
-
-    def __init__(self, triggers: Iterable[str], output_path: str | Path, **kwargs: Any) -> None:
-        super().__init__(triggers, **kwargs)
-        self.output_path = Path(output_path)
-
-    def on_run_end(self, event: Event) -> None:
-        """Write ``report.md`` for a scaffold run."""
-
-        run_id = event.context.metadata.run_id
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.output_path.write_text(
-            "\n".join(
-                [
-                    "# SpENN Scaffold Run",
-                    "",
-                    f"- Run ID: `{run_id}`",
-                    f"- Run directory: `{event.context.run_dir}`",
-                    "- Status: completed",
-                    "",
-                    "This scaffold run only exercised generic run management.",
-                    "No Hooke physics, VMC training, diagnostics, sampling, or plotting were run.",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-
-
 class Checkpoint(Callback):
     """Write training checkpoints from the loop `TrainerState`.
 
@@ -598,48 +568,6 @@ class RuntimeEquivariance(Callback):
                 )
 
 
-class ReferenceEnergy(Callback):
-    """Log reference-energy comparison metrics from training metrics.
-
-    Reads ``state.metrics[source_metric]`` and logs ``reference_energy``,
-    ``energy_error``, and ``abs_energy_error`` under ``namespace``. Keeps
-    reference comparison an explicit run choice rather than trainer policy.
-    """
-
-    def __init__(
-        self,
-        triggers: Iterable[str],
-        *,
-        reference_energy: float,
-        source_metric: str = "energy_mean",
-        namespace: str = "reference",
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(triggers, **kwargs)
-        self.reference_energy = float(reference_energy)
-        self.source_metric = source_metric
-        self.namespace = namespace
-
-    def on_step_end(self, event: Event) -> None:
-        """Compute and log reference-energy metrics for the current step."""
-
-        from spenn.physics.hamiltonian import reference_energy_metrics
-
-        state = event.state
-        if state is None or state.metrics is None:
-            return
-        if self.source_metric not in state.metrics:
-            raise KeyError(
-                f"ReferenceEnergy expected metric {self.source_metric!r} "
-                f"in TrainerState.metrics at step {state.step}."
-            )
-        metrics = reference_energy_metrics(
-            energy_mean=state.metrics[self.source_metric],
-            reference_energy=self.reference_energy,
-        )
-        event.context.log(metrics, step=state.step, namespace=self.namespace)
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -786,8 +714,6 @@ __all__ = [
     "Event",
     "GradientStats",
     "Metadata",
-    "ReferenceEnergy",
-    "ReportSkeleton",
     "ResolvedConfigSnapshot",
     "RuntimeEquivariance",
     "SamplerHealth",

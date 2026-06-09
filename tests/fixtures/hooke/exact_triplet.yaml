@@ -65,10 +65,6 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/status.json
-- _target_: spenn.callback.ReportSkeleton
-  triggers:
-  - run_end
-  output_path: ${run.dir}/report.md
 loggers:
 - _target_: spenn.logging.CSV
   path: ${run.dir}/metrics.csv

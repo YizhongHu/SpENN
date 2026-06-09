@@ -137,10 +137,13 @@ def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
 
 def _instantiate_runner(context: RunContext) -> Runner:
     runner_cfg = OmegaConf.create(OmegaConf.to_container(context.cfg.runner, resolve=False))
-    runner_cfg.pop("callbacks", None)
-    runner_cfg.pop("loggers", None)
-    # Callbacks and loggers are owned by the RunContext; runners dispatch into
-    # ``context.callbacks`` via ``emit`` and log through ``context.log``.
+    # Callbacks and loggers are configured at the config root and owned by the
+    # RunContext; a runner must not own them.
+    for forbidden in ("callbacks", "loggers"):
+        if forbidden in runner_cfg:
+            raise ValueError(
+                f"runner config must not own {forbidden!r}; configure it at the config root."
+            )
     runner = instantiate(runner_cfg)
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to spenn.runner.Runner, got {type(runner)!r}")

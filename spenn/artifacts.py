@@ -14,7 +14,7 @@ from uuid import uuid4
 from omegaconf import DictConfig, OmegaConf
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_RUN_DIRS = ("checkpoints", "traces", "diagnostics", "figures")
+REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
 
 
 class ArtifactManager:

@@ -40,18 +40,6 @@ class Runner:
         raise NotImplementedError
 
 
-class Scaffold(Runner):
-    """Runner that validates generic run-management plumbing."""
-
-    def run(self, context: RunContext) -> RunResult:
-        """Execute the PR1 scaffold lifecycle."""
-
-        self.emit("run_start", context)
-        context.log({"scaffold_completed": True}, step=0, namespace="scaffold")
-        self.emit("run_end", context)
-        return RunResult(status="completed")
-
-
 class Train(Runner):
     """Config-driven VMC training runner.
 
@@ -68,18 +56,19 @@ class Train(Runner):
         Sampler exposing ``collect_samples(model) -> (walkers, stats)``.
     hamiltonian_terms : sequence
         Hamiltonian terms summed by `local_energy`.
-    optimizer_factory : Any
-        Optimizer factory or config consumed by `make_optimizer`.
+    optimizer : Any
+        Configured optimizer spec/factory (typically a ``_partial_`` optimizer
+        constructor) applied to ``model.parameters()`` by `make_optimizer`.
     trainer : object
         Trainer exposing ``fit(*, model, sampler, hamiltonian_terms, optimizer,
         context, emit) -> TrainerState``.
     """
 
-    def __init__(self, model, sampler, hamiltonian_terms, optimizer_factory, trainer) -> None:
+    def __init__(self, model, sampler, hamiltonian_terms, optimizer, trainer) -> None:
         self.model = model
         self.sampler = sampler
         self.hamiltonian_terms = list(hamiltonian_terms)
-        self.optimizer_factory = optimizer_factory
+        self.optimizer = optimizer
         self.trainer = trainer
 
     def run(self, context: RunContext) -> RunResult:
@@ -89,7 +78,7 @@ class Train(Runner):
         if isinstance(self.model, torch.nn.Module):
             self.model.train()
 
-        optimizer = make_optimizer(self.optimizer_factory, self.model.parameters())
+        optimizer = make_optimizer(self.optimizer, self.model.parameters())
         self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
 
         self.emit("train_start", context)
@@ -104,15 +93,6 @@ class Train(Runner):
         self.emit("train_end", context, state=final_state)
         self.emit("run_end", context)
         return RunResult(status="completed")
-
-
-class Load(Runner):
-    """Placeholder for future load/evaluate runner configs."""
-
-    def run(self, context: RunContext) -> RunResult:
-        """Raise until load runner support is implemented."""
-
-        raise NotImplementedError("spenn.runner.Load will be implemented in a later PR.")
 
 
 class Evaluate(Runner):
@@ -174,4 +154,4 @@ class Evaluate(Runner):
         return RunResult(status="completed")
 
 
-__all__ = ["Evaluate", "Load", "Runner", "Scaffold", "Train"]
+__all__ = ["Evaluate", "Runner", "Train"]
