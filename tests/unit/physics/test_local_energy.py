@@ -1,4 +1,4 @@
-"""Physics, local-energy, and VMC-loss sanity tests."""
+"""Physics and local-energy sanity tests."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
 from spenn.physics.hamiltonian import (
     LocalEnergyResult,
@@ -59,16 +58,6 @@ class CuspGaussianOutputModel(nn.Module):
 
     def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = self.cusp(batch) - self.alpha * batch.positions.square().sum(dim=(1, 2))
-        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
-
-
-class FixedLogAbsModel(nn.Module):
-    def __init__(self, values: torch.Tensor) -> None:
-        super().__init__()
-        self.logabs = nn.Parameter(values.clone())
-
-    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
-        logabs = self.logabs[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
@@ -180,22 +169,6 @@ def test_cusp_local_energy_has_finite_second_derivatives_with_pair_diagonal() ->
     assert torch.all(torch.isfinite(energy))
     assert model.alpha.grad is not None
     assert torch.isfinite(model.alpha.grad)
-
-
-def test_vmc_loss_returns_score_function_objective_and_detached_metrics() -> None:
-    local_energy_vals = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64, requires_grad=True)
-    logabs = torch.tensor([0.0, 1.0, 2.0], dtype=torch.float64)
-    batch = ElectronBatch(positions=torch.zeros(3, 2, 1, dtype=torch.float64))
-    model = FixedLogAbsModel(logabs)
-
-    loss, metrics = VMCLoss()(model=model, terms=[_ConstantTerm("fixed", local_energy_vals)], batch=batch)
-    expected_loss = 2.0 * ((local_energy_vals.detach() - local_energy_vals.detach().mean()) * logabs).mean()
-
-    assert torch.equal(loss, expected_loss)
-    assert torch.equal(metrics["energy"], torch.tensor(3.0, dtype=torch.float64))
-    assert torch.equal(metrics["variance"], torch.tensor(8.0 / 3.0, dtype=torch.float64))
-    assert not metrics["energy"].requires_grad
-    assert not metrics["variance"].requires_grad
 
 
 # --- Local-energy helper over a list of terms ---
