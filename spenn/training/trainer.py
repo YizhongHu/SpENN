@@ -8,9 +8,9 @@ import torch
 from torch.nn.parameter import UninitializedParameter
 
 from spenn.artifacts import RunContext
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, summarize_local_energy
+from spenn.physics.hamiltonian import LocalEnergyResult, local_energy
 from spenn.training.state import TrainerState
-from spenn.training.vmc import summarize_logabs, vmc_surrogate_loss
+from spenn.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
 
 
 def _parameter_norm(model) -> float:
@@ -88,10 +88,16 @@ class VMCTrainer:
             walkers, sampler_stats = sampler.collect_samples(model)
             batch = walkers.make_batch()
             result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
-            eloc = result.total if isinstance(result, LocalEnergyResult) else result
+            if isinstance(result, LocalEnergyResult):
+                total_local_energy = result.total
+                term_components = result.components
+            else:
+                total_local_energy = result
+                term_components = None
 
             output = model(batch)
-            loss = vmc_surrogate_loss(output.logabs, eloc)
+            objective = compute_vmc_objective(output.logabs, total_local_energy)
+            loss = objective.loss
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -100,9 +106,13 @@ class VMCTrainer:
             grad_norm = _gradient_norm(model)
             optimizer.step()
 
-            metrics: dict[str, Any] = summarize_local_energy(result)
+            # Canonical VMC-native metrics come from the objective helper; the
+            # trainer only adds trainer-owned mechanics and optional per-term
+            # local-energy metrics (metrics only, never part of the objective).
+            metrics: dict[str, Any] = dict(objective.metrics)
             metrics.update(summarize_logabs(output.logabs))
-            metrics["loss"] = float(loss.detach().item())
+            if term_components is not None:
+                metrics.update(summarize_local_energy_terms(term_components, hamiltonian_terms))
             metrics["grad_norm"] = grad_norm
             metrics["param_norm"] = _parameter_norm(model)
             metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})
@@ -111,7 +121,7 @@ class VMCTrainer:
             state.metrics = metrics
             state.samples = walkers
             state.batch = batch
-            state.local_energy = eloc.detach()
+            state.local_energy = total_local_energy.detach()
             state.loss = loss.detach()
             state.wavefunction_output = output
             state.sampler_stats = dict(sampler_stats)
