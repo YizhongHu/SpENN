@@ -8,7 +8,12 @@ from torch import nn
 from spenn.data.batch import Walkers
 
 
-def gaussian_proposal(positions: torch.Tensor, step_size: float) -> torch.Tensor:
+def gaussian_proposal(
+    positions: torch.Tensor,
+    step_size: float,
+    *,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
     """Return a Gaussian random-walk proposal.
 
     Parameters
@@ -17,6 +22,10 @@ def gaussian_proposal(positions: torch.Tensor, step_size: float) -> torch.Tensor
         Current positions with shape ``[batch, n_electrons, spatial_dim]``.
     step_size : float
         Standard deviation of the isotropic Gaussian perturbation.
+    generator : torch.Generator or None, optional
+        RNG stream consumed for the proposal noise. When ``None``, the default
+        global RNG is used. Stateful samplers should pass their own generator so
+        the Markov chain owns its randomness.
 
     Returns
     -------
@@ -26,11 +35,18 @@ def gaussian_proposal(positions: torch.Tensor, step_size: float) -> torch.Tensor
 
     if positions.ndim != 3:
         raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
-    return positions + step_size * torch.randn_like(positions)
+    noise = torch.randn(
+        positions.shape, device=positions.device, dtype=positions.dtype, generator=generator
+    )
+    return positions + step_size * noise
 
 
 class GaussianMove(nn.Module):
     """Gaussian random-walk proposal module.
+
+    The move owns the proposal shape/rules; it does not own an RNG. The sampler
+    that drives it passes the generator for every proposal so that all
+    Markov-chain randomness belongs to the sampler.
 
     Parameters
     ----------
@@ -46,13 +62,21 @@ class GaussianMove(nn.Module):
         self.step_size = step_size
         self.move_all = move_all
 
-    def forward(self, positions: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        positions: torch.Tensor,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
         """Return proposed positions.
 
         Parameters
         ----------
         positions : torch.Tensor
             Current positions with shape ``[batch, n_electrons, spatial_dim]``.
+        generator : torch.Generator or None, optional
+            RNG stream consumed for proposal noise and one-electron index
+            selection. When ``None``, the default global RNG is used.
 
         Returns
         -------
@@ -63,21 +87,33 @@ class GaussianMove(nn.Module):
         if positions.ndim != 3:
             raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
         if self.move_all:
-            return gaussian_proposal(positions, self.step_size)
+            return gaussian_proposal(positions, self.step_size, generator=generator)
         proposals = positions.clone()
-        electron_idx = torch.randint(positions.shape[1], (positions.shape[0],), device=positions.device)
+        electron_idx = torch.randint(
+            positions.shape[1], (positions.shape[0],), device=positions.device, generator=generator
+        )
         walker_idx = torch.arange(positions.shape[0], device=positions.device)
         selected = proposals[walker_idx, electron_idx]
-        proposals[walker_idx, electron_idx] = selected + self.step_size * torch.randn_like(selected)
+        noise = torch.randn(
+            selected.shape, device=selected.device, dtype=selected.dtype, generator=generator
+        )
+        proposals[walker_idx, electron_idx] = selected + self.step_size * noise
         return proposals
 
-    def propose(self, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
+    def propose(
+        self,
+        walkers: Walkers,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return proposed positions and proposal log-ratio.
 
         Parameters
         ----------
         walkers : Walkers
             Current walker state.
+        generator : torch.Generator or None, optional
+            RNG stream consumed for the proposal, passed by the sampler.
 
         Returns
         -------
@@ -88,6 +124,6 @@ class GaussianMove(nn.Module):
             log-ratio is zero.
         """
 
-        proposed = self.forward(walkers.positions)
+        proposed = self.forward(walkers.positions, generator=generator)
         log_q_ratio = torch.zeros(walkers.batch_size, device=walkers.device, dtype=walkers.dtype)
         return proposed, log_q_ratio
