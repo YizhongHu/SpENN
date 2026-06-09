@@ -1,51 +1,39 @@
 """Tiny real-model builders for Hooke pair smoke tests.
 
-Builds an actual `SpENNWaveFunction` (embedding + Pfaffian readout, no layers)
-sized for a 2-electron CPU smoke run. Kept under ``tests/`` -- this is a test
-fixture, not core API.
+Single source of truth: everything is instantiated from the smoke training
+fixture ``tests/fixtures/hooke/pair_train.yaml`` (a copy of the experiments
+config), so unit tests exercise the exact model/sampler the integration run uses.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 from spenn.data.batch import ElectronBatch
-from spenn.nn import Embedding, SpENNWaveFunction
-from spenn.nn.readout import PfaffianReadout
+from spenn.nn import SpENNWaveFunction
 from spenn.sampling.metropolis import MetropolisSampler
+
+PAIR_TRAIN_CONFIG = Path(__file__).resolve().parents[1] / "fixtures" / "hooke" / "pair_train.yaml"
+
+
+def _config() -> OmegaConf:
+    return OmegaConf.load(PAIR_TRAIN_CONFIG)
 
 
 def build_tiny_spenn() -> SpENNWaveFunction:
-    """Return a tiny, equivariant two-electron `SpENNWaveFunction`."""
+    """Instantiate the tiny `SpENNWaveFunction` from the smoke fixture config."""
 
-    return SpENNWaveFunction(
-        embedding=Embedding(
-            max_order=2,
-            out_channels=4,
-            hidden_channels=8,
-            num_hidden_layers=1,
-            include_spins=True,
-        ),
-        layers=[],
-        readout=PfaffianReadout(allow_odd_electron_bordered=True),
-    )
+    return instantiate(_config().model)
 
 
-def build_tiny_sampler(*, n_walkers: int = 4, burn_in: int = 1, n_steps: int = 1) -> MetropolisSampler:
-    """Return a tiny fixed-spin (1 up, 1 down) Metropolis sampler."""
+def build_tiny_sampler() -> MetropolisSampler:
+    """Instantiate the fixed-spin Metropolis sampler from the smoke fixture config."""
 
-    return MetropolisSampler(
-        n_walkers=n_walkers,
-        burn_in=burn_in,
-        n_steps=n_steps,
-        proposal_scale=0.5,
-        seed=0,
-        n_electrons=2,
-        spatial_dim=3,
-        n_up=1,
-        n_down=1,
-        dtype=torch.float64,
-    )
+    return instantiate(_config().sampler)
 
 
 def tiny_pair_batch(n_walkers: int = 4) -> ElectronBatch:
