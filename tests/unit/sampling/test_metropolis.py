@@ -173,6 +173,16 @@ def test_initialize_rejects_mismatched_device() -> None:
         sampler.initialize(device="meta")
 
 
+def test_step_rejects_mismatched_walker_device() -> None:
+    import pytest
+
+    sampler = _tiny_sampler()
+    walkers = Walkers(positions=torch.empty(2, 2, 1, device="meta", dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="reset"):
+        sampler.step(NoGradLinearModel(), walkers)
+
+
 def _tiny_mala() -> MALASampler:
     return MALASampler(
         n_walkers=8,
@@ -203,7 +213,6 @@ def test_mala_sampler_seed_is_reproducible_across_instances() -> None:
 
 
 def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
-    torch.manual_seed(0)
     model = QuadraticLogAbsModel()
     sampler = MALASampler(proposal_scale=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)
     walkers = Walkers(positions=torch.zeros(4, 2, 1, dtype=torch.float64))

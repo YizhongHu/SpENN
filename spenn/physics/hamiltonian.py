@@ -1,10 +1,14 @@
 """Hamiltonian terms, local-energy results, and aggregation.
 
 A Hamiltonian is a collection of `HamiltonianTerm`s, given either as a sequence
-or as a ``dict[str, HamiltonianTerm]`` that names each term explicitly. The
+or as a ``dict[str, HamiltonianTerm]`` that names each term explicitly. Dict
+keys are the public, authoritative term names: they must be non-empty strings,
+and the values must expose ``local_energy(wavefunction, batch)``. The
 `local_energy` helper normalizes either form (see `normalize_hamiltonian_terms`),
 evaluates every term, and sums their contributions, optionally returning the
-per-term decomposition keyed by the resolved term names.
+per-term decomposition keyed by the resolved term names. Evaluation summaries
+emit per-term metrics as ``terms.{name}_mean`` and
+``terms.{name}_nonfinite_fraction``.
 """
 
 from __future__ import annotations
@@ -45,9 +49,10 @@ def normalize_hamiltonian_terms(
     """Return an ordered ``{name: term}`` mapping from a dict or sequence.
 
     A ``dict[str, HamiltonianTerm]`` is used directly: its keys are the
-    explicit, authoritative term names. A sequence falls back to the snake-case
-    class name of each term, suffixed with the term index when a class name
-    repeats, so the resulting names are always unique.
+    explicit, authoritative term names used in `LocalEnergyResult.terms` and
+    downstream metrics. A sequence falls back to the snake-case class name of
+    each term, suffixed with the term index when a class name repeats, so the
+    resulting names are always unique.
 
     Names are enforced as non-empty strings and each value must expose a
     callable ``local_energy``; invalid specifications fail loudly here rather
@@ -124,8 +129,8 @@ def local_energy(
     ----------
     terms : Mapping or Sequence of HamiltonianTerm
         Hamiltonian contributions to sum. A ``dict[str, HamiltonianTerm]`` names
-        terms by its keys; a sequence falls back to snake-case class names (see
-        `normalize_hamiltonian_terms`).
+        terms by its non-empty string keys; a sequence falls back to snake-case
+        class names (see `normalize_hamiltonian_terms`).
     wavefunction : callable
         Wavefunction model or exact reference returning ``WavefunctionOutput``.
     batch : ElectronBatch
@@ -179,10 +184,13 @@ def summarize_local_energy(
     """Summarize a sampled local energy into scalar logging metrics.
 
     Handles all-finite, partially-nonfinite, all-nonfinite, and empty inputs,
-    and per-term decompositions. All returned values are Python scalars
-    suitable for CSV/JSONL logging. This summary is reference-free: comparison
-    against a known energy is the job of `reference_energy_metrics` (typically
-    driven by `spenn.callback.ReferenceEnergy`).
+    and per-term decompositions. Per-term metrics are named
+    ``terms.{name}_mean`` and ``terms.{name}_nonfinite_fraction``, where
+    ``name`` is the resolved Hamiltonian term name. All returned values are
+    Python scalars suitable for CSV/JSONL logging. This summary is
+    reference-free: comparison against a known energy is the job of
+    `reference_energy_metrics` (typically driven by
+    `spenn.callback.ReferenceEnergy`).
 
     Parameters
     ----------

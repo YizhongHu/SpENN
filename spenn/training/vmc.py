@@ -121,7 +121,10 @@ def hamiltonian_term_metric_prefix(name: str) -> str:
     The prefix is derived from the resolved term name (the ``dict`` key, or the
     snake-case class name for a sequence; see
     `spenn.physics.hamiltonian.normalize_hamiltonian_terms`). Names are unique,
-    so prefixes are deterministic and collision-free.
+    so prefixes are deterministic and collision-free. Training per-term metrics
+    use this prefix directly for the finite mean and append suffixes such as
+    ``_variance``, ``_std``, ``_stderr``, ``_n_finite``, ``_n_total``,
+    ``_finite_fraction``, and ``_nonfinite_count`` for companion statistics.
     """
 
     return f"energy_term_{name}"
@@ -133,8 +136,10 @@ def summarize_local_energy_terms(
     """Summarize per-Hamiltonian-term local-energy tensors as training metrics.
 
     Term metric keys are derived from the resolved term names (see
-    `hamiltonian_term_metric_prefix`). These are metrics only -- they never form
-    part of the optimizer objective.
+    `hamiltonian_term_metric_prefix`). For a resolved name ``kinetic``, the
+    finite mean is logged as ``energy_term_kinetic`` and companion statistics
+    use suffixes like ``energy_term_kinetic_variance``. These are metrics only
+    -- they never form part of the optimizer objective.
 
     Parameters
     ----------

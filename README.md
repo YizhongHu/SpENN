@@ -75,6 +75,10 @@ loggers: [...]     # config-root, RunContext-owned
 
 - `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
   reusable top-level blocks referenced by the runner via `${...}`.
+- `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
+  the public term names used for decompositions and metrics, so they must be
+  non-empty strings; sequence entries are named from snake-case term class names
+  with index suffixes added for repeats.
 - `optimizer` names a partial factory (`_partial_: true`) that builds an
   optimizer from model parameters; `Train` applies it to `model.parameters()`.
 - `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
@@ -82,6 +86,11 @@ loggers: [...]     # config-root, RunContext-owned
   `hamiltonian_terms`, `return_terms`); it does **not** own diagnostics or
   reference-energy comparison yet -- those arrive with the PR6 diagnostics
   interface.
+- `Evaluate(return_terms=True)` logs evaluation term metrics as
+  `terms.<name>_mean` and `terms.<name>_nonfinite_fraction`. VMC training term
+  metrics use `energy_term_<name>` for the finite mean and suffixes such as
+  `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
+  and `_nonfinite_count` for companion statistics.
 
 `prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
 `RunContext`. `Runner.emit(...)` dispatches lifecycle events through
@@ -208,4 +217,4 @@ uv run --extra cpu python -m http.server --directory docs/_build/html 8000
 The backwards compatibility of this repository is only with respect to the behavior
 of Hydra config files. Before v1.0.0, every minor version can break backwards compatibility.
 v0.2.0 does not have to be able to reproduce a v0.1.0 config. But patches have to be
-compatible with each other. 
+compatible with each other.

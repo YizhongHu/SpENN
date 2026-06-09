@@ -55,8 +55,11 @@ class Train(Runner):
         Wavefunction model to optimize.
     sampler : object
         Sampler exposing ``collect_samples(model) -> (walkers, stats)``.
-    hamiltonian_terms : sequence
-        Hamiltonian terms summed by `local_energy`.
+    hamiltonian_terms : sequence or mapping
+        Hamiltonian terms summed by `local_energy`. A
+        ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the
+        public term names for decomposition and metrics; a sequence derives
+        unique names from term class names.
     optimizer : Any
         Configured optimizer spec/factory (typically a ``_partial_`` optimizer
         constructor) applied to ``model.parameters()`` by `make_optimizer`.
@@ -66,8 +69,11 @@ class Train(Runner):
     construction_seed : int or None, optional
         Seed used only to materialize lazy model parameters before sampling and
         optimizer construction. This controls parameter initialization, kept
-        separate from the sampler's Markov-chain RNG. When ``None``, lazy
-        parameters are still materialized first, but under the ambient RNG.
+        separate from the sampler's Markov-chain RNG. It only affects lazy
+        parameters that are materialized by this runner; parameters initialized
+        eagerly before runner construction keep their existing values. When
+        ``None``, lazy parameters are still materialized first, but under the
+        ambient RNG.
     """
 
     def __init__(self, model, sampler, hamiltonian_terms, optimizer, trainer, construction_seed: int | None = None) -> None:
@@ -179,8 +185,11 @@ class Evaluate(Runner):
         Wavefunction model returning ``WavefunctionOutput``.
     sampler : object
         Sampler exposing ``collect_samples(model) -> (walkers, stats)``.
-    hamiltonian_terms : sequence
-        Hamiltonian terms summed by `local_energy`.
+    hamiltonian_terms : sequence or mapping
+        Hamiltonian terms summed by `local_energy`. A
+        ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the
+        public term names for decomposition and metrics; a sequence derives
+        unique names from term class names.
     return_terms : bool, optional
         Whether to request per-term local-energy components from `local_energy`.
     """

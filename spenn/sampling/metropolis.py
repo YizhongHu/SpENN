@@ -250,6 +250,7 @@ class MetropolisSampler(nn.Module):
             diagnostics in ``aux``.
         """
 
+        self._require_device(walkers.device)
         current_logabs = walkers.logabs
         current_sign = walkers.sign
         if current_logabs is None or current_sign is None:
