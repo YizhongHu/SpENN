@@ -1,8 +1,9 @@
-"""Integration tests: the Evaluate runner samples the exact Hooke energy.
+"""Tests for the minimal Evaluate runner (sampled local-energy evaluation).
 
-These drive the full configured path -- ``run_from_config`` -> ``Evaluate``
-runner -> sampler -> Hamiltonian terms -> local energy -> loggers/callbacks --
-and assert the logged sampled energy matches the known exact energy.
+Evaluate is deliberately minimal before PR6 diagnostics: it samples, computes
+intrinsic local-energy metrics, logs them through the RunContext, and emits
+evaluation lifecycle events. It does not read reference energy and does not
+accept diagnostics or callbacks/loggers (those are RunContext-owned).
 """
 
 from __future__ import annotations
@@ -15,8 +16,14 @@ import pytest
 from omegaconf import OmegaConf
 
 import spenn.runner as runner_module
+from spenn.artifacts import RunContext
+from spenn.callback import Callback, Event
 from spenn.physics.hamiltonian import summarize_local_energy
+from spenn.physics.kinetic import KineticEnergy
+from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from spenn.run import run_from_config
+from spenn.runner import Evaluate
+from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "hooke"
 
@@ -26,22 +33,91 @@ def test_evaluate_uses_summary_helper_from_physics_hamiltonian() -> None:
     assert "summarize_local_energy" not in runner_module.__all__
 
 
-def test_evaluate_owns_callbacks_loggers_and_diagnostics() -> None:
-    params = inspect.signature(runner_module.Evaluate.__init__).parameters
-    assert "callbacks" in params
-    assert "loggers" in params
-    assert "diagnostics" in params
+def test_evaluate_accepts_only_minimal_constructor_args() -> None:
+    params = set(inspect.signature(Evaluate.__init__).parameters)
+    assert params == {"self", "model", "sampler", "hamiltonian_terms", "return_terms"}
+
+
+def test_evaluate_rejects_reference_energy_api() -> None:
+    with pytest.raises(TypeError):
+        Evaluate(model=None, sampler=None, hamiltonian_terms=[], evaluation={"reference_energy": 2.0})
+
+
+def test_evaluate_rejects_diagnostics_before_pr6() -> None:
+    with pytest.raises(TypeError):
+        Evaluate(model=None, sampler=None, hamiltonian_terms=[], diagnostics=[])
+
+
+def test_evaluate_rejects_callbacks_and_loggers() -> None:
+    with pytest.raises(TypeError):
+        Evaluate(model=None, sampler=None, hamiltonian_terms=[], callbacks=[])
+    with pytest.raises(TypeError):
+        Evaluate(model=None, sampler=None, hamiltonian_terms=[], loggers=[])
 
 
 @pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
-def test_evaluate_config_passes_callbacks_and_loggers_through_runner(fixture: str) -> None:
+def test_evaluate_config_is_root_owned_and_has_no_reference_energy(fixture: str) -> None:
     cfg = OmegaConf.load(FIXTURES / fixture)
-    # Runner-owned: callbacks and loggers live under the runner, not top-level.
-    assert "callbacks" not in cfg
-    assert "loggers" not in cfg
-    runner_keys = set(cfg.runner.keys())
-    assert "callbacks" in runner_keys
-    assert "loggers" in runner_keys
+    # Callbacks and loggers are config-root / RunContext-owned, not on the runner.
+    assert "callbacks" in cfg and "loggers" in cfg
+    assert "callbacks" not in cfg.runner
+    assert "loggers" not in cfg.runner
+    # return_terms is passed directly; no evaluation/reference_energy block.
+    assert cfg.runner.return_terms is True
+    assert "evaluation" not in cfg
+    assert "reference_energy" not in (FIXTURES / fixture).read_text()
+
+
+class _EventRecorder(Callback):
+    """Records every emitted lifecycle event name."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            triggers=("run_start", "evaluate_start", "samples_collected", "evaluate_end", "run_end")
+        )
+        self.events: list[str] = []
+
+    def handle(self, event: Event) -> None:
+        self.events.append(event.name)
+
+
+class _RecordingContext(RunContext):
+    """Minimal RunContext: holds root callbacks, swallows logs."""
+
+    def __init__(self, callbacks) -> None:
+        self.callbacks = list(callbacks)
+        self.loggers = []
+        self.records: list[tuple[str, dict]] = []
+
+    def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
+        self.records.append((namespace, dict(metrics)))
+
+
+def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
+    recorder = _EventRecorder()
+    context = _RecordingContext([recorder])
+    runner = Evaluate(
+        model=build_tiny_spenn(),
+        sampler=build_tiny_sampler(),
+        hamiltonian_terms=[KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()],
+        return_terms=True,
+    )
+
+    result = runner.run(context)
+
+    assert result.status == "completed"
+    assert recorder.events == [
+        "run_start",
+        "evaluate_start",
+        "samples_collected",
+        "evaluate_end",
+        "run_end",
+    ]
+    # Logged through the context under the eval namespace, intrinsic metrics only.
+    eval_records = [m for ns, m in context.records if ns == "eval"]
+    assert eval_records
+    assert "energy_mean" in eval_records[-1]
+    assert "reference_energy" not in eval_records[-1]
 
 
 def _eval_metrics(run_root: Path) -> dict:
@@ -69,10 +145,13 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     energy_atol = float(cfg.validation.energy_atol)
     variance_max = float(cfg.validation.variance_max)
 
-    assert metrics["reference_energy"] == pytest.approx(exact_energy)
+    # Evaluate logs intrinsic metrics only -- no reference-energy comparison.
+    assert "reference_energy" not in metrics
+    assert "abs_energy_error" not in metrics
     assert metrics["n_finite_samples"] == metrics["n_samples"] == 512
     assert metrics["nonfinite_energy_fraction"] == 0.0
-    assert metrics["abs_energy_error"] < energy_atol
+    # The exact-energy comparison is done test-side against the intrinsic mean.
+    assert abs(metrics["energy_mean"] - exact_energy) < energy_atol
     assert metrics["energy_variance"] < variance_max
     # return_terms: true -> per-term decomposition is logged as terms.<name>_mean
     # and terms.<name>_nonfinite_fraction.

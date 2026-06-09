@@ -31,12 +31,9 @@ def test_smoke_config_prepares_generic_artifact_context(tmp_path: Path) -> None:
     assert context.source_cfg.run.run_id is None
     assert context.source_cfg.run.dir is None
 
-    # Callbacks and loggers are owned by the runner, not the run context.
-    assert context.callbacks == []
-    assert context.loggers == []
-    runner = instantiate(context.cfg.runner)
-    assert [type(logger) for logger in runner.loggers] == [CSV, JSONL]
-    assert [type(callback) for callback in runner.callbacks] == [
+    # Callbacks and loggers are config-root / RunContext-owned.
+    assert [type(logger) for logger in context.loggers] == [CSV, JSONL]
+    assert [type(callback) for callback in context.callbacks] == [
         ConfigSnapshot,
         ResolvedConfigSnapshot,
         Metadata,
@@ -48,15 +45,7 @@ def test_smoke_config_prepares_generic_artifact_context(tmp_path: Path) -> None:
 def test_flat_public_targets_instantiate() -> None:
     """Hydra can instantiate every flat public scaffold target."""
 
-    runner = instantiate(
-        OmegaConf.create(
-            {
-                "_target_": "spenn.runner.Scaffold",
-                "callbacks": [],
-                "loggers": [],
-            }
-        )
-    )
+    runner = instantiate(OmegaConf.create({"_target_": "spenn.runner.Scaffold"}))
     callback = instantiate(
         OmegaConf.create(
             {
