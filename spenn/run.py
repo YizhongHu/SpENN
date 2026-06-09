@@ -136,7 +136,7 @@ def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
 
 
 def _instantiate_runner(context: RunContext) -> Runner:
-    runner_cfg = OmegaConf.create(OmegaConf.to_container(context.cfg.runner, resolve=False))
+    runner_cfg = context.cfg.runner
     # Callbacks and loggers are configured at the config root and owned by the
     # RunContext; a runner must not own them.
     for forbidden in ("callbacks", "loggers"):
