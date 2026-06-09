@@ -121,7 +121,8 @@ class FullModelEquivarianceChecker:
                 permuted_batch = apply_particle_permutation(batch, permutation)
                 lhs = model(permuted_batch)
                 rhs = apply_particle_permutation(output, permutation)
-                close, error = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                close, comparison = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                error = float(comparison.get("max_abs_error", 0.0))
                 if error > max_abs_error:
                     max_abs_error = error
                     worst = list(permutation.image)
@@ -283,7 +284,8 @@ class TraceEquivarianceChecker:
                 for key in keys_a & keys_b:
                     expected = apply_particle_permutation(trace_a[key].value, permutation)
                     actual = trace_b[key].value
-                    close, error = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    close, comparison = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    error = float(comparison.get("max_abs_error", 0.0))
                     per_key_error[key] = max(per_key_error.get(key, 0.0), error)
                     if error > max_abs_error:
                         max_abs_error = error
@@ -295,7 +297,8 @@ class TraceEquivarianceChecker:
 
                 if self.compare_output:
                     expected_output = apply_particle_permutation(output_a, permutation)
-                    close, error = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    close, comparison = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    error = float(comparison.get("max_abs_error", 0.0))
                     if error > max_abs_error:
                         max_abs_error = error
                         worst_key = "output"

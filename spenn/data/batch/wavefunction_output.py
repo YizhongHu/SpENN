@@ -143,14 +143,14 @@ class WavefunctionOutput(EquivariantState):
         *,
         atol: float = 1.0e-6,
         rtol: float = 1.0e-6,
-    ) -> tuple[bool, float]:
+    ) -> tuple[bool, dict[str, float]]:
         """Compare ``logabs``/``sign``/``phase``; return ``(is_close, max_abs_error)``.
 
         ``aux`` is diagnostic and not compared.
         """
 
         if type(self) is not type(other) or (self.phase is None) != (other.phase is None):
-            return False, float("inf")
+            return False, {"max_abs_error": float("inf")}
         blocks_self = [self.logabs, self.sign] + ([] if self.phase is None else [self.phase])
         blocks_other = [other.logabs, other.sign] + ([] if other.phase is None else [other.phase])
         return compare_tensor_blocks(blocks_self, blocks_other, atol=atol, rtol=rtol)

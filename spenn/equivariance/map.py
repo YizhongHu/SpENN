@@ -10,6 +10,7 @@ under ``tests/``.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any
 
 from torch import nn
@@ -17,8 +18,16 @@ from torch import nn
 from spenn.equivariance.trace import trace_equivariant
 
 
-class EquivariantMap(nn.Module):
-    """Base class for modules that commute with particle permutations.
+class EquivariantMap(nn.Module, ABC):
+    """Base class for traced equivariant-state modules.
+
+    The public `forward` is the normal execution path: it owns trace recording
+    and delegates computation to the abstract :meth:`forward_impl`. Subclasses
+    implement ``forward_impl``, not ``forward``, unless they have a specific
+    reason to bypass tracing. Runtime checkers still call the normal ``forward``;
+    ``forward_impl`` is the internal template method. ``EquivariantMap`` does not
+    check equivariance, permute, or compare -- that is done by the checkers in
+    :mod:`spenn.equivariance.checks` and pytest-only helpers under ``tests/``.
 
     Parameters
     ----------
@@ -47,8 +56,9 @@ class EquivariantMap(nn.Module):
             self.trace("output", output)
         return output
 
+    @abstractmethod
     def forward_impl(self, *args: Any, **kwargs: Any) -> Any:
-        """Implement the module computation in subclasses."""
+        """Compute the module output without owning trace recording."""
 
         raise NotImplementedError(f"{type(self).__name__}.forward_impl is not implemented")
 

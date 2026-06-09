@@ -34,8 +34,8 @@ def assert_equivariant(
     permuted_args = tuple(apply_particle_permutation(arg, permutation) for arg in args)
     lhs = module(*permuted_args)
     rhs = apply_particle_permutation(output, permutation)
-    close, error = lhs.compare(rhs, atol=atol, rtol=rtol)
-    assert close, f"equivariance violated for {permutation.image}: max_abs_error={error}"
+    close, comparison = lhs.compare(rhs, atol=atol, rtol=rtol)
+    assert close, f"equivariance violated for {permutation.image}: {dict(comparison)}"
 
 
 def assert_equivariant_all(

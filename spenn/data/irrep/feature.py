@@ -80,11 +80,11 @@ class IrrepFeature:
             }
         )
 
-    def compare(self, other: "IrrepFeature", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, float]:
+    def compare(self, other: "IrrepFeature", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
         """Compare partition blocks; return ``(is_close, max_abs_error)``."""
 
         if type(self) is not type(other):
-            return False, float("inf")
+            return False, {"max_abs_error": float("inf")}
         return compare_tensor_mapping(self.blocks, other.blocks, atol=atol, rtol=rtol)
 
 

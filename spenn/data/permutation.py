@@ -6,6 +6,7 @@ import math
 import random
 from dataclasses import dataclass
 from itertools import permutations
+from typing import Protocol, Self, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,16 @@ def reversal_permutation(size: int) -> Permutation:
     return Permutation(tuple(reversed(range(size))))
 
 
+@runtime_checkable
+class Permutable(Protocol):
+    """Typed value with a semantic particle-permutation action."""
+
+    def permute(self, permutation: Permutation) -> Self:
+        """Return this value with the particle axis permuted."""
+
+        ...
+
+
 def count_nonidentity_permutations(n_particles: int) -> int:
     """Return ``n! - 1``, the number of non-identity permutations of `n_particles`.
 
@@ -305,6 +316,7 @@ def _unique_permutations(images: list[tuple[int, ...]] | tuple[tuple[int, ...], 
 
 
 __all__ = [
+    "Permutable",
     "Permutation",
     "adjacent_transpositions",
     "all_permutations",
