@@ -15,11 +15,33 @@ from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-from spenn.data.equivariant_state import apply_particle_permutation, infer_particle_count
+from spenn.data.equivariant_state import apply_particle_permutation
 from spenn.data.permutation import (
     count_nonidentity_permutations,
     select_nonidentity_permutations,
 )
+
+
+def _particle_count_from_batch(batch: object) -> int:
+    """Return the particle count from a typed batch used in runtime checks.
+
+    Runtime equivariance checks operate on the current training/evaluation batch.
+    Particle count should come from explicit typed batch metadata, not from
+    recursively inspecting arbitrary object structure.
+    """
+
+    for attr in ("n_particles", "n_electrons"):
+        value = getattr(batch, attr, None)
+        if value is not None:
+            count = int(value)
+            if count < 1:
+                raise ValueError(f"batch.{attr} must be positive, got {count}")
+            return count
+
+    raise TypeError(
+        f"cannot determine particle count from batch type {type(batch).__name__}; "
+        "expected explicit `n_particles` or `n_electrons` metadata"
+    )
 
 
 @dataclass
@@ -94,7 +116,7 @@ class FullModelEquivarianceChecker:
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
         step = getattr(state, "step", None)
-        n_particles = infer_particle_count(batch)
+        n_particles = _particle_count_from_batch(batch) if batch is not None else None
         metrics = self._base_metrics(n_particles)
 
         if model is None or batch is None or n_particles is None or n_particles < 2:
@@ -229,7 +251,7 @@ class TraceEquivarianceChecker:
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
         step = getattr(state, "step", None)
-        n_particles = infer_particle_count(batch)
+        n_particles = _particle_count_from_batch(batch) if batch is not None else None
         metrics = self._base_metrics(n_particles)
 
         if model is None or batch is None or n_particles is None or n_particles < 2:

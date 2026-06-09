@@ -55,10 +55,12 @@ def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
 
     RED BANNER:
     Do not add a generic tree walker or any recursive container prober as a
-    replacement for this function. Particle permutation, validation, and
-    comparison are semantic typed-data actions. Values used in equivariance
-    checks must expose explicit ``.permute(...)``, ``.validate()``, and
-    ``.compare(...)`` contracts.
+    replacement for this function. Particle permutation and comparison are
+    semantic typed-data actions. Values used in equivariance checks must expose
+    explicit ``.permute(...)`` and ``.compare(...)`` contracts. Runtime
+    validation belongs to separate typed validation contracts such as
+    ``.validate()`` / ``.validity_metrics()`` (see :mod:`spenn.data.validation`),
+    not to ``EquivariantState``.
 
     This dispatches on the value's own permutation contract, requiring a
     ``permute`` method (any `Permutable`); it never infers a representation
@@ -77,45 +79,6 @@ def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
             "(no callable .permute); runtime equivariance needs semantic typed values."
         )
     return permute(permutation)
-
-
-def infer_particle_count(obj: Any) -> int | None:
-    """Infer a shared particle count from an input tree."""
-
-    counts = _collect_particle_counts(obj)
-    if not counts:
-        return None
-    first = counts[0]
-    for count in counts[1:]:
-        if count != first:
-            raise ValueError(f"Equivariant inputs disagree on particle count: {counts}")
-    return first
-
-
-def _collect_particle_counts(obj: Any) -> list[int]:
-    if obj is None:
-        return []
-    n_particles = getattr(obj, "n_particles", None)
-    if n_particles is not None:
-        return [int(n_particles)]
-    n_electrons = getattr(obj, "n_electrons", None)
-    if n_electrons is not None:
-        return [int(n_electrons)]
-    if isinstance(obj, Mapping):
-        counts: list[int] = []
-        for value in obj.values():
-            counts.extend(_collect_particle_counts(value))
-        return counts
-    if _is_sequence(obj):
-        counts = []
-        for value in obj:
-            counts.extend(_collect_particle_counts(value))
-        return counts
-    return []
-
-
-def _is_sequence(obj: Any) -> bool:
-    return isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray))
 
 
 def _compare_tensor_pair(x: torch.Tensor, y: torch.Tensor, *, atol: float, rtol: float) -> tuple[bool, float]:
@@ -178,5 +141,4 @@ __all__ = [
     "apply_particle_permutation",
     "compare_tensor_blocks",
     "compare_tensor_mapping",
-    "infer_particle_count",
 ]

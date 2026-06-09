@@ -1,22 +1,45 @@
 """Pytest-only equivariance assertions built on typed semantic contracts.
 
 Lives under ``tests/`` (never ``spenn/``). Uses only the allowed typed
-contracts -- ``apply_particle_permutation``, ``infer_particle_count``,
-``select_nonidentity_permutations``, and each value's own ``.compare(...)``.
-There is no generic tree walking here: multi-input modules pass an explicit
-tuple of typed args, each permuted individually.
+contracts -- ``apply_particle_permutation``, ``select_nonidentity_permutations``,
+and each value's own ``.compare(...)``. There is no generic tree walking here:
+multi-input modules pass an explicit tuple of typed args, each permuted
+individually, and particle count comes from explicit typed-value metadata.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from spenn.data.equivariant_state import apply_particle_permutation, infer_particle_count
+from spenn.data.equivariant_state import apply_particle_permutation
 from spenn.data.permutation import Permutation, select_nonidentity_permutations
 
 
 def _as_args(inputs: Any) -> tuple[Any, ...]:
     return inputs if isinstance(inputs, tuple) else (inputs,)
+
+
+def _particle_count_from_args(args: tuple[Any, ...]) -> int | None:
+    """Particle count from explicit typed args via ``n_particles``/``n_electrons``.
+
+    Scans only the explicit argument tuple (no recursive container probing) and
+    reads each typed value's own particle-count metadata.
+    """
+
+    counts: list[int] = []
+    for arg in args:
+        for attr in ("n_particles", "n_electrons"):
+            value = getattr(arg, attr, None)
+            if value is not None:
+                counts.append(int(value))
+                break
+    if not counts:
+        return None
+    first = counts[0]
+    for count in counts[1:]:
+        if count != first:
+            raise ValueError(f"equivariant inputs disagree on particle count: {counts}")
+    return first
 
 
 def assert_equivariant(
@@ -48,7 +71,7 @@ def assert_equivariant_all(
     """Assert equivariance over every non-identity particle permutation."""
 
     args = _as_args(inputs)
-    n_particles = infer_particle_count(args)
+    n_particles = _particle_count_from_args(args)
     if n_particles is None or n_particles < 2:
         return
     permutations = select_nonidentity_permutations(
