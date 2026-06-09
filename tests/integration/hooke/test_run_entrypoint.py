@@ -1,4 +1,4 @@
-"""Entrypoint tests for configured scaffold runs."""
+"""Entrypoint tests for configured runs (via a real Evaluate config)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG = ROOT / "experiments" / "hooke" / "configs" / "smoke" / "scaffold.yaml"
+ROOT = Path(__file__).resolve().parents[3]
+CONFIG = ROOT / "tests" / "integration" / "artifacts" / "hooke" / "exact_singlet.yaml"
+RUN_GLOB = "hooke_exact/singlet"
 
 
 def test_run_py_is_the_only_root_entrypoint() -> None:
@@ -34,7 +35,7 @@ def test_run_cli_writes_rerunnable_config(tmp_path: Path) -> None:
     assert resolved_snapshot.run.dir == str(first_run)
 
     _run_cli(first_run / "config.yaml", None)
-    run_dirs = sorted((tmp_path / "hooke_scaffold" / "scaffold").iterdir())
+    run_dirs = sorted((tmp_path / RUN_GLOB).iterdir())
     assert len(run_dirs) == 2
     assert run_dirs[0].name != run_dirs[1].name
     assert all((run_dir / "status.json").exists() for run_dir in run_dirs)
@@ -46,18 +47,11 @@ def _run_cli(config: Path, root: Path | None) -> None:
     cmd = [sys.executable, "run.py", "--config", str(config)]
     if root is not None:
         cmd.append(f"run.root={root}")
-    result = subprocess.run(
-        cmd,
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    result = subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
 
 
 def _single_run_dir(root: Path) -> Path:
-    run_dirs = sorted((root / "hooke_scaffold" / "scaffold").iterdir())
+    run_dirs = sorted((root / RUN_GLOB).iterdir())
     assert len(run_dirs) == 1
     return run_dirs[0]

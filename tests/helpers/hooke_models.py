@@ -1,7 +1,7 @@
 """Tiny real-model builders for Hooke pair smoke tests.
 
 Single source of truth: everything is instantiated from the smoke training
-fixture ``tests/fixtures/hooke/pair_train.yaml`` (a copy of the experiments
+fixture ``tests/integration/artifacts/hooke/pair_train.yaml`` (a copy of the experiments
 config), so unit tests exercise the exact model/sampler the integration run uses.
 """
 
@@ -17,7 +17,7 @@ from spenn.data.batch import ElectronBatch
 from spenn.nn import SpENNWaveFunction
 from spenn.sampling.metropolis import MetropolisSampler
 
-PAIR_TRAIN_CONFIG = Path(__file__).resolve().parents[1] / "fixtures" / "hooke" / "pair_train.yaml"
+PAIR_TRAIN_CONFIG = Path(__file__).resolve().parents[1] / "integration" / "artifacts" / "hooke" / "pair_train.yaml"
 
 
 def _config() -> OmegaConf:

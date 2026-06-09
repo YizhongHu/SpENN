@@ -24,17 +24,24 @@ uv sync --extra cu126
 
 Use `cu128` or `cu130` instead if that is the CUDA Torch build you want.
 
-The legacy Hooke experiment configs were removed from this restructuring
-branch. Core tests remain the active validation target:
+Core tests are the active validation target:
 
 ```bash
 uv run pytest -q
 ```
 
+Configured runs go through the single `run.py` entrypoint, which launches one
+`spenn.runner.Runner` from a YAML config. The Hooke pair smoke training config
+is a working example:
+
+```bash
+uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+```
+
 For a syntax-only check:
 
 ```bash
-uv run python -m compileall spenn train.py typechecked.py
+uv run python -m compileall spenn run.py typechecked.py
 ```
 
 Regenerate checked-in Specht irrep cache files from SageMath with:
@@ -49,8 +56,9 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
 
 ## Config ownership
 
-**Runners own everything they use.** Callbacks, loggers, and (for `Evaluate`)
-diagnostics live *inside* the runner config block, not at the top level:
+**Callbacks and loggers are config-root and owned by the `RunContext`.** They
+live at the top level, *not* inside the runner block. A runner config that
+declares `callbacks` or `loggers` is rejected by `run_from_config`:
 
 ```yaml
 runner:
@@ -58,34 +66,37 @@ runner:
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
-  optimizer_factory: ${optimizer_factory}
+  optimizer: ${optimizer}
   trainer: ${trainer}
-  callbacks: [...]   # runner-owned
-  loggers: [...]     # runner-owned
+
+callbacks: [...]   # config-root, RunContext-owned
+loggers: [...]     # config-root, RunContext-owned
 ```
 
-- `spenn.runner.Train` owns its `callbacks` and `loggers`.
-- `spenn.runner.Evaluate` owns its `callbacks`, `loggers`, and `diagnostics`
-  (diagnostics are Evaluate-only and are never consumed by `Train`).
-- `model`, `sampler`, `hamiltonian_terms`, `optimizer_factory`, and `trainer`
-  remain reusable top-level blocks referenced by the runner via `${...}`.
-- `loggers` and `diagnostics` are **not** top-level blocks.
+- `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
+  reusable top-level blocks referenced by the runner via `${...}`.
+- `optimizer` names a partial factory (`_partial_: true`) that builds an
+  optimizer from model parameters; `Train` applies it to `model.parameters()`.
+- `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
+  minimal sampled local-energy evaluator (`model`, `sampler`,
+  `hamiltonian_terms`, `return_terms`); it does **not** own diagnostics or
+  reference-energy comparison yet -- those arrive with the PR6 diagnostics
+  interface.
 
-`run_from_config` instantiates the runner (including its callbacks/loggers) and
-mirrors them onto the `RunContext` so `context.log`, lifecycle dispatch, and
-`logger.finish()` operate on the runner's objects. `optimizer_factory` names a
-factory (`_partial_: true`) that builds an optimizer from model parameters, not
-an optimizer instance. `VMCTrainer` owns only training-loop hyperparameters
-(`max_steps`, `log_every_n_steps`, `return_terms`, `gradient_clip_norm`) and the
-loss/backward/step mechanics; it does not own callbacks, loggers, reference
-energy, or diagnostics.
+`prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
+`RunContext`. `Runner.emit(...)` dispatches lifecycle events through
+`context.callbacks`, runners log through `context.log(...)`, and
+`logger.finish()` runs against the context's loggers. `VMCTrainer` owns only
+training-loop hyperparameters (`max_steps`, `log_every_n_steps`, `return_terms`,
+`gradient_clip_norm`) and the loss/backward/step mechanics; it does not own
+callbacks, loggers, reference energy, or diagnostics.
 
 ## Checks After Changes
 
 After code changes, run the fast syntax and test checks:
 
 ```bash
-uv run python -m compileall spenn train.py typechecked.py
+uv run python -m compileall spenn run.py typechecked.py
 uv run pytest -q
 ```
 
@@ -99,40 +110,43 @@ Run tests with Typeguard instrumentation for `spenn`:
 uv run pytest -q
 ```
 
-Equivariance checks are runtime checks on `spenn.data.EquivariantMap`. When
-enabled, small systems are checked against every particle permutation; larger
-systems are checked against adjacent transpositions and reversal. Tests force
-checks with `check_probability=1.0`.
+Equivariance checks are runtime checks on `spenn.equivariance.EquivariantMap`.
+When enabled, small systems are checked against every particle permutation;
+larger systems are checked against adjacent transpositions and reversal. Configs
+force checks with `probability: 1.0` on the `RuntimeEquivariance` callback.
 
-Tensor state validation is a typed, per-object contract. `RealFeature`,
-`RealInteraction`, `RealUpdate`, `IrrepInteraction`, `IrrepFeature`, and
-`IrrepUpdate` each expose a `validate()` method that validates their own
-semantic fields. There is no generic tree-validation helper: validation,
-particle permutation (`permute`), and comparison (`compare`) are declared by
-typed data objects, never inferred by recursively probing arbitrary containers.
-A compound value that needs validation should be a typed container (e.g.
-`ConcatenatedState`) whose own `validate()` delegates to its children.
+Runtime validation is a typed, per-object contract kept **separate** from
+equivariance. `RealFeature`, `RealInteraction`, `IrrepFeature`,
+`IrrepInteraction`, and `ElectronBatch` each expose a `validate()` method (and,
+where useful, `validity_metrics()`) that checks their own semantic fields; the
+static contracts live in `spenn.data.validation` (`RuntimeValidatable`,
+`RuntimeValidityMetrics`). This is deliberately distinct from
+`spenn.data.equivariant_state.EquivariantState`, which declares only particle
+permutation (`permute`) and comparison (`compare`). There is no generic
+tree-validation, tree-permutation, or particle-count-inference helper:
+validation, permutation, and comparison are declared by typed data objects,
+never inferred by recursively probing arbitrary containers.
 
 Exact testing strategy:
 
 - Permutation convention and algebra:
   `spenn.data.permutation.Permutation`,
   `spenn.data.indices.permute_tuple_slots`, and
-  `tests/equivariance/test_permutation.py`.
+  `tests/unit/data/test_permutation.py`.
 - State actions:
   `spenn.data.equivariant_state.EquivariantState`,
   `spenn.data.real.RealFeature`, `RealInteraction`, `RealUpdate`,
   `spenn.data.batch.WavefunctionOutput`, and tests in
-  `tests/equivariance/test_equivariant_state.py`,
-  `tests/equivariance/test_real_feature.py`,
-  `tests/equivariance/test_real_interaction.py`, and
-  `tests/equivariance/test_real_update.py`.
+  `tests/unit/data/test_equivariant_state.py`,
+  `tests/unit/data/test_real_feature.py`,
+  `tests/unit/data/test_real_interaction.py`, and
+  `tests/unit/data/test_real_update.py`.
 - Runtime equivariance checks:
   `spenn.equivariance.checks.FullModelEquivarianceChecker` and
   `TraceEquivarianceChecker` (driven by `spenn.callback.RuntimeEquivariance`),
   using `apply_particle_permutation` and typed `.compare(...)`. Pytest-only
   assertion helpers live under `tests/helpers/equivariance.py`, with coverage in
-  `tests/equivariance/test_equivariant_map.py`.
+  `tests/unit/equivariance/test_equivariant_map.py`.
 - Tensor shape checks:
   `RealFeature`, `RealInteraction`, and `RealUpdate` are dense order-indexed
   lists of tensors. Index 0 is reserved for zero-order data and must have zero
@@ -143,14 +157,14 @@ Exact testing strategy:
 - Layer-level checks:
   `spenn.nn.Update`, `spenn.nn.Activation`, `spenn.nn.ActivationByType`,
   `spenn.nn.PathAggregation`, and `spenn.nn.SpENNLayer`, with forced runtime
-  checks in `tests/equivariance/test_update.py`,
-  `tests/equivariance/test_activation.py`,
-  `tests/equivariance/test_path_aggregation.py`, and
-  `tests/equivariance/test_spenn_layer_scaffold.py`.
+  checks in `tests/unit/nn/test_update_equivariance.py`,
+  `tests/unit/nn/test_activation_equivariance.py`,
+  `tests/unit/nn/test_path_aggregation_equivariance.py`, and
+  `tests/unit/nn/test_spenn_layer_scaffold.py`.
 - Virtual-support combinatorics:
   `spenn.reps.paths.PathMetadata`, `generate_virtual_paths`, and
   `validate_virtual_path`, with coverage in
-  `tests/equivariance/test_virtual_paths.py`.
+  `tests/unit/reps/test_virtual_paths.py`.
 
 For `n_particles <= 5`, the runtime schedule is exhaustive over all
 permutations. Larger-particle tests use deterministic random inputs and random

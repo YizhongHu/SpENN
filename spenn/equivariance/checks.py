@@ -15,11 +15,33 @@ from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-from spenn.data.equivariant_state import apply_particle_permutation, infer_particle_count
+from spenn.data.equivariant_state import apply_particle_permutation
 from spenn.data.permutation import (
     count_nonidentity_permutations,
     select_nonidentity_permutations,
 )
+
+
+def _particle_count_from_batch(batch: object) -> int:
+    """Return the particle count from a typed batch used in runtime checks.
+
+    Runtime equivariance checks operate on the current training/evaluation batch.
+    Particle count should come from explicit typed batch metadata, not from
+    recursively inspecting arbitrary object structure.
+    """
+
+    for attr in ("n_particles", "n_electrons"):
+        value = getattr(batch, attr, None)
+        if value is not None:
+            count = int(value)
+            if count < 1:
+                raise ValueError(f"batch.{attr} must be positive, got {count}")
+            return count
+
+    raise TypeError(
+        f"cannot determine particle count from batch type {type(batch).__name__}; "
+        "expected explicit `n_particles` or `n_electrons` metadata"
+    )
 
 
 @dataclass
@@ -94,7 +116,7 @@ class FullModelEquivarianceChecker:
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
         step = getattr(state, "step", None)
-        n_particles = infer_particle_count(batch)
+        n_particles = _particle_count_from_batch(batch) if batch is not None else None
         metrics = self._base_metrics(n_particles)
 
         if model is None or batch is None or n_particles is None or n_particles < 2:
@@ -121,7 +143,8 @@ class FullModelEquivarianceChecker:
                 permuted_batch = apply_particle_permutation(batch, permutation)
                 lhs = model(permuted_batch)
                 rhs = apply_particle_permutation(output, permutation)
-                close, error = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                close, comparison = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                error = float(comparison.get("max_abs_error", 0.0))
                 if error > max_abs_error:
                     max_abs_error = error
                     worst = list(permutation.image)
@@ -228,7 +251,7 @@ class TraceEquivarianceChecker:
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
         step = getattr(state, "step", None)
-        n_particles = infer_particle_count(batch)
+        n_particles = _particle_count_from_batch(batch) if batch is not None else None
         metrics = self._base_metrics(n_particles)
 
         if model is None or batch is None or n_particles is None or n_particles < 2:
@@ -283,7 +306,8 @@ class TraceEquivarianceChecker:
                 for key in keys_a & keys_b:
                     expected = apply_particle_permutation(trace_a[key].value, permutation)
                     actual = trace_b[key].value
-                    close, error = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    close, comparison = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    error = float(comparison.get("max_abs_error", 0.0))
                     per_key_error[key] = max(per_key_error.get(key, 0.0), error)
                     if error > max_abs_error:
                         max_abs_error = error
@@ -295,7 +319,8 @@ class TraceEquivarianceChecker:
 
                 if self.compare_output:
                     expected_output = apply_particle_permutation(output_a, permutation)
-                    close, error = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    close, comparison = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    error = float(comparison.get("max_abs_error", 0.0))
                     if error > max_abs_error:
                         max_abs_error = error
                         worst_key = "output"

@@ -16,7 +16,7 @@ from omegaconf import OmegaConf
 
 from spenn.run import run_from_config
 
-FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "training" / "vmc_smoke.yaml"
+FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_smoke.yaml"
 
 ALLOWED_NONFINITE_KEYS = {"energy_stderr"}
 
@@ -41,7 +41,6 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
         "status.json",
         "metrics.csv",
         "metrics.jsonl",
-        "report.md",
         "checkpoints/latest.pt",
         "checkpoints/step_3.pt",
     ):
