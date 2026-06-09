@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import re
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ import torch
 from omegaconf import OmegaConf
 
 from spenn.artifacts import RunContext, write_json
+from spenn.naming import camel_to_snake
 
 
 @dataclass
@@ -618,13 +618,6 @@ _DEFAULT_CHECKER_NAMES = {
 }
 
 
-def _camel_to_snake(name: str) -> str:
-    """Convert a CamelCase class name to snake_case."""
-
-    first = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first).lower()
-
-
 def _checker_base_name(checker: object) -> str:
     """Return a readable base log name for a checker."""
 
@@ -634,7 +627,7 @@ def _checker_base_name(checker: object) -> str:
     explicit = getattr(checker, "name", None)
     if explicit:
         return str(explicit)
-    snake = _camel_to_snake(class_name)
+    snake = camel_to_snake(class_name)
     for suffix in ("_equivariance_checker", "_checker"):
         if snake.endswith(suffix):
             return snake[: -len(suffix)]

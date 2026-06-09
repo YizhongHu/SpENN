@@ -10,7 +10,6 @@ per-term decomposition keyed by the resolved term names.
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from typing import Any, Protocol, runtime_checkable
 import torch
 
 from spenn.data.batch import ElectronBatch
+from spenn.naming import camel_to_snake
 
 
 @dataclass
@@ -37,13 +37,6 @@ class LocalEnergyResult:
 
     total: torch.Tensor
     terms: dict[str, torch.Tensor] = field(default_factory=dict)
-
-
-def _snake_case(name: str) -> str:
-    """Return the snake_case form of a class name (e.g. ``KineticEnergy``)."""
-
-    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name)
-    return spaced.strip("_").lower()
 
 
 def normalize_hamiltonian_terms(
@@ -76,7 +69,7 @@ def normalize_hamiltonian_terms(
         return normalized
 
     sequence = list(terms)
-    base_names = [_snake_case(type(term).__name__) for term in sequence]
+    base_names = [camel_to_snake(type(term).__name__) for term in sequence]
     counts = Counter(base_names)
     normalized = {}
     for index, (term, base) in enumerate(zip(sequence, base_names)):
