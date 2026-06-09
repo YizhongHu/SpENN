@@ -183,7 +183,7 @@ Good PR sequence:
 
 ```text
 1. Add state dataclasses and permute tests.
-2. Add EquivariantMap and runtime-check tests.
+2. Add EquivariantMap and runtime-check tests.()
 3. Add path metadata and path-count tests.
 4. Add slow EquivariantMixing and equivariance tests.
 5. Add Fourier/Specht activation.
