@@ -13,6 +13,7 @@ from spenn.nn.cusp import ElectronElectronCusp
 from spenn.physics.hamiltonian import (
     LocalEnergyResult,
     local_energy,
+    normalize_hamiltonian_terms,
     reference_energy_metrics,
     summarize_local_energy,
 )
@@ -171,6 +172,38 @@ def test_cusp_local_energy_has_finite_second_derivatives_with_pair_diagonal() ->
     assert torch.isfinite(model.alpha.grad)
 
 
+# --- normalize_hamiltonian_terms ---
+
+
+def test_normalize_hamiltonian_terms_dict_is_used_directly() -> None:
+    kinetic = KineticEnergy()
+    trap = HarmonicTrap(omega=1.0)
+    normalized = normalize_hamiltonian_terms({"ke": kinetic, "trap": trap})
+
+    assert list(normalized) == ["ke", "trap"]
+    assert normalized["ke"] is kinetic
+    assert normalized["trap"] is trap
+
+
+def test_normalize_hamiltonian_terms_list_uses_snake_case_class_names() -> None:
+    normalized = normalize_hamiltonian_terms(
+        [KineticEnergy(), HarmonicTrap(omega=1.0), ElectronElectronInteraction()]
+    )
+
+    assert list(normalized) == ["kinetic_energy", "harmonic_trap", "electron_electron_interaction"]
+
+
+def test_normalize_hamiltonian_terms_disambiguates_repeated_classes_by_index() -> None:
+    normalized = normalize_hamiltonian_terms([HarmonicTrap(omega=1.0), HarmonicTrap(omega=2.0)])
+
+    assert list(normalized) == ["harmonic_trap_0", "harmonic_trap_1"]
+
+
+def test_normalize_hamiltonian_terms_rejects_non_string_keys() -> None:
+    with pytest.raises(TypeError, match="must be strings"):
+        normalize_hamiltonian_terms({0: KineticEnergy()})
+
+
 # --- Local-energy helper over a list of terms ---
 
 
@@ -186,18 +219,34 @@ def test_local_energy_helper_sums_terms() -> None:
     assert torch.equal(total, a + b)
 
 
-def test_local_energy_helper_return_terms_true() -> None:
+def test_local_energy_helper_return_terms_true_with_named_dict() -> None:
     a = torch.tensor([1.0, 2.0], dtype=torch.float64)
     b = torch.tensor([3.0, 4.0], dtype=torch.float64)
-    terms = [_ConstantTerm("alpha", a), _ConstantTerm("beta", b)]
+    terms = {"alpha": _ConstantTerm("alpha", a), "beta": _ConstantTerm("beta", b)}
     batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
 
     result = local_energy(terms, None, batch, return_terms=True)
 
     assert isinstance(result, LocalEnergyResult)
     assert torch.equal(result.total, a + b)
+    # dict keys become the decomposition names
     assert torch.equal(result.terms["alpha"], a)
     assert torch.equal(result.terms["beta"], b)
+
+
+def test_local_energy_helper_return_terms_true_with_list_uses_snake_class_names() -> None:
+    a = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    b = torch.tensor([3.0, 4.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    # A list of two same-class terms falls back to snake-case class names,
+    # disambiguated by index to keep names unique.
+    result = local_energy([_ConstantTerm("a", a), _ConstantTerm("b", b)], None, batch, return_terms=True)
+
+    assert isinstance(result, LocalEnergyResult)
+    assert set(result.terms) == {"constant_term_0", "constant_term_1"}
+    assert torch.equal(result.terms["constant_term_0"], a)
+    assert torch.equal(result.terms["constant_term_1"], b)
 
 
 # --- Term classes return decomposed LocalEnergyResult objects ---

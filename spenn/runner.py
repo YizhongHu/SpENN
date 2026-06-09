@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from torch.nn.parameter import UninitializedParameter
 
 from spenn.artifacts import RunContext, RunResult
 from spenn.callback import Event
@@ -62,14 +63,50 @@ class Train(Runner):
     trainer : object
         Trainer exposing ``fit(*, model, sampler, hamiltonian_terms, optimizer,
         context, emit) -> TrainerState``.
+    construction_seed : int or None, optional
+        Seed used only to materialize lazy model parameters before sampling and
+        optimizer construction. This controls parameter initialization, kept
+        separate from the sampler's Markov-chain RNG. When ``None``, lazy
+        parameters are still materialized first, but under the ambient RNG.
     """
 
-    def __init__(self, model, sampler, hamiltonian_terms, optimizer, trainer) -> None:
+    def __init__(self, model, sampler, hamiltonian_terms, optimizer, trainer, construction_seed: int | None = None) -> None:
         self.model = model
         self.sampler = sampler
-        self.hamiltonian_terms = list(hamiltonian_terms)
+        # Keep the configured form (sequence or ``dict[str, term]``);
+        # ``local_energy`` normalizes it (see ``normalize_hamiltonian_terms``).
+        self.hamiltonian_terms = hamiltonian_terms
         self.optimizer = optimizer
         self.trainer = trainer
+        self.construction_seed = None if construction_seed is None else int(construction_seed)
+
+    def _materialize_model(self) -> None:
+        """Materialize lazy model parameters before sampling/optimizer build.
+
+        Lazy modules (e.g. ``nn.LazyLinear``) only allocate parameters on their
+        first forward. If that first forward were the sampler's model
+        evaluation, parameter initialization would be coupled to the sampler's
+        RNG and ordering. This forces one deterministic example forward under
+        the explicit construction seed, leaving the global RNG state unchanged
+        for everything else.
+        """
+
+        if not isinstance(self.model, torch.nn.Module):
+            return
+        if not any(isinstance(p, UninitializedParameter) for p in self.model.parameters()):
+            return
+        example = getattr(self.sampler, "example_batch", None)
+        if not callable(example):
+            return
+        batch = example()
+        rng_state = torch.get_rng_state()
+        try:
+            if self.construction_seed is not None:
+                torch.manual_seed(self.construction_seed)
+            with torch.no_grad():
+                self.model(batch)
+        finally:
+            torch.set_rng_state(rng_state)
 
     def run(self, context: RunContext) -> RunResult:
         """Build the optimizer and run the configured VMC training loop."""
@@ -78,6 +115,9 @@ class Train(Runner):
         if isinstance(self.model, torch.nn.Module):
             self.model.train()
 
+        # Materialize lazy parameters before optimizer/sampling so model init is
+        # decoupled from sampler RNG (construction seed, not sampler seed).
+        self._materialize_model()
         optimizer = make_optimizer(self.optimizer, self.model.parameters())
         self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
 
@@ -124,7 +164,9 @@ class Evaluate(Runner):
     def __init__(self, model, sampler, hamiltonian_terms, return_terms: bool = False) -> None:
         self.model = model
         self.sampler = sampler
-        self.hamiltonian_terms = list(hamiltonian_terms)
+        # Keep the configured form (sequence or ``dict[str, term]``);
+        # ``local_energy`` normalizes it (see ``normalize_hamiltonian_terms``).
+        self.hamiltonian_terms = hamiltonian_terms
         self.return_terms = bool(return_terms)
 
     def run(self, context: RunContext) -> RunResult:

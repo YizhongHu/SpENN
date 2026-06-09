@@ -1,16 +1,20 @@
 """Hamiltonian terms, local-energy results, and aggregation.
 
-A Hamiltonian is represented simply as a list of `HamiltonianTerm`s. Each term
-reports its contribution as a `LocalEnergyResult`, and the `local_energy` helper
-evaluates every term and sums their contributions, optionally returning the
-per-term decomposition.
+A Hamiltonian is a collection of `HamiltonianTerm`s, given either as a sequence
+or as a ``dict[str, HamiltonianTerm]`` that names each term explicitly. The
+`local_energy` helper normalizes either form (see `normalize_hamiltonian_terms`),
+evaluates every term, and sums their contributions, optionally returning the
+per-term decomposition keyed by the resolved term names.
 """
 
 from __future__ import annotations
 
 import math
+import re
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 
@@ -26,20 +30,59 @@ class LocalEnergyResult:
     total : torch.Tensor
         Summed local energy across all contributions, shape ``[batch]``.
     terms : dict[str, torch.Tensor]
-        Per-term local energies keyed by ``HamiltonianTerm.name``. This is the
-        named decomposition used by `summarize_local_energy` for evaluation
-        logging; entries collide when two terms share a name.
-    components : tuple[torch.Tensor, ...] or None
-        Per-term local energies positionally aligned with the evaluated term
-        order. Unlike ``terms``, this preserves every term even when names
-        repeat, so it supports deterministic index-based metric naming
-        (`spenn.training.vmc.summarize_local_energy_terms`). ``None`` when the
-        decomposition was not requested.
+        Per-term local energies keyed by the resolved term name. When produced
+        by `local_energy`, names come from the ``dict`` key (named form) or the
+        snake-case class name (sequence form), and are guaranteed unique.
     """
 
     total: torch.Tensor
     terms: dict[str, torch.Tensor] = field(default_factory=dict)
-    components: tuple[torch.Tensor, ...] | None = None
+
+
+def _snake_case(name: str) -> str:
+    """Return the snake_case form of a class name (e.g. ``KineticEnergy``)."""
+
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name)
+    return spaced.strip("_").lower()
+
+
+def normalize_hamiltonian_terms(
+    terms: Mapping[Any, "HamiltonianTerm"] | Sequence["HamiltonianTerm"],
+) -> dict[str, "HamiltonianTerm"]:
+    """Return an ordered ``{name: term}`` mapping from a dict or sequence.
+
+    A ``dict[str, HamiltonianTerm]`` is used directly: its keys are the term
+    names. A sequence falls back to the snake-case class name of each term,
+    suffixed with the term index when a class name repeats, so the resulting
+    names are always unique.
+
+    Parameters
+    ----------
+    terms : Mapping or Sequence of HamiltonianTerm
+        Configured Hamiltonian terms, named (dict) or unnamed (sequence).
+
+    Returns
+    -------
+    dict[str, HamiltonianTerm]
+        Ordered mapping from resolved name to term.
+    """
+
+    if isinstance(terms, Mapping):
+        normalized: dict[str, HamiltonianTerm] = {}
+        for key, term in terms.items():
+            if not isinstance(key, str):
+                raise TypeError(f"hamiltonian term names must be strings, got {type(key).__name__}")
+            normalized[str(key)] = term
+        return normalized
+
+    sequence = list(terms)
+    base_names = [_snake_case(type(term).__name__) for term in sequence]
+    counts = Counter(base_names)
+    normalized = {}
+    for index, (term, base) in enumerate(zip(sequence, base_names)):
+        name = base if counts[base] == 1 else f"{base}_{index}"
+        normalized[name] = term
+    return normalized
 
 
 @runtime_checkable
@@ -58,26 +101,28 @@ class HamiltonianTerm(Protocol):
 
 
 def local_energy(
-    terms: Sequence[HamiltonianTerm],
+    terms: Mapping[str, HamiltonianTerm] | Sequence[HamiltonianTerm],
     wavefunction,
     batch: ElectronBatch,
     *,
     return_terms: bool = False,
 ) -> torch.Tensor | LocalEnergyResult:
-    """Evaluate the local energy of a list of Hamiltonian terms.
+    """Evaluate the local energy of a collection of Hamiltonian terms.
 
     Parameters
     ----------
-    terms : sequence of HamiltonianTerm
-        Ordered Hamiltonian contributions to sum.
+    terms : Mapping or Sequence of HamiltonianTerm
+        Hamiltonian contributions to sum. A ``dict[str, HamiltonianTerm]`` names
+        terms by its keys; a sequence falls back to snake-case class names (see
+        `normalize_hamiltonian_terms`).
     wavefunction : callable
         Wavefunction model or exact reference returning ``WavefunctionOutput``.
     batch : ElectronBatch
         Electron configuration batch.
     return_terms : bool, optional
-        If ``True``, return a ``LocalEnergyResult`` carrying both the merged
-        named decomposition and the positional per-term ``components``;
-        otherwise return the summed tensor directly.
+        If ``True``, return a ``LocalEnergyResult`` whose ``terms`` decomposition
+        is keyed by the resolved (unique) term names; otherwise return the summed
+        tensor directly.
 
     Returns
     -------
@@ -86,19 +131,18 @@ def local_energy(
         ``return_terms=True``.
     """
 
+    normalized = normalize_hamiltonian_terms(terms)
     total: torch.Tensor | None = None
-    merged: dict[str, torch.Tensor] = {}
-    components: list[torch.Tensor] = []
-    for term in terms:
+    decomposition: dict[str, torch.Tensor] = {}
+    for name, term in normalized.items():
         result = term.local_energy(wavefunction, batch)
-        merged.update(result.terms)
-        components.append(result.total)
+        decomposition[name] = result.total
         total = result.total if total is None else total + result.total
     if total is None:
         flat = batch.flatten_samples()
         total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
     if return_terms:
-        return LocalEnergyResult(total=total, terms=merged, components=tuple(components))
+        return LocalEnergyResult(total=total, terms=decomposition)
     return total
 
 
@@ -211,6 +255,7 @@ __all__ = [
     "HamiltonianTerm",
     "LocalEnergyResult",
     "local_energy",
+    "normalize_hamiltonian_terms",
     "reference_energy_metrics",
     "summarize_local_energy",
 ]

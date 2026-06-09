@@ -10,7 +10,7 @@ surface.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import torch
@@ -115,35 +115,32 @@ def compute_vmc_objective(
     return VMCObjectiveResult(loss=loss, metrics=metrics)
 
 
-def hamiltonian_term_metric_prefix(term: object, index: int) -> str:
-    """Return the deterministic metric-key prefix for a Hamiltonian term.
+def hamiltonian_term_metric_prefix(name: str) -> str:
+    """Return the metric-key prefix for a named Hamiltonian term.
 
-    The prefix is derived from the configured term object's class name and its
-    position in ``hamiltonian_terms``. The index is always included so that
-    repeated term classes produce distinct, deterministic metric keys.
+    The prefix is derived from the resolved term name (the ``dict`` key, or the
+    snake-case class name for a sequence; see
+    `spenn.physics.hamiltonian.normalize_hamiltonian_terms`). Names are unique,
+    so prefixes are deterministic and collision-free.
     """
 
-    return f"energy_term_{term.__class__.__name__}_{index}"
+    return f"energy_term_{name}"
 
 
 def summarize_local_energy_terms(
-    terms: Sequence[torch.Tensor],
-    hamiltonian_terms: Sequence[object],
+    terms: Mapping[str, torch.Tensor],
 ) -> dict[str, float | int]:
     """Summarize per-Hamiltonian-term local-energy tensors as training metrics.
 
-    Term metric keys are deterministic and based on the configured term object
-    class name plus its index in ``hamiltonian_terms`` (see
+    Term metric keys are derived from the resolved term names (see
     `hamiltonian_term_metric_prefix`). These are metrics only -- they never form
     part of the optimizer objective.
 
     Parameters
     ----------
-    terms : sequence of torch.Tensor
-        Per-term local-energy tensors, positionally aligned with
-        ``hamiltonian_terms``.
-    hamiltonian_terms : sequence of object
-        The configured Hamiltonian term objects, used only for their class name.
+    terms : Mapping of str to torch.Tensor
+        Per-term local-energy tensors keyed by resolved term name, as produced
+        by ``local_energy(..., return_terms=True).terms``.
 
     Returns
     -------
@@ -153,21 +150,13 @@ def summarize_local_energy_terms(
     Raises
     ------
     ValueError
-        If the number of term tensors does not match the number of Hamiltonian
-        terms, or if any term has no finite samples.
+        If any term has no finite samples.
     """
-
-    if len(terms) != len(hamiltonian_terms):
-        raise ValueError(
-            "number of local-energy term tensors must match number of "
-            "Hamiltonian terms, "
-            f"got {len(terms)} tensors and {len(hamiltonian_terms)} terms"
-        )
 
     metrics: dict[str, float | int] = {}
 
-    for index, (term, values) in enumerate(zip(hamiltonian_terms, terms, strict=True)):
-        prefix = hamiltonian_term_metric_prefix(term, index)
+    for name, values in terms.items():
+        prefix = hamiltonian_term_metric_prefix(name)
 
         finite_mask = torch.isfinite(values)
         n_total = int(values.numel())

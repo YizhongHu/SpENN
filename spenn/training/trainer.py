@@ -90,10 +90,10 @@ class VMCTrainer:
             result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
             if isinstance(result, LocalEnergyResult):
                 total_local_energy = result.total
-                term_components = result.components
+                term_energies = result.terms
             else:
                 total_local_energy = result
-                term_components = None
+                term_energies = None
 
             output = model(batch)
             objective = compute_vmc_objective(output.logabs, total_local_energy)
@@ -111,8 +111,8 @@ class VMCTrainer:
             # local-energy metrics (metrics only, never part of the objective).
             metrics: dict[str, Any] = dict(objective.metrics)
             metrics.update(summarize_logabs(output.logabs))
-            if term_components is not None:
-                metrics.update(summarize_local_energy_terms(term_components, hamiltonian_terms))
+            if term_energies is not None:
+                metrics.update(summarize_local_energy_terms(term_energies))
             metrics["grad_norm"] = grad_norm
             metrics["param_norm"] = _parameter_norm(model)
             metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})

@@ -22,9 +22,13 @@ ENERGY_RTOL = 1e-5
 VARIANCE_ATOL = 1e-8
 
 
-def _hooke_terms(wf) -> list:
-    """Kinetic + harmonic trap + electron-electron terms for a Hooke pair."""
-    return [KineticEnergy(), HarmonicTrap(omega=wf.omega), ElectronElectronInteraction()]
+def _hooke_terms(wf) -> dict:
+    """Named kinetic + harmonic trap + electron-electron terms for a Hooke pair."""
+    return {
+        "kinetic": KineticEnergy(),
+        "harmonic_trap": HarmonicTrap(omega=wf.omega),
+        "electron_electron": ElectronElectronInteraction(),
+    }
 
 
 def _singlet_positions(seed: int = 0) -> torch.Tensor:

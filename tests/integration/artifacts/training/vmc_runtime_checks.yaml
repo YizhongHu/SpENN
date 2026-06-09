@@ -23,13 +23,17 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  construction_seed: ${runtime.seed}
 model:
   _target_: tests.helpers.trainable_wavefunctions.TrainableHookeSingletAnsatz
 hamiltonian_terms:
-- _target_: spenn.physics.kinetic.KineticEnergy
-- _target_: spenn.physics.potential.HarmonicTrap
-  omega: ${system.omega}
-- _target_: spenn.physics.potential.ElectronElectronInteraction
+  kinetic:
+    _target_: spenn.physics.kinetic.KineticEnergy
+  harmonic_trap:
+    _target_: spenn.physics.potential.HarmonicTrap
+    omega: ${system.omega}
+  electron_electron:
+    _target_: spenn.physics.potential.ElectronElectronInteraction
 sampler:
   _target_: spenn.sampling.metropolis.MetropolisSampler
   n_walkers: 256
