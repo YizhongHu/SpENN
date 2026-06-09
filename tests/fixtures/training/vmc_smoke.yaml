@@ -25,7 +25,7 @@ runner:
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
-  optimizer_factory: ${optimizer}
+  optimizer_factory: ${optimizer_factory}
   trainer: ${trainer}
 
 model:
@@ -50,7 +50,7 @@ sampler:
   spatial_dim: ${system.spatial_dim}
   dtype: ${runtime.dtype}
 
-optimizer:
+optimizer_factory:
   _target_: torch.optim.Adam
   _partial_: true
   lr: 0.01

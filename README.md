@@ -47,6 +47,26 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
   --out-cache spenn/cache/irreps_m3.pt
 ```
 
+## Config ownership
+
+Top-level config blocks are reusable object definitions. They are instantiated
+only when referenced by the selected runner or by run-context setup:
+
+- `callbacks` and `loggers` are **run-context owned** — the run context
+  instantiates and drives them; runners dispatch into them via events/logging.
+- `model`, `sampler`, `hamiltonian_terms`, `optimizer_factory`, and `trainer`
+  are **runner-wired** — they are inert unless the selected runner references
+  them explicitly (e.g. `spenn.runner.Train` takes `optimizer_factory:
+  ${optimizer_factory}` and `trainer: ${trainer}`).
+- `diagnostics` are **Evaluate-owned** and are not consumed by `Train`.
+
+`optimizer_factory` is named to reflect that the configured object is a factory
+(`_partial_: true`) used to build an optimizer from model parameters, not an
+optimizer instance. `VMCTrainer` owns training-loop hyperparameters
+(`max_steps`, `log_every_n_steps`, `return_terms`, `gradient_clip_norm`) and the
+loss/backward/step mechanics; it does not own callbacks, loggers, reference
+energy, or diagnostics.
+
 ## Checks After Changes
 
 After code changes, run the fast syntax and test checks:
