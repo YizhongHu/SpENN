@@ -26,11 +26,20 @@ class LocalEnergyResult:
     total : torch.Tensor
         Summed local energy across all contributions, shape ``[batch]``.
     terms : dict[str, torch.Tensor]
-        Per-term local energies keyed by ``HamiltonianTerm.name``.
+        Per-term local energies keyed by ``HamiltonianTerm.name``. This is the
+        named decomposition used by `summarize_local_energy` for evaluation
+        logging; entries collide when two terms share a name.
+    components : tuple[torch.Tensor, ...] or None
+        Per-term local energies positionally aligned with the evaluated term
+        order. Unlike ``terms``, this preserves every term even when names
+        repeat, so it supports deterministic index-based metric naming
+        (`spenn.training.vmc.summarize_local_energy_terms`). ``None`` when the
+        decomposition was not requested.
     """
 
     total: torch.Tensor
     terms: dict[str, torch.Tensor] = field(default_factory=dict)
+    components: tuple[torch.Tensor, ...] | None = None
 
 
 @runtime_checkable
@@ -66,8 +75,9 @@ def local_energy(
     batch : ElectronBatch
         Electron configuration batch.
     return_terms : bool, optional
-        If ``True``, return a ``LocalEnergyResult`` carrying the merged per-term
-        decomposition; otherwise return the summed tensor directly.
+        If ``True``, return a ``LocalEnergyResult`` carrying both the merged
+        named decomposition and the positional per-term ``components``;
+        otherwise return the summed tensor directly.
 
     Returns
     -------
@@ -78,15 +88,17 @@ def local_energy(
 
     total: torch.Tensor | None = None
     merged: dict[str, torch.Tensor] = {}
+    components: list[torch.Tensor] = []
     for term in terms:
         result = term.local_energy(wavefunction, batch)
         merged.update(result.terms)
+        components.append(result.total)
         total = result.total if total is None else total + result.total
     if total is None:
         flat = batch.flatten_samples()
         total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
     if return_terms:
-        return LocalEnergyResult(total=total, terms=merged)
+        return LocalEnergyResult(total=total, terms=merged, components=tuple(components))
     return total
 
 
