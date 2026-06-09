@@ -350,6 +350,33 @@ class DataValidity(Callback):
                     metrics["sign_invalid_fraction"] = sign_fraction
                     if sign_fraction > 0.0:
                         failures.append(f"sign_invalid_fraction={sign_fraction} exceeds 0.0")
+                # Schema invariants belong to the typed output object;
+                # DataValidity only decides when to check and whether to fail.
+                validate = getattr(output, "validate", None)
+                if not callable(validate):
+                    metrics["output_validated"] = False
+                    failures.append(
+                        f"wavefunction output type {type(output).__name__} does not expose validate()"
+                    )
+                else:
+                    kwargs: dict[str, Any] = {}
+                    batch = getattr(state, "batch", None)
+                    if batch is not None:
+                        sample_shape = getattr(batch, "sample_shape", None)
+                        batch_size = getattr(batch, "batch_size", None)
+                        if sample_shape is not None:
+                            kwargs["sample_shape"] = tuple(sample_shape)
+                        if batch_size is not None:
+                            kwargs["batch_size"] = int(batch_size)
+                    try:
+                        validate(**kwargs)
+                    except Exception as exc:
+                        metrics["output_validated"] = False
+                        failures.append(
+                            f"WavefunctionOutput.validate() failed with {type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        metrics["output_validated"] = True
 
         if self.check_loss:
             loss = getattr(state, "loss", None)
