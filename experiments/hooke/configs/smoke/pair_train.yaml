@@ -25,81 +25,6 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer_factory: ${optimizer_factory}
   trainer: ${trainer}
-  callbacks:
-  - _target_: spenn.callback.ConfigSnapshot
-    triggers:
-    - run_start
-    output_path: ${run.dir}/config.yaml
-  - _target_: spenn.callback.ResolvedConfigSnapshot
-    triggers:
-    - run_start
-    output_path: ${run.dir}/resolved_config.yaml
-  - _target_: spenn.callback.Metadata
-    triggers:
-    - run_start
-    - run_end
-    - exception
-    output_path: ${run.dir}/metadata.json
-  - _target_: spenn.callback.Status
-    triggers:
-    - run_start
-    - run_end
-    - exception
-    output_path: ${run.dir}/status.json
-  - _target_: spenn.callback.DataValidity
-    triggers:
-    - step_end
-    every_n_steps: 1
-    fail_fast: true
-    max_nonfinite_energy_fraction: 0.0
-    max_nonfinite_logabs_fraction: 0.0
-    check_loss: true
-    check_wavefunction_output: true
-    check_batch_tensors: true
-    strict_sign_values: true
-  - _target_: spenn.callback.GradientStats
-    triggers:
-    - step_end
-    every_n_steps: 1
-    fail_fast: true
-    check_finite: true
-  - _target_: spenn.callback.SamplerHealth
-    triggers:
-    - step_end
-    every_n_steps: 1
-    fail_fast: false
-  - _target_: spenn.callback.RuntimeEquivariance
-    triggers:
-    - step_end
-    every_n_steps: 1
-    probability: 1.0
-    fail_fast: true
-    artifact_dir: ${run.dir}/checks/equivariance
-    checkers:
-    - _target_: spenn.equivariance.checks.FullModelEquivarianceChecker
-      permutation_fraction: 1.0
-      max_permutations: 1
-      seed: ${runtime.seed}
-      atol: 1.0e-06
-      rtol: 1.0e-06
-    - _target_: spenn.equivariance.checks.TraceEquivarianceChecker
-      permutation_fraction: 1.0
-      max_permutations: 1
-      seed: ${runtime.seed}
-      comparison: stepwise
-      compare_output: false
-      atol: 1.0e-06
-      rtol: 1.0e-06
-  - _target_: spenn.callback.Checkpoint
-    triggers:
-    - step_end
-    every_n_steps: 1
-    output_dir: ${run.dir}/checkpoints
-  loggers:
-  - _target_: spenn.logging.CSV
-    path: ${run.dir}/metrics.csv
-  - _target_: spenn.logging.JSONL
-    path: ${run.dir}/metrics.jsonl
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn
@@ -159,3 +84,78 @@ trainer:
   max_steps: 2
   log_every_n_steps: 1
   return_terms: true
+callbacks:
+- _target_: spenn.callback.ConfigSnapshot
+  triggers:
+  - run_start
+  output_path: ${run.dir}/config.yaml
+- _target_: spenn.callback.ResolvedConfigSnapshot
+  triggers:
+  - run_start
+  output_path: ${run.dir}/resolved_config.yaml
+- _target_: spenn.callback.Metadata
+  triggers:
+  - run_start
+  - run_end
+  - exception
+  output_path: ${run.dir}/metadata.json
+- _target_: spenn.callback.Status
+  triggers:
+  - run_start
+  - run_end
+  - exception
+  output_path: ${run.dir}/status.json
+- _target_: spenn.callback.DataValidity
+  triggers:
+  - step_end
+  every_n_steps: 1
+  fail_fast: true
+  max_nonfinite_energy_fraction: 0.0
+  max_nonfinite_logabs_fraction: 0.0
+  check_loss: true
+  check_wavefunction_output: true
+  check_batch_tensors: true
+  strict_sign_values: true
+- _target_: spenn.callback.GradientStats
+  triggers:
+  - step_end
+  every_n_steps: 1
+  fail_fast: true
+  check_finite: true
+- _target_: spenn.callback.SamplerHealth
+  triggers:
+  - step_end
+  every_n_steps: 1
+  fail_fast: false
+- _target_: spenn.callback.RuntimeEquivariance
+  triggers:
+  - step_end
+  every_n_steps: 1
+  probability: 1.0
+  fail_fast: true
+  artifact_dir: ${run.dir}/checks/equivariance
+  checkers:
+  - _target_: spenn.equivariance.checks.FullModelEquivarianceChecker
+    permutation_fraction: 1.0
+    max_permutations: 1
+    seed: ${runtime.seed}
+    atol: 1.0e-06
+    rtol: 1.0e-06
+  - _target_: spenn.equivariance.checks.TraceEquivarianceChecker
+    permutation_fraction: 1.0
+    max_permutations: 1
+    seed: ${runtime.seed}
+    comparison: stepwise
+    compare_output: false
+    atol: 1.0e-06
+    rtol: 1.0e-06
+- _target_: spenn.callback.Checkpoint
+  triggers:
+  - step_end
+  every_n_steps: 1
+  output_dir: ${run.dir}/checkpoints
+loggers:
+- _target_: spenn.logging.CSV
+  path: ${run.dir}/metrics.csv
+- _target_: spenn.logging.JSONL
+  path: ${run.dir}/metrics.jsonl
