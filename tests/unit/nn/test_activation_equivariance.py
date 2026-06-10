@@ -8,7 +8,7 @@ from torch import nn
 from spenn.data.irrep import IrrepInteraction
 from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
-from spenn.nn import ActivationByType
+from spenn.nn.activation import ActivationByType
 from spenn.reps import specht_irrep
 from tests.helpers.equivariance import assert_equivariant_all
 

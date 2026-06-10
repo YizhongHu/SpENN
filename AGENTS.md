@@ -65,7 +65,11 @@ from spenn.data.indices import ordered_tuples
 
 ### Keep equivariance contracts executable
 
-Every state-like object should implement `.permute(permutation)`. Every equivariant module should subclass `EquivariantMap` and implement `forward_impl`, not `forward`.
+Values participating in equivariance checks must expose typed semantic
+`.permute(...)` and `.compare(...)` contracts. Do not require arbitrary runtime
+state or validation-only objects to be EquivariantState. Every equivariant
+module should subclass `EquivariantMap` and implement `forward_impl`, not
+`forward`.
 
 Bad:
 

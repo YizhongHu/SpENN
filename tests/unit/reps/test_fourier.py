@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 from spenn.data.irrep import IrrepFeature
 from spenn.data.partition import Partition
 from spenn.data.real import RealInteraction, zero_block
+from spenn.nn.activation import GatedNormActivation
 from spenn.reps import FourierTransform, InverseFourierTransform
 
 
@@ -41,8 +43,31 @@ def test_fourier_uses_slot_permutation_representations_for_order_two() -> None:
 
     symmetric = irrep[Partition((2,))][..., 0, 0].squeeze(2)
     antisymmetric = irrep[Partition((1, 1))][..., 0, 0].squeeze(2)
-    torch.testing.assert_close(symmetric, pair + pair.transpose(-1, -2))
-    torch.testing.assert_close(antisymmetric, pair - pair.transpose(-1, -2))
+    torch.testing.assert_close(symmetric, 0.5 * (pair + pair.transpose(-1, -2)))
+    torch.testing.assert_close(antisymmetric, 0.5 * (pair - pair.transpose(-1, -2)))
+
+
+def test_fourier_normalization_sets_activation_gate_scale() -> None:
+    pair = torch.tensor([[[[0.0, 2.0], [5.0, 0.0]]]], dtype=torch.float64)
+    real = RealInteraction(
+        [
+            zero_block(paths=0, dtype=torch.float64),
+            torch.empty(1, 0, 1, 2, dtype=torch.float64),
+            pair.unsqueeze(2),
+        ]
+    )
+    partition = Partition((2,))
+
+    irrep = FourierTransform(partitions=(partition,))(real)
+    activated = GatedNormActivation(gate=nn.Identity())(irrep)
+
+    normalized_block = irrep[partition]
+    expected_real_projection = 0.5 * (pair + pair.transpose(-1, -2))
+    torch.testing.assert_close(normalized_block[..., 0, 0].squeeze(2), expected_real_projection)
+    torch.testing.assert_close(
+        activated[partition],
+        normalized_block * normalized_block.square().sum(dim=-2, keepdim=True),
+    )
 
 
 def test_inverse_fourier_recovers_path_aggregated_slot_fourier_transform() -> None:

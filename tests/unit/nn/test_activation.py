@@ -8,7 +8,7 @@ from torch import nn
 
 from spenn.data.irrep import IrrepInteraction
 from spenn.data.partition import Partition
-from spenn.nn import Activation, ActivationByIrrep, ActivationByType, GatedNormActivation
+from spenn.nn.activation import Activation, ActivationByIrrep, ActivationByType, GatedNormActivation
 
 
 class Cube(nn.Module):
@@ -86,10 +86,10 @@ def test_gated_norm_activation_uses_configured_gate_module() -> None:
     partition = Partition((2, 1))
     tensor = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float64).reshape(1, 1, 1, 1, 1, 1, 2, 2)
     interaction = IrrepInteraction({partition: tensor})
-    activation = GatedNormActivation(gate=nn.Identity(), eps=0.0)
+    activation = GatedNormActivation(gate=nn.Identity())
 
     output = activation(interaction)[partition]
-    expected_gate = tensor.square().sum(dim=-2, keepdim=True).sqrt()
+    expected_gate = tensor.square().sum(dim=-2, keepdim=True)
 
     torch.testing.assert_close(output, tensor * expected_gate)
 

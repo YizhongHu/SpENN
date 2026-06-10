@@ -36,6 +36,8 @@ class MALASampler(MetropolisSampler):
         Number of electrons per walker.
     spatial_dim : int, optional
         Spatial dimension of each electron coordinate.
+    n_up, n_down : int or None, optional
+        Spin partition passed through to the base Metropolis sampler.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
@@ -52,6 +54,8 @@ class MALASampler(MetropolisSampler):
         seed: int | None = None,
         n_electrons: int = 2,
         spatial_dim: int = 3,
+        n_up: int | None = None,
+        n_down: int | None = None,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
@@ -66,6 +70,8 @@ class MALASampler(MetropolisSampler):
             seed=seed,
             n_electrons=n_electrons,
             spatial_dim=spatial_dim,
+            n_up=n_up,
+            n_down=n_down,
             initial_scale=initial_scale,
             dtype=dtype,
         )

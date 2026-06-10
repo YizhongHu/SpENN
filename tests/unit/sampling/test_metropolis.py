@@ -212,6 +212,23 @@ def test_mala_sampler_seed_is_reproducible_across_instances() -> None:
     assert torch.equal(first.positions, second.positions)
 
 
+def test_mala_sampler_initializes_configured_spin_partition() -> None:
+    sampler = MALASampler(
+        n_walkers=3,
+        n_electrons=4,
+        spatial_dim=2,
+        n_up=1,
+        n_down=3,
+        dtype=torch.float64,
+    )
+
+    walkers = sampler.initialize()
+
+    assert walkers.spins is not None
+    expected = torch.tensor([[1.0, -1.0, -1.0, -1.0]], dtype=torch.float64).expand(3, -1)
+    torch.testing.assert_close(walkers.spins, expected)
+
+
 def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
     model = QuadraticLogAbsModel()
     sampler = MALASampler(proposal_scale=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)

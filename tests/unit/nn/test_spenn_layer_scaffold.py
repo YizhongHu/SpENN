@@ -9,13 +9,12 @@ from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition
 from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
 from spenn.nn import (
-    ActivationByType,
-    ChannelMappedUpdate,
     EquivariantMixing,
     PathAggregation,
-    ReplaceUpdate,
     SpENNLayer,
 )
+from spenn.nn.activation import ActivationByType
+from spenn.nn.update import ChannelMappedUpdate, ReplaceUpdate
 from spenn.reps import FourierTransform, InverseFourierTransform
 from tests.helpers.equivariance import assert_equivariant_all
 

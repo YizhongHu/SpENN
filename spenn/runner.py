@@ -53,7 +53,7 @@ class Train(Runner):
     model : torch.nn.Module
         Wavefunction model to optimize.
     sampler : object
-        Sampler exposing ``collect_samples(model) -> (walkers, stats)``.
+        Sampler exposing ``collect_samples(model, device=...) -> (walkers, stats)``.
     hamiltonian_terms : sequence or mapping
         Hamiltonian terms summed by `local_energy`. A
         ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the
@@ -112,7 +112,7 @@ class Evaluate(Runner):
 
     Sampler contract assumed by this runner::
 
-        walkers, sampler_stats = sampler.collect_samples(model)
+        walkers, sampler_stats = sampler.collect_samples(model, device=runtime_device)
         batch = walkers.make_batch()
 
     Parameters
@@ -120,7 +120,7 @@ class Evaluate(Runner):
     model : callable
         Wavefunction model returning ``WavefunctionOutput``.
     sampler : object
-        Sampler exposing ``collect_samples(model) -> (walkers, stats)``.
+        Sampler exposing ``collect_samples(model, device=...) -> (walkers, stats)``.
     hamiltonian_terms : sequence or mapping
         Hamiltonian terms summed by `local_energy`. A
         ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the
@@ -149,7 +149,10 @@ class Evaluate(Runner):
             self.model.eval()
 
         # No torch.no_grad: local-energy evaluation needs position derivatives.
-        walkers, sampler_stats = self.sampler.collect_samples(self.model)
+        walkers, sampler_stats = self.sampler.collect_samples(
+            self.model,
+            device=context.metadata.device,
+        )
         batch = walkers.make_batch()
 
         self.emit("samples_collected", context, payload={"sampler_stats": dict(sampler_stats)})

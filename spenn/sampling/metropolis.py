@@ -22,7 +22,7 @@ class MetropolisSampler(nn.Module):
     proposal noise, one-electron index selection, and accept/reject uniforms).
     Sampler code never mutates global Torch RNG state, and the runner/trainer
     must not seed on the sampler's behalf. Walker state and generator state are
-    checkpointed together by `state_dict`/`load_state_dict`.
+    checkpointed together by `mcmc_state_dict`/`load_mcmc_state_dict`.
 
     Parameters
     ----------

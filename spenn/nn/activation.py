@@ -27,30 +27,25 @@ class GatedNormActivation(Activation):
     Parameters
     ----------
     gate : torch.nn.Module
-        Scalar module applied to alpha-coordinate norms.
-    eps : float, optional
-        Numerical floor for the norm.
+        Scalar module applied to alpha-coordinate squared norms.
     """
 
     def __init__(
         self,
         gate: nn.Module,
-        *,
-        eps: float = 1.0e-12,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.gate = gate
-        self.eps = float(eps)
 
     def forward_impl(self, x: IrrepFeature | IrrepInteraction) -> IrrepFeature | IrrepInteraction:
-        """Scale each irrep vector by a scalar function of ``||alpha||``."""
+        """Scale each irrep vector by a scalar function of squared alpha norm."""
 
         return type(x)({partition: self._apply_gate(tensor) for partition, tensor in x.items()})
 
     def _apply_gate(self, tensor: torch.Tensor) -> torch.Tensor:
-        norm = (tensor.square().sum(dim=-2, keepdim=True) + self.eps).sqrt()
-        return tensor * self.gate(norm)
+        norm_sq = tensor.square().sum(dim=-2, keepdim=True)
+        return tensor * self.gate(norm_sq)
 
 
 class ActivationByType(Activation):
