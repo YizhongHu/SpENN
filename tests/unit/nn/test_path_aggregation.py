@@ -27,7 +27,7 @@ def test_path_aggregation_removes_path_axis_and_selects_learned_path() -> None:
         channel_out_by_order={1: 1},
         path_counts_by_order={1: 2},
         partitions=(partition,),
-    )
+    ).to(dtype=torch.float64)
 
     with torch.no_grad():
         module.weights[module.key(partition)].zero_()
@@ -65,7 +65,7 @@ def test_path_aggregation_mixes_channels_paths_and_beta_without_alpha_mixing() -
         channel_out_by_order=3,
         path_counts_by_order={1: 0, 2: 0, 3: 2},
         partitions=(partition,),
-    )
+    ).to(dtype=torch.float64)
     weight = torch.arange(1, 1 + 3 * 2 * 2 * 2 * 2, dtype=torch.float64).reshape(3, 2, 2, 2, 2)
 
     with torch.no_grad():
@@ -99,7 +99,7 @@ def test_path_aggregation_rejects_input_channels_that_disagree_with_config() -> 
         channel_out_by_order=1,
         path_counts_by_order={1: 0, 2: 1},
         partitions=(Partition((2,)), Partition((1, 1))),
-    )
+    ).to(dtype=torch.float64)
 
     with pytest.raises(ValueError, match="input channels"):
         module(interaction)
@@ -128,7 +128,7 @@ def test_path_aggregation_eagerly_creates_zero_path_weights() -> None:
         channel_out_by_order=2,
         path_counts_by_order={1: 0},
         partitions=(partition,),
-    )
+    ).to(dtype=torch.float64)
 
     output = module(IrrepInteraction({partition: tensor}))[partition]
 

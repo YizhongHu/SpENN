@@ -45,8 +45,7 @@ class SumReadout(nn.Module):
         outputs = [readout(features, batch) for readout in self.readouts]
         values = torch.stack([output.sign * torch.exp(output.logabs) for output in outputs], dim=0)
         if self.readout_weights is not None:
-            weights = self.readout_weights.to(device=values.device, dtype=values.dtype)
-            values = values * weights.view(-1, *([1] * (values.ndim - 1)))
+            values = values * self.readout_weights.view(-1, *([1] * (values.ndim - 1)))
         values = values.sum(dim=0)
         sign = torch.sign(values)
         logabs = torch.where(sign == 0, torch.full_like(values, -torch.inf), torch.log(values.abs()))

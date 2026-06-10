@@ -162,7 +162,7 @@ class PathAggregation(EquivariantMap):
                 f"PathAggregation weight for {partition.parts} has shape {tuple(weight.shape)}, "
                 f"expected {shape}"
             )
-        return weight.to(device=tensor.device, dtype=tensor.dtype)
+        return weight
 
     def _out_channels(self, order: int) -> int:
         return self.channel_out_by_order[order]

@@ -207,8 +207,8 @@ class ElectronElectronCusp(Cusp):
             )
             ranges = torch.where(
                 same_spin,
-                self.same_range_parameter.to(device=batch.device, dtype=batch.dtype),
-                self.opposite_range_parameter.to(device=batch.device, dtype=batch.dtype),
+                self.same_range_parameter,
+                self.opposite_range_parameter,
             )
             contribution = rational_pair_cusp(distances, coefficients, ranges)
         output = contribution.masked_fill(~tri, 0.0).sum(dim=(1, 2))
@@ -298,7 +298,7 @@ class NuclearCusp(Cusp):
         contribution = rational_nuclear_cusp(
             distances,
             nuclear_charges.unsqueeze(1),
-            self.range_parameter.to(device=batch.device, dtype=batch.dtype),
+            self.range_parameter,
         )
         output = contribution.sum(dim=(1, 2))
         assert output.shape == (batch.batch_size,)

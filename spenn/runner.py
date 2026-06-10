@@ -81,6 +81,7 @@ class Train(Runner):
 
         self.emit("run_start", context)
         if isinstance(self.model, torch.nn.Module):
+            _place_module_for_runtime(self.model, context)
             self.model.train()
 
         optimizer = make_optimizer(self.optimizer, self.model.parameters())
@@ -144,6 +145,7 @@ class Evaluate(Runner):
         self.emit("evaluate_start", context)
 
         if isinstance(self.model, torch.nn.Module):
+            _place_module_for_runtime(self.model, context)
             self.model.eval()
 
         # No torch.no_grad: local-energy evaluation needs position derivatives.
@@ -162,6 +164,22 @@ class Evaluate(Runner):
         self.emit("evaluate_end", context, payload={"metrics": metrics})
         self.emit("run_end", context)
         return RunResult(status="completed")
+
+
+def _place_module_for_runtime(module: torch.nn.Module, context: RunContext) -> None:
+    """Move a configured module to the run's device and floating dtype."""
+
+    module.to(device=torch.device(context.metadata.device), dtype=_runtime_dtype(context.metadata.dtype))
+
+
+def _runtime_dtype(name: str) -> torch.dtype:
+    try:
+        dtype = getattr(torch, str(name))
+    except AttributeError as exc:
+        raise ValueError(f"Unsupported runtime dtype {name!r}") from exc
+    if not isinstance(dtype, torch.dtype):
+        raise ValueError(f"Unsupported runtime dtype {name!r}")
+    return dtype
 
 
 __all__ = ["Evaluate", "Runner", "Train"]

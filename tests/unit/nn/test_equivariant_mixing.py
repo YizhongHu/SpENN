@@ -24,7 +24,7 @@ def _one_channel_feature(values: torch.Tensor) -> RealFeature:
 def test_slow_mixing_matches_one_body_product_formula() -> None:
     values = torch.tensor([[1.0, 2.0, 4.0]], dtype=torch.float64)
     feature = _one_channel_feature(values)
-    mixing = EquivariantMixing(max_order=1, max_virtual_order=1, channels=1, initial_weight=1.0)
+    mixing = EquivariantMixing(max_order=1, max_virtual_order=1, channels=1, initial_weight=1.0).to(dtype=torch.float64)
 
     output = mixing(feature)
 
@@ -41,7 +41,7 @@ def test_completion_mean_averages_compatible_virtual_tuples() -> None:
         aggregation="completion_mean",
         channels=1,
         initial_weight=1.0,
-    )
+    ).to(dtype=torch.float64)
 
     output = mixing(feature)
 
@@ -66,7 +66,7 @@ def test_mixing_handles_zero_particles_without_nan(implementation: str) -> None:
         channels=1,
         aggregation="completion_mean",
         implementation=implementation,
-    )
+    ).to(dtype=torch.float64)
 
     output = mixing(feature)
 
@@ -91,7 +91,7 @@ def test_mixing_zeroes_orders_without_distinct_virtual_tuples(implementation: st
         channels=1,
         aggregation="completion_mean",
         implementation=implementation,
-    )
+    ).to(dtype=torch.float64)
 
     output = mixing(feature)
 
@@ -123,7 +123,7 @@ def test_slow_mixing_passes_forced_runtime_equivariance_check() -> None:
         max_order=2,
         max_virtual_order=2,
         channels=2,
-    )
+    ).to(dtype=torch.float64)
 
     output = mixing(feature)
 
@@ -161,7 +161,7 @@ def test_vectorized_mixing_matches_slow_reference_for_all_aggregations() -> None
                 out_channels=out_channels,
                 implementation="slow",
                 initial_weight=0.5,
-            )
+            ).to(dtype=torch.float64)
             vectorized = EquivariantMixing(
                 max_order=2,
                 max_virtual_order=2,
@@ -172,7 +172,7 @@ def test_vectorized_mixing_matches_slow_reference_for_all_aggregations() -> None
                 out_channels=out_channels,
                 implementation="vectorized",
                 initial_weight=0.5,
-            )
+            ).to(dtype=torch.float64)
 
             slow_output = slow(feature, other)
             vectorized_output = vectorized(feature, other)
@@ -196,7 +196,7 @@ def test_vectorized_mixing_passes_forced_runtime_equivariance_check() -> None:
         aggregation="completion_mean",
         channels=2,
         implementation="vectorized",
-    )
+    ).to(dtype=torch.float64)
 
     output = mixing(feature)
 

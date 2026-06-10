@@ -298,7 +298,7 @@ class EquivariantMixing(EquivariantMap):
         weight = self.weights[key]
         if tuple(weight.shape) != shape:
             raise ValueError(f"Path {path.global_id} weight shape {tuple(weight.shape)} does not match {shape}")
-        return weight.to(device=x1.blocks[path.m1].device, dtype=x1.blocks[path.m1].dtype)
+        return weight
 
 
 def _normalize_channels(value: int | Mapping[int, int], *, max_order: int, name: str) -> dict[int, int]:

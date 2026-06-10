@@ -44,7 +44,7 @@ def test_path_aggregation_passes_forced_runtime_equivariance_check() -> None:
         channel_out_by_order=2,
         path_counts_by_order={1: 0, 2: 3},
         partitions=(symmetric, sign),
-    )
+    ).to(dtype=torch.float64)
 
     output = aggregation(interaction)
 
@@ -74,7 +74,7 @@ def test_path_aggregation_preserves_orthogonal_coordinate_action() -> None:
         channel_out_by_order=2,
         path_counts_by_order={1: 0, 2: 0, 3: 3},
         partitions=(partition,),
-    )
+    ).to(dtype=torch.float64)
 
     transformed_input = torch.einsum("ab,...bc->...ac", representation, tensor)
     transformed_output = aggregation(IrrepInteraction({partition: transformed_input}))[partition]

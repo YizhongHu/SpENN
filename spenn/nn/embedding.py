@@ -116,8 +116,7 @@ class Embedding(EquivariantMap):
         blocks = [zero_block(batch_size=flat.batch_size, device=flat.device, dtype=flat.dtype)]
         for order in range(1, self.max_order + 1):
             inputs = tuple_particle_inputs(particle_vectors, order)
-            mlp = self.order_mlps[str(order)].to(device=flat.device, dtype=flat.dtype)
-            block = mlp(inputs).movedim(-1, 1)
+            block = self.order_mlps[str(order)](inputs).movedim(-1, 1)
             block = block * no_repeated_particle_mask(flat.n_electrons, order, device=flat.device).reshape(
                 1,
                 1,

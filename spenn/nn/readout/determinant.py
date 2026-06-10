@@ -92,7 +92,7 @@ class DeterminantReadout(nn.Module):
                 weights = self.orbital_weights
             elif tuple(weights.shape) != expected_shape:
                 raise ValueError(f"orbital_weights has shape {tuple(weights.shape)}, expected {expected_shape}")
-            return weights.to(device=device, dtype=dtype)
+            return weights
 
         weights = self.orbital_weight_buffer
         if weights is None:
@@ -100,7 +100,7 @@ class DeterminantReadout(nn.Module):
             weights = self.orbital_weight_buffer
         elif tuple(weights.shape) != expected_shape:
             raise ValueError(f"orbital_weight_buffer has shape {tuple(weights.shape)}, expected {expected_shape}")
-        return weights.to(device=device, dtype=dtype)
+        return weights
 
 
 def _initial_orbital_weights(

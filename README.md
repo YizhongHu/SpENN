@@ -54,6 +54,32 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
   --out-cache spenn/cache/irreps_m3.pt
 ```
 
+## Eager Model Invariant
+
+SpENN model construction owns trainable state. All trainable parameters must be
+registered during ``__init__`` from explicit architecture metadata such as
+channel counts and maximum order. A forward pass may allocate activations whose
+tuple axes depend on the runtime particle count, including zero-sized axes, but
+it must not create, resize, replace, move, or cast parameters or buffers.
+
+The sampler is never involved in model construction. There is no materialization
+batch in the eager design: setup moves the model to the configured device and
+dtype, the optimizer is built from the complete parameter set, and forward only
+evaluates the already-constructed model.
+
+Current tensor layouts are:
+
+```text
+RealFeature order m:
+  [batch, channels, i1, ..., im]
+
+IrrepInteraction:
+  [batch, channels, paths, indices..., alpha, beta_in]
+
+IrrepFeature:
+  [batch, channels, indices..., alpha, beta]
+```
+
 ## Config ownership
 
 **Callbacks and loggers are config-root and owned by the `RunContext`.** They

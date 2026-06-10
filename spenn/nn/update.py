@@ -138,8 +138,6 @@ class ChannelMappedUpdate(Update):
                 order,
                 out_channels=int(feature.shape[1]),
                 in_channels=int(update.shape[1]),
-                device=feature.device,
-                dtype=feature.dtype,
             )
             mapped = torch.einsum("oc,bc...->bo...", weight, update)
             output.append(feature + self.step * mapped)
@@ -151,8 +149,6 @@ class ChannelMappedUpdate(Update):
         *,
         out_channels: int,
         in_channels: int,
-        device: torch.device,
-        dtype: torch.dtype,
     ) -> torch.Tensor:
         key = str(order)
         shape = (out_channels, in_channels)
@@ -161,7 +157,7 @@ class ChannelMappedUpdate(Update):
         weight = self.channel_maps[key]
         if tuple(weight.shape) != shape:
             raise ValueError(f"Order-{order} channel map shape {tuple(weight.shape)} does not match {shape}")
-        return weight.to(device=device, dtype=dtype)
+        return weight
 
     def _initialize_channel_maps(self) -> None:
         for order in range(1, self.max_order + 1):

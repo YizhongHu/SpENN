@@ -5,8 +5,17 @@ from __future__ import annotations
 import torch
 from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
-from spenn.data.batch import WavefunctionOutput
+from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from tests.helpers.hooke_models import build_tiny_spenn, tiny_pair_batch
+
+
+def _snapshot_state_dict_metadata(
+    model: torch.nn.Module,
+) -> dict[str, tuple[tuple[int, ...], torch.dtype, torch.device]]:
+    return {
+        name: (tuple(tensor.shape), tensor.dtype, tensor.device)
+        for name, tensor in model.state_dict().items()
+    }
 
 
 def test_forward_returns_finite_wavefunction_output() -> None:
@@ -25,14 +34,23 @@ def test_forward_returns_finite_wavefunction_output() -> None:
 
 def test_tiny_spenn_initializes_stock_parameters_before_first_forward() -> None:
     model = build_tiny_spenn()
-    batch = tiny_pair_batch(n_walkers=4)
+    batch_n2 = tiny_pair_batch(n_walkers=4)
+    batch_n4 = ElectronBatch(
+        positions=torch.randn(4, 4, 3, generator=torch.Generator().manual_seed(123), dtype=torch.float64),
+        spins=torch.tensor([[1.0, 1.0, -1.0, -1.0]] * 4, dtype=torch.float64),
+    )
 
     for _name, parameter in model.named_parameters():
         assert not isinstance(parameter, UninitializedParameter)
     for _name, buffer in model.named_buffers():
         assert not isinstance(buffer, UninitializedBuffer)
-    state_keys_before = tuple(model.state_dict().keys())
+    before = _snapshot_state_dict_metadata(model)
 
-    model(batch)
+    model(batch_n2)
+    after_n2 = _snapshot_state_dict_metadata(model)
 
-    assert tuple(model.state_dict().keys()) == state_keys_before
+    model(batch_n4)
+    after_n4 = _snapshot_state_dict_metadata(model)
+
+    assert after_n2 == before
+    assert after_n4 == before

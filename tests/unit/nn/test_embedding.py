@@ -83,7 +83,7 @@ def test_embedding_builds_mlp_blocks_for_arbitrary_orders() -> None:
         hidden_channels=7,
         num_hidden_layers=1,
         include_spins=False,
-    )
+    ).to(dtype=torch.float64)
 
     feature = embedding(batch)
 
@@ -100,7 +100,7 @@ def test_embedding_allows_orders_above_particle_count_as_zero_blocks() -> None:
         spatial_dim=2,
         out_channels={1: 2, 2: 3, 3: 4, 4: 5},
         include_spins=False,
-    )
+    ).to(dtype=torch.float64)
 
     feature = embedding(batch)
 
@@ -110,7 +110,7 @@ def test_embedding_allows_orders_above_particle_count_as_zero_blocks() -> None:
 
 def test_embedding_handles_zero_particles_with_empty_tuple_axes() -> None:
     batch = ElectronBatch(positions=torch.zeros(1, 0, 2, dtype=torch.float64))
-    embedding = Embedding(max_order=3, spatial_dim=2, out_channels=4, include_spins=False)
+    embedding = Embedding(max_order=3, spatial_dim=2, out_channels=4, include_spins=False).to(dtype=torch.float64)
 
     feature = embedding(batch)
 
@@ -166,7 +166,7 @@ def test_embedding_keeps_dtype_and_allows_gradients() -> None:
         hidden_channels=5,
         num_hidden_layers=1,
         include_spins=False,
-    )
+    ).to(dtype=torch.float64)
 
     feature = embedding(batch)
     loss = sum(block.sum() for block in feature.blocks)
@@ -181,6 +181,6 @@ def test_embedding_keeps_dtype_and_allows_gradients() -> None:
 def test_embedding_flattens_multi_sample_batches() -> None:
     batch = ElectronBatch(positions=torch.zeros(2, 3, 4, 5, dtype=torch.float64))
 
-    feature = Embedding(max_order=1, spatial_dim=5, out_channels=6, include_spins=False)(batch)
+    feature = Embedding(max_order=1, spatial_dim=5, out_channels=6, include_spins=False).to(dtype=torch.float64)(batch)
 
     assert feature.blocks[1].shape == (6, 6, 4)

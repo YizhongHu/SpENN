@@ -46,10 +46,10 @@ class GatedNormActivation(Activation):
     def forward_impl(self, x: IrrepFeature | IrrepInteraction) -> IrrepFeature | IrrepInteraction:
         """Scale each irrep vector by a scalar function of ``||alpha||``."""
 
-        return type(x)({partition: self._apply(tensor) for partition, tensor in x.items()})
+        return type(x)({partition: self._apply_gate(tensor) for partition, tensor in x.items()})
 
-    def _apply(self, tensor: torch.Tensor) -> torch.Tensor:
-        norm = tensor.square().sum(dim=-2, keepdim=True).clamp_min(self.eps).sqrt()
+    def _apply_gate(self, tensor: torch.Tensor) -> torch.Tensor:
+        norm = (tensor.square().sum(dim=-2, keepdim=True) + self.eps).sqrt()
         return tensor * self.gate(norm)
 
 
@@ -106,9 +106,9 @@ class ActivationByType(Activation):
     def forward_impl(self, x: IrrepFeature | IrrepInteraction) -> IrrepFeature | IrrepInteraction:
         """Apply the selected activation to each irrep block."""
 
-        return type(x)({partition: self._apply(partition, tensor) for partition, tensor in x.items()})
+        return type(x)({partition: self._apply_partition(partition, tensor) for partition, tensor in x.items()})
 
-    def _apply(self, partition: Partition, tensor: torch.Tensor) -> torch.Tensor:
+    def _apply_partition(self, partition: Partition, tensor: torch.Tensor) -> torch.Tensor:
         if partition.is_symmetric():
             return tensor if self.symmetric_activation is None else self.symmetric_activation(tensor)
         if partition.is_antisymmetric():

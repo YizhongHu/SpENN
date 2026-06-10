@@ -27,7 +27,11 @@ def _config() -> OmegaConf:
 def build_tiny_spenn() -> SpENNWaveFunction:
     """Instantiate the tiny `SpENNWaveFunction` from the smoke fixture config."""
 
-    return instantiate(_config().model)
+    cfg = _config()
+    model = instantiate(cfg.model)
+    dtype = getattr(torch, str(cfg.runtime.dtype))
+    device = torch.device(str(cfg.runtime.device))
+    return model.to(device=device, dtype=dtype)
 
 
 def build_tiny_sampler() -> MetropolisSampler:

@@ -168,7 +168,7 @@ class PfaffianReadout(nn.Module):
             raise ValueError(f"Order-2 block must have shape [batch, channels, n, n], got {tuple(pair.shape)}")
         if batch is not None and pair.shape[0] != batch.batch_size:
             raise ValueError("Feature batch size disagrees with ElectronBatch")
-        weights = self._ensure_pair_weights(pair.shape[1], device=pair.device, dtype=pair.dtype)
+        weights = self._ensure_pair_weights(pair.shape[1])
         antisymmetric = 0.5 * (pair - pair.transpose(-1, -2))
         kernel = (antisymmetric * weights.view(1, -1, 1, 1)).sum(dim=1)
         if kernel.shape[-1] % 2 == 1:
@@ -181,7 +181,7 @@ class PfaffianReadout(nn.Module):
                 raise ValueError("Order-1 border block must match order-2 batch and particle axes")
             if one_body.shape[1] == 0:
                 raise KeyError("Odd-electron Pfaffian requires a nonempty order-1 RealFeature border block")
-            border_weights = self._ensure_border_weights(one_body.shape[1], device=one_body.device, dtype=one_body.dtype)
+            border_weights = self._ensure_border_weights(one_body.shape[1])
             border = (one_body * border_weights.view(1, -1, 1)).sum(dim=1)
             bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1] + 1, kernel.shape[2] + 1)
             bordered[:, :-1, :-1] = kernel
@@ -202,24 +202,20 @@ class PfaffianReadout(nn.Module):
             aux={"K": kernel, "pfaffian": pfaffian(kernel), "envelope": envelope},
         )
 
-    def _ensure_pair_weights(self, channels: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    def _ensure_pair_weights(self, channels: int) -> torch.Tensor:
         return _ensure_readout_weights(
             self,
             channels,
             parameter_name="channel_weights",
             buffer_name="channel_weight_buffer",
-            device=device,
-            dtype=dtype,
         )
 
-    def _ensure_border_weights(self, channels: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    def _ensure_border_weights(self, channels: int) -> torch.Tensor:
         return _ensure_readout_weights(
             self,
             channels,
             parameter_name="border_weights",
             buffer_name="border_weight_buffer",
-            device=device,
-            dtype=dtype,
         )
 
 
@@ -229,8 +225,6 @@ def _ensure_readout_weights(
     *,
     parameter_name: str,
     buffer_name: str,
-    device: torch.device,
-    dtype: torch.dtype,
 ) -> torch.Tensor:
     if module.trainable:
         weight = getattr(module, parameter_name)
@@ -238,14 +232,14 @@ def _ensure_readout_weights(
             raise RuntimeError(f"{parameter_name} was not eagerly initialized")
         if tuple(weight.shape) != (channels,):
             raise ValueError(f"{parameter_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
-        return weight.to(device=device, dtype=dtype)
+        return weight
 
     weight = getattr(module, buffer_name)
     if weight is None:
         raise RuntimeError(f"{buffer_name} was not eagerly initialized")
     if tuple(weight.shape) != (channels,):
         raise ValueError(f"{buffer_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
-    return weight.to(device=device, dtype=dtype)
+    return weight
 
 
 def _positive_int(value: int, name: str) -> int:
@@ -273,15 +267,15 @@ def _inverse_softplus(value: float) -> float:
     return math.log(math.expm1(value))
 
 
-def _current_envelope_coefficient(module: nn.Module, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+def _current_envelope_coefficient(module: nn.Module) -> torch.Tensor:
     raw = getattr(module, "envelope_raw", None)
     if raw is not None:
-        return F.softplus(raw).to(device=device, dtype=dtype)
-    return module.envelope_coefficient.to(device=device, dtype=dtype)
+        return F.softplus(raw)
+    return module.envelope_coefficient
 
 
 def _harmonic_envelope(module: nn.Module, batch: ElectronBatch) -> torch.Tensor:
-    coefficient = _current_envelope_coefficient(module, dtype=batch.dtype, device=batch.device)
+    coefficient = _current_envelope_coefficient(module)
     radius_squared = batch.positions.square().sum(dim=(1, 2))
     return -coefficient * radius_squared
 

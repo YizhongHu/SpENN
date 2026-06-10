@@ -23,7 +23,7 @@ def test_embedding_passes_forced_runtime_equivariance_check() -> None:
         hidden_channels=8,
         num_hidden_layers=1,
         aux_feature_channels={"types": 2},
-    )
+    ).to(dtype=torch.float64)
 
     feature = embedding(batch)
 
@@ -45,7 +45,7 @@ def test_embedding_passes_runtime_equivariance_with_sample_axes() -> None:
         hidden_channels=7,
         num_hidden_layers=1,
         aux_feature_channels={"types": 2},
-    )
+    ).to(dtype=torch.float64)
 
     feature = embedding(batch)
 

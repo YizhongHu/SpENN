@@ -81,7 +81,7 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
         update=ChannelMappedUpdate(max_order=1, channels=2),
-    )
+    ).to(dtype=torch.float64)
 
     output = layer(feature)
 
@@ -139,7 +139,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
         ),
         inverse_fourier=InverseFourierTransform(partitions=(partition,)),
         update=ChannelMappedUpdate(max_order=1, channels=2),
-    )
+    ).to(dtype=torch.float64)
 
     output = layer(feature)
 
