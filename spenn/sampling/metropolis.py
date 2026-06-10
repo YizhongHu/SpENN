@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from spenn.data.batch import Walkers, WavefunctionOutput
 from spenn.sampling.moves import GaussianMove
 
 
@@ -147,33 +147,6 @@ class MetropolisSampler(nn.Module):
             dtype=self.dtype,
         )
         return Walkers(positions=positions, spins=spins)
-
-    def example_batch(self, n_walkers: int = 2, device=None) -> ElectronBatch:
-        """Return a small deterministic batch for lazy-parameter materialization.
-
-        Uses no sampler randomness so model parameter initialization stays
-        decoupled from the sampler's Markov-chain RNG. Intended for forcing a
-        first model forward before sampling/optimizer construction.
-        """
-
-        target_device = torch.device(device) if device is not None else self._generator_device
-        n = max(1, int(n_walkers))
-        count = n * self.n_electrons * self.spatial_dim
-        positions = (
-            torch.arange(count, dtype=self.dtype, device=target_device).reshape(
-                n, self.n_electrons, self.spatial_dim
-            )
-            + 1.0
-        ) * 0.1
-        spins = _default_spins(
-            n_up=self.n_up,
-            n_down=self.n_down,
-            n_electrons=self.n_electrons,
-            n_walkers=n,
-            device=target_device,
-            dtype=self.dtype,
-        )
-        return Walkers(positions=positions, spins=spins).make_batch()
 
     def reset(self, n_walkers: int | None = None, device=None) -> Walkers:
         """Re-seed the generator and start a fresh, un-burned-in chain.

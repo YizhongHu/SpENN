@@ -23,7 +23,6 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
-  construction_seed: ${runtime.seed}
 model:
   _target_: tests.helpers.trainable_wavefunctions.TrainableHookeSingletAnsatz
 hamiltonian_terms:
