@@ -67,6 +67,9 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
+- _target_: spenn.callback.RunTiming
+- _target_: spenn.callback.EvaluationTiming
+- _target_: spenn.callback.DiagnosticTiming
 - _target_: spenn.callback.Status
   triggers:
   - run_start

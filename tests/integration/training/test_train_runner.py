@@ -56,8 +56,12 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     records = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines() if line.strip()]
     train_records = [record["metrics"] for record in records if record.get("namespace") == "train"]
     sampler_records = [record["metrics"] for record in records if record.get("namespace") == "train/sampler"]
+    perf_records = [record["metrics"] for record in records if record.get("namespace") == "train/perf"]
+    runtime_records = [record["metrics"] for record in records if record.get("namespace") == "runtime"]
     assert len(train_records) == 3, "expected one train record per step"
     assert len(sampler_records) == 3, "expected one train/sampler record per step"
+    assert len(perf_records) == 3, "expected one train/perf record per step"
+    assert any("wall_time_sec" in record for record in runtime_records)
 
     last = train_records[-1]
     for key in (
@@ -74,6 +78,8 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     assert not any(key.startswith("sampler.") for key in last)
     assert "acceptance_rate" in sampler_records[-1]
     assert "n_walkers" in sampler_records[-1]
+    assert "step_time_sec" in perf_records[-1]
+    assert "step_time_sec_rolling_mean" in perf_records[-1]
 
     # JSONL serialization with allow_nan=False would already have failed the run
     # on any non-finite value; assert finiteness directly for good measure.

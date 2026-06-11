@@ -154,6 +154,43 @@ export PYTHONUNBUFFERED=1
 uv run python -u run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
+## Timing Metrics
+
+Timing instrumentation is callback-owned and logs through the same CSV/JSONL
+logger path as other metrics:
+
+```yaml
+callbacks:
+  - _target_: spenn.callback.RunTiming
+
+  - _target_: spenn.callback.TrainStepTiming
+    every_n_steps: 1
+    rolling_window: 20
+    cuda_synchronize: false
+
+  - _target_: spenn.callback.EvaluationTiming
+    cuda_synchronize: false
+
+  - _target_: spenn.callback.DiagnosticTiming
+    cuda_synchronize: false
+```
+
+Canonical timing metric identities are:
+
+```text
+runtime/start_time_unix
+runtime/end_time_unix
+runtime/wall_time_sec
+train/perf/step_time_sec
+train/perf/step_time_sec_rolling_mean
+eval/perf/wall_time_sec
+diagnostics/<name>/time_sec
+```
+
+Use `time.perf_counter()` for elapsed durations and `time.time()` only for Unix
+timestamps. GPU synchronization is opt-in with `cuda_synchronize: true` for
+benchmarking; it is disabled by default for normal training.
+
 Regenerate checked-in Specht irrep cache files from SageMath with:
 
 ```bash

@@ -191,7 +191,11 @@ class Evaluate(Runner):
             sampler_stats=dict(sampler_stats),
             hamiltonian_terms=normalized_terms,
         )
-        metrics = _evaluate_diagnostics(self.diagnostics, evaluation)
+        metrics = _evaluate_diagnostics(
+            self.diagnostics,
+            evaluation,
+            emit=lambda name, *, payload=None: self.emit(name, context, payload=payload),
+        )
 
         context.log(metrics, step=0, namespace="eval")
         if sampler_stats:
@@ -260,12 +264,24 @@ def _split_local_energy_result(
 def _evaluate_diagnostics(
     diagnostics: Sequence[Diagnostic],
     context: EvaluationContext,
+    *,
+    emit=None,
 ) -> dict[str, JsonScalar]:
     """Evaluate diagnostics and merge their flat metric mappings."""
 
     metrics: dict[str, JsonScalar] = {}
     for diagnostic in diagnostics:
-        result = diagnostic.evaluate(context)
+        payload = {"diagnostic_name": diagnostic.name, "step": 0}
+        if emit is not None:
+            emit("diagnostic_start", payload=payload)
+        try:
+            result = diagnostic.evaluate(context)
+        except Exception as exc:
+            if emit is not None:
+                emit("diagnostic_failed", payload={**payload, "exception": exc})
+            raise
+        if emit is not None:
+            emit("diagnostic_end", payload=payload)
         if not isinstance(result, Mapping):
             raise TypeError(f"diagnostic {diagnostic.name!r} must return a mapping of metric names to scalars")
         for key, value in result.items():

@@ -114,6 +114,10 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
+- _target_: spenn.callback.RunTiming
+- _target_: spenn.callback.TrainStepTiming
+  every_n_steps: 1
+  rolling_window: 20
 - _target_: spenn.callback.Status
   triggers:
   - run_start
@@ -131,6 +135,8 @@ callbacks:
   - train/sampler/acceptance_rate
   - train/grad_norm
   - train/local_energy_finite_fraction
+  - train/perf/step_time_sec
+  - train/perf/step_time_sec_rolling_mean
 - _target_: spenn.callback.DataValidity
   triggers:
   - step_end
