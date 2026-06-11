@@ -44,6 +44,60 @@ For a syntax-only check:
 uv run python -m compileall spenn run.py typechecked.py
 ```
 
+## Optional W&B Tracking
+
+SpENN can optionally mirror scalar run metrics to Weights & Biases for
+dashboarding and monitoring. W&B is an observability backend only; the local run
+directory remains the authoritative experiment record.
+
+Install optional W&B support:
+
+```bash
+uv sync --extra wandb
+```
+
+For interactive authentication:
+
+```bash
+wandb login
+```
+
+For non-interactive jobs:
+
+```bash
+export WANDB_API_KEY=<your-api-key>
+```
+
+Add W&B as another root-level logger:
+
+```yaml
+loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
+  - _target_: spenn.logging.WandB
+    project: spenn-qmc
+    entity: null
+    mode: online
+    group: hooke_pair
+    tags:
+      - hooke
+      - vmc
+```
+
+For jobs without reliable internet, use W&B offline mode:
+
+```bash
+wandb offline
+uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+wandb sync --sync-all
+```
+
+By default, SpENN does not upload checkpoints, traces, raw batches, per-sample
+arrays, or full run directories to W&B. W&B receives scalar metrics and compact
+config/provenance metadata; CSV/JSONL logs and local artifacts remain canonical.
+
 Regenerate checked-in Specht irrep cache files from SageMath with:
 
 ```bash
