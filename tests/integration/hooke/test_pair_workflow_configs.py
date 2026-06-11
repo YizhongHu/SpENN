@@ -1,0 +1,175 @@
+"""PR7 workflow-readiness tests for the canonical Hooke pair configs.
+
+Runs the real ``experiments/hooke/configs/smoke`` train and eval configs
+end-to-end through ``run_from_config`` and asserts the run-directory artifacts,
+metric namespaces, and timing/perf metrics that benchmark runs rely on. Also
+keeps the SLURM submission scripts line-oriented and batch-safe.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+import torch
+from omegaconf import OmegaConf
+
+from spenn.run import run_from_config
+
+ROOT = Path(__file__).resolve().parents[3]
+CONFIG_DIR = ROOT / "experiments" / "hooke" / "configs" / "smoke"
+SLURM_DIR = ROOT / "experiments" / "hooke" / "slurm"
+
+TRAIN_CONFIG = CONFIG_DIR / "pair_train.yaml"
+EVAL_CONFIG = CONFIG_DIR / "pair_eval.yaml"
+
+EXPECTED_ARTIFACTS = (
+    "config.yaml",
+    "resolved_config.yaml",
+    "metadata.json",
+    "status.json",
+    "metrics.csv",
+    "metrics.jsonl",
+)
+
+
+def _run_config(config: Path, tmp_path: Path, overrides: dict[str, object] | None = None) -> Path:
+    """Run one canonical config into ``tmp_path`` and return the run directory."""
+
+    cfg = OmegaConf.load(config)
+    cfg.run.root = str(tmp_path)
+    cfg.run.timezone = "UTC"  # tests log in UTC; experiments use America/New_York
+    # Keep the process-global "spenn" terminal logger unconfigured: it would
+    # set propagate=False and break caplog-based unit tests that run later.
+    cfg.terminal.enabled = False
+    if overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.create(overrides))
+    exit_code = run_from_config(cfg, config_path=str(config), command="pytest")
+    assert exit_code == 0
+    run_dirs = list(tmp_path.glob("hooke_pair_smoke/pair/*"))
+    assert len(run_dirs) == 1, f"expected one run dir, found {run_dirs}"
+    return run_dirs[0]
+
+
+def _metrics_by_namespace(run_dir: Path) -> dict[str, set[str]]:
+    """Map each logged namespace to the set of metric keys it received."""
+
+    namespaces: dict[str, set[str]] = {}
+    for line in (run_dir / "metrics.jsonl").read_text().splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        namespaces.setdefault(record["namespace"], set()).update(record["metrics"])
+    return namespaces
+
+
+def test_canonical_configs_load_and_interpolate() -> None:
+    """Both canonical configs load and fully resolve without a live run."""
+
+    for config in (TRAIN_CONFIG, EVAL_CONFIG):
+        cfg = OmegaConf.load(config)
+        # run.dir is populated by run setup; give it a value so ${run.dir}
+        # interpolations resolve during this static check.
+        cfg.run.dir = "/tmp/spenn-config-check"
+        OmegaConf.resolve(cfg)
+
+
+def test_canonical_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> None:
+    """The canonical train config runs and emits artifacts plus perf metrics."""
+
+    run_dir = _run_config(TRAIN_CONFIG, tmp_path)
+
+    for artifact in (*EXPECTED_ARTIFACTS, "checkpoints/latest.pt"):
+        assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"
+    assert json.loads((run_dir / "status.json").read_text())["status"] == "completed"
+
+    namespaces = _metrics_by_namespace(run_dir)
+    assert "energy" in namespaces["train"]
+    assert "acceptance_rate" in namespaces["train/sampler"]
+    assert "passed" in namespaces["checks/data_validity"]
+    assert "passed" in namespaces["checks/equivariance/full_model"]
+    assert "wall_time_sec" in namespaces["runtime"]
+    assert {"step_time_sec", "step_time_sec_rolling_mean"} <= namespaces["train/perf"]
+
+
+def test_canonical_eval_config_runs_and_emits_energy_metrics(tmp_path: Path) -> None:
+    """The canonical eval config runs EnergyEvaluation with reference errors."""
+
+    run_dir = _run_config(EVAL_CONFIG, tmp_path)
+
+    for artifact in EXPECTED_ARTIFACTS:
+        assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"
+    assert json.loads((run_dir / "status.json").read_text())["status"] == "completed"
+
+    namespaces = _metrics_by_namespace(run_dir)
+    assert {"energy", "energy_stderr", "energy_error", "energy_abs_error"} <= namespaces["eval"]
+    # return_terms=true + include_terms=true produce per-term decompositions.
+    assert "energy_term_kinetic" in namespaces["eval"]
+    # Sampler stats use the namespaced path, not dotted keys inside "eval".
+    assert "acceptance_rate" in namespaces["eval/sampler"]
+    assert not any("." in key for key in namespaces["eval"])
+    assert "wall_time_sec" in namespaces["eval/perf"]
+    assert "time_sec" in namespaces["diagnostics/energy"]
+    assert "wall_time_sec" in namespaces["runtime"]
+
+
+def test_eval_config_keeps_reference_energy_out_of_system() -> None:
+    """Reference energies live under ``references``, never ``system``."""
+
+    cfg = OmegaConf.load(EVAL_CONFIG)
+    assert OmegaConf.select(cfg, "references.exact_energy") is not None
+    assert OmegaConf.select(cfg, "system.exact_energy") is None
+
+
+def test_metadata_records_hardware_and_runtime_provenance(tmp_path: Path) -> None:
+    """metadata.json carries hardware/runtime (and SLURM, when present) blocks."""
+
+    run_dir = _run_config(EVAL_CONFIG, tmp_path)
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+
+    hardware = metadata["hardware"]
+    assert hardware["hostname"]
+    assert isinstance(hardware["cuda_available"], bool)
+    assert isinstance(hardware["cuda_device_count"], int)
+
+    runtime = metadata["runtime"]
+    assert runtime["device"] == "cpu"
+    assert runtime["dtype"] == "float64"
+    assert runtime["python_version"]
+    assert "torch_version" in runtime
+
+    # SLURM block exists; contents depend on whether the test runs under SLURM.
+    assert isinstance(metadata["slurm"], dict)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_canonical_train_config_runs_on_cuda(tmp_path: Path) -> None:
+    """GPU smoke path: the train config runs with runtime.device=cuda."""
+
+    run_dir = _run_config(
+        TRAIN_CONFIG,
+        tmp_path,
+        overrides={"runtime": {"device": "cuda"}, "timing": {"cuda_synchronize": True}},
+    )
+
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+    assert metadata["runtime"]["device"] == "cuda"
+    assert json.loads((run_dir / "status.json").read_text())["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    "script", ["train_pair_smoke.sbatch", "eval_pair_smoke.sbatch"]
+)
+def test_slurm_scripts_are_batch_safe(script: str) -> None:
+    """SLURM scripts stay unbuffered, line-oriented, and exit-code preserving."""
+
+    text = (SLURM_DIR / script).read_text()
+    assert text.startswith("#!/bin/bash")
+    assert "export PYTHONUNBUFFERED=1" in text
+    assert "python -u" in text
+    assert "set -euo pipefail" in text
+    assert 'echo "[slurm] job_id=' in text
+    assert "OMP_NUM_THREADS" in text
+    # Submission forwards dotlist overrides to run.py.
+    assert '"$@"' in text
