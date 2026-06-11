@@ -262,8 +262,12 @@ timing:
 # -----------------------------------------------------------------------------
 # Human-facing status cadence
 # -----------------------------------------------------------------------------
+# Smoke runs are short, so report every step. Steps are 1-indexed and the
+# cadence gate fires when step % every_n_steps == 0, so any cadence above
+# training.max_steps would print nothing. Benchmark configs should use a lower
+# cadence such as every_n_steps: 10.
 status:
-  every_n_steps: 10
+  every_n_steps: 1
   include:
     - train/loss
     - train/energy
