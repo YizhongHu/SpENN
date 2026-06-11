@@ -79,12 +79,7 @@ class IrrepInteraction:
         return type(self)({partition: tensor.clone() for partition, tensor in self.blocks.items()})
 
     def permute(self, permutation: Permutation) -> "IrrepInteraction":
-        """Return a copy with tuple-index axes permuted.
-
-        The scaffold applies the particle-label action to tuple axes directly.
-        Future Fourier-backed implementations may replace this with an exact
-        representation-coordinate action.
-        """
+        """Return a copy with the particle-label action on tuple-index axes."""
 
         return type(self)(
             {

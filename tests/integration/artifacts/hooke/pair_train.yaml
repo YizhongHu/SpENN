@@ -25,13 +25,13 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
-  construction_seed: ${runtime.seed}
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn
   embedding:
     _target_: spenn.nn.Embedding
     max_order: 2
+    spatial_dim: ${system.spatial_dim}
     out_channels: 4
     hidden_channels: 8
     num_hidden_layers: 1
@@ -42,23 +42,28 @@ model:
       _target_: spenn.nn.EquivariantMixing
       max_order: 2
       max_virtual_order: 2
+      channels: 4
       implementation: slow
       initial_weight: 0.5
     fourier:
       _target_: spenn.reps.FourierTransform
     activation:
-      _target_: spenn.nn.ActivationByType
-      symmetric_activation:
-        _target_: torch.nn.Tanh
+      _target_: spenn.nn.GatedNormActivation
+      gate:
+        _target_: torch.nn.SiLU
     path_aggregation:
       _target_: spenn.nn.PathAggregation
+      max_order: 2
+      max_virtual_order: 2
+      channels: 4
     inverse_fourier:
       _target_: spenn.reps.InverseFourierTransform
     update:
-      _target_: spenn.nn.ChannelMappedUpdate
+      _target_: spenn.nn.ResidualUpdate
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     allow_odd_electron_bordered: true
+    channels: 4
 hamiltonian_terms:
   kinetic:
     _target_: spenn.physics.kinetic.KineticEnergy
@@ -149,7 +154,6 @@ callbacks:
     permutation_fraction: 1.0
     max_permutations: 1
     seed: ${runtime.seed}
-    comparison: stepwise
     compare_output: false
     atol: 1.0e-06
     rtol: 1.0e-06

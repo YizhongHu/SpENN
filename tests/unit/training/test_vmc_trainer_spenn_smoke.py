@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import torch
 
@@ -18,6 +19,7 @@ class _StubContext(RunContext):
 
     def __init__(self) -> None:
         self.loggers = []
+        self.metadata = SimpleNamespace(device="cpu", dtype="float64")
         self.records: list[tuple[str, dict]] = []
 
     def log(self, metrics, *, step=None, namespace="run", event=None) -> None:

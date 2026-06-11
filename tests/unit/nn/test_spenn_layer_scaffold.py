@@ -9,11 +9,10 @@ from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition
 from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
 from spenn.nn import (
-    ActivationByType,
-    ChannelMappedUpdate,
     EquivariantMixing,
+    GatedNormActivation,
     PathAggregation,
-    ReplaceUpdate,
+    ResidualUpdate,
     SpENNLayer,
 )
 from spenn.reps import FourierTransform, InverseFourierTransform
@@ -80,8 +79,8 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
         activation=IdentityActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
-        update=ChannelMappedUpdate(),
-    )
+        update=ResidualUpdate(),
+    ).to(dtype=torch.float64)
 
     output = layer(feature)
 
@@ -102,12 +101,12 @@ def test_spenn_layer_applies_activation_before_path_aggregation() -> None:
         activation=SquareActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
-        update=ReplaceUpdate(),
+        update=ResidualUpdate(),
     )
 
     output = layer(feature)
 
-    torch.testing.assert_close(output.blocks[1], 5.0 * feature.blocks[1].square())
+    torch.testing.assert_close(output.blocks[1], feature.blocks[1] + 5.0 * feature.blocks[1].square())
 
 
 def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() -> None:
@@ -125,14 +124,21 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             max_order=1,
             max_virtual_order=1,
             implementation="vectorized",
+            channels=2,
             initial_weight=0.5,
         ),
         fourier=FourierTransform(partitions=(partition,)),
-        activation=ActivationByType(symmetric_activation=torch.nn.Tanh()),
-        path_aggregation=PathAggregation(channel_out_by_order={1: 2}),
+        activation=GatedNormActivation(gate=torch.nn.Sigmoid()),
+        path_aggregation=PathAggregation(
+            max_order=1,
+            channels=2,
+            channel_out_by_order=2,
+            path_counts_by_order={1: 1},
+            partitions=(partition,),
+        ),
         inverse_fourier=InverseFourierTransform(partitions=(partition,)),
-        update=ChannelMappedUpdate(),
-    )
+        update=ResidualUpdate(),
+    ).to(dtype=torch.float64)
 
     output = layer(feature)
 

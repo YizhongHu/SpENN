@@ -170,7 +170,7 @@ def _fourier_block(
         )
         permuted = permute_tuple_slots(tensor, permutation, axis_start=tuple_axis_start, order=order)
         output = output + permuted.unsqueeze(-1).unsqueeze(-1) * matrix
-    return output
+    return output / float(_factorial(order))
 
 
 def _inverse_fourier_block(
@@ -180,7 +180,7 @@ def _inverse_fourier_block(
     order = partition.order
     dim = irrep_dimension(partition)
     trace = tensor.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-    return (dim / float(_factorial(order))) * trace
+    return dim * trace
 
 
 def _factorial(value: int) -> int:

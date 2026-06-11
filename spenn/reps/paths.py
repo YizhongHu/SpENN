@@ -291,14 +291,22 @@ def generate_virtual_paths(
         paths[s] = {}
         for m in range(1, min(max_order, s) + 1):
             paths[s][m] = {}
+            # Canonical output embeddings fix tau = (0, ..., m - 1).
+            # This is a gauge choice for the output injection, not independent
+            # canonicalization of all injections. Relative input injections
+            # tau1/tau2 remain part of the path data and carry the interaction
+            # degrees of freedom.
             output_maps = [tuple(range(m))] if output_embedding == "canonical" else ordered_tuples(s, m)
             for m1 in range(1, min(max_order, s) + 1):
                 paths[s][m][m1] = {}
+                # Injections from [m1] into the virtual support
                 left_maps = ordered_tuples(s, m1)
                 for m2 in range(1, min(max_order, s) + 1):
+                    # Injections from [m2] into the virtual support
                     right_maps = ordered_tuples(s, m2)
                     block: list[VirtualPath] = []
                     local_id = 0
+                    # Iterate over all injections
                     for tau in output_maps:
                         for tau1 in left_maps:
                             for tau2 in right_maps:

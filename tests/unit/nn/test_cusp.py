@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
@@ -34,6 +35,12 @@ class AntisymmetricReadout(nn.Module):
 class BadShapeCusp(Cusp):
     def forward(self, batch: ElectronBatch) -> torch.Tensor:
         return torch.zeros(batch.batch_size, 1, device=batch.device, dtype=batch.dtype)
+
+
+class FullOutputCusp(nn.Module):
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        logabs = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
 def test_spinless_electron_electron_cusp_matches_rational_option_a_formula() -> None:
@@ -194,6 +201,19 @@ def test_wavefunction_cusp_shape_must_match_readout_logabs() -> None:
         assert "cusp output" in str(exc).lower()
     else:
         raise AssertionError("Expected mismatched cusp shape to raise ValueError")
+
+
+def test_wavefunction_cusp_must_return_additive_tensor_not_full_output() -> None:
+    batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
+    model = SpENNWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=ConstantReadout(),
+        cusp=FullOutputCusp(),
+    )
+
+    with pytest.raises(TypeError, match="torch.Tensor"):
+        model(batch)
 
 
 def test_spenn_wavefunction_passes_runtime_sign_equivariance_check() -> None:

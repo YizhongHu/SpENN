@@ -208,10 +208,6 @@ class TraceEquivarianceChecker:
         Hard cap on permutations tested.
     seed : int or None, optional
         Seed controlling permutation selection.
-    comparison : {"stepwise", "full_trace", "both"}, optional
-        ``stepwise`` compares entries key-by-key and reports the worst/failing
-        key; ``full_trace`` adds whole-trace schema aggregation; ``both`` does
-        both. All modes treat missing/extra keys as failures.
     compare_output : bool, optional
         Also compare the final model outputs like the full-model checker.
     dump_on_failure : bool, optional
@@ -226,18 +222,14 @@ class TraceEquivarianceChecker:
         permutation_fraction: float = 1.0,
         max_permutations: int = 4,
         seed: int | None = None,
-        comparison: str = "stepwise",
         compare_output: bool = False,
         dump_on_failure: bool = True,
         atol: float = 1.0e-6,
         rtol: float = 1.0e-6,
     ) -> None:
-        if comparison not in ("stepwise", "full_trace", "both"):
-            raise ValueError(f"comparison must be stepwise/full_trace/both, got {comparison!r}")
         self.permutation_fraction = float(permutation_fraction)
         self.max_permutations = int(max_permutations)
         self.seed = seed
-        self.comparison = comparison
         self.compare_output = bool(compare_output)
         self.dump_on_failure = bool(dump_on_failure)
         self.atol = float(atol)
@@ -363,7 +355,6 @@ class TraceEquivarianceChecker:
                 artifact = {
                     "checker_class": type(self).__name__,
                     "step": step,
-                    "comparison": self.comparison,
                     "n_particles": int(n_particles),
                     "permutations_tested": [list(p.image) for p in permutations],
                     "failed_permutations": failed_permutations,
@@ -398,7 +389,6 @@ class TraceEquivarianceChecker:
             "n_available_permutations": n_available,
             "permutation_fraction": self.permutation_fraction,
             "max_permutations": self.max_permutations,
-            "comparison": self.comparison,
             "atol": self.atol,
             "rtol": self.rtol,
         }

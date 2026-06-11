@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import torch
-from torch.nn.parameter import UninitializedParameter
 
 from spenn.artifacts import RunContext
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy
@@ -18,7 +17,7 @@ def _parameter_norm(model) -> float:
 
     total = None
     for param in model.parameters():
-        if not param.requires_grad or isinstance(param, UninitializedParameter):
+        if not param.requires_grad:
             continue
         value = param.detach().pow(2).sum()
         total = value if total is None else total + value
@@ -30,7 +29,7 @@ def _gradient_norm(model) -> float:
 
     total = None
     for param in model.parameters():
-        if param.grad is None or isinstance(param, UninitializedParameter):
+        if param.grad is None:
             continue
         value = param.grad.detach().pow(2).sum()
         total = value if total is None else total + value
@@ -85,7 +84,7 @@ class VMCTrainer:
         for step in range(1, self.max_steps + 1):
             emit("step_start", payload={"step": step})
 
-            walkers, sampler_stats = sampler.collect_samples(model)
+            walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)
             batch = walkers.make_batch()
             result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
             if isinstance(result, LocalEnergyResult):

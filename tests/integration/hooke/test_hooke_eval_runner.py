@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from omegaconf import OmegaConf
@@ -87,6 +88,7 @@ class _RecordingContext(RunContext):
     def __init__(self, callbacks) -> None:
         self.callbacks = list(callbacks)
         self.loggers = []
+        self.metadata = SimpleNamespace(device="cpu", dtype="float64")
         self.records: list[tuple[str, dict]] = []
 
     def log(self, metrics, *, step=None, namespace="run", event=None) -> None:

@@ -1,5 +1,12 @@
 # SpENN project specific guidelines
 
+## Design Document
+
+A design document that contains the mathematical background of
+SpENN can be found in `main.typ`. Key components of the model:
+`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
+should closely follow the design document for correctness.
+
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.
@@ -12,12 +19,6 @@
 ## Conventions
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
-
-## Plans and Todos
-
-- Each folder under root contains `TODO.md`. This is a plan for the current directory. Maintain this TODO list to keep information between agents.
-- Each folder under root contains `instructions.md`. This states the detailed design of everything in the current directory. Reference this for
-  implementation details.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
@@ -71,7 +72,11 @@ from spenn.data.indices import ordered_tuples
 
 ### Keep equivariance contracts executable
 
-Every state-like object should implement `.permute(permutation)`. Every equivariant module should subclass `EquivariantMap` and implement `forward_impl`, not `forward`.
+Values participating in equivariance checks must expose typed semantic
+`.permute(...)` and `.compare(...)` contracts. Do not require arbitrary runtime
+state or validation-only objects to be EquivariantState. Every equivariant
+module should subclass `EquivariantMap` and implement `forward_impl`, not
+`forward`.
 
 Bad:
 
