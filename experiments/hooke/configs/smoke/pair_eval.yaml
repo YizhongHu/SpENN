@@ -120,18 +120,22 @@ terminal:
 #   3. Uncomment the WandB logger in the `loggers:` section at the bottom.
 #
 wandb:
-  project: spenn-qmc
+  project: spenn-qmc-test
   entity: null
+  # Use the SpENN run id as the W&B run name so dashboard runs map 1:1 to
+  # local run directories. Populated by run setup before loggers instantiate.
+  name: ${run.run_id}
   # online   - stream metrics to W&B
   # offline  - write locally and sync later with `wandb sync`
   # disabled - no-op, if supported by the logger
-  mode: offline
+  mode: online
   group: ${experiment.name}
   job_type: eval
   tags:
     - hooke
     - smoke
     - eval
+    - ${runtime.device}
 
   # W&B should mirror scalar metrics using the canonical namespace/key path:
   #   namespace = eval/sampler
@@ -432,6 +436,7 @@ loggers:
   # - _target_: spenn.logging.WandB
   #   project: ${wandb.project}
   #   entity: ${wandb.entity}
+  #   name: ${wandb.name}
   #   mode: ${wandb.mode}
   #   group: ${wandb.group}
   #   job_type: ${wandb.job_type}
@@ -440,3 +445,10 @@ loggers:
   #   dashboard_aliases: ${wandb.dashboard_aliases}
   #   health_flags: ${wandb.health_flags}
   #   log_artifacts: ${wandb.log_artifacts}
+  #   # Compact provenance mirrored into the W&B run config: links the dashboard
+  #   # run back to the authoritative local run directory.
+  #   config:
+  #     run_id: ${run.run_id}
+  #     run_dir: ${run.dir}
+  #     experiment: ${experiment.name}
+  #     sector: ${experiment.sector}

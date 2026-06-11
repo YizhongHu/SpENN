@@ -43,6 +43,12 @@ def _run_config(config: Path, tmp_path: Path, overrides: dict[str, object] | Non
     # Keep the process-global "spenn" terminal logger unconfigured: it would
     # set propagate=False and break caplog-based unit tests that run later.
     cfg.terminal.enabled = False
+    # Tests must stay hermetic: if the on-disk config enables the W&B logger,
+    # force offline mode and keep its files inside tmp_path.
+    for logger_cfg in cfg.loggers:
+        if str(logger_cfg.get("_target_", "")).endswith("WandB"):
+            logger_cfg["mode"] = "offline"
+            logger_cfg["dir"] = str(tmp_path)
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.create(overrides))
     exit_code = run_from_config(cfg, config_path=str(config), command="pytest")

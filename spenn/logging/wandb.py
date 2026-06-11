@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +30,9 @@ class WandB(Logger):
         W&B run group.
     job_type : str or None, optional
         W&B job type.
-    tags : list of str or None, optional
-        W&B tags.
+    tags : sequence of str or None, optional
+        W&B tags. Any sequence is accepted (e.g. an OmegaConf list from a
+        Hydra config) and is copied into a plain list.
     mode : {"online", "offline", "disabled"}, optional
         W&B logging mode.
     config : mapping or None, optional
@@ -60,7 +61,7 @@ class WandB(Logger):
         name: str | None = None,
         group: str | None = None,
         job_type: str | None = None,
-        tags: list[str] | None = None,
+        tags: Sequence[str] | None = None,
         mode: str = "online",
         dir: str | None = None,
         config: Mapping[str, object] | None = None,
@@ -78,7 +79,9 @@ class WandB(Logger):
         self.name = name
         self.group = group
         self.job_type = job_type
-        self.tags = None if tags is None else list(tags)
+        if isinstance(tags, str):
+            raise TypeError(f"tags must be a sequence of strings, not a single string: {tags!r}")
+        self.tags = None if tags is None else [str(tag) for tag in tags]
         self.mode = mode
         self.dir = dir
         self.config = None if config is None else _json_safe(dict(config))
