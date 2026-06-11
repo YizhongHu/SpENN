@@ -13,7 +13,7 @@ def _state(step: int) -> TrainerState:
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     return TrainerState(
         step=step,
-        metrics={"loss": 0.5, "energy_mean": 1.25},
+        metrics={"loss": 0.5, "energy": 1.25},
         model=model,
         optimizer=optimizer,
         sampler=None,
@@ -44,7 +44,7 @@ def test_checkpoint_payload_contains_expected_keys(tmp_path) -> None:
     assert payload["step"] == 3
     assert set(payload["model_state_dict"]) == set(state.model.state_dict())
     assert "optimizer_state_dict" in payload
-    assert payload["metrics"] == {"loss": 0.5, "energy_mean": 1.25}
+    assert payload["metrics"] == {"loss": 0.5, "energy": 1.25}
     assert payload["sampler_mcmc_state"] is None
 
 

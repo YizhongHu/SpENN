@@ -191,9 +191,9 @@ class Evaluate(Runner):
         else:
             metrics = summarize_local_energy(energy_result)
 
-        metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})
-
         context.log(metrics, step=0, namespace="eval")
+        if sampler_stats:
+            context.log(dict(sampler_stats), step=0, namespace="eval/sampler")
 
         self.emit("evaluate_end", context, payload={"metrics": metrics})
         self.emit("run_end", context)

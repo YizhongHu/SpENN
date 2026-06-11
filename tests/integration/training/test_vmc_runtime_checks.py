@@ -53,7 +53,7 @@ def test_runtime_checks_log_check_namespaces(tmp_path) -> None:
     ]
     namespaces = {record.get("namespace") for record in records}
 
-    for expected in ("train", "checks/data_validity", "checks/gradient", "checks/sampler"):
+    for expected in ("train", "train/sampler", "checks/data_validity", "checks/gradient", "checks/sampler"):
         assert expected in namespaces, f"missing namespace: {expected}"
 
     data_validity = [r["metrics"] for r in records if r.get("namespace") == "checks/data_validity"]

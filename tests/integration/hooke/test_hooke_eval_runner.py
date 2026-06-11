@@ -176,8 +176,12 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
     # Logged through the context under the eval namespace, intrinsic metrics only.
     eval_records = [m for ns, m in context.records if ns == "eval"]
     assert eval_records
-    assert "energy_mean" in eval_records[-1]
+    assert "energy" in eval_records[-1]
+    assert "energy_mean" not in eval_records[-1]
     assert "reference_energy" not in eval_records[-1]
+    sampler_records = [m for ns, m in context.records if ns == "eval/sampler"]
+    assert sampler_records
+    assert "n_walkers" in sampler_records[-1]
 
 
 def test_evaluate_runs_energy_diagnostics_from_shared_context_once() -> None:
@@ -218,8 +222,11 @@ def test_evaluate_runs_energy_diagnostics_from_shared_context_once() -> None:
     assert metrics["energy_term_kinetic"] == pytest.approx(2.0)
     assert metrics["energy_term_harmonic_trap"] == pytest.approx(5.0)
     assert metrics["probe_batch_size"] == 3
-    assert metrics["sampler.n_walkers"] == 3
+    sampler_records = [m for ns, m in context.records if ns == "eval/sampler"]
+    assert len(sampler_records) == 1
+    assert sampler_records[0]["n_walkers"] == 3
     assert "energy_mean" not in metrics
+    assert not any(key.startswith("sampler.") for key in metrics)
 
 
 def test_energy_evaluation_fails_when_terms_were_not_returned() -> None:
@@ -260,6 +267,13 @@ def _eval_metrics(run_root: Path) -> dict:
     return eval_records[-1]
 
 
+def _namespace_records(run_root: Path, namespace: str) -> list[dict]:
+    jsonl_files = list(run_root.glob("**/metrics.jsonl"))
+    assert len(jsonl_files) == 1, f"expected exactly one metrics.jsonl, found {jsonl_files}"
+    records = [json.loads(line) for line in jsonl_files[0].read_text().splitlines() if line.strip()]
+    return [record["metrics"] for record in records if record.get("namespace") == namespace]
+
+
 @pytest.mark.parametrize(
     ("fixture", "exact_energy"),
     [("exact_singlet.yaml", 2.0), ("exact_triplet.yaml", 1.25)],
@@ -291,9 +305,11 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
         prefix = f"energy_term_{term}"
         assert prefix in metrics
         assert metrics[f"{prefix}_nonfinite_count"] == 0
-    # sampler diagnostics are logged with sampler.* keys.
-    assert metrics["sampler.n_walkers"] == 512
-    assert "sampler.acceptance_rate" in metrics
+    assert not any(key.startswith("sampler.") for key in metrics)
+    # Sampler diagnostics own the eval/sampler namespace.
+    sampler_metrics = _namespace_records(tmp_path, "eval/sampler")[-1]
+    assert sampler_metrics["n_walkers"] == 512
+    assert "acceptance_rate" in sampler_metrics
 
 
 @pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
