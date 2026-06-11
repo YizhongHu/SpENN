@@ -487,8 +487,7 @@ class GradientStats(Callback):
 class SamplerHealth(Callback):
     """Expose sampler statistics under ``checks/sampler`` with optional bounds.
 
-    Reads ``state.sampler_stats`` (falling back to ``sampler.*`` keys in
-    ``state.metrics``) and logs only the stats actually available. When
+    Reads ``state.sampler_stats`` and logs only the stats actually available. When
     acceptance-rate bounds are configured and violated, ``passed`` is ``False``;
     it raises only if ``fail_fast`` is set.
     """
@@ -512,10 +511,6 @@ class SamplerHealth(Callback):
 
         state = event.state
         stats = dict(getattr(state, "sampler_stats", None) or {})
-        if not stats:
-            source = getattr(state, "metrics", None) or {}
-            prefix = "sampler."
-            stats = {key[len(prefix):]: value for key, value in source.items() if key.startswith(prefix)}
 
         metrics: dict[str, Any] = {
             key: stats[key] for key in ("acceptance_rate", "n_walkers", "n_steps", "burn_in") if key in stats

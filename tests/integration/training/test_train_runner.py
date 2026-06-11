@@ -55,7 +55,9 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
 
     records = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines() if line.strip()]
     train_records = [record["metrics"] for record in records if record.get("namespace") == "train"]
+    sampler_records = [record["metrics"] for record in records if record.get("namespace") == "train/sampler"]
     assert len(train_records) == 3, "expected one train record per step"
+    assert len(sampler_records) == 3, "expected one train/sampler record per step"
 
     last = train_records[-1]
     for key in (
@@ -69,6 +71,9 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
         assert key in last, f"missing metric: {key}"
     # The physical training estimator is logged as `energy`, never `energy_mean`.
     assert "energy_mean" not in last
+    assert not any(key.startswith("sampler.") for key in last)
+    assert "acceptance_rate" in sampler_records[-1]
+    assert "n_walkers" in sampler_records[-1]
 
     # JSONL serialization with allow_nan=False would already have failed the run
     # on any non-finite value; assert finiteness directly for good measure.

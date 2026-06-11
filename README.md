@@ -116,15 +116,16 @@ loggers: [...]     # config-root, RunContext-owned
 - `optimizer` names a partial factory (`_partial_: true`) that builds an
   optimizer from model parameters; `Train` applies it to `model.parameters()`.
 - `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
-  minimal sampled local-energy evaluator (`model`, `sampler`,
-  `hamiltonian_terms`, `return_terms`); it does **not** own diagnostics or
-  reference-energy comparison yet -- those arrive with the PR6 diagnostics
-  interface.
-- `Evaluate(return_terms=True)` logs evaluation term metrics as
-  `terms.<name>_mean` and `terms.<name>_nonfinite_fraction`. VMC training term
-  metrics use `energy_term_<name>` for the finite mean and suffixes such as
+  sampled diagnostic evaluator (`model`, `sampler`, `hamiltonian_terms`,
+  `diagnostics`, `return_terms`). Reference-energy comparison belongs to
+  evaluation diagnostics such as `spenn.diagnostics.EnergyEvaluation`.
+- Training and evaluation term metrics use `energy_term_<name>` for the finite
+  mean and suffixes such as
   `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
   and `_nonfinite_count` for companion statistics.
+- Metric identity is `namespace + key`: training metrics use `train`, sampler
+  stats use `train/sampler` or `eval/sampler`, runtime checks use `checks/...`,
+  and evaluation diagnostics use `eval`. See `spenn/metrics_naming.md`.
 
 `prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
 `RunContext`. `Runner.emit(...)` dispatches lifecycle events through
@@ -252,3 +253,10 @@ The backwards compatibility of this repository is only with respect to the behav
 of Hydra config files. Before v1.0.0, every minor version can break backwards compatibility.
 v0.2.0 does not have to be able to reproduce a v0.1.0 config. But patches have to be
 compatible with each other.
+
+## Conventions
+
+### Metrics Naming Scheme
+
+Metric naming and logger conventions are documented in
+[`spenn/metrics_naming.md`](spenn/metrics_naming.md).

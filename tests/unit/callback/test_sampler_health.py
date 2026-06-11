@@ -36,13 +36,14 @@ def test_does_not_require_all_sampler_stats() -> None:
     assert metrics["passed"] is True
 
 
-def test_falls_back_to_sampler_prefixed_metrics() -> None:
+def test_ignores_sampler_prefixed_metric_keys() -> None:
     state = FakeState(metrics={"sampler.acceptance_rate": 0.3, "sampler.n_walkers": 128, "loss": 1.0})
 
     metrics = _handle(SamplerHealth(["step_end"]), state).latest("checks/sampler")
 
-    assert metrics["acceptance_rate"] == pytest.approx(0.3)
-    assert metrics["n_walkers"] == 128
+    assert "acceptance_rate" not in metrics
+    assert "n_walkers" not in metrics
+    assert metrics["passed"] is True
 
 
 def test_acceptance_bounds_set_passed_false_without_raising() -> None:

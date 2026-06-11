@@ -201,7 +201,7 @@ def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
 
 
 def _instantiate_runner(context: RunContext) -> Runner:
-    runner_cfg = context.cfg.runner
+    runner_cfg = context.cfg.runner.copy()
     # Callbacks and loggers are configured at the config root and owned by the
     # RunContext; a runner must not own them.
     for forbidden in ("callbacks", "loggers"):

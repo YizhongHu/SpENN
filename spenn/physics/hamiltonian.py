@@ -7,8 +7,8 @@ and the values must expose ``local_energy(wavefunction, batch)``. The
 `local_energy` helper normalizes either form (see `normalize_hamiltonian_terms`),
 evaluates every term, and sums their contributions, optionally returning the
 per-term decomposition keyed by the resolved term names. Evaluation summaries
-emit per-term metrics as ``terms.{name}_mean`` and
-``terms.{name}_nonfinite_fraction``.
+use canonical flat metric keys such as ``energy`` and
+``energy_term_{name}``; hierarchy belongs in the logging namespace.
 """
 
 from __future__ import annotations
@@ -199,35 +199,17 @@ def _validate_local_energy_result(
     return result
 
 
-def _finite_stats(values: torch.Tensor) -> tuple[float, float]:
-    """Return ``(mean_over_finite, nonfinite_fraction)`` for a tensor.
-
-    The mean is ``nan`` when there are no finite entries, and the fraction is
-    ``nan`` for an empty tensor. The finite mask is always checked before any
-    mean is computed.
-    """
-
-    n = int(values.numel())
-    finite_mask = torch.isfinite(values)
-    n_finite = int(finite_mask.sum().item())
-    mean = float(values[finite_mask].mean().item()) if n_finite > 0 else float("nan")
-    nonfinite_fraction = float((n - n_finite) / n) if n > 0 else float("nan")
-    return mean, nonfinite_fraction
-
-
 def summarize_local_energy(
     result: LocalEnergyResult | torch.Tensor,
 ) -> dict[str, Any]:
     """Summarize a sampled local energy into scalar logging metrics.
 
     Handles all-finite, partially-nonfinite, all-nonfinite, and empty inputs,
-    and per-term decompositions. Per-term metrics are named
-    ``terms.{name}_mean`` and ``terms.{name}_nonfinite_fraction``, where
-    ``name`` is the resolved Hamiltonian term name. All returned values are
-    Python scalars suitable for CSV/JSONL logging. This summary is
-    reference-free: comparison against a known energy is the job of
-    `reference_energy_metrics` (typically driven by
-    `spenn.callback.ReferenceEnergy`).
+    and per-term decompositions. Returned keys follow the metric naming
+    convention: callers provide the logging namespace, while this helper emits
+    flat leaf keys such as ``energy``, ``local_energy_n_finite``, and
+    ``energy_term_{name}``. This summary is reference-free; benchmark
+    comparison belongs to evaluation diagnostics.
 
     Parameters
     ----------
@@ -237,7 +219,7 @@ def summarize_local_energy(
     Returns
     -------
     dict
-        Scalar metrics. When no finite samples exist, ``energy_mean`` and
+        Scalar metrics. When no finite samples exist, ``energy`` and
         ``energy_variance`` are ``nan`` and ``energy_stderr`` is ``inf``.
     """
 
@@ -246,37 +228,57 @@ def summarize_local_energy(
     else:
         eloc, terms = result, {}
 
-    n = int(eloc.numel())
-    finite_mask = torch.isfinite(eloc)
+    metrics = _summarize_values("", eloc)
+    for name, value in terms.items():
+        metrics.update(_summarize_values(f"energy_term_{name}", value))
+    return metrics
+
+
+def _summarize_values(prefix: str, values: torch.Tensor) -> dict[str, Any]:
+    """Return canonical finite-aware energy metrics for one value tensor."""
+
+    n_total = int(values.numel())
+    finite_mask = torch.isfinite(values)
     n_finite = int(finite_mask.sum().item())
     if n_finite > 0:
-        finite = eloc[finite_mask]
-        mean = float(finite.mean().item())
-        variance = float(finite.var(unbiased=False).item())
-        stderr = float(finite.std(unbiased=False).item()) / math.sqrt(n_finite)
+        finite = values[finite_mask]
+        energy = float(finite.mean().item())
+        variance = float(finite.var(unbiased=False).item()) if n_finite > 1 else 0.0
+        std = math.sqrt(variance)
+        stderr = std / math.sqrt(n_finite)
     else:
-        mean = float("nan")
+        energy = float("nan")
         variance = float("nan")
+        std = float("nan")
         stderr = float("inf")
 
-    metrics: dict[str, Any] = {
-        "n_samples": n,
-        "n_finite_samples": n_finite,
-        "nonfinite_energy_fraction": float((n - n_finite) / n) if n > 0 else float("nan"),
-        "energy_mean": mean,
-        "energy_stderr": stderr,
+    if prefix:
+        return {
+            prefix: energy,
+            f"{prefix}_variance": variance,
+            f"{prefix}_std": std,
+            f"{prefix}_stderr": stderr,
+            f"{prefix}_n_finite": n_finite,
+            f"{prefix}_n_total": n_total,
+            f"{prefix}_finite_fraction": float(n_finite / n_total) if n_total else 0.0,
+            f"{prefix}_nonfinite_count": n_total - n_finite,
+        }
+
+    return {
+        "energy": energy,
         "energy_variance": variance,
+        "energy_std": std,
+        "energy_stderr": stderr,
+        "local_energy_n_finite": n_finite,
+        "local_energy_n_total": n_total,
+        "local_energy_finite_fraction": float(n_finite / n_total) if n_total else 0.0,
+        "local_energy_nonfinite_count": n_total - n_finite,
     }
-    for name, value in terms.items():
-        term_mean, term_nonfinite = _finite_stats(value)
-        metrics[f"terms.{name}_mean"] = term_mean
-        metrics[f"terms.{name}_nonfinite_fraction"] = term_nonfinite
-    return metrics
 
 
 def reference_energy_metrics(
     *,
-    energy_mean: float,
+    energy: float,
     reference_energy: float,
 ) -> dict[str, float]:
     """Compare a mean energy against a known reference energy.
@@ -295,7 +297,7 @@ def reference_energy_metrics(
 
     Parameters
     ----------
-    energy_mean : float
+    energy : float
         Estimated mean energy.
     reference_energy : float
         Known reference energy to compare against.
@@ -304,14 +306,14 @@ def reference_energy_metrics(
     -------
     dict
         ``reference_energy``, ``energy_error`` (mean minus reference), and
-        ``abs_energy_error``.
+        ``energy_abs_error``.
     """
 
-    error = float(energy_mean) - float(reference_energy)
+    error = float(energy) - float(reference_energy)
     return {
         "reference_energy": float(reference_energy),
         "energy_error": error,
-        "abs_energy_error": abs(error),
+        "energy_abs_error": abs(error),
     }
 
 

@@ -114,7 +114,6 @@ class VMCTrainer:
                 metrics.update(summarize_local_energy_terms(term_energies))
             metrics["grad_norm"] = grad_norm
             metrics["param_norm"] = _parameter_norm(model)
-            metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})
 
             state.step = step
             state.metrics = metrics
@@ -127,6 +126,8 @@ class VMCTrainer:
 
             if self.log_every_n_steps and step % self.log_every_n_steps == 0:
                 context.log(metrics, step=step, namespace="train")
+                if sampler_stats:
+                    context.log(dict(sampler_stats), step=step, namespace="train/sampler")
 
             emit("step_end", state=state, payload={"step": step})
 

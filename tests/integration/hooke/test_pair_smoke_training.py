@@ -57,6 +57,7 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
 
     for expected in (
         "train",
+        "train/sampler",
         "checks/data_validity",
         "checks/gradient",
         "checks/sampler",
