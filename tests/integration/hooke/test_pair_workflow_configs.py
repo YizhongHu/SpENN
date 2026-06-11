@@ -159,6 +159,56 @@ def test_canonical_train_config_runs_on_cuda(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "config,job_type",
+    [(TRAIN_CONFIG, "train"), (EVAL_CONFIG, "eval")],
+    ids=["train", "eval"],
+)
+def test_wandb_offline_logger_creates_event_files(
+    config: Path,
+    job_type: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WandB offline logger runs end-to-end and writes offline event files."""
+
+    pytest.importorskip("wandb")
+
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+    cfg = OmegaConf.load(config)
+    cfg.run.root = str(tmp_path)
+    cfg.run.timezone = "UTC"
+    cfg.terminal.enabled = False
+    # Pass dir explicitly so each test's wandb files land in its own tmp_path
+    # regardless of any WANDB_DIR global state left by a previous test.
+    cfg.loggers.append(
+        OmegaConf.create(
+            {
+                "_target_": "spenn.logging.WandB",
+                "project": "spenn-qmc",
+                "mode": "offline",
+                "dir": str(tmp_path),
+                "group": "hooke_pair_smoke",
+                "job_type": job_type,
+                "mirror_scalars": True,
+                "dashboard_aliases": True,
+                "health_flags": True,
+                "log_artifacts": False,
+            }
+        )
+    )
+
+    exit_code = run_from_config(cfg, config_path=str(config), command="pytest")
+    assert exit_code == 0
+
+    # Verify that at least one offline W&B run directory with an event file exists.
+    offline_runs = list((tmp_path / "wandb").glob("offline-run-*"))
+    assert offline_runs, f"no offline W&B run dirs found under {tmp_path / 'wandb'}"
+    event_files = [f for run_dir in offline_runs for f in run_dir.iterdir() if f.suffix == ".wandb"]
+    assert event_files, f"no .wandb event files in {offline_runs}"
+
+
+@pytest.mark.parametrize(
     "script", ["train_pair_smoke.sbatch", "eval_pair_smoke.sbatch"]
 )
 def test_slurm_scripts_are_batch_safe(script: str) -> None:

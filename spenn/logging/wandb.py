@@ -62,6 +62,7 @@ class WandB(Logger):
         job_type: str | None = None,
         tags: list[str] | None = None,
         mode: str = "online",
+        dir: str | None = None,
         config: Mapping[str, object] | None = None,
         log_config: bool = True,
         log_code: bool = False,
@@ -79,6 +80,7 @@ class WandB(Logger):
         self.job_type = job_type
         self.tags = None if tags is None else list(tags)
         self.mode = mode
+        self.dir = dir
         self.config = None if config is None else _json_safe(dict(config))
         self.log_config = bool(log_config)
         self.log_code = bool(log_code)
@@ -151,6 +153,7 @@ class WandB(Logger):
             job_type=self.job_type,
             tags=self.tags,
             mode=self.mode,
+            dir=self.dir,
             config=self.config if self.log_config else None,
             save_code=self.log_code,
         )
