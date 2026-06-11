@@ -1,42 +1,13 @@
-"""Tests for real-feature update equivariance."""
+"""Tests for baseline real-feature update equivariance."""
 
 from __future__ import annotations
 
-import pytest
 import torch
 
 from spenn.equivariance import EquivariantMap
 from spenn.data.real import RealFeature, RealUpdate, zero_block
+from spenn.nn.update import ResidualUpdate, Update
 from tests.helpers.equivariance import assert_equivariant_all
-from spenn.nn.update import (
-    ChannelMappedUpdate,
-    NormGatedUpdate,
-    ReplaceUpdate,
-    ResidualUpdate,
-    Update,
-)
-
-
-def test_update_passes_runtime_equivariance_check() -> None:
-    feature = RealFeature(
-        [
-            zero_block(dtype=torch.float64),
-            torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
-        ]
-    )
-    update = RealUpdate(
-        [
-            zero_block(dtype=torch.float64),
-            torch.ones(1, 3, 3, dtype=torch.float64),
-        ]
-    )
-    module = ChannelMappedUpdate(max_order=1, channels=2, update_channels=3, initial_weight=0.25).to(dtype=torch.float64)
-
-    output = module(feature, update)
-
-    assert output.blocks[1].shape == feature.blocks[1].shape
-    assert module.channel_maps["1"].shape == (2, 3)
-    assert_equivariant_all(module, (feature, update))
 
 
 def _feature_and_update() -> tuple[RealFeature, RealUpdate]:
@@ -57,18 +28,13 @@ def _feature_and_update() -> tuple[RealFeature, RealUpdate]:
     return feature, update
 
 
-@pytest.mark.parametrize(
-    "module_factory",
-    [
-        ReplaceUpdate,
-        ResidualUpdate,
-        NormGatedUpdate,
-        lambda: ChannelMappedUpdate(max_order=2, channels=2).to(dtype=torch.float64),
-    ],
-)
-def test_update_strategy_scaffolds_are_equivariant_maps(module_factory) -> None:
+def test_residual_update_is_baseline_update_map() -> None:
+    assert issubclass(ResidualUpdate, Update)
+
+
+def test_residual_update_passes_runtime_equivariance_check() -> None:
     feature, update = _feature_and_update()
-    module = module_factory()
+    module = ResidualUpdate(step=0.25)
 
     output = module(feature, update)
 
@@ -78,63 +44,10 @@ def test_update_strategy_scaffolds_are_equivariant_maps(module_factory) -> None:
     assert_equivariant_all(module, (feature, update))
 
 
-def test_update_reuses_channel_mapped_strategy() -> None:
-    assert issubclass(ChannelMappedUpdate, Update)
-    assert issubclass(NormGatedUpdate, Update)
-    assert issubclass(ReplaceUpdate, Update)
-    assert issubclass(ResidualUpdate, Update)
-
-
-def test_update_strategies_keep_real_space_shapes() -> None:
+def test_residual_update_keeps_real_space_shapes() -> None:
     feature, update = _feature_and_update()
 
-    replaced = ReplaceUpdate()(feature, update)
-    residual = ResidualUpdate(step=0.25)(feature, update)
-    gated = NormGatedUpdate(step=0.25)(feature, update)
+    output = ResidualUpdate(step=0.25)(feature, update)
 
-    torch.testing.assert_close(replaced.blocks[1], update.blocks[1])
-    torch.testing.assert_close(residual.blocks[1], feature.blocks[1] + 0.25 * update.blocks[1])
-    assert tuple(gated.blocks[1].shape) == tuple(feature.blocks[1].shape)
-    assert tuple(gated.blocks[2].shape) == tuple(feature.blocks[2].shape)
-
-
-def test_channel_mapped_update_starts_as_identity_when_channels_match() -> None:
-    feature, update = _feature_and_update()
-
-    output = ChannelMappedUpdate(max_order=2, channels=2).to(dtype=torch.float64)(feature, update)
-
-    torch.testing.assert_close(output.blocks[1], feature.blocks[1] + update.blocks[1])
-    torch.testing.assert_close(output.blocks[2], feature.blocks[2] + update.blocks[2])
-
-
-def test_channel_mapped_update_allows_unequal_channels_with_shared_tuple_map() -> None:
-    feature = RealFeature(
-        [
-            zero_block(dtype=torch.float64),
-            torch.zeros(1, 3, 2, dtype=torch.float64),
-        ]
-    )
-    update = RealUpdate(
-        [
-            zero_block(dtype=torch.float64),
-            torch.tensor([[[1.0, 2.0], [3.0, 4.0]]], dtype=torch.float64),
-        ]
-    )
-    module = ChannelMappedUpdate(
-        max_order=1,
-        channels=3,
-        update_channels=2,
-        step=2.0,
-        initial_weight=0.5,
-        identity_init=False,
-    ).to(dtype=torch.float64)
-
-    output = module(feature, update)
-
-    expected_mapped = torch.einsum(
-        "oc,bc...->bo...",
-        module.channel_maps["1"],
-        update.blocks[1],
-    )
-    torch.testing.assert_close(output.blocks[1], 2.0 * expected_mapped)
-    assert tuple(output.blocks[1].shape) == (1, 3, 2)
+    torch.testing.assert_close(output.blocks[1], feature.blocks[1] + 0.25 * update.blocks[1])
+    torch.testing.assert_close(output.blocks[2], feature.blocks[2] + 0.25 * update.blocks[2])

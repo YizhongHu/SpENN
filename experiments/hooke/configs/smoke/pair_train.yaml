@@ -154,7 +154,6 @@ callbacks:
     permutation_fraction: 1.0
     max_permutations: 1
     seed: ${runtime.seed}
-    comparison: stepwise
     compare_output: false
     atol: 1.0e-06
     rtol: 1.0e-06

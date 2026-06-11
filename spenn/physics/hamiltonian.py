@@ -45,7 +45,7 @@ class LocalEnergyResult:
 
 def normalize_hamiltonian_terms(
     terms: Mapping[Any, Any] | Sequence[Any],
-) -> dict[str, "HamiltonianTerm"]:
+) -> dict[str, Any]:
     """Return an ordered ``{name: term}`` mapping from a dict or sequence.
 
     A ``dict[str, HamiltonianTerm]`` is used directly: its keys are the
@@ -117,7 +117,7 @@ class HamiltonianTerm(Protocol):
 
 
 def local_energy(
-    terms: Mapping[str, HamiltonianTerm] | Sequence[HamiltonianTerm],
+    terms: Mapping[Any, Any] | Sequence[Any],
     wavefunction,
     batch: ElectronBatch,
     *,
@@ -148,10 +148,12 @@ def local_energy(
     """
 
     normalized = normalize_hamiltonian_terms(terms)
+    batch_size = batch.flatten_samples().batch_size
     total: torch.Tensor | None = None
     decomposition: dict[str, torch.Tensor] = {}
     for name, term in normalized.items():
         result = term.local_energy(wavefunction, batch)
+        result = _validate_local_energy_result(name, result, batch_size=batch_size)
         decomposition[name] = result.total
         total = result.total if total is None else total + result.total
     if total is None:
@@ -160,6 +162,41 @@ def local_energy(
     if return_terms:
         return LocalEnergyResult(total=total, terms=decomposition)
     return total
+
+
+def _validate_local_energy_result(
+    name: str,
+    result: object,
+    *,
+    batch_size: int,
+) -> LocalEnergyResult:
+    """Validate the object returned by one Hamiltonian term."""
+
+    if not isinstance(result, LocalEnergyResult):
+        raise TypeError(
+            f"hamiltonian term {name!r} must return LocalEnergyResult, got {type(result).__name__}"
+        )
+    if not isinstance(result.total, torch.Tensor):
+        raise TypeError(f"hamiltonian term {name!r} total must be a torch.Tensor")
+    expected_shape = (batch_size,)
+    if tuple(result.total.shape) != expected_shape:
+        raise ValueError(
+            f"hamiltonian term {name!r} total must have shape {expected_shape}, "
+            f"got {tuple(result.total.shape)}"
+        )
+    if not isinstance(result.terms, Mapping):
+        raise TypeError(f"hamiltonian term {name!r} terms must be a mapping")
+    for term_name, value in result.terms.items():
+        if not isinstance(term_name, str) or not term_name.strip():
+            raise ValueError(f"hamiltonian term {name!r} returned an empty decomposition name")
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"hamiltonian term {name!r} decomposition {term_name!r} must be a torch.Tensor")
+        if tuple(value.shape) != expected_shape:
+            raise ValueError(
+                f"hamiltonian term {name!r} decomposition {term_name!r} must have shape "
+                f"{expected_shape}, got {tuple(value.shape)}"
+            )
+    return result
 
 
 def _finite_stats(values: torch.Tensor) -> tuple[float, float]:

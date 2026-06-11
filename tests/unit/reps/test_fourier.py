@@ -29,7 +29,7 @@ def test_fourier_lifts_real_interactions_to_irrep_tail_dimensions() -> None:
     torch.testing.assert_close(irrep[Partition((1,))][..., 0, 0], real.blocks[1])
 
 
-def test_fourier_uses_slot_permutation_representations_for_order_two() -> None:
+def test_fourier_normalization_matches_documented_one_over_factorial_convention() -> None:
     pair = torch.tensor([[[[0.0, 2.0], [5.0, 0.0]]]], dtype=torch.float64)
     real = RealInteraction(
         [
@@ -70,7 +70,7 @@ def test_fourier_normalization_sets_activation_gate_scale() -> None:
     )
 
 
-def test_inverse_fourier_recovers_path_aggregated_slot_fourier_transform() -> None:
+def test_inverse_fourier_of_fourier_reconstructs_real_interaction() -> None:
     real = RealInteraction(
         [
             zero_block(paths=0, dtype=torch.float64),
@@ -87,6 +87,25 @@ def test_inverse_fourier_recovers_path_aggregated_slot_fourier_transform() -> No
 
     torch.testing.assert_close(update.blocks[1], real.blocks[1].sum(dim=2))
     torch.testing.assert_close(update.blocks[2], real.blocks[2].sum(dim=2))
+
+
+def test_inverse_fourier_uses_dim_lambda_trace_reconstruction() -> None:
+    partition = Partition((2, 1))
+    tensor = torch.arange(1, 1 + 1 * 1 * 2 * 2 * 2 * 2 * 2, dtype=torch.float64).reshape(
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+    )
+    feature = IrrepFeature({partition: tensor})
+
+    update = InverseFourierTransform(partitions=(partition,))(feature)
+
+    expected = 2.0 * tensor.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+    torch.testing.assert_close(update.blocks[3], expected)
 
 
 def test_order_three_inverse_fourier_roundtrip_uses_sage_cache() -> None:

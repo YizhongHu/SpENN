@@ -1,5 +1,12 @@
 # SpENN project specific guidelines
 
+## Design Document
+
+A design document that contains the mathematical background of
+SpENN can be found in `main.typ`. Key components of the model:
+`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
+should closely follow the design document for correctness.
+
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.

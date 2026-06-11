@@ -45,11 +45,20 @@ class GatedNormActivation(Activation):
 
     def _apply_gate(self, tensor: torch.Tensor) -> torch.Tensor:
         norm_sq = tensor.square().sum(dim=-2, keepdim=True)
-        return tensor * self.gate(norm_sq)
+        gate = self.gate(norm_sq)
+        if tuple(gate.shape) != tuple(norm_sq.shape):
+            raise ValueError(
+                "GatedNormActivation gate must preserve squared-norm shape "
+                f"{tuple(norm_sq.shape)}, got {tuple(gate.shape)}"
+            )
+        return tensor * gate
 
 
 class ActivationByType(Activation):
-    """Apply equivariant activation rules by partition type.
+    """Experimental activation rules selected by partition type.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
 
     Symmetric and antisymmetric scalar irreps receive their own scalar modules.
     Higher-dimensional irreps are gated by a scalar function of the transforming
@@ -134,7 +143,10 @@ class ActivationByType(Activation):
 
 
 class ActivationByIrrep(Activation):
-    """Apply activation modules selected independently for each irrep.
+    """Experimental activation modules selected independently for each irrep.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
 
     Parameters
     ----------
@@ -179,4 +191,4 @@ class ActivationByIrrep(Activation):
         return type(x)(blocks)
 
 
-__all__ = ["Activation", "ActivationByIrrep", "ActivationByType", "GatedNormActivation"]
+__all__ = ["Activation", "GatedNormActivation"]

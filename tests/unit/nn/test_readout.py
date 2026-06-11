@@ -4,24 +4,13 @@ from __future__ import annotations
 
 import pytest
 import torch
-from torch import nn
 from typeguard import TypeCheckError
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import all_permutations
 from spenn.data.real import RealFeature, zero_block
-from spenn.nn.readout import DeterminantReadout, PfaffianReadout, SumReadout
+from spenn.nn.readout import PfaffianReadout
 from spenn.nn.readout.pfaffian import pfaffian
-
-
-class ConstantReadout(nn.Module):
-    def __init__(self, value: float) -> None:
-        super().__init__()
-        self.value = float(value)
-
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
-        values = torch.full((batch.batch_size,), self.value, dtype=batch.dtype, device=batch.device)
-        return WavefunctionOutput(logabs=values.abs().log(), sign=torch.sign(values))
 
 
 class BlockContainer:
@@ -213,56 +202,3 @@ def test_pfaffian_readout_returns_empty_pfaffian_for_zero_electrons() -> None:
     torch.testing.assert_close(output.logabs, torch.zeros(1, dtype=torch.float64))
     torch.testing.assert_close(output.sign, torch.ones(1, dtype=torch.float64))
     torch.testing.assert_close(output.aux["pfaffian"], torch.ones(1, dtype=torch.float64))
-
-
-def test_sum_readout_trainable_flag_controls_component_weights() -> None:
-    batch = _batch()
-    features = RealFeature()
-
-    fixed = SumReadout([ConstantReadout(1.0), ConstantReadout(2.0)])
-    trainable = SumReadout([ConstantReadout(1.0), ConstantReadout(2.0)], trainable=True)
-
-    fixed(features, batch)
-    trainable(features, batch)
-
-    assert "readout_weights" not in dict(fixed.named_parameters())
-    assert "readout_weights" in dict(trainable.named_parameters())
-
-
-def test_determinant_readout_uses_order_one_orbital_matrix() -> None:
-    features = RealFeature(
-        [
-            zero_block(dtype=torch.float64),
-            torch.tensor([[[2.0, 0.0], [0.0, 3.0]]], dtype=torch.float64),
-        ]
-    )
-    readout = DeterminantReadout()
-
-    output = readout(features, _batch())
-
-    torch.testing.assert_close(output.aux["A"], torch.tensor([[[2.0, 0.0], [0.0, 3.0]]], dtype=torch.float64))
-    torch.testing.assert_close(output.logabs, torch.tensor([6.0], dtype=torch.float64).log())
-    torch.testing.assert_close(output.sign, torch.ones(1, dtype=torch.float64))
-    assert "orbital_weights" not in dict(readout.named_parameters())
-    assert "orbital_weight_buffer" in dict(readout.named_buffers())
-
-
-def test_determinant_readout_trainable_flag_registers_projection() -> None:
-    features = RealFeature(
-        [
-            zero_block(dtype=torch.float64),
-            torch.tensor([[[2.0, 0.0], [0.0, 3.0]]], dtype=torch.float64),
-        ]
-    )
-    readout = DeterminantReadout(trainable=True)
-
-    readout(features, _batch())
-
-    parameters = dict(readout.named_parameters())
-    assert "orbital_weights" in parameters
-    assert parameters["orbital_weights"].requires_grad
-
-
-def test_determinant_readout_rejects_missing_order_one_block() -> None:
-    with pytest.raises(KeyError, match="order-1"):
-        DeterminantReadout()(RealFeature([zero_block(dtype=torch.float64)]), _batch())

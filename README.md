@@ -56,6 +56,11 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
 
 ## Eager Model Invariant
 
+SpENN feature layouts are unchanged.
+All trainable parameters are registered during __init__.
+Forward may allocate activations but not trainable parameters.
+Sampler never materializes models.
+
 SpENN model construction owns trainable state. All trainable parameters must be
 registered during ``__init__`` from explicit architecture metadata such as
 channel counts and maximum order. A forward pass may allocate activations whose
@@ -104,7 +109,10 @@ loggers: [...]     # config-root, RunContext-owned
 - `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
   the public term names used for decompositions and metrics, so they must be
   non-empty strings; sequence entries are named from snake-case term class names
-  with index suffixes added for repeats.
+  with index suffixes added for repeats. Every term object must expose
+  `local_energy(wavefunction, batch)` and return a `LocalEnergyResult` whose
+  `total` has shape `[batch]`. With `return_terms=True`, configured mapping
+  keys are preserved as the public decomposition names.
 - `optimizer` names a partial factory (`_partial_: true`) that builds an
   optimizer from model parameters; `Train` applies it to `model.parameters()`.
 - `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
@@ -190,8 +198,8 @@ Exact testing strategy:
   `order` defines the tuple order. Validation coverage lives in
   `tests/unit/data/test_tensor_validation.py`.
 - Layer-level checks:
-  `spenn.nn.Update`, `spenn.nn.Activation`, `spenn.nn.ActivationByType`,
-  `spenn.nn.PathAggregation`, and `spenn.nn.SpENNLayer`, with forced runtime
+  `spenn.nn.Update`, `spenn.nn.Activation`, `spenn.nn.PathAggregation`, and
+  `spenn.nn.SpENNLayer`, with forced runtime
   checks in `tests/unit/nn/test_update_equivariance.py`,
   `tests/unit/nn/test_activation_equivariance.py`,
   `tests/unit/nn/test_path_aggregation_equivariance.py`, and
@@ -214,9 +222,9 @@ The new core scaffold is direct, not a compatibility layer:
   Electron-batch geometry helpers live under `spenn.data.batch`.
 - `spenn.reps`: virtual path metadata, irrep metadata, Sage-backed fixture
   generation, and cache-backed Fourier transforms.
-- `spenn.nn`: `EquivariantMixing`, `Activation`, `ActivationByType`,
-  `PathAggregation`, `Update`, `ChannelMappedUpdate`, `SpENNLayer`,
-  `SpENNWaveFunction`, and readouts under `spenn.nn.readout`.
+- `spenn.nn`: `EquivariantMixing`, `GatedNormActivation`, `PathAggregation`,
+  `ResidualUpdate`, `SpENNLayer`, `SpENNWaveFunction`, and readouts under
+  `spenn.nn.readout`.
 - `spenn.equivariance`: traceable `EquivariantMap`, passive trace recording, and
   runtime equivariance checkers (`spenn.equivariance.checks`).
 

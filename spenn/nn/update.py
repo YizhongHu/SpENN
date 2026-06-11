@@ -26,7 +26,11 @@ class Update(EquivariantMap):
 
 
 class ReplaceUpdate(Update):
-    """Replace persistent real features with a real update proposal."""
+    """Experimental strategy replacing persistent features with update proposals.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
+    """
 
     def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
         """Return the update proposal as the next real feature state."""
@@ -50,7 +54,11 @@ class ResidualUpdate(Update):
 
 
 class NormGatedUpdate(Update):
-    """Gate a residual update by an equivariant per-tuple update norm."""
+    """Experimental residual update gated by an equivariant update norm.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
+    """
 
     def __init__(self, step: float = 1.0, eps: float = 1.0e-12, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -73,7 +81,10 @@ class NormGatedUpdate(Update):
 
 
 class ChannelMappedUpdate(Update):
-    """Add a channel-mapped real update proposal to persistent features.
+    """Experimental channel-mapped real update proposal.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
 
     The learned map is shared across all tuple positions within each body
     order. This preserves particle equivariance because only channel axes are
@@ -190,4 +201,4 @@ def _normalize_positive_channels(
     return dict(sorted(channels.items()))
 
 
-__all__ = ["ChannelMappedUpdate", "NormGatedUpdate", "ReplaceUpdate", "ResidualUpdate", "Update"]
+__all__ = ["ResidualUpdate", "Update"]

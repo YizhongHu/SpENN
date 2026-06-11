@@ -259,6 +259,70 @@ def test_local_energy_helper_return_terms_true_with_list_uses_snake_class_names(
     assert torch.equal(result.terms["constant_term_1"], b)
 
 
+def test_local_energy_rejects_empty_configured_term_name() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="non-empty"):
+        local_energy({"": _ConstantTerm("ignored", torch.zeros(2, dtype=torch.float64))}, None, batch)
+
+
+def test_local_energy_rejects_term_object_without_local_energy() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(TypeError, match="local_energy"):
+        local_energy({"bad": object()}, None, batch)
+
+
+def test_local_energy_rejects_term_returning_tensor_instead_of_result() -> None:
+    class TensorTerm:
+        def local_energy(self, wavefunction, batch: ElectronBatch) -> torch.Tensor:
+            return torch.zeros(batch.batch_size, dtype=batch.dtype)
+
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(TypeError, match="LocalEnergyResult"):
+        local_energy({"bad": TensorTerm()}, None, batch)
+
+
+def test_local_energy_rejects_term_total_shape_mismatch() -> None:
+    term = _ConstantTerm("bad", torch.zeros(2, 1, dtype=torch.float64))
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="total.*shape"):
+        local_energy({"bad": term}, None, batch)
+
+
+def test_local_energy_rejects_term_decomposition_shape_mismatch() -> None:
+    class BadDecompositionTerm:
+        def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+            total = torch.zeros(batch.batch_size, dtype=batch.dtype)
+            return LocalEnergyResult(total=total, terms={"bad": torch.zeros(batch.batch_size, 1)})
+
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="decomposition.*shape"):
+        local_energy({"bad": BadDecompositionTerm()}, None, batch)
+
+
+def test_local_energy_return_terms_preserves_configured_names() -> None:
+    a = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    b = torch.tensor([3.0, 4.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    result = local_energy(
+        {
+            "kinetic_custom": _ConstantTerm("ignored_a", a),
+            "trap_custom": _ConstantTerm("ignored_b", b),
+        },
+        None,
+        batch,
+        return_terms=True,
+    )
+
+    assert isinstance(result, LocalEnergyResult)
+    assert set(result.terms) == {"kinetic_custom", "trap_custom"}
+
+
 # --- Term classes return decomposed LocalEnergyResult objects ---
 
 

@@ -10,11 +10,11 @@ from spenn.data.partition import Partition
 from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
 from spenn.nn import (
     EquivariantMixing,
+    GatedNormActivation,
     PathAggregation,
+    ResidualUpdate,
     SpENNLayer,
 )
-from spenn.nn.activation import ActivationByType
-from spenn.nn.update import ChannelMappedUpdate, ReplaceUpdate
 from spenn.reps import FourierTransform, InverseFourierTransform
 from tests.helpers.equivariance import assert_equivariant_all
 
@@ -79,7 +79,7 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
         activation=IdentityActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
-        update=ChannelMappedUpdate(max_order=1, channels=2),
+        update=ResidualUpdate(),
     ).to(dtype=torch.float64)
 
     output = layer(feature)
@@ -101,12 +101,12 @@ def test_spenn_layer_applies_activation_before_path_aggregation() -> None:
         activation=SquareActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
-        update=ReplaceUpdate(),
+        update=ResidualUpdate(),
     )
 
     output = layer(feature)
 
-    torch.testing.assert_close(output.blocks[1], 5.0 * feature.blocks[1].square())
+    torch.testing.assert_close(output.blocks[1], feature.blocks[1] + 5.0 * feature.blocks[1].square())
 
 
 def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() -> None:
@@ -128,7 +128,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             initial_weight=0.5,
         ),
         fourier=FourierTransform(partitions=(partition,)),
-        activation=ActivationByType(symmetric_activation=torch.nn.Tanh()),
+        activation=GatedNormActivation(gate=torch.nn.Sigmoid()),
         path_aggregation=PathAggregation(
             max_order=1,
             channels=2,
@@ -137,7 +137,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             partitions=(partition,),
         ),
         inverse_fourier=InverseFourierTransform(partitions=(partition,)),
-        update=ChannelMappedUpdate(max_order=1, channels=2),
+        update=ResidualUpdate(),
     ).to(dtype=torch.float64)
 
     output = layer(feature)
