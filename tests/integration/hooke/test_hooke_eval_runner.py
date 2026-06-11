@@ -13,6 +13,7 @@ from torch import nn
 from omegaconf import OmegaConf
 
 import spenn.runner as runner_module
+import spenn.run as run_module
 from spenn.artifacts import RunContext
 from spenn.callback import Callback, Event
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
@@ -48,6 +49,12 @@ def test_evaluate_accepts_empty_diagnostics_for_minimal_behavior() -> None:
     assert runner.diagnostics == ()
 
 
+@pytest.mark.parametrize("raw", [{"name": "energy"}, OmegaConf.create({"name": "energy"})])
+def test_evaluate_rejects_raw_diagnostic_configs(raw) -> None:
+    with pytest.raises(TypeError, match="instantiated diagnostic object.*Hydra"):
+        Evaluate(model=None, sampler=None, hamiltonian_terms=[], diagnostics=[raw])
+
+
 def test_evaluate_rejects_callbacks_and_loggers() -> None:
     with pytest.raises(TypeError):
         Evaluate(model=None, sampler=None, hamiltonian_terms=[], callbacks=[])
@@ -62,15 +69,77 @@ def test_evaluate_config_is_root_owned_and_uses_diagnostics(fixture: str) -> Non
     assert "callbacks" in cfg and "loggers" in cfg
     assert "callbacks" not in cfg.runner
     assert "loggers" not in cfg.runner
-    # Diagnostics are configured at the root and passed into the runner.
-    assert "diagnostics" in cfg
+    # Diagnostics are runner-owned; system metadata stays reference-blind.
+    assert "diagnostics" not in cfg
+    assert "references" in cfg
+    assert "exact_energy" not in cfg.system
     runner_cfg = OmegaConf.to_container(cfg.runner, resolve=False)
-    diagnostics_cfg = OmegaConf.to_container(cfg.diagnostics, resolve=False)
-    assert runner_cfg["diagnostics"] == "${diagnostics}"
+    diagnostics_cfg = runner_cfg["diagnostics"]
     assert cfg.runner.return_terms is True
     assert "evaluation" not in cfg
     assert diagnostics_cfg[0]["_target_"] == "spenn.diagnostics.EnergyEvaluation"
     assert diagnostics_cfg[0]["reference_energy"] == "${references.exact_energy}"
+
+
+def test_instantiate_runner_uses_normal_hydra_recursion_for_diagnostics(monkeypatch) -> None:
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("_instantiate_runner must not special-case diagnostics")
+
+    monkeypatch.setattr(run_module, "_instantiate_sequence", fail_if_called)
+    cfg = OmegaConf.create(
+        {
+            "runner": {
+                "_target_": "spenn.runner.Evaluate",
+                "model": None,
+                "sampler": None,
+                "hamiltonian_terms": [],
+                "diagnostics": [
+                    {
+                        "_target_": "spenn.diagnostics.EnergyEvaluation",
+                        "name": "energy",
+                    }
+                ],
+            }
+        }
+    )
+
+    runner = run_module._instantiate_runner(_runner_context(cfg))
+
+    assert isinstance(runner, Evaluate)
+    assert len(runner.diagnostics) == 1
+    assert isinstance(runner.diagnostics[0], EnergyEvaluation)
+
+
+def test_train_config_with_diagnostics_fails_as_normal_constructor_error() -> None:
+    cfg = OmegaConf.create(
+        {
+            "runner": {
+                "_target_": "spenn.runner.Train",
+                "model": None,
+                "sampler": None,
+                "hamiltonian_terms": [],
+                "optimizer": None,
+                "trainer": None,
+                "diagnostics": [
+                    {
+                        "_target_": "spenn.diagnostics.EnergyEvaluation",
+                        "name": "energy",
+                    }
+                ],
+            }
+        }
+    )
+
+    with pytest.raises(Exception, match="diagnostics"):
+        run_module._instantiate_runner(_runner_context(cfg))
+
+
+def _runner_context(cfg) -> RunContext:
+    """Return a minimal real RunContext instance for private runner-instantiation tests."""
+
+    context = object.__new__(RunContext)
+    context.cfg = cfg
+    return context
 
 
 class _EventRecorder(Callback):

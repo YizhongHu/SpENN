@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 
 from spenn.diagnostics.base import EvaluationContext, JsonScalar
 from spenn.training.vmc import summarize_local_energy_terms
 
 
-@dataclass(frozen=True)
 class EnergyEvaluation:
     """Summarize total and optional per-term local energy for evaluation.
 
@@ -27,9 +24,15 @@ class EnergyEvaluation:
         context must include term energies when this is ``True``.
     """
 
-    name: str = "energy"
-    reference_energy: float | None = None
-    include_terms: bool = False
+    def __init__(
+        self,
+        name: str = "energy",
+        reference_energy: float | None = None,
+        include_terms: bool = False,
+    ) -> None:
+        self.name = str(name)
+        self.reference_energy = None if reference_energy is None else float(reference_energy)
+        self.include_terms = bool(include_terms)
 
     def evaluate(self, context: EvaluationContext) -> dict[str, JsonScalar]:
         """Return flat JSON-safe energy metrics."""

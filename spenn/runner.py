@@ -139,7 +139,7 @@ class Evaluate(Runner):
         model,
         sampler,
         hamiltonian_terms,
-        diagnostics: Sequence[Diagnostic] | None = None,
+        diagnostics: Sequence[object] | None = None,
         return_terms: bool = False,
     ) -> None:
         self.model = model
@@ -217,20 +217,26 @@ def _assert_eager_initialized(module: torch.nn.Module) -> None:
             raise RuntimeError(f"model buffer {name!r} is uninitialized before evaluation")
 
 
-def _validate_diagnostics(diagnostics: Sequence[Diagnostic] | None) -> tuple[Diagnostic, ...]:
+def _validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnostic, ...]:
     """Validate configured diagnostics without invoking them."""
 
     if diagnostics is None:
         return ()
 
-    validated = tuple(diagnostics)
-    for index, diagnostic in enumerate(validated):
+    validated: list[Diagnostic] = []
+    for index, diagnostic in enumerate(diagnostics):
+        if not callable(getattr(diagnostic, "evaluate", None)):
+            raise TypeError(
+                f"diagnostics[{index}] must be an instantiated diagnostic object with an evaluate(...) "
+                f"method, got {type(diagnostic)!r}. This usually means the diagnostic config was not "
+                "recursively instantiated by Hydra. Put diagnostics inside the Evaluate runner config "
+                "or pass instantiated diagnostic objects."
+            )
         name = getattr(diagnostic, "name", None)
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"diagnostics[{index}] must expose a non-empty string name")
-        if not callable(getattr(diagnostic, "evaluate", None)):
-            raise TypeError(f"diagnostics[{index}]={type(diagnostic).__name__} must expose evaluate(context)")
-    return validated
+        validated.append(diagnostic)
+    return tuple(validated)
 
 
 def _split_local_energy_result(
