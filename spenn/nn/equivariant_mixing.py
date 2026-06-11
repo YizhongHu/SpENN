@@ -5,9 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
-import torch
-from torch import nn
-
 from spenn.data.indices import (
     flatten_tuple_indices,
     ordered_tuple_tensor,
@@ -23,8 +20,12 @@ from spenn.data.real import (
     common_real_particle_count,
     zero_block,
 )
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
+
+torch = require_torch(feature="SpENN equivariant mixing")
+nn = require_torch_nn(feature="SpENN equivariant mixing")
 
 
 Aggregation = Literal["sum", "completion_mean"]

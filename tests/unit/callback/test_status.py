@@ -16,6 +16,9 @@ from tests.unit.callback.support import FakeState
 def _context(tmp_path: Path) -> SimpleNamespace:
     metadata = SimpleNamespace(
         run_id="run-1",
+        run_name="unit-status",
+        timestamp="2026-06-11T10:00:00-04:00",
+        timezone="America/New_York",
         run_dir=str(tmp_path / "run-1"),
         device="cpu",
         dtype="float64",
@@ -53,7 +56,7 @@ def _context(tmp_path: Path) -> SimpleNamespace:
             },
         },
     )
-    return SimpleNamespace(metadata=metadata)
+    return SimpleNamespace(metadata=metadata, now_iso=lambda: "2026-06-11T10:00:00-04:00")
 
 
 def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -72,6 +75,8 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
     assert any("SpENN Run Status" in message for message in messages)
     assert any("Hardware Environment" in message for message in messages)
     assert any("Run ID" in message and "run-1" in message for message in messages)
+    assert any("Timezone" in message and "America/New_York" in message for message in messages)
+    assert any("Started At" in message and "-04:00" in message for message in messages)
     assert any("Runtime Device" in message and "cuda" in message for message in messages)
     assert any("Torch CUDA" in message and "12.8" in message for message in messages)
     assert any("GPU 0 Name" in message and "NVIDIA A100-SXM4-40GB" in message for message in messages)
@@ -80,6 +85,9 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
     assert any(message.startswith("[run] completed dir=") for message in messages)
     status = json.loads((tmp_path / "status.json").read_text())
     assert status["status"] == "completed"
+    assert status["timezone"] == "America/New_York"
+    assert status["start_time"] == "2026-06-11T10:00:00-04:00"
+    assert status["end_time"] == "2026-06-11T10:00:00-04:00"
 
 
 def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

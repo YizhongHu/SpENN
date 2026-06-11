@@ -13,7 +13,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-import torch
+from spenn.dependencies import require_torch
+
+torch = require_torch(feature="VMC objective")
 
 
 @dataclass(frozen=True)

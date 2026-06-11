@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import torch
-
 from spenn.artifacts import RunContext, RunResult
 from spenn.training.optim import make_optimizer
 
-from .base import Runner, _assert_eager_initialized, _place_module_for_runtime
+from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
 
 
 class Train(Runner):
@@ -50,7 +48,7 @@ class Train(Runner):
         """Build the optimizer and run the configured VMC training loop."""
 
         self.emit("run_start", context)
-        if isinstance(self.model, torch.nn.Module):
+        if _is_torch_module(self.model):
             _place_module_for_runtime(self.model, context)
             _assert_eager_initialized(self.model)
             self.model.train()

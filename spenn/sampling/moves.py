@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import torch
-from torch import nn
-
 from spenn.data.batch import Walkers
+from spenn.dependencies import require_torch, require_torch_nn
+
+torch = require_torch(feature="sampling moves")
+nn = require_torch_nn(feature="sampling moves")
 
 
 def gaussian_proposal(

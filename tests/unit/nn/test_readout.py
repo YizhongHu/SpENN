@@ -10,7 +10,7 @@ from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import all_permutations
 from spenn.data.real import RealFeature, zero_block
 from spenn.nn.readout import PfaffianReadout
-from spenn.nn.readout.pfaffian import pfaffian
+from spenn.nn.readout.pfaffian import _ODD_PADDING_IRREP, pfaffian
 
 
 class BlockContainer:
@@ -58,6 +58,7 @@ def test_pfaffian_readout_weights_are_fixed_by_default() -> None:
     assert output.logabs.shape == (1,)
     assert "channel_weights" not in dict(readout.named_parameters())
     assert "channel_weight_buffer" in dict(readout.named_buffers())
+    assert "border_weight_buffer" in dict(readout.named_buffers())
 
 
 def test_pfaffian_readout_trainable_flag_registers_weights() -> None:
@@ -67,7 +68,9 @@ def test_pfaffian_readout_trainable_flag_registers_weights() -> None:
 
     parameters = dict(readout.named_parameters())
     assert "channel_weights" in parameters
+    assert "border_weights" in parameters
     assert parameters["channel_weights"].requires_grad
+    assert parameters["border_weights"].requires_grad
 
 
 def test_pfaffian_readout_is_antisymmetric_under_even_particle_permutations() -> None:
@@ -96,7 +99,7 @@ def test_pfaffian_readout_is_antisymmetric_under_even_particle_permutations() ->
         torch.testing.assert_close(permuted_output.sign, output.sign * permutation.sign)
 
 
-def test_pfaffian_readout_uses_odd_electron_border_block() -> None:
+def test_pfaffian_readout_uses_one_irrep_padding_block_for_odd_electrons() -> None:
     one_body = torch.tensor([[[7.0, 11.0, 13.0]]], dtype=torch.float64)
     pair = torch.zeros(1, 1, 3, 3, dtype=torch.float64)
     pair[:, :, 0, 1] = 2.0
@@ -105,6 +108,7 @@ def test_pfaffian_readout_uses_odd_electron_border_block() -> None:
     pair = pair - pair.transpose(-1, -2)
     features = RealFeature([zero_block(dtype=torch.float64), one_body, pair])
 
+    assert _ODD_PADDING_IRREP.parts == (1,)
     output = PfaffianReadout(channels=1)(features, _batch(n_electrons=3))
 
     expected = torch.tensor([2.0 * 13.0 - 3.0 * 11.0 + 7.0 * 5.0], dtype=torch.float64)
@@ -156,15 +160,17 @@ def test_pfaffian_readout_builds_weighted_bordered_kernel() -> None:
     torch.testing.assert_close(kernel, expected)
 
 
-def test_pfaffian_readout_rejects_missing_or_disallowed_odd_border() -> None:
+def test_pfaffian_readout_requires_one_irrep_padding_for_odd_electron_systems() -> None:
     pair = torch.zeros(1, 1, 3, 3, dtype=torch.float64)
     features_without_border = RealFeature([zero_block(dtype=torch.float64), torch.empty(1, 0, 3, dtype=torch.float64), pair])
-    features_with_border = RealFeature([zero_block(dtype=torch.float64), torch.ones(1, 1, 3, dtype=torch.float64), pair])
 
-    with pytest.raises(KeyError, match="border"):
+    with pytest.raises(KeyError, match=r"irrep \(1\)"):
         PfaffianReadout(channels=1)(features_without_border, _batch(n_electrons=3))
-    with pytest.raises(ValueError, match="allow_odd_electron_bordered"):
-        PfaffianReadout(allow_odd_electron_bordered=False, channels=1)(features_with_border, _batch(n_electrons=3))
+
+
+def test_pfaffian_readout_does_not_expose_odd_padding_toggle() -> None:
+    with pytest.raises(TypeError, match="allow_odd_electron_bordered"):
+        PfaffianReadout(allow_odd_electron_bordered=False, channels=1)  # type: ignore[call-arg]
 
 
 def test_pfaffian_readout_rejects_malformed_kernel_inputs() -> None:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-import torch
-
 from spenn.artifacts import RunContext
+from spenn.dependencies import require_torch
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy
 from spenn.training.state import TrainerState
 from spenn.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
+
+torch = require_torch(feature="VMC training")
 
 
 def _parameter_norm(model) -> float:

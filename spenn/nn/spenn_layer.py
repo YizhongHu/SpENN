@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from torch import nn
-
 from spenn.data.real import RealFeature
+from spenn.dependencies import require_torch_nn
 from spenn.equivariance import EquivariantMap
+
+nn = require_torch_nn(feature="SpENN layer modules")
 
 
 class SpENNLayer(EquivariantMap):

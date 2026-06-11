@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import torch
-from torch import nn
-
 from spenn.data.batch import Walkers, WavefunctionOutput
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.sampling.moves import GaussianMove
+
+torch = require_torch(feature="Metropolis sampling")
+nn = require_torch_nn(feature="Metropolis sampling")
 
 
 class MetropolisSampler(nn.Module):

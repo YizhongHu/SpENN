@@ -10,16 +10,18 @@ import socket
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from omegaconf import DictConfig, OmegaConf
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
+DEFAULT_RUN_TIMEZONE = "UTC"
 
 
 class ArtifactManager:
@@ -71,6 +73,7 @@ class RunMetadata:
     run_id: str
     run_name: str
     timestamp: str
+    timezone: str
     git_commit: str
     git_branch: str
     dirty_worktree: bool
@@ -101,6 +104,24 @@ class RunResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class RunClock:
+    """Run-wide wall-clock convention."""
+
+    timezone: str
+    tzinfo: tzinfo
+
+    def now(self) -> datetime:
+        """Return the current wall-clock time in the run timezone."""
+
+        return datetime.now(self.tzinfo)
+
+    def now_iso(self) -> str:
+        """Return an ISO timestamp in the run timezone."""
+
+        return self.now().isoformat()
+
+
 @dataclass
 class RunContext:
     """Runtime context shared by runners, callbacks, and loggers."""
@@ -109,6 +130,7 @@ class RunContext:
     source_cfg: DictConfig
     artifact_manager: ArtifactManager
     metadata: RunMetadata
+    clock: RunClock
     callbacks: list[Any] = field(default_factory=list)
     loggers: list[Any] = field(default_factory=list)
 
@@ -122,6 +144,16 @@ class RunContext:
         """Return a path under the active run directory."""
 
         return self.artifact_manager.path(*parts)
+
+    def now(self) -> datetime:
+        """Return the current wall-clock time in the run timezone."""
+
+        return self.clock.now()
+
+    def now_iso(self) -> str:
+        """Return an ISO timestamp in the run timezone."""
+
+        return self.clock.now_iso()
 
     def log(
         self,
@@ -140,10 +172,11 @@ class RunContext:
             logger.log(record)
 
 
-def generate_run_id(run_name: str) -> str:
+def generate_run_id(run_name: str, *, clock: RunClock | None = None) -> str:
     """Return a timestamped run identifier."""
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_clock = _default_run_clock() if clock is None else clock
+    timestamp = run_clock.now().strftime("%Y-%m-%d_%H%M%S")
     slug = _slugify(run_name)
     return f"{timestamp}_{slug}_{uuid4().hex[:6]}"
 
@@ -153,14 +186,17 @@ def build_run_metadata(
     *,
     command: str | None,
     config_path: str | None,
+    clock: RunClock | None = None,
 ) -> RunMetadata:
     """Build metadata for a resolved run config."""
 
+    run_clock = resolve_run_clock(cfg) if clock is None else clock
     git = collect_git_metadata()
     return RunMetadata(
         run_id=str(OmegaConf.select(cfg, "run.run_id")),
         run_name=str(OmegaConf.select(cfg, "experiment.run_name", default=OmegaConf.select(cfg, "experiment.name"))),
-        timestamp=datetime.now(UTC).isoformat(),
+        timestamp=run_clock.now_iso(),
+        timezone=run_clock.timezone,
         git_commit=str(git["git_commit"]),
         git_branch=str(git["git_branch"]),
         dirty_worktree=bool(git["dirty_worktree"]),
@@ -175,6 +211,28 @@ def build_run_metadata(
             dtype=str(OmegaConf.select(cfg, "runtime.dtype", default="float64")),
         ),
     )
+
+
+def resolve_run_clock(cfg: DictConfig) -> RunClock:
+    """Resolve and validate the run-wide timezone from config.
+
+    The value lives at ``run.timezone`` and defaults to ``UTC``. It must be an
+    IANA timezone accepted by :mod:`zoneinfo`, such as ``UTC`` or
+    ``America/New_York``.
+    """
+
+    value = OmegaConf.select(cfg, "run.timezone", default=DEFAULT_RUN_TIMEZONE)
+    if value is None:
+        value = DEFAULT_RUN_TIMEZONE
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("run.timezone must be a nonempty IANA timezone name")
+    timezone = value.strip()
+    if timezone == DEFAULT_RUN_TIMEZONE:
+        return RunClock(timezone=DEFAULT_RUN_TIMEZONE, tzinfo=UTC)
+    try:
+        return RunClock(timezone=timezone, tzinfo=ZoneInfo(timezone))
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"run.timezone must be a valid IANA timezone name, got {timezone!r}") from exc
 
 
 def collect_git_metadata() -> dict[str, Any]:
@@ -263,6 +321,10 @@ def _slugify(value: str) -> str:
     return slug.strip("_") or "run"
 
 
+def _default_run_clock() -> RunClock:
+    return RunClock(timezone=DEFAULT_RUN_TIMEZONE, tzinfo=UTC)
+
+
 def _run_git(command: list[str]) -> str:
     result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     if result.returncode != 0:
@@ -282,12 +344,29 @@ def _collect_torch_hardware() -> dict[str, Any]:
             "cuda_devices": [],
         }
 
-    cuda_available = bool(torch.cuda.is_available())
-    device_count = int(torch.cuda.device_count()) if cuda_available else 0
-    devices = []
-    for index in range(device_count):
+    cuda = getattr(torch, "cuda", None)
+    cuda_available = False
+    is_available = getattr(cuda, "is_available", None)
+    if callable(is_available):
         try:
-            properties = torch.cuda.get_device_properties(index)
+            cuda_available = bool(is_available())
+        except Exception:  # pragma: no cover - hardware/runtime dependent
+            cuda_available = False
+    device_count = 0
+    device_count_fn = getattr(cuda, "device_count", None)
+    if cuda_available and callable(device_count_fn):
+        try:
+            device_count = int(device_count_fn())
+        except Exception:  # pragma: no cover - hardware/runtime dependent
+            device_count = 0
+    devices = []
+    get_device_properties = getattr(cuda, "get_device_properties", None)
+    for index in range(device_count):
+        if not callable(get_device_properties):
+            devices.append({"index": index, "error": "torch.cuda.get_device_properties unavailable"})
+            continue
+        try:
+            properties = get_device_properties(index)
         except Exception as exc:  # pragma: no cover - hardware dependent
             devices.append({"index": index, "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -301,7 +380,7 @@ def _collect_torch_hardware() -> dict[str, Any]:
         )
     return {
         "torch_version": getattr(torch, "__version__", None),
-        "torch_cuda_version": getattr(torch.version, "cuda", None),
+        "torch_cuda_version": getattr(getattr(torch, "version", None), "cuda", None),
         "cuda_available": cuda_available,
         "cuda_device_count": device_count,
         "cuda_devices": devices,
@@ -333,7 +412,9 @@ def _collect_slurm_metadata() -> dict[str, str]:
 
 __all__ = [
     "ArtifactManager",
+    "DEFAULT_RUN_TIMEZONE",
     "REQUIRED_RUN_DIRS",
+    "RunClock",
     "RunContext",
     "RunMetadata",
     "RunResult",
@@ -341,5 +422,6 @@ __all__ = [
     "collect_hardware_metadata",
     "collect_git_metadata",
     "generate_run_id",
+    "resolve_run_clock",
     "write_json",
 ]

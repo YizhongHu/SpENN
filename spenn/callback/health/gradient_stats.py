@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-import torch
-
+from spenn.dependencies import require_torch
 from ..base import Callback, Event
 
 
@@ -36,6 +35,7 @@ class GradientStats(Callback):
     def on_step_end(self, event: Event) -> None:
         """Summarize gradients of the model parameters."""
 
+        torch = require_torch(feature="GradientStats callback")
         state = event.state
         grads = [
             param.grad.detach().reshape(-1)

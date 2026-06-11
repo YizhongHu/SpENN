@@ -7,7 +7,11 @@ contracts (run-dir layout, runner-owned vs RunContext-owned config) hold.
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from omegaconf import OmegaConf
@@ -62,39 +66,81 @@ def test_data_validity_has_no_recursive_tensor_probe() -> None:
 def test_runtime_qol_modules_are_split_packages() -> None:
     """Keep callback, logging, and runner implementations in owner modules."""
 
-    modules = (
+    importable_modules = (
         "spenn.callback.base",
-        "spenn.callback.timing",
         "spenn.callback.status",
         "spenn.callback.snapshot",
         "spenn.callback.metadata",
         "spenn.callback.checkpoint",
         "spenn.callback.equivariance",
-        "spenn.callback.health.datavalidity",
-        "spenn.callback.health.samplerhealth",
-        "spenn.callback.health.gradientstats",
+        "spenn.callback.health.data_validity",
+        "spenn.callback.health.sampler_health",
+        "spenn.callback.health.gradient_stats",
+        "spenn.callback.timing.base",
+        "spenn.callback.timing.run_timing",
+        "spenn.callback.timing.train_step_timing",
+        "spenn.callback.timing.evaluation_timing",
+        "spenn.callback.timing.diagnostic_timing",
         "spenn.logging.base",
         "spenn.logging.csv",
         "spenn.logging.jsonl",
         "spenn.logging.wandb",
         "spenn.runner.base",
+    )
+    owner_modules = (
+        "spenn.callback.timing",
         "spenn.runner.train",
         "spenn.runner.evaluate",
     )
 
-    for module in modules:
+    for module in importable_modules:
         assert importlib.import_module(module)
+    for module in owner_modules:
+        assert importlib.util.find_spec(module) is not None
 
     from spenn.callback import DataValidity
-    from spenn.callback.health.datavalidity import DataValidity as OwnedDataValidity
+    from spenn.callback.health.data_validity import DataValidity as OwnedDataValidity
+    from spenn.callback import DiagnosticTiming, EvaluationTiming, RunTiming, TrainStepTiming
+    from spenn.callback.timing.diagnostic_timing import DiagnosticTiming as OwnedDiagnosticTiming
+    from spenn.callback.timing.evaluation_timing import EvaluationTiming as OwnedEvaluationTiming
+    from spenn.callback.timing.run_timing import RunTiming as OwnedRunTiming
+    from spenn.callback.timing.train_step_timing import TrainStepTiming as OwnedTrainStepTiming
     from spenn.logging import WandB
     from spenn.logging.wandb import WandB as OwnedWandB
-    from spenn.runner import Evaluate
-    from spenn.runner.evaluate import Evaluate as OwnedEvaluate
 
     assert DataValidity is OwnedDataValidity
+    assert DiagnosticTiming is OwnedDiagnosticTiming
+    assert EvaluationTiming is OwnedEvaluationTiming
+    assert RunTiming is OwnedRunTiming
+    assert TrainStepTiming is OwnedTrainStepTiming
     assert WandB is OwnedWandB
-    assert Evaluate is OwnedEvaluate
+
+
+def test_runner_import_does_not_require_torch_nn(tmp_path: Path) -> None:
+    """Importing the runner base target should not eagerly import ``torch.nn``."""
+
+    (tmp_path / "torch.py").write_text('__version__ = "partial-torch"\n', encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    pythonpath = [str(tmp_path), str(repo)]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from spenn.run import main; from spenn.runner import Runner; print(Runner.__name__)",
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Runner"
 
 
 def test_required_run_dirs_are_checks_diagnostics_and_checkpoints() -> None:

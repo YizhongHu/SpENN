@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import torch
-from torch import nn
-
 from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition, as_partition
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
+
+torch = require_torch(feature="SpENN neural-network modules")
+nn = require_torch_nn(feature="SpENN neural-network modules")
 
 
 class Activation(EquivariantMap):
