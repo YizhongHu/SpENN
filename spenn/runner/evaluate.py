@@ -1,108 +1,16 @@
-"""Public runner targets for configured SpENN executions."""
+"""Evaluation runner target."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 import torch
-from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
 from spenn.artifacts import RunContext, RunResult
-from spenn.callback import Event
 from spenn.diagnostics import Diagnostic, EvaluationContext, JsonScalar
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
-from spenn.training.optim import make_optimizer
 
-
-class Runner:
-    """Base runner with callback lifecycle dispatch.
-
-    Callbacks and loggers are owned by the `RunContext` (configured at the
-    config root); ``emit`` dispatches lifecycle events into ``context.callbacks``
-    and runners log through ``context.log``.
-    """
-
-    def emit(
-        self,
-        name: str,
-        context: RunContext,
-        *,
-        state: object | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> None:
-        """Emit one lifecycle event to the context's callbacks."""
-
-        event = Event(name=name, context=context, state=state, payload={} if payload is None else payload)
-        for callback in context.callbacks:
-            callback.handle(event)
-
-    def run(self, context: RunContext) -> RunResult:
-        """Execute a configured run."""
-
-        raise NotImplementedError
-
-
-class Train(Runner):
-    """Config-driven VMC training runner.
-
-    Builds the optimizer, drives the configured trainer through the VMC loop,
-    and emits lifecycle events. Callbacks and loggers are owned by the
-    `RunContext`; the runner adds no exception handling (``run_from_config``
-    owns that) and only emits events while the trainer logs through the context.
-
-    Parameters
-    ----------
-    model : torch.nn.Module
-        Wavefunction model to optimize.
-    sampler : object
-        Sampler exposing ``collect_samples(model, device=...) -> (walkers, stats)``.
-    hamiltonian_terms : sequence or mapping
-        Hamiltonian terms summed by `local_energy`. A
-        ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the
-        public term names for decomposition and metrics; a sequence derives
-        unique names from term class names.
-    optimizer : Any
-        Configured optimizer spec/factory (typically a ``_partial_`` optimizer
-        constructor) applied to ``model.parameters()`` by `make_optimizer`.
-    trainer : object
-        Trainer exposing ``fit(*, model, sampler, hamiltonian_terms, optimizer,
-        context, emit) -> TrainerState``.
-    """
-
-    def __init__(self, model, sampler, hamiltonian_terms, optimizer, trainer) -> None:
-        self.model = model
-        self.sampler = sampler
-        # Keep the configured form (sequence or ``dict[str, term]``);
-        # ``local_energy`` normalizes it (see ``normalize_hamiltonian_terms``).
-        self.hamiltonian_terms = hamiltonian_terms
-        self.optimizer = optimizer
-        self.trainer = trainer
-
-    def run(self, context: RunContext) -> RunResult:
-        """Build the optimizer and run the configured VMC training loop."""
-
-        self.emit("run_start", context)
-        if isinstance(self.model, torch.nn.Module):
-            _place_module_for_runtime(self.model, context)
-            _assert_eager_initialized(self.model)
-            self.model.train()
-
-        optimizer = make_optimizer(self.optimizer, self.model.parameters())
-        self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
-
-        self.emit("train_start", context)
-        final_state = self.trainer.fit(
-            model=self.model,
-            sampler=self.sampler,
-            hamiltonian_terms=self.hamiltonian_terms,
-            optimizer=optimizer,
-            context=context,
-            emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
-        )
-        self.emit("train_end", context, state=final_state)
-        self.emit("run_end", context)
-        return RunResult(status="completed")
+from .base import Runner, _assert_eager_initialized, _place_module_for_runtime
 
 
 class Evaluate(Runner):
@@ -206,22 +114,6 @@ class Evaluate(Runner):
         return RunResult(status="completed")
 
 
-def _place_module_for_runtime(module: torch.nn.Module, context: RunContext) -> None:
-    """Move a configured module to the run's device and floating dtype."""
-
-    module.to(device=torch.device(context.metadata.device), dtype=_runtime_dtype(context.metadata.dtype))
-
-
-def _assert_eager_initialized(module: torch.nn.Module) -> None:
-    """Fail before runner use if a model still contains lazy state."""
-
-    for name, parameter in module.named_parameters():
-        if isinstance(parameter, UninitializedParameter):
-            raise RuntimeError(f"model parameter {name!r} is uninitialized before runner use")
-    for name, buffer in module.named_buffers():
-        if isinstance(buffer, UninitializedBuffer):
-            raise RuntimeError(f"model buffer {name!r} is uninitialized before runner use")
-
 
 def _validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnostic, ...]:
     """Validate configured diagnostics without invoking them."""
@@ -305,16 +197,5 @@ def _validate_json_scalar(diagnostic_name: str, key: str, value: object) -> None
     )
 
 
-def _runtime_dtype(name: str) -> torch.dtype:
-    try:
-        dtype = getattr(torch, str(name))
-    except AttributeError as exc:
-        raise ValueError(f"Unsupported runtime dtype {name!r}") from exc
-    if not isinstance(dtype, torch.dtype):
-        raise ValueError(f"Unsupported runtime dtype {name!r}")
-    if not dtype.is_floating_point:
-        raise ValueError(f"Runtime dtype must be floating point, got {name!r}")
-    return dtype
 
-
-__all__ = ["Evaluate", "Runner", "Train"]
+__all__ = ["Evaluate"]

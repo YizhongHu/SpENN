@@ -6,6 +6,7 @@ contracts (run-dir layout, runner-owned vs RunContext-owned config) hold.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,44 @@ def test_data_validity_has_no_recursive_tensor_probe() -> None:
 
     assert not hasattr(callback, "_iter_tensors")
     assert not hasattr(callback, "_nonfinite_tensor_count")
+
+
+def test_runtime_qol_modules_are_split_packages() -> None:
+    """Keep callback, logging, and runner implementations in owner modules."""
+
+    modules = (
+        "spenn.callback.base",
+        "spenn.callback.timing",
+        "spenn.callback.status",
+        "spenn.callback.snapshot",
+        "spenn.callback.metadata",
+        "spenn.callback.checkpoint",
+        "spenn.callback.equivariance",
+        "spenn.callback.health.datavalidity",
+        "spenn.callback.health.samplerhealth",
+        "spenn.callback.health.gradientstats",
+        "spenn.logging.base",
+        "spenn.logging.csv",
+        "spenn.logging.jsonl",
+        "spenn.logging.wandb",
+        "spenn.runner.base",
+        "spenn.runner.train",
+        "spenn.runner.evaluate",
+    )
+
+    for module in modules:
+        assert importlib.import_module(module)
+
+    from spenn.callback import DataValidity
+    from spenn.callback.health.datavalidity import DataValidity as OwnedDataValidity
+    from spenn.logging import WandB
+    from spenn.logging.wandb import WandB as OwnedWandB
+    from spenn.runner import Evaluate
+    from spenn.runner.evaluate import Evaluate as OwnedEvaluate
+
+    assert DataValidity is OwnedDataValidity
+    assert WandB is OwnedWandB
+    assert Evaluate is OwnedEvaluate
 
 
 def test_required_run_dirs_are_checks_diagnostics_and_checkpoints() -> None:
