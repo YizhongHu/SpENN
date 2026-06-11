@@ -10,7 +10,7 @@ from spenn.artifacts import RunContext, RunResult
 from spenn.diagnostics import Diagnostic, EvaluationContext, JsonScalar
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
 
-from .base import Runner, _assert_eager_initialized, _place_module_for_runtime
+from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
 
 
 class Evaluate(Runner):
@@ -65,7 +65,7 @@ class Evaluate(Runner):
 
         self.emit("run_start", context)
 
-        if isinstance(self.model, torch.nn.Module):
+        if _is_torch_module(self.model):
             _place_module_for_runtime(self.model, context)
             self.model.eval()
             _assert_eager_initialized(self.model)

@@ -7,7 +7,10 @@ contracts (run-dir layout, runner-owned vs RunContext-owned config) hold.
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from omegaconf import OmegaConf
@@ -70,9 +73,9 @@ def test_runtime_qol_modules_are_split_packages() -> None:
         "spenn.callback.metadata",
         "spenn.callback.checkpoint",
         "spenn.callback.equivariance",
-        "spenn.callback.health.datavalidity",
-        "spenn.callback.health.samplerhealth",
-        "spenn.callback.health.gradientstats",
+        "spenn.callback.health.data_validity",
+        "spenn.callback.health.sampler_health",
+        "spenn.callback.health.gradient_stats",
         "spenn.logging.base",
         "spenn.logging.csv",
         "spenn.logging.jsonl",
@@ -86,7 +89,7 @@ def test_runtime_qol_modules_are_split_packages() -> None:
         assert importlib.import_module(module)
 
     from spenn.callback import DataValidity
-    from spenn.callback.health.datavalidity import DataValidity as OwnedDataValidity
+    from spenn.callback.health.data_validity import DataValidity as OwnedDataValidity
     from spenn.logging import WandB
     from spenn.logging.wandb import WandB as OwnedWandB
     from spenn.runner import Evaluate
@@ -95,6 +98,33 @@ def test_runtime_qol_modules_are_split_packages() -> None:
     assert DataValidity is OwnedDataValidity
     assert WandB is OwnedWandB
     assert Evaluate is OwnedEvaluate
+
+
+def test_runner_import_does_not_require_torch_nn(tmp_path: Path) -> None:
+    """Importing the runner base target should not eagerly import ``torch.nn``."""
+
+    (tmp_path / "torch.py").write_text('__version__ = "partial-torch"\n', encoding="utf-8")
+    repo = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    pythonpath = [str(tmp_path), str(repo)]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from spenn.run import main; from spenn.runner import Runner; print(Runner.__name__)",
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "Runner"
 
 
 def test_required_run_dirs_are_checks_diagnostics_and_checkpoints() -> None:

@@ -33,6 +33,12 @@ class FakeTorch:
     cuda = FakeCuda()
 
 
+class FakePartialTorch:
+    """Torch-like module missing optional CUDA and NN surfaces."""
+
+    __version__ = "partial"
+
+
 def test_collect_hardware_metadata_records_runtime_hardware_and_slurm(
     monkeypatch,
 ) -> None:
@@ -69,3 +75,15 @@ def test_collect_hardware_metadata_records_runtime_hardware_and_slurm(
         "job_partition": "kozinsky_gpu",
     }.items():
         assert metadata["slurm"][key] == value
+
+
+def test_collect_hardware_metadata_tolerates_partial_torch(monkeypatch) -> None:
+    monkeypatch.setattr(artifacts, "import_module", lambda name: FakePartialTorch)
+
+    metadata = artifacts.collect_hardware_metadata(device="cpu", dtype="float64")
+
+    assert metadata["runtime"]["torch_version"] == "partial"
+    assert metadata["runtime"]["torch_cuda_version"] is None
+    assert metadata["hardware"]["cuda_available"] is False
+    assert metadata["hardware"]["cuda_device_count"] == 0
+    assert metadata["hardware"]["cuda_devices"] == []

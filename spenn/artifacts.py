@@ -282,12 +282,29 @@ def _collect_torch_hardware() -> dict[str, Any]:
             "cuda_devices": [],
         }
 
-    cuda_available = bool(torch.cuda.is_available())
-    device_count = int(torch.cuda.device_count()) if cuda_available else 0
-    devices = []
-    for index in range(device_count):
+    cuda = getattr(torch, "cuda", None)
+    cuda_available = False
+    is_available = getattr(cuda, "is_available", None)
+    if callable(is_available):
         try:
-            properties = torch.cuda.get_device_properties(index)
+            cuda_available = bool(is_available())
+        except Exception:  # pragma: no cover - hardware/runtime dependent
+            cuda_available = False
+    device_count = 0
+    device_count_fn = getattr(cuda, "device_count", None)
+    if cuda_available and callable(device_count_fn):
+        try:
+            device_count = int(device_count_fn())
+        except Exception:  # pragma: no cover - hardware/runtime dependent
+            device_count = 0
+    devices = []
+    get_device_properties = getattr(cuda, "get_device_properties", None)
+    for index in range(device_count):
+        if not callable(get_device_properties):
+            devices.append({"index": index, "error": "torch.cuda.get_device_properties unavailable"})
+            continue
+        try:
+            properties = get_device_properties(index)
         except Exception as exc:  # pragma: no cover - hardware dependent
             devices.append({"index": index, "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -301,7 +318,7 @@ def _collect_torch_hardware() -> dict[str, Any]:
         )
     return {
         "torch_version": getattr(torch, "__version__", None),
-        "torch_cuda_version": getattr(torch.version, "cuda", None),
+        "torch_cuda_version": getattr(getattr(torch, "version", None), "cuda", None),
         "cuda_available": cuda_available,
         "cuda_device_count": device_count,
         "cuda_devices": devices,

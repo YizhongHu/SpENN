@@ -1,7 +1,7 @@
 """Health callbacks for configured SpENN runs."""
 
-from .datavalidity import DataValidity
-from .gradientstats import GradientStats
-from .samplerhealth import SamplerHealth
+from .data_validity import DataValidity
+from .gradient_stats import GradientStats
+from .sampler_health import SamplerHealth
 
 __all__ = ["DataValidity", "GradientStats", "SamplerHealth"]
