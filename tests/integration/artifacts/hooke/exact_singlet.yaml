@@ -16,11 +16,19 @@ system:
   spatial_dim: 3
   omega: 0.5
   exact_energy: 2.0
+references:
+  exact_energy: ${system.exact_energy}
+diagnostics:
+- _target_: spenn.diagnostics.EnergyEvaluation
+  name: energy
+  reference_energy: ${references.exact_energy}
+  include_terms: true
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
+  diagnostics: ${diagnostics}
   return_terms: true
 model:
   _target_: spenn.physics.hooke.HookeSingletExact

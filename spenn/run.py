@@ -201,7 +201,7 @@ def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
 
 
 def _instantiate_runner(context: RunContext) -> Runner:
-    runner_cfg = context.cfg.runner
+    runner_cfg = context.cfg.runner.copy()
     # Callbacks and loggers are configured at the config root and owned by the
     # RunContext; a runner must not own them.
     for forbidden in ("callbacks", "loggers"):
@@ -209,7 +209,12 @@ def _instantiate_runner(context: RunContext) -> Runner:
             raise ValueError(
                 f"runner config must not own {forbidden!r}; configure it at the config root."
             )
-    runner = instantiate(runner_cfg)
+    if "diagnostics" in runner_cfg:
+        diagnostics = _instantiate_sequence(OmegaConf.select(runner_cfg, "diagnostics", default=[]))
+        del runner_cfg["diagnostics"]
+        runner = instantiate(runner_cfg, _partial_=True)(diagnostics=diagnostics)
+    else:
+        runner = instantiate(runner_cfg)
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to spenn.runner.Runner, got {type(runner)!r}")
     return runner
