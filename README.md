@@ -5,29 +5,37 @@ docstrings under `spenn/data`, `spenn/reps`, `spenn/nn`, and `spenn/equivariance
 
 ## Quick Start
 
-Use `uv` for local environment management. The default CPU environment is
-`.venv`. GPU work uses a separate `.venv-gpu` so CUDA Torch does not replace the
-CPU Torch install. Both environments still resolve from this one `pyproject.toml`.
+Use `uv` for local environment management. Keep CPU and GPU work in separate
+virtual environments so Slurm jobs never replace each other's Torch install.
+Both environments resolve from this one `pyproject.toml`.
 
-For CPU work:
+### CPU Environment
+
+CPU work uses the default `.venv`:
 
 ```bash
 uv sync --extra cpu
+uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
-For CUDA work:
+### GPU Environment
+
+CUDA work uses a separate `.venv-gpu`:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT=.venv-gpu
 uv sync --extra cu126
+uv run --extra cu126 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
-Use `cu128` or `cu130` instead if that is the CUDA Torch build you want.
+Use `cu128` or `cu130` instead if that is the CUDA Torch build you want. Keep
+the `UV_PROJECT_ENVIRONMENT` setting in GPU Slurm scripts so GPU jobs do not
+mutate the CPU `.venv`.
 
 Core tests are the active validation target:
 
 ```bash
-uv run pytest -q
+uv run --extra cpu pytest -q
 ```
 
 Configured runs go through the single `run.py` entrypoint, which launches one
@@ -35,13 +43,18 @@ Configured runs go through the single `run.py` entrypoint, which launches one
 is a working example:
 
 ```bash
-uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
+
+Human-readable run timestamps are controlled by `run.timezone`, an IANA
+timezone name. The code default is `UTC`; the Hooke smoke config uses
+`America/New_York` so run IDs, `metadata.json`, `status.json`, and terminal
+status boxes share the same cluster-log convention.
 
 For a syntax-only check:
 
 ```bash
-uv run python -m compileall spenn run.py typechecked.py
+uv run --extra cpu python -m compileall spenn run.py typechecked.py
 ```
 
 ## Optional W&B Tracking
@@ -90,7 +103,7 @@ For jobs without reliable internet, use W&B offline mode:
 
 ```bash
 wandb offline
-uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 wandb sync --sync-all
 ```
 

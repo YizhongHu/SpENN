@@ -18,6 +18,7 @@ from spenn.artifacts import (
     RunResult,
     build_run_metadata,
     generate_run_id,
+    resolve_run_clock,
 )
 from spenn.callback import Event, configure_terminal_logging
 from spenn.dependencies import OptionalDependencyError, require_torch
@@ -69,8 +70,11 @@ def prepare_run_context(
     ``context.log``.
     """
 
+    run_clock = resolve_run_clock(cfg)
     source_cfg = _rerunnable_config(cfg)
+    OmegaConf.update(source_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
     resolved_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    OmegaConf.update(resolved_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
     run_name = str(
         OmegaConf.select(
             resolved_cfg,
@@ -80,7 +84,7 @@ def prepare_run_context(
     )
     run_id = OmegaConf.select(resolved_cfg, "run.run_id", default=None)
     if run_id is None:
-        run_id = generate_run_id(run_name)
+        run_id = generate_run_id(run_name, clock=run_clock)
         OmegaConf.update(resolved_cfg, "run.run_id", run_id, merge=False, force_add=True)
     experiment_name = str(OmegaConf.select(resolved_cfg, "experiment.name", default="experiment"))
     sector = str(OmegaConf.select(resolved_cfg, "experiment.sector", default="default"))
@@ -97,12 +101,13 @@ def prepare_run_context(
     # the lifecycle methods, without invoking any behavior (no handle/log/finish).
     _validate_callbacks(callbacks)
     _validate_loggers(loggers)
-    metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path)
+    metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
     return RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
         artifact_manager=artifact_manager,
         metadata=metadata,
+        clock=run_clock,
         callbacks=callbacks,
         loggers=loggers,
     )

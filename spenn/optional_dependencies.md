@@ -4,30 +4,32 @@ PyTorch is optional in package metadata so downstream installs, config parsing,
 documentation, and non-execution tooling can import SpENN without a full Torch
 install.
 
-The repository's default `uv run` development environment includes the local
-`cpu` dependency group, which installs the CPU Torch build so smoke training
-configs run without extra command-line flags:
-
-```bash
-uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
-```
-
 Training, sampling, neural-network modules, physics evaluation, diagnostics, and
-runtime equivariance checks require a complete PyTorch install. Use one of the
-Torch extras before running those paths from a minimal install:
+runtime equivariance checks require a complete PyTorch install. Keep CPU and GPU
+work in separate uv environments so concurrent Slurm jobs do not replace each
+other's Torch install.
+
+## CPU Environment
+
+CPU work uses the default `.venv` and the `cpu` Torch extra:
 
 ```bash
 uv sync --extra cpu
 uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
-Use `cu126`, `cu128`, or `cu130` instead of `cpu` when running against a CUDA
-Torch build in a GPU environment. The local default `cpu` group conflicts with
-CUDA Torch extras, so disable it explicitly for CUDA runs:
+## GPU Environment
+
+CUDA work uses a separate environment selected by `UV_PROJECT_ENVIRONMENT`:
 
 ```bash
-uv run --no-group cpu --extra cu128 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+export UV_PROJECT_ENVIRONMENT=.venv-gpu
+uv sync --extra cu126
+uv run --extra cu126 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
+
+Use `cu128` or `cu130` instead if that is the CUDA Torch build you want. Keep
+the `UV_PROJECT_ENVIRONMENT` setting in GPU Slurm scripts.
 
 The public `run.py` entrypoint preflights configured Hydra targets. If a config
 requires PyTorch and the active environment only has the lightweight optional

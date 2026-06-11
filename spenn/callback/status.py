@@ -8,7 +8,6 @@ import os
 import socket
 import sys
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,10 +41,11 @@ class Status(Callback):
     def on_run_start(self, event: Event) -> None:
         """Record run start."""
 
-        self.start_time = _now()
+        self.start_time = _now(event)
         for line in _format_run_start_lines(event):
             self._log_status(line, kind="run")
         self._write(
+            event,
             status="running",
             current_event=event.name,
             end_time=None,
@@ -58,9 +58,10 @@ class Status(Callback):
 
         self._log_status(_format_run_end(event), kind="completed")
         self._write(
+            event,
             status="completed",
             current_event=event.name,
-            end_time=_now(),
+            end_time=_now(event),
             exception_type=None,
             exception_message=None,
         )
@@ -71,9 +72,10 @@ class Status(Callback):
         exception = event.payload.get("exception")
         self._log_status(_format_run_failure(event, exception), kind="failed")
         self._write(
+            event,
             status="failed",
             current_event=event.name,
-            end_time=_now(),
+            end_time=_now(event),
             exception_type=None if exception is None else type(exception).__name__,
             exception_message=None if exception is None else str(exception),
         )
@@ -99,6 +101,7 @@ class Status(Callback):
 
     def _write(
         self,
+        event: Event,
         *,
         status: str,
         current_event: str,
@@ -112,6 +115,7 @@ class Status(Callback):
             self.output_path,
             {
                 "status": status,
+                "timezone": event.context.metadata.timezone,
                 "start_time": self.start_time,
                 "end_time": end_time,
                 "current_event": current_event,
@@ -159,8 +163,8 @@ def configure_terminal_logging(
     logger.propagate = False
 
 
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
+def _now(event: Event) -> str:
+    return event.context.now_iso()
 
 
 _DEFAULT_STATUS_METRICS = (
@@ -204,6 +208,8 @@ def _format_run_start_lines(event: Event) -> list[str]:
         ("Run ID", metadata.run_id),
         ("Run Dir", metadata.run_dir),
         ("Run Name", getattr(metadata, "run_name", "")),
+        ("Timezone", getattr(metadata, "timezone", "")),
+        ("Started At", getattr(metadata, "timestamp", "")),
         ("Status", "starting"),
         None,
         ("Git Commit", metadata.git_commit[:7] if metadata.git_commit else ""),

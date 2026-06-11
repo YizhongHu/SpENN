@@ -57,6 +57,9 @@ run:
   root: outputs
   run_id: null
   dir: null
+  # IANA timezone used for human-readable run IDs, metadata, and status files.
+  # The code default is UTC; Harvard cluster logs use New York time here.
+  timezone: America/New_York
 
 
 # -----------------------------------------------------------------------------
@@ -170,10 +173,6 @@ model_params:
   #   reference implementation to maximize test coverage.
   mixing_implementation: slow
   mixing_initial_weight: 0.5
-  # `allow_odd_electron_bordered`:
-  #   Determine if Pfaffian readout can border odd-electron systems with a
-  # dummy electron to enable Pfaffian evaluation.
-  allow_odd_electron_bordered: true
 
 
 # -----------------------------------------------------------------------------
@@ -328,7 +327,6 @@ model:
 
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
-    allow_odd_electron_bordered: ${model_params.allow_odd_electron_bordered}
     channels: ${model_params.channels}
 
 

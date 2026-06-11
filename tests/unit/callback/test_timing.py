@@ -6,8 +6,8 @@ import logging
 
 import pytest
 
-import spenn.callback as callback_module
 from spenn.callback import DiagnosticTiming, EvaluationTiming, Event, RunTiming, Status, TrainStepTiming
+from spenn.callback.timing import base as timing_base
 from tests.unit.callback.support import FakeState, RecordingContext
 
 
@@ -134,8 +134,21 @@ def test_diagnostic_timing_requires_name() -> None:
 
 def test_cuda_synchronize_flag_controls_cuda_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
-    monkeypatch.setattr(callback_module.torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(callback_module.torch.cuda, "synchronize", lambda: calls.append("sync"))
+    fake_torch = type(
+        "FakeTorch",
+        (),
+        {
+            "cuda": type(
+                "FakeCuda",
+                (),
+                {
+                    "is_available": staticmethod(lambda: True),
+                    "synchronize": staticmethod(lambda: calls.append("sync")),
+                },
+            )(),
+        },
+    )()
+    monkeypatch.setattr(timing_base, "require_torch", lambda *, feature: fake_torch)
 
     no_sync = TrainStepTiming(cuda_synchronize=False, clock=FakeClock([1.0, 2.0]))
     no_sync.handle(Event(name="step_start", context=RecordingContext(), payload={"step": 1}))

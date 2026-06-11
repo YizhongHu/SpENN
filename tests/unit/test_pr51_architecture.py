@@ -76,6 +76,11 @@ def test_runtime_qol_modules_are_split_packages() -> None:
         "spenn.callback.health.data_validity",
         "spenn.callback.health.sampler_health",
         "spenn.callback.health.gradient_stats",
+        "spenn.callback.timing.base",
+        "spenn.callback.timing.run_timing",
+        "spenn.callback.timing.train_step_timing",
+        "spenn.callback.timing.evaluation_timing",
+        "spenn.callback.timing.diagnostic_timing",
         "spenn.logging.base",
         "spenn.logging.csv",
         "spenn.logging.jsonl",
@@ -95,10 +100,19 @@ def test_runtime_qol_modules_are_split_packages() -> None:
 
     from spenn.callback import DataValidity
     from spenn.callback.health.data_validity import DataValidity as OwnedDataValidity
+    from spenn.callback import DiagnosticTiming, EvaluationTiming, RunTiming, TrainStepTiming
+    from spenn.callback.timing.diagnostic_timing import DiagnosticTiming as OwnedDiagnosticTiming
+    from spenn.callback.timing.evaluation_timing import EvaluationTiming as OwnedEvaluationTiming
+    from spenn.callback.timing.run_timing import RunTiming as OwnedRunTiming
+    from spenn.callback.timing.train_step_timing import TrainStepTiming as OwnedTrainStepTiming
     from spenn.logging import WandB
     from spenn.logging.wandb import WandB as OwnedWandB
 
     assert DataValidity is OwnedDataValidity
+    assert DiagnosticTiming is OwnedDiagnosticTiming
+    assert EvaluationTiming is OwnedEvaluationTiming
+    assert RunTiming is OwnedRunTiming
+    assert TrainStepTiming is OwnedTrainStepTiming
     assert WandB is OwnedWandB
 
 
