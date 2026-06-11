@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
+import socket
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
@@ -165,6 +170,10 @@ def build_run_metadata(
         run_dir=str(OmegaConf.select(cfg, "run.dir")),
         device=str(OmegaConf.select(cfg, "runtime.device", default="cpu")),
         dtype=str(OmegaConf.select(cfg, "runtime.dtype", default="float64")),
+        extra=collect_hardware_metadata(
+            device=str(OmegaConf.select(cfg, "runtime.device", default="cpu")),
+            dtype=str(OmegaConf.select(cfg, "runtime.dtype", default="float64")),
+        ),
     )
 
 
@@ -176,6 +185,55 @@ def collect_git_metadata() -> dict[str, Any]:
         "git_commit": _run_git(["git", "rev-parse", "HEAD"]),
         "git_branch": _run_git(["git", "branch", "--show-current"]),
         "dirty_worktree": bool(status.strip()),
+    }
+
+
+def collect_hardware_metadata(*, device: str, dtype: str) -> dict[str, Any]:
+    """Collect hardware, runtime, and scheduler provenance once per run.
+
+    The returned container is JSON-safe and intentionally uses only stdlib plus
+    an optional lazy torch import. This keeps hardware provenance in run setup,
+    not in trainers, models, samplers, diagnostics, or loggers.
+
+    Parameters
+    ----------
+    device : str
+        Configured runtime device.
+    dtype : str
+        Configured runtime floating dtype.
+
+    Returns
+    -------
+    dict
+        Nested ``hardware``, ``runtime``, and ``slurm`` metadata blocks.
+    """
+
+    torch_info = _collect_torch_hardware()
+    hardware = {
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "cpu_count_logical": os.cpu_count(),
+        "cpu_count_available": _available_cpu_count(),
+        "cpu_count_physical": None,
+        "cuda_available": torch_info["cuda_available"],
+        "cuda_device_count": torch_info["cuda_device_count"],
+        "cuda_devices": torch_info["cuda_devices"],
+    }
+    runtime = {
+        "device": device,
+        "dtype": dtype,
+        "python_version": sys.version.split()[0],
+        "python_executable": sys.executable,
+        "torch_version": torch_info["torch_version"],
+        "torch_cuda_version": torch_info["torch_cuda_version"],
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+    return {
+        "hardware": hardware,
+        "runtime": runtime,
+        "slurm": _collect_slurm_metadata(),
     }
 
 
@@ -212,6 +270,67 @@ def _run_git(command: list[str]) -> str:
     return result.stdout.strip()
 
 
+def _collect_torch_hardware() -> dict[str, Any]:
+    try:
+        torch = import_module("torch")
+    except ImportError:
+        return {
+            "torch_version": None,
+            "torch_cuda_version": None,
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_devices": [],
+        }
+
+    cuda_available = bool(torch.cuda.is_available())
+    device_count = int(torch.cuda.device_count()) if cuda_available else 0
+    devices = []
+    for index in range(device_count):
+        try:
+            properties = torch.cuda.get_device_properties(index)
+        except Exception as exc:  # pragma: no cover - hardware dependent
+            devices.append({"index": index, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        devices.append(
+            {
+                "index": index,
+                "name": str(properties.name),
+                "total_memory_bytes": int(properties.total_memory),
+                "capability": f"{int(properties.major)}.{int(properties.minor)}",
+            }
+        )
+    return {
+        "torch_version": getattr(torch, "__version__", None),
+        "torch_cuda_version": getattr(torch.version, "cuda", None),
+        "cuda_available": cuda_available,
+        "cuda_device_count": device_count,
+        "cuda_devices": devices,
+    }
+
+
+def _available_cpu_count() -> int | None:
+    affinity = getattr(os, "sched_getaffinity", None)
+    if not callable(affinity):
+        return None
+    try:
+        return len(affinity(0))
+    except OSError:
+        return None
+
+
+def _collect_slurm_metadata() -> dict[str, str]:
+    keys = {
+        "job_id": "SLURM_JOB_ID",
+        "array_task_id": "SLURM_ARRAY_TASK_ID",
+        "cpus_per_task": "SLURM_CPUS_PER_TASK",
+        "mem_per_node": "SLURM_MEM_PER_NODE",
+        "job_partition": "SLURM_JOB_PARTITION",
+        "submit_dir": "SLURM_SUBMIT_DIR",
+        "job_name": "SLURM_JOB_NAME",
+    }
+    return {name: os.environ[env] for name, env in keys.items() if env in os.environ}
+
+
 __all__ = [
     "ArtifactManager",
     "REQUIRED_RUN_DIRS",
@@ -219,6 +338,7 @@ __all__ = [
     "RunMetadata",
     "RunResult",
     "build_run_metadata",
+    "collect_hardware_metadata",
     "collect_git_metadata",
     "generate_run_id",
     "write_json",

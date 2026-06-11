@@ -21,6 +21,37 @@ def _context(tmp_path: Path) -> SimpleNamespace:
         dtype="float64",
         git_commit="abcdef123456",
         dirty_worktree=False,
+        extra={
+            "hardware": {
+                "hostname": "node123",
+                "cpu_count_logical": 64,
+                "cpu_count_available": 8,
+                "cuda_available": True,
+                "cuda_device_count": 1,
+                "cuda_devices": [
+                    {
+                        "index": 0,
+                        "name": "NVIDIA A100-SXM4-40GB",
+                        "total_memory_bytes": 40 * 1024**3,
+                        "capability": "8.0",
+                    }
+                ],
+            },
+            "runtime": {
+                "device": "cuda",
+                "dtype": "float64",
+                "python_version": "3.14.0",
+                "torch_version": "2.9.0",
+                "torch_cuda_version": "12.8",
+                "cuda_visible_devices": "0",
+            },
+            "slurm": {
+                "job_id": "123456",
+                "array_task_id": "7",
+                "cpus_per_task": "8",
+                "job_partition": "kozinsky_gpu",
+            },
+        },
     )
     return SimpleNamespace(metadata=metadata)
 
@@ -38,7 +69,14 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
         callback.handle(Event(name="run_end", context=context))
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any(message.startswith("[run] started id=run-1") for message in messages)
+    assert any("SpENN Run Status" in message for message in messages)
+    assert any("Hardware Environment" in message for message in messages)
+    assert any("Run ID" in message and "run-1" in message for message in messages)
+    assert any("Runtime Device" in message and "cuda" in message for message in messages)
+    assert any("Torch CUDA" in message and "12.8" in message for message in messages)
+    assert any("GPU 0 Name" in message and "NVIDIA A100-SXM4-40GB" in message for message in messages)
+    assert any("GPU 0 Memory" in message and "40.0GB" in message for message in messages)
+    assert any("SLURM Job ID" in message and "123456" in message for message in messages)
     assert any(message.startswith("[run] completed dir=") for message in messages)
     status = json.loads((tmp_path / "status.json").read_text())
     assert status["status"] == "completed"

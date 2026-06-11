@@ -48,6 +48,14 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
 
     status = json.loads((run_dir / "status.json").read_text())
     assert status["status"] == "completed"
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+    assert metadata["hardware"]["hostname"]
+    assert "cpu_count_logical" in metadata["hardware"]
+    assert "cuda_available" in metadata["hardware"]
+    assert metadata["runtime"]["device"] == "cpu"
+    assert metadata["runtime"]["dtype"] == "float64"
+    assert "python_version" in metadata["runtime"]
+    assert "slurm" in metadata
 
 
 def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:

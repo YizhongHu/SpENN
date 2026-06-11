@@ -209,7 +209,8 @@ class Status(Callback):
         """Record run start."""
 
         self.start_time = _now()
-        self._log_status(_format_run_start(event), kind="run")
+        for line in _format_run_start_lines(event):
+            self._log_status(line, kind="run")
         self._write(
             status="running",
             current_event=event.name,
@@ -961,23 +962,97 @@ _STATUS_COLORS = {
 }
 
 
-def _format_run_start(event: Event) -> str:
+def _format_run_start_lines(event: Event) -> list[str]:
     metadata = event.context.metadata
-    parts = [
-        "[run] started",
-        f"id={metadata.run_id}",
-        f"dir={metadata.run_dir}",
-        f"device={metadata.device}",
-        f"dtype={metadata.dtype}",
+    extra = getattr(metadata, "extra", {}) or {}
+    hardware = extra.get("hardware") if isinstance(extra, Mapping) else None
+    runtime = extra.get("runtime") if isinstance(extra, Mapping) else None
+    slurm = extra.get("slurm") if isinstance(extra, Mapping) else None
+    status_rows: list[tuple[str, object] | None] = [
+        ("Run ID", metadata.run_id),
+        ("Run Dir", metadata.run_dir),
+        ("Run Name", getattr(metadata, "run_name", "")),
+        ("Status", "starting"),
+        None,
+        ("Git Commit", metadata.git_commit[:7] if metadata.git_commit else ""),
+        ("Git Branch", getattr(metadata, "git_branch", "")),
+        ("Dirty Worktree", metadata.dirty_worktree),
     ]
-    if metadata.git_commit:
-        parts.append(f"git={metadata.git_commit[:7]}")
-    parts.append(f"dirty={str(metadata.dirty_worktree).lower()}")
-    slurm_job_id = os.environ.get("SLURM_JOB_ID")
-    if slurm_job_id:
-        parts.append(f"slurm_job_id={slurm_job_id}")
-    parts.append(f"host={socket.gethostname()}")
-    return " ".join(parts)
+    command = getattr(metadata, "command", None)
+    if command:
+        status_rows.append(("Command", command))
+    config_path = getattr(metadata, "config_path", None)
+    if config_path:
+        status_rows.append(("Config", config_path))
+
+    hardware_rows: list[tuple[str, object] | None] = []
+    if isinstance(runtime, Mapping):
+        hardware_rows.extend(
+            [
+                ("Runtime Device", runtime.get("device", metadata.device)),
+                ("Runtime DType", runtime.get("dtype", metadata.dtype)),
+                ("Python", runtime.get("python_version", "unknown")),
+                ("Torch", runtime.get("torch_version", "unavailable")),
+                ("Torch CUDA", runtime.get("torch_cuda_version") or "unavailable"),
+            ]
+        )
+        if runtime.get("cuda_visible_devices"):
+            hardware_rows.append(("CUDA_VISIBLE_DEVICES", runtime["cuda_visible_devices"]))
+    else:
+        hardware_rows.extend([("Runtime Device", metadata.device), ("Runtime DType", metadata.dtype)])
+    hardware_rows.append(None)
+
+    if isinstance(hardware, Mapping):
+        hardware_rows.extend(
+            [
+                ("Host", hardware.get("hostname", socket.gethostname())),
+                ("Platform", hardware.get("platform", "unknown")),
+                ("Machine", hardware.get("machine", "unknown")),
+                ("Logical CPUs", hardware.get("cpu_count_logical")),
+                ("Available CPUs", hardware.get("cpu_count_available")),
+                ("CUDA Available", hardware.get("cuda_available", False)),
+                ("CUDA Device Count", hardware.get("cuda_device_count", 0)),
+            ]
+        )
+        devices = hardware.get("cuda_devices")
+        if isinstance(devices, Sequence) and not isinstance(devices, str):
+            for device in devices:
+                if not isinstance(device, Mapping):
+                    continue
+                index = device.get("index")
+                memory = (
+                    _format_gib(device["total_memory_bytes"])
+                    if isinstance(device.get("total_memory_bytes"), int | float)
+                    else "unknown"
+                )
+                hardware_rows.extend(
+                    [
+                        (f"GPU {index} Name", device.get("name", "unknown")),
+                        (f"GPU {index} Memory", memory),
+                        (f"GPU {index} Capability", device.get("capability", "unknown")),
+                    ]
+                )
+                if device.get("error"):
+                    hardware_rows.append((f"GPU {index} Error", device["error"]))
+    else:
+        hardware_rows.append(("Host", socket.gethostname()))
+
+    if isinstance(slurm, Mapping) and slurm:
+        hardware_rows.append(None)
+        for key, label in (
+            ("job_id", "SLURM Job ID"),
+            ("array_task_id", "SLURM Array Task"),
+            ("cpus_per_task", "SLURM CPUs/Task"),
+            ("mem_per_node", "SLURM Mem/Node"),
+            ("job_partition", "SLURM Partition"),
+            ("job_name", "SLURM Job Name"),
+        ):
+            if key in slurm:
+                hardware_rows.append((label, slurm[key]))
+    return [
+        *_format_status_box("SpENN Run Status", status_rows),
+        *_format_status_box("Hardware Environment", hardware_rows),
+    ]
 
 
 def _format_run_end(event: Event) -> str:
@@ -1057,6 +1132,8 @@ def _payload_metric_values(event: Event) -> dict[str, object]:
 
 
 def _format_status_value(value: object) -> str:
+    if value is None:
+        return "null"
     if isinstance(value, bool):
         return "ok" if value else "failed"
     if isinstance(value, int):
@@ -1073,6 +1150,51 @@ def _format_status_value(value: object) -> str:
             return f"{value:.3e}"
         return f"{value:.6g}"
     return _quote_value(str(value)) if _needs_shell_quote(str(value)) else str(value)
+
+
+def _format_gib(value: int | float) -> str:
+    return f"{float(value) / (1024**3):.1f}GB"
+
+
+def _format_status_box(title: str, rows: Sequence[tuple[str, object] | None]) -> list[str]:
+    rendered_rows: list[tuple[str, str] | None] = []
+    for row in rows:
+        if row is None:
+            if rendered_rows and rendered_rows[-1] is not None:
+                rendered_rows.append(None)
+            continue
+        label, value = row
+        rendered_rows.append((str(label), _format_box_value(value)))
+    if rendered_rows and rendered_rows[-1] is None:
+        rendered_rows.pop()
+
+    label_width = max((len(label) for row in rendered_rows if row is not None for label, _ in [row]), default=0)
+    value_width = max((len(value) for row in rendered_rows if row is not None for _, value in [row]), default=0)
+    content_width = max(len(title), label_width + 3 + value_width)
+    top = "+" + "=" * (content_width + 2) + "+"
+    rule = "+" + "-" * (content_width + 2) + "+"
+    lines = [top, f"| {title.center(content_width)} |", rule]
+    for row in rendered_rows:
+        if row is None:
+            lines.append(rule)
+            continue
+        label, value = row
+        text = f"{label.ljust(label_width)} : {value}"
+        lines.append(f"| {text.ljust(content_width)} |")
+    lines.append(top)
+    return lines
+
+
+def _format_box_value(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return _format_status_value(value)
+    return " ".join(str(value).splitlines()) or "null"
 
 
 def _quote_value(value: str) -> str:

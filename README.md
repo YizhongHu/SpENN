@@ -140,7 +140,40 @@ callbacks:
 Status lines are grep-friendly, for example:
 
 ```text
-[run] started id=... dir=... device=cpu dtype=float64 git=... dirty=false host=...
++===========================================================+
+|                     SpENN Run Status                      |
++-----------------------------------------------------------+
+| Run ID         : 2026-06-11_143208_hooke_pair             |
+| Run Dir        : runs/2026-06-11/143208_hooke_pair        |
+| Run Name       : hooke_pair                               |
+| Status         : starting                                 |
++-----------------------------------------------------------+
+| Git Commit     : abc1234                                  |
+| Git Branch     : codex/hooke/QoL                          |
+| Dirty Worktree : false                                    |
++===========================================================+
++===========================================================+
+|                   Hardware Environment                    |
++-----------------------------------------------------------+
+| Runtime Device      : cpu                                 |
+| Runtime DType       : float64                             |
+| Python              : 3.14.0                              |
+| Torch               : 2.9.0                               |
+| Torch CUDA          : unavailable                         |
++-----------------------------------------------------------+
+| Host                : node123                             |
+| Platform            : Linux-...                           |
+| Machine             : x86_64                              |
+| Logical CPUs        : 64                                  |
+| Available CPUs      : 8                                   |
+| CUDA Available      : false                               |
+| CUDA Device Count   : 0                                   |
++-----------------------------------------------------------+
+| SLURM Job ID        : 123456                              |
+| SLURM Array Task    : 7                                   |
+| SLURM CPUs/Task     : 8                                   |
+| SLURM Partition     : kozinsky                            |
++===========================================================+
 [train] step=10 loss=0.421 energy=2.104 stderr=0.031 acc=0.61 grad=0.012 finite=1
 [run] completed dir=...
 ```
@@ -153,6 +186,40 @@ For SLURM jobs, prefer unbuffered output:
 export PYTHONUNBUFFERED=1
 uv run python -u run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
+
+Every configured run also records hardware and environment provenance in
+`metadata.json`. The nested metadata blocks include:
+
+```text
+hardware.hostname
+hardware.platform
+hardware.cpu_count_logical
+hardware.cpu_count_available
+hardware.cuda_available
+hardware.cuda_device_count
+hardware.cuda_devices
+runtime.python_version
+runtime.torch_version
+runtime.torch_cuda_version
+runtime.device
+runtime.dtype
+runtime.cuda_visible_devices
+slurm.job_id
+slurm.array_task_id
+slurm.cpus_per_task
+slurm.job_partition
+```
+
+On GPU nodes, the hardware box also includes one row group per visible CUDA
+device:
+
+```text
+| GPU 0 Name          : NVIDIA A100-SXM4-40GB               |
+| GPU 0 Memory        : 40.0GB                              |
+| GPU 0 Capability    : 8.0                                 |
+```
+
+This metadata is provenance, not a training metric time series.
 
 ## Timing Metrics
 
