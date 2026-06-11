@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Iterable
 
+import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
@@ -24,9 +24,8 @@ class SpENNWaveFunction(EquivariantMap):
     readout : torch.nn.Module
         Module mapping final real features to :class:`WavefunctionOutput`.
     cusp : torch.nn.Module or None, optional
-        Optional additive log-amplitude cusp. A cusp may either accept
-        ``(batch, output)`` and return a full output, or accept ``batch`` and
-        return an additive tensor matching ``output.logabs``.
+        Optional additive log-amplitude cusp. Cusps accept ``batch`` and return
+        an additive tensor matching ``output.logabs``.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -45,7 +44,6 @@ class SpENNWaveFunction(EquivariantMap):
         self.layers = nn.ModuleList(tuple(layers))
         self.readout = readout
         self.cusp = cusp
-        self._cusp_accepts_output = False if cusp is None else _cusp_accepts_output(cusp)
 
     def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
@@ -56,12 +54,9 @@ class SpENNWaveFunction(EquivariantMap):
         output = self.readout(features, batch)
         if self.cusp is None:
             return output
-        if self._cusp_accepts_output:
-            cusp_output = self.cusp(batch, output)
-        else:
-            cusp_output = self.cusp(batch)
-        if isinstance(cusp_output, WavefunctionOutput):
-            return cusp_output
+        cusp_output = self.cusp(batch)
+        if not isinstance(cusp_output, torch.Tensor):
+            raise TypeError(f"Cusp output must be a torch.Tensor, got {type(cusp_output)!r}")
         if cusp_output.shape != output.logabs.shape:
             raise ValueError(
                 f"Cusp output must have shape {tuple(output.logabs.shape)}, got {tuple(cusp_output.shape)}"
@@ -72,29 +67,6 @@ class SpENNWaveFunction(EquivariantMap):
             phase=output.phase,
             aux=dict(output.aux),
         )
-
-
-def _cusp_accepts_output(cusp: nn.Module) -> bool:
-    """Return whether a cusp accepts the readout output as a second argument."""
-
-    try:
-        signature = inspect.signature(cusp.forward)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("cusp must expose an inspectable forward signature") from exc
-
-    parameters = tuple(signature.parameters.values())
-    if any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
-        return True
-    positional = tuple(
-        parameter
-        for parameter in parameters
-        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    )
-    if len(positional) >= 2:
-        return True
-    if len(positional) == 1:
-        return False
-    raise TypeError("cusp forward must accept either (batch) or (batch, output)")
 
 
 __all__ = ["SpENNWaveFunction"]
