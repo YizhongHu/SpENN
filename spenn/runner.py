@@ -11,7 +11,7 @@ from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 from spenn.artifacts import RunContext, RunResult
 from spenn.callback import Event
 from spenn.diagnostics import Diagnostic, EvaluationContext, JsonScalar
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms, summarize_local_energy
+from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
 from spenn.training.optim import make_optimizer
 
 
@@ -85,6 +85,7 @@ class Train(Runner):
         self.emit("run_start", context)
         if isinstance(self.model, torch.nn.Module):
             _place_module_for_runtime(self.model, context)
+            _assert_eager_initialized(self.model)
             self.model.train()
 
         optimizer = make_optimizer(self.optimizer, self.model.parameters())
@@ -128,8 +129,9 @@ class Evaluate(Runner):
         public term names for decomposition and metrics; a sequence derives
         unique names from term class names.
     diagnostics : sequence of Diagnostic, optional
-        Diagnostics to evaluate from the shared `EvaluationContext`. An empty
-        sequence preserves the minimal pre-diagnostics local-energy summary.
+        Diagnostics to evaluate from the shared `EvaluationContext`. At least
+        one diagnostic is required; configure `EnergyEvaluation` for energy
+        summaries.
     return_terms : bool, optional
         Whether to request per-term local-energy components from `local_energy`.
     """
@@ -154,12 +156,13 @@ class Evaluate(Runner):
         """Sample configurations, evaluate local energy, and log metrics."""
 
         self.emit("run_start", context)
-        self.emit("evaluate_start", context)
 
         if isinstance(self.model, torch.nn.Module):
             _place_module_for_runtime(self.model, context)
             self.model.eval()
             _assert_eager_initialized(self.model)
+
+        self.emit("evaluate_start", context)
 
         # No torch.no_grad: local-energy evaluation needs position derivatives.
         walkers, sampler_stats = self.sampler.collect_samples(
@@ -174,22 +177,21 @@ class Evaluate(Runner):
         energy_result = local_energy(normalized_terms, self.model, batch, return_terms=self.return_terms)
         total_energy, term_energies = _split_local_energy_result(energy_result)
 
-        metrics: dict[str, JsonScalar]
-        if self.diagnostics:
-            with torch.no_grad():
-                wavefunction_output = self.model(batch)
-            evaluation = EvaluationContext(
-                model=self.model,
-                batch=batch,
-                wavefunction_output=wavefunction_output,
-                local_energy=total_energy,
-                local_energy_terms=term_energies,
-                sampler_stats=dict(sampler_stats),
-                hamiltonian_terms=normalized_terms,
-            )
-            metrics = _evaluate_diagnostics(self.diagnostics, evaluation)
-        else:
-            metrics = summarize_local_energy(energy_result)
+        # PR6 keeps `wavefunction_output` in the shared context. Local-energy
+        # terms may already evaluate the model internally; a future local-energy
+        # API can avoid this extra no-grad forward when diagnostics do not need it.
+        with torch.no_grad():
+            wavefunction_output = self.model(batch)
+        evaluation = EvaluationContext(
+            model=self.model,
+            batch=batch,
+            wavefunction_output=wavefunction_output,
+            local_energy=total_energy,
+            local_energy_terms=term_energies,
+            sampler_stats=dict(sampler_stats),
+            hamiltonian_terms=normalized_terms,
+        )
+        metrics = _evaluate_diagnostics(self.diagnostics, evaluation)
 
         context.log(metrics, step=0, namespace="eval")
         if sampler_stats:
@@ -207,21 +209,23 @@ def _place_module_for_runtime(module: torch.nn.Module, context: RunContext) -> N
 
 
 def _assert_eager_initialized(module: torch.nn.Module) -> None:
-    """Fail before evaluation if a model still contains lazy state."""
+    """Fail before runner use if a model still contains lazy state."""
 
     for name, parameter in module.named_parameters():
         if isinstance(parameter, UninitializedParameter):
-            raise RuntimeError(f"model parameter {name!r} is uninitialized before evaluation")
+            raise RuntimeError(f"model parameter {name!r} is uninitialized before runner use")
     for name, buffer in module.named_buffers():
         if isinstance(buffer, UninitializedBuffer):
-            raise RuntimeError(f"model buffer {name!r} is uninitialized before evaluation")
+            raise RuntimeError(f"model buffer {name!r} is uninitialized before runner use")
 
 
 def _validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnostic, ...]:
     """Validate configured diagnostics without invoking them."""
 
     if diagnostics is None:
-        return ()
+        raise ValueError(
+            "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
+        )
 
     validated: list[Diagnostic] = []
     for index, diagnostic in enumerate(diagnostics):
@@ -236,6 +240,10 @@ def _validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnos
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"diagnostics[{index}] must expose a non-empty string name")
         validated.append(diagnostic)
+    if not validated:
+        raise ValueError(
+            "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
+        )
     return tuple(validated)
 
 
@@ -288,6 +296,8 @@ def _runtime_dtype(name: str) -> torch.dtype:
         raise ValueError(f"Unsupported runtime dtype {name!r}") from exc
     if not isinstance(dtype, torch.dtype):
         raise ValueError(f"Unsupported runtime dtype {name!r}")
+    if not dtype.is_floating_point:
+        raise ValueError(f"Runtime dtype must be floating point, got {name!r}")
     return dtype
 
 

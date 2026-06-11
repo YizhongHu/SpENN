@@ -18,19 +18,14 @@ from spenn.artifacts import RunContext
 from spenn.callback import Callback, Event
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.diagnostics import EnergyEvaluation, EvaluationContext
-from spenn.physics.hamiltonian import LocalEnergyResult, summarize_local_energy
+from spenn.physics.hamiltonian import LocalEnergyResult
 from spenn.physics.kinetic import KineticEnergy
 from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from spenn.run import run_from_config
-from spenn.runner import Evaluate
+from spenn.runner import Evaluate, Train
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
-
-
-def test_evaluate_uses_summary_helper_from_physics_hamiltonian() -> None:
-    assert runner_module.summarize_local_energy is summarize_local_energy
-    assert "summarize_local_energy" not in runner_module.__all__
 
 
 def test_evaluate_accepts_only_minimal_constructor_args() -> None:
@@ -43,10 +38,10 @@ def test_evaluate_rejects_reference_energy_api() -> None:
         Evaluate(model=None, sampler=None, hamiltonian_terms=[], evaluation={"reference_energy": 2.0})
 
 
-def test_evaluate_accepts_empty_diagnostics_for_minimal_behavior() -> None:
-    runner = Evaluate(model=None, sampler=None, hamiltonian_terms=[], diagnostics=[])
-
-    assert runner.diagnostics == ()
+@pytest.mark.parametrize("diagnostics", [None, []])
+def test_evaluate_requires_at_least_one_diagnostic(diagnostics) -> None:
+    with pytest.raises(ValueError, match="requires at least one diagnostic"):
+        Evaluate(model=None, sampler=None, hamiltonian_terms=[], diagnostics=diagnostics)
 
 
 @pytest.mark.parametrize("raw", [{"name": "energy"}, OmegaConf.create({"name": "energy"})])
@@ -132,6 +127,53 @@ def test_train_config_with_diagnostics_fails_as_normal_constructor_error() -> No
 
     with pytest.raises(Exception, match="diagnostics"):
         run_module._instantiate_runner(_runner_context(cfg))
+
+
+def test_runtime_dtype_rejects_non_floating_dtype() -> None:
+    with pytest.raises(ValueError, match="floating point"):
+        runner_module._runtime_dtype("int64")
+
+
+def test_train_asserts_eager_initialization_before_optimizer_construction() -> None:
+    class _OptimizerFactory:
+        called = False
+
+        def __call__(self, params):
+            self.called = True
+            raise AssertionError("optimizer should not be constructed")
+
+    optimizer = _OptimizerFactory()
+    recorder = _EventRecorder()
+    context = _RecordingContext([recorder])
+    runner = Train(
+        model=nn.LazyLinear(1),
+        sampler=object(),
+        hamiltonian_terms=[],
+        optimizer=optimizer,
+        trainer=object(),
+    )
+
+    with pytest.raises(RuntimeError, match="uninitialized"):
+        runner.run(context)
+
+    assert optimizer.called is False
+    assert recorder.events == ["run_start"]
+
+
+def test_evaluate_start_is_emitted_after_model_ready() -> None:
+    recorder = _EventRecorder()
+    context = _RecordingContext([recorder])
+    runner = Evaluate(
+        model=nn.LazyLinear(1),
+        sampler=_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)),
+        hamiltonian_terms=[],
+        diagnostics=[EnergyEvaluation()],
+    )
+
+    with pytest.raises(RuntimeError, match="uninitialized"):
+        runner.run(context)
+
+    assert recorder.events == ["run_start"]
 
 
 def _runner_context(cfg) -> RunContext:
@@ -229,6 +271,7 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
         model=build_tiny_spenn(),
         sampler=build_tiny_sampler(),
         hamiltonian_terms=[KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()],
+        diagnostics=[EnergyEvaluation()],
         return_terms=True,
     )
 
@@ -242,7 +285,7 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
         "evaluate_end",
         "run_end",
     ]
-    # Logged through the context under the eval namespace, intrinsic metrics only.
+    # Energy metrics are emitted by the configured diagnostic.
     eval_records = [m for ns, m in context.records if ns == "eval"]
     assert eval_records
     assert "energy" in eval_records[-1]
