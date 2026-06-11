@@ -115,6 +115,17 @@ def test_full_model_trivial_pass_without_particle_count() -> None:
     assert result.metrics["n_permutations_tested"] == 0
 
 
+def test_full_model_trivial_pass_for_zero_particles() -> None:
+    batch = type("ZeroElectronBatch", (), {"n_electrons": 0})()
+
+    result = FullModelEquivarianceChecker().run(_State(IdentityModule(), batch=batch))
+
+    assert result.passed is True
+    assert result.metrics["n_particles"] == 0
+    assert result.metrics["n_available_permutations"] == 0
+    assert result.metrics["n_permutations_tested"] == 0
+
+
 # --- TraceEquivarianceChecker ---
 
 

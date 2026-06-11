@@ -34,8 +34,8 @@ def _particle_count_from_batch(batch: object) -> int:
         value = getattr(batch, attr, None)
         if value is not None:
             count = int(value)
-            if count < 1:
-                raise ValueError(f"batch.{attr} must be positive, got {count}")
+            if count < 0:
+                raise ValueError(f"batch.{attr} must be nonnegative, got {count}")
             return count
 
     raise TypeError(

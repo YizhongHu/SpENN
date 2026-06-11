@@ -99,11 +99,24 @@ class VMCTrainer:
             loss = objective.loss
 
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if self.gradient_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip_norm)
-            grad_norm = _gradient_norm(model)
-            optimizer.step()
+            optimizer_step = False
+            if loss.requires_grad:
+                loss.backward()
+                if self.gradient_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip_norm)
+                grad_norm = _gradient_norm(model)
+                optimizer.step()
+                optimizer_step = True
+            elif batch.n_electrons == 0:
+                # The zero-electron vacuum has no sampled coordinate degrees of
+                # freedom, so the current Pfaffian readout yields a constant
+                # wavefunction and a no-op optimizer step is the correct loop
+                # behavior. Nonzero disconnected losses still fail below.
+                grad_norm = 0.0
+            else:
+                raise RuntimeError(
+                    "VMC loss is disconnected from model parameters for a nonzero-electron batch"
+                )
 
             # Canonical VMC-native metrics come from the objective helper; the
             # trainer only adds trainer-owned mechanics and optional per-term
@@ -114,6 +127,8 @@ class VMCTrainer:
                 metrics.update(summarize_local_energy_terms(term_energies))
             metrics["grad_norm"] = grad_norm
             metrics["param_norm"] = _parameter_norm(model)
+            metrics["loss_has_grad"] = bool(loss.requires_grad)
+            metrics["optimizer_step"] = optimizer_step
 
             state.step = step
             state.metrics = metrics
