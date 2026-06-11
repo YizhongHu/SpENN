@@ -11,9 +11,13 @@
 #    # CPU smoke with a custom output root:
 #    sbatch experiments/hooke/slurm/eval_pair_smoke.sbatch run.root=/scratch/$USER/spenn
 #
-#    # GPU smoke (also switch the partition/gres below or via sbatch flags):
+#    # GPU smoke: pick a CUDA torch extra (cu126/cu128/cu130) and a GPU partition.
+#    # The CUDA extra runs from a separate uv environment (.venv-gpu) so the
+#    # default CPU .venv stays untouched:
 #    sbatch --partition=kozinsky_gpu --gres=gpu:1 \
-#        experiments/hooke/slurm/eval_pair_smoke.sbatch runtime.device=cuda
+#        --export=ALL,SPENN_TORCH_EXTRA=cu126 \
+#        experiments/hooke/slurm/eval_pair_smoke.sbatch \
+#        runtime.device=cuda timing.cuda_synchronize=true
 # =============================================================================
 #SBATCH --job-name=spenn_hooke_pair_eval_smoke
 #SBATCH --partition=kozinsky
@@ -37,6 +41,15 @@ echo "[slurm] started_at=$(date --iso-8601=seconds)"
 echo "[slurm] config=${CONFIG}"
 echo "[slurm] command=$*"
 
+# --- Torch flavor ---------------------------------------------------------------
+# SPENN_TORCH_EXTRA selects the torch extra from pyproject (cpu/cu126/cu128/cu130).
+# CUDA flavors use a dedicated uv environment so the CPU .venv is not rewritten.
+TORCH_EXTRA="${SPENN_TORCH_EXTRA:-cpu}"
+if [ "${TORCH_EXTRA}" != "cpu" ]; then
+    export UV_PROJECT_ENVIRONMENT=.venv-gpu
+fi
+echo "[slurm] torch_extra=${TORCH_EXTRA}"
+
 # --- Environment --------------------------------------------------------------
 # Unbuffered, line-oriented logs; no interactive progress bars in batch logs.
 export PYTHONUNBUFFERED=1
@@ -55,7 +68,7 @@ fi
 # --- Run ----------------------------------------------------------------------
 # Capture the exit code so the epilogue still prints on failure, then preserve it.
 set +e
-uv run python -u run.py --config "${CONFIG}" "$@"
+uv run --extra "${TORCH_EXTRA}" python -u run.py --config "${CONFIG}" "$@"
 status=$?
 set -e
 
