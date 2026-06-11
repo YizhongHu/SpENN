@@ -2345,7 +2345,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'cu128'", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "spenn", extra = "cu128" } },
     { name = "torch", marker = "extra == 'cu130'", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "spenn", extra = "cu130" } },
     { name = "typeguard", marker = "extra == 'test'", specifier = ">=4" },
-    { name = "wandb", marker = "extra == 'wandb'" },
+    { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.17" },
 ]
 provides-extras = ["cpu", "cu126", "cu128", "cu130", "test", "wandb"]
 

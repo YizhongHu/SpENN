@@ -32,7 +32,7 @@ test = [
   "typeguard>=4",
 ]
 wandb = [
-  "wandb",
+  "wandb>=0.17",
 ]
 
 [dependency-groups]

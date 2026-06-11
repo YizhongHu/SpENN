@@ -44,6 +44,220 @@ For a syntax-only check:
 uv run python -m compileall spenn run.py typechecked.py
 ```
 
+## Optional W&B Tracking
+
+SpENN can optionally mirror scalar run metrics to Weights & Biases for
+dashboarding and monitoring. W&B is an observability backend only; the local run
+directory remains the authoritative experiment record.
+
+Install optional W&B support:
+
+```bash
+uv sync --extra wandb
+```
+
+For interactive authentication:
+
+```bash
+wandb login
+```
+
+For non-interactive jobs:
+
+```bash
+export WANDB_API_KEY=<your-api-key>
+```
+
+Add W&B as another root-level logger:
+
+```yaml
+loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
+  - _target_: spenn.logging.WandB
+    project: spenn-qmc
+    entity: null
+    mode: online
+    group: hooke_pair
+    tags:
+      - hooke
+      - vmc
+```
+
+For jobs without reliable internet, use W&B offline mode:
+
+```bash
+wandb offline
+uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+wandb sync --sync-all
+```
+
+By default, SpENN does not upload checkpoints, traces, raw batches, per-sample
+arrays, or full run directories to W&B. W&B receives scalar metrics and compact
+config/provenance metadata; CSV/JSONL logs and local artifacts remain canonical.
+
+## Terminal and SLURM Status
+
+Terminal output is a human-facing status view, not the authoritative metric
+store. Configured runs can enable line-oriented Python logging for local
+terminals and SLURM `.out` files:
+
+```yaml
+terminal:
+  enabled: true
+  level: info
+  color: auto      # auto | always | never
+  rich: auto       # reserved; plain logging remains the fallback
+  progress: false  # keep false for SLURM-compatible logs
+```
+
+Use the `Status` callback for compact lifecycle and progress lines:
+
+```yaml
+callbacks:
+  - _target_: spenn.callback.Status
+    triggers:
+      - run_start
+      - run_end
+      - exception
+    output_path: ${run.dir}/status.json
+
+  - _target_: spenn.callback.Status
+    triggers:
+      - step_end
+    every_n_steps: 10
+    include:
+      - train/loss
+      - train/energy
+      - train/energy_stderr
+      - train/sampler/acceptance_rate
+      - train/grad_norm
+      - train/local_energy_finite_fraction
+```
+
+Status lines are grep-friendly, for example:
+
+```text
++===========================================================+
+|                     SpENN Run Status                      |
++-----------------------------------------------------------+
+| Run ID         : 2026-06-11_143208_hooke_pair             |
+| Run Dir        : runs/2026-06-11/143208_hooke_pair        |
+| Run Name       : hooke_pair                               |
+| Status         : starting                                 |
++-----------------------------------------------------------+
+| Git Commit     : abc1234                                  |
+| Git Branch     : codex/hooke/QoL                          |
+| Dirty Worktree : false                                    |
++===========================================================+
++===========================================================+
+|                   Hardware Environment                    |
++-----------------------------------------------------------+
+| Runtime Device      : cpu                                 |
+| Runtime DType       : float64                             |
+| Python              : 3.14.0                              |
+| Torch               : 2.9.0                               |
+| Torch CUDA          : unavailable                         |
++-----------------------------------------------------------+
+| Host                : node123                             |
+| Platform            : Linux-...                           |
+| Machine             : x86_64                              |
+| Logical CPUs        : 64                                  |
+| Available CPUs      : 8                                   |
+| CUDA Available      : false                               |
+| CUDA Device Count   : 0                                   |
++-----------------------------------------------------------+
+| SLURM Job ID        : 123456                              |
+| SLURM Array Task    : 7                                   |
+| SLURM CPUs/Task     : 8                                   |
+| SLURM Partition     : kozinsky                            |
++===========================================================+
+[train] step=10 loss=0.421 energy=2.104 stderr=0.031 acc=0.61 grad=0.012 finite=1
+[run] completed dir=...
+```
+
+`run.py`, trainers, models, samplers, diagnostics, and loggers do not print
+training metrics directly. CSV/JSONL remain the canonical local metric records.
+For SLURM jobs, prefer unbuffered output:
+
+```bash
+export PYTHONUNBUFFERED=1
+uv run python -u run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+```
+
+Every configured run also records hardware and environment provenance in
+`metadata.json`. The nested metadata blocks include:
+
+```text
+hardware.hostname
+hardware.platform
+hardware.cpu_count_logical
+hardware.cpu_count_available
+hardware.cuda_available
+hardware.cuda_device_count
+hardware.cuda_devices
+runtime.python_version
+runtime.torch_version
+runtime.torch_cuda_version
+runtime.device
+runtime.dtype
+runtime.cuda_visible_devices
+slurm.job_id
+slurm.array_task_id
+slurm.cpus_per_task
+slurm.job_partition
+```
+
+On GPU nodes, the hardware box also includes one row group per visible CUDA
+device:
+
+```text
+| GPU 0 Name          : NVIDIA A100-SXM4-40GB               |
+| GPU 0 Memory        : 40.0GB                              |
+| GPU 0 Capability    : 8.0                                 |
+```
+
+This metadata is provenance, not a training metric time series.
+
+## Timing Metrics
+
+Timing instrumentation is callback-owned and logs through the same CSV/JSONL
+logger path as other metrics:
+
+```yaml
+callbacks:
+  - _target_: spenn.callback.RunTiming
+
+  - _target_: spenn.callback.TrainStepTiming
+    every_n_steps: 1
+    rolling_window: 20
+    cuda_synchronize: false
+
+  - _target_: spenn.callback.EvaluationTiming
+    cuda_synchronize: false
+
+  - _target_: spenn.callback.DiagnosticTiming
+    cuda_synchronize: false
+```
+
+Canonical timing metric identities are:
+
+```text
+runtime/start_time_unix
+runtime/end_time_unix
+runtime/wall_time_sec
+train/perf/step_time_sec
+train/perf/step_time_sec_rolling_mean
+eval/perf/wall_time_sec
+diagnostics/<name>/time_sec
+```
+
+Use `time.perf_counter()` for elapsed durations and `time.time()` only for Unix
+timestamps. GPU synchronization is opt-in with `cuda_synchronize: true` for
+benchmarking; it is disabled by default for normal training.
+
 Regenerate checked-in Specht irrep cache files from SageMath with:
 
 ```bash

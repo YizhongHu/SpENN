@@ -282,6 +282,8 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
         "run_start",
         "evaluate_start",
         "samples_collected",
+        "diagnostic_start",
+        "diagnostic_end",
         "evaluate_end",
         "run_end",
     ]
@@ -422,6 +424,12 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     sampler_metrics = _namespace_records(tmp_path, "eval/sampler")[-1]
     assert sampler_metrics["n_walkers"] == 512
     assert "acceptance_rate" in sampler_metrics
+    eval_perf = _namespace_records(tmp_path, "eval/perf")[-1]
+    assert "wall_time_sec" in eval_perf
+    diagnostic_timing = _namespace_records(tmp_path, "diagnostics/energy")[-1]
+    assert "time_sec" in diagnostic_timing
+    runtime_metrics = _namespace_records(tmp_path, "runtime")
+    assert any("wall_time_sec" in record for record in runtime_metrics)
 
 
 @pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])

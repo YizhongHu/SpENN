@@ -66,6 +66,10 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
+- _target_: spenn.callback.RunTiming
+- _target_: spenn.callback.TrainStepTiming
+  every_n_steps: 1
+  rolling_window: 2
 - _target_: spenn.callback.Status
   triggers:
   - run_start

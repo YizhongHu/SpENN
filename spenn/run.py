@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import traceback
 from pathlib import Path
@@ -18,7 +19,7 @@ from spenn.artifacts import (
     build_run_metadata,
     generate_run_id,
 )
-from spenn.callback import Event
+from spenn.callback import Event, configure_terminal_logging
 from spenn.runner import Runner
 
 
@@ -82,6 +83,7 @@ def prepare_run_context(
     OmegaConf.update(resolved_cfg, "run.dir", str(artifact_manager.run_dir), merge=False, force_add=True)
     OmegaConf.resolve(resolved_cfg)
     artifact_manager.make_dirs()
+    _configure_terminal_logging(resolved_cfg)
 
     loggers = _instantiate_sequence(OmegaConf.select(resolved_cfg, "loggers", default=[]))
     callbacks = _instantiate_sequence(OmegaConf.select(resolved_cfg, "callbacks", default=[]))
@@ -150,6 +152,8 @@ def run_from_config(
                 callback.handle(event)
         else:
             runner.emit("exception", context, payload=payload)
+        if _terminal_logging_enabled(context.cfg):
+            logging.getLogger("spenn.run").exception("configured run failed")
         if raise_exceptions:
             raise
         return 1
@@ -213,6 +217,22 @@ def _instantiate_runner(context: RunContext) -> Runner:
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to spenn.runner.Runner, got {type(runner)!r}")
     return runner
+
+
+def _configure_terminal_logging(cfg: DictConfig) -> None:
+    terminal = OmegaConf.select(cfg, "terminal", default=None)
+    if terminal is None:
+        return
+    configure_terminal_logging(
+        enabled=bool(OmegaConf.select(terminal, "enabled", default=True)),
+        level=str(OmegaConf.select(terminal, "level", default="info")),
+        color=str(OmegaConf.select(terminal, "color", default="auto")),
+    )
+
+
+def _terminal_logging_enabled(cfg: DictConfig) -> bool:
+    terminal = OmegaConf.select(cfg, "terminal", default=None)
+    return terminal is not None and bool(OmegaConf.select(terminal, "enabled", default=True))
 
 
 def _rerunnable_config(cfg: DictConfig) -> DictConfig:
