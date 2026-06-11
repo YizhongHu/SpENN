@@ -6,7 +6,7 @@ run:
   root: outputs
   run_id: null
   dir: null
-  timezone: America/New_York
+  timezone: UTC
 runtime:
   seed: 0
   device: cpu
