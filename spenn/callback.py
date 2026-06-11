@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import json
+import os
 import random
+import socket
+import sys
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -177,17 +182,32 @@ class Metadata(Callback):
 
 
 class Status(Callback):
-    """Write lifecycle status for one run."""
+    """Write lifecycle status artifacts and terminal status lines."""
 
-    def __init__(self, triggers: Iterable[str], output_path: str | Path, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        triggers: Iterable[str],
+        output_path: str | Path | None = None,
+        *,
+        terminal: bool = True,
+        logger_name: str = "spenn.status",
+        include: Sequence[str] | None = None,
+        color: str = "auto",
+        **kwargs: Any,
+    ) -> None:
         super().__init__(triggers, **kwargs)
-        self.output_path = Path(output_path)
+        self.output_path = None if output_path is None else Path(output_path)
+        self.terminal = bool(terminal)
+        self.logger = logging.getLogger(logger_name)
+        self.include = tuple(_DEFAULT_STATUS_METRICS if include is None else include)
+        self.color = _validate_terminal_choice(color, name="color")
         self.start_time: str | None = None
 
     def on_run_start(self, event: Event) -> None:
         """Record run start."""
 
         self.start_time = _now()
+        self._log_status(_format_run_start(event), kind="run")
         self._write(
             status="running",
             current_event=event.name,
@@ -199,6 +219,7 @@ class Status(Callback):
     def on_run_end(self, event: Event) -> None:
         """Record successful completion."""
 
+        self._log_status(_format_run_end(event), kind="completed")
         self._write(
             status="completed",
             current_event=event.name,
@@ -211,6 +232,7 @@ class Status(Callback):
         """Record run failure."""
 
         exception = event.payload.get("exception")
+        self._log_status(_format_run_failure(event, exception), kind="failed")
         self._write(
             status="failed",
             current_event=event.name,
@@ -218,6 +240,25 @@ class Status(Callback):
             exception_type=None if exception is None else type(exception).__name__,
             exception_message=None if exception is None else str(exception),
         )
+
+    def on_step_end(self, event: Event) -> None:
+        """Write one compact training status line."""
+
+        line = _format_train_status(event, self.include)
+        if line is not None:
+            self._log_status(line, kind="train")
+
+    def on_evaluate_end(self, event: Event) -> None:
+        """Write one compact evaluation status line."""
+
+        line = _format_evaluate_status(event)
+        if line is not None:
+            self._log_status(line, kind="eval")
+
+    def _log_status(self, line: str, *, kind: str) -> None:
+        if not self.terminal:
+            return
+        self.logger.info(_color_status_line(line, kind=kind, color=self.color))
 
     def _write(
         self,
@@ -228,6 +269,8 @@ class Status(Callback):
         exception_type: str | None,
         exception_message: str | None,
     ) -> None:
+        if self.output_path is None:
+            return
         write_json(
             self.output_path,
             {
@@ -239,6 +282,44 @@ class Status(Callback):
                 "exception_message": exception_message,
             },
         )
+
+
+def configure_terminal_logging(
+    *,
+    enabled: bool = True,
+    level: str = "info",
+    color: str = "auto",
+    logger_name: str = "spenn",
+) -> None:
+    """Configure the package terminal logging channel.
+
+    Parameters
+    ----------
+    enabled : bool, optional
+        If ``False``, leave logging configuration unchanged.
+    level : str, optional
+        Logging level name.
+    color : {"auto", "always", "never"}, optional
+        Accepted for config validation and consistency with `Status`.
+    logger_name : str, optional
+        Logger subtree to configure.
+    """
+
+    if not enabled:
+        return
+    _validate_terminal_choice(color, name="color")
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(_logging_level(level))
+    for handler in logger.handlers:
+        if getattr(handler, "_spenn_terminal_handler", False):
+            handler.setLevel(_logging_level(level))
+            return
+    handler = logging.StreamHandler()
+    handler._spenn_terminal_handler = True
+    handler.setLevel(_logging_level(level))
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
 
 
 class Checkpoint(Callback):
@@ -608,6 +689,178 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+_DEFAULT_STATUS_METRICS = (
+    "train/loss",
+    "train/energy",
+    "train/energy_stderr",
+    "train/sampler/acceptance_rate",
+    "train/grad_norm",
+    "train/local_energy_finite_fraction",
+    "train/perf/step_time_sec",
+    "train/perf/step_time_sec_rolling_mean",
+)
+
+_STATUS_LABELS = {
+    "train/loss": "loss",
+    "train/energy": "energy",
+    "train/energy_stderr": "stderr",
+    "train/sampler/acceptance_rate": "acc",
+    "train/grad_norm": "grad",
+    "train/local_energy_finite_fraction": "finite",
+    "train/perf/step_time_sec": "step_time",
+    "train/perf/step_time_sec_rolling_mean": "step_avg",
+}
+
+_STATUS_COLORS = {
+    "run": "\033[36m",
+    "train": "\033[34m",
+    "eval": "\033[35m",
+    "completed": "\033[32m",
+    "failed": "\033[31m",
+}
+
+
+def _format_run_start(event: Event) -> str:
+    metadata = event.context.metadata
+    parts = [
+        "[run] started",
+        f"id={metadata.run_id}",
+        f"dir={metadata.run_dir}",
+        f"device={metadata.device}",
+        f"dtype={metadata.dtype}",
+    ]
+    if metadata.git_commit:
+        parts.append(f"git={metadata.git_commit[:7]}")
+    parts.append(f"dirty={str(metadata.dirty_worktree).lower()}")
+    slurm_job_id = os.environ.get("SLURM_JOB_ID")
+    if slurm_job_id:
+        parts.append(f"slurm_job_id={slurm_job_id}")
+    parts.append(f"host={socket.gethostname()}")
+    return " ".join(parts)
+
+
+def _format_run_end(event: Event) -> str:
+    return f"[run] completed dir={event.context.metadata.run_dir}"
+
+
+def _format_run_failure(event: Event, exception: object | None) -> str:
+    parts = ["[run] failed", f"dir={event.context.metadata.run_dir}"]
+    if exception is not None:
+        parts.extend([f"exception={type(exception).__name__}", f"message={_quote_value(str(exception))}"])
+    return " ".join(parts)
+
+
+def _format_train_status(event: Event, include: Sequence[str]) -> str | None:
+    state = event.state
+    if state is None:
+        return None
+    values = _training_metric_values(state)
+    rendered = [
+        f"{_STATUS_LABELS.get(identity, identity)}={_format_status_value(values[identity])}"
+        for identity in include
+        if identity in values
+    ]
+    if not rendered:
+        return None
+    step = event.step
+    prefix = "[train]" if step is None else f"[train] step={step}"
+    return " ".join([prefix, *rendered])
+
+
+def _format_evaluate_status(event: Event) -> str | None:
+    metrics = event.payload.get("metrics")
+    if not isinstance(metrics, Mapping) or not metrics:
+        return None
+    values = {f"eval/{key}": value for key, value in metrics.items()}
+    include = ("eval/energy", "eval/energy_stderr", "eval/energy_error", "eval/wall_time_sec")
+    labels = {
+        "eval/energy": "energy",
+        "eval/energy_stderr": "stderr",
+        "eval/energy_error": "abs_error",
+        "eval/wall_time_sec": "wall_time",
+    }
+    rendered = [
+        f"{labels[identity]}={_format_status_value(values[identity])}"
+        for identity in include
+        if identity in values
+    ]
+    if not rendered:
+        return None
+    return " ".join(["[eval]", *rendered])
+
+
+def _training_metric_values(state: object) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for key, value in dict(getattr(state, "metrics", {}) or {}).items():
+        values[f"train/{key}"] = value
+    for key, value in dict(getattr(state, "sampler_stats", {}) or {}).items():
+        values[f"train/sampler/{key}"] = value
+    return values
+
+
+def _format_status_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "ok" if value else "failed"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value:
+            return "nan"
+        if value == float("inf"):
+            return "inf"
+        if value == float("-inf"):
+            return "-inf"
+        abs_value = abs(value)
+        if 0 < abs_value < 1.0e-3 or abs_value >= 1.0e4:
+            return f"{value:.3e}"
+        return f"{value:.6g}"
+    return _quote_value(str(value)) if _needs_shell_quote(str(value)) else str(value)
+
+
+def _quote_value(value: str) -> str:
+    return json.dumps(value)
+
+
+def _needs_shell_quote(value: str) -> bool:
+    return any(character.isspace() for character in value) or value == ""
+
+
+def _validate_terminal_choice(value: str, *, name: str) -> str:
+    if value not in {"auto", "always", "never"}:
+        raise ValueError(f"{name} must be one of 'auto', 'always', or 'never', got {value!r}")
+    return value
+
+
+def _logging_level(level: str) -> int:
+    value = getattr(logging, str(level).upper(), None)
+    if not isinstance(value, int):
+        raise ValueError(f"Unsupported logging level {level!r}")
+    return value
+
+
+def _color_status_line(line: str, *, kind: str, color: str) -> str:
+    if not _color_enabled(color):
+        return line
+    prefix = _STATUS_COLORS.get(kind)
+    if prefix is None:
+        return line
+    return f"{prefix}{line}\033[0m"
+
+
+def _color_enabled(color: str) -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    if color == "always":
+        return True
+    if color == "never":
+        return False
+    if os.environ.get("SLURM_JOB_ID"):
+        return False
+    return sys.stderr.isatty()
+
+
 _DEFAULT_CHECKER_NAMES = {
     "FullModelEquivarianceChecker": "full_model",
     "TraceEquivarianceChecker": "trace",
@@ -714,4 +967,5 @@ __all__ = [
     "RuntimeEquivariance",
     "SamplerHealth",
     "Status",
+    "configure_terminal_logging",
 ]

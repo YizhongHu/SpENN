@@ -93,6 +93,12 @@ trainer:
   max_steps: 2
   log_every_n_steps: 1
   return_terms: true
+terminal:
+  enabled: true
+  level: info
+  color: auto
+  rich: auto
+  progress: false
 callbacks:
 - _target_: spenn.callback.ConfigSnapshot
   triggers:
@@ -114,6 +120,17 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/status.json
+- _target_: spenn.callback.Status
+  triggers:
+  - step_end
+  every_n_steps: 1
+  include:
+  - train/loss
+  - train/energy
+  - train/energy_stderr
+  - train/sampler/acceptance_rate
+  - train/grad_norm
+  - train/local_energy_finite_fraction
 - _target_: spenn.callback.DataValidity
   triggers:
   - step_end

@@ -98,6 +98,62 @@ By default, SpENN does not upload checkpoints, traces, raw batches, per-sample
 arrays, or full run directories to W&B. W&B receives scalar metrics and compact
 config/provenance metadata; CSV/JSONL logs and local artifacts remain canonical.
 
+## Terminal and SLURM Status
+
+Terminal output is a human-facing status view, not the authoritative metric
+store. Configured runs can enable line-oriented Python logging for local
+terminals and SLURM `.out` files:
+
+```yaml
+terminal:
+  enabled: true
+  level: info
+  color: auto      # auto | always | never
+  rich: auto       # reserved; plain logging remains the fallback
+  progress: false  # keep false for SLURM-compatible logs
+```
+
+Use the `Status` callback for compact lifecycle and progress lines:
+
+```yaml
+callbacks:
+  - _target_: spenn.callback.Status
+    triggers:
+      - run_start
+      - run_end
+      - exception
+    output_path: ${run.dir}/status.json
+
+  - _target_: spenn.callback.Status
+    triggers:
+      - step_end
+    every_n_steps: 10
+    include:
+      - train/loss
+      - train/energy
+      - train/energy_stderr
+      - train/sampler/acceptance_rate
+      - train/grad_norm
+      - train/local_energy_finite_fraction
+```
+
+Status lines are grep-friendly, for example:
+
+```text
+[run] started id=... dir=... device=cpu dtype=float64 git=... dirty=false host=...
+[train] step=10 loss=0.421 energy=2.104 stderr=0.031 acc=0.61 grad=0.012 finite=1
+[run] completed dir=...
+```
+
+`run.py`, trainers, models, samplers, diagnostics, and loggers do not print
+training metrics directly. CSV/JSONL remain the canonical local metric records.
+For SLURM jobs, prefer unbuffered output:
+
+```bash
+export PYTHONUNBUFFERED=1
+uv run python -u run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+```
+
 Regenerate checked-in Specht irrep cache files from SageMath with:
 
 ```bash
