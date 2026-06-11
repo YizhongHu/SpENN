@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import torch
-from torch import nn
-
 from spenn.data.real import (
     RealFeature,
     RealUpdate,
@@ -14,7 +11,11 @@ from spenn.data.real import (
     validate_matching_real_blocks,
     validate_real_update_geometry,
 )
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
+
+torch = require_torch(feature="SpENN update modules")
+nn = require_torch_nn(feature="SpENN update modules")
 
 
 class Update(EquivariantMap):

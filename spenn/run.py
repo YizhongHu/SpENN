@@ -20,6 +20,7 @@ from spenn.artifacts import (
     generate_run_id,
 )
 from spenn.callback import Event, configure_terminal_logging
+from spenn.dependencies import OptionalDependencyError, require_torch
 from spenn.runner import Runner
 
 
@@ -29,6 +30,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     command = " ".join(["run.py", *(sys.argv[1:] if argv is None else argv)])
     cfg = load_config(str(args.config), args.overrides)
+    try:
+        _preflight_optional_dependencies(cfg)
+    except OptionalDependencyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return run_from_config(cfg, config_path=str(args.config), command=command)
 
 
@@ -233,6 +239,40 @@ def _configure_terminal_logging(cfg: DictConfig) -> None:
 def _terminal_logging_enabled(cfg: DictConfig) -> bool:
     terminal = OmegaConf.select(cfg, "terminal", default=None)
     return terminal is not None and bool(OmegaConf.select(terminal, "enabled", default=True))
+
+
+def _preflight_optional_dependencies(cfg: DictConfig) -> None:
+    """Fail early with actionable optional-dependency errors for configured targets."""
+
+    if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
+        require_torch(feature="configured SpENN run")
+
+
+def _config_requires_torch(value: object) -> bool:
+    if isinstance(value, dict):
+        target = value.get("_target_")
+        if isinstance(target, str) and _target_requires_torch(target):
+            return True
+        return any(_config_requires_torch(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_config_requires_torch(item) for item in value)
+    return False
+
+
+def _target_requires_torch(target: str) -> bool:
+    return target.startswith(
+        (
+            "torch.",
+            "spenn.nn.",
+            "spenn.training.",
+            "spenn.sampling.",
+            "spenn.physics.",
+            "spenn.diagnostics.",
+            "spenn.equivariance.checks.",
+            "spenn.runner.Train",
+            "spenn.runner.Evaluate",
+        )
+    )
 
 
 def _rerunnable_config(cfg: DictConfig) -> DictConfig:

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-import torch
-from torch import nn
-
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
+
+torch = require_torch(feature="SpENN wavefunction modules")
+nn = require_torch_nn(feature="SpENN wavefunction modules")
 
 
 class SpENNWaveFunction(EquivariantMap):

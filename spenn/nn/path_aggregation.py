@@ -5,14 +5,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from operator import index
 
-import torch
-from torch import nn
-
 from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition, as_partition, integer_partitions
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.reps.irreps import irrep_dimension
 from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
+
+torch = require_torch(feature="SpENN path aggregation")
+nn = require_torch_nn(feature="SpENN path aggregation")
 
 
 class PathAggregation(EquivariantMap):

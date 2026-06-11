@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import math
 
-import torch
-from torch import nn
-from torch.nn import functional as F
-
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.real import RealFeature
+from spenn.dependencies import require_torch, require_torch_functional, require_torch_nn
+
+torch = require_torch(feature="Pfaffian readout")
+nn = require_torch_nn(feature="Pfaffian readout")
+F = require_torch_functional(feature="Pfaffian readout")
 
 
 def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:

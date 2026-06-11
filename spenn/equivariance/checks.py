@@ -13,13 +13,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-import torch
-
 from spenn.data.equivariant_state import apply_particle_permutation
 from spenn.data.permutation import (
     count_nonidentity_permutations,
     select_nonidentity_permutations,
 )
+from spenn.dependencies import require_torch
+
+torch = require_torch(feature="runtime equivariance checks")
 
 
 def _particle_count_from_batch(batch: object) -> int:

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-import torch
-
 from spenn.artifacts import RunContext, RunResult
 from spenn.diagnostics import Diagnostic, EvaluationContext, JsonScalar
+from spenn.dependencies import require_torch
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
+
+torch = require_torch(feature="evaluation runner")
 
 
 class Evaluate(Runner):

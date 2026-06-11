@@ -7,8 +7,7 @@ from collections import deque
 from collections.abc import Iterable
 from typing import Any, Callable
 
-import torch
-
+from spenn.dependencies import require_torch
 from .base import Callback, Event, _attach_event_metrics
 
 
@@ -238,7 +237,10 @@ class DiagnosticTiming(Callback):
 
 
 def _sync_cuda(cuda_synchronize: bool) -> None:
-    if cuda_synchronize and torch.cuda.is_available():
+    if not cuda_synchronize:
+        return
+    torch = require_torch(feature="CUDA timing synchronization")
+    if torch.cuda.is_available():
         torch.cuda.synchronize()
 
 

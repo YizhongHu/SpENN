@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
+
+from spenn.dependencies import require_torch
+
+torch = require_torch(feature="optimizer construction")
 
 
 def make_optimizer(factory_or_cfg: Any, params: Iterable[torch.nn.Parameter]) -> torch.optim.Optimizer:

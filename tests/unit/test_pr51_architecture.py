@@ -7,6 +7,7 @@ contracts (run-dir layout, runner-owned vs RunContext-owned config) hold.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -65,9 +66,8 @@ def test_data_validity_has_no_recursive_tensor_probe() -> None:
 def test_runtime_qol_modules_are_split_packages() -> None:
     """Keep callback, logging, and runner implementations in owner modules."""
 
-    modules = (
+    importable_modules = (
         "spenn.callback.base",
-        "spenn.callback.timing",
         "spenn.callback.status",
         "spenn.callback.snapshot",
         "spenn.callback.metadata",
@@ -81,23 +81,25 @@ def test_runtime_qol_modules_are_split_packages() -> None:
         "spenn.logging.jsonl",
         "spenn.logging.wandb",
         "spenn.runner.base",
+    )
+    owner_modules = (
+        "spenn.callback.timing",
         "spenn.runner.train",
         "spenn.runner.evaluate",
     )
 
-    for module in modules:
+    for module in importable_modules:
         assert importlib.import_module(module)
+    for module in owner_modules:
+        assert importlib.util.find_spec(module) is not None
 
     from spenn.callback import DataValidity
     from spenn.callback.health.data_validity import DataValidity as OwnedDataValidity
     from spenn.logging import WandB
     from spenn.logging.wandb import WandB as OwnedWandB
-    from spenn.runner import Evaluate
-    from spenn.runner.evaluate import Evaluate as OwnedEvaluate
 
     assert DataValidity is OwnedDataValidity
     assert WandB is OwnedWandB
-    assert Evaluate is OwnedEvaluate
 
 
 def test_runner_import_does_not_require_torch_nn(tmp_path: Path) -> None:

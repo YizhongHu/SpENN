@@ -41,6 +41,9 @@ dev = [
   "pytest",
   "typeguard>=4",
 ]
+cpu = [
+  "torch",
+]
 docs = [
   "numpydoc>=1.7",
   "sphinx>=7.2,<8",
@@ -48,10 +51,16 @@ docs = [
 
 [tool.uv]
 python-preference = "only-managed"
-default-groups = ["dev"]
+default-groups = ["dev", "cpu"]
 conflicts = [
   [
     { extra = "cpu" },
+    { extra = "cu126" },
+    { extra = "cu128" },
+    { extra = "cu130" }
+  ],
+  [
+    { group = "cpu" },
     { extra = "cu126" },
     { extra = "cu128" },
     { extra = "cu130" }
@@ -60,6 +69,7 @@ conflicts = [
 
 [tool.uv.sources]
 torch = [
+  { index = "pytorch-cpu", group = "cpu" },
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu126", extra = "cu126" },
   { index = "pytorch-cu128", extra = "cu128" },
