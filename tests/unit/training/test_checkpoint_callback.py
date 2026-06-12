@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import torch
+from types import SimpleNamespace
 
-from spenn.callback import Checkpoint, Event
+import torch
+from omegaconf import OmegaConf
+
+import spenn
+from spenn.callback import Checkpoint, Event, model_config_hash
 from spenn.training.state import TrainerState
 
 
@@ -72,3 +76,62 @@ def test_checkpoint_saves_sampler_mcmc_state_when_available(tmp_path) -> None:
 
     payload = torch.load(tmp_path / "step_1.pt", weights_only=False)
     assert payload["sampler_mcmc_state"] == {"has_burned_in": True}
+
+
+def _context() -> SimpleNamespace:
+    """Minimal RunContext stand-in carrying resolved config and metadata."""
+
+    cfg = OmegaConf.create(
+        {
+            "study": {"name": "test_study", "config_id": "lr=0.001_channels=4"},
+            "model": {"_target_": "torch.nn.Linear", "in_features": 2, "out_features": 1},
+            "runtime": {"device": "cpu", "dtype": "float64"},
+        }
+    )
+    metadata = SimpleNamespace(
+        device="cpu",
+        dtype="float64",
+        git_commit="deadbeef",
+        git_branch="main",
+        dirty_worktree=False,
+        extra={"python_version": "3.12.0", "torch_version": torch.__version__},
+    )
+    return SimpleNamespace(cfg=cfg, metadata=metadata)
+
+
+def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
+    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
+    context = _context()
+    state = _state(1)
+
+    callback.handle(Event(name="step_end", context=context, state=state, payload={"step": 1}))
+
+    payload = torch.load(tmp_path / "step_1.pt", weights_only=False)
+    assert payload["schema_version"] == 1
+    assert payload["kind"] == "spenn.model_checkpoint"
+    assert payload["model_config"] == OmegaConf.to_container(context.cfg.model)
+    assert payload["model_config_hash"] == model_config_hash(context.cfg.model)
+    assert payload["resolved_config_hash"] == model_config_hash(context.cfg)
+    assert payload["config_id"] == "lr=0.001_channels=4"
+    assert payload["runtime"] == {"device": "cpu", "dtype": "float64"}
+    assert payload["git"] == {"sha": "deadbeef", "branch": "main", "dirty": False}
+    assert payload["versions"] == {
+        "python": "3.12.0",
+        "torch": torch.__version__,
+        "spenn": spenn.__version__,
+    }
+
+
+def test_checkpoint_provenance_degrades_without_context(tmp_path) -> None:
+    # Existing unit tests run with context=None; provenance must degrade to
+    # None fields instead of failing the checkpoint write.
+    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
+
+    callback.handle(_event(_state(1)))
+
+    payload = torch.load(tmp_path / "step_1.pt", weights_only=False)
+    assert payload["schema_version"] == 1
+    assert payload["model_config"] is None
+    assert payload["model_config_hash"] is None
+    assert payload["config_id"] is None
+    assert payload["versions"]["spenn"] == spenn.__version__

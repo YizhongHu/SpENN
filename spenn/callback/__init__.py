@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .base import Callback, Event
-from .checkpoint import Checkpoint, load_model_checkpoint
+from .checkpoint import Checkpoint, load_model_checkpoint, model_config_hash
 from .equivariance import RuntimeEquivariance
 from .metadata import Metadata
 from .snapshot import ConfigSnapshot, ResolvedConfigSnapshot
@@ -66,4 +66,5 @@ __all__ = [
     "Validation",
     "configure_terminal_logging",
     "load_model_checkpoint",
+    "model_config_hash",
 ]

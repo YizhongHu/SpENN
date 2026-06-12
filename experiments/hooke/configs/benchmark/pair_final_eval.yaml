@@ -24,13 +24,13 @@
 #
 # ----- END AI-FACED CONFIG GUIDANCE -----
 #
-# Runs are launched by the commands evaluate_selected.py generates, e.g.:
+# Runs are launched by the commands evaluate_selected.py generates. The script
+# derives one self-contained config per (training seed, eval seed) pair from
+# this template — replacing `model:` with the explicit trained model spec and
+# baking in checkpoint path, seeds, study identity, and sampler settings — so
+# each generated run is just:
 #
-#   uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-#     evaluation.checkpoint=<train_run_dir>/checkpoints/latest.pt \
-#     evaluation.training_seed=100 runtime.seed=100000 \
-#     model_params.channels=32 model_params.gate_activation=silu \
-#     study.name=hooke_pair_final_v1
+#   uv run python run.py --config <output_dir>/final_eval_config_seed100_eval100000.yaml
 #
 # =============================================================================
 
@@ -140,9 +140,10 @@ references:
 # -----------------------------------------------------------------------------
 # Model scale
 # -----------------------------------------------------------------------------
-# Must reproduce the trained architecture exactly: evaluate_selected.py passes
-# the selected model_params overrides alongside evaluation.checkpoint, and
-# load_model_checkpoint is strict, so any mismatch fails loudly.
+# Template defaults only: evaluate_selected.py replaces the `model:` block
+# below with the explicit model spec of the training run (resolved from the
+# selected overrides, or copied from the training run's resolved_config.yaml),
+# and load_model_checkpoint is strict, so any mismatch fails loudly.
 gate_targets:
   silu: torch.nn.SiLU
   sigmoid: torch.nn.Sigmoid
@@ -182,6 +183,15 @@ evaluation:
   # Trained-weights checkpoint to restore (required; no trained default).
   # evaluate_selected.py points this at <train_run_dir>/checkpoints/latest.pt.
   checkpoint: ???
+  # Strict state-dict loading: missing/unexpected keys fail loudly.
+  checkpoint_strict: true
+  # Structured checkpoints store a model_config_hash; when set, the checkpoint
+  # hash must match or loading fails. evaluate_selected.py fills this in for
+  # structured-checkpoint runs and leaves it null for the legacy
+  # resolved-config workaround (pre-schema checkpoints carry no hash).
+  expected_model_config_hash: null
+  # Explicit escape hatch only; canonical benchmark runs must keep this false.
+  allow_model_config_mismatch: false
   # Provenance only: the training seed of the restored checkpoint, recorded in
   # resolved_config.yaml for the final benchmark summary.
   training_seed: null
@@ -211,6 +221,9 @@ runner:
     _target_: spenn.callback.checkpoint.load_model_checkpoint
     model: ${model}
     path: ${evaluation.checkpoint}
+    strict: ${evaluation.checkpoint_strict}
+    expected_model_config_hash: ${evaluation.expected_model_config_hash}
+    allow_model_config_mismatch: ${evaluation.allow_model_config_mismatch}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
   return_terms: ${evaluation.return_terms}
