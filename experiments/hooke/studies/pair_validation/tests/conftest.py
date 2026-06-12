@@ -63,12 +63,19 @@ def manifest_path(tmp_path: Path) -> Path:
             ],
             "local_energy_finite_fraction": 1.0,
         },
-        "tie_breakers": [
-            "validation/energy_variance",
-            "seed_energy_spread",
-            "model_params.channels",
-            "runtime/wall_time_sec",
-        ],
+        "selection": {
+            "absolute_energy_floor": 1.0e-4,
+            "margin": {"stderr_multiplier": 2.0, "seed_iqr_fraction": 0.25},
+            "require_all_seeds": True,
+            "tie_breakers": [
+                "validation/energy_variance",
+                "validation_energy_iqr",
+                "validation/energy_stderr",
+                "geometry_warning_count",
+                "model_params.channels",
+                "runtime/wall_time_sec",
+            ],
+        },
         "diagnostic_fields": {
             "sampler_geometry": [
                 "validation/sampler/radius_mean",
@@ -80,6 +87,19 @@ def manifest_path(tmp_path: Path) -> Path:
             ]
         },
         "geometry_flags": {"electron_distance_q01_min": 1.0e-3},
+        "final_evaluation": {
+            "study_name": "test_study_final_v1",
+            "eval_config": "experiments/hooke/configs/benchmark/pair_final_eval.yaml",
+            "training_seeds": [100, 101],
+            "eval_seeds": [100000, 100001],
+            "allow_validation_seed_reuse": False,
+            "sampler": {
+                "n_walkers": 4096,
+                "burn_in": 100,
+                "n_steps": 50,
+                "proposal_scale": 0.35,
+            },
+        },
     }
     path = tmp_path / "manifest.yaml"
     # sort_keys=False keeps the grid axis declaration order, which defines

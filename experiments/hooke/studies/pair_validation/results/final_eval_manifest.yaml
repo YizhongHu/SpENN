@@ -1,0 +1,95 @@
+study:
+  name: hooke_pair_final_v1
+  purpose: final_benchmark
+  source_validation_study: hooke_pair_validation_v1
+selected:
+  config_id: lr=0.001_channels=32_layers=1_gate_activation=sigmoid
+  optimizer_params.lr: '0.001'
+  model_params.channels: '32'
+  model_params.layers: '1'
+  model_params.gate_activation: sigmoid
+selection_report: /n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/SpENN/experiments/hooke/studies/pair_validation/results/selection_report.md
+source_git_sha: 86a28fb9fd2a421961592a6737ea87e0f4944d6e
+final_eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
+final_eval_sampler:
+  n_walkers: 8192
+  burn_in: 1000
+  n_steps: 500
+  proposal_scale: 0.35
+final_training_seeds:
+- 100
+- 101
+- 102
+- 103
+- 104
+- 105
+- 106
+- 107
+- 108
+- 109
+final_eval_seeds:
+- 100000
+- 100001
+- 100002
+- 100003
+- 100004
+- 100005
+- 100006
+- 100007
+- 100008
+- 100009
+exact_reference:
+  source: references.exact_energy in the final eval config (Taut 1993, omega=0.5 Hooke
+    singlet)
+  used_by: eval/energy_error, eval/energy_abs_error, eval/reference_energy
+runs:
+- training_seed: 100
+  eval_seed: 100000
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed100
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed100/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed100_eval100000
+- training_seed: 101
+  eval_seed: 100001
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed101
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed101/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed101_eval100001
+- training_seed: 102
+  eval_seed: 100002
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed102
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed102/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed102_eval100002
+- training_seed: 103
+  eval_seed: 100003
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed103
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed103/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed103_eval100003
+- training_seed: 104
+  eval_seed: 100004
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed104
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed104/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed104_eval100004
+- training_seed: 105
+  eval_seed: 100005
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed105
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed105/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed105_eval100005
+- training_seed: 106
+  eval_seed: 100006
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed106
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed106/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed106_eval100006
+- training_seed: 107
+  eval_seed: 100007
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed107
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed107/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed107_eval100007
+- training_seed: 108
+  eval_seed: 100008
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed108
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed108/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed108_eval100008
+- training_seed: 109
+  eval_seed: 100009
+  train_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed109
+  checkpoint: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed109/checkpoints/latest.pt
+  eval_run_dir: outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_eval_seed109_eval100009

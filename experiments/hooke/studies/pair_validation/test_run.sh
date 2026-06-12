@@ -4,9 +4,10 @@
 # =============================================================================
 #
 # Runs a tiny 2x2 grid (2 seeds x 2 learning rates) of the benchmark training
-# config at smoke scale, then collects and selects, and reports PASS/FAIL.
-# Use this to confirm the whole train -> validation -> collect -> select
-# pipeline works before launching the real scan.
+# config at smoke scale, then collects, selects, and dry-runs the final
+# evaluator, and reports PASS/FAIL. Use this to confirm the whole
+# train -> validation -> collect -> select -> final-eval-commands pipeline
+# works before launching the real scan.
 #
 # Local (workstation/WSL):
 #   bash experiments/hooke/studies/pair_validation/test_run.sh
@@ -105,11 +106,19 @@ eligibility:
     - checks/gradient/passed
     - checks/equivariance/full_model/passed
   local_energy_finite_fraction: 1.0
-tie_breakers:
-  - validation/energy_variance
-  - seed_energy_spread
-  - model_params.channels
-  - runtime/wall_time_sec
+selection:
+  absolute_energy_floor: 1.0e-4
+  margin:
+    stderr_multiplier: 2.0
+    seed_iqr_fraction: 0.25
+  require_all_seeds: true
+  tie_breakers:
+    - validation/energy_variance
+    - validation_energy_iqr
+    - validation/energy_stderr
+    - geometry_warning_count
+    - model_params.channels
+    - runtime/wall_time_sec
 diagnostic_fields:
   sampler_geometry:
     - validation/sampler/radius_mean
@@ -120,6 +129,17 @@ diagnostic_fields:
     - validation/sampler/position_rms
 geometry_flags:
   electron_distance_q01_min: 1.0e-3
+final_evaluation:
+  study_name: hooke_pair_validation_test_run_final
+  eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
+  training_seeds: [100, 101]
+  eval_seeds: [100000, 100001]
+  allow_validation_seed_reuse: false
+  sampler:
+    n_walkers: 8192
+    burn_in: 1000
+    n_steps: 500
+    proposal_scale: 0.35
 EOF
 
 # 1. Train the tiny grid at smoke scale (W&B stays off: loggers are CSV/JSONL).
@@ -156,18 +176,29 @@ uv run --extra "$EXTRA" python "$SCRIPT_DIR/collect.py" \
 uv run --extra "$EXTRA" python "$SCRIPT_DIR/select.py" \
   --manifest "$MANIFEST" --runs "$RESULTS/runs.csv" --output-dir "$RESULTS"
 
-# 4. Check the pipeline produced what the real scan needs.
+# 4. Generate the final-benchmark commands (dry-run; nothing executes).
+uv run --extra "$EXTRA" python "$SCRIPT_DIR/evaluate_selected.py" \
+  --manifest "$MANIFEST" --selected-config "$RESULTS/selected_config.yaml" \
+  --run-root "$RUN_ROOT" --output-dir "$RESULTS" --dry-run
+
+# 5. Check the pipeline produced what the real scan needs.
 fail() { echo "TEST RUN FAILED: $1"; exit 1; }
 [[ -s "$RESULTS/runs.csv" ]] || fail "runs.csv missing/empty"
 [[ -s "$RESULTS/selection.csv" ]] || fail "selection.csv missing/empty"
 [[ -s "$RESULTS/selected_config.yaml" ]] || fail "selected_config.yaml missing/empty"
 [[ -s "$RESULTS/selection_report.md" ]] || fail "selection_report.md missing/empty"
+[[ -s "$RESULTS/final_eval_commands.sh" ]] || fail "final_eval_commands.sh missing/empty"
+[[ -s "$RESULTS/final_eval_manifest.yaml" ]] || fail "final_eval_manifest.yaml missing/empty"
+[[ -s "$RESULTS/final_eval_inputs.csv" ]] || fail "final_eval_inputs.csv missing/empty"
 grep -q "validation/energy" "$RESULTS/runs.csv" || fail "no validation/energy column"
 grep -q "radius_q99" "$RESULTS/runs.csv" || fail "no sampler geometry columns"
+grep -q "pair_final_eval.yaml" "$RESULTS/final_eval_commands.sh" \
+  || fail "final eval commands missing eval config"
 completed=$(awk -F, 'NR>1 && $2=="completed"' "$RESULTS/runs.csv" | wc -l)
 [[ "$completed" -eq 4 ]] || fail "expected 4 completed runs, got $completed"
-# n_failed_seeds (last column) must be 0 for every config group.
-awk -F, 'NR>1 && $NF != 0 { bad = 1 } END { exit bad }' "$RESULTS/selection.csv" \
+# n_failed_seeds must be 0 for every config group (located by header name).
+awk -F, 'NR==1 { for (i = 1; i <= NF; i++) if ($i == "n_failed_seeds") col = i }
+         NR>1 && $col != 0 { bad = 1 } END { exit bad }' "$RESULTS/selection.csv" \
   || fail "selection has failed seeds"
 
 echo

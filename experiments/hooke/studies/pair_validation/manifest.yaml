@@ -44,13 +44,36 @@ eligibility:
     - checks/equivariance/full_model/passed
   local_energy_finite_fraction: 1.0
 
-# Applied in order after the aggregate metric; lower is better for metric
-# tie-breakers, smaller is better for model_params.channels.
-tie_breakers:
-  - validation/energy_variance
-  - seed_energy_spread
-  - model_params.channels
-  - runtime/wall_time_sec
+# Margin-based selection policy: a config only clearly beats another when its
+# aggregate energy is lower by more than the selection margin
+#
+#   margin(A, B) = max(
+#     margin.stderr_multiplier * sqrt(stderr_A^2 + stderr_B^2),
+#     margin.seed_iqr_fraction * max(energy_iqr_A, energy_iqr_B),
+#     absolute_energy_floor,
+#   )
+#
+# where stderr is the median validation/energy_stderr over seeds and
+# energy_iqr is the seed-to-seed IQR of validation/energy. Candidates within
+# the margin of the current best are tied and ranked by the tie-breakers, in
+# order. Lower always wins (geometry_warning_count counts flags; smaller
+# model_params.channels means a simpler ansatz).
+selection:
+  absolute_energy_floor: 1.0e-4
+  margin:
+    stderr_multiplier: 2.0
+    seed_iqr_fraction: 0.25
+  # First PR8 selection requires all seeds: any failed/missing/ineligible seed
+  # makes the whole config score +inf (infrastructure failures are not marked
+  # retryable in study v1).
+  require_all_seeds: true
+  tie_breakers:
+    - validation/energy_variance
+    - validation_energy_iqr
+    - validation/energy_stderr
+    - geometry_warning_count
+    - model_params.channels
+    - runtime/wall_time_sec
 
 # Reported and flagged in selection_report.md; these never decide the winner
 # (they are neither eligibility criteria nor tie-breakers above).
@@ -66,3 +89,24 @@ diagnostic_fields:
 # Thresholds for flagging suspicious walker geometry in the report.
 geometry_flags:
   electron_distance_q01_min: 1.0e-3
+
+# Final held-out benchmark of the selected config (evaluate_selected.py).
+# Training seeds are fresh (disjoint from the validation grid seeds above) so
+# the reported benchmark never reuses the runs that drove selection; eval
+# seeds seed the final evaluation sampler and are paired index-wise with the
+# training seeds.
+final_evaluation:
+  study_name: hooke_pair_final_v1
+  eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
+  training_seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+  eval_seeds: [100000, 100001, 100002, 100003, 100004, 100005, 100006, 100007, 100008, 100009]
+  # evaluate_selected.py refuses to emit commands whose training seeds overlap
+  # the validation seeds unless this is set true.
+  allow_validation_seed_reuse: false
+  # Final evaluation sampler (larger than validation); evaluate_selected.py
+  # passes these as overrides so the manifest stays the source of truth.
+  sampler:
+    n_walkers: 8192
+    burn_in: 1000
+    n_steps: 500
+    proposal_scale: 0.35

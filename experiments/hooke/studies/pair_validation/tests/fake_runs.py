@@ -20,6 +20,7 @@ def make_run_dir(
     gate: str = "silu",
     energy: float = 2.0,
     energy_variance: float = 0.5,
+    energy_stderr: float = 0.1,
     finite_fraction: float = 1.0,
     status: str = "completed",
     checks_passed: bool = True,
@@ -67,7 +68,7 @@ def make_run_dir(
                 "metrics": {
                     "energy": energy,
                     "energy_variance": energy_variance,
-                    "energy_stderr": 0.1,
+                    "energy_stderr": energy_stderr,
                     "local_energy_finite_fraction": finite_fraction,
                 },
             }

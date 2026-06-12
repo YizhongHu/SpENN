@@ -14,12 +14,16 @@ The workflow:
 3. collect.py normalizes the run directories into runs.csv / runs.jsonl.
 4. select.py applies the manifest-declared rule and writes selection.csv,
    selected_config.yaml, and selection_report.md.
-5. Final benchmark evaluation of the selected config happens separately
-   (Evaluate runner, eval/* metrics, exact reference energy).
+5. evaluate_selected.py turns the frozen winner into final benchmark commands
+   (retrain on fresh seeds, then Evaluate runs against the exact reference);
+   dry-run by default.
+6. evaluate_selected.py --collect summarizes the finished final-eval runs into
+   final_benchmark_summary.csv/json and final_benchmark_report.md.
 ```
 
 Local run outputs are authoritative end to end. W&B may visualize the runs,
-but neither the collector nor the selector reads W&B.
+but none of the study scripts read W&B; W&B is visualization only and never
+the source of a selection or benchmark decision.
 
 ## Quick test run (start here)
 
@@ -144,18 +148,53 @@ The selection rule (declared in the manifest, applied by `select.py`):
 ```text
 group runs by the non-seed hyperparameters
 failed / ineligible / missing seeds count as +inf validation energy
-rank by median validation/energy
-tie-break by validation/energy_variance, seed-to-seed spread,
-  smaller model (channels), lower wall time, then config_id
+any failed seed fails the whole config (selection.require_all_seeds)
+rank by median validation/energy, but only outside the selection margin
+candidates within the margin are tied and ranked by the tie-breakers
 ```
 
 Eligibility requires `checks/data_integrity/passed`,
 `checks/gradient/passed`, `checks/equivariance/full_model/passed`, and
 `validation/local_energy_finite_fraction = 1.0`.
 
-Outputs in `results/`: `selection.csv` (full ranking),
-`selected_config.yaml` (frozen winner + reproduction overrides), and
-`selection_report.md` (ranking, winner geometry table, and flags).
+### Tie-breaker rule
+
+Validation energies can sit within Monte Carlo uncertainty of each other, so
+the selector never picks between configs based on tiny differences. Config A
+clearly beats config B only when
+
+```text
+median_energy_A + selection_margin < median_energy_B
+
+selection_margin = max(
+  2 * sqrt(median_stderr_A^2 + median_stderr_B^2),
+  0.25 * max(energy_iqr_A, energy_iqr_B),
+  1.0e-4,   # absolute_energy_floor
+)
+```
+
+where `median_stderr` is the median `validation/energy_stderr` over seeds and
+`energy_iqr` is the seed-to-seed interquartile range of `validation/energy`.
+Candidates within the margin of the best median energy are tied; the tie is
+decided by the manifest tie-breakers, in order (lower always wins):
+
+```text
+1. median validation/energy_variance   - lower variance, better VMC wavefunction
+2. validation/energy IQR across seeds  - lower spread, more robust optimization
+3. median validation/energy_stderr     - lower estimator uncertainty
+4. geometry warning count              - suspicious sampler geometry never
+                                         decides the benchmark when energy ties
+5. smaller model_params.channels       - prefer the simpler ansatz
+6. median runtime/wall_time_sec        - last resort, not a scientific criterion
+```
+
+`selection_report.md` records the computed margin, the tie set, and which
+tie-breaker decided the winner.
+
+Outputs in `results/`: `selection.csv` (full ranking with margin/tie-breaker
+statistics), `selected_config.yaml` (frozen winner + reproduction overrides +
+the decision record), and `selection_report.md` (ranking, margin and
+tie-breaker decisions, winner geometry table, and flags).
 
 ## Why validation never uses the exact reference energy
 
@@ -178,6 +217,69 @@ final eval  - separate Evaluate run on the frozen selected protocol, fresh
               evaluation sampler, eval/* metrics, compares against the exact
               Hooke reference energy
 ```
+
+## Final benchmark of the selected config
+
+`evaluate_selected.py` turns the frozen winner into the final held-out
+benchmark declared in the manifest's `final_evaluation` block. It is dry-run
+by default: it writes commands and provenance without executing anything.
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/results/selected_config.yaml \
+  --run-root outputs \
+  --output-dir experiments/hooke/studies/pair_validation/results \
+  --dry-run
+```
+
+This writes to `results/`:
+
+```text
+final_eval_commands.sh    - train + eval run.py commands, one pair per seed
+final_eval_manifest.yaml  - frozen provenance (winner, seeds, sampler, git sha,
+                            selection report path, exact-reference policy)
+final_eval_inputs.csv     - one row per planned (training seed, eval seed) pair
+```
+
+The benchmark is two stages per seed pair, generated as standard `run.py`
+commands (the script implements no physics itself; the `Evaluate` runner owns
+all diagnostics):
+
+```text
+1. retrain the selected config with a fresh final training seed
+   (pair_train.yaml + the selected overrides)
+2. evaluate the trained checkpoint (checkpoints/latest.pt) with
+   pair_final_eval.yaml: the Evaluate runner restores the weights
+   (spenn.callback.checkpoint.load_model_checkpoint), samples with the large
+   final-evaluation sampler (8192 walkers), and logs eval/* metrics including
+   eval/energy_error against the exact reference
+```
+
+Final seeds are fresh: training seeds `100-109` and evaluation seeds
+`100000-100009` are disjoint from the validation grid seeds, and the script
+refuses to generate commands that reuse validation seeds unless the manifest
+sets `final_evaluation.allow_validation_seed_reuse: true`.
+
+Run the benchmark either locally (`--execute` runs the commands sequentially
+and records `final_eval_runs.csv`) or through SLURM by submitting each command
+from `final_eval_commands.sh` (keep the train -> eval dependency per seed,
+e.g. `sbatch --dependency=afterok:<train_job>`). The training stage is
+GPU-friendly (`kozinsky_gpu`, `seas_gpu`); keep the SLURM logs.
+
+Once final-eval runs exist, summarize them:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --run-root outputs \
+  --output-dir experiments/hooke/studies/pair_validation/results \
+  --collect
+```
+
+which writes `final_benchmark_summary.csv`, `final_benchmark_summary.json`,
+and `final_benchmark_report.md` (per-run eval energies, errors vs the exact
+reference, and median aggregates) from the local run directories only.
 
 ## Sampler geometry diagnostics
 
@@ -206,6 +308,37 @@ A run can be numerically sound yet a poor model (passes DataIntegrity, bad
 validation energy), or a good model with a corrupted step (fails
 DataIntegrity, which makes it ineligible for selection regardless of its
 validation energy).
+
+## Output files
+
+Everything the study writes lands in `results/`:
+
+```text
+runs.csv / runs.jsonl            - collect.py: one normalized row per run
+selection.csv                    - select.py: full margin-aware ranking
+selected_config.yaml             - select.py: frozen winner + overrides
+selection_report.md              - select.py: ranking, margin, tie-breakers, flags
+final_eval_commands.sh           - evaluate_selected.py: train + eval commands
+final_eval_manifest.yaml         - evaluate_selected.py: benchmark provenance
+final_eval_inputs.csv            - evaluate_selected.py: planned run pairs
+final_eval_runs.csv              - evaluate_selected.py --execute: run statuses
+final_benchmark_summary.csv/json - evaluate_selected.py --collect: per-run table
+final_benchmark_report.md        - evaluate_selected.py --collect: report
+```
+
+## Reproducibility notes
+
+- The manifest is the protocol contract: grid, eligibility, selection margin,
+  tie-breakers, and final seeds. Changing it after the scan starts means a new
+  study version (bump `study.name`).
+- Every decision is recomputable from local files: re-running collect/select
+  on the same run directories reproduces the same winner bit-for-bit, and
+  `selection_report.md` documents why.
+- Keep `slurm_logs/` and the committed `results/` tables; together with the
+  recorded `git/sha` per run they pin what produced each number.
+- Local run directories, `metrics.csv`, `metrics.jsonl`, `metadata.json`, and
+  the generated summary files are authoritative. W&B is visualization only —
+  never use W&B clicks as the source of the selection decision.
 
 ## Tests
 

@@ -1,0 +1,53 @@
+study: hooke_pair_validation_v1
+train_config: experiments/hooke/configs/benchmark/pair_train.yaml
+selected:
+  config_id: lr=0.001_channels=32_layers=1_gate_activation=sigmoid
+  optimizer_params.lr: '0.001'
+  model_params.channels: '32'
+  model_params.layers: '1'
+  model_params.gate_activation: sigmoid
+overrides:
+- optimizer_params.lr=0.001
+- model_params.channels=32
+- model_params.layers=1
+- model_params.gate_activation=sigmoid
+selection:
+  metric: validation/energy
+  aggregate: median
+  score: 2.00127328638
+  seed_energies:
+    '3': 2.00127328638
+    '9': 1.99994487474
+    '11': 2.00278013311
+  n_failed_seeds: 0
+  stats:
+    median_energy_stderr: 0.00114266898316
+    energy_iqr: 0.0014176291850001022
+    median_energy_variance: 0.00267405804558
+    geometry_warning_count: 0.0
+    median_wall_time_sec: 2352.66060401
+  tie_set:
+  - lr=0.0003_channels=8_layers=1_gate_activation=silu
+  - lr=0.001_channels=8_layers=1_gate_activation=silu
+  - lr=0.003_channels=8_layers=1_gate_activation=silu
+  - lr=0.001_channels=32_layers=1_gate_activation=silu
+  - lr=0.003_channels=32_layers=1_gate_activation=silu
+  - lr=0.0003_channels=8_layers=1_gate_activation=sigmoid
+  - lr=0.001_channels=8_layers=1_gate_activation=sigmoid
+  - lr=0.003_channels=8_layers=1_gate_activation=sigmoid
+  - lr=0.001_channels=32_layers=1_gate_activation=sigmoid
+  - lr=0.003_channels=32_layers=1_gate_activation=sigmoid
+  deciding_tie_breaker: validation/energy_variance
+  policy:
+    absolute_energy_floor: 0.0001
+    margin:
+      stderr_multiplier: 2.0
+      seed_iqr_fraction: 0.25
+    require_all_seeds: true
+    tie_breakers:
+    - validation/energy_variance
+    - validation_energy_iqr
+    - validation/energy_stderr
+    - geometry_warning_count
+    - model_params.channels
+    - runtime/wall_time_sec
