@@ -61,6 +61,12 @@ model:
       _target_: spenn.reps.InverseFourierTransform
     update:
       _target_: spenn.nn.ResidualUpdate
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - _target_: spenn.nn.HarmonicConfinement
+        coefficient: 0.25
+      - _target_: spenn.nn.ElectronElectronCusp
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     channels: 4

@@ -199,6 +199,8 @@ model_params:
   #   reference implementation to maximize test coverage.
   mixing_implementation: slow
   mixing_initial_weight: 0.5
+  # Fixed Hooke Gaussian tail: exp(-(omega / 2) * sum_i |r_i|^2).
+  harmonic_confinement_coefficient: 0.25
 
 
 # -----------------------------------------------------------------------------
@@ -310,6 +312,13 @@ model:
 
       update:
         _target_: spenn.nn.ResidualUpdate
+
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - _target_: spenn.nn.HarmonicConfinement
+        coefficient: ${model_params.harmonic_confinement_coefficient}
+      - _target_: spenn.nn.ElectronElectronCusp
 
   readout:
     _target_: spenn.nn.readout.PfaffianReadout

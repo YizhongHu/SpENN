@@ -1,32 +1,17 @@
 # =============================================================================
-#  SpENN | Hooke pair smoke training
+#  SpENN | Hooke pair preflight training
 # -----------------------------------------------------------------------------
 #  experiment : hooke_pair_smoke        runner : spenn.runner.Train
 #  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
 # =============================================================================
 #
 # Purpose:
-#   Cheap end-to-end training sanity check for the two-electron Hooke system.
+#   Check numerical stability during basic training.
 #
 # Workflow position:
 #
 #   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  benchmark configs
 #   (this file)                         (sampled eval)       (future PRs)
-#
-# ---- BEGIN AI-FACED CONFIG GUIDANCE ----
-#
-# This config is intended for:
-#   - verifying model construction
-#   - checking sampler/trainer wiring
-#   - exercising runtime validation callbacks
-#   - producing local CSV/JSONL metrics for inspection
-#
-# This config is not intended for:
-#   - benchmark-quality energies
-#   - final scientific evaluation
-#   - architecture comparison
-#
-# ----- END AI-FACED CONFIG GUIDANCE -----
 #
 # Config style:
 #   The first half of this file contains parameter blocks: readable knobs that
@@ -51,9 +36,9 @@
 # Experiment identity
 # -----------------------------------------------------------------------------
 experiment:
-  name: hooke_pair_smoke
+  name: hooke_pair_preflight
   sector: pair
-  run_name: hooke_pair_smoke_train
+  run_name: hooke_pair_preflight_train
 
 
 # -----------------------------------------------------------------------------
@@ -75,7 +60,7 @@ run:
 # -----------------------------------------------------------------------------
 runtime:
   seed: 0
-  device: cpu
+  device: cuda
   dtype: float64
 
 
@@ -128,7 +113,7 @@ wandb:
   job_type: train
   tags:
     - hooke
-    - smoke
+    - preflight
     - train
     - ${runtime.device}
 
@@ -174,7 +159,7 @@ model_params:
   max_virtual_order: 2
   # `channels`:
   #   Feature channel count throughout this model.
-  channels: 4
+  channels: 8
   # `hidden_channels` and `num_hidden_layers`:
   #   Embedding MLP size.
   hidden_channels: 8
@@ -195,28 +180,28 @@ model_params:
 sampler_params:
   # `n_walkers`:
   #   Number of configurations sampled per training step.
-  n_walkers: 16
+  n_walkers: 512
   # `burn_in`:
   #   Number of initial MCMC updates before collecting samples.
-  burn_in: 10
+  burn_in: 100
   # `n_steps`:
   #   Number of MCMC updates used between returned samples.
-  n_steps: 5
+  n_steps: 10
   # `proposal_scale`:
   #   Gaussian proposal scale for Metropolis moves.
-  proposal_scale: 0.5
+  proposal_scale: 0.35
 
 
 # -----------------------------------------------------------------------------
 # Training
 # -----------------------------------------------------------------------------
 training:
-  max_steps: 5
+  max_steps: 50
   log_every_n_steps: 1
   return_terms: true # If true, compute/log named Hamiltonian term contributions.
 
 optimizer_params:
-  lr: 0.01
+  lr: 0.0 #0.00001
 
 
 # -----------------------------------------------------------------------------
@@ -243,7 +228,7 @@ checks:
   equivariance:
     probability: 1.0
     permutation_fraction: 1.0
-    max_permutations: 1
+    max_permutations: 120
     atol: 1.0e-06
     rtol: 1.0e-06
 
@@ -252,7 +237,7 @@ checks:
 # Checkpointing
 # -----------------------------------------------------------------------------
 checkpoint:
-  every_n_steps: 1
+  every_n_steps: 10
 
 
 # -----------------------------------------------------------------------------
@@ -273,7 +258,7 @@ timing:
 # reports regardless of cadence. Benchmark configs should use a lower cadence
 # such as every_n_steps: 10.
 status:
-  every_n_steps: 1
+  every_n_steps: 10
   include:
     - train/loss
     - train/energy
@@ -452,7 +437,7 @@ callbacks:
   # Save compact lifecycle status for quick inspection.
   - _target_: spenn.callback.Status
     triggers:
-      - run_start
+      # - run_start
       - run_end
       - exception
     output_path: ${run.dir}/status.json

@@ -13,7 +13,7 @@ nn = require_torch_nn(feature="SpENN wavefunction modules")
 
 
 class SpENNWaveFunction(EquivariantMap):
-    """Compose embedding, SpENN layers, readout, and optional cusp.
+    """Compose embedding, SpENN layers, readout, and an envelope factor.
 
     Parameters
     ----------
@@ -24,9 +24,9 @@ class SpENNWaveFunction(EquivariantMap):
         Sequence of SpENN layers.
     readout : torch.nn.Module
         Module mapping final real features to :class:`WavefunctionOutput`.
-    cusp : torch.nn.Module or None, optional
-        Optional additive log-amplitude cusp. Cusps accept ``batch`` and return
-        an additive tensor matching ``output.logabs``.
+    envelope : torch.nn.Module
+        Required additive log-amplitude envelope. Envelopes accept ``batch``
+        and return an additive tensor matching ``output.logabs``.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -37,14 +37,16 @@ class SpENNWaveFunction(EquivariantMap):
         embedding: nn.Module,
         layers: Iterable[nn.Module] = (),
         readout: nn.Module,
-        cusp: nn.Module | None = None,
+        envelope: nn.Module | None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        if envelope is None:
+            raise ValueError("SpENNWaveFunction requires an envelope module")
         self.embedding = embedding
         self.layers = nn.ModuleList(tuple(layers))
         self.readout = readout
-        self.cusp = cusp
+        self.envelope = envelope
 
     def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
@@ -53,21 +55,23 @@ class SpENNWaveFunction(EquivariantMap):
         for layer in self.layers:
             features = layer(features)
         output = self.readout(features, batch)
-        if self.cusp is None:
-            return output
-        cusp_output = self.cusp(batch)
-        if not isinstance(cusp_output, torch.Tensor):
-            raise TypeError(f"Cusp output must be a torch.Tensor, got {type(cusp_output)!r}")
-        if cusp_output.shape != output.logabs.shape:
-            raise ValueError(
-                f"Cusp output must have shape {tuple(output.logabs.shape)}, got {tuple(cusp_output.shape)}"
-            )
+        logabs = output.logabs
+        logabs = logabs + _log_factor(self.envelope, batch, output.logabs.shape, name="Envelope")
         return WavefunctionOutput(
-            logabs=output.logabs + cusp_output,
+            logabs=logabs,
             sign=output.sign,
             phase=output.phase,
             aux=dict(output.aux),
         )
+
+
+def _log_factor(module: nn.Module, batch: ElectronBatch, shape: torch.Size, *, name: str) -> torch.Tensor:
+    value = module(batch)
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(f"{name} output must be a torch.Tensor, got {type(value)!r}")
+    if value.shape != shape:
+        raise ValueError(f"{name} output must have shape {tuple(shape)}, got {tuple(value.shape)}")
+    return value
 
 
 __all__ = ["SpENNWaveFunction"]

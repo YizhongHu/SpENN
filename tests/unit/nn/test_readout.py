@@ -173,6 +173,11 @@ def test_pfaffian_readout_does_not_expose_odd_padding_toggle() -> None:
         PfaffianReadout(allow_odd_electron_bordered=False, channels=1)  # type: ignore[call-arg]
 
 
+def test_pfaffian_readout_does_not_own_harmonic_confinement() -> None:
+    with pytest.raises(TypeError, match="envelope"):
+        PfaffianReadout(envelope=object(), channels=1)  # type: ignore[call-arg]
+
+
 def test_pfaffian_readout_rejects_malformed_kernel_inputs() -> None:
     readout = PfaffianReadout(pair_channels=2, border_channels=1)
     malformed_pair = BlockContainer([zero_block(dtype=torch.float64), torch.empty(1, 0, 3), torch.zeros(1, 1, 3)])
