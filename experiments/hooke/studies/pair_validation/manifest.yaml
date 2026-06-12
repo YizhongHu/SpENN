@@ -1,0 +1,68 @@
+# =============================================================================
+# Hooke pair validation study manifest (protocol contract)
+# =============================================================================
+#
+# This manifest declares the validation-scan protocol: the grid, the selection
+# rule, and the eligibility requirements. Once the scan starts, changing this
+# file means creating a new study version (bump study.name).
+#
+# The collector and selector read this file; they never read W&B and never use
+# the exact reference energy.
+
+study:
+  name: hooke_pair_validation_v1
+  purpose: validation_scan
+  sector: singlet
+
+# Base training config expanded by the launcher (one run per grid point).
+train_config: experiments/hooke/configs/benchmark/pair_train.yaml
+
+# Grid axes are resolved-config keys (OmegaConf dotted paths).
+grid:
+  runtime.seed: [3, 9, 11]
+  optimizer_params.lr: [3.0e-4, 1.0e-3, 3.0e-3]
+  model_params.channels: [8, 32, 128]
+  model_params.layers: [1]
+  model_params.gate_activation: [silu, sigmoid]
+
+# Grid key holding the replicate seed; all other grid keys define a config
+# group for selection.
+seed_key: runtime.seed
+
+validation:
+  metric: validation/energy
+  aggregate: median
+  checkpoint: final
+  # Failed/ineligible/missing seeds count as +inf validation energy.
+  failed_run_value: .inf
+
+# Runs failing any of these are treated as failed for selection.
+eligibility:
+  require:
+    - checks/data_integrity/passed
+    - checks/gradient/passed
+    - checks/equivariance/full_model/passed
+  local_energy_finite_fraction: 1.0
+
+# Applied in order after the aggregate metric; lower is better for metric
+# tie-breakers, smaller is better for model_params.channels.
+tie_breakers:
+  - validation/energy_variance
+  - seed_energy_spread
+  - model_params.channels
+  - runtime/wall_time_sec
+
+# Reported and flagged in selection_report.md; these never decide the winner
+# (they are neither eligibility criteria nor tie-breakers above).
+diagnostic_fields:
+  sampler_geometry:
+    - validation/sampler/radius_mean
+    - validation/sampler/radius_q99
+    - validation/sampler/radius_max
+    - validation/sampler/electron_distance_q01
+    - validation/sampler/electron_distance_min
+    - validation/sampler/position_rms
+
+# Thresholds for flagging suspicious walker geometry in the report.
+geometry_flags:
+  electron_distance_q01_min: 1.0e-3

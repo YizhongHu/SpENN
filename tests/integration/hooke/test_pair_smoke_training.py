@@ -3,7 +3,8 @@
 Drives ``run_from_config`` through the real Train runner -> SpENNWaveFunction ->
 MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with DataIntegrity,
 GradientStats, SamplerHealth, RuntimeEquivariance (full_model + trace),
-Checkpoint, and CSV/JSONL logging. No convergence or reference-energy assertions.
+train-end Validation, Checkpoint, and CSV/JSONL logging. No convergence or
+reference-energy assertions.
 """
 
 from __future__ import annotations
@@ -58,6 +59,9 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
     for expected in (
         "train",
         "train/sampler",
+        "validation",
+        "validation/sampler",
+        "validation/perf",
         "checks/data_integrity",
         "checks/gradient",
         "checks/sampler",
@@ -65,3 +69,29 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
         "checks/equivariance/trace",
     ):
         assert expected in namespaces, f"missing namespace: {expected}"
+    assert "checks/data_validity" not in namespaces
+
+
+def test_pair_smoke_training_validation_and_geometry_metrics(tmp_path) -> None:
+    run_dir = _run(tmp_path)
+
+    records = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+    validation = [r["metrics"] for r in records if r.get("namespace") == "validation"]
+    assert validation, "no validation records"
+    assert "energy" in validation[-1]
+    # Exact-reference comparison is reserved for final evaluation (eval/*).
+    assert "energy_error" not in validation[-1]
+    assert "energy_abs_error" not in validation[-1]
+    assert "reference_energy" not in validation[-1]
+
+    # Geometry diagnostics ride along with sampler stats in both phases.
+    for namespace in ("train/sampler", "validation/sampler"):
+        sampler_records = [r["metrics"] for r in records if r.get("namespace") == namespace]
+        assert sampler_records, f"no {namespace} records"
+        for key in ("radius_mean", "radius_q99", "electron_distance_q01", "position_rms"):
+            assert key in sampler_records[-1], f"missing {namespace}/{key}"
