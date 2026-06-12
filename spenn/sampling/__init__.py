@@ -1,5 +1,6 @@
 """Monte Carlo sampling namespace."""
 
+from spenn.sampling.diagnostics import summarize_walker_geometry
 from spenn.sampling.equilibrate import equilibrate, warmup
 from spenn.sampling.mala import MALASampler
 from spenn.sampling.metropolis import MetropolisSampler
@@ -11,5 +12,6 @@ __all__ = [
     "MetropolisSampler",
     "equilibrate",
     "gaussian_proposal",
+    "summarize_walker_geometry",
     "warmup",
 ]

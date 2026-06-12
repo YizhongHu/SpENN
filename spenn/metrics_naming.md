@@ -64,7 +64,7 @@ Examples:
 | `train`                          | `energy_stderr`   | `train/energy_stderr`                          |
 | `train/sampler`                  | `acceptance_rate` | `train/sampler/acceptance_rate`                |
 | `train/perf`                     | `step_time_sec`   | `train/perf/step_time_sec`                     |
-| `checks/data_validity`           | `passed`          | `checks/data_validity/passed`                  |
+| `checks/data_integrity`           | `passed`          | `checks/data_integrity/passed`                  |
 | `checks/equivariance/full_model` | `max_abs_error`   | `checks/equivariance/full_model/max_abs_error` |
 | `runtime`                        | `wall_time_sec`   | `runtime/wall_time_sec`                        |
 | `diagnostics/energy`             | `time_sec`        | `diagnostics/energy/time_sec`                  |
@@ -92,7 +92,7 @@ runtime
 
 diagnostics/energy
 
-checks/data_validity
+checks/data_integrity
 checks/gradient
 checks/sampler
 checks/equivariance/full_model
@@ -175,7 +175,7 @@ step,namespace,key,value
 1,train,loss,0.6580171494985763
 1,train,energy,3.658536762108973
 1,train/sampler,acceptance_rate,0.8625
-1,checks/data_validity,passed,true
+1,checks/data_integrity,passed,true
 1,checks/equivariance/full_model,max_abs_error,0.0
 ```
 
@@ -338,7 +338,7 @@ Examples:
 | `train`                          | `energy_stderr`   | `train/energy_stderr`                          |
 | `train/sampler`                  | `acceptance_rate` | `train/sampler/acceptance_rate`                |
 | `train/perf`                     | `step_time_sec`   | `train/perf/step_time_sec`                     |
-| `checks/data_validity`           | `passed`          | `checks/data_validity/passed`                  |
+| `checks/data_integrity`           | `passed`          | `checks/data_integrity/passed`                  |
 | `checks/equivariance/full_model` | `max_abs_error`   | `checks/equivariance/full_model/max_abs_error` |
 | `runtime`                        | `wall_time_sec`   | `runtime/wall_time_sec`                        |
 | `diagnostics/energy`             | `time_sec`        | `diagnostics/energy/time_sec`                  |
@@ -619,7 +619,7 @@ Runtime checks should live under `checks/...`.
 Examples:
 
 ```text
-checks/data_validity/passed
+checks/data_integrity/passed
 checks/gradient/passed
 checks/sampler/passed
 checks/equivariance/full_model/passed
@@ -629,7 +629,7 @@ checks/equivariance/trace/passed
 Detailed check metrics stay in the same namespace:
 
 ```text
-checks/data_validity/local_energy_nonfinite_fraction
+checks/data_integrity/local_energy_nonfinite_fraction
 checks/gradient/global_grad_norm
 checks/sampler/acceptance_rate
 checks/equivariance/full_model/max_abs_error
@@ -656,7 +656,7 @@ train/sampler/n_walkers
 train/perf/step_time_sec
 train/perf/sampling_time_sec
 
-checks/data_validity/passed
+checks/data_integrity/passed
 checks/gradient/global_grad_norm
 checks/sampler/acceptance_rate
 checks/equivariance/full_model/max_abs_error

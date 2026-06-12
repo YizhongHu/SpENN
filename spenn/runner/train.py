@@ -65,7 +65,14 @@ class Train(Runner):
             context=context,
             emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
         )
-        self.emit("train_end", context, state=final_state)
+        # train_end carries the trained model and final step so consumers
+        # (e.g. the Validation callback) do not depend on trainer internals.
+        self.emit(
+            "train_end",
+            context,
+            state=final_state,
+            payload={"model": self.model, "step": int(final_state.step)},
+        )
         self.emit("run_end", context)
         return RunResult(status="completed")
 

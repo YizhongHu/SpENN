@@ -7,6 +7,7 @@ from typing import Any
 
 from spenn.data.batch import Walkers, WavefunctionOutput
 from spenn.dependencies import require_torch, require_torch_nn
+from spenn.sampling.diagnostics import summarize_walker_geometry
 from spenn.sampling.moves import GaussianMove
 
 torch = require_torch(feature="Metropolis sampling")
@@ -350,12 +351,19 @@ class MetropolisSampler(nn.Module):
             self._walkers = self.sample(model, self._walkers, self.burn_in)
             self._has_burned_in = True
         self._walkers = self.sample(model, self._walkers, self.n_steps)
-        stats = {
+        stats: dict[str, float] = {
             "acceptance_rate": float(self.acceptance_rate),
             "n_walkers": int(self._walkers.batch_size),
             "burn_in": int(self.burn_in),
             "n_steps": int(self.n_steps),
+            "proposal_scale": float(getattr(self.move, "step_size", self.proposal_scale)),
         }
+        if self.seed is not None:
+            stats["seed"] = int(self.seed)
+        # Geometry diagnostics describe the production samples actually
+        # returned to the caller; phase namespacing (train/validation/eval)
+        # is owned by whoever logs these stats.
+        stats.update(summarize_walker_geometry(self._walkers))
         return self._walkers, stats
 
     def mcmc_state_dict(self) -> dict[str, Any]:

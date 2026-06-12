@@ -1,7 +1,7 @@
 """Integration smoke test: the real Hooke pair config runs end-to-end.
 
 Drives ``run_from_config`` through the real Train runner -> SpENNWaveFunction ->
-MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with DataValidity,
+MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with DataIntegrity,
 GradientStats, SamplerHealth, RuntimeEquivariance (full_model + trace),
 Checkpoint, and CSV/JSONL logging. No convergence or reference-energy assertions.
 """
@@ -58,7 +58,7 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
     for expected in (
         "train",
         "train/sampler",
-        "checks/data_validity",
+        "checks/data_integrity",
         "checks/gradient",
         "checks/sampler",
         "checks/equivariance/full_model",

@@ -1,4 +1,4 @@
-"""Training data validity health callback."""
+"""Training data integrity health callback."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from spenn.dependencies import require_torch
 from ..base import Callback, Event
 
 
-class DataValidity(Callback):
+class DataIntegrity(Callback):
     """Hard guardrail catching invalid training tensors at ``step_end``.
 
     Inspects the batch, wavefunction output (``sign``/``logabs``), local energy,
     and loss on the `TrainerState`, logging finite/validity metrics under
-    ``checks/data_validity``. In ``fail_fast`` mode a failed required check
+    ``checks/data_integrity``. In ``fail_fast`` mode a failed required check
     raises a clear `RuntimeError` instead of silently continuing.
     """
 
@@ -79,7 +79,7 @@ class DataValidity(Callback):
                     if sign_fraction > 0.0:
                         failures.append(f"sign_invalid_fraction={sign_fraction} exceeds 0.0")
                 # Schema invariants belong to the typed output object;
-                # DataValidity only decides when to check and whether to fail.
+                # DataIntegrity only decides when to check and whether to fail.
                 validate = getattr(output, "validate", None)
                 if not callable(validate):
                     metrics["output_validated"] = False
@@ -109,7 +109,7 @@ class DataValidity(Callback):
         if self.check_loss:
             loss = getattr(state, "loss", None)
             if loss is not None:
-                torch = require_torch(feature="DataValidity callback")
+                torch = require_torch(feature="DataIntegrity callback")
                 loss_is_finite = bool(torch.isfinite(loss).all().item())
                 metrics["loss_is_finite"] = loss_is_finite
                 if not loss_is_finite:
@@ -138,15 +138,15 @@ class DataValidity(Callback):
 
         passed = not failures
         metrics["passed"] = passed
-        event.context.log(metrics, step=state.step, namespace="checks/data_validity")
+        event.context.log(metrics, step=state.step, namespace="checks/data_integrity")
         if self.fail_fast and not passed:
-            raise RuntimeError(f"DataValidity failed at step {state.step}: {failures[0]}")
+            raise RuntimeError(f"DataIntegrity failed at step {state.step}: {failures[0]}")
 
 
 def _finite_counts(tensor: object) -> tuple[int, int]:
     """Return ``(finite_count, total_count)`` for `tensor`."""
 
-    torch = require_torch(feature="DataValidity callback")
+    torch = require_torch(feature="DataIntegrity callback")
     total = int(tensor.numel())
     finite = int(torch.isfinite(tensor).sum().item()) if total else 0
     return finite, total
@@ -169,7 +169,7 @@ def _sign_invalid_fraction(sign: object) -> float:
     check is exact rather than tolerant. An empty tensor is invalid (1.0).
     """
 
-    torch = require_torch(feature="DataValidity callback")
+    torch = require_torch(feature="DataIntegrity callback")
     n = int(sign.numel())
     if n == 0:
         return 1.0
@@ -178,4 +178,4 @@ def _sign_invalid_fraction(sign: object) -> float:
 
 
 
-__all__ = ["DataValidity"]
+__all__ = ["DataIntegrity"]

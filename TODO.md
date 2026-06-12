@@ -84,7 +84,7 @@ new scaffold documented in package docstrings.
       Hooke smoke configs. This is not a physics experiment harness.
 - [x] Added a minimal VMC training loop (`VMCTrainer`, `TrainerState`) and a
       Hooke pair smoke training run driven by `SpENNWaveFunction`.
-- [x] Added runtime-validation and training-health callbacks (`DataValidity`,
+- [x] Added runtime-validation and training-health callbacks (`DataIntegrity`,
       `GradientStats`, `SamplerHealth`, `RuntimeEquivariance`) with
       callback-local probabilistic scheduling.
 - [x] Post-smoke cleanup: removed `Scaffold`/`Load` runners,

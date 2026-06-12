@@ -1,6 +1,6 @@
 """Integration test: runtime-check callbacks during a VMC smoke training run.
 
-Drives ``run_from_config`` through the Train runner with DataValidity,
+Drives ``run_from_config`` through the Train runner with DataIntegrity,
 GradientStats, and SamplerHealth callbacks active, and asserts the standard
 artifacts plus the check-metric namespaces. No convergence assertions.
 """
@@ -53,9 +53,9 @@ def test_runtime_checks_log_check_namespaces(tmp_path) -> None:
     ]
     namespaces = {record.get("namespace") for record in records}
 
-    for expected in ("train", "train/sampler", "checks/data_validity", "checks/gradient", "checks/sampler"):
+    for expected in ("train", "train/sampler", "checks/data_integrity", "checks/gradient", "checks/sampler"):
         assert expected in namespaces, f"missing namespace: {expected}"
 
-    data_validity = [r["metrics"] for r in records if r.get("namespace") == "checks/data_validity"]
-    assert data_validity, "no data-validity records"
-    assert all(record["passed"] is True for record in data_validity)
+    data_integrity = [r["metrics"] for r in records if r.get("namespace") == "checks/data_integrity"]
+    assert data_integrity, "no data-integrity records"
+    assert all(record["passed"] is True for record in data_integrity)

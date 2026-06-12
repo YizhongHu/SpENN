@@ -56,7 +56,7 @@ def test_equivariant_state_has_no_validate_contract() -> None:
     assert not hasattr(module.EquivariantState, "validate")
 
 
-def test_data_validity_has_no_recursive_tensor_probe() -> None:
+def test_data_integrity_has_no_recursive_tensor_probe() -> None:
     import spenn.callback as callback
 
     assert not hasattr(callback, "_iter_tensors")
@@ -73,7 +73,7 @@ def test_runtime_qol_modules_are_split_packages() -> None:
         "spenn.callback.metadata",
         "spenn.callback.checkpoint",
         "spenn.callback.equivariance",
-        "spenn.callback.health.data_validity",
+        "spenn.callback.health.data_integrity",
         "spenn.callback.health.sampler_health",
         "spenn.callback.health.gradient_stats",
         "spenn.callback.timing.base",
@@ -98,8 +98,8 @@ def test_runtime_qol_modules_are_split_packages() -> None:
     for module in owner_modules:
         assert importlib.util.find_spec(module) is not None
 
-    from spenn.callback import DataValidity
-    from spenn.callback.health.data_validity import DataValidity as OwnedDataValidity
+    from spenn.callback import DataIntegrity
+    from spenn.callback.health.data_integrity import DataIntegrity as OwnedDataIntegrity
     from spenn.callback import DiagnosticTiming, EvaluationTiming, RunTiming, TrainStepTiming
     from spenn.callback.timing.diagnostic_timing import DiagnosticTiming as OwnedDiagnosticTiming
     from spenn.callback.timing.evaluation_timing import EvaluationTiming as OwnedEvaluationTiming
@@ -108,7 +108,7 @@ def test_runtime_qol_modules_are_split_packages() -> None:
     from spenn.logging import WandB
     from spenn.logging.wandb import WandB as OwnedWandB
 
-    assert DataValidity is OwnedDataValidity
+    assert DataIntegrity is OwnedDataIntegrity
     assert DiagnosticTiming is OwnedDiagnosticTiming
     assert EvaluationTiming is OwnedEvaluationTiming
     assert RunTiming is OwnedRunTiming

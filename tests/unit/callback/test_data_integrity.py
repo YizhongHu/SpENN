@@ -1,11 +1,11 @@
-"""Tests for the DataValidity runtime-check callback."""
+"""Tests for the DataIntegrity runtime-check callback."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from spenn.callback import DataValidity
+from spenn.callback import DataIntegrity
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from tests.unit.callback.support import FakeState, RecordingContext, step_event
 
@@ -26,16 +26,16 @@ def _finite_state() -> FakeState:
     )
 
 
-def _handle(callback: DataValidity, state: FakeState) -> RecordingContext:
+def _handle(callback: DataIntegrity, state: FakeState) -> RecordingContext:
     context = RecordingContext()
     callback.handle(step_event(context, state))
     return context
 
 
 def test_passes_on_finite_state() -> None:
-    context = _handle(DataValidity(["step_end"], fail_fast=True), _finite_state())
+    context = _handle(DataIntegrity(["step_end"], fail_fast=True), _finite_state())
 
-    metrics = context.latest("checks/data_validity")
+    metrics = context.latest("checks/data_integrity")
     assert metrics["passed"] is True
     assert metrics["local_energy_nonfinite_fraction"] == 0.0
     assert metrics["local_energy_finite_count"] == 4
@@ -57,9 +57,9 @@ def test_typed_output_validation_failure_is_reported() -> None:
         spins=torch.tensor([[1.0, -1.0]] * 3, dtype=torch.float64),
     )
 
-    context = _handle(DataValidity(["step_end"], fail_fast=False), state)
+    context = _handle(DataIntegrity(["step_end"], fail_fast=False), state)
 
-    metrics = context.latest("checks/data_validity")
+    metrics = context.latest("checks/data_integrity")
     assert metrics["output_validated"] is False
     assert metrics["passed"] is False
 
@@ -70,8 +70,8 @@ def test_counts_disambiguate_empty_from_all_nonfinite() -> None:
     empty = _finite_state()
     empty.local_energy = torch.empty(0, dtype=torch.float64)
 
-    nan_metrics = _handle(DataValidity(["step_end"], fail_fast=False), all_nan).latest("checks/data_validity")
-    empty_metrics = _handle(DataValidity(["step_end"], fail_fast=False), empty).latest("checks/data_validity")
+    nan_metrics = _handle(DataIntegrity(["step_end"], fail_fast=False), all_nan).latest("checks/data_integrity")
+    empty_metrics = _handle(DataIntegrity(["step_end"], fail_fast=False), empty).latest("checks/data_integrity")
 
     # Both share fraction 1.0 but the counts tell them apart.
     assert nan_metrics["local_energy_nonfinite_fraction"] == 1.0
@@ -89,7 +89,7 @@ def test_valid_batch_logs_typed_validity_metrics() -> None:
         spins=torch.tensor([[1.0, -1.0]] * 4, dtype=torch.float64),
     )
 
-    metrics = _handle(DataValidity(["step_end"], fail_fast=False), state).latest("checks/data_validity")
+    metrics = _handle(DataIntegrity(["step_end"], fail_fast=False), state).latest("checks/data_integrity")
 
     assert metrics["batch_validated"] is True
     assert metrics["batch_positions_nonfinite_fraction"] == 0.0
@@ -101,7 +101,7 @@ def test_fails_on_nan_local_energy() -> None:
     state.local_energy = torch.tensor([1.0, float("nan"), 3.0, 4.0], dtype=torch.float64)
 
     with pytest.raises(RuntimeError, match="local_energy_nonfinite_fraction"):
-        _handle(DataValidity(["step_end"], fail_fast=True), state)
+        _handle(DataIntegrity(["step_end"], fail_fast=True), state)
 
 
 def test_fails_on_inf_logabs() -> None:
@@ -112,7 +112,7 @@ def test_fails_on_inf_logabs() -> None:
     )
 
     with pytest.raises(RuntimeError, match="logabs_nonfinite_fraction"):
-        _handle(DataValidity(["step_end"], fail_fast=True), state)
+        _handle(DataIntegrity(["step_end"], fail_fast=True), state)
 
 
 def test_fails_on_nonfinite_loss() -> None:
@@ -120,7 +120,7 @@ def test_fails_on_nonfinite_loss() -> None:
     state.loss = torch.tensor(float("nan"), dtype=torch.float64)
 
     with pytest.raises(RuntimeError, match="loss is not finite"):
-        _handle(DataValidity(["step_end"], fail_fast=True), state)
+        _handle(DataIntegrity(["step_end"], fail_fast=True), state)
 
 
 def test_strict_sign_values_catches_invalid_sign() -> None:
@@ -130,9 +130,9 @@ def test_strict_sign_values_catches_invalid_sign() -> None:
         sign=torch.tensor([1.0, 0.5, -1.0, 1.0], dtype=torch.float64),
     )
 
-    context = _handle(DataValidity(["step_end"], fail_fast=False, strict_sign_values=True), state)
+    context = _handle(DataIntegrity(["step_end"], fail_fast=False, strict_sign_values=True), state)
 
-    metrics = context.latest("checks/data_validity")
+    metrics = context.latest("checks/data_integrity")
     assert metrics["sign_invalid_fraction"] == pytest.approx(0.25)
     assert metrics["passed"] is False
 
@@ -141,9 +141,9 @@ def test_logs_nonfinite_fractions_without_raising_when_not_fail_fast() -> None:
     state = _finite_state()
     state.local_energy = torch.tensor([1.0, float("inf"), float("nan"), 4.0], dtype=torch.float64)
 
-    context = _handle(DataValidity(["step_end"], fail_fast=False), state)
+    context = _handle(DataIntegrity(["step_end"], fail_fast=False), state)
 
-    metrics = context.latest("checks/data_validity")
+    metrics = context.latest("checks/data_integrity")
     assert metrics["local_energy_nonfinite_fraction"] == pytest.approx(0.5)
     assert metrics["passed"] is False
 
@@ -153,8 +153,8 @@ def test_batch_without_validate_method_fails() -> None:
     # A plain dict is not a typed batch: it exposes no validate() contract.
     state.batch = {"positions": torch.tensor([[float("nan")]], dtype=torch.float64)}
 
-    context = _handle(DataValidity(["step_end"], fail_fast=False), state)
+    context = _handle(DataIntegrity(["step_end"], fail_fast=False), state)
 
-    metrics = context.latest("checks/data_validity")
+    metrics = context.latest("checks/data_integrity")
     assert metrics["batch_validated"] is False
     assert metrics["passed"] is False

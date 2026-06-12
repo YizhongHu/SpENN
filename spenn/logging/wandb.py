@@ -172,6 +172,11 @@ class WandB(Logger):
             ("train/*", "train/step"),
             ("train/sampler/*", "train/step"),
             ("train/perf/*", "train/step"),
+            # Validation runs inside the training lifecycle, so it shares the
+            # train step axis.
+            ("validation/*", "train/step"),
+            ("validation/sampler/*", "train/step"),
+            ("validation/perf/*", "train/step"),
             ("eval/*", "eval/step"),
             ("eval/sampler/*", "eval/step"),
             ("eval/perf/*", "eval/step"),
@@ -269,6 +274,8 @@ def _record_fields(record: LogRecord | Mapping[str, object]) -> tuple[int | None
 def _add_step_fields(payload: dict[str, object], namespace: str, step: int) -> None:
     if namespace == "train" or namespace.startswith("train/"):
         payload["train/step"] = step
+    elif namespace == "validation" or namespace.startswith("validation/"):
+        payload["train/step"] = step
     elif namespace == "eval" or namespace.startswith("eval/"):
         payload["eval/step"] = step
     elif namespace.startswith("checks/"):
@@ -287,10 +294,10 @@ def _join_metric(namespace: str, key: str) -> str:
 
 def _derive_health_flags(raw_metrics: Mapping[str, object]) -> dict[str, float]:
     flags: dict[str, float] = {}
-    data_passed = raw_metrics.get("checks/data_validity/passed")
+    data_passed = raw_metrics.get("checks/data_integrity/passed")
     if isinstance(data_passed, bool):
         flags["health/numerics_ok"] = 1.0 if data_passed else 0.0
-    elif raw_metrics.get("checks/data_validity/local_energy_nonfinite_fraction") == 0:
+    elif raw_metrics.get("checks/data_integrity/local_energy_nonfinite_fraction") == 0:
         flags["health/numerics_ok"] = 1.0
 
     sampler_passed = raw_metrics.get("checks/sampler/passed")
