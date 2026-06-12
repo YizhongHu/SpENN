@@ -57,14 +57,23 @@ def test_collector_reads_fake_run_dir(tmp_path: Path, manifest_path: Path) -> No
 
 def test_collector_handles_failed_and_incomplete_runs(tmp_path: Path, manifest_path: Path) -> None:
     manifest = collect.load_manifest(manifest_path)
-    failed = make_run_dir(tmp_path / "runs", seed=3, status="failed", with_validation=False)
+    failed = make_run_dir(
+        tmp_path / "runs",
+        seed=3,
+        status="failed",
+        with_validation=False,
+        exception_type="OutOfMemoryError",
+        exception_message="CUDA out of memory",
+    )
     incomplete = make_run_dir(tmp_path / "runs", seed=9, status="running", with_validation=False)
 
     failed_row = collect.collect_run(failed, manifest)
     incomplete_row = collect.collect_run(incomplete, manifest)
 
     assert failed_row["status"] == "failed"
+    assert failed_row["failure_reason"] == "OutOfMemoryError"
     assert incomplete_row["status"] == "incomplete"
+    assert incomplete_row["failure_reason"] == "missing validation metric validation/energy"
     assert "validation/energy" not in failed_row
 
 
@@ -72,6 +81,13 @@ def test_completed_status_requires_validation_metric(tmp_path: Path, manifest_pa
     manifest = collect.load_manifest(manifest_path)
     run_dir = make_run_dir(tmp_path / "runs", seed=3, status="completed", with_validation=False)
     assert collect.collect_run(run_dir, manifest)["status"] == "incomplete"
+
+
+def test_csv_cell_formats_floats_for_readable_tables() -> None:
+    assert collect._csv_cell(2.0) == "2.0"
+    assert collect._csv_cell(2.123456789012345) == "2.12345678901"
+    assert collect._csv_cell(1.0e-8) == "1e-08"
+    assert collect._csv_cell(float("inf")) == "inf"
 
 
 def test_collector_writes_runs_csv_and_jsonl(tmp_path: Path, manifest_path: Path) -> None:
@@ -103,6 +119,7 @@ def test_collector_writes_runs_csv_and_jsonl(tmp_path: Path, manifest_path: Path
     for column in (
         "run_dir",
         "status",
+        "failure_reason",
         "study_name",
         "config_id",
         "runtime.seed",

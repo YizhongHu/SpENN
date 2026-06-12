@@ -17,7 +17,7 @@
 # Keep the slurm_logs/ output files around for reproducibility.
 #
 #SBATCH --job-name=hooke-pv-v1
-#SBATCH --partition=kozinsky_gpu
+#SBATCH --partition=kozinsky_gpu,seas_gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -26,6 +26,17 @@
 #SBATCH --output=slurm_logs/hooke_pv_v1_%A_%a.out
 
 set -euo pipefail
+
+# Under sbatch the script runs from a copy in the slurmd spool dir, so the
+# BASH_SOURCE-relative path math breaks; recover the repo root from the
+# directory sbatch was invoked in instead.
+if [[ "${BASH_SOURCE[0]}" == */slurmd/* && -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+  REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR" && git rev-parse --show-toplevel)"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+fi
+cd "$REPO_ROOT"
 
 DEVICE="${DEVICE:-cuda}"
 if [[ "$DEVICE" == "cuda" ]]; then

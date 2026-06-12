@@ -37,8 +37,9 @@ import yaml
 _METRIC_PREFIXES = ("validation/",)
 _EXTRA_METRICS = ("runtime/wall_time_sec",)
 
-_BASE_COLUMNS = ("run_dir", "status", "study_name", "config_id")
+_BASE_COLUMNS = ("run_dir", "status", "failure_reason", "study_name", "config_id")
 _PROVENANCE_COLUMNS = ("git/sha", "wandb/run_id")
+_CSV_FLOAT_SIG_DIGITS = 12
 
 
 def load_manifest(path: Path) -> dict:
@@ -164,6 +165,36 @@ def _run_status(status_file: dict, metrics: dict[str, object], validation_metric
     return "incomplete"
 
 
+def _failure_reason(
+    status: str,
+    *,
+    status_file: dict,
+    metadata: dict,
+    metrics: dict[str, object],
+    validation_metric: str,
+) -> str:
+    """Return a compact human-readable reason for failed/incomplete runs."""
+
+    if status == "completed":
+        return ""
+    if status == "failed":
+        exception_type = status_file.get("exception_type") or metadata.get("exception_type")
+        exception_message = status_file.get("exception_message") or metadata.get("exception_message")
+        if exception_type:
+            return str(exception_type)
+        if exception_message:
+            return _single_line(str(exception_message))
+        return "run status failed"
+    if validation_metric not in metrics:
+        return f"missing validation metric {validation_metric}"
+    raw_status = status_file.get("status")
+    return f"run status {raw_status}" if raw_status else "missing status.json"
+
+
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
+
+
 def collect_run(run_dir: Path, manifest: dict) -> dict[str, object]:
     """Normalize one run directory into a flat row."""
 
@@ -173,9 +204,17 @@ def collect_run(run_dir: Path, manifest: dict) -> dict[str, object]:
     metrics = read_last_metrics(run_dir / "metrics.jsonl")
 
     validation_metric = str(manifest["validation"]["metric"])
+    status = _run_status(status_file, metrics, validation_metric)
     row: dict[str, object] = {
         "run_dir": str(run_dir),
-        "status": _run_status(status_file, metrics, validation_metric),
+        "status": status,
+        "failure_reason": _failure_reason(
+            status,
+            status_file=status_file,
+            metadata=metadata,
+            metrics=metrics,
+            validation_metric=validation_metric,
+        ),
         "study_name": lookup_dotted(resolved, "study.name") or "",
     }
 
@@ -213,11 +252,19 @@ def _csv_cell(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float):
-        if math.isinf(value):
-            return "inf" if value > 0 else "-inf"
-        if math.isnan(value):
-            return "nan"
+        return _format_csv_float(value)
     return str(value)
+
+
+def _format_csv_float(value: float) -> str:
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    if math.isnan(value):
+        return "nan"
+    text = f"{value:.{_CSV_FLOAT_SIG_DIGITS}g}"
+    if value.is_integer() and "." not in text and "e" not in text.lower():
+        return f"{text}.0"
+    return text
 
 
 def write_outputs(rows: list[dict[str, object]], manifest: dict, output_dir: Path) -> tuple[Path, Path]:

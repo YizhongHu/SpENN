@@ -27,6 +27,8 @@ def make_run_dir(
     with_geometry: bool = True,
     electron_distance_q01: float = 0.5,
     wall_time: float = 10.0,
+    exception_type: str | None = None,
+    exception_message: str | None = None,
 ) -> Path:
     """Write one fake run directory and return its path."""
 
@@ -36,7 +38,12 @@ def make_run_dir(
     (run_dir / "metadata.json").write_text(
         json.dumps({"git_commit": "deadbeef", "run_id": run_dir.name}), encoding="utf-8"
     )
-    (run_dir / "status.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+    status_payload = {
+        "status": status,
+        "exception_type": exception_type,
+        "exception_message": exception_message,
+    }
+    (run_dir / "status.json").write_text(json.dumps(status_payload), encoding="utf-8")
 
     resolved = {
         "study": {"name": "test_study_v1", "config_id": None},

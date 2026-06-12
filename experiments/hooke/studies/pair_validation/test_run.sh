@@ -21,15 +21,26 @@
 #
 # Environment knobs:
 #   DEVICE   cuda|cpu   (default: cuda if nvidia-smi works, else cpu)
-#   SCRATCH  output dir (default: mktemp -d)
+#   PV_SCRATCH  output dir; must be writable (default: a fresh dir under
+#               /n/netscratch/kozinsky_lab/Everyone/$USER on FASRC, else
+#               mktemp -d). Named PV_SCRATCH because FASRC exports
+#               SCRATCH=/n/netscratch globally, which is not writable.
 #
 #SBATCH --job-name=spenn-pv-test-run
 #SBATCH --output=pv_test_run_%j.out
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+# Under sbatch the script runs from a copy in the slurmd spool dir, so the
+# BASH_SOURCE-relative path math breaks; recover the repo root from the
+# directory sbatch was invoked in instead.
+if [[ "${BASH_SOURCE[0]}" == */slurmd/* && -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+  REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR" && git rev-parse --show-toplevel)"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+fi
+SCRIPT_DIR="$REPO_ROOT/experiments/hooke/studies/pair_validation"
 cd "$REPO_ROOT"
 
 # Pick device + matching uv environment (see README.md: GPU uses .venv-gpu).
@@ -47,7 +58,22 @@ else
   EXTRA=cpu
 fi
 
-SCRATCH="${SCRATCH:-$(mktemp -d -t spenn_pv_test_run.XXXXXX)}"
+# Default scratch: lab netscratch on FASRC (writable per-user dir), else tmpdir.
+# Knob is PV_SCRATCH, not SCRATCH: FASRC exports SCRATCH=/n/netscratch globally.
+NETSCRATCH_BASE="/n/netscratch/kozinsky_lab/Everyone/$USER"
+if [[ -z "${PV_SCRATCH:-}" ]]; then
+  if [[ -d "$NETSCRATCH_BASE" && -w "$NETSCRATCH_BASE" ]]; then
+    SCRATCH="$(mktemp -d -p "$NETSCRATCH_BASE" spenn_pv_test_run.XXXXXX)"
+  else
+    SCRATCH="$(mktemp -d -t spenn_pv_test_run.XXXXXX)"
+  fi
+elif [[ ! -d "$PV_SCRATCH" || ! -w "$PV_SCRATCH" ]]; then
+  echo "ERROR: PV_SCRATCH=$PV_SCRATCH is not a writable directory" >&2
+  echo "       (e.g. use a subdir of $NETSCRATCH_BASE)" >&2
+  exit 1
+else
+  SCRATCH="$PV_SCRATCH"
+fi
 RUN_ROOT="$SCRATCH/runs"
 RESULTS="$SCRATCH/results"
 echo "device=$DEVICE extra=$EXTRA scratch=$SCRATCH"

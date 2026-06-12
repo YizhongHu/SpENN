@@ -31,7 +31,13 @@ Before launching the real scan, confirm the whole pipeline
 bash experiments/hooke/studies/pair_validation/test_run.sh
 
 # FASRC SLURM, GPU:
-sbatch -p kozinsky_gpu --gres=gpu:1 -c 4 -t 00:30:00 \
+sbatch -p gpu_test --gres=gpu:1 -c 4 -t 00:30:00 \
+  experiments/hooke/studies/pair_validation/test_run.sh
+```
+
+```bash
+# FASRC SLURM, CPU:
+DEVICE=cpu sbatch -p test -c 4 -t 00:30:00 \
   experiments/hooke/studies/pair_validation/test_run.sh
 ```
 
