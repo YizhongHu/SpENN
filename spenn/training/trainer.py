@@ -82,7 +82,9 @@ class VMCTrainer:
         """Run the training loop and return the final `TrainerState`."""
 
         state = TrainerState(model=model, optimizer=optimizer, sampler=sampler)
-        for step in range(1, self.max_steps + 1):
+        # Steps are 0-indexed: the first step always satisfies the
+        # step % every_n_steps == 0 cadence gates in callbacks and logging.
+        for step in range(self.max_steps):
             emit("step_start", payload={"step": step})
 
             walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)

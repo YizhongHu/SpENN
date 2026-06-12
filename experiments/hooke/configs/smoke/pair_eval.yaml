@@ -1,30 +1,35 @@
 # =============================================================================
-#  SpENN | Hooke pair smoke training
+#  SpENN | Hooke pair smoke evaluation
 # -----------------------------------------------------------------------------
-#  experiment : hooke_pair_smoke        runner : spenn.runner.Train
+#  experiment : hooke_pair_smoke        runner : spenn.runner.Evaluate
 #  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
 # =============================================================================
 #
 # Purpose:
-#   Cheap end-to-end training sanity check for the two-electron Hooke system.
+#   Cheap end-to-end sampled-evaluation sanity check for the two-electron Hooke
+#   system. Exercises the Evaluate runner, EnergyEvaluation diagnostics, and
+#   the eval metric namespaces against a freshly initialized SpENN ansatz.
 #
 # Workflow position:
 #
 #   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  benchmark configs
-#   (this file)                         (sampled eval)       (future PRs)
+#   (VMC training)                      (this file)          (future PRs)
 #
 # ---- BEGIN AI-FACED CONFIG GUIDANCE ----
 #
 # This config is intended for:
-#   - verifying model construction
-#   - checking sampler/trainer wiring
-#   - exercising runtime validation callbacks
+#   - verifying Evaluate runner wiring (sampler -> local energy -> diagnostics)
+#   - checking eval metric namespaces (eval, eval/sampler, eval/perf,
+#     diagnostics/energy)
 #   - producing local CSV/JSONL metrics for inspection
 #
 # This config is not intended for:
-#   - benchmark-quality energies
+#   - benchmark-quality energies (the ansatz here is untrained)
 #   - final scientific evaluation
 #   - architecture comparison
+#
+# The reported eval/energy_abs_error against `references.exact_energy` is
+# expected to be large; it documents the metric path, not model quality.
 #
 # ----- END AI-FACED CONFIG GUIDANCE -----
 #
@@ -53,7 +58,7 @@
 experiment:
   name: hooke_pair_smoke
   sector: pair
-  run_name: hooke_pair_smoke_train
+  run_name: hooke_pair_smoke_eval
 
 
 # -----------------------------------------------------------------------------
@@ -125,17 +130,17 @@ wandb:
   # disabled - no-op, if supported by the logger
   mode: online
   group: ${experiment.name}
-  job_type: train
+  job_type: eval
   tags:
     - hooke
     - smoke
-    - train
+    - eval
     - ${runtime.device}
 
   # W&B should mirror scalar metrics using the canonical namespace/key path:
-  #   namespace = train/sampler
+  #   namespace = eval/sampler
   #   key       = acceptance_rate
-  #   W&B name  = train/sampler/acceptance_rate
+  #   W&B name  = eval/sampler/acceptance_rate
   mirror_scalars: true
 
   # Add a small curated dashboard/* layer for easy visualization.
@@ -160,6 +165,15 @@ system:
   spin:
     n_up: 1
     n_down: 1
+
+
+# -----------------------------------------------------------------------------
+# Reference values
+# -----------------------------------------------------------------------------
+# Reference energies belong in evaluation/reference context, never in `system`.
+references:
+  # Exact ground-state energy of the omega=0.5 Hooke singlet (Taut 1993).
+  exact_energy: 2.0
 
 
 # -----------------------------------------------------------------------------
@@ -194,11 +208,11 @@ model_params:
 # -----------------------------------------------------------------------------
 sampler_params:
   # `n_walkers`:
-  #   Number of configurations sampled per training step.
-  n_walkers: 16
+  #   Number of configurations sampled for evaluation.
+  n_walkers: 32
   # `burn_in`:
   #   Number of initial MCMC updates before collecting samples.
-  burn_in: 10
+  burn_in: 20
   # `n_steps`:
   #   Number of MCMC updates used between returned samples.
   n_steps: 5
@@ -208,81 +222,18 @@ sampler_params:
 
 
 # -----------------------------------------------------------------------------
-# Training
+# Evaluation
 # -----------------------------------------------------------------------------
-training:
-  max_steps: 5
-  log_every_n_steps: 1
+evaluation:
   return_terms: true # If true, compute/log named Hamiltonian term contributions.
-
-optimizer_params:
-  lr: 0.01
-
-
-# -----------------------------------------------------------------------------
-# Runtime validation cadence
-# -----------------------------------------------------------------------------
-checks:
-  every_n_steps: 1
-  fail_fast: true
-
-  data_validity:
-    max_nonfinite_energy_fraction: 0.0
-    max_nonfinite_logabs_fraction: 0.0
-    check_loss: true
-    check_wavefunction_output: true
-    check_batch: true
-    strict_sign_values: true
-
-  gradients:
-    check_finite: true
-
-  sampler:
-    fail_fast: false
-
-  equivariance:
-    probability: 1.0
-    permutation_fraction: 1.0
-    max_permutations: 1
-    atol: 1.0e-06
-    rtol: 1.0e-06
-
-
-# -----------------------------------------------------------------------------
-# Checkpointing
-# -----------------------------------------------------------------------------
-checkpoint:
-  every_n_steps: 1
 
 
 # -----------------------------------------------------------------------------
 # Timing
 # -----------------------------------------------------------------------------
 timing:
-  # Rolling window (in steps) for the step-time rolling mean.
-  rolling_window: 20
   # Set true on GPU runs for accurate timings; adds a small synchronization cost.
   cuda_synchronize: false
-
-
-# -----------------------------------------------------------------------------
-# Human-facing status cadence
-# -----------------------------------------------------------------------------
-# Smoke runs are short, so report every step. Steps are 0-indexed and the
-# cadence gate fires when step % every_n_steps == 0, so the first step always
-# reports regardless of cadence. Benchmark configs should use a lower cadence
-# such as every_n_steps: 10.
-status:
-  every_n_steps: 1
-  include:
-    - train/loss
-    - train/energy
-    - train/energy_stderr
-    - train/sampler/acceptance_rate
-    - train/grad_norm
-    - train/local_energy_finite_fraction
-    - train/perf/step_time_sec
-    - train/perf/step_time_sec_rolling_mean
 
 
 # =============================================================================
@@ -295,22 +246,29 @@ status:
 #
 # The runner owns the high-level lifecycle for this run.
 #
-# Train receives already-configured model/sampler/Hamiltonian/optimizer/trainer
-# component specs.
+# Evaluate samples once, evaluates the local energy, and feeds one shared
+# EvaluationContext to every configured diagnostic. Diagnostics do not
+# resample, log, or write artifacts themselves.
 runner:
-  _target_: spenn.runner.Train
+  _target_: spenn.runner.Evaluate
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
-  optimizer: ${optimizer}
-  trainer: ${trainer}
+  return_terms: ${evaluation.return_terms}
+  diagnostics:
+    - _target_: spenn.diagnostics.EnergyEvaluation
+      name: energy
+      reference_energy: ${references.exact_energy}
+      include_terms: true
 
 
 # -----------------------------------------------------------------------------
 # Model
 # -----------------------------------------------------------------------------
 #
-# SpENNWaveFunction is the trainable ansatz.
+# SpENNWaveFunction is the evaluated ansatz. This smoke config evaluates a
+# freshly initialized model; benchmark evaluation configs should restore
+# trained weights instead.
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn # Name for traceable SpENN components.
@@ -401,31 +359,9 @@ sampler:
 
 
 # -----------------------------------------------------------------------------
-# Optimizer
-# -----------------------------------------------------------------------------
-optimizer:
-  _target_: torch.optim.Adam
-  # `_partial_: true` means Hydra returns an optimizer factory. The runner/trainer
-  # supplies model parameters after model setup and eager-initialization checks.
-  _partial_: true
-  lr: ${optimizer_params.lr}
-
-
-# -----------------------------------------------------------------------------
-# Trainer
-# -----------------------------------------------------------------------------
-trainer:
-  _target_: spenn.training.trainer.VMCTrainer
-  max_steps: ${training.max_steps}
-  log_every_n_steps: ${training.log_every_n_steps}
-  return_terms: ${training.return_terms}
-
-
-# -----------------------------------------------------------------------------
 # Callbacks
 # -----------------------------------------------------------------------------
-# Callbacks own lifecycle side effects, runtime checks, checkpoints, and
-# human-facing status.
+# Callbacks own lifecycle side effects, timing, and human-facing status.
 #
 # Loggers own persistent machine-readable metrics.
 callbacks:
@@ -449,11 +385,12 @@ callbacks:
       - exception
     output_path: ${run.dir}/metadata.json
 
-  # Save compact lifecycle status for quick inspection.
+  # Save compact lifecycle status and write the [eval] terminal summary line.
   - _target_: spenn.callback.Status
     triggers:
       - run_start
       - run_end
+      - evaluate_end
       - exception
     output_path: ${run.dir}/status.json
 
@@ -465,81 +402,21 @@ callbacks:
       - exception
     cuda_synchronize: ${timing.cuda_synchronize}
 
-  # Per-step timing: train/perf/step_time_sec and its rolling mean.
-  - _target_: spenn.callback.TrainStepTiming
+  # Evaluation wall time: eval/perf/wall_time_sec.
+  - _target_: spenn.callback.EvaluationTiming
     triggers:
-      - step_start
-      - step_end
-    rolling_window: ${timing.rolling_window}
+      - evaluate_start
+      - evaluate_end
+      - exception
     cuda_synchronize: ${timing.cuda_synchronize}
 
-  # Fail fast on nonfinite energies/logabs or malformed wavefunction/batch data.
-  - _target_: spenn.callback.DataValidity
+  # Per-diagnostic durations: diagnostics/<name>/time_sec.
+  - _target_: spenn.callback.DiagnosticTiming
     triggers:
-      - step_end
-    every_n_steps: ${checks.every_n_steps}
-    fail_fast: ${checks.fail_fast}
-    max_nonfinite_energy_fraction: ${checks.data_validity.max_nonfinite_energy_fraction}
-    max_nonfinite_logabs_fraction: ${checks.data_validity.max_nonfinite_logabs_fraction}
-    check_loss: ${checks.data_validity.check_loss}
-    check_wavefunction_output: ${checks.data_validity.check_wavefunction_output}
-    check_batch: ${checks.data_validity.check_batch}
-    strict_sign_values: ${checks.data_validity.strict_sign_values}
-
-  # Track gradient norms and optionally fail on nonfinite gradients.
-  - _target_: spenn.callback.GradientStats
-    triggers:
-      - step_end
-    every_n_steps: ${checks.every_n_steps}
-    fail_fast: ${checks.fail_fast}
-    check_finite: ${checks.gradients.check_finite}
-
-  # Track sampler health. This is warning-oriented in the smoke config.
-  - _target_: spenn.callback.SamplerHealth
-    triggers:
-      - step_end
-    every_n_steps: ${checks.every_n_steps}
-    fail_fast: ${checks.sampler.fail_fast}
-
-  # Runtime equivariance checks. These are intentionally frequent in smoke runs.
-  - _target_: spenn.callback.RuntimeEquivariance
-    triggers:
-      - step_end
-    every_n_steps: ${checks.every_n_steps}
-    probability: ${checks.equivariance.probability}
-    fail_fast: ${checks.fail_fast}
-    artifact_dir: ${run.dir}/checks/equivariance
-    checkers:
-      - _target_: spenn.equivariance.checks.FullModelEquivarianceChecker
-        permutation_fraction: ${checks.equivariance.permutation_fraction}
-        max_permutations: ${checks.equivariance.max_permutations}
-        seed: ${runtime.seed}
-        atol: ${checks.equivariance.atol}
-        rtol: ${checks.equivariance.rtol}
-
-      - _target_: spenn.equivariance.checks.TraceEquivarianceChecker
-        permutation_fraction: ${checks.equivariance.permutation_fraction}
-        max_permutations: ${checks.equivariance.max_permutations}
-        seed: ${runtime.seed}
-        compare_output: false
-        atol: ${checks.equivariance.atol}
-        rtol: ${checks.equivariance.rtol}
-
-  # Save checkpoints. Smoke runs checkpoint every step; benchmark configs should
-  # usually use a lower cadence.
-  - _target_: spenn.callback.Checkpoint
-    triggers:
-      - step_end
-    every_n_steps: ${checkpoint.every_n_steps}
-    output_dir: ${run.dir}/checkpoints
-
-  # Human-facing terminal progress. This should render compact lines for local
-  # terminals and SLURM logs. It is not the authoritative metrics record.
-  - _target_: spenn.callback.Status
-    triggers:
-      - step_end
-    every_n_steps: ${status.every_n_steps}
-    include: ${status.include}
+      - diagnostic_start
+      - diagnostic_end
+      - diagnostic_failed
+    cuda_synchronize: ${timing.cuda_synchronize}
 
 
 # -----------------------------------------------------------------------------
@@ -577,8 +454,8 @@ loggers:
   #   dashboard_aliases: ${wandb.dashboard_aliases}
   #   health_flags: ${wandb.health_flags}
   #   log_artifacts: ${wandb.log_artifacts}
-  #   # Compact provenance mirrored into the W&B run config: links the
-  #   # dashboard run back to the authoritative local run directory.
+  #   # Compact provenance mirrored into the W&B run config: links the dashboard
+  #   # run back to the authoritative local run directory.
   #   config:
   #     run_id: ${run.run_id}
   #     run_dir: ${run.dir}

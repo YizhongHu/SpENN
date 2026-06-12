@@ -435,6 +435,10 @@ Health flags do not replace detailed metrics under `checks/...`.
 
 ## Step conventions
 
+Steps are 0-indexed: the first training step is `step = 0`. This means the
+first step always satisfies `step % every_n_steps == 0` cadence gates, so
+periodic callbacks and loggers report at the start of every run.
+
 Training metrics use the training step:
 
 ```text
