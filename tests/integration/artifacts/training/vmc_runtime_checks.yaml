@@ -72,7 +72,7 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/status.json
-- _target_: spenn.callback.DataValidity
+- _target_: spenn.callback.DataIntegrity
   triggers:
   - step_end
   every_n_steps: 1

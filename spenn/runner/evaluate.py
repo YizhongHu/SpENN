@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from spenn.artifacts import RunContext, RunResult
-from spenn.diagnostics import Diagnostic, EvaluationContext, JsonScalar
+from spenn.diagnostics import EvaluationContext, evaluate_diagnostics, validate_diagnostics
 from spenn.dependencies import require_torch
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
 
@@ -58,7 +58,11 @@ class Evaluate(Runner):
         # Keep the configured form (sequence or ``dict[str, term]``);
         # ``local_energy`` normalizes it (see ``normalize_hamiltonian_terms``).
         self.hamiltonian_terms = hamiltonian_terms
-        self.diagnostics = _validate_diagnostics(diagnostics)
+        if diagnostics is None or not tuple(diagnostics):
+            raise ValueError(
+                "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
+            )
+        self.diagnostics = validate_diagnostics(diagnostics)
         self.return_terms = bool(return_terms)
 
     def run(self, context: RunContext) -> RunResult:
@@ -100,7 +104,7 @@ class Evaluate(Runner):
             sampler_stats=dict(sampler_stats),
             hamiltonian_terms=normalized_terms,
         )
-        metrics = _evaluate_diagnostics(
+        metrics = evaluate_diagnostics(
             self.diagnostics,
             evaluation,
             emit=lambda name, *, payload=None: self.emit(name, context, payload=payload),
@@ -116,34 +120,6 @@ class Evaluate(Runner):
 
 
 
-def _validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnostic, ...]:
-    """Validate configured diagnostics without invoking them."""
-
-    if diagnostics is None:
-        raise ValueError(
-            "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
-        )
-
-    validated: list[Diagnostic] = []
-    for index, diagnostic in enumerate(diagnostics):
-        if not callable(getattr(diagnostic, "evaluate", None)):
-            raise TypeError(
-                f"diagnostics[{index}] must be an instantiated diagnostic object with an evaluate(...) "
-                f"method, got {type(diagnostic)!r}. This usually means the diagnostic config was not "
-                "recursively instantiated by Hydra. Put diagnostics inside the Evaluate runner config "
-                "or pass instantiated diagnostic objects."
-            )
-        name = getattr(diagnostic, "name", None)
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"diagnostics[{index}] must expose a non-empty string name")
-        validated.append(diagnostic)
-    if not validated:
-        raise ValueError(
-            "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
-        )
-    return tuple(validated)
-
-
 def _split_local_energy_result(
     result: LocalEnergyResult | torch.Tensor,
 ) -> tuple[torch.Tensor, Mapping[str, torch.Tensor] | None]:
@@ -152,50 +128,6 @@ def _split_local_energy_result(
     if isinstance(result, LocalEnergyResult):
         return result.total, result.terms
     return result, None
-
-
-def _evaluate_diagnostics(
-    diagnostics: Sequence[Diagnostic],
-    context: EvaluationContext,
-    *,
-    emit=None,
-) -> dict[str, JsonScalar]:
-    """Evaluate diagnostics and merge their flat metric mappings."""
-
-    metrics: dict[str, JsonScalar] = {}
-    for diagnostic in diagnostics:
-        payload = {"diagnostic_name": diagnostic.name, "step": 0}
-        if emit is not None:
-            emit("diagnostic_start", payload=payload)
-        try:
-            result = diagnostic.evaluate(context)
-        except Exception as exc:
-            if emit is not None:
-                emit("diagnostic_failed", payload={**payload, "exception": exc})
-            raise
-        if emit is not None:
-            emit("diagnostic_end", payload=payload)
-        if not isinstance(result, Mapping):
-            raise TypeError(f"diagnostic {diagnostic.name!r} must return a mapping of metric names to scalars")
-        for key, value in result.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ValueError(f"diagnostic {diagnostic.name!r} returned an empty metric name")
-            if key in metrics:
-                raise ValueError(f"diagnostic metric key collision for {key!r}")
-            _validate_json_scalar(diagnostic.name, key, value)
-            metrics[key] = value
-    return metrics
-
-
-def _validate_json_scalar(diagnostic_name: str, key: str, value: object) -> None:
-    """Fail loudly when a diagnostic returns a non-scalar metric value."""
-
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return
-    raise TypeError(
-        f"diagnostic {diagnostic_name!r} metric {key!r} must be a JSON scalar, "
-        f"got {type(value).__name__}"
-    )
 
 
 
