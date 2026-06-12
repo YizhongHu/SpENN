@@ -92,6 +92,14 @@ new scaffold documented in package docstrings.
       trimmed `Evaluate` to a minimal sampled local-energy evaluator; standard
       run dirs are `checkpoints/`, `checks/`, and `diagnostics/`.
 
+- [x] PR8.0: validation-scan infrastructure for Hooke benchmark selection.
+      Renamed `DataValidity` -> `DataIntegrity` (`checks/data_integrity/*`),
+      added `spenn.callback.Validation` (train-end independent-sampler
+      validation under `validation/*`, no exact-reference energy), walker
+      geometry diagnostics in `MetropolisSampler.collect_samples` stats, and
+      the `experiments/hooke/studies/pair_validation/` study (manifest,
+      collect.py, select.py, SLURM array launcher, end-to-end test_run.sh).
+
 ## Next Core Work
 
 - [ ] Introduce the PR6 `diagnostics` interface (e.g. `EnergyEvaluation` for

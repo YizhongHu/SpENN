@@ -58,7 +58,7 @@ class Evaluate(Runner):
         # Keep the configured form (sequence or ``dict[str, term]``);
         # ``local_energy`` normalizes it (see ``normalize_hamiltonian_terms``).
         self.hamiltonian_terms = hamiltonian_terms
-        if diagnostics is None:
+        if diagnostics is None or not tuple(diagnostics):
             raise ValueError(
                 "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
             )
