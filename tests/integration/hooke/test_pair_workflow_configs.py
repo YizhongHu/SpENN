@@ -93,7 +93,7 @@ def test_canonical_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> No
     namespaces = _metrics_by_namespace(run_dir)
     assert "energy" in namespaces["train"]
     assert "acceptance_rate" in namespaces["train/sampler"]
-    assert "passed" in namespaces["checks/data_validity"]
+    assert "passed" in namespaces["checks/data_integrity"]
     assert "passed" in namespaces["checks/equivariance/full_model"]
     assert "wall_time_sec" in namespaces["runtime"]
     assert {"step_time_sec", "step_time_sec_rolling_mean"} <= namespaces["train/perf"]
