@@ -51,8 +51,6 @@ class Validation(Callback):
     return_terms : bool, optional
         Whether to request per-term local-energy components from
         `local_energy`.
-    enabled : bool, optional
-        Config-level switch; when ``False`` the callback never runs.
     """
 
     def __init__(
@@ -64,11 +62,9 @@ class Validation(Callback):
         diagnostics: Sequence[object] | None = None,
         namespace: str = "validation",
         return_terms: bool = False,
-        enabled: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__(triggers, **kwargs)
-        self.enabled = bool(enabled)
         from spenn.diagnostics import validate_diagnostics
 
         namespace = str(namespace).strip("/")
@@ -97,15 +93,13 @@ class Validation(Callback):
                 )
 
     def should_run(self, event: Event) -> bool:
-        """Gate on `enabled`; ``train_end`` bypasses the periodic step filter.
+        """Let ``train_end`` bypass the periodic step filter.
 
         The ``every_n_steps`` cadence only applies to periodic ``step_end``
-        validation. ``train_end`` always validates (when enabled and
-        triggered), even when the final step does not land on the cadence.
+        validation. ``train_end`` always validates when triggered, even when
+        the final step does not land on the cadence.
         """
 
-        if not self.enabled:
-            return False
         if event.name == "train_end":
             if event.name not in self.triggers:
                 return False
