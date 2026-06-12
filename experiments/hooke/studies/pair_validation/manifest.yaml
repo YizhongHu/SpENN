@@ -103,8 +103,17 @@ final_evaluation:
   # evaluate_selected.py refuses to emit commands whose training seeds overlap
   # the validation seeds unless this is set true.
   allow_validation_seed_reuse: false
+  # Checkpoint/model pairing mode. structured_checkpoint: the fresh final
+  # training runs write schema-v1 checkpoints carrying model_config_hash, and
+  # the generated eval configs pin expected_model_config_hash so loading
+  # verifies the pairing. legacy_resolved_config_workaround: only for
+  # evaluating pre-schema checkpoints of already-completed training runs
+  # (model spec copied from the training resolved_config.yaml; strict load,
+  # no hash verification); it must not become the long-term benchmark path.
+  checkpoint_loading: structured_checkpoint
   # Final evaluation sampler (larger than validation); evaluate_selected.py
-  # passes these as overrides so the manifest stays the source of truth.
+  # bakes these into the generated eval configs so the manifest stays the
+  # source of truth.
   sampler:
     n_walkers: 8192
     burn_in: 1000

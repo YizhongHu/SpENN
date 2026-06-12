@@ -236,10 +236,15 @@ uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
 This writes to `results/`:
 
 ```text
-final_eval_commands.sh    - train + eval run.py commands, one pair per seed
-final_eval_manifest.yaml  - frozen provenance (winner, seeds, sampler, git sha,
-                            selection report path, exact-reference policy)
-final_eval_inputs.csv     - one row per planned (training seed, eval seed) pair
+final_eval_commands.sh             - train + eval run.py commands, one pair per seed
+final_eval_manifest.yaml           - frozen provenance (winner, seeds, sampler, git
+                                     sha, checkpoint-loading mode, selection report
+                                     path, exact-reference policy)
+final_eval_inputs.csv              - one row per planned (training seed, eval seed)
+                                     pair, with checkpoint/model-spec sources
+final_eval_config_seed*_eval*.yaml - one self-contained generated eval config per
+                                     pair (explicit model spec, checkpoint path,
+                                     seeds, sampler, study identity all baked in)
 ```
 
 The benchmark is two stages per seed pair, generated as standard `run.py`
@@ -249,8 +254,9 @@ all diagnostics):
 ```text
 1. retrain the selected config with a fresh final training seed
    (pair_train.yaml + the selected overrides)
-2. evaluate the trained checkpoint (checkpoints/latest.pt) with
-   pair_final_eval.yaml: the Evaluate runner restores the weights
+2. evaluate the trained checkpoint (checkpoints/latest.pt) by running the
+   generated final_eval_config_seed<t>_eval<e>.yaml (derived from
+   pair_final_eval.yaml): the Evaluate runner restores the weights
    (spenn.callback.checkpoint.load_model_checkpoint), samples with the large
    final-evaluation sampler (8192 walkers), and logs eval/* metrics including
    eval/energy_error against the exact reference
@@ -260,6 +266,42 @@ Final seeds are fresh: training seeds `100-109` and evaluation seeds
 `100000-100009` are disjoint from the validation grid seeds, and the script
 refuses to generate commands that reuse validation seeds unless the manifest
 sets `final_evaluation.allow_validation_seed_reuse: true`.
+
+### Checkpoint loading contract
+
+A checkpoint pairs with an *explicit* model spec; architecture is never
+inferred from state-dict keys. Training checkpoints use a structured schema
+(`schema_version: 1`, written by `spenn.callback.Checkpoint`) that stores the
+weights plus `model_config`, `model_config_hash` (sha256 of the canonical
+resolved model config), `resolved_config_hash`, `config_id`, and
+git/runtime/version provenance. Loading
+(`spenn.callback.checkpoint.load_model_checkpoint`) is strict by default —
+missing or unexpected keys fail loudly — and verifies
+`evaluation.expected_model_config_hash` against the checkpoint when set; the
+only escape hatch is the explicit
+`evaluation.allow_model_config_mismatch: true`, which canonical benchmark
+configs must not set.
+
+`final_evaluation.checkpoint_loading` in the manifest picks how
+`evaluate_selected.py` pairs eval configs with checkpoints:
+
+```text
+structured_checkpoint (default)
+  Fresh final training runs write schema-v1 checkpoints. Each generated eval
+  config carries the model spec the training command resolves to (training
+  run's resolved_config.yaml when the run already exists, otherwise the same
+  OmegaConf resolution the training command performs) and pins
+  expected_model_config_hash, so loading verifies the pairing end to end.
+
+legacy_resolved_config_workaround
+  Only for pre-schema checkpoints of already-completed training runs (the
+  current study's outputs do not need rerunning). The model spec is copied
+  from the training run's resolved_config.yaml; loading stays strict, but no
+  hash is verified because legacy payloads carry none. The mode is recorded
+  in final_eval_manifest.yaml (checkpoint_loading.mode,
+  model_config_hash_verified: false) and in each generated eval config; it
+  must not become the long-term benchmark path.
+```
 
 Run the benchmark either locally (`--execute` runs the commands sequentially
 and records `final_eval_runs.csv`) or through SLURM by submitting each command
@@ -321,6 +363,8 @@ selection_report.md              - select.py: ranking, margin, tie-breakers, fla
 final_eval_commands.sh           - evaluate_selected.py: train + eval commands
 final_eval_manifest.yaml         - evaluate_selected.py: benchmark provenance
 final_eval_inputs.csv            - evaluate_selected.py: planned run pairs
+final_eval_config_*.yaml         - evaluate_selected.py: generated per-pair eval
+                                   configs (explicit model spec + checkpoint pin)
 final_eval_runs.csv              - evaluate_selected.py --execute: run statuses
 final_benchmark_summary.csv/json - evaluate_selected.py --collect: per-run table
 final_benchmark_report.md        - evaluate_selected.py --collect: report

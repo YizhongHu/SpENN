@@ -135,6 +135,7 @@ final_evaluation:
   training_seeds: [100, 101]
   eval_seeds: [100000, 100001]
   allow_validation_seed_reuse: false
+  checkpoint_loading: structured_checkpoint
   sampler:
     n_walkers: 8192
     burn_in: 1000
@@ -192,8 +193,12 @@ fail() { echo "TEST RUN FAILED: $1"; exit 1; }
 [[ -s "$RESULTS/final_eval_inputs.csv" ]] || fail "final_eval_inputs.csv missing/empty"
 grep -q "validation/energy" "$RESULTS/runs.csv" || fail "no validation/energy column"
 grep -q "radius_q99" "$RESULTS/runs.csv" || fail "no sampler geometry columns"
-grep -q "pair_final_eval.yaml" "$RESULTS/final_eval_commands.sh" \
-  || fail "final eval commands missing eval config"
+grep -q "final_eval_config_seed" "$RESULTS/final_eval_commands.sh" \
+  || fail "final eval commands missing generated eval configs"
+[[ -s "$RESULTS/final_eval_config_seed100_eval100000.yaml" ]] \
+  || fail "generated final eval config missing/empty"
+grep -q "expected_model_config_hash" "$RESULTS/final_eval_config_seed100_eval100000.yaml" \
+  || fail "generated eval config missing model-config hash pin"
 completed=$(awk -F, 'NR>1 && $2=="completed"' "$RESULTS/runs.csv" | wc -l)
 [[ "$completed" -eq 4 ]] || fail "expected 4 completed runs, got $completed"
 # n_failed_seeds must be 0 for every config group (located by header name).

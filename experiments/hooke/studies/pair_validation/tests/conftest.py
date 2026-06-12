@@ -1,7 +1,8 @@
 """Shared fixtures for the pair_validation study-script tests.
 
-These tests exercise experiments-owned code only; they must not import
-``spenn``.
+These tests exercise experiments-owned code; the only spenn surface allowed
+is the torch-free checkpoint hash helper that evaluate_selected.py shares
+with the Checkpoint callback (physics stays with the Evaluate runner).
 """
 
 from __future__ import annotations
@@ -93,6 +94,7 @@ def manifest_path(tmp_path: Path) -> Path:
             "training_seeds": [100, 101],
             "eval_seeds": [100000, 100001],
             "allow_validation_seed_reuse": False,
+            "checkpoint_loading": "structured_checkpoint",
             "sampler": {
                 "n_walkers": 4096,
                 "burn_in": 100,

@@ -20,21 +20,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100000 (checkpoint from seed 100)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed100_eval100000 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100000 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed100/checkpoints/latest.pt \
-  evaluation.training_seed=100 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed100_eval100000.yaml
 
 # --- training seed 101 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -49,21 +35,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100001 (checkpoint from seed 101)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed101_eval100001 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100001 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed101/checkpoints/latest.pt \
-  evaluation.training_seed=101 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed101_eval100001.yaml
 
 # --- training seed 102 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -78,21 +50,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100002 (checkpoint from seed 102)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed102_eval100002 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100002 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed102/checkpoints/latest.pt \
-  evaluation.training_seed=102 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed102_eval100002.yaml
 
 # --- training seed 103 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -107,21 +65,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100003 (checkpoint from seed 103)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed103_eval100003 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100003 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed103/checkpoints/latest.pt \
-  evaluation.training_seed=103 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed103_eval100003.yaml
 
 # --- training seed 104 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -136,21 +80,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100004 (checkpoint from seed 104)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed104_eval100004 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100004 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed104/checkpoints/latest.pt \
-  evaluation.training_seed=104 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed104_eval100004.yaml
 
 # --- training seed 105 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -165,21 +95,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100005 (checkpoint from seed 105)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed105_eval100005 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100005 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed105/checkpoints/latest.pt \
-  evaluation.training_seed=105 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed105_eval100005.yaml
 
 # --- training seed 106 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -194,21 +110,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100006 (checkpoint from seed 106)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed106_eval100006 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100006 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed106/checkpoints/latest.pt \
-  evaluation.training_seed=106 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed106_eval100006.yaml
 
 # --- training seed 107 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -223,21 +125,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100007 (checkpoint from seed 107)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed107_eval100007 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100007 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed107/checkpoints/latest.pt \
-  evaluation.training_seed=107 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed107_eval100007.yaml
 
 # --- training seed 108 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -252,21 +140,7 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100008 (checkpoint from seed 108)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed108_eval100008 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100008 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed108/checkpoints/latest.pt \
-  evaluation.training_seed=108 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed108_eval100008.yaml
 
 # --- training seed 109 ---
 uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
@@ -281,18 +155,4 @@ uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yam
   model_params.gate_activation=sigmoid
 
 # eval seed 100009 (checkpoint from seed 109)
-uv run python run.py --config experiments/hooke/configs/benchmark/pair_final_eval.yaml \
-  run.root=outputs/hooke_pair_final_v1 \
-  run.run_id=final_eval_seed109_eval100009 \
-  study.name=hooke_pair_final_v1 \
-  study.config_id=lr=0.001_channels=32_layers=1_gate_activation=sigmoid \
-  runtime.seed=100009 \
-  evaluation.checkpoint=outputs/hooke_pair_final_v1/hooke_pair_benchmark/pair/final_train_seed109/checkpoints/latest.pt \
-  evaluation.training_seed=109 \
-  sampler_params.n_walkers=8192 \
-  sampler_params.burn_in=1000 \
-  sampler_params.n_steps=500 \
-  sampler_params.proposal_scale=0.35 \
-  model_params.channels=32 \
-  model_params.layers=1 \
-  model_params.gate_activation=sigmoid
+uv run python run.py --config experiments/hooke/studies/pair_validation/results/final_eval_config_seed109_eval100009.yaml

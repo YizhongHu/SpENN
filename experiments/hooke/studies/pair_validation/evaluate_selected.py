@@ -11,8 +11,27 @@ The final benchmark is two staged sets of standard ``run.py`` commands:
 1. retrain the selected config once per fresh final training seed
    (``pair_train.yaml``), and
 2. evaluate each trained checkpoint with the large final-evaluation sampler
-   and its paired evaluation seed (``pair_final_eval.yaml`` + the Evaluate
-   runner, which owns all physics diagnostics).
+   and its paired evaluation seed, via a generated, self-contained eval
+   config derived from ``pair_final_eval.yaml`` (the Evaluate runner owns
+   all physics diagnostics).
+
+Checkpoint/model pairing contract (issue #45 addendum): each generated eval
+config carries the *explicit* model spec of its training run — copied from
+the training run's ``resolved_config.yaml`` when it exists, otherwise
+resolved from the training config plus the selected overrides (the same
+resolution the training command performs). Architecture is never inferred
+from checkpoint keys. ``final_evaluation.checkpoint_loading`` in the
+manifest picks the mode:
+
+- ``structured_checkpoint`` (default): training runs write schema-v1
+  checkpoints carrying ``model_config_hash``; the generated eval config pins
+  ``evaluation.expected_model_config_hash`` so loading verifies the pairing.
+- ``legacy_resolved_config_workaround``: for pre-schema checkpoints from
+  already-completed training runs. The model spec is copied from the
+  training ``resolved_config.yaml``, loading stays strict, but no hash is
+  verified (legacy payloads carry none). Recorded as such in
+  ``final_eval_manifest.yaml``; this mode must not become the long-term
+  benchmark path.
 
 ``--collect`` summarizes existing final-eval run directories into
 ``final_benchmark_summary.csv/json`` and ``final_benchmark_report.md``.
@@ -25,6 +44,7 @@ Local run outputs are authoritative end to end; this script never reads W&B.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import math
@@ -34,8 +54,15 @@ from pathlib import Path
 from statistics import median
 
 import yaml
+from omegaconf import OmegaConf
+
+# Canonical config hashing is owned by the checkpoint module (torch-free).
+from spenn.callback.checkpoint import model_config_hash
 
 from collect import _read_json, _read_yaml, load_manifest, lookup_dotted, read_last_metrics
+
+# Manifest final_evaluation.checkpoint_loading values (issue #45 addendum).
+CHECKPOINT_LOADING_MODES = ("structured_checkpoint", "legacy_resolved_config_workaround")
 
 # Columns of the final benchmark summary (issue-required field list).
 _SUMMARY_COLUMNS = (
@@ -98,7 +125,51 @@ def final_evaluation_policy(manifest: dict) -> dict:
                 f"final seeds {reused} reuse validation seeds; set "
                 "final_evaluation.allow_validation_seed_reuse in the manifest to permit this"
             )
+
+    mode = checkpoint_loading_mode(policy)
+    if mode not in CHECKPOINT_LOADING_MODES:
+        raise ValueError(
+            f"final_evaluation.checkpoint_loading must be one of {CHECKPOINT_LOADING_MODES}, "
+            f"got {mode!r}"
+        )
     return policy
+
+
+def checkpoint_loading_mode(policy: dict) -> str:
+    """Checkpoint pairing mode declared by the manifest (structured default)."""
+
+    return str(policy.get("checkpoint_loading", "structured_checkpoint"))
+
+
+def trained_model_spec(train_run_dir: Path) -> dict | None:
+    """Explicit model spec from an existing training run, or None.
+
+    The training run's ``resolved_config.yaml`` is the authoritative source of
+    the trained architecture (issue #45 addendum workaround): copying it means
+    the eval model is explicitly configured, never guessed from checkpoint keys.
+    """
+
+    resolved_path = train_run_dir / "resolved_config.yaml"
+    if not resolved_path.is_file():
+        return None
+    return (_read_yaml(resolved_path) or {}).get("model")
+
+
+def planned_model_spec(train_config: Path, overrides: list[str]) -> dict | None:
+    """Model spec the planned training command will resolve to.
+
+    Replays the training command's config resolution (OmegaConf load + dotlist
+    overrides) and resolves only the ``model`` subtree, so the hash of this
+    spec equals the ``model_config_hash`` a schema-v1 checkpoint will store.
+    """
+
+    cfg = OmegaConf.load(train_config)
+    if overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(list(overrides)))
+    node = OmegaConf.select(cfg, "model")
+    if node is None:
+        return None
+    return OmegaConf.to_container(node, resolve=True)
 
 
 def _experiment_subdir(config_path: Path) -> str:
@@ -112,11 +183,66 @@ def _experiment_subdir(config_path: Path) -> str:
     return f"{name}/{sector}"
 
 
-def _sampler_overrides(policy: dict) -> list[str]:
-    """Final-eval sampler settings as dotlist overrides (manifest-owned)."""
+def _selected_model_params(overrides: list[str]) -> dict[str, object]:
+    """Selected ``model_params.*`` override values as a provenance mapping."""
 
-    sampler = policy.get("sampler", {})
-    return [f"sampler_params.{key}={value}" for key, value in sampler.items()]
+    params: dict[str, object] = {}
+    for override in overrides:
+        key, _, value = override.partition("=")
+        if key.startswith("model_params."):
+            params[key.removeprefix("model_params.")] = yaml.safe_load(value)
+    return params
+
+
+def _baked_eval_config(
+    eval_config: Path,
+    entry: dict[str, object],
+    *,
+    study_name: str,
+    model_spec: dict | None,
+    model_params: dict[str, object],
+    sampler: dict,
+    mode: str,
+    run_root: Path,
+) -> dict:
+    """One self-contained eval config derived from the base eval config.
+
+    Bakes in the explicit model spec, checkpoint pairing, seeds, study
+    identity, and sampler settings, so the eval run is fully reproducible from
+    the generated file alone (no command-line overrides).
+    """
+
+    config = copy.deepcopy(_read_yaml(eval_config))
+    config.setdefault("run", {})["root"] = str(run_root / study_name)
+    config["run"]["run_id"] = entry["eval_run_id"]
+    config.setdefault("study", {})["name"] = study_name
+    config["study"]["config_id"] = entry["config_id"]
+    config.setdefault("runtime", {})["seed"] = entry["eval_seed"]
+    if model_spec is not None:
+        config["model"] = copy.deepcopy(model_spec)
+    # Keep the user-facing knob block consistent with the explicit model spec.
+    config.setdefault("model_params", {}).update(model_params)
+    config.setdefault("sampler_params", {}).update(sampler)
+
+    evaluation = config.setdefault("evaluation", {})
+    evaluation["checkpoint"] = entry["source_checkpoint_path"]
+    evaluation["checkpoint_strict"] = True
+    evaluation["allow_model_config_mismatch"] = False
+    evaluation["expected_model_config_hash"] = (
+        entry["source_model_config_hash"] if mode == "structured_checkpoint" else None
+    )
+    evaluation["training_seed"] = entry["training_seed"]
+
+    # Checkpoint pairing provenance (issue #45 addendum); lands verbatim in the
+    # eval run's resolved_config.yaml.
+    config["checkpoint_loading"] = {
+        "mode": mode,
+        "source_resolved_config": entry["source_resolved_config"],
+        "checkpoint_path": entry["source_checkpoint_path"],
+        "strict": True,
+        "model_config_hash_verified": mode == "structured_checkpoint",
+    }
+    return config
 
 
 def build_plan(
@@ -126,21 +252,21 @@ def build_plan(
     run_root: Path,
     train_config: Path,
     eval_config: Path,
+    output_dir: Path,
 ) -> list[dict[str, object]]:
-    """Plan one train + one paired eval command per final training seed."""
+    """Plan one train command + one generated eval config per training seed."""
 
     policy = final_evaluation_policy(manifest)
+    mode = checkpoint_loading_mode(policy)
     study_name = str(policy.get("study_name") or f"{manifest['study']['name']}_final")
     config_id = str(selected["selected"]["config_id"])
     overrides = [str(override) for override in selected["overrides"]]
-    # The eval run only rebuilds the architecture; training-only overrides
-    # (e.g. optimizer_params.lr) have no key in the eval config.
-    model_overrides = [override for override in overrides if override.startswith("model_params.")]
+    model_params = _selected_model_params(overrides)
+    sampler = dict(policy.get("sampler", {}))
 
     root = run_root / study_name
     train_subdir = _experiment_subdir(train_config)
     eval_subdir = _experiment_subdir(eval_config)
-    sampler_overrides = _sampler_overrides(policy)
 
     plan: list[dict[str, object]] = []
     for training_seed, eval_seed in zip(policy["training_seeds"], policy["eval_seeds"]):
@@ -149,6 +275,26 @@ def build_plan(
         train_run_dir = root / train_subdir / train_run_id
         eval_run_dir = root / eval_subdir / eval_run_id
         checkpoint = train_run_dir / "checkpoints" / "latest.pt"
+        final_eval_config_path = output_dir / f"final_eval_config_seed{training_seed}_eval{eval_seed}.yaml"
+
+        # The explicit model spec for this eval run: the training run's
+        # resolved config when it already exists; otherwise (fresh benchmark
+        # dry-run) the spec the planned training command will resolve to.
+        model_spec = trained_model_spec(train_run_dir)
+        source_resolved_config = (
+            str(train_run_dir / "resolved_config.yaml") if model_spec is not None else None
+        )
+        if model_spec is None:
+            if mode == "legacy_resolved_config_workaround":
+                raise ValueError(
+                    "legacy_resolved_config_workaround needs completed training runs; "
+                    f"missing {train_run_dir / 'resolved_config.yaml'}"
+                )
+            model_spec = planned_model_spec(
+                train_config, [f"runtime.seed={training_seed}", *overrides]
+            )
+        source_model_config_hash = None if model_spec is None else model_config_hash(model_spec)
+        train_metadata = _read_json(train_run_dir / "metadata.json")
 
         train_command = [
             "uv", "run", "python", "run.py",
@@ -160,40 +306,55 @@ def build_plan(
             f"runtime.seed={training_seed}",
             *overrides,
         ]
-        eval_command = [
-            "uv", "run", "python", "run.py",
-            "--config", str(eval_config),
-            f"run.root={root}",
-            f"run.run_id={eval_run_id}",
-            f"study.name={study_name}",
-            f"study.config_id={config_id}",
-            f"runtime.seed={eval_seed}",
-            f"evaluation.checkpoint={checkpoint}",
-            f"evaluation.training_seed={training_seed}",
-            *sampler_overrides,
-            *model_overrides,
-        ]
-        plan.append(
-            {
-                "config_id": config_id,
-                "training_seed": training_seed,
-                "eval_seed": eval_seed,
-                "train_run_id": train_run_id,
-                "train_run_dir": str(train_run_dir),
-                "checkpoint": str(checkpoint),
-                "eval_run_id": eval_run_id,
-                "eval_run_dir": str(eval_run_dir),
-                "train_command": train_command,
-                "eval_command": eval_command,
-            }
+        # Everything eval-side is baked into the generated config.
+        eval_command = ["uv", "run", "python", "run.py", "--config", str(final_eval_config_path)]
+
+        entry: dict[str, object] = {
+            "config_id": config_id,
+            "training_seed": training_seed,
+            "eval_seed": eval_seed,
+            "train_run_id": train_run_id,
+            "source_train_run_dir": str(train_run_dir),
+            "source_resolved_config": source_resolved_config,
+            "source_checkpoint_path": str(checkpoint),
+            "source_model_config_hash": source_model_config_hash,
+            "source_train_git_sha": train_metadata.get("git_commit") or None,
+            "eval_run_id": eval_run_id,
+            "eval_run_dir": str(eval_run_dir),
+            "final_eval_config_path": str(final_eval_config_path),
+            "train_command": train_command,
+            "eval_command": eval_command,
+        }
+        entry["eval_config"] = _baked_eval_config(
+            eval_config,
+            entry,
+            study_name=study_name,
+            model_spec=model_spec,
+            model_params=model_params,
+            sampler=sampler,
+            mode=mode,
+            run_root=run_root,
         )
+        plan.append(entry)
     return plan
 
 
+def write_eval_configs(plan: list[dict[str, object]]) -> None:
+    """Write each planned eval run's self-contained generated config."""
+
+    for entry in plan:
+        path = Path(entry["final_eval_config_path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(entry["eval_config"], handle, sort_keys=False)
+
+
 def _shell_line(command: list[str]) -> str:
-    """One command as a readable multi-line shell invocation."""
+    """One command as a readable (multi-line when long) shell invocation."""
 
     head, args = command[:6], command[6:]
+    if not args:
+        return " ".join(head)
     lines = [" ".join(head) + " \\"]
     lines += [f"  {arg} \\" for arg in args[:-1]]
     lines.append(f"  {args[-1]}")
@@ -248,6 +409,7 @@ def write_final_manifest(
     path: Path,
 ) -> None:
     policy = final_evaluation_policy(manifest)
+    mode = checkpoint_loading_mode(policy)
     payload = {
         "study": {
             "name": str(policy.get("study_name") or f"{manifest['study']['name']}_final"),
@@ -261,6 +423,14 @@ def write_final_manifest(
         "final_eval_sampler": dict(policy.get("sampler", {})),
         "final_training_seeds": list(policy["training_seeds"]),
         "final_eval_seeds": list(policy["eval_seeds"]),
+        # How eval models are paired with checkpoints (issue #45 addendum):
+        # structured checkpoints verify model_config_hash; the legacy
+        # resolved-config workaround copies the model spec but cannot verify.
+        "checkpoint_loading": {
+            "mode": mode,
+            "strict": True,
+            "model_config_hash_verified": mode == "structured_checkpoint",
+        },
         # The exact reference enters only here, after selection froze.
         "exact_reference": {
             "source": "references.exact_energy in the final eval config (Taut 1993, omega=0.5 Hooke singlet)",
@@ -270,8 +440,12 @@ def write_final_manifest(
             {
                 "training_seed": entry["training_seed"],
                 "eval_seed": entry["eval_seed"],
-                "train_run_dir": entry["train_run_dir"],
-                "checkpoint": entry["checkpoint"],
+                "source_train_run_dir": entry["source_train_run_dir"],
+                "source_resolved_config": entry["source_resolved_config"],
+                "source_checkpoint_path": entry["source_checkpoint_path"],
+                "source_model_config_hash": entry["source_model_config_hash"],
+                "source_train_git_sha": entry["source_train_git_sha"],
+                "final_eval_config_path": entry["final_eval_config_path"],
                 "eval_run_dir": entry["eval_run_dir"],
             }
             for entry in plan
@@ -287,10 +461,13 @@ def write_inputs_csv(plan: list[dict[str, object]], path: Path) -> None:
         "training_seed",
         "eval_seed",
         "train_run_id",
-        "train_run_dir",
-        "checkpoint",
+        "source_train_run_dir",
+        "source_resolved_config",
+        "source_checkpoint_path",
+        "source_model_config_hash",
         "eval_run_id",
         "eval_run_dir",
+        "final_eval_config_path",
     ]
     with open(path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -306,7 +483,7 @@ def execute_plan(plan: list[dict[str, object]], output_dir: Path) -> int:
     failed = False
     for entry in plan:
         for stage, command, run_dir in (
-            ("train", entry["train_command"], entry["train_run_dir"]),
+            ("train", entry["train_command"], entry["source_train_run_dir"]),
             ("eval", entry["eval_command"], entry["eval_run_dir"]),
         ):
             if failed:
@@ -515,9 +692,11 @@ def main(argv: list[str] | None = None) -> int:
         run_root=args.run_root,
         train_config=train_config,
         eval_config=eval_config,
+        output_dir=args.output_dir,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    write_eval_configs(plan)
     commands_path = args.output_dir / "final_eval_commands.sh"
     write_commands(plan, commands_path)
     write_final_manifest(
