@@ -152,6 +152,8 @@ model_params:
   # Benchmark runs use the vectorized mixing kernel for throughput.
   mixing_implementation: vectorized
   mixing_initial_weight: 0.5
+  # Fixed Hooke Gaussian tail: exp(-(omega / 2) * sum_i |r_i|^2).
+  harmonic_confinement_coefficient: 0.25
 
 
 # -----------------------------------------------------------------------------
@@ -226,6 +228,16 @@ checks:
     max_permutations: 1
     atol: 1.0e-06
     rtol: 1.0e-06
+
+
+# -----------------------------------------------------------------------------
+# Timing
+# -----------------------------------------------------------------------------
+timing:
+  # Rolling window (in steps) for the step-time rolling mean.
+  rolling_window: 20
+  # Set true on GPU runs for accurate timings; adds a small synchronization cost.
+  cuda_synchronize: false
 
 
 # -----------------------------------------------------------------------------
@@ -311,6 +323,13 @@ model:
 
       update:
         _target_: spenn.nn.ResidualUpdate
+
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - _target_: spenn.nn.HarmonicConfinement
+        coefficient: ${model_params.harmonic_confinement_coefficient}
+      - _target_: spenn.nn.ElectronElectronCusp
 
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
@@ -486,7 +505,22 @@ callbacks:
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
 
+  # Whole-run wall-clock timing: runtime/wall_time_sec (a selection
+  # tie-breaker in the validation study) and unix timestamps.
   - _target_: spenn.callback.RunTiming
+    triggers:
+      - run_start
+      - run_end
+      - exception
+    cuda_synchronize: ${timing.cuda_synchronize}
+
+  # Per-step timing: train/perf/step_time_sec and its rolling mean.
+  - _target_: spenn.callback.TrainStepTiming
+    triggers:
+      - step_start
+      - step_end
+    rolling_window: ${timing.rolling_window}
+    cuda_synchronize: ${timing.cuda_synchronize}
 
   - _target_: spenn.callback.Status
     triggers:
