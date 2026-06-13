@@ -3,6 +3,7 @@ stage: final_train
 job_index: 0
 device: cuda
 python: python
+run_suffix: ""
 dry_run: false
 require_checkpoint: true
 

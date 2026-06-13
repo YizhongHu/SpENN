@@ -15,7 +15,8 @@ uv run pytest -q \
   tests/integration/hooke/test_pair_validation_study.py::test_local_smoke_pipeline_runs_collects_selects_and_plans
 ```
 
-On the cluster, submit the final-launcher smoke before launching the real scan:
+On the cluster, submit the CPU final-launcher smoke before launching the real
+scan:
 
 ```bash
 INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
@@ -24,9 +25,8 @@ INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
 ```
 
 After the CPU `final_train` smoke finishes, run its CPU `final_eval` smoke.
-Then repeat the same two commands with `DEVICE=cuda PARTITION=gpu_test`.
-If all smoke stages finish successfully and write metrics under `outputs/`,
-launch the validation scan:
+Then run the single-index GPU smoke commands below. If all smoke stages finish
+successfully and write metrics under `outputs/`, launch the validation scan:
 
 ```bash
 DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
@@ -83,6 +83,18 @@ The smoke grid and tiny model/sampler/training sizes live in
 [final_smoke_inputs.csv](final_smoke_inputs.csv). Edit the command columns there
 when smoke needs to cover a new model-size knob.
 
+FASRC `gpu_test` policy is stricter than `test`: it has a small submitted-job
+cap, and `ARRAY_PARALLELISM=1` does not reduce the number of Hydra jobs being
+submitted. Keep GPU smoke to `job_index=0` even when the smoke inputs grow; CPU
+smoke submits every row in `final_smoke_inputs.csv`.
+
+Smoke run IDs are suffixed at launch time with
+`<device>_<YYYYMMDD_HHMMSS>_<git-sha>`, so retries do not collide with old
+checkpoints. The training smoke writes the suffix to
+`slurm_logs/hooke_pair_final_v1/smoke_<device>.run_suffix`; evaluation smoke
+reuses that suffix. Set `RUN_SUFFIX=...` only when you want to target a specific
+smoke run.
+
 Submit the CPU training smoke:
 
 ```bash
@@ -91,7 +103,7 @@ INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
   bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-After CPU training smoke checkpoints exist, submit CPU evaluation smoke:
+After CPU training smoke checkpoints exist, submit the CPU evaluation smoke:
 
 ```bash
 INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
@@ -99,20 +111,23 @@ INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
   bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-Submit the GPU training smoke:
+Submit one GPU training smoke job:
 
 ```bash
 INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
   DEVICE=cuda STAGE=final_train PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  job_index=0
 ```
 
-After GPU training smoke checkpoints exist, submit GPU evaluation smoke:
+After that GPU training smoke checkpoint exists, submit one GPU evaluation
+smoke job:
 
 ```bash
 INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
   DEVICE=cuda STAGE=final_eval PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  job_index=0
 ```
 
 Command-expansion dry run:
@@ -125,9 +140,11 @@ INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
 ```
 
 Check `slurm_logs/hooke_pair_final_v1/` and `outputs/hooke_pair_final_smoke/`
-after each smoke. The smoke inputs submit a 2x2 grid over seed and channel
-count, run one tiny benchmark-config training step, load those checkpoints with
-`load.mode=model_only`, and use the W&B project `SpENN-QMC-test`.
+after each smoke. The smoke inputs define a tiny grid over seed and channel
+count; it is intentionally small enough to run often. CPU smoke submits every
+row, while GPU smoke runs one representative index because of `gpu_test` submit
+limits. Both paths run one tiny benchmark-config training step, load checkpoints
+with `load.mode=model_only`, and use the W&B project `SpENN-QMC-test`.
 
 ## Validation Scan
 

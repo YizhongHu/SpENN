@@ -38,6 +38,7 @@ def main(cfg: DictConfig) -> None:
         stage=str(cfg.stage),
         python=str(cfg.python),
         device=str(cfg.device),
+        run_suffix=str(cfg.run_suffix),
     )
     job_index = int(cfg.job_index)
     if job_index < 0 or job_index >= len(jobs):
@@ -71,33 +72,38 @@ def stage_jobs(
     stage: str,
     python: str = "python",
     device: str | None = None,
+    run_suffix: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return unique jobs for ``final_train`` or ``final_eval``."""
 
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}, got {stage!r}")
+    suffix = str(run_suffix or "").strip()
     jobs: list[dict[str, Any]] = []
     seen: set[tuple[str, ...]] = set()
     for row in inputs:
+        job_row = _suffix_row_paths(row, suffix) if suffix else dict(row)
         if stage == "final_train":
             command = _row_command(row, "train_command", str(row["train_config"]), python=python)
+            command = _suffix_command(command, row, job_row, suffix)
             key = (str(row["training_seed"]), str(row["train_config"]), " ".join(command))
             if key in seen:
                 continue
             seen.add(key)
-            config_path = str(row["train_config"])
+            config_path = str(job_row["train_config"])
         else:
             command = _row_command(row, "eval_command", str(row["eval_config"]), python=python)
+            command = _suffix_command(command, row, job_row, suffix)
             key = (str(row["training_seed"]), str(row["eval_seed"]), str(row["eval_config"]), " ".join(command))
             if key in seen:
                 continue
             seen.add(key)
-            config_path = str(row["eval_config"])
+            config_path = str(job_row["eval_config"])
         if device:
             command = [*command, f"runtime.device={device}"]
         jobs.append(
             {
-                **dict(row),
+                **job_row,
                 "stage": stage,
                 "config": config_path,
                 "command": command,
@@ -116,6 +122,72 @@ def _row_command(row: Mapping[str, Any], key: str, config_path: str, *, python: 
             parts[0] = python
         return parts
     return [python, "-u", "run.py", "--config", config_path]
+
+
+def _suffix_row_paths(row: Mapping[str, Any], suffix: str) -> dict[str, Any]:
+    """Return a row whose run-directory fields include ``suffix``."""
+
+    updated = dict(row)
+    train_run_dir = str(row.get("train_run_dir") or "")
+    eval_run_dir = str(row.get("eval_run_dir") or "")
+    if train_run_dir:
+        updated["train_run_dir"] = _suffix_path_basename(train_run_dir, suffix)
+    if eval_run_dir:
+        updated["eval_run_dir"] = _suffix_path_basename(eval_run_dir, suffix)
+    checkpoint_path = str(row.get("checkpoint_path") or "")
+    if checkpoint_path:
+        updated["checkpoint_path"] = _replace_once(
+            checkpoint_path,
+            train_run_dir,
+            str(updated.get("train_run_dir") or ""),
+        )
+    return updated
+
+
+def _suffix_command(
+    command: Sequence[str],
+    row: Mapping[str, Any],
+    suffixed_row: Mapping[str, Any],
+    suffix: str,
+) -> list[str]:
+    """Append ``suffix`` to run IDs and path-bearing overrides."""
+
+    if not suffix:
+        return list(command)
+    replacements = [
+        (str(row.get("train_run_dir") or ""), str(suffixed_row.get("train_run_dir") or "")),
+        (str(row.get("eval_run_dir") or ""), str(suffixed_row.get("eval_run_dir") or "")),
+        (str(row.get("checkpoint_path") or ""), str(suffixed_row.get("checkpoint_path") or "")),
+    ]
+    patched: list[str] = []
+    for token in command:
+        if token.startswith("run.run_id="):
+            key, value = token.split("=", 1)
+            token = f"{key}={_append_suffix(value, suffix)}"
+        for old, new in replacements:
+            token = _replace_once(token, old, new)
+        patched.append(token)
+    return patched
+
+
+def _suffix_path_basename(path: str, suffix: str) -> str:
+    if not path:
+        return path
+    prefix, sep, basename = path.rstrip("/").rpartition("/")
+    suffixed = _append_suffix(basename, suffix)
+    return f"{prefix}{sep}{suffixed}" if sep else suffixed
+
+
+def _append_suffix(value: str, suffix: str) -> str:
+    if not suffix or value.endswith(f"_{suffix}"):
+        return value
+    return f"{value}_{suffix}"
+
+
+def _replace_once(value: str, old: str, new: str) -> str:
+    if old and new and old != new:
+        return value.replace(old, new, 1)
+    return value
 
 
 def job_index_sweep(inputs: Sequence[Mapping[str, Any]], *, stage: str) -> str:

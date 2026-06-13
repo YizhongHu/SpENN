@@ -438,11 +438,12 @@ def test_final_smoke_inputs_use_real_final_launcher_path() -> None:
     train_jobs = launch_final_submitit.stage_jobs(inputs, stage="final_train", device="cpu")
     eval_jobs = launch_final_submitit.stage_jobs(inputs, stage="final_eval", device="cuda")
 
-    assert len(inputs) == 4
-    assert len(train_jobs) == 4
-    assert len(eval_jobs) == 4
-    assert launch_final_submitit.job_index_sweep(inputs, stage="final_train") == "0,1,2,3"
-    assert launch_final_submitit.job_index_sweep(inputs, stage="final_eval") == "0,1,2,3"
+    assert len(inputs) == 2
+    assert len(train_jobs) == len(inputs)
+    assert len(eval_jobs) == len(inputs)
+    expected_sweep = ",".join(str(index) for index in range(len(inputs)))
+    assert launch_final_submitit.job_index_sweep(inputs, stage="final_train") == expected_sweep
+    assert launch_final_submitit.job_index_sweep(inputs, stage="final_eval") == expected_sweep
 
     train_commands = [" ".join(job["command"]) for job in train_jobs]
     eval_commands = [" ".join(job["command"]) for job in eval_jobs]
@@ -462,6 +463,26 @@ def test_final_smoke_inputs_use_real_final_launcher_path() -> None:
     assert all("sampler_params.n_steps=1" in command for command in eval_commands)
     assert all("wandb.project=SpENN-QMC-test" in command for command in eval_commands)
     assert all("runtime.device=cuda" in command for command in eval_commands)
+
+    suffix = "cpu_20260613_160000_8ed6de3"
+    suffixed_train_jobs = launch_final_submitit.stage_jobs(
+        inputs,
+        stage="final_train",
+        device="cpu",
+        run_suffix=suffix,
+    )
+    suffixed_eval_jobs = launch_final_submitit.stage_jobs(
+        inputs,
+        stage="final_eval",
+        device="cpu",
+        run_suffix=suffix,
+    )
+    suffixed_train_commands = [" ".join(job["command"]) for job in suffixed_train_jobs]
+    suffixed_eval_commands = [" ".join(job["command"]) for job in suffixed_eval_jobs]
+    assert any(f"run.run_id=final_smoke_train_ch8_seed3_{suffix}" in command for command in suffixed_train_commands)
+    assert any(f"run.run_id=final_smoke_eval_ch8_seed3_{suffix}" in command for command in suffixed_eval_commands)
+    assert all(str(job["checkpoint_path"]).endswith(f"_{suffix}/checkpoints/latest.json") for job in suffixed_eval_jobs)
+    assert all(f"_{suffix}/checkpoints/latest.json" in command for command in suffixed_eval_commands)
 
 
 def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) -> None:
@@ -553,6 +574,10 @@ def test_final_submitit_shell_launcher_uses_sync_activate_and_phases() -> None:
     assert '"hydra/launcher=${HYDRA_LAUNCHER}"' in text
     assert "hydra_value()" in text
     assert 'hydra.launcher.partition=$(hydra_value "$PARTITION")' in text
+    assert 'RUN_SUFFIX="${RUN_SUFFIX:-}"' in text
+    assert 'smoke_${DEVICE}.run_suffix' in text
+    assert "date +%Y%m%d_%H%M%S" in text
+    assert 'LAUNCH_OVERRIDES+=("run_suffix=${RUN_SUFFIX}")' in text
     assert "--multirun" in text
     assert "uv run" not in text
     assert "SLURM_ARRAY_TASK_ID" not in text
@@ -596,6 +621,10 @@ def test_readme_documents_reproducibility_contract() -> None:
     assert "Do not add a separate smoke" in text
     assert "DEVICE=cpu STAGE=final_train PARTITION=test" in text
     assert "DEVICE=cuda STAGE=final_train PARTITION=gpu_test" in text
+    assert "Keep GPU smoke to" in text
+    assert "job_index=0" in text
+    assert "<device>_<YYYYMMDD_HHMMSS>_<git-sha>" in text
+    assert "smoke_<device>.run_suffix" in text
     assert "load.mode=model_only" in text
     assert "SpENN-QMC-test" in text
     assert "`sapphire,kozinsky,seas_compute`" in text
@@ -622,6 +651,9 @@ def test_methods_documents_experiment_protocol() -> None:
     assert "Cluster smoke uses the real" in text
     assert "do not add a separate smoke" in text
     assert "final_smoke_inputs.csv" in text
+    assert "GPU smoke uses `job_index=0`" in text
+    assert "does not shrink the submitted Hydra sweep" in text
+    assert "time-and-git-hash suffix" in text
     assert "escapes partition commas for Hydra" in text
     assert "`gpu_test`" in text
     assert "validation/energy_abs_error" in text

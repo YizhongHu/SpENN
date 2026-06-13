@@ -55,6 +55,28 @@ esac
 
 export UV_PROJECT_ENVIRONMENT="$VENV"
 
+RUN_SUFFIX="${RUN_SUFFIX:-}"
+if [[ "$(basename "$INPUTS")" == "final_smoke_inputs.csv" ]]; then
+  RUN_SUFFIX_FILE="${RUN_SUFFIX_FILE:-slurm_logs/hooke_pair_final_v1/smoke_${DEVICE}.run_suffix}"
+  mkdir -p "$(dirname "$RUN_SUFFIX_FILE")"
+  if [[ -z "$RUN_SUFFIX" ]]; then
+    if [[ "$STAGE" == "final_eval" ]]; then
+      if [[ -s "$RUN_SUFFIX_FILE" ]]; then
+        RUN_SUFFIX="$(<"$RUN_SUFFIX_FILE")"
+      else
+        echo "No smoke RUN_SUFFIX found for final_eval. Run final_train first or set RUN_SUFFIX explicitly." >&2
+        echo "Expected suffix file: ${RUN_SUFFIX_FILE}" >&2
+        exit 2
+      fi
+    else
+      GIT_HASH="$(git rev-parse --short=8 HEAD 2>/dev/null || printf 'nogit')"
+      RUN_STAMP="$(TZ=America/New_York date +%Y%m%d_%H%M%S)"
+      RUN_SUFFIX="${DEVICE}_${RUN_STAMP}_${GIT_HASH}"
+    fi
+  fi
+  printf '%s\n' "$RUN_SUFFIX" > "$RUN_SUFFIX_FILE"
+fi
+
 SYNC_EXTRAS=(--extra "$EXTRA" --extra submitit)
 if [[ -n "${SPENN_EXTRA_EXTRAS:-}" ]]; then
   for extra in $SPENN_EXTRA_EXTRAS; do
@@ -111,12 +133,20 @@ echo "device=${DEVICE}"
 echo "venv=${VENV}"
 echo "hydra_launcher=${HYDRA_LAUNCHER}"
 echo "job_index=${JOB_INDEX_SWEEP}"
+echo "run_suffix=${RUN_SUFFIX:-<none>}"
+
+LAUNCH_OVERRIDES=(
+  "inputs=${INPUTS}"
+  "stage=${STAGE}"
+  "device=${DEVICE}"
+  "job_index=${JOB_INDEX_SWEEP}"
+)
+if [[ -n "$RUN_SUFFIX" ]]; then
+  LAUNCH_OVERRIDES+=("run_suffix=${RUN_SUFFIX}")
+fi
 
 HYDRA_FULL_ERROR=1 python "$LAUNCHER" \
   --multirun \
-  "inputs=${INPUTS}" \
-  "stage=${STAGE}" \
-  "device=${DEVICE}" \
-  "job_index=${JOB_INDEX_SWEEP}" \
+  "${LAUNCH_OVERRIDES[@]}" \
   "${HYDRA_OVERRIDES[@]}" \
   "$@"

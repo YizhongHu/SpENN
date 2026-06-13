@@ -77,8 +77,14 @@ launcher or smoke manifest when the real launcher can express the check. Smoke
 should change only the inputs table and resource environment variables. Model
 size, sampler size, training length, run IDs, and checkpoint paths belong in
 the smoke inputs command columns so the final launcher remains the behavior
-under test. The launcher escapes partition commas for Hydra; Slurm still
-receives the normal comma-separated partition list.
+under test.
+
+CPU smoke runs every row in the smoke-input grid. GPU smoke uses `job_index=0`
+because `gpu_test` has a small job-count cap; `ARRAY_PARALLELISM=1` limits
+concurrency but does not shrink the submitted Hydra sweep. The launcher escapes partition commas for Hydra; Slurm still receives
+the normal comma-separated partition list. Smoke run IDs and matching checkpoint paths receive a
+time-and-git-hash suffix at launch time so repeated smoke submissions do not
+overwrite or collide with previous checkpoints.
 
 Each Submitit task is shaped like:
 
