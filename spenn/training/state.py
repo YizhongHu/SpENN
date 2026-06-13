@@ -29,6 +29,8 @@ class TrainerState:
         Wavefunction model being optimized.
     optimizer : Any, optional
         Optimizer driving the model parameters.
+    trainer : Any, optional
+        Trainer object owning train-loop progress state.
     sampler : Any, optional
         Sampler producing walker configurations.
     samples : Any, optional
@@ -49,6 +51,7 @@ class TrainerState:
     metrics: dict[str, Any] = field(default_factory=dict)
     model: Any = None
     optimizer: Any = None
+    trainer: Any = None
     sampler: Any = None
     samples: Any = None
     batch: Any = None

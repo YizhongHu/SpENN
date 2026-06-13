@@ -81,7 +81,8 @@ training.*          step count and logging cadence (train config)
 evaluation.*        term decomposition toggle (eval config)
 optimizer_params.*  learning rate (train config)
 checks.*            runtime validation cadence and tolerances
-checkpoint.*        checkpoint cadence
+checkpoint.*        restore intent: path, restore_mode, strictness
+checkpointing.*     checkpoint writing cadence and retention (train config)
 timing.*            timing instrumentation knobs
 status.*            terminal status cadence and included metrics
 wandb.*             optional dashboard settings
@@ -106,12 +107,13 @@ Each run creates a directory:
 ```text
 <run.root>/<experiment.name>/<experiment.sector>/<run_id>/
   config.yaml           # authored config (rerunnable: run_id/dir reset to null)
+  run_start.json        # early run breadcrumb before long work begins
   resolved_config.yaml  # fully interpolated config actually used
   metadata.json         # git/hardware/SLURM/runtime provenance
   status.json           # compact lifecycle status (running/completed/failed)
   metrics.csv           # long-form scalar records: step, namespace, key, value
   metrics.jsonl         # structured metric records
-  checkpoints/          # model/optimizer state (train runs)
+  checkpoints/          # complete step directories plus latest.json
   checks/               # runtime-check artifacts, e.g. equivariance reports
   diagnostics/          # evaluation diagnostic artifacts, when written
 ```

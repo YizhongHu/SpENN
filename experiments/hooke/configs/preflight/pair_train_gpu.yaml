@@ -234,10 +234,25 @@ checks:
 
 
 # -----------------------------------------------------------------------------
-# Checkpointing
+# Checkpoint restore
 # -----------------------------------------------------------------------------
 checkpoint:
+  path: null
+  restore_mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint writing
+# -----------------------------------------------------------------------------
+checkpointing:
   every_n_steps: 10
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
 
 
 # -----------------------------------------------------------------------------
@@ -289,6 +304,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  checkpoint: ${checkpoint}
 
 
 # -----------------------------------------------------------------------------
@@ -515,8 +531,13 @@ callbacks:
   - _target_: spenn.callback.Checkpoint
     triggers:
       - step_end
-    every_n_steps: ${checkpoint.every_n_steps}
+    every_n_steps: ${checkpointing.every_n_steps}
     output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpointing.keep_last}
+    save_optimizer: ${checkpointing.save_optimizer}
+    save_trainer: ${checkpointing.save_trainer}
+    save_sampler: ${checkpointing.save_sampler}
+    save_rng: ${checkpointing.save_rng}
 
   # Human-facing terminal progress. This should render compact lines for local
   # terminals and SLURM logs. It is not the authoritative metrics record.

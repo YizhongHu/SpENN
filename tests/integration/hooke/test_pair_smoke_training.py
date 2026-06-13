@@ -39,7 +39,8 @@ def test_pair_smoke_training_writes_standard_artifacts(tmp_path) -> None:
         "status.json",
         "metrics.jsonl",
         "metrics.csv",
-        "checkpoints/latest.pt",
+        "run_start.json",
+        "checkpoints/latest.json",
     ):
         assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"
 

@@ -22,6 +22,13 @@ from omegaconf import DictConfig, OmegaConf
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
 DEFAULT_RUN_TIMEZONE = "UTC"
+RUN_START_ENV_ALLOWLIST = (
+    "SLURM_JOB_ID",
+    "SLURM_ARRAY_TASK_ID",
+    "SLURM_CPUS_PER_TASK",
+    "SLURM_JOB_PARTITION",
+    "CUDA_VISIBLE_DEVICES",
+)
 
 
 class ArtifactManager:
@@ -304,6 +311,37 @@ def write_json(path: Path, data: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
+def write_run_start_artifact(context: RunContext) -> None:
+    """Write the early run-start breadcrumb before long-running work begins."""
+
+    cfg = context.cfg
+    study = OmegaConf.select(cfg, "study", default={}) or {}
+    if OmegaConf.is_config(study):
+        study = OmegaConf.to_container(study, resolve=True)
+    if not isinstance(study, Mapping):
+        study = {}
+    data = {
+        "run_id": context.metadata.run_id,
+        "run_dir": context.metadata.run_dir,
+        "study": {
+            "name": study.get("name"),
+            "config_id": study.get("config_id"),
+        },
+        "hostname": socket.gethostname(),
+        "cwd": str(Path.cwd()),
+        "command": context.metadata.command,
+        "git": {
+            "sha": context.metadata.git_commit,
+            "branch": context.metadata.git_branch,
+            "dirty": context.metadata.dirty_worktree,
+        },
+        "slurm": _collect_slurm_metadata(),
+        "environment": _collect_allowed_environment(),
+        "start_time_unix": context.now().timestamp(),
+    }
+    write_json(context.path("run_start.json"), data)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -410,6 +448,10 @@ def _collect_slurm_metadata() -> dict[str, str]:
     return {name: os.environ[env] for name, env in keys.items() if env in os.environ}
 
 
+def _collect_allowed_environment() -> dict[str, str]:
+    return {key: os.environ[key] for key in RUN_START_ENV_ALLOWLIST if key in os.environ}
+
+
 __all__ = [
     "ArtifactManager",
     "DEFAULT_RUN_TIMEZONE",
@@ -424,4 +466,5 @@ __all__ = [
     "generate_run_id",
     "resolve_run_clock",
     "write_json",
+    "write_run_start_artifact",
 ]

@@ -41,9 +41,12 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
         "status.json",
         "metrics.csv",
         "metrics.jsonl",
-        "checkpoints/latest.pt",
+        "run_start.json",
+        "checkpoints/latest.json",
         # Steps are 0-indexed, so a 3-step run ends at step 2.
-        "checkpoints/step_2.pt",
+        "checkpoints/step_000002/manifest.json",
+        "checkpoints/step_000002/model.pt",
+        "checkpoints/step_000002/COMPLETE",
     ):
         assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"
 

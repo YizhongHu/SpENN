@@ -48,9 +48,9 @@ experiment:
 # Study provenance
 # -----------------------------------------------------------------------------
 # Identifies which study (if any) launched this run. The launcher sets
-# study.name via an override; the collector derives a deterministic config_id
-# from the resolved grid fields when config_id is null. Both end up in
-# resolved_config.yaml, which study scripts read.
+# study.name via an override; future PR8.2 post-processing may derive a
+# deterministic config_id from resolved grid fields when config_id is null.
+# Both fields land in resolved_config.yaml and checkpoint manifests.
 study:
   name: null
   config_id: null
@@ -241,10 +241,25 @@ timing:
 
 
 # -----------------------------------------------------------------------------
-# Checkpointing
+# Checkpoint restore
 # -----------------------------------------------------------------------------
 checkpoint:
+  path: null
+  restore_mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint writing
+# -----------------------------------------------------------------------------
+checkpointing:
   every_n_steps: 500
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
 
 
 # -----------------------------------------------------------------------------
@@ -275,6 +290,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  checkpoint: ${checkpoint}
 
 
 # -----------------------------------------------------------------------------
@@ -502,8 +518,13 @@ callbacks:
   - _target_: spenn.callback.Checkpoint
     triggers:
       - step_end
-    every_n_steps: ${checkpoint.every_n_steps}
+    every_n_steps: ${checkpointing.every_n_steps}
     output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpointing.keep_last}
+    save_optimizer: ${checkpointing.save_optimizer}
+    save_trainer: ${checkpointing.save_trainer}
+    save_sampler: ${checkpointing.save_sampler}
+    save_rng: ${checkpointing.save_rng}
 
   # Whole-run wall-clock timing: runtime/wall_time_sec (a selection
   # tie-breaker in the validation study) and unix timestamps.

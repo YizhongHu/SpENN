@@ -19,6 +19,7 @@ from spenn.artifacts import (
     build_run_metadata,
     generate_run_id,
     resolve_run_clock,
+    write_run_start_artifact,
 )
 from spenn.callback import Event, configure_terminal_logging
 from spenn.dependencies import OptionalDependencyError, require_torch
@@ -102,7 +103,7 @@ def prepare_run_context(
     _validate_callbacks(callbacks)
     _validate_loggers(loggers)
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
-    return RunContext(
+    context = RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
         artifact_manager=artifact_manager,
@@ -111,6 +112,8 @@ def prepare_run_context(
         callbacks=callbacks,
         loggers=loggers,
     )
+    write_run_start_artifact(context)
+    return context
 
 
 def run_from_config(
