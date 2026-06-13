@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -20,6 +21,7 @@ STUDY_DIR = ROOT / "experiments" / "hooke" / "studies" / "pair_validation"
 MANIFEST = STUDY_DIR / "manifest.yaml"
 SMOKE_TRAIN_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "smoke" / "pair_train.yaml"
 FINAL_EVAL_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "benchmark" / "pair_final_eval.yaml"
+METHODS = STUDY_DIR / "methods.md"
 
 
 def _load_script(name: str) -> ModuleType:
@@ -383,7 +385,7 @@ def test_submitit_launcher_derives_jobs_and_overrides_from_manifest() -> None:
     assert "hydra.launcher.array_parallelism=54" in overrides
 
 
-def test_submitit_launcher_has_small_cpu_and_gpu_preflight_overrides() -> None:
+def test_submitit_launcher_has_cpu_and_gpu_slurm_overrides() -> None:
     manifest = launch_submitit.load_manifest(MANIFEST)
 
     cpu_overrides = launch_submitit.hydra_overrides(manifest, device="cpu")
@@ -414,6 +416,22 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert "SLURM_ARRAY_TASK_ID" not in text
     assert "uv run" not in text
     assert "SEEDS=(" not in text
+
+
+def test_cluster_smoke_script_submits_cpu_and_gpu_dry_runs() -> None:
+    script = STUDY_DIR / "cluster_smoke.sh"
+    text = script.read_text()
+
+    subprocess.run(["bash", "-n", str(script)], check=True)
+
+    assert "--device cpu|cuda|both" in text
+    assert 'DEVICE="${DEVICE:-both}"' in text
+    assert "DEVICES=(cpu cuda)" in text
+    assert "HYDRA_LAUNCHER=submitit_slurm" in text
+    assert "ARRAY_PARALLELISM=1" in text
+    assert "launch_array.sh" in text
+    assert "dry_run=true" in text
+    assert "job_index=0" in text
 
 
 def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) -> None:
@@ -449,7 +467,7 @@ def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) ->
     assert "hydra.launcher.array_parallelism=10" in overrides
 
 
-def test_final_submitit_launcher_has_small_cpu_and_gpu_preflight_overrides(tmp_path: Path) -> None:
+def test_final_submitit_launcher_has_cpu_and_gpu_slurm_overrides(tmp_path: Path) -> None:
     selected_config = _write_selected_config(tmp_path)
     evaluate_selected.generate_final_evaluation(
         manifest_path=MANIFEST,
@@ -535,6 +553,10 @@ def test_readme_documents_reproducibility_contract() -> None:
         assert f"## {old_explanation_first_section}" not in text
     assert "W&B is visualization only" in text
     assert "Validation does not use exact reference energy" in text
+    assert "[methods.md](methods.md)" in text
+    assert "cluster_smoke.sh" in text
+    assert "--device cpu" in text
+    assert "--device cuda" in text
     assert "collect.py" in text
     assert "select.py" in text
     assert "evaluate_selected.py" in text
@@ -542,6 +564,22 @@ def test_readme_documents_reproducibility_contract() -> None:
     assert "HYDRA_LAUNCHER=submitit_slurm" in text
     assert "DEVICE=cuda" in text
     assert "DEVICE=cpu" in text
+
+
+def test_methods_documents_experiment_protocol() -> None:
+    text = METHODS.read_text()
+
+    assert "Validation is used only for selection" in text
+    assert "W&B is visualization only" in text
+    assert "runtime.seed: [3, 9, 11]" in text
+    assert "optimizer_params.lr: [3.0e-4, 1.0e-3, 3.0e-3]" in text
+    assert "Validation metrics are logged under" in text
+    assert "validation/energy_abs_error" in text
+    assert "Selection Rule" in text
+    assert "lower median validation/energy_variance" in text
+    assert "Final Evaluation" in text
+    assert "mode: model_only" in text
+    assert "Reproducibility" in text
 
 
 def _write_local_smoke_manifest(tmp_path: Path) -> Path:

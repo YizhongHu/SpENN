@@ -1,6 +1,7 @@
 # Hooke Pair Validation Study
 
-This is the runbook for `hooke_pair_validation_v1`.
+This is the runbook for `hooke_pair_validation_v1`. Experiment details are in
+[methods.md](methods.md).
 
 Run commands from the repository root. Keep local run directories, generated
 reports, checkpoints, and `slurm_logs/`.
@@ -14,27 +15,11 @@ uv run pytest -q \
   tests/integration/hooke/test_pair_validation_study.py::test_local_smoke_pipeline_runs_collects_selects_and_plans
 ```
 
-Then run launcher preflight tests:
+On the cluster, submit one CPU and one GPU dry-run job before launching the
+real scan:
 
 ```bash
-uv run pytest -q \
-  tests/integration/hooke/test_pair_validation_study.py::test_submitit_launcher_has_small_cpu_and_gpu_preflight_overrides \
-  tests/integration/hooke/test_pair_validation_study.py::test_final_submitit_launcher_has_small_cpu_and_gpu_preflight_overrides
-```
-
-On the cluster, submit one CPU and one GPU dry-run job before launching the real
-scan:
-
-```bash
-DEVICE=cpu HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
-  RUN_ROOT=outputs/hooke_pair_validation_v1_cpu_smoke \
-  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-  dry_run=true job_index=0
-
-DEVICE=cuda HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
-  RUN_ROOT=outputs/hooke_pair_validation_v1_gpu_smoke \
-  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-  dry_run=true job_index=0
+bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
 ```
 
 If those jobs print a clear `python -u run.py ...` command and exit
@@ -52,6 +37,14 @@ Run the whole pair-validation test file:
 
 ```bash
 uv run pytest -q tests/integration/hooke/test_pair_validation_study.py
+```
+
+Run launcher contract tests:
+
+```bash
+uv run pytest -q \
+  tests/integration/hooke/test_pair_validation_study.py::test_submitit_launcher_has_cpu_and_gpu_slurm_overrides \
+  tests/integration/hooke/test_pair_validation_study.py::test_final_submitit_launcher_has_cpu_and_gpu_slurm_overrides
 ```
 
 Dry-run validation Submitit locally without Slurm submission:
@@ -72,19 +65,23 @@ before training because `dry_run=true`.
 
 ## Cluster Smoke
 
-Use these before any large submission. They are intentionally one-job Slurm
-submissions:
+Use this before any large submission. By default it submits one CPU and one GPU
+Slurm dry-run job:
 
 ```bash
-DEVICE=cpu HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
-  RUN_ROOT=outputs/hooke_pair_validation_v1_cpu_smoke \
-  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-  dry_run=true job_index=0
+bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
+```
 
-DEVICE=cuda HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
-  RUN_ROOT=outputs/hooke_pair_validation_v1_gpu_smoke \
-  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-  dry_run=true job_index=0
+CPU-only:
+
+```bash
+bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cpu
+```
+
+GPU-only:
+
+```bash
+bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cuda
 ```
 
 Check `slurm_logs/hooke_pair_validation_v1/` after each smoke. The job should
