@@ -1,0 +1,53 @@
+# Hooke pair validation cluster smoke manifest.
+#
+# This is intentionally tiny: it exercises the real benchmark training config
+# through the same Hydra Submitit launcher path while staying within test
+# partition etiquette.
+
+study:
+  name: hooke_pair_validation_smoke
+  purpose: cluster_smoke
+  sector: singlet
+
+train_config: experiments/hooke/configs/benchmark/pair_train.yaml
+final_eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
+
+grid:
+  runtime.seed: [3]
+  optimizer_params.lr: [3.0e-4]
+  model_params.channels: [8]
+  model_params.layers: [1]
+  model_params.gate_activation: [silu]
+  sampler_params.n_walkers: [16]
+  sampler_params.burn_in: [2]
+  sampler_params.n_steps: [1]
+  validation_sampler_params.n_walkers: [16]
+  validation_sampler_params.burn_in: [2]
+  validation_sampler_params.n_steps: [1]
+  training.max_steps: [1]
+  training.log_every_n_steps: [1]
+  checks.every_n_steps: [1]
+  checkpoint.every_n_steps: [1]
+  status.every_n_steps: [1]
+
+seed_key: runtime.seed
+
+launcher:
+  run_root: outputs/hooke_pair_validation_smoke
+  hydra_sweep_dir: slurm_logs/hooke_pair_validation_smoke
+  job_name: hooke-pv-smoke
+  slurm:
+    gpu:
+      partition: gpu_test
+      gres: gpu:1
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 15
+      array_parallelism: 1
+    cpu:
+      partition: test
+      gres: null
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 15
+      array_parallelism: 1

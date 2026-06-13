@@ -19,6 +19,8 @@ from spenn.run import run_from_config
 ROOT = Path(__file__).resolve().parents[3]
 STUDY_DIR = ROOT / "experiments" / "hooke" / "studies" / "pair_validation"
 MANIFEST = STUDY_DIR / "manifest.yaml"
+SMOKE_MANIFEST = STUDY_DIR / "smoke_manifest.yaml"
+BENCHMARK_TRAIN_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "benchmark" / "pair_train.yaml"
 SMOKE_TRAIN_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "smoke" / "pair_train.yaml"
 FINAL_EVAL_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "benchmark" / "pair_final_eval.yaml"
 METHODS = STUDY_DIR / "methods.md"
@@ -427,23 +429,54 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert "SEEDS=(" not in text
 
 
-def test_cluster_smoke_script_submits_cpu_and_gpu_dry_runs() -> None:
+def test_cluster_smoke_script_submits_cpu_and_gpu_short_runs() -> None:
     script = STUDY_DIR / "cluster_smoke.sh"
     text = script.read_text()
 
     subprocess.run(["bash", "-n", str(script)], check=True)
 
     assert "--device cpu|cuda|both" in text
+    assert "--dry-run" in text
+    assert "--execute" in text
     assert 'DEVICE="${DEVICE:-both}"' in text
+    assert 'SMOKE_MANIFEST="${SMOKE_MANIFEST:-experiments/hooke/studies/pair_validation/smoke_manifest.yaml}"' in text
     assert 'SMOKE_CPU_PARTITION="${SMOKE_CPU_PARTITION:-test}"' in text
     assert 'SMOKE_GPU_PARTITION="${SMOKE_GPU_PARTITION:-gpu_test}"' in text
+    assert 'SMOKE_TIMEOUT_MIN="${SMOKE_TIMEOUT_MIN:-15}"' in text
+    assert 'DRY_RUN="${DRY_RUN:-false}"' in text
     assert "DEVICES=(cpu cuda)" in text
+    assert 'MANIFEST="$SMOKE_MANIFEST"' in text
     assert "HYDRA_LAUNCHER=submitit_slurm" in text
     assert "ARRAY_PARALLELISM=1" in text
     assert 'PARTITION="$partition"' in text
+    assert 'TIMEOUT_MIN="$SMOKE_TIMEOUT_MIN"' in text
     assert "launch_array.sh" in text
-    assert "dry_run=true" in text
+    assert 'dry_run="${DRY_RUN}"' in text
     assert "job_index=0" in text
+
+
+def test_cluster_smoke_manifest_is_short_and_uses_test_partitions() -> None:
+    manifest = launch_submitit.load_manifest(SMOKE_MANIFEST)
+
+    assert manifest["train_config"] == str(BENCHMARK_TRAIN_CONFIG.relative_to(ROOT))
+    assert len(launch_submitit.manifest_jobs(manifest)) == 1
+    assert manifest["grid"]["training.max_steps"] == [1]
+    assert manifest["grid"]["sampler_params.n_walkers"] == [16]
+    assert manifest["grid"]["validation_sampler_params.n_walkers"] == [16]
+    assert manifest["launcher"]["slurm"]["cpu"]["partition"] == "test"
+    assert manifest["launcher"]["slurm"]["gpu"]["partition"] == "gpu_test"
+    assert manifest["launcher"]["slurm"]["cpu"]["timeout_min"] == 15
+    assert manifest["launcher"]["slurm"]["gpu"]["timeout_min"] == 15
+
+    command = launch_submitit.run_command(
+        manifest=manifest,
+        job=launch_submitit.manifest_jobs(manifest)[0],
+        run_root="outputs/hooke_pair_validation_smoke_cpu",
+        device="cpu",
+    )
+    assert "training.max_steps=1" in command
+    assert "sampler_params.n_walkers=16" in command
+    assert "validation_sampler_params.n_steps=1" in command
 
 
 def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) -> None:

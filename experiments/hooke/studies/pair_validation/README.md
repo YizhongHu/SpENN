@@ -15,15 +15,15 @@ uv run pytest -q \
   tests/integration/hooke/test_pair_validation_study.py::test_local_smoke_pipeline_runs_collects_selects_and_plans
 ```
 
-On the cluster, submit one CPU and one GPU dry-run job before launching the
-real scan:
+On the cluster, submit one CPU and one GPU short execution smoke before
+launching the real scan:
 
 ```bash
 bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
 ```
 
-If those jobs print a clear `python -u run.py ...` command and exit
-successfully, launch the validation scan:
+If those jobs finish successfully and write metrics under `outputs/`, launch
+the validation scan:
 
 ```bash
 DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
@@ -66,7 +66,7 @@ before training because `dry_run=true`.
 ## Cluster Smoke
 
 Use this before any large submission. By default it submits one CPU and one GPU
-Slurm dry-run job to the test partitions:
+Slurm execution smoke to the test partitions with a 15-minute timeout:
 
 ```bash
 bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
@@ -84,9 +84,16 @@ GPU-only:
 bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cuda
 ```
 
-Check `slurm_logs/hooke_pair_validation_v1/` after each smoke. The job should
-show the exact `python -u run.py --config ...` command and should not run
-training. CPU smoke defaults to `test`; GPU smoke defaults to `gpu_test`.
+Command-expansion dry run:
+
+```bash
+bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --dry-run
+```
+
+Check `slurm_logs/hooke_pair_validation_smoke/` and
+`outputs/hooke_pair_validation_smoke_*` after each smoke. The job should run
+one tiny benchmark-config training step and finish well under the 15-minute
+limit. CPU smoke defaults to `test`; GPU smoke defaults to `gpu_test`.
 
 ## Validation Scan
 

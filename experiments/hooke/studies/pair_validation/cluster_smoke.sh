@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit one-job Slurm dry runs for the Hooke pair-validation launcher.
+# Submit one-job Slurm smokes for the Hooke pair-validation launcher.
 
 set -euo pipefail
 
@@ -8,23 +8,28 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$REPO_ROOT"
 
 DEVICE="${DEVICE:-both}"
-RUN_ROOT_PREFIX="${RUN_ROOT_PREFIX:-outputs/hooke_pair_validation_v1}"
+SMOKE_MANIFEST="${SMOKE_MANIFEST:-experiments/hooke/studies/pair_validation/smoke_manifest.yaml}"
+RUN_ROOT_PREFIX="${RUN_ROOT_PREFIX:-outputs/hooke_pair_validation_smoke}"
 SMOKE_CPU_PARTITION="${SMOKE_CPU_PARTITION:-test}"
 SMOKE_GPU_PARTITION="${SMOKE_GPU_PARTITION:-gpu_test}"
+SMOKE_TIMEOUT_MIN="${SMOKE_TIMEOUT_MIN:-15}"
+DRY_RUN="${DRY_RUN:-false}"
 EXTRA_OVERRIDES=()
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bash experiments/hooke/studies/pair_validation/cluster_smoke.sh [--device cpu|cuda|both] [-- HYDRA_OVERRIDES...]
+  bash experiments/hooke/studies/pair_validation/cluster_smoke.sh [--device cpu|cuda|both] [--dry-run] [-- HYDRA_OVERRIDES...]
 
 Examples:
   bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
   bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cpu
   bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cuda
+  bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --dry-run
 
-The default submits both CPU and GPU one-job Slurm dry runs.
+The default submits both CPU and GPU one-job Slurm execution smokes.
 CPU smoke defaults to partition `test`; GPU smoke defaults to `gpu_test`.
+Each smoke uses a 15-minute Slurm timeout unless SMOKE_TIMEOUT_MIN is set.
 USAGE
 }
 
@@ -40,6 +45,14 @@ while (($#)); do
       ;;
     --device=*)
       DEVICE="${1#--device=}"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --execute)
+      DRY_RUN=false
       shift
       ;;
     -h|--help)
@@ -85,12 +98,14 @@ for device in "${DEVICES[@]}"; do
 
   echo "Submitting ${device} validation smoke job to partition ${partition}..."
   DEVICE="$device" \
+    MANIFEST="$SMOKE_MANIFEST" \
     HYDRA_LAUNCHER=submitit_slurm \
     ARRAY_PARALLELISM=1 \
     PARTITION="$partition" \
-    RUN_ROOT="${RUN_ROOT_PREFIX}_${label}_smoke" \
+    TIMEOUT_MIN="$SMOKE_TIMEOUT_MIN" \
+    RUN_ROOT="${RUN_ROOT_PREFIX}_${label}" \
     bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-    dry_run=true \
+    dry_run="${DRY_RUN}" \
     job_index=0 \
     "${EXTRA_OVERRIDES[@]}"
 done
