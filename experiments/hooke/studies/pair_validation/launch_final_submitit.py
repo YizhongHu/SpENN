@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -32,7 +33,12 @@ def main(cfg: DictConfig) -> None:
     """Run one final train/eval config inside a Hydra Submitit job."""
 
     inputs_path = Path(to_absolute_path(str(cfg.inputs)))
-    jobs = stage_jobs(read_inputs(inputs_path), stage=str(cfg.stage), python=str(cfg.python))
+    jobs = stage_jobs(
+        read_inputs(inputs_path),
+        stage=str(cfg.stage),
+        python=str(cfg.python),
+        device=str(cfg.device),
+    )
     job_index = int(cfg.job_index)
     if job_index < 0 or job_index >= len(jobs):
         raise ValueError(f"job_index={job_index} outside {cfg.stage} job count {len(jobs)}")
@@ -64,35 +70,52 @@ def stage_jobs(
     *,
     stage: str,
     python: str = "python",
+    device: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return unique jobs for ``final_train`` or ``final_eval``."""
 
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}, got {stage!r}")
     jobs: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, ...]] = set()
     for row in inputs:
         if stage == "final_train":
-            key = (str(row["training_seed"]), str(row["train_config"]))
+            command = _row_command(row, "train_command", str(row["train_config"]), python=python)
+            key = (str(row["training_seed"]), str(row["train_config"]), " ".join(command))
             if key in seen:
                 continue
             seen.add(key)
             config_path = str(row["train_config"])
         else:
-            key = (str(row["training_seed"]), str(row["eval_seed"]), str(row["eval_config"]))
+            command = _row_command(row, "eval_command", str(row["eval_config"]), python=python)
+            key = (str(row["training_seed"]), str(row["eval_seed"]), str(row["eval_config"]), " ".join(command))
             if key in seen:
                 continue
             seen.add(key)
             config_path = str(row["eval_config"])
+        if device:
+            command = [*command, f"runtime.device={device}"]
         jobs.append(
             {
                 **dict(row),
                 "stage": stage,
                 "config": config_path,
-                "command": [python, "-u", "run.py", "--config", config_path],
+                "command": command,
             }
         )
     return jobs
+
+
+def _row_command(row: Mapping[str, Any], key: str, config_path: str, *, python: str) -> list[str]:
+    """Return a command from an inputs row, falling back to the config path."""
+
+    command = str(row.get(key) or "").strip()
+    if command:
+        parts = shlex.split(command)
+        if parts and parts[0] == "python" and python != "python":
+            parts[0] = python
+        return parts
+    return [python, "-u", "run.py", "--config", config_path]
 
 
 def job_index_sweep(inputs: Sequence[Mapping[str, Any]], *, stage: str) -> str:

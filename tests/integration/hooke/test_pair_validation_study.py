@@ -19,7 +19,7 @@ from spenn.run import run_from_config
 ROOT = Path(__file__).resolve().parents[3]
 STUDY_DIR = ROOT / "experiments" / "hooke" / "studies" / "pair_validation"
 MANIFEST = STUDY_DIR / "manifest.yaml"
-SMOKE_MANIFEST = STUDY_DIR / "smoke_manifest.yaml"
+FINAL_SMOKE_INPUTS = STUDY_DIR / "final_smoke_inputs.csv"
 BENCHMARK_TRAIN_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "benchmark" / "pair_train.yaml"
 SMOKE_TRAIN_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "smoke" / "pair_train.yaml"
 FINAL_EVAL_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "benchmark" / "pair_final_eval.yaml"
@@ -422,6 +422,7 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert '"hydra/launcher=${HYDRA_LAUNCHER}"' in text
     assert "hydra_value()" in text
     assert 'hydra.launcher.partition=$(hydra_value "$PARTITION")' in text
+    assert '"device=${DEVICE}"' in text
     assert "--multirun" in text
     assert "--array" not in text
     assert "SLURM_ARRAY_TASK_ID" not in text
@@ -429,54 +430,38 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert "SEEDS=(" not in text
 
 
-def test_cluster_smoke_script_submits_cpu_and_gpu_short_runs() -> None:
-    script = STUDY_DIR / "cluster_smoke.sh"
-    text = script.read_text()
+def test_final_smoke_inputs_use_real_final_launcher_path() -> None:
+    assert not (STUDY_DIR / "cluster_smoke.sh").exists()
+    assert not (STUDY_DIR / "smoke_manifest.yaml").exists()
 
-    subprocess.run(["bash", "-n", str(script)], check=True)
+    inputs = launch_final_submitit.read_inputs(FINAL_SMOKE_INPUTS)
+    train_jobs = launch_final_submitit.stage_jobs(inputs, stage="final_train", device="cpu")
+    eval_jobs = launch_final_submitit.stage_jobs(inputs, stage="final_eval", device="cuda")
 
-    assert "--device cpu|cuda|both" in text
-    assert "--dry-run" in text
-    assert "--execute" in text
-    assert 'DEVICE="${DEVICE:-both}"' in text
-    assert 'SMOKE_MANIFEST="${SMOKE_MANIFEST:-experiments/hooke/studies/pair_validation/smoke_manifest.yaml}"' in text
-    assert 'SMOKE_CPU_PARTITION="${SMOKE_CPU_PARTITION:-test}"' in text
-    assert 'SMOKE_GPU_PARTITION="${SMOKE_GPU_PARTITION:-gpu_test}"' in text
-    assert 'SMOKE_TIMEOUT_MIN="${SMOKE_TIMEOUT_MIN:-15}"' in text
-    assert 'DRY_RUN="${DRY_RUN:-false}"' in text
-    assert "DEVICES=(cpu cuda)" in text
-    assert 'MANIFEST="$SMOKE_MANIFEST"' in text
-    assert "HYDRA_LAUNCHER=submitit_slurm" in text
-    assert "ARRAY_PARALLELISM=1" in text
-    assert 'PARTITION="$partition"' in text
-    assert 'TIMEOUT_MIN="$SMOKE_TIMEOUT_MIN"' in text
-    assert "launch_array.sh" in text
-    assert 'dry_run="${DRY_RUN}"' in text
-    assert "job_index=0" in text
+    assert len(inputs) == 4
+    assert len(train_jobs) == 4
+    assert len(eval_jobs) == 4
+    assert launch_final_submitit.job_index_sweep(inputs, stage="final_train") == "0,1,2,3"
+    assert launch_final_submitit.job_index_sweep(inputs, stage="final_eval") == "0,1,2,3"
 
+    train_commands = [" ".join(job["command"]) for job in train_jobs]
+    eval_commands = [" ".join(job["command"]) for job in eval_jobs]
 
-def test_cluster_smoke_manifest_is_short_and_uses_test_partitions() -> None:
-    manifest = launch_submitit.load_manifest(SMOKE_MANIFEST)
+    assert all(command.startswith("python -u run.py --config experiments/hooke/configs/benchmark/") for command in train_commands)
+    assert all("training.max_steps=1" in command for command in train_commands)
+    assert all("sampler_params.n_walkers=16" in command for command in train_commands)
+    assert all("validation_sampler_params.n_steps=1" in command for command in train_commands)
+    assert all("wandb.project=SpENN-QMC-test" in command for command in train_commands)
+    assert all("runtime.device=cpu" in command for command in train_commands)
+    assert any("model_params.channels=8" in command for command in train_commands)
+    assert any("model_params.channels=16" in command for command in train_commands)
 
-    assert manifest["train_config"] == str(BENCHMARK_TRAIN_CONFIG.relative_to(ROOT))
-    assert len(launch_submitit.manifest_jobs(manifest)) == 1
-    assert manifest["grid"]["training.max_steps"] == [1]
-    assert manifest["grid"]["sampler_params.n_walkers"] == [16]
-    assert manifest["grid"]["validation_sampler_params.n_walkers"] == [16]
-    assert manifest["launcher"]["slurm"]["cpu"]["partition"] == "test"
-    assert manifest["launcher"]["slurm"]["gpu"]["partition"] == "gpu_test"
-    assert manifest["launcher"]["slurm"]["cpu"]["timeout_min"] == 15
-    assert manifest["launcher"]["slurm"]["gpu"]["timeout_min"] == 15
-
-    command = launch_submitit.run_command(
-        manifest=manifest,
-        job=launch_submitit.manifest_jobs(manifest)[0],
-        run_root="outputs/hooke_pair_validation_smoke_cpu",
-        device="cpu",
-    )
-    assert "training.max_steps=1" in command
-    assert "sampler_params.n_walkers=16" in command
-    assert "validation_sampler_params.n_steps=1" in command
+    assert all(command.startswith("python -u run.py --config experiments/hooke/configs/benchmark/") for command in eval_commands)
+    assert all("load.mode=model_only" in command for command in eval_commands)
+    assert all("load.path=outputs/hooke_pair_final_smoke" in command for command in eval_commands)
+    assert all("sampler_params.n_steps=1" in command for command in eval_commands)
+    assert all("wandb.project=SpENN-QMC-test" in command for command in eval_commands)
+    assert all("runtime.device=cuda" in command for command in eval_commands)
 
 
 def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) -> None:
@@ -607,11 +592,12 @@ def test_readme_documents_reproducibility_contract() -> None:
     assert "W&B is visualization only" in text
     assert "Validation does not use exact reference energy" in text
     assert "[methods.md](methods.md)" in text
-    assert "cluster_smoke.sh" in text
-    assert "--device cpu" in text
-    assert "--device cuda" in text
-    assert "CPU smoke defaults to `test`" in text
-    assert "GPU smoke defaults to `gpu_test`" in text
+    assert "final_smoke_inputs.csv" in text
+    assert "Do not add a separate smoke" in text
+    assert "DEVICE=cpu STAGE=final_train PARTITION=test" in text
+    assert "DEVICE=cuda STAGE=final_train PARTITION=gpu_test" in text
+    assert "load.mode=model_only" in text
+    assert "SpENN-QMC-test" in text
     assert "`sapphire,kozinsky,seas_compute`" in text
     assert "`kozinsky_gpu,seas_gpu`" in text
     assert "escapes partition commas for Hydra" in text
@@ -633,7 +619,9 @@ def test_methods_documents_experiment_protocol() -> None:
     assert "optimizer_params.lr: [3.0e-4, 1.0e-3, 3.0e-3]" in text
     assert "Validation metrics are logged under" in text
     assert "Real CPU submissions default to `sapphire,kozinsky,seas_compute`" in text
-    assert "Cluster smoke submissions use" in text
+    assert "Cluster smoke uses the real" in text
+    assert "do not add a separate smoke" in text
+    assert "final_smoke_inputs.csv" in text
     assert "escapes partition commas for Hydra" in text
     assert "`gpu_test`" in text
     assert "validation/energy_abs_error" in text

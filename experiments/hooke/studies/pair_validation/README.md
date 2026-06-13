@@ -15,15 +15,18 @@ uv run pytest -q \
   tests/integration/hooke/test_pair_validation_study.py::test_local_smoke_pipeline_runs_collects_selects_and_plans
 ```
 
-On the cluster, submit one CPU and one GPU short execution smoke before
-launching the real scan:
+On the cluster, submit the final-launcher smoke before launching the real scan:
 
 ```bash
-bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_train PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-If those jobs finish successfully and write metrics under `outputs/`, launch
-the validation scan:
+After the CPU `final_train` smoke finishes, run its CPU `final_eval` smoke.
+Then repeat the same two commands with `DEVICE=cuda PARTITION=gpu_test`.
+If all smoke stages finish successfully and write metrics under `outputs/`,
+launch the validation scan:
 
 ```bash
 DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
@@ -65,35 +68,66 @@ before training because `dry_run=true`.
 
 ## Cluster Smoke
 
-Use this before any large submission. By default it submits one CPU and one GPU
-Slurm execution smoke to the test partitions with a 15-minute timeout:
+Smoke must exercise the real final launcher. Do not add a separate smoke
+launcher or smoke manifest unless the final launcher cannot express the check.
+The only differences from a real final launch should be:
 
-```bash
-bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
+```text
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv
+PARTITION=test or gpu_test
+ARRAY_PARALLELISM=1
+TIMEOUT_MIN=15
 ```
 
-CPU-only:
+The smoke grid and tiny model/sampler/training sizes live in
+[final_smoke_inputs.csv](final_smoke_inputs.csv). Edit the command columns there
+when smoke needs to cover a new model-size knob.
+
+Submit the CPU training smoke:
 
 ```bash
-bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cpu
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_train PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-GPU-only:
+After CPU training smoke checkpoints exist, submit CPU evaluation smoke:
 
 ```bash
-bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cuda
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_eval PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+```
+
+Submit the GPU training smoke:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cuda STAGE=final_train PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+```
+
+After GPU training smoke checkpoints exist, submit GPU evaluation smoke:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cuda STAGE=final_eval PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
 Command-expansion dry run:
 
 ```bash
-bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --dry-run
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_train HYDRA_LAUNCHER=submitit_local \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0
 ```
 
-Check `slurm_logs/hooke_pair_validation_smoke/` and
-`outputs/hooke_pair_validation_smoke_*` after each smoke. The job should run
-one tiny benchmark-config training step and finish well under the 15-minute
-limit. CPU smoke defaults to `test`; GPU smoke defaults to `gpu_test`.
+Check `slurm_logs/hooke_pair_final_v1/` and `outputs/hooke_pair_final_smoke/`
+after each smoke. The smoke inputs submit a 2x2 grid over seed and channel
+count, run one tiny benchmark-config training step, load those checkpoints with
+`load.mode=model_only`, and use the W&B project `SpENN-QMC-test`.
 
 ## Validation Scan
 

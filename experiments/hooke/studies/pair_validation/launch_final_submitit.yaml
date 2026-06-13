@@ -1,6 +1,7 @@
 inputs: experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv
 stage: final_train
 job_index: 0
+device: cuda
 python: python
 dry_run: false
 require_checkpoint: true

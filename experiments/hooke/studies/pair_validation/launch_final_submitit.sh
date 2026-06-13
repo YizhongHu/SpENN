@@ -116,6 +116,7 @@ HYDRA_FULL_ERROR=1 python "$LAUNCHER" \
   --multirun \
   "inputs=${INPUTS}" \
   "stage=${STAGE}" \
+  "device=${DEVICE}" \
   "job_index=${JOB_INDEX_SWEEP}" \
   "${HYDRA_OVERRIDES[@]}" \
   "$@"

@@ -66,11 +66,19 @@ manifest, expands one Hydra multirun job per manifest grid point, runs
 then uses direct `python -u run.py ...` commands inside the job.
 
 Real CPU submissions default to `sapphire,kozinsky,seas_compute`. Real GPU
-submissions default to `kozinsky_gpu,seas_gpu`. Cluster smoke submissions use
-the dedicated [smoke_manifest.yaml](smoke_manifest.yaml), the smaller test
-partitions (`test` for CPU and `gpu_test` for GPU), and a 15-minute timeout.
-The launcher escapes partition commas for Hydra; Slurm still receives the
-normal comma-separated partition list.
+submissions default to `kozinsky_gpu,seas_gpu`. Cluster smoke uses the real
+final Submitit launcher with [final_smoke_inputs.csv](final_smoke_inputs.csv),
+the smaller test partitions (`test` for CPU and `gpu_test` for GPU),
+`ARRAY_PARALLELISM=1`, a 15-minute timeout, and the W&B project
+`SpENN-QMC-test`.
+
+The smoke philosophy is deliberately strict: do not add a separate smoke
+launcher or smoke manifest when the real launcher can express the check. Smoke
+should change only the inputs table and resource environment variables. Model
+size, sampler size, training length, run IDs, and checkpoint paths belong in
+the smoke inputs command columns so the final launcher remains the behavior
+under test. The launcher escapes partition commas for Hydra; Slurm still
+receives the normal comma-separated partition list.
 
 Each Submitit task is shaped like:
 
