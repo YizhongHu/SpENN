@@ -2,12 +2,10 @@
 # Hooke pair validation study manifest (protocol contract)
 # =============================================================================
 #
-# This manifest declares the validation-scan protocol: the grid, the selection
-# rule, and the eligibility requirements. Once the scan starts, changing this
-# file means creating a new study version (bump study.name).
-#
-# The collector and selector read this file; they never read W&B and never use
-# the exact reference energy.
+# This manifest declares the PR8.1 validation-scan protocol: the grid and the
+# durable checkpoint/run-artifact policy. Selection and final-evaluation
+# orchestration are deferred to PR8.2 and should consume the local artifacts
+# written by these runs.
 
 study:
   name: hooke_pair_validation_v1
@@ -30,92 +28,23 @@ grid:
 seed_key: runtime.seed
 
 validation:
-  metric: validation/energy
-  aggregate: median
-  checkpoint: final
-  # Failed/ineligible/missing seeds count as +inf validation energy.
-  failed_run_value: .inf
+  namespace: validation
+  sampler_namespace: validation/sampler
+  exact_reference_energy_allowed: false
 
-# Runs failing any of these are treated as failed for selection.
-eligibility:
-  require:
-    - checks/data_integrity/passed
-    - checks/gradient/passed
-    - checks/equivariance/full_model/passed
-  local_energy_finite_fraction: 1.0
+checkpoint_artifacts:
+  schema_version: 1
+  restore_modes: [none, model_only, train_resume]
+  directory_layout: true
+  require_complete_marker: true
+  latest_pointer: latest.json
+  save_model_state_dict: true
+  save_optimizer_state_dict: true
+  save_trainer_state: true
+  save_sampler_mcmc_state: true
+  save_rng_state: true
 
-# Margin-based selection policy: a config only clearly beats another when its
-# aggregate energy is lower by more than the selection margin
-#
-#   margin(A, B) = max(
-#     margin.stderr_multiplier * sqrt(stderr_A^2 + stderr_B^2),
-#     margin.seed_iqr_fraction * max(energy_iqr_A, energy_iqr_B),
-#     absolute_energy_floor,
-#   )
-#
-# where stderr is the median validation/energy_stderr over seeds and
-# energy_iqr is the seed-to-seed IQR of validation/energy. Candidates within
-# the margin of the current best are tied and ranked by the tie-breakers, in
-# order. Lower always wins (geometry_warning_count counts flags; smaller
-# model_params.channels means a simpler ansatz).
-selection:
-  absolute_energy_floor: 1.0e-4
-  margin:
-    stderr_multiplier: 2.0
-    seed_iqr_fraction: 0.25
-  # First PR8 selection requires all seeds: any failed/missing/ineligible seed
-  # makes the whole config score +inf (infrastructure failures are not marked
-  # retryable in study v1).
-  require_all_seeds: true
-  tie_breakers:
-    - validation/energy_variance
-    - validation_energy_iqr
-    - validation/energy_stderr
-    - geometry_warning_count
-    - model_params.channels
-    - runtime/wall_time_sec
-
-# Reported and flagged in selection_report.md; these never decide the winner
-# (they are neither eligibility criteria nor tie-breakers above).
-diagnostic_fields:
-  sampler_geometry:
-    - validation/sampler/radius_mean
-    - validation/sampler/radius_q99
-    - validation/sampler/radius_max
-    - validation/sampler/electron_distance_q01
-    - validation/sampler/electron_distance_min
-    - validation/sampler/position_rms
-
-# Thresholds for flagging suspicious walker geometry in the report.
-geometry_flags:
-  electron_distance_q01_min: 1.0e-3
-
-# Final held-out benchmark of the selected config (evaluate_selected.py).
-# Training seeds are fresh (disjoint from the validation grid seeds above) so
-# the reported benchmark never reuses the runs that drove selection; eval
-# seeds seed the final evaluation sampler and are paired index-wise with the
-# training seeds.
-final_evaluation:
-  study_name: hooke_pair_final_v1
-  eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
-  training_seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
-  eval_seeds: [100000, 100001, 100002, 100003, 100004, 100005, 100006, 100007, 100008, 100009]
-  # evaluate_selected.py refuses to emit commands whose training seeds overlap
-  # the validation seeds unless this is set true.
-  allow_validation_seed_reuse: false
-  # Checkpoint/model pairing mode. structured_checkpoint: the fresh final
-  # training runs write schema-v1 checkpoints carrying model_config_hash, and
-  # the generated eval configs pin expected_model_config_hash so loading
-  # verifies the pairing. legacy_resolved_config_workaround: only for
-  # evaluating pre-schema checkpoints of already-completed training runs
-  # (model spec copied from the training resolved_config.yaml; strict load,
-  # no hash verification); it must not become the long-term benchmark path.
-  checkpoint_loading: structured_checkpoint
-  # Final evaluation sampler (larger than validation); evaluate_selected.py
-  # bakes these into the generated eval configs so the manifest stays the
-  # source of truth.
-  sampler:
-    n_walkers: 8192
-    burn_in: 1000
-    n_steps: 500
-    proposal_scale: 0.35
+run_durability:
+  write_run_start_json: true
+  environment_policy: allowlist
+  keep_slurm_logs: true
