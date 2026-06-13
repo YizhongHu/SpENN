@@ -48,9 +48,9 @@ experiment:
 # Study provenance
 # -----------------------------------------------------------------------------
 # Identifies which study (if any) launched this run. The launcher sets
-# study.name via an override; the collector derives a deterministic config_id
-# from the resolved grid fields when config_id is null. Both end up in
-# resolved_config.yaml, which study scripts read.
+# study.name via an override; future PR8.2 post-processing may derive a
+# deterministic config_id from resolved grid fields when config_id is null.
+# Both fields land in resolved_config.yaml and checkpoint manifests.
 study:
   name: null
   config_id: null
@@ -241,10 +241,25 @@ timing:
 
 
 # -----------------------------------------------------------------------------
-# Checkpointing
+# Checkpoint restore
+# -----------------------------------------------------------------------------
+load:
+  path: null
+  mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint writing
 # -----------------------------------------------------------------------------
 checkpoint:
   every_n_steps: 500
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
 
 
 # -----------------------------------------------------------------------------
@@ -275,6 +290,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  load: ${load}
 
 
 # -----------------------------------------------------------------------------
@@ -504,6 +520,11 @@ callbacks:
       - step_end
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpoint.keep_last}
+    save_optimizer: ${checkpoint.save_optimizer}
+    save_trainer: ${checkpoint.save_trainer}
+    save_sampler: ${checkpoint.save_sampler}
+    save_rng: ${checkpoint.save_rng}
 
   # Whole-run wall-clock timing: runtime/wall_time_sec (a selection
   # tie-breaker in the validation study) and unix timestamps.

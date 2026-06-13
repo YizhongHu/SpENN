@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 import sys
+import textwrap
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ from typing import Any
 from spenn.artifacts import write_json
 
 from .base import Callback, Event
+
+_STATUS_BOX_MAX_LINE_WIDTH = 100
+_STATUS_BOX_BORDER_WIDTH = 4
+_STATUS_BOX_SEPARATOR = " : "
 
 
 class Status(Callback):
@@ -28,6 +33,7 @@ class Status(Callback):
         logger_name: str = "spenn.status",
         include: Sequence[str] | None = None,
         color: str = "auto",
+        max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH,
         **kwargs: Any,
     ) -> None:
         super().__init__(triggers, **kwargs)
@@ -36,13 +42,14 @@ class Status(Callback):
         self.logger = logging.getLogger(logger_name)
         self.include = tuple(_DEFAULT_STATUS_METRICS if include is None else include)
         self.color = _validate_terminal_choice(color, name="color")
+        self.max_line_width = _validate_max_line_width(max_line_width)
         self.start_time: str | None = None
 
     def on_run_start(self, event: Event) -> None:
         """Record run start."""
 
         self.start_time = _now(event)
-        for line in _format_run_start_lines(event):
+        for line in _format_run_start_lines(event, max_line_width=self.max_line_width):
             self._log_status(line, kind="run")
         self._write(
             event,
@@ -198,7 +205,7 @@ _STATUS_COLORS = {
 }
 
 
-def _format_run_start_lines(event: Event) -> list[str]:
+def _format_run_start_lines(event: Event, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
     metadata = event.context.metadata
     extra = getattr(metadata, "extra", {}) or {}
     hardware = extra.get("hardware") if isinstance(extra, Mapping) else None
@@ -288,8 +295,8 @@ def _format_run_start_lines(event: Event) -> list[str]:
             if key in slurm:
                 hardware_rows.append((label, slurm[key]))
     return [
-        *_format_status_box("SpENN Run Status", status_rows),
-        *_format_status_box("Hardware Environment", hardware_rows),
+        *_format_status_box("SpENN Run Status", status_rows, max_line_width=max_line_width),
+        *_format_status_box("Hardware Environment", hardware_rows, max_line_width=max_line_width),
     ]
 
 
@@ -394,7 +401,12 @@ def _format_gib(value: int | float) -> str:
     return f"{float(value) / (1024**3):.1f}GB"
 
 
-def _format_status_box(title: str, rows: Sequence[tuple[str, object] | None]) -> list[str]:
+def _format_status_box(
+    title: str,
+    rows: Sequence[tuple[str, object] | None],
+    *,
+    max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH,
+) -> list[str]:
     rendered_rows: list[tuple[str, str] | None] = []
     for row in rows:
         if row is None:
@@ -407,8 +419,14 @@ def _format_status_box(title: str, rows: Sequence[tuple[str, object] | None]) ->
         rendered_rows.pop()
 
     label_width = max((len(label) for row in rendered_rows if row is not None for label, _ in [row]), default=0)
-    value_width = max((len(value) for row in rendered_rows if row is not None for _, value in [row]), default=0)
-    content_width = max(len(title), label_width + 3 + value_width)
+    max_line_width = _validate_max_line_width(max_line_width)
+    max_content_width = max_line_width - _STATUS_BOX_BORDER_WIDTH
+    max_value_width = max(1, max_content_width - label_width - len(_STATUS_BOX_SEPARATOR))
+    value_width = min(
+        max((len(value) for row in rendered_rows if row is not None for _, value in [row]), default=0),
+        max_value_width,
+    )
+    content_width = max(len(title), label_width + len(_STATUS_BOX_SEPARATOR) + value_width)
     top = "+" + "=" * (content_width + 2) + "+"
     rule = "+" + "-" * (content_width + 2) + "+"
     lines = [top, f"| {title.center(content_width)} |", rule]
@@ -417,10 +435,22 @@ def _format_status_box(title: str, rows: Sequence[tuple[str, object] | None]) ->
             lines.append(rule)
             continue
         label, value = row
-        text = f"{label.ljust(label_width)} : {value}"
-        lines.append(f"| {text.ljust(content_width)} |")
+        value_lines = _wrap_box_value(value, width=max_value_width)
+        for index, value_line in enumerate(value_lines):
+            rendered_label = label if index == 0 else ""
+            text = f"{rendered_label.ljust(label_width)}{_STATUS_BOX_SEPARATOR}{value_line}"
+            lines.append(f"| {text.ljust(content_width)} |")
     lines.append(top)
     return lines
+
+
+def _wrap_box_value(value: str, *, width: int) -> list[str]:
+    return textwrap.wrap(
+        value,
+        width=width,
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or ["null"]
 
 
 def _format_box_value(value: object) -> str:
@@ -447,6 +477,13 @@ def _validate_terminal_choice(value: str, *, name: str) -> str:
     if value not in {"auto", "always", "never"}:
         raise ValueError(f"{name} must be one of 'auto', 'always', or 'never', got {value!r}")
     return value
+
+
+def _validate_max_line_width(value: int) -> int:
+    width = int(value)
+    if width < 40:
+        raise ValueError(f"max_line_width must be at least 40, got {width}")
+    return width
 
 
 def _logging_level(level: str) -> int:

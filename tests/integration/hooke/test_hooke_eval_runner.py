@@ -13,7 +13,10 @@ from torch import nn
 from omegaconf import OmegaConf
 
 import spenn.runner as runner_module
+import spenn.runner.evaluate as evaluate_runner_module
+import spenn.runner.train as train_runner_module
 import spenn.run as run_module
+from spenn.checkpoint import RestoreReport
 from spenn.artifacts import RunContext
 from spenn.callback import Callback, Event
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
@@ -23,6 +26,7 @@ from spenn.physics.kinetic import KineticEnergy
 from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from spenn.run import run_from_config
 from spenn.runner import Evaluate, Train
+from spenn.training.state import TrainerState
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
@@ -30,7 +34,15 @@ FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
 
 def test_evaluate_accepts_only_minimal_constructor_args() -> None:
     params = set(inspect.signature(Evaluate.__init__).parameters)
-    assert params == {"self", "model", "sampler", "hamiltonian_terms", "diagnostics", "return_terms"}
+    assert params == {
+        "self",
+        "model",
+        "sampler",
+        "hamiltonian_terms",
+        "diagnostics",
+        "return_terms",
+        "load",
+    }
 
 
 def test_evaluate_rejects_reference_energy_api() -> None:
@@ -176,6 +188,118 @@ def test_evaluate_start_is_emitted_after_model_ready() -> None:
     assert recorder.events == ["run_start"]
 
 
+def test_train_rejects_model_only_load_mode() -> None:
+    runner = Train(
+        model=nn.Linear(1, 1).double(),
+        sampler=object(),
+        hamiltonian_terms=[],
+        optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
+        trainer=_NoopTrainer(),
+        load={"mode": "model_only", "path": "unused"},
+    )
+
+    with pytest.raises(ValueError, match="load.mode.*model_only"):
+        runner.run(_RecordingContext([]))
+
+
+def test_evaluate_rejects_train_resume_load_mode() -> None:
+    runner = Evaluate(
+        model=_QuadraticModel(),
+        sampler=_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)),
+        hamiltonian_terms=[],
+        diagnostics=[EnergyEvaluation()],
+        load={"mode": "train_resume", "path": "unused"},
+    )
+
+    with pytest.raises(ValueError, match="load.mode.*train_resume"):
+        runner.run(_RecordingContext([]))
+
+
+def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
+    calls = []
+
+    def fake_restore_checkpoint_with_events(**kwargs):
+        calls.append(kwargs)
+        return RestoreReport(mode="train_resume", checkpoint_dir="ckpt", step=4)
+
+    monkeypatch.setattr(
+        train_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
+    runner = Train(
+        model=nn.Linear(1, 1).double(),
+        sampler=object(),
+        hamiltonian_terms=[],
+        optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
+        trainer=_NoopTrainer(),
+        load={"mode": "train_resume", "path": "ckpt"},
+    )
+
+    result = runner.run(_RecordingContext([]))
+
+    assert result.status == "completed"
+    assert calls and calls[0]["model"] is runner.model
+    assert calls[0]["trainer"] is runner.trainer
+    assert calls[0]["sampler"] is runner.sampler
+    assert calls[0]["emit"] == runner.emit
+
+
+def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
+    calls = []
+
+    def fake_restore_checkpoint_with_events(**kwargs):
+        calls.append(kwargs)
+        return RestoreReport(mode="model_only", checkpoint_dir="ckpt", step=4)
+
+    monkeypatch.setattr(
+        evaluate_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
+    runner = Evaluate(
+        model=_QuadraticModel(),
+        sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
+        hamiltonian_terms={"constant": _ConstantEnergyTerm([1.0, 1.0])},
+        diagnostics=[EnergyEvaluation()],
+        load={"mode": "model_only", "path": "ckpt"},
+    )
+
+    result = runner.run(_RecordingContext([]))
+
+    assert result.status == "completed"
+    assert calls and calls[0]["model"] is runner.model
+    assert calls[0]["sampler"] is runner.sampler
+    assert calls[0]["emit"] == runner.emit
+
+
+def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
+    def fail_restore(**kwargs):
+        raise AssertionError("restore_checkpoint should not be called")
+
+    monkeypatch.setattr(train_runner_module, "restore_checkpoint_with_events", fail_restore)
+    monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint_with_events", fail_restore)
+
+    train = Train(
+        model=nn.Linear(1, 1).double(),
+        sampler=object(),
+        hamiltonian_terms=[],
+        optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
+        trainer=_NoopTrainer(),
+        load={"mode": "none"},
+    )
+    assert train.run(_RecordingContext([])).status == "completed"
+
+    evaluate = Evaluate(
+        model=_QuadraticModel(),
+        sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
+        hamiltonian_terms={"constant": _ConstantEnergyTerm([1.0, 1.0])},
+        diagnostics=[EnergyEvaluation()],
+        load={"mode": "none"},
+    )
+    assert evaluate.run(_RecordingContext([])).status == "completed"
+
+
 def _runner_context(cfg) -> RunContext:
     """Return a minimal real RunContext instance for private runner-instantiation tests."""
 
@@ -230,6 +354,11 @@ class _StaticSampler:
         self.calls += 1
         positions = self.positions.to(device=device)
         return Walkers(positions=positions), {"n_walkers": positions.shape[0], "acceptance_rate": 1.0}
+
+
+class _NoopTrainer:
+    def fit(self, *, model, sampler, hamiltonian_terms, optimizer, context, emit):
+        return TrainerState(step=0, model=model, optimizer=optimizer, trainer=self, sampler=sampler)
 
 
 class _ConstantEnergyTerm:

@@ -211,7 +211,7 @@ checks:
   every_n_steps: 1
   fail_fast: true
 
-  data_validity:
+  data_integrity:
     max_nonfinite_energy_fraction: 0.0
     max_nonfinite_logabs_fraction: 0.0
     check_loss: true
@@ -234,10 +234,25 @@ checks:
 
 
 # -----------------------------------------------------------------------------
-# Checkpointing
+# Checkpoint restore
+# -----------------------------------------------------------------------------
+load:
+  path: null
+  mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint writing
 # -----------------------------------------------------------------------------
 checkpoint:
   every_n_steps: 10
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
 
 
 # -----------------------------------------------------------------------------
@@ -289,6 +304,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  load: ${load}
 
 
 # -----------------------------------------------------------------------------
@@ -459,17 +475,17 @@ callbacks:
     cuda_synchronize: ${timing.cuda_synchronize}
 
   # Fail fast on nonfinite energies/logabs or malformed wavefunction/batch data.
-  - _target_: spenn.callback.DataValidity
+  - _target_: spenn.callback.DataIntegrity
     triggers:
       - step_end
     every_n_steps: ${checks.every_n_steps}
     fail_fast: ${checks.fail_fast}
-    max_nonfinite_energy_fraction: ${checks.data_validity.max_nonfinite_energy_fraction}
-    max_nonfinite_logabs_fraction: ${checks.data_validity.max_nonfinite_logabs_fraction}
-    check_loss: ${checks.data_validity.check_loss}
-    check_wavefunction_output: ${checks.data_validity.check_wavefunction_output}
-    check_batch: ${checks.data_validity.check_batch}
-    strict_sign_values: ${checks.data_validity.strict_sign_values}
+    max_nonfinite_energy_fraction: ${checks.data_integrity.max_nonfinite_energy_fraction}
+    max_nonfinite_logabs_fraction: ${checks.data_integrity.max_nonfinite_logabs_fraction}
+    check_loss: ${checks.data_integrity.check_loss}
+    check_wavefunction_output: ${checks.data_integrity.check_wavefunction_output}
+    check_batch: ${checks.data_integrity.check_batch}
+    strict_sign_values: ${checks.data_integrity.strict_sign_values}
 
   # Track gradient norms and optionally fail on nonfinite gradients.
   - _target_: spenn.callback.GradientStats
@@ -517,6 +533,11 @@ callbacks:
       - step_end
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpoint.keep_last}
+    save_optimizer: ${checkpoint.save_optimizer}
+    save_trainer: ${checkpoint.save_trainer}
+    save_sampler: ${checkpoint.save_sampler}
+    save_rng: ${checkpoint.save_rng}
 
   # Human-facing terminal progress. This should render compact lines for local
   # terminals and SLURM logs. It is not the authoritative metrics record.

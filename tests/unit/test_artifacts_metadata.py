@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +118,33 @@ def test_prepare_run_context_enforces_configured_timezone(tmp_path: Path) -> Non
     assert context.cfg.run.timezone == "America/New_York"
     assert context.metadata.timezone == "America/New_York"
     assert timestamp.utcoffset() == ZoneInfo("America/New_York").utcoffset(timestamp)
+
+
+def test_prepare_run_context_writes_run_start_breadcrumb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLURM_JOB_ID", "123456")
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "7")
+    monkeypatch.setenv("WANDB_API_KEY", "secret")
+    cfg = _run_cfg(tmp_path)
+    cfg.study = {"name": "study", "config_id": "cfg"}
+
+    context = prepare_run_context(cfg, config_path="test.yaml", command="pytest command")
+
+    run_start = json.loads((context.run_dir / "run_start.json").read_text())
+    assert run_start["run_id"] == context.metadata.run_id
+    assert run_start["run_dir"] == context.metadata.run_dir
+    assert run_start["study"] == {"name": "study", "config_id": "cfg"}
+    assert run_start["hostname"]
+    assert run_start["command"] == "pytest command"
+    assert run_start["git"]["sha"] == context.metadata.git_commit
+    assert run_start["slurm"]["job_id"] == "123456"
+    assert run_start["slurm"]["array_task_id"] == "7"
+    assert run_start["environment"]["SLURM_JOB_ID"] == "123456"
+    assert "WANDB_API_KEY" not in run_start["environment"]
+    assert "WANDB_API_KEY" not in json.dumps(run_start)
+    assert isinstance(run_start["start_time_unix"], float)
 
 
 def test_prepare_run_context_rejects_invalid_timezone(tmp_path: Path) -> None:

@@ -36,7 +36,8 @@ def test_runtime_checks_run_writes_standard_artifacts(tmp_path) -> None:
         "metadata.json",
         "status.json",
         "metrics.jsonl",
-        "checkpoints/latest.pt",
+        "run_start.json",
+        "checkpoints/latest.json",
     ):
         assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"
 

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from spenn.callback import Event, Status, configure_terminal_logging
+from spenn.callback.status import _format_status_box
 from tests.unit.callback.support import FakeState
 
 
@@ -155,6 +156,46 @@ def test_status_terminal_false_suppresses_terminal_output(
     assert json.loads((tmp_path / "status.json").read_text())["status"] == "running"
 
 
+def test_status_box_wraps_long_values_to_log_width() -> None:
+    long_path = (
+        "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/SpENN/outputs/"
+        "hooke_pair_smoke/pair/2026-06-11_142841_hooke_pair_smoke_train_7e9715/"
+        "resolved_config.yaml"
+    )
+
+    lines = _format_status_box(
+        "SpENN Run Status",
+        [
+            ("Run ID", "2026-06-11_142841_hooke_pair_smoke_train_7e9715"),
+            ("Run Dir", long_path),
+            ("Command", f"run.py --config {long_path}"),
+        ],
+    )
+
+    assert all(len(line) <= 100 for line in lines)
+    assert len(lines) > 7
+    assert any(line.startswith("|        ") and " : " in line for line in lines)
+
+
+def test_status_max_line_width_option_controls_start_boxes(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    callback = Status(["run_start"], color="never", max_line_width=72)
+    context = _context(tmp_path)
+    context.metadata.run_dir = (
+        "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/SpENN/outputs/"
+        "hooke_pair_smoke/pair/run-1"
+    )
+
+    with caplog.at_level(logging.INFO, logger="spenn.status"):
+        callback.handle(Event(name="run_start", context=context))
+
+    box_lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith(("+", "|"))]
+    assert box_lines
+    assert all(len(line) <= 72 for line in box_lines)
+
+
 def test_configure_terminal_logging_adds_one_package_handler() -> None:
     logger_name = "spenn.test_terminal_status"
     logger = logging.getLogger(logger_name)
@@ -176,3 +217,8 @@ def test_configure_terminal_logging_adds_one_package_handler() -> None:
 def test_status_rejects_invalid_color() -> None:
     with pytest.raises(ValueError, match="color"):
         Status(["run_start"], color="sometimes")
+
+
+def test_status_rejects_too_small_max_line_width() -> None:
+    with pytest.raises(ValueError, match="max_line_width"):
+        Status(["run_start"], max_line_width=39)

@@ -86,7 +86,7 @@ def test_canonical_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> No
 
     run_dir = _run_config(TRAIN_CONFIG, tmp_path)
 
-    for artifact in (*EXPECTED_ARTIFACTS, "checkpoints/latest.pt"):
+    for artifact in (*EXPECTED_ARTIFACTS, "run_start.json", "checkpoints/latest.json"):
         assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"
     assert json.loads((run_dir / "status.json").read_text())["status"] == "completed"
 

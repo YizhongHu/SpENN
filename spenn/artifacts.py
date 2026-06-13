@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import re
@@ -22,6 +23,13 @@ from omegaconf import DictConfig, OmegaConf
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
 DEFAULT_RUN_TIMEZONE = "UTC"
+RUN_START_ENV_ALLOWLIST = (
+    "SLURM_JOB_ID",
+    "SLURM_ARRAY_TASK_ID",
+    "SLURM_CPUS_PER_TASK",
+    "SLURM_JOB_PARTITION",
+    "CUDA_VISIBLE_DEVICES",
+)
 
 
 class ArtifactManager:
@@ -133,6 +141,7 @@ class RunContext:
     clock: RunClock
     callbacks: list[Any] = field(default_factory=list)
     loggers: list[Any] = field(default_factory=list)
+    _run_start_emitted: bool = field(default=False, init=False, repr=False)
 
     @property
     def run_dir(self) -> Path:
@@ -170,6 +179,27 @@ class RunContext:
         record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
         for logger in self.loggers:
             logger.log(record)
+
+    def emit_event(
+        self,
+        name: str,
+        *,
+        state: object | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Durably record and dispatch one lifecycle event."""
+
+        if name == "run_start":
+            if self._run_start_emitted:
+                return
+            self._run_start_emitted = True
+
+        from spenn.callback.base import Event
+
+        event = Event(name=name, context=self, state=state, payload={} if payload is None else payload)
+        write_event_artifact(self, event)
+        for callback in self.callbacks:
+            callback.handle(event)
 
 
 def generate_run_id(run_name: str, *, clock: RunClock | None = None) -> str:
@@ -304,8 +334,107 @@ def write_json(path: Path, data: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
+def append_jsonl(path: Path, data: Mapping[str, Any]) -> None:
+    """Append a JSON-safe object as one JSONL record."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_jsonable(data), sort_keys=True, allow_nan=False))
+        handle.write("\n")
+
+
+def write_event_artifact(context: RunContext, event: Any) -> None:
+    """Append one lifecycle event to the run's durable event stream."""
+
+    append_jsonl(
+        context.path("events.jsonl"),
+        {
+            "event": event.name,
+            "payload": _event_jsonable(event.payload),
+            "run_id": context.metadata.run_id,
+            "step": event.step,
+            "time": context.now_iso(),
+        },
+    )
+
+
+def write_error_artifact(
+    target: RunContext | Path,
+    exception: BaseException,
+    *,
+    phase: str | None = None,
+    traceback_text: str | None = None,
+    command: str | None = None,
+    config_path: str | None = None,
+) -> Path:
+    """Write a durable failure artifact when a run directory is available."""
+
+    if isinstance(target, RunContext):
+        run_dir = target.run_dir
+        now = target.now_iso()
+        run_id = target.metadata.run_id
+        command = target.metadata.command if command is None else command
+        config_path = target.metadata.config_path if config_path is None else config_path
+    else:
+        run_dir = Path(target)
+        now = datetime.now(UTC).isoformat()
+        run_id = None
+    path = run_dir / "error.json"
+    write_json(
+        path,
+        {
+            "command": command,
+            "config_path": config_path,
+            "exception_message": str(exception),
+            "exception_type": type(exception).__name__,
+            "phase": phase,
+            "run_dir": str(run_dir),
+            "run_id": run_id,
+            "status": "failed",
+            "time": now,
+            "traceback": traceback_text,
+        },
+    )
+    return path
+
+
+def write_run_start_artifact(context: RunContext) -> None:
+    """Write the early run-start breadcrumb before long-running work begins."""
+
+    cfg = context.cfg
+    study = OmegaConf.select(cfg, "study", default={}) or {}
+    if OmegaConf.is_config(study):
+        study = OmegaConf.to_container(study, resolve=True)
+    if not isinstance(study, Mapping):
+        study = {}
+    data = {
+        "run_id": context.metadata.run_id,
+        "run_dir": context.metadata.run_dir,
+        "study": {
+            "name": study.get("name"),
+            "config_id": study.get("config_id"),
+        },
+        "hostname": socket.gethostname(),
+        "cwd": str(Path.cwd()),
+        "command": context.metadata.command,
+        "git": {
+            "sha": context.metadata.git_commit,
+            "branch": context.metadata.git_branch,
+            "dirty": context.metadata.dirty_worktree,
+        },
+        "slurm": _collect_slurm_metadata(),
+        "environment": _collect_allowed_environment(),
+        "start_time_unix": context.now().timestamp(),
+    }
+    write_json(context.path("run_start.json"), data)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, BaseException):
+        return {"exception_type": type(value).__name__, "message": str(value)}
+    if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, Mapping):
         return {str(key): _jsonable(item) for key, item in value.items()}
@@ -314,6 +443,34 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, DictConfig):
         return OmegaConf.to_container(value, resolve=True)
     return value
+
+
+def _event_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, BaseException):
+        return {"exception_type": type(value).__name__, "message": str(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _event_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_event_jsonable(item) for item in value]
+    if isinstance(value, DictConfig):
+        return _event_jsonable(OmegaConf.to_container(value, resolve=True))
+    shape = getattr(value, "shape", None)
+    dtype = getattr(value, "dtype", None)
+    device = getattr(value, "device", None)
+    if shape is not None and dtype is not None:
+        return {
+            "device": None if device is None else str(device),
+            "dtype": str(dtype),
+            "shape": [int(dim) for dim in shape],
+            "type": f"{type(value).__module__}.{type(value).__name__}",
+        }
+    return {"type": f"{type(value).__module__}.{type(value).__name__}"}
 
 
 def _slugify(value: str) -> str:
@@ -410,6 +567,10 @@ def _collect_slurm_metadata() -> dict[str, str]:
     return {name: os.environ[env] for name, env in keys.items() if env in os.environ}
 
 
+def _collect_allowed_environment() -> dict[str, str]:
+    return {key: os.environ[key] for key in RUN_START_ENV_ALLOWLIST if key in os.environ}
+
+
 __all__ = [
     "ArtifactManager",
     "DEFAULT_RUN_TIMEZONE",
@@ -424,4 +585,7 @@ __all__ = [
     "generate_run_id",
     "resolve_run_clock",
     "write_json",
+    "write_error_artifact",
+    "write_event_artifact",
+    "write_run_start_artifact",
 ]

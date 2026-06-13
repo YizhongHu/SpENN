@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from spenn.artifacts import RunContext, RunResult
+from spenn.checkpoint import restore_checkpoint_with_events
 from spenn.diagnostics import EvaluationContext, evaluate_diagnostics, validate_diagnostics
 from spenn.dependencies import require_torch
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
@@ -52,6 +53,7 @@ class Evaluate(Runner):
         hamiltonian_terms,
         diagnostics: Sequence[object] | None = None,
         return_terms: bool = False,
+        load=None,
     ) -> None:
         self.model = model
         self.sampler = sampler
@@ -64,6 +66,7 @@ class Evaluate(Runner):
             )
         self.diagnostics = validate_diagnostics(diagnostics)
         self.return_terms = bool(return_terms)
+        self.load = load
 
     def run(self, context: RunContext) -> RunResult:
         """Sample configurations, evaluate local energy, and log metrics."""
@@ -74,6 +77,21 @@ class Evaluate(Runner):
             _place_module_for_runtime(self.model, context)
             self.model.eval()
             _assert_eager_initialized(self.model)
+
+        mode = _load_mode(self.load)
+        if mode == "train_resume":
+            raise ValueError("Evaluate rejects load.mode='train_resume'; use model_only")
+        if mode == "model_only":
+            report = restore_checkpoint_with_events(
+                load=self.load,
+                model=self.model,
+                sampler=self.sampler,
+                context=context,
+                emit=self.emit,
+            )
+            self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
+            if _is_torch_module(self.model):
+                self.model.eval()
 
         self.emit("evaluate_start", context)
 
@@ -129,6 +147,13 @@ def _split_local_energy_result(
         return result.total, result.terms
     return result, None
 
+
+def _load_mode(load) -> str:
+    if load is None:
+        return "none"
+    if hasattr(load, "get"):
+        return str(load.get("mode", "none"))
+    return "none"
 
 
 __all__ = ["Evaluate"]

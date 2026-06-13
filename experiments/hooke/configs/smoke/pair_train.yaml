@@ -271,10 +271,25 @@ checks:
 
 
 # -----------------------------------------------------------------------------
-# Checkpointing
+# Checkpoint restore
+# -----------------------------------------------------------------------------
+load:
+  path: null
+  mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint writing
 # -----------------------------------------------------------------------------
 checkpoint:
   every_n_steps: 1
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
 
 
 # -----------------------------------------------------------------------------
@@ -326,6 +341,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  load: ${load}
 
 
 # -----------------------------------------------------------------------------
@@ -589,6 +605,11 @@ callbacks:
       - step_end
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpoint.keep_last}
+    save_optimizer: ${checkpoint.save_optimizer}
+    save_trainer: ${checkpoint.save_trainer}
+    save_sampler: ${checkpoint.save_sampler}
+    save_rng: ${checkpoint.save_rng}
 
   # Human-facing terminal progress. This should render compact lines for local
   # terminals and SLURM logs. It is not the authoritative metrics record.

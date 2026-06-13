@@ -2,12 +2,10 @@
 # Hooke pair validation study manifest (protocol contract)
 # =============================================================================
 #
-# This manifest declares the validation-scan protocol: the grid, the selection
-# rule, and the eligibility requirements. Once the scan starts, changing this
-# file means creating a new study version (bump study.name).
-#
-# The collector and selector read this file; they never read W&B and never use
-# the exact reference energy.
+# This manifest declares the PR8.1 validation-scan protocol: the grid and the
+# durable checkpoint/run-artifact policy. Selection and final-evaluation
+# orchestration are deferred to PR8.2 and should consume the local artifacts
+# written by these runs.
 
 study:
   name: hooke_pair_validation_v1
@@ -30,39 +28,23 @@ grid:
 seed_key: runtime.seed
 
 validation:
-  metric: validation/energy
-  aggregate: median
-  checkpoint: final
-  # Failed/ineligible/missing seeds count as +inf validation energy.
-  failed_run_value: .inf
+  namespace: validation
+  sampler_namespace: validation/sampler
+  exact_reference_energy_allowed: false
 
-# Runs failing any of these are treated as failed for selection.
-eligibility:
-  require:
-    - checks/data_integrity/passed
-    - checks/gradient/passed
-    - checks/equivariance/full_model/passed
-  local_energy_finite_fraction: 1.0
+checkpoint_artifacts:
+  schema_version: 1
+  load_modes: [none, model_only, train_resume]
+  directory_layout: true
+  require_complete_marker: true
+  latest_pointer: latest.json
+  save_model_state_dict: true
+  save_optimizer_state_dict: true
+  save_trainer_state: true
+  save_sampler_mcmc_state: true
+  save_rng_state: true
 
-# Applied in order after the aggregate metric; lower is better for metric
-# tie-breakers, smaller is better for model_params.channels.
-tie_breakers:
-  - validation/energy_variance
-  - seed_energy_spread
-  - model_params.channels
-  - runtime/wall_time_sec
-
-# Reported and flagged in selection_report.md; these never decide the winner
-# (they are neither eligibility criteria nor tie-breakers above).
-diagnostic_fields:
-  sampler_geometry:
-    - validation/sampler/radius_mean
-    - validation/sampler/radius_q99
-    - validation/sampler/radius_max
-    - validation/sampler/electron_distance_q01
-    - validation/sampler/electron_distance_min
-    - validation/sampler/position_rms
-
-# Thresholds for flagging suspicious walker geometry in the report.
-geometry_flags:
-  electron_distance_q01_min: 1.0e-3
+run_durability:
+  write_run_start_json: true
+  environment_policy: allowlist
+  keep_slurm_logs: true
