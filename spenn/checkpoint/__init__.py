@@ -12,7 +12,7 @@ from .artifact import (
 )
 from .hashing import checkpoint_hashes, component_config_hash, resolved_config_hash, stable_config_hash
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
-from .restore import RESTORE_MODES, RestoreReport, restore_checkpoint
+from .restore import RESTORE_MODES, RestoreReport, restore_checkpoint, restore_checkpoint_with_events
 from .save import save_checkpoint
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "resolved_config_hash",
     "resolve_checkpoint_dir",
     "restore_checkpoint",
+    "restore_checkpoint_with_events",
     "save_checkpoint",
     "stable_config_hash",
 ]

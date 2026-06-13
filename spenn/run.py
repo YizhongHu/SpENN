@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
@@ -19,9 +20,10 @@ from spenn.artifacts import (
     build_run_metadata,
     generate_run_id,
     resolve_run_clock,
+    write_error_artifact,
     write_run_start_artifact,
 )
-from spenn.callback import Event, configure_terminal_logging
+from spenn.callback import configure_terminal_logging
 from spenn.dependencies import OptionalDependencyError, require_torch
 from spenn.runner import Runner
 
@@ -29,15 +31,31 @@ from spenn.runner import Runner
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one configured SpENN runner from the command line."""
 
+    _install_bootstrap_stderr_logger()
     args = parse_args(argv)
     command = " ".join(["run.py", *(sys.argv[1:] if argv is None else argv)])
-    cfg = load_config(str(args.config), args.overrides)
+    try:
+        cfg = load_config(str(args.config), args.overrides)
+    except Exception as exc:
+        _print_fatal(
+            exc,
+            phase="bootstrap",
+            traceback_text=traceback.format_exc(),
+            command=command,
+            config_path=str(args.config),
+        )
+        return 1
     try:
         _preflight_optional_dependencies(cfg)
     except OptionalDependencyError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_fatal(exc, phase="bootstrap", command=command, config_path=str(args.config))
         return 1
     return run_from_config(cfg, config_path=str(args.config), command=command)
+
+
+@dataclass
+class _BootstrapState:
+    run_dir: Path | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -63,6 +81,7 @@ def prepare_run_context(
     *,
     config_path: str | None = None,
     command: str | None = None,
+    bootstrap: _BootstrapState | None = None,
 ) -> RunContext:
     """Resolve run metadata, artifact paths, callbacks, and loggers.
 
@@ -91,6 +110,8 @@ def prepare_run_context(
     sector = str(OmegaConf.select(resolved_cfg, "experiment.sector", default="default"))
     root = Path(str(OmegaConf.select(resolved_cfg, "run.root", default="outputs")))
     artifact_manager = ArtifactManager(root, experiment_name, sector, str(run_id))
+    if bootstrap is not None:
+        bootstrap.run_dir = artifact_manager.run_dir
     OmegaConf.update(resolved_cfg, "run.dir", str(artifact_manager.run_dir), merge=False, force_add=True)
     OmegaConf.resolve(resolved_cfg)
     artifact_manager.make_dirs()
@@ -144,36 +165,57 @@ def run_from_config(
         ``raise_exceptions=False``).
     """
 
-    context = prepare_run_context(cfg, config_path=config_path, command=command)
+    _install_bootstrap_stderr_logger()
+    bootstrap = _BootstrapState()
+    context: RunContext | None = None
     runner: Runner | None = None
     try:
+        context = prepare_run_context(cfg, config_path=config_path, command=command, bootstrap=bootstrap)
+        context.emit_event("run_start")
         runner = _instantiate_runner(context)
         result = runner.run(context)
         if isinstance(result, RunResult):
             context.metadata.status = result.status
         return 0
     except Exception as exc:
-        context.metadata.status = "failed"
+        phase = _failure_phase(exc, context=context, runner=runner)
+        traceback_text = traceback.format_exc()
         payload = {
             "exception": exc,
             "exception_type": type(exc).__name__,
             "exception_message": str(exc),
-            "traceback": traceback.format_exc(),
+            "phase": phase,
+            "traceback": traceback_text,
         }
-        if runner is None:
-            event = Event(name="exception", context=context, payload=payload)
-            for callback in context.callbacks:
-                callback.handle(event)
-        else:
-            runner.emit("exception", context, payload=payload)
-        if _terminal_logging_enabled(context.cfg):
-            logging.getLogger("spenn.run").exception("configured run failed")
+        if context is not None:
+            context.metadata.status = "failed"
+            _write_error_if_possible(context, exc, phase=phase, traceback_text=traceback_text)
+            _emit_event_if_possible(context, "run_failed", payload=payload)
+            _emit_event_if_possible(context, "exception", payload=payload)
+        elif bootstrap.run_dir is not None:
+            _write_error_if_possible(
+                bootstrap.run_dir,
+                exc,
+                phase=phase,
+                traceback_text=traceback_text,
+                command=command,
+                config_path=config_path,
+            )
+        _print_fatal(
+            exc,
+            phase=phase,
+            traceback_text=traceback_text,
+            run_dir=context.run_dir if context is not None else bootstrap.run_dir,
+            command=command,
+            config_path=config_path,
+        )
         if raise_exceptions:
             raise
         return 1
     finally:
-        for logger in context.loggers:
-            logger.finish()
+        if context is not None:
+            for logger in context.loggers:
+                logger.finish()
 
 
 def _validate_callbacks(callbacks: list[object]) -> None:
@@ -244,9 +286,101 @@ def _configure_terminal_logging(cfg: DictConfig) -> None:
     )
 
 
-def _terminal_logging_enabled(cfg: DictConfig) -> bool:
-    terminal = OmegaConf.select(cfg, "terminal", default=None)
-    return terminal is not None and bool(OmegaConf.select(terminal, "enabled", default=True))
+def _install_bootstrap_stderr_logger() -> None:
+    """Install a minimal stderr logger for fatal bootstrap diagnostics."""
+
+    logger = logging.getLogger("spenn.bootstrap")
+    logger.setLevel(logging.ERROR)
+    for handler in logger.handlers:
+        if getattr(handler, "_spenn_bootstrap_handler", False):
+            return
+    handler = logging.StreamHandler(sys.stderr)
+    handler._spenn_bootstrap_handler = True
+    handler.setLevel(logging.ERROR)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+
+
+def _failure_phase(
+    exc: BaseException,
+    *,
+    context: RunContext | None,
+    runner: Runner | None,
+) -> str:
+    phase = getattr(exc, "_spenn_failure_phase", None)
+    if phase is not None:
+        return str(phase)
+    if context is None or runner is None:
+        return "bootstrap"
+    return "run"
+
+
+def _write_error_if_possible(
+    target: RunContext | Path,
+    exc: BaseException,
+    *,
+    phase: str,
+    traceback_text: str,
+    command: str | None = None,
+    config_path: str | None = None,
+) -> None:
+    try:
+        write_error_artifact(
+            target,
+            exc,
+            phase=phase,
+            traceback_text=traceback_text,
+            command=command,
+            config_path=config_path,
+        )
+    except Exception as artifact_exc:  # pragma: no cover - disk/runtime dependent
+        logging.getLogger("spenn.bootstrap").error(
+            "FATAL: failed to write error.json: %s: %s",
+            type(artifact_exc).__name__,
+            artifact_exc,
+        )
+
+
+def _emit_event_if_possible(context: RunContext, name: str, *, payload: dict[str, object]) -> None:
+    try:
+        context.emit_event(name, payload=payload)
+    except Exception as event_exc:  # pragma: no cover - callback/runtime dependent
+        logging.getLogger("spenn.bootstrap").error(
+            "FATAL: failed to emit %s while reporting failure: %s: %s",
+            name,
+            type(event_exc).__name__,
+            event_exc,
+        )
+
+
+def _print_fatal(
+    exc: BaseException,
+    *,
+    phase: str,
+    traceback_text: str | None = None,
+    run_dir: Path | None = None,
+    command: str | None = None,
+    config_path: str | None = None,
+) -> None:
+    """Print a fatal diagnostic to stderr regardless of terminal settings."""
+
+    parts = [f"FATAL {phase} error: {type(exc).__name__}: {exc}"]
+    load_path = getattr(exc, "_spenn_load_path", None)
+    load_mode = getattr(exc, "_spenn_load_mode", None)
+    if load_path is not None:
+        parts.append(f"load.path: {load_path}")
+    if load_mode is not None:
+        parts.append(f"load.mode: {load_mode}")
+    if run_dir is not None:
+        parts.append(f"run_dir: {run_dir}")
+    if config_path is not None:
+        parts.append(f"config: {config_path}")
+    if command is not None:
+        parts.append(f"command: {command}")
+    if traceback_text:
+        parts.append(traceback_text.rstrip())
+    print("\n".join(parts), file=sys.stderr, flush=True)
 
 
 def _preflight_optional_dependencies(cfg: DictConfig) -> None:

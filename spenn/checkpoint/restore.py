@@ -23,6 +23,7 @@ class RestoreReport:
 
     mode: str
     checkpoint_dir: str | None = None
+    schema_version: int | None = None
     step: int | None = None
     loaded_model: bool = False
     loaded_optimizer: bool = False
@@ -36,6 +37,7 @@ class RestoreReport:
         return {
             "mode": self.mode,
             "checkpoint_dir": self.checkpoint_dir,
+            "schema_version": self.schema_version,
             "step": self.step,
             "loaded_model": self.loaded_model,
             "loaded_optimizer": self.loaded_optimizer,
@@ -93,6 +95,7 @@ def restore_checkpoint(
         return RestoreReport(
             mode=mode,
             checkpoint_dir=str(checkpoint_dir),
+            schema_version=manifest.schema_version,
             step=manifest.step,
             loaded_model=True,
         )
@@ -119,6 +122,7 @@ def restore_checkpoint(
     return RestoreReport(
         mode=mode,
         checkpoint_dir=str(checkpoint_dir),
+        schema_version=manifest.schema_version,
         step=manifest.step,
         loaded_model=True,
         loaded_optimizer=True,
@@ -126,6 +130,76 @@ def restore_checkpoint(
         loaded_sampler=True,
         loaded_rng=True,
     )
+
+
+def restore_checkpoint_with_events(
+    *,
+    load: Any,
+    model: Any,
+    context: Any,
+    emit: Any,
+    optimizer: Any | None = None,
+    trainer: Any | None = None,
+    sampler: Any | None = None,
+) -> RestoreReport:
+    """Restore a checkpoint while emitting durable load lifecycle events."""
+
+    config = _load_config(load)
+    mode = str(config.get("mode", "none"))
+    if mode == "none":
+        return RestoreReport(mode="none")
+    path = config.get("path")
+    strict = bool(config.get("strict", True))
+    emit(
+        "load_start",
+        context,
+        payload={
+            "path": path,
+            "mode": mode,
+            "strict": strict,
+        },
+    )
+    try:
+        report = restore_checkpoint(
+            load=load,
+            model=model,
+            context=context,
+            optimizer=optimizer,
+            trainer=trainer,
+            sampler=sampler,
+        )
+    except Exception as exc:
+        setattr(exc, "_spenn_failure_phase", "load")
+        setattr(exc, "_spenn_load_path", path)
+        setattr(exc, "_spenn_load_mode", mode)
+        emit(
+            "load_failed",
+            context,
+            payload={
+                "path": path,
+                "mode": mode,
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+            },
+        )
+        raise
+
+    emit(
+        "load_success",
+        context,
+        payload={
+            "path": path,
+            "resolved_checkpoint_dir": report.checkpoint_dir,
+            "schema_version": report.schema_version,
+            "step": report.step,
+            "loaded_model": report.loaded_model,
+            "loaded_optimizer": report.loaded_optimizer,
+            "loaded_trainer": report.loaded_trainer,
+            "loaded_sampler": report.loaded_sampler,
+            "loaded_rng": report.loaded_rng,
+        },
+    )
+    return report
 
 
 def _load_config(load: Any) -> dict[str, Any]:

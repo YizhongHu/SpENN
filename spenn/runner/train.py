@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from spenn.artifacts import RunContext, RunResult
-from spenn.checkpoint import restore_checkpoint
+from spenn.checkpoint import restore_checkpoint_with_events
 from spenn.training.optim import make_optimizer
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
@@ -69,13 +69,14 @@ class Train(Runner):
         if mode == "model_only":
             raise ValueError("Train rejects load.mode='model_only'; use train_resume")
         if mode == "train_resume":
-            report = restore_checkpoint(
+            report = restore_checkpoint_with_events(
                 load=self.load,
                 model=self.model,
                 optimizer=optimizer,
                 trainer=self.trainer,
                 sampler=self.sampler,
                 context=context,
+                emit=self.emit,
             )
             self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
 

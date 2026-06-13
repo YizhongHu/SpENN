@@ -218,11 +218,15 @@ def test_evaluate_rejects_train_resume_load_mode() -> None:
 def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
     calls = []
 
-    def fake_restore_checkpoint(**kwargs):
+    def fake_restore_checkpoint_with_events(**kwargs):
         calls.append(kwargs)
         return RestoreReport(mode="train_resume", checkpoint_dir="ckpt", step=4)
 
-    monkeypatch.setattr(train_runner_module, "restore_checkpoint", fake_restore_checkpoint)
+    monkeypatch.setattr(
+        train_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
     runner = Train(
         model=nn.Linear(1, 1).double(),
         sampler=object(),
@@ -238,16 +242,21 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
     assert calls and calls[0]["model"] is runner.model
     assert calls[0]["trainer"] is runner.trainer
     assert calls[0]["sampler"] is runner.sampler
+    assert calls[0]["emit"] == runner.emit
 
 
 def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
     calls = []
 
-    def fake_restore_checkpoint(**kwargs):
+    def fake_restore_checkpoint_with_events(**kwargs):
         calls.append(kwargs)
         return RestoreReport(mode="model_only", checkpoint_dir="ckpt", step=4)
 
-    monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint", fake_restore_checkpoint)
+    monkeypatch.setattr(
+        evaluate_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
     runner = Evaluate(
         model=_QuadraticModel(),
         sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
@@ -261,14 +270,15 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
     assert calls[0]["sampler"] is runner.sampler
+    assert calls[0]["emit"] == runner.emit
 
 
 def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
     def fail_restore(**kwargs):
         raise AssertionError("restore_checkpoint should not be called")
 
-    monkeypatch.setattr(train_runner_module, "restore_checkpoint", fail_restore)
-    monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint", fail_restore)
+    monkeypatch.setattr(train_runner_module, "restore_checkpoint_with_events", fail_restore)
+    monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint_with_events", fail_restore)
 
     train = Train(
         model=nn.Linear(1, 1).double(),

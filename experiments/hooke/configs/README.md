@@ -108,6 +108,8 @@ Each run creates a directory:
 <run.root>/<experiment.name>/<experiment.sector>/<run_id>/
   config.yaml           # authored config (rerunnable: run_id/dir reset to null)
   run_start.json        # early run breadcrumb before long work begins
+  events.jsonl          # durable lifecycle event stream, including load failures
+  error.json            # failure details and traceback, written only on failure
   resolved_config.yaml  # fully interpolated config actually used
   metadata.json         # git/hardware/SLURM/runtime provenance
   status.json           # compact lifecycle status (running/completed/failed)

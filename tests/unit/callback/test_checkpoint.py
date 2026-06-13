@@ -9,7 +9,14 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from spenn.checkpoint import checkpoint_hashes, restore_checkpoint, save_checkpoint, stable_config_hash
+from spenn.checkpoint import (
+    CHECKPOINT_SCHEMA_VERSION,
+    checkpoint_hashes,
+    restore_checkpoint,
+    restore_checkpoint_with_events,
+    save_checkpoint,
+    stable_config_hash,
+)
 
 
 def _cfg(*, model_out: int = 2):
@@ -99,6 +106,38 @@ def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) 
     assert report.loaded_model is True
     assert report.loaded_optimizer is False
     assert report.loaded_sampler is False
+
+
+def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:
+    trained = torch.nn.Linear(3, 2).double()
+    root = _write_checkpoint(tmp_path, model=trained).parent
+    fresh = torch.nn.Linear(3, 2).double()
+    events = []
+
+    def emit(name, context, *, payload=None):
+        events.append((name, payload))
+
+    report = restore_checkpoint_with_events(
+        load={"path": str(root), "mode": "model_only", "strict": True},
+        model=fresh,
+        context=_context(),
+        emit=emit,
+    )
+
+    assert report.loaded_model is True
+    assert [name for name, _ in events] == ["load_start", "load_success"]
+    assert events[0][1] == {"path": str(root), "mode": "model_only", "strict": True}
+    assert events[1][1] == {
+        "path": str(root),
+        "resolved_checkpoint_dir": str(root / "step_000003"),
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "step": 3,
+        "loaded_model": True,
+        "loaded_optimizer": False,
+        "loaded_trainer": False,
+        "loaded_sampler": False,
+        "loaded_rng": False,
+    }
 
 
 def test_restore_rejects_checkpoint_without_complete_marker(tmp_path: Path) -> None:

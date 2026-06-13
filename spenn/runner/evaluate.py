@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from spenn.artifacts import RunContext, RunResult
-from spenn.checkpoint import restore_checkpoint
+from spenn.checkpoint import restore_checkpoint_with_events
 from spenn.diagnostics import EvaluationContext, evaluate_diagnostics, validate_diagnostics
 from spenn.dependencies import require_torch
 from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
@@ -82,11 +82,12 @@ class Evaluate(Runner):
         if mode == "train_resume":
             raise ValueError("Evaluate rejects load.mode='train_resume'; use model_only")
         if mode == "model_only":
-            report = restore_checkpoint(
+            report = restore_checkpoint_with_events(
                 load=self.load,
                 model=self.model,
                 sampler=self.sampler,
                 context=context,
+                emit=self.emit,
             )
             self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
             if _is_torch_module(self.model):
