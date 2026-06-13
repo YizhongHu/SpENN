@@ -27,12 +27,6 @@ The available gpu nodes are: kozinsky_gpu, and seas_gpu
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
 
-## Plans and Todos
-
-- Each folder under root contains `TODO.md`. This is a plan for the current directory. Maintain this TODO list to keep information between agents.
-- Each folder under root contains `instructions.md`. This states the detailed design of everything in the current directory. Reference this for
-  implementation details.
-
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
 running, and debugging tasks.
