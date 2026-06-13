@@ -1,72 +1,112 @@
 #!/usr/bin/env bash
 # =============================================================================
-# SLURM array launcher for the Hooke pair validation scan (study v1)
+# Hydra Submitit launcher for the Hooke pair validation scan (study v1)
 # =============================================================================
 #
-# One array task per grid point of manifest.yaml (3 seeds x 3 lrs x 3 channel
-# counts x 2 gates = 54 tasks). Submit from the repo root on FASRC:
+# This script is intentionally a thin environment/setup wrapper. The study
+# manifest owns the train config, study name, grid axes, run root, and default
+# Slurm resources; launch_submitit.py turns that manifest into a Hydra Submitit
+# multirun.
 #
-#   mkdir -p slurm_logs
-#   sbatch experiments/hooke/studies/pair_validation/launch_array.sh
+# Submit from the repo root or from this file's directory:
 #
-# CPU partitions (sapphire, kozinsky, seas_compute) work too:
+#   bash experiments/hooke/studies/pair_validation/launch_array.sh
 #
-#   DEVICE=cpu sbatch -p sapphire --gres="" \
-#     experiments/hooke/studies/pair_validation/launch_array.sh
+# CPU example:
 #
-# Keep the slurm_logs/ output files around for reproducibility.
+#   DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
 #
-#SBATCH --job-name=hooke-pv-v1
-#SBATCH --partition=kozinsky_gpu,seas_gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=08:00:00
-#SBATCH --array=0-53
-#SBATCH --output=slurm_logs/hooke_pv_v1_%A_%a.out
+# Extra Hydra overrides can be appended after `--`, for example:
+#
+#   bash experiments/hooke/studies/pair_validation/launch_array.sh -- dry_run=true
+#
+# Keep slurm_logs/ around for reproducibility.
 
 set -euo pipefail
 
-# Under sbatch the script runs from a copy in the slurmd spool dir, so the
-# BASH_SOURCE-relative path math breaks; recover the repo root from the
-# directory sbatch was invoked in instead.
-if [[ "${BASH_SOURCE[0]}" == */slurmd/* && -n "${SLURM_SUBMIT_DIR:-}" ]]; then
-  REPO_ROOT="$(cd "$SLURM_SUBMIT_DIR" && git rev-parse --show-toplevel)"
-else
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$REPO_ROOT"
 
+MANIFEST="${MANIFEST:-experiments/hooke/studies/pair_validation/manifest.yaml}"
+LAUNCHER="experiments/hooke/studies/pair_validation/launch_submitit.py"
 DEVICE="${DEVICE:-cuda}"
-if [[ "$DEVICE" == "cuda" ]]; then
-  export UV_PROJECT_ENVIRONMENT=.venv-gpu
-  EXTRA=cu126
-else
-  EXTRA=cpu
+HYDRA_LAUNCHER="${HYDRA_LAUNCHER:-submitit_slurm}"
+
+case "$DEVICE" in
+  cuda)
+    VENV="${VENV:-.venv-gpu}"
+    EXTRA="${EXTRA:-cu126}"
+    ;;
+  cpu)
+    VENV="${VENV:-.venv}"
+    EXTRA="${EXTRA:-cpu}"
+    ;;
+  *)
+    echo "Unsupported DEVICE=${DEVICE}; expected 'cuda' or 'cpu'." >&2
+    exit 2
+    ;;
+esac
+
+export UV_PROJECT_ENVIRONMENT="$VENV"
+
+SYNC_EXTRAS=(--extra "$EXTRA" --extra submitit)
+if [[ -n "${SPENN_EXTRA_EXTRAS:-}" ]]; then
+  # Space-separated extra names, e.g. SPENN_EXTRA_EXTRAS="wandb".
+  for extra in $SPENN_EXTRA_EXTRAS; do
+    SYNC_EXTRAS+=(--extra "$extra")
+  done
 fi
 
-# Grid axes; must mirror manifest.yaml. Changing the grid means a new study
-# version (new manifest + new study.name).
-SEEDS=(3 9 11)
-LRS=(3e-4 1e-3 3e-3)
-CHANNELS=(8 32 128)
-GATES=(silu sigmoid)
+uv sync "${SYNC_EXTRAS[@]}"
+source "$VENV/bin/activate"
 
-i="${SLURM_ARRAY_TASK_ID:?run via sbatch --array}"
-seed="${SEEDS[$(( i % ${#SEEDS[@]} ))]}";        i=$(( i / ${#SEEDS[@]} ))
-lr="${LRS[$(( i % ${#LRS[@]} ))]}";              i=$(( i / ${#LRS[@]} ))
-channels="${CHANNELS[$(( i % ${#CHANNELS[@]} ))]}"; i=$(( i / ${#CHANNELS[@]} ))
-gate="${GATES[$(( i % ${#GATES[@]} ))]}"
+JOB_INDEX_SWEEP="$(python "$LAUNCHER" --manifest "$MANIFEST" --print-job-index-sweep)"
+MANIFEST_HYDRA_OVERRIDES=()
+if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
+  mapfile -t MANIFEST_HYDRA_OVERRIDES < <(
+    python "$LAUNCHER" --manifest "$MANIFEST" --device "$DEVICE" --print-hydra-overrides
+  )
+else
+  MANIFEST_HYDRA_OVERRIDES+=("hydra.sweep.dir=${HYDRA_SWEEP_DIR:-/tmp/rhu/spenn_submitit_local}")
+fi
 
-echo "task=$SLURM_ARRAY_TASK_ID seed=$seed lr=$lr channels=$channels gate=$gate device=$DEVICE"
+HYDRA_OVERRIDES=(
+  "hydra/launcher=${HYDRA_LAUNCHER}"
+  "${MANIFEST_HYDRA_OVERRIDES[@]}"
+)
 
-uv run --extra "$EXTRA" python run.py \
-  --config experiments/hooke/configs/benchmark/pair_train.yaml \
-  run.root=outputs/hooke_pair_validation_v1 \
-  study.name=hooke_pair_validation_v1 \
-  runtime.device="$DEVICE" \
-  runtime.seed="$seed" \
-  optimizer_params.lr="$lr" \
-  model_params.channels="$channels" \
-  model_params.gate_activation="$gate"
+if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
+  HYDRA_OVERRIDES+=("hydra.launcher.setup=[\"cd ${REPO_ROOT}\",\"source ${REPO_ROOT}/${VENV}/bin/activate\"]")
+fi
+
+# Optional one-off resource overrides without editing the manifest.
+if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
+  [[ -n "${PARTITION:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.partition=${PARTITION}")
+  if [[ "${GRES+x}" == "x" ]]; then
+    if [[ -n "$GRES" ]]; then
+      HYDRA_OVERRIDES+=("hydra.launcher.gres=${GRES}")
+    else
+      HYDRA_OVERRIDES+=("hydra.launcher.gres=null")
+    fi
+  fi
+  [[ -n "${ARRAY_PARALLELISM:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.array_parallelism=${ARRAY_PARALLELISM}")
+fi
+[[ -n "${CPUS_PER_TASK:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.cpus_per_task=${CPUS_PER_TASK}")
+[[ -n "${MEM_GB:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.mem_gb=${MEM_GB}")
+[[ -n "${TIMEOUT_MIN:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.timeout_min=${TIMEOUT_MIN}")
+[[ -n "${RUN_ROOT:-}" ]] && HYDRA_OVERRIDES+=("run_root=${RUN_ROOT}")
+
+echo "manifest=${MANIFEST}"
+echo "device=${DEVICE}"
+echo "venv=${VENV}"
+echo "hydra_launcher=${HYDRA_LAUNCHER}"
+echo "job_index=${JOB_INDEX_SWEEP}"
+
+HYDRA_FULL_ERROR=1 python "$LAUNCHER" \
+  --multirun \
+  "manifest=${MANIFEST}" \
+  "device=${DEVICE}" \
+  "job_index=${JOB_INDEX_SWEEP}" \
+  "${HYDRA_OVERRIDES[@]}" \
+  "$@"

@@ -34,6 +34,9 @@ test = [
 wandb = [
   "wandb>=0.17",
 ]
+submitit = [
+  "hydra-submitit-launcher>=1.2",
+]
 
 [dependency-groups]
 dev = [

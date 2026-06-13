@@ -33,6 +33,7 @@ def _load_script(name: str) -> ModuleType:
 collect = _load_script("collect")
 select = _load_script("select")
 evaluate_selected = _load_script("evaluate_selected")
+launch_submitit = _load_script("launch_submitit")
 
 
 def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> None:
@@ -289,6 +290,57 @@ def test_evaluate_selected_collect_writes_final_summary_files(tmp_path: Path) ->
     assert (tmp_path / "reports" / "final_benchmark_summary.csv").exists()
     assert (tmp_path / "reports" / "final_benchmark_summary.json").exists()
     assert (tmp_path / "reports" / "final_benchmark_report.md").exists()
+
+
+def test_submitit_launcher_derives_jobs_and_overrides_from_manifest() -> None:
+    manifest = launch_submitit.load_manifest(MANIFEST)
+    jobs = launch_submitit.manifest_jobs(manifest)
+
+    assert len(jobs) == 54
+    assert launch_submitit.job_index_sweep(manifest).startswith("0,1,2,3")
+    assert jobs[0] == {
+        "runtime.seed": 3,
+        "optimizer_params.lr": 0.0003,
+        "model_params.channels": 8,
+        "model_params.layers": 1,
+        "model_params.gate_activation": "silu",
+    }
+    assert jobs[1]["runtime.seed"] == 9
+    assert jobs[3]["optimizer_params.lr"] == 0.001
+
+    command = launch_submitit.run_command(
+        manifest=manifest,
+        job=jobs[0],
+        run_root="outputs/hooke_pair_validation_v1",
+        device="cuda",
+    )
+    assert command[:4] == ["python", "-u", "run.py", "--config"]
+    assert "experiments/hooke/configs/benchmark/pair_train.yaml" in command
+    assert "study.name=hooke_pair_validation_v1" in command
+    assert "runtime.device=cuda" in command
+    assert "model_params.layers=1" in command
+    assert any(item.startswith("study.config_id=config_") for item in command)
+
+    overrides = launch_submitit.hydra_overrides(manifest, device="cuda")
+    assert "hydra.job.name=hooke-pv-v1" in overrides
+    assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in overrides
+    assert "hydra.launcher.gres=gpu:1" in overrides
+    assert "hydra.launcher.array_parallelism=54" in overrides
+
+
+def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None:
+    text = (STUDY_DIR / "launch_array.sh").read_text()
+
+    assert "uv sync" in text
+    assert "--extra submitit" in text
+    assert "source \"$VENV/bin/activate\"" in text
+    assert 'HYDRA_LAUNCHER="${HYDRA_LAUNCHER:-submitit_slurm}"' in text
+    assert '"hydra/launcher=${HYDRA_LAUNCHER}"' in text
+    assert "--multirun" in text
+    assert "--array" not in text
+    assert "SLURM_ARRAY_TASK_ID" not in text
+    assert "uv run" not in text
+    assert "SEEDS=(" not in text
 
 
 def test_pair_final_eval_template_uses_pr81_load_contract() -> None:

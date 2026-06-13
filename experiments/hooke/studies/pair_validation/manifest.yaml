@@ -34,6 +34,26 @@ validation:
   sampler_namespace: validation/sampler
   exact_reference_energy_allowed: false
 
+launcher:
+  run_root: outputs/hooke_pair_validation_v1
+  hydra_sweep_dir: slurm_logs/hooke_pair_validation_v1
+  job_name: hooke-pv-v1
+  slurm:
+    gpu:
+      partition: kozinsky_gpu,seas_gpu
+      gres: gpu:1
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 480
+      array_parallelism: null
+    cpu:
+      partition: sapphire
+      gres: null
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 480
+      array_parallelism: null
+
 system:
   n_particles: 2
 

@@ -17,10 +17,12 @@ of the selection decision.
 
 ## Prerequisites
 
-Run commands from the repository root with the `uv` environment. Keep local run
-directories, `metrics.csv`, `metrics.jsonl`, `metadata.json`, `run_start.json`,
-`status.json`, checkpoint directories, generated reports, and SLURM logs for
-reproducibility.
+Run commands from the repository root with the `uv` environment. The validation
+launcher uses `uv sync --extra ... --extra submitit`, activates `.venv` or
+`.venv-gpu`, and then runs `python` directly instead of `uv run` inside Slurm
+jobs. Keep local run directories, `metrics.csv`, `metrics.jsonl`,
+`metadata.json`, `run_start.json`, `status.json`, checkpoint directories,
+generated reports, and SLURM logs for reproducibility.
 
 The post-processing scripts are read-only over raw run directories. They do not
 delete, move, rewrite, or repair raw run artifacts.
@@ -40,30 +42,56 @@ independent validation sampler.
 
 ## How To Launch Training Scan
 
-The SLURM array helper maps `SLURM_ARRAY_TASK_ID` onto the manifest grid:
+The launcher reads [manifest.yaml](manifest.yaml), builds one Hydra multirun
+job per manifest grid point, and submits those jobs with Hydra Submitit:
 
 ```bash
 mkdir -p slurm_logs
-sbatch experiments/hooke/studies/pair_validation/launch_array.sh
+bash experiments/hooke/studies/pair_validation/launch_array.sh
 ```
 
 CPU example:
 
 ```bash
-DEVICE=cpu sbatch -p sapphire --gres="" \
-  experiments/hooke/studies/pair_validation/launch_array.sh
+DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
 ```
 
-Local command template:
+Dry-run the generated Hydra jobs without running training:
 
 ```bash
-uv run python -u run.py \
+bash experiments/hooke/studies/pair_validation/launch_array.sh -- dry_run=true
+```
+
+Smoke-test launcher wiring without Slurm submission:
+
+```bash
+DEVICE=cpu HYDRA_LAUNCHER=submitit_local \
+  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
+  dry_run=true job_index=0,1
+```
+
+For one-off cluster resource changes, prefer environment overrides rather than
+editing the script:
+
+```bash
+DEVICE=cpu PARTITION=seas_compute GRES="" \
+  bash experiments/hooke/studies/pair_validation/launch_array.sh
+```
+
+Each Submitit task runs a direct venv Python command shaped like:
+
+```bash
+python -u run.py \
   --config experiments/hooke/configs/benchmark/pair_train.yaml \
-  optimizer_params.lr=3e-4 \
-  model_params.channels=8 \
-  model_params.gate_activation=silu \
-  runtime.seed=3 \
-  study.name=hooke_pair_validation_v1
+  run.root=outputs/hooke_pair_validation_v1 \
+  study.name=hooke_pair_validation_v1 \
+  study.config_id=<non-seed-config-id> \
+  runtime.device=cuda \
+  runtime.seed=<manifest-grid-seed> \
+  optimizer_params.lr=<manifest-grid-lr> \
+  model_params.channels=<manifest-grid-channels> \
+  model_params.layers=<manifest-grid-layers> \
+  model_params.gate_activation=<manifest-grid-gate>
 ```
 
 ## How Validation Runs At Train End
