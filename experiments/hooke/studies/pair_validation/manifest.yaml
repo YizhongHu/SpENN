@@ -47,7 +47,7 @@ launcher:
       timeout_min: 480
       array_parallelism: null
     cpu:
-      partition: sapphire
+      partition: sapphire,kozinsky,seas_compute
       gres: null
       cpus_per_task: 4
       mem_gb: 16

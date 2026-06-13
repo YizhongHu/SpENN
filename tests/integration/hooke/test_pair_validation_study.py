@@ -391,7 +391,7 @@ def test_submitit_launcher_has_cpu_and_gpu_slurm_overrides() -> None:
     cpu_overrides = launch_submitit.hydra_overrides(manifest, device="cpu")
     gpu_overrides = launch_submitit.hydra_overrides(manifest, device="cuda")
 
-    assert "hydra.launcher.partition=sapphire" in cpu_overrides
+    assert "hydra.launcher.partition=sapphire,kozinsky,seas_compute" in cpu_overrides
     assert "hydra.launcher.cpus_per_task=4" in cpu_overrides
     assert "hydra.launcher.mem_gb=16" in cpu_overrides
     assert "hydra.launcher.timeout_min=480" in cpu_overrides
@@ -426,9 +426,12 @@ def test_cluster_smoke_script_submits_cpu_and_gpu_dry_runs() -> None:
 
     assert "--device cpu|cuda|both" in text
     assert 'DEVICE="${DEVICE:-both}"' in text
+    assert 'SMOKE_CPU_PARTITION="${SMOKE_CPU_PARTITION:-test}"' in text
+    assert 'SMOKE_GPU_PARTITION="${SMOKE_GPU_PARTITION:-gpu_test}"' in text
     assert "DEVICES=(cpu cuda)" in text
     assert "HYDRA_LAUNCHER=submitit_slurm" in text
     assert "ARRAY_PARALLELISM=1" in text
+    assert 'PARTITION="$partition"' in text
     assert "launch_array.sh" in text
     assert "dry_run=true" in text
     assert "job_index=0" in text
@@ -495,7 +498,7 @@ def test_final_submitit_launcher_has_cpu_and_gpu_slurm_overrides(tmp_path: Path)
 
         assert f"hydra.job.name=hooke-final-v1-{stage.replace('_', '-')}" in cpu_overrides
         assert f"hydra.job.name=hooke-final-v1-{stage.replace('_', '-')}" in gpu_overrides
-        assert "hydra.launcher.partition=sapphire" in cpu_overrides
+        assert "hydra.launcher.partition=sapphire,kozinsky,seas_compute" in cpu_overrides
         assert "hydra.launcher.cpus_per_task=4" in cpu_overrides
         assert "hydra.launcher.mem_gb=16" in cpu_overrides
         assert "hydra.launcher.timeout_min=480" in cpu_overrides
@@ -557,6 +560,10 @@ def test_readme_documents_reproducibility_contract() -> None:
     assert "cluster_smoke.sh" in text
     assert "--device cpu" in text
     assert "--device cuda" in text
+    assert "CPU smoke defaults to `test`" in text
+    assert "GPU smoke defaults to `gpu_test`" in text
+    assert "`sapphire,kozinsky,seas_compute`" in text
+    assert "`kozinsky_gpu,seas_gpu`" in text
     assert "collect.py" in text
     assert "select.py" in text
     assert "evaluate_selected.py" in text
@@ -574,6 +581,9 @@ def test_methods_documents_experiment_protocol() -> None:
     assert "runtime.seed: [3, 9, 11]" in text
     assert "optimizer_params.lr: [3.0e-4, 1.0e-3, 3.0e-3]" in text
     assert "Validation metrics are logged under" in text
+    assert "Real CPU submissions default to `sapphire,kozinsky,seas_compute`" in text
+    assert "Cluster smoke submissions use" in text
+    assert "`gpu_test`" in text
     assert "validation/energy_abs_error" in text
     assert "Selection Rule" in text
     assert "lower median validation/energy_variance" in text

@@ -9,6 +9,8 @@ cd "$REPO_ROOT"
 
 DEVICE="${DEVICE:-both}"
 RUN_ROOT_PREFIX="${RUN_ROOT_PREFIX:-outputs/hooke_pair_validation_v1}"
+SMOKE_CPU_PARTITION="${SMOKE_CPU_PARTITION:-test}"
+SMOKE_GPU_PARTITION="${SMOKE_GPU_PARTITION:-gpu_test}"
 EXTRA_OVERRIDES=()
 
 usage() {
@@ -22,6 +24,7 @@ Examples:
   bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cuda
 
 The default submits both CPU and GPU one-job Slurm dry runs.
+CPU smoke defaults to partition `test`; GPU smoke defaults to `gpu_test`.
 USAGE
 }
 
@@ -74,14 +77,17 @@ esac
 
 for device in "${DEVICES[@]}"; do
   label="$device"
+  partition="$SMOKE_CPU_PARTITION"
   if [[ "$device" == "cuda" ]]; then
     label="gpu"
+    partition="$SMOKE_GPU_PARTITION"
   fi
 
-  echo "Submitting ${device} validation smoke job..."
+  echo "Submitting ${device} validation smoke job to partition ${partition}..."
   DEVICE="$device" \
     HYDRA_LAUNCHER=submitit_slurm \
     ARRAY_PARALLELISM=1 \
+    PARTITION="$partition" \
     RUN_ROOT="${RUN_ROOT_PREFIX}_${label}_smoke" \
     bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
     dry_run=true \

@@ -66,7 +66,7 @@ before training because `dry_run=true`.
 ## Cluster Smoke
 
 Use this before any large submission. By default it submits one CPU and one GPU
-Slurm dry-run job:
+Slurm dry-run job to the test partitions:
 
 ```bash
 bash experiments/hooke/studies/pair_validation/cluster_smoke.sh
@@ -86,7 +86,7 @@ bash experiments/hooke/studies/pair_validation/cluster_smoke.sh --device cuda
 
 Check `slurm_logs/hooke_pair_validation_v1/` after each smoke. The job should
 show the exact `python -u run.py --config ...` command and should not run
-training.
+training. CPU smoke defaults to `test`; GPU smoke defaults to `gpu_test`.
 
 ## Validation Scan
 
@@ -103,7 +103,9 @@ DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
 ```
 
 The launcher reads [manifest.yaml](manifest.yaml), expands the declared grid,
-and submits one Hydra Submitit job per grid point.
+and submits one Hydra Submitit job per grid point. Real CPU runs default to
+`sapphire,kozinsky,seas_compute`; real GPU runs default to
+`kozinsky_gpu,seas_gpu`.
 
 ## Collect And Select
 

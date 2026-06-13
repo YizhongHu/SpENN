@@ -65,6 +65,10 @@ manifest, expands one Hydra multirun job per manifest grid point, runs
 `uv sync --extra ... --extra submitit`, activates `.venv` or `.venv-gpu`, and
 then uses direct `python -u run.py ...` commands inside the job.
 
+Real CPU submissions default to `sapphire,kozinsky,seas_compute`. Real GPU
+submissions default to `kozinsky_gpu,seas_gpu`. Cluster smoke submissions use
+the smaller test partitions: `test` for CPU and `gpu_test` for GPU.
+
 Each Submitit task is shaped like:
 
 ```bash
