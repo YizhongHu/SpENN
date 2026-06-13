@@ -168,7 +168,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def _discover_run_dirs(run_root: Path) -> list[Path]:
     if not run_root.exists():
         return []
-    return sorted(path.parent for path in run_root.rglob("resolved_config.yaml"))
+    run_dirs = []
+    for path in run_root.rglob("resolved_config.yaml"):
+        if "checkpoints" in path.relative_to(run_root).parts:
+            continue
+        run_dirs.append(path.parent)
+    return sorted(run_dirs)
 
 
 def _read_metrics(run_dir: Path) -> dict[str, Any]:

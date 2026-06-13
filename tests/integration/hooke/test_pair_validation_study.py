@@ -13,9 +13,12 @@ from typing import Any
 import pytest
 from omegaconf import OmegaConf
 
+from spenn.run import run_from_config
+
 ROOT = Path(__file__).resolve().parents[3]
 STUDY_DIR = ROOT / "experiments" / "hooke" / "studies" / "pair_validation"
 MANIFEST = STUDY_DIR / "manifest.yaml"
+SMOKE_TRAIN_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "smoke" / "pair_train.yaml"
 FINAL_EVAL_CONFIG = ROOT / "experiments" / "hooke" / "configs" / "benchmark" / "pair_final_eval.yaml"
 
 
@@ -89,6 +92,55 @@ def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> 
         allow_other_studies=True,
     )
     assert any(Path(row["run_dir"]) == other for row in rows_with_other)
+
+
+@pytest.mark.integration
+def test_local_smoke_pipeline_runs_collects_selects_and_plans(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs"
+    reports = tmp_path / "reports"
+    manifest_path = _write_local_smoke_manifest(tmp_path)
+
+    cfg = OmegaConf.load(SMOKE_TRAIN_CONFIG)
+    cfg.run.root = str(run_root)
+    cfg.run.timezone = "UTC"
+    cfg.terminal.enabled = False
+    cfg.runtime.seed = 3
+    cfg.runtime.device = "cpu"
+    cfg.study = {"name": "hooke_pair_validation_v1", "config_id": "local_smoke"}
+    cfg.optimizer_params.lr = 0.01
+    cfg.model_params.channels = 4
+    cfg.model_params.layers = 1
+    cfg.model_params.gate_activation = "silu"
+    cfg.training.max_steps = 1
+    cfg.sampler_params.n_walkers = 4
+    cfg.sampler_params.burn_in = 1
+    cfg.sampler_params.n_steps = 1
+    cfg.validation_sampler_params.n_walkers = 4
+    cfg.validation_sampler_params.burn_in = 1
+    cfg.validation_sampler_params.n_steps = 1
+    cfg.checkpoint.keep_last = 1
+
+    assert run_from_config(cfg, config_path=str(SMOKE_TRAIN_CONFIG), command="pytest local pipeline smoke") == 0
+
+    rows = collect.collect_runs(manifest_path=manifest_path, run_root=run_root, output_dir=reports)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["study_name"] == "hooke_pair_validation_v1"
+    assert rows[0]["checkpoint/latest_path"]
+
+    selected = select.select_runs(manifest_path=manifest_path, runs_path=reports / "runs.csv", output_dir=reports)
+    assert selected["selected"]["config_id"] == "local_smoke"
+
+    plan = evaluate_selected.generate_final_evaluation(
+        manifest_path=manifest_path,
+        selected_config_path=reports / "selected_config.yaml",
+        run_root=tmp_path / "final_outputs",
+        output_dir=reports / "final",
+    )
+    assert len(plan["inputs"]) == 1
+    eval_config = OmegaConf.load(plan["inputs"][0]["eval_config"])
+    assert eval_config.load.mode == "model_only"
+    assert str(eval_config.load.path).endswith("checkpoints/latest.json")
 
 
 def test_selector_groups_failed_seeds_and_writes_outputs(tmp_path: Path) -> None:
@@ -331,6 +383,24 @@ def test_submitit_launcher_derives_jobs_and_overrides_from_manifest() -> None:
     assert "hydra.launcher.array_parallelism=54" in overrides
 
 
+def test_submitit_launcher_has_small_cpu_and_gpu_preflight_overrides() -> None:
+    manifest = launch_submitit.load_manifest(MANIFEST)
+
+    cpu_overrides = launch_submitit.hydra_overrides(manifest, device="cpu")
+    gpu_overrides = launch_submitit.hydra_overrides(manifest, device="cuda")
+
+    assert "hydra.launcher.partition=sapphire" in cpu_overrides
+    assert "hydra.launcher.cpus_per_task=4" in cpu_overrides
+    assert "hydra.launcher.mem_gb=16" in cpu_overrides
+    assert "hydra.launcher.timeout_min=480" in cpu_overrides
+    assert "hydra.launcher.array_parallelism=54" in cpu_overrides
+    assert not any(item.startswith("hydra.launcher.gres=") for item in cpu_overrides)
+
+    assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in gpu_overrides
+    assert "hydra.launcher.gres=gpu:1" in gpu_overrides
+    assert "hydra.launcher.array_parallelism=54" in gpu_overrides
+
+
 def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None:
     text = (STUDY_DIR / "launch_array.sh").read_text()
 
@@ -379,6 +449,45 @@ def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) ->
     assert "hydra.launcher.array_parallelism=10" in overrides
 
 
+def test_final_submitit_launcher_has_small_cpu_and_gpu_preflight_overrides(tmp_path: Path) -> None:
+    selected_config = _write_selected_config(tmp_path)
+    evaluate_selected.generate_final_evaluation(
+        manifest_path=MANIFEST,
+        selected_config_path=selected_config,
+        run_root=tmp_path / "outputs",
+        output_dir=tmp_path / "reports",
+    )
+    inputs = launch_final_submitit.read_inputs(tmp_path / "reports" / "final_eval_inputs.csv")
+    manifest = launch_submitit.load_manifest(MANIFEST)
+
+    for stage in launch_final_submitit.STAGES:
+        job_count = len(launch_final_submitit.stage_jobs(inputs, stage=stage))
+        cpu_overrides = launch_final_submitit.hydra_overrides(
+            manifest,
+            stage=stage,
+            device="cpu",
+            job_count=job_count,
+        )
+        gpu_overrides = launch_final_submitit.hydra_overrides(
+            manifest,
+            stage=stage,
+            device="cuda",
+            job_count=job_count,
+        )
+
+        assert f"hydra.job.name=hooke-final-v1-{stage.replace('_', '-')}" in cpu_overrides
+        assert f"hydra.job.name=hooke-final-v1-{stage.replace('_', '-')}" in gpu_overrides
+        assert "hydra.launcher.partition=sapphire" in cpu_overrides
+        assert "hydra.launcher.cpus_per_task=4" in cpu_overrides
+        assert "hydra.launcher.mem_gb=16" in cpu_overrides
+        assert "hydra.launcher.timeout_min=480" in cpu_overrides
+        assert "hydra.launcher.array_parallelism=10" in cpu_overrides
+        assert not any(item.startswith("hydra.launcher.gres=") for item in cpu_overrides)
+        assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in gpu_overrides
+        assert "hydra.launcher.gres=gpu:1" in gpu_overrides
+        assert "hydra.launcher.array_parallelism=10" in gpu_overrides
+
+
 def test_final_submitit_shell_launcher_uses_sync_activate_and_phases() -> None:
     text = (STUDY_DIR / "launch_final_submitit.sh").read_text()
 
@@ -409,27 +518,50 @@ def test_pair_final_eval_template_uses_pr81_load_contract() -> None:
 def test_readme_documents_reproducibility_contract() -> None:
     text = (STUDY_DIR / "README.md").read_text()
     for section in (
-        "Overview",
-        "Prerequisites",
-        "Validation Scan Protocol",
-        "How To Launch Training Scan",
-        "How Validation Runs At Train End",
-        "How To Collect Results",
-        "How To Select The Winning Config",
-        "Tie-Breaker Rule",
-        "How To Generate Final Evaluation Commands",
-        "How To Run Final Evaluation",
-        "How To Summarize Final Evaluation Results",
-        "Output Files",
-        "W&B Role",
-        "Reproducibility Notes",
+        "Quick Start",
+        "Local Checks",
+        "Cluster Smoke",
+        "Validation Scan",
+        "Collect And Select",
+        "Final Benchmark",
+        "Outputs To Keep",
+        "Reference",
     ):
         assert f"## {section}" in text
+    for old_explanation_first_section in (
+        "Smoke Tests",
+        "How To Launch Training Scan",
+    ):
+        assert f"## {old_explanation_first_section}" not in text
     assert "W&B is visualization only" in text
     assert "Validation does not use exact reference energy" in text
     assert "collect.py" in text
     assert "select.py" in text
     assert "evaluate_selected.py" in text
+    assert "test_local_smoke_pipeline_runs_collects_selects_and_plans" in text
+    assert "HYDRA_LAUNCHER=submitit_slurm" in text
+    assert "DEVICE=cuda" in text
+    assert "DEVICE=cpu" in text
+
+
+def _write_local_smoke_manifest(tmp_path: Path) -> Path:
+    manifest = OmegaConf.load(MANIFEST)
+    manifest.grid["runtime.seed"] = [3]
+    manifest.grid["optimizer_params.lr"] = [0.01]
+    manifest.grid["model_params.channels"] = [4]
+    manifest.grid["model_params.layers"] = [1]
+    manifest.grid["model_params.gate_activation"] = ["silu"]
+    manifest.final_evaluation.training_seeds = [100]
+    manifest.final_evaluation.eval_seeds = [100000]
+    manifest.final_evaluation.sampler.n_walkers = 4
+    manifest.final_evaluation.sampler.burn_in = 1
+    manifest.final_evaluation.sampler.n_steps = 1
+    manifest.launcher.run_root = str(tmp_path / "outputs")
+    manifest.launcher.hydra_sweep_dir = str(tmp_path / "slurm_logs" / "validation")
+    manifest.final_evaluation.launcher.hydra_sweep_dir = str(tmp_path / "slurm_logs" / "final")
+    path = tmp_path / "manifest.yaml"
+    OmegaConf.save(manifest, path, resolve=True)
+    return path
 
 
 def _fake_run(
