@@ -82,7 +82,7 @@ evaluation.*        term decomposition toggle (eval config)
 optimizer_params.*  learning rate (train config)
 checks.*            runtime validation cadence and tolerances
 checkpoint.*        restore intent: path, restore_mode, strictness
-checkpointing.*     checkpoint writing cadence and retention (train config)
+write_checkpoint.*  checkpoint writing cadence and retention (train config)
 timing.*            timing instrumentation knobs
 status.*            terminal status cadence and included metrics
 wandb.*             optional dashboard settings
