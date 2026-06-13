@@ -78,10 +78,10 @@ class Evaluate(Runner):
             self.model.eval()
             _assert_eager_initialized(self.model)
 
-        restore_mode = _load_restore_mode(self.load)
-        if restore_mode == "train_resume":
-            raise ValueError("Evaluate rejects load.restore_mode='train_resume'; use model_only")
-        if restore_mode == "model_only":
+        mode = _load_mode(self.load)
+        if mode == "train_resume":
+            raise ValueError("Evaluate rejects load.mode='train_resume'; use model_only")
+        if mode == "model_only":
             report = restore_checkpoint(
                 load=self.load,
                 model=self.model,
@@ -147,11 +147,11 @@ def _split_local_energy_result(
     return result, None
 
 
-def _load_restore_mode(load) -> str:
+def _load_mode(load) -> str:
     if load is None:
         return "none"
     if hasattr(load, "get"):
-        return str(load.get("restore_mode", "none"))
+        return str(load.get("mode", "none"))
     return "none"
 
 

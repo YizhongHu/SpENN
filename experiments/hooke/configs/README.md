@@ -81,7 +81,7 @@ training.*          step count and logging cadence (train config)
 evaluation.*        term decomposition toggle (eval config)
 optimizer_params.*  learning rate (train config)
 checks.*            runtime validation cadence and tolerances
-load.*              restore intent: path, restore_mode, strictness
+load.*              restore intent: path, mode, strictness
 checkpoint.*        checkpoint writing cadence and retention (train config)
 timing.*            timing instrumentation knobs
 status.*            terminal status cadence and included metrics

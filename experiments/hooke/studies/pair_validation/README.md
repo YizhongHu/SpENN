@@ -83,7 +83,7 @@ Restore intent is runner-owned:
 ```yaml
 load:
   path: null
-  restore_mode: none   # none | model_only | train_resume
+  mode: none   # none | model_only | train_resume
   strict: true
   allow_protocol_mismatch: false
 ```

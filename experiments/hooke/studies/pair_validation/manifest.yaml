@@ -34,7 +34,7 @@ validation:
 
 checkpoint_artifacts:
   schema_version: 1
-  restore_modes: [none, model_only, train_resume]
+  load_modes: [none, model_only, train_resume]
   directory_layout: true
   require_complete_marker: true
   latest_pointer: latest.json

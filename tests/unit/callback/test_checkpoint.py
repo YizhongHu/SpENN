@@ -90,7 +90,7 @@ def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) 
     assert not torch.equal(fresh.weight, trained.weight)
 
     report = restore_checkpoint(
-        load={"path": str(root), "restore_mode": "model_only", "strict": True},
+        load={"path": str(root), "mode": "model_only", "strict": True},
         model=fresh,
         context=_context(),
     )
@@ -107,7 +107,7 @@ def test_restore_rejects_checkpoint_without_complete_marker(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="COMPLETE"):
         restore_checkpoint(
-            load={"path": str(checkpoint_dir), "restore_mode": "model_only"},
+            load={"path": str(checkpoint_dir), "mode": "model_only"},
             model=torch.nn.Linear(3, 2).double(),
             context=_context(),
         )
@@ -118,7 +118,7 @@ def test_restore_rejects_model_config_hash_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="model_config"):
         restore_checkpoint(
-            load={"path": str(checkpoint_dir), "restore_mode": "model_only"},
+            load={"path": str(checkpoint_dir), "mode": "model_only"},
             model=torch.nn.Linear(3, 4).double(),
             context=_context(_cfg(model_out=4)),
         )
@@ -139,7 +139,7 @@ def test_model_only_does_not_require_train_resume_files(tmp_path: Path) -> None:
 
     fresh = torch.nn.Linear(3, 2).double()
     report = restore_checkpoint(
-        load={"path": str(checkpoint_dir), "restore_mode": "model_only"},
+        load={"path": str(checkpoint_dir), "mode": "model_only"},
         model=fresh,
         context=_context(),
     )
@@ -158,7 +158,7 @@ def test_train_resume_restores_all_train_state(tmp_path: Path) -> None:
     sampler = _Sampler()
 
     report = restore_checkpoint(
-        load={"path": str(checkpoint_dir), "restore_mode": "train_resume"},
+        load={"path": str(checkpoint_dir), "mode": "train_resume"},
         model=fresh,
         optimizer=optimizer,
         trainer=trainer,
@@ -189,7 +189,7 @@ def test_train_resume_fails_when_required_file_is_missing(tmp_path: Path) -> Non
 
     with pytest.raises(FileNotFoundError, match="optimizer"):
         restore_checkpoint(
-            load={"path": str(checkpoint_dir), "restore_mode": "train_resume"},
+            load={"path": str(checkpoint_dir), "mode": "train_resume"},
             model=torch.nn.Linear(3, 2).double(),
             optimizer=torch.optim.Adam(torch.nn.Linear(3, 2).double().parameters(), lr=0.01),
             trainer=_Trainer(),
@@ -206,7 +206,7 @@ def test_restore_strict_load_fails_on_unexpected_keys(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="ghost"):
         restore_checkpoint(
-            load={"path": str(checkpoint_dir), "restore_mode": "model_only", "strict": True},
+            load={"path": str(checkpoint_dir), "mode": "model_only", "strict": True},
             model=torch.nn.Linear(3, 2).double(),
             context=_context(),
         )

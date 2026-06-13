@@ -238,7 +238,7 @@ checks:
 # -----------------------------------------------------------------------------
 load:
   path: null
-  restore_mode: none
+  mode: none
   strict: true
   allow_protocol_mismatch: false
 

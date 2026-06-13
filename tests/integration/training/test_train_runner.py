@@ -61,6 +61,10 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
     assert "python_version" in metadata["runtime"]
     assert "slurm" in metadata
 
+    trainer_state = json.loads((run_dir / "checkpoints/step_000002/trainer.json").read_text())
+    assert trainer_state["global_step"] == 3
+    assert trainer_state["completed_steps"] == 3
+
 
 def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     run_dir = _run(tmp_path)

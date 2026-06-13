@@ -188,30 +188,30 @@ def test_evaluate_start_is_emitted_after_model_ready() -> None:
     assert recorder.events == ["run_start"]
 
 
-def test_train_rejects_model_only_restore_mode() -> None:
+def test_train_rejects_model_only_load_mode() -> None:
     runner = Train(
         model=nn.Linear(1, 1).double(),
         sampler=object(),
         hamiltonian_terms=[],
         optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
         trainer=_NoopTrainer(),
-        load={"restore_mode": "model_only", "path": "unused"},
+        load={"mode": "model_only", "path": "unused"},
     )
 
-    with pytest.raises(ValueError, match="load.restore_mode.*model_only"):
+    with pytest.raises(ValueError, match="load.mode.*model_only"):
         runner.run(_RecordingContext([]))
 
 
-def test_evaluate_rejects_train_resume_restore_mode() -> None:
+def test_evaluate_rejects_train_resume_load_mode() -> None:
     runner = Evaluate(
         model=_QuadraticModel(),
         sampler=_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)),
         hamiltonian_terms=[],
         diagnostics=[EnergyEvaluation()],
-        load={"restore_mode": "train_resume", "path": "unused"},
+        load={"mode": "train_resume", "path": "unused"},
     )
 
-    with pytest.raises(ValueError, match="load.restore_mode.*train_resume"):
+    with pytest.raises(ValueError, match="load.mode.*train_resume"):
         runner.run(_RecordingContext([]))
 
 
@@ -220,7 +220,7 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
 
     def fake_restore_checkpoint(**kwargs):
         calls.append(kwargs)
-        return RestoreReport(restore_mode="train_resume", checkpoint_dir="ckpt", step=4)
+        return RestoreReport(mode="train_resume", checkpoint_dir="ckpt", step=4)
 
     monkeypatch.setattr(train_runner_module, "restore_checkpoint", fake_restore_checkpoint)
     runner = Train(
@@ -229,7 +229,7 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
         hamiltonian_terms=[],
         optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
         trainer=_NoopTrainer(),
-        load={"restore_mode": "train_resume", "path": "ckpt"},
+        load={"mode": "train_resume", "path": "ckpt"},
     )
 
     result = runner.run(_RecordingContext([]))
@@ -245,7 +245,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
 
     def fake_restore_checkpoint(**kwargs):
         calls.append(kwargs)
-        return RestoreReport(restore_mode="model_only", checkpoint_dir="ckpt", step=4)
+        return RestoreReport(mode="model_only", checkpoint_dir="ckpt", step=4)
 
     monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint", fake_restore_checkpoint)
     runner = Evaluate(
@@ -253,7 +253,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
         sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
         hamiltonian_terms={"constant": _ConstantEnergyTerm([1.0, 1.0])},
         diagnostics=[EnergyEvaluation()],
-        load={"restore_mode": "model_only", "path": "ckpt"},
+        load={"mode": "model_only", "path": "ckpt"},
     )
 
     result = runner.run(_RecordingContext([]))
@@ -263,7 +263,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
     assert calls[0]["sampler"] is runner.sampler
 
 
-def test_checkpoint_restore_mode_none_does_not_call_restore(monkeypatch) -> None:
+def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
     def fail_restore(**kwargs):
         raise AssertionError("restore_checkpoint should not be called")
 
@@ -276,7 +276,7 @@ def test_checkpoint_restore_mode_none_does_not_call_restore(monkeypatch) -> None
         hamiltonian_terms=[],
         optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
         trainer=_NoopTrainer(),
-        load={"restore_mode": "none"},
+        load={"mode": "none"},
     )
     assert train.run(_RecordingContext([])).status == "completed"
 
@@ -285,7 +285,7 @@ def test_checkpoint_restore_mode_none_does_not_call_restore(monkeypatch) -> None
         sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
         hamiltonian_terms={"constant": _ConstantEnergyTerm([1.0, 1.0])},
         diagnostics=[EnergyEvaluation()],
-        load={"restore_mode": "none"},
+        load={"mode": "none"},
     )
     assert evaluate.run(_RecordingContext([])).status == "completed"
 

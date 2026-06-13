@@ -162,6 +162,7 @@ class VMCTrainer:
                 if sampler_stats:
                     context.log(dict(sampler_stats), step=step, namespace="train/sampler")
 
+            self.global_step = step + 1
             emit(
                 "step_end",
                 state=state,
@@ -173,7 +174,6 @@ class VMCTrainer:
                     "sampler": sampler,
                 },
             )
-            self.global_step = step + 1
 
         return state
 

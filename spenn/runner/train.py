@@ -65,10 +65,10 @@ class Train(Runner):
 
         optimizer = make_optimizer(self.optimizer, self.model.parameters())
         self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
-        restore_mode = _load_restore_mode(self.load)
-        if restore_mode == "model_only":
-            raise ValueError("Train rejects load.restore_mode='model_only'; use train_resume")
-        if restore_mode == "train_resume":
+        mode = _load_mode(self.load)
+        if mode == "model_only":
+            raise ValueError("Train rejects load.mode='model_only'; use train_resume")
+        if mode == "train_resume":
             report = restore_checkpoint(
                 load=self.load,
                 model=self.model,
@@ -100,11 +100,11 @@ class Train(Runner):
         return RunResult(status="completed")
 
 
-def _load_restore_mode(load) -> str:
+def _load_mode(load) -> str:
     if load is None:
         return "none"
     if hasattr(load, "get"):
-        return str(load.get("restore_mode", "none"))
+        return str(load.get("mode", "none"))
     return "none"
 
 

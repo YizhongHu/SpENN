@@ -21,7 +21,7 @@ RESTORE_MODES = ("none", "model_only", "train_resume")
 class RestoreReport:
     """Summary of the state restored from a checkpoint."""
 
-    restore_mode: str
+    mode: str
     checkpoint_dir: str | None = None
     step: int | None = None
     loaded_model: bool = False
@@ -34,7 +34,7 @@ class RestoreReport:
         """Return a JSON-safe report mapping."""
 
         return {
-            "restore_mode": self.restore_mode,
+            "mode": self.mode,
             "checkpoint_dir": self.checkpoint_dir,
             "step": self.step,
             "loaded_model": self.loaded_model,
@@ -53,22 +53,22 @@ def restore_checkpoint(
     optimizer: Any | None = None,
     trainer: Any | None = None,
     sampler: Any | None = None,
-    restore_mode: str | None = None,
+    mode: str | None = None,
     strict: bool | None = None,
     allow_protocol_mismatch: bool | None = None,
 ) -> RestoreReport:
     """Restore checkpoint state into explicitly configured objects."""
 
     config = _load_config(load)
-    mode = str(restore_mode or config.get("restore_mode", "none"))
+    mode = str(mode or config.get("mode", "none"))
     if mode not in RESTORE_MODES:
-        raise ValueError(f"load.restore_mode must be one of {RESTORE_MODES}, got {mode!r}")
+        raise ValueError(f"load.mode must be one of {RESTORE_MODES}, got {mode!r}")
     if mode == "none":
-        return RestoreReport(restore_mode="none")
+        return RestoreReport(mode="none")
 
     path = config.get("path")
     if path in (None, ""):
-        raise ValueError(f"load.path is required for restore_mode={mode!r}")
+        raise ValueError(f"load.path is required for mode={mode!r}")
     strict_load = bool(config.get("strict", True) if strict is None else strict)
     allow_mismatch = bool(
         config.get("allow_protocol_mismatch", False)
@@ -91,7 +91,7 @@ def restore_checkpoint(
         )
         _load_model(checkpoint_dir, manifest.files, model, strict=strict_load, context=context)
         return RestoreReport(
-            restore_mode=mode,
+            mode=mode,
             checkpoint_dir=str(checkpoint_dir),
             step=manifest.step,
             loaded_model=True,
@@ -117,7 +117,7 @@ def restore_checkpoint(
     _load_sampler(checkpoint_dir, manifest.files, sampler)
     _load_rng(checkpoint_dir, manifest.files)
     return RestoreReport(
-        restore_mode=mode,
+        mode=mode,
         checkpoint_dir=str(checkpoint_dir),
         step=manifest.step,
         loaded_model=True,
@@ -130,7 +130,7 @@ def restore_checkpoint(
 
 def _load_config(load: Any) -> dict[str, Any]:
     if load is None:
-        return {"restore_mode": "none"}
+        return {"mode": "none"}
     if OmegaConf.is_config(load):
         return dict(OmegaConf.to_container(load, resolve=True))
     if isinstance(load, dict):
