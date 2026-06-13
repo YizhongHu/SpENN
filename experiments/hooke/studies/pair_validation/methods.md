@@ -67,7 +67,9 @@ then uses direct `python -u run.py ...` commands inside the job.
 
 Real CPU submissions default to `sapphire,kozinsky,seas_compute`. Real GPU
 submissions default to `kozinsky_gpu,seas_gpu`. Cluster smoke submissions use
-the smaller test partitions: `test` for CPU and `gpu_test` for GPU.
+the smaller test partitions: `test` for CPU and `gpu_test` for GPU. The
+launcher escapes partition commas for Hydra; Slurm still receives the normal
+comma-separated partition list.
 
 Each Submitit task is shaped like:
 

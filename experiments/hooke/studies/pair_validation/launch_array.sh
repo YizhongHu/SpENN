@@ -33,6 +33,12 @@ LAUNCHER="experiments/hooke/studies/pair_validation/launch_submitit.py"
 DEVICE="${DEVICE:-cuda}"
 HYDRA_LAUNCHER="${HYDRA_LAUNCHER:-submitit_slurm}"
 
+hydra_value() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  printf '%s' "${value//,/\\,}"
+}
+
 case "$DEVICE" in
   cuda)
     VENV="${VENV:-.venv-gpu}"
@@ -82,7 +88,7 @@ fi
 
 # Optional one-off resource overrides without editing the manifest.
 if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
-  [[ -n "${PARTITION:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.partition=${PARTITION}")
+  [[ -n "${PARTITION:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.partition=$(hydra_value "$PARTITION")")
   if [[ "${GRES+x}" == "x" ]]; then
     if [[ -n "$GRES" ]]; then
       HYDRA_OVERRIDES+=("hydra.launcher.gres=${GRES}")

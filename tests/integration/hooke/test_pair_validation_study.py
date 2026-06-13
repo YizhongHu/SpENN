@@ -380,7 +380,9 @@ def test_submitit_launcher_derives_jobs_and_overrides_from_manifest() -> None:
 
     overrides = launch_submitit.hydra_overrides(manifest, device="cuda")
     assert "hydra.job.name=hooke-pv-v1" in overrides
-    assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in overrides
+    gpu_partition = "hydra.launcher.partition=kozinsky_gpu\\,seas_gpu"
+    assert gpu_partition in overrides
+    _assert_hydra_string_value(gpu_partition, "kozinsky_gpu,seas_gpu")
     assert "hydra.launcher.gres=gpu:1" in overrides
     assert "hydra.launcher.array_parallelism=54" in overrides
 
@@ -391,14 +393,19 @@ def test_submitit_launcher_has_cpu_and_gpu_slurm_overrides() -> None:
     cpu_overrides = launch_submitit.hydra_overrides(manifest, device="cpu")
     gpu_overrides = launch_submitit.hydra_overrides(manifest, device="cuda")
 
-    assert "hydra.launcher.partition=sapphire,kozinsky,seas_compute" in cpu_overrides
+    cpu_partition = "hydra.launcher.partition=sapphire\\,kozinsky\\,seas_compute"
+    gpu_partition = "hydra.launcher.partition=kozinsky_gpu\\,seas_gpu"
+
+    assert cpu_partition in cpu_overrides
+    _assert_hydra_string_value(cpu_partition, "sapphire,kozinsky,seas_compute")
     assert "hydra.launcher.cpus_per_task=4" in cpu_overrides
     assert "hydra.launcher.mem_gb=16" in cpu_overrides
     assert "hydra.launcher.timeout_min=480" in cpu_overrides
     assert "hydra.launcher.array_parallelism=54" in cpu_overrides
     assert not any(item.startswith("hydra.launcher.gres=") for item in cpu_overrides)
 
-    assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in gpu_overrides
+    assert gpu_partition in gpu_overrides
+    _assert_hydra_string_value(gpu_partition, "kozinsky_gpu,seas_gpu")
     assert "hydra.launcher.gres=gpu:1" in gpu_overrides
     assert "hydra.launcher.array_parallelism=54" in gpu_overrides
 
@@ -411,6 +418,8 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert "source \"$VENV/bin/activate\"" in text
     assert 'HYDRA_LAUNCHER="${HYDRA_LAUNCHER:-submitit_slurm}"' in text
     assert '"hydra/launcher=${HYDRA_LAUNCHER}"' in text
+    assert "hydra_value()" in text
+    assert 'hydra.launcher.partition=$(hydra_value "$PARTITION")' in text
     assert "--multirun" in text
     assert "--array" not in text
     assert "SLURM_ARRAY_TASK_ID" not in text
@@ -466,7 +475,9 @@ def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) ->
         job_count=len(eval_jobs),
     )
     assert "hydra.job.name=hooke-final-v1-final-eval" in overrides
-    assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in overrides
+    gpu_partition = "hydra.launcher.partition=kozinsky_gpu\\,seas_gpu"
+    assert gpu_partition in overrides
+    _assert_hydra_string_value(gpu_partition, "kozinsky_gpu,seas_gpu")
     assert "hydra.launcher.array_parallelism=10" in overrides
 
 
@@ -498,13 +509,17 @@ def test_final_submitit_launcher_has_cpu_and_gpu_slurm_overrides(tmp_path: Path)
 
         assert f"hydra.job.name=hooke-final-v1-{stage.replace('_', '-')}" in cpu_overrides
         assert f"hydra.job.name=hooke-final-v1-{stage.replace('_', '-')}" in gpu_overrides
-        assert "hydra.launcher.partition=sapphire,kozinsky,seas_compute" in cpu_overrides
+        cpu_partition = "hydra.launcher.partition=sapphire\\,kozinsky\\,seas_compute"
+        gpu_partition = "hydra.launcher.partition=kozinsky_gpu\\,seas_gpu"
+        assert cpu_partition in cpu_overrides
+        _assert_hydra_string_value(cpu_partition, "sapphire,kozinsky,seas_compute")
         assert "hydra.launcher.cpus_per_task=4" in cpu_overrides
         assert "hydra.launcher.mem_gb=16" in cpu_overrides
         assert "hydra.launcher.timeout_min=480" in cpu_overrides
         assert "hydra.launcher.array_parallelism=10" in cpu_overrides
         assert not any(item.startswith("hydra.launcher.gres=") for item in cpu_overrides)
-        assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in gpu_overrides
+        assert gpu_partition in gpu_overrides
+        _assert_hydra_string_value(gpu_partition, "kozinsky_gpu,seas_gpu")
         assert "hydra.launcher.gres=gpu:1" in gpu_overrides
         assert "hydra.launcher.array_parallelism=10" in gpu_overrides
 
@@ -518,6 +533,8 @@ def test_final_submitit_shell_launcher_uses_sync_activate_and_phases() -> None:
     assert 'STAGE="${STAGE:-final_train}"' in text
     assert "final_train|final_eval" in text
     assert '"hydra/launcher=${HYDRA_LAUNCHER}"' in text
+    assert "hydra_value()" in text
+    assert 'hydra.launcher.partition=$(hydra_value "$PARTITION")' in text
     assert "--multirun" in text
     assert "uv run" not in text
     assert "SLURM_ARRAY_TASK_ID" not in text
@@ -564,6 +581,7 @@ def test_readme_documents_reproducibility_contract() -> None:
     assert "GPU smoke defaults to `gpu_test`" in text
     assert "`sapphire,kozinsky,seas_compute`" in text
     assert "`kozinsky_gpu,seas_gpu`" in text
+    assert "escapes partition commas for Hydra" in text
     assert "collect.py" in text
     assert "select.py" in text
     assert "evaluate_selected.py" in text
@@ -583,6 +601,7 @@ def test_methods_documents_experiment_protocol() -> None:
     assert "Validation metrics are logged under" in text
     assert "Real CPU submissions default to `sapphire,kozinsky,seas_compute`" in text
     assert "Cluster smoke submissions use" in text
+    assert "escapes partition commas for Hydra" in text
     assert "`gpu_test`" in text
     assert "validation/energy_abs_error" in text
     assert "Selection Rule" in text
@@ -590,6 +609,14 @@ def test_methods_documents_experiment_protocol() -> None:
     assert "Final Evaluation" in text
     assert "mode: model_only" in text
     assert "Reproducibility" in text
+
+
+def _assert_hydra_string_value(override: str, expected: str) -> None:
+    from hydra.core.override_parser.overrides_parser import OverridesParser
+
+    parsed = OverridesParser.create().parse_override(override)
+    assert not parsed.is_sweep_override()
+    assert parsed.value() == expected
 
 
 def _write_local_smoke_manifest(tmp_path: Path) -> Path:

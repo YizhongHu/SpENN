@@ -23,6 +23,12 @@ DEVICE="${DEVICE:-cuda}"
 STAGE="${STAGE:-final_train}"
 HYDRA_LAUNCHER="${HYDRA_LAUNCHER:-submitit_slurm}"
 
+hydra_value() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  printf '%s' "${value//,/\\,}"
+}
+
 case "$DEVICE" in
   cuda)
     VENV="${VENV:-.venv-gpu}"
@@ -84,7 +90,7 @@ if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
 fi
 
 if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
-  [[ -n "${PARTITION:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.partition=${PARTITION}")
+  [[ -n "${PARTITION:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.partition=$(hydra_value "$PARTITION")")
   if [[ "${GRES+x}" == "x" ]]; then
     if [[ -n "$GRES" ]]; then
       HYDRA_OVERRIDES+=("hydra.launcher.gres=${GRES}")

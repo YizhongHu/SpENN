@@ -105,7 +105,8 @@ DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
 The launcher reads [manifest.yaml](manifest.yaml), expands the declared grid,
 and submits one Hydra Submitit job per grid point. Real CPU runs default to
 `sapphire,kozinsky,seas_compute`; real GPU runs default to
-`kozinsky_gpu,seas_gpu`.
+`kozinsky_gpu,seas_gpu`. The launcher escapes partition commas for Hydra; Slurm
+still receives the normal comma-separated partition list.
 
 ## Collect And Select
 

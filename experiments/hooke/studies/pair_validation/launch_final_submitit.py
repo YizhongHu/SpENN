@@ -15,10 +15,10 @@ from hydra.utils import get_original_cwd, to_absolute_path
 from omegaconf import DictConfig
 
 try:
-    from launch_submitit import _dotlist_value, _patch_hydra_argparse_for_python314, load_manifest
+    from launch_submitit import _hydra_override_value, _patch_hydra_argparse_for_python314, load_manifest
 except ModuleNotFoundError:  # pragma: no cover - exercised by importlib file loading
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from launch_submitit import _dotlist_value, _patch_hydra_argparse_for_python314, load_manifest
+    from launch_submitit import _hydra_override_value, _patch_hydra_argparse_for_python314, load_manifest
 
 DEFAULT_MANIFEST = "experiments/hooke/studies/pair_validation/manifest.yaml"
 DEFAULT_INPUTS = "experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv"
@@ -142,7 +142,7 @@ def hydra_overrides(
     ):
         value = profile.get(manifest_key)
         if value is not None:
-            overrides.append(f"{hydra_key}={_dotlist_value(value)}")
+            overrides.append(f"{hydra_key}={_hydra_override_value(value)}")
     array_parallelism = profile.get("array_parallelism")
     if array_parallelism is None:
         array_parallelism = job_count

@@ -168,7 +168,7 @@ def hydra_overrides(manifest: Mapping[str, Any], *, device: str) -> list[str]:
     ):
         value = profile.get(manifest_key)
         if value is not None:
-            overrides.append(f"{hydra_key}={_dotlist_value(value)}")
+            overrides.append(f"{hydra_key}={_hydra_override_value(value)}")
 
     array_parallelism = profile.get("array_parallelism")
     if array_parallelism is None:
@@ -207,6 +207,15 @@ def _dotlist_value(value: Any) -> str:
             return "inf" if value > 0 else "-inf"
         return f"{value:g}"
     return str(value)
+
+
+def _hydra_override_value(value: Any) -> str:
+    """Return a value string that Hydra will parse as one override value."""
+
+    text = _dotlist_value(value)
+    if isinstance(value, str):
+        return text.replace("\\", "\\\\").replace(",", "\\,")
+    return text
 
 
 def _slug(value: Any) -> str:
