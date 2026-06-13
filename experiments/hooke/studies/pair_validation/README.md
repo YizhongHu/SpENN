@@ -192,7 +192,8 @@ model instantiation.
 Inspect `final_eval_commands.sh`, then submit or execute the generated commands.
 The command script contains final training commands for the manifest final
 training seeds followed by final evaluation commands that load each generated
-training checkpoint through `load.mode=model_only`.
+training checkpoint through `load.mode=model_only`. Activate the intended venv
+before running the command script directly.
 
 To execute locally:
 
@@ -200,8 +201,32 @@ To execute locally:
 bash experiments/hooke/studies/pair_validation/reports/final_eval_commands.sh
 ```
 
-For cluster runs, submit the generated commands through SLURM/Submitit and keep
-the SLURM logs alongside the local run directories.
+For cluster runs, use the separate final Submitit launcher in two phases. First
+submit final training:
+
+```bash
+STAGE=final_train INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+```
+
+After final training checkpoints exist, submit held-out final evaluation:
+
+```bash
+STAGE=final_eval INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+```
+
+Smoke-test either final phase without Slurm submission:
+
+```bash
+DEVICE=cpu HYDRA_LAUNCHER=submitit_local STAGE=final_train \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0,1
+```
+
+Keep the SLURM logs alongside the local run directories. The final eval phase
+checks that each configured checkpoint path exists before running unless
+`require_checkpoint=false` is passed for a dry operational test.
 
 ## How To Summarize Final Evaluation Results
 

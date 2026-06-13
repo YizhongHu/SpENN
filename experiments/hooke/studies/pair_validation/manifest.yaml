@@ -93,3 +93,6 @@ final_evaluation:
     burn_in: 1000
     n_steps: 500
     proposal_scale: 0.35
+  launcher:
+    hydra_sweep_dir: slurm_logs/hooke_pair_final_v1
+    job_name_prefix: hooke-final-v1

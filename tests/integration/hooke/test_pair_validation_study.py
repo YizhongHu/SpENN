@@ -34,6 +34,7 @@ collect = _load_script("collect")
 select = _load_script("select")
 evaluate_selected = _load_script("evaluate_selected")
 launch_submitit = _load_script("launch_submitit")
+launch_final_submitit = _load_script("launch_final_submitit")
 
 
 def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> None:
@@ -246,6 +247,8 @@ def test_evaluate_selected_dry_run_writes_load_configs_and_inputs(tmp_path: Path
     assert (tmp_path / "reports" / "final_eval_manifest.yaml").exists()
     assert (tmp_path / "reports" / "final_eval_inputs.csv").exists()
     assert len(plan["inputs"]) == 10
+    assert plan["inputs"][0]["train_command"].startswith("python -u run.py --config ")
+    assert plan["inputs"][0]["eval_command"].startswith("python -u run.py --config ")
     eval_config = OmegaConf.load(plan["inputs"][0]["eval_config"])
     eval_config_raw = OmegaConf.to_container(eval_config, resolve=False)
     assert eval_config.load.mode == "model_only"
@@ -341,6 +344,53 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert "SLURM_ARRAY_TASK_ID" not in text
     assert "uv run" not in text
     assert "SEEDS=(" not in text
+
+
+def test_final_submitit_launcher_splits_train_and_eval_stages(tmp_path: Path) -> None:
+    selected_config = _write_selected_config(tmp_path)
+    plan = evaluate_selected.generate_final_evaluation(
+        manifest_path=MANIFEST,
+        selected_config_path=selected_config,
+        run_root=tmp_path / "outputs",
+        output_dir=tmp_path / "reports",
+    )
+    inputs = launch_final_submitit.read_inputs(tmp_path / "reports" / "final_eval_inputs.csv")
+    manifest = launch_submitit.load_manifest(MANIFEST)
+
+    train_jobs = launch_final_submitit.stage_jobs(inputs, stage="final_train")
+    eval_jobs = launch_final_submitit.stage_jobs(inputs, stage="final_eval")
+
+    assert len(train_jobs) == 10
+    assert len(eval_jobs) == 10
+    assert train_jobs[0]["command"][:4] == ["python", "-u", "run.py", "--config"]
+    assert train_jobs[0]["config"] == plan["inputs"][0]["train_config"]
+    assert eval_jobs[0]["command"][:4] == ["python", "-u", "run.py", "--config"]
+    assert eval_jobs[0]["config"] == plan["inputs"][0]["eval_config"]
+    assert launch_final_submitit.job_index_sweep(inputs, stage="final_train") == "0,1,2,3,4,5,6,7,8,9"
+
+    overrides = launch_final_submitit.hydra_overrides(
+        manifest,
+        stage="final_eval",
+        device="cuda",
+        job_count=len(eval_jobs),
+    )
+    assert "hydra.job.name=hooke-final-v1-final-eval" in overrides
+    assert "hydra.launcher.partition=kozinsky_gpu,seas_gpu" in overrides
+    assert "hydra.launcher.array_parallelism=10" in overrides
+
+
+def test_final_submitit_shell_launcher_uses_sync_activate_and_phases() -> None:
+    text = (STUDY_DIR / "launch_final_submitit.sh").read_text()
+
+    assert "uv sync" in text
+    assert "--extra submitit" in text
+    assert "source \"$VENV/bin/activate\"" in text
+    assert 'STAGE="${STAGE:-final_train}"' in text
+    assert "final_train|final_eval" in text
+    assert '"hydra/launcher=${HYDRA_LAUNCHER}"' in text
+    assert "--multirun" in text
+    assert "uv run" not in text
+    assert "SLURM_ARRAY_TASK_ID" not in text
 
 
 def test_pair_final_eval_template_uses_pr81_load_contract() -> None:

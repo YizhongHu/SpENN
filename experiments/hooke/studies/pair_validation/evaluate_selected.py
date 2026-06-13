@@ -6,7 +6,6 @@ import argparse
 import csv
 import json
 import math
-import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -135,8 +134,8 @@ def generate_final_evaluation(
             checkpoint_path=checkpoint_path,
         )
 
-        train_command = f"uv run python -u run.py --config {shlex.quote(str(train_config_path))}"
-        eval_command = f"uv run python -u run.py --config {shlex.quote(str(eval_config_path))}"
+        train_command = f"python -u run.py --config {train_config_path}"
+        eval_command = f"python -u run.py --config {eval_config_path}"
         commands.extend([train_command, eval_command])
         inputs.append(
             {
