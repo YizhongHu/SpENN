@@ -81,7 +81,7 @@ metadata; they do not pickle full model objects and do not instantiate models.
 Restore intent is runner-owned:
 
 ```yaml
-checkpoint:
+load:
   path: null
   restore_mode: none   # none | model_only | train_resume
   strict: true
@@ -90,6 +90,14 @@ checkpoint:
 
 `model_only` is for `Evaluate`. `train_resume` is for `Train`. Config
 instantiates objects first; checkpoint restore loads state into those objects.
+
+Checkpoint writing policy stays under `checkpoint` in train configs:
+
+```yaml
+checkpoint:
+  every_n_steps: 500
+  keep_last: 3
+```
 
 ## Run Durability
 

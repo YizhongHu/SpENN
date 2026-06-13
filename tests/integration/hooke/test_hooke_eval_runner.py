@@ -41,7 +41,7 @@ def test_evaluate_accepts_only_minimal_constructor_args() -> None:
         "hamiltonian_terms",
         "diagnostics",
         "return_terms",
-        "checkpoint",
+        "load",
     }
 
 
@@ -195,10 +195,10 @@ def test_train_rejects_model_only_restore_mode() -> None:
         hamiltonian_terms=[],
         optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
         trainer=_NoopTrainer(),
-        checkpoint={"restore_mode": "model_only", "path": "unused"},
+        load={"restore_mode": "model_only", "path": "unused"},
     )
 
-    with pytest.raises(ValueError, match="model_only"):
+    with pytest.raises(ValueError, match="load.restore_mode.*model_only"):
         runner.run(_RecordingContext([]))
 
 
@@ -208,10 +208,10 @@ def test_evaluate_rejects_train_resume_restore_mode() -> None:
         sampler=_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)),
         hamiltonian_terms=[],
         diagnostics=[EnergyEvaluation()],
-        checkpoint={"restore_mode": "train_resume", "path": "unused"},
+        load={"restore_mode": "train_resume", "path": "unused"},
     )
 
-    with pytest.raises(ValueError, match="train_resume"):
+    with pytest.raises(ValueError, match="load.restore_mode.*train_resume"):
         runner.run(_RecordingContext([]))
 
 
@@ -229,7 +229,7 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
         hamiltonian_terms=[],
         optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
         trainer=_NoopTrainer(),
-        checkpoint={"restore_mode": "train_resume", "path": "ckpt"},
+        load={"restore_mode": "train_resume", "path": "ckpt"},
     )
 
     result = runner.run(_RecordingContext([]))
@@ -253,7 +253,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
         sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
         hamiltonian_terms={"constant": _ConstantEnergyTerm([1.0, 1.0])},
         diagnostics=[EnergyEvaluation()],
-        checkpoint={"restore_mode": "model_only", "path": "ckpt"},
+        load={"restore_mode": "model_only", "path": "ckpt"},
     )
 
     result = runner.run(_RecordingContext([]))
@@ -276,7 +276,7 @@ def test_checkpoint_restore_mode_none_does_not_call_restore(monkeypatch) -> None
         hamiltonian_terms=[],
         optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
         trainer=_NoopTrainer(),
-        checkpoint={"restore_mode": "none"},
+        load={"restore_mode": "none"},
     )
     assert train.run(_RecordingContext([])).status == "completed"
 
@@ -285,7 +285,7 @@ def test_checkpoint_restore_mode_none_does_not_call_restore(monkeypatch) -> None
         sampler=_StaticSampler(torch.zeros(2, 2, 1, dtype=torch.float64)),
         hamiltonian_terms={"constant": _ConstantEnergyTerm([1.0, 1.0])},
         diagnostics=[EnergyEvaluation()],
-        checkpoint={"restore_mode": "none"},
+        load={"restore_mode": "none"},
     )
     assert evaluate.run(_RecordingContext([])).status == "completed"
 

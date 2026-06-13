@@ -177,7 +177,7 @@ sampler_params:
 # -----------------------------------------------------------------------------
 # Checkpoint restore
 # -----------------------------------------------------------------------------
-checkpoint:
+load:
   # Path may be a checkpoint root containing latest.json, latest.json itself,
   # or a complete step_000000-style checkpoint directory.
   path: ???
@@ -216,7 +216,7 @@ timing:
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
-  checkpoint: ${checkpoint}
+  load: ${load}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
   return_terms: ${evaluation.return_terms}

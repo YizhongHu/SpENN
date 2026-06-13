@@ -53,7 +53,7 @@ class Evaluate(Runner):
         hamiltonian_terms,
         diagnostics: Sequence[object] | None = None,
         return_terms: bool = False,
-        checkpoint=None,
+        load=None,
     ) -> None:
         self.model = model
         self.sampler = sampler
@@ -66,7 +66,7 @@ class Evaluate(Runner):
             )
         self.diagnostics = validate_diagnostics(diagnostics)
         self.return_terms = bool(return_terms)
-        self.checkpoint = checkpoint
+        self.load = load
 
     def run(self, context: RunContext) -> RunResult:
         """Sample configurations, evaluate local energy, and log metrics."""
@@ -78,12 +78,12 @@ class Evaluate(Runner):
             self.model.eval()
             _assert_eager_initialized(self.model)
 
-        restore_mode = _checkpoint_restore_mode(self.checkpoint)
+        restore_mode = _load_restore_mode(self.load)
         if restore_mode == "train_resume":
-            raise ValueError("Evaluate rejects checkpoint.restore_mode='train_resume'; use model_only")
+            raise ValueError("Evaluate rejects load.restore_mode='train_resume'; use model_only")
         if restore_mode == "model_only":
             report = restore_checkpoint(
-                checkpoint=self.checkpoint,
+                load=self.load,
                 model=self.model,
                 sampler=self.sampler,
                 context=context,
@@ -147,11 +147,11 @@ def _split_local_energy_result(
     return result, None
 
 
-def _checkpoint_restore_mode(checkpoint) -> str:
-    if checkpoint is None:
+def _load_restore_mode(load) -> str:
+    if load is None:
         return "none"
-    if hasattr(checkpoint, "get"):
-        return str(checkpoint.get("restore_mode", "none"))
+    if hasattr(load, "get"):
+        return str(load.get("restore_mode", "none"))
     return "none"
 
 

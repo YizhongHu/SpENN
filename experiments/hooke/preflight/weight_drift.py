@@ -11,7 +11,7 @@ Prints a per-parameter summary (sorted by final relative drift, flagging
 parameters that never moved) and saves drift curves to
 ``experiments/hooke/preflight/plots/<run_id>_weight_drift.png``.
 
-Requires ``write_checkpoint.every_n_steps: 1`` (the preflight default) for a
+Requires ``checkpoint.every_n_steps: 1`` (the preflight default) for a
 per-step trajectory; sparser checkpoints still work but sample the curve.
 
 Usage
@@ -67,7 +67,7 @@ def load_weight_trajectory(run_dir: Path) -> tuple[list[int], dict[str, list[tor
     if len(step_files) < 2:
         raise RuntimeError(
             f"need at least two step_*.pt checkpoints in {checkpoint_dir} to measure "
-            f"drift, found {len(step_files)}; run with write_checkpoint.every_n_steps=1"
+            f"drift, found {len(step_files)}; run with checkpoint.every_n_steps=1"
         )
     step_files.sort()
 

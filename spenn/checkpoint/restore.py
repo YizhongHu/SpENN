@@ -47,7 +47,7 @@ class RestoreReport:
 
 def restore_checkpoint(
     *,
-    checkpoint: Any,
+    load: Any,
     model: Any,
     context: Any,
     optimizer: Any | None = None,
@@ -59,16 +59,16 @@ def restore_checkpoint(
 ) -> RestoreReport:
     """Restore checkpoint state into explicitly configured objects."""
 
-    config = _restore_config(checkpoint)
+    config = _load_config(load)
     mode = str(restore_mode or config.get("restore_mode", "none"))
     if mode not in RESTORE_MODES:
-        raise ValueError(f"checkpoint.restore_mode must be one of {RESTORE_MODES}, got {mode!r}")
+        raise ValueError(f"load.restore_mode must be one of {RESTORE_MODES}, got {mode!r}")
     if mode == "none":
         return RestoreReport(restore_mode="none")
 
     path = config.get("path")
     if path in (None, ""):
-        raise ValueError(f"checkpoint.path is required for restore_mode={mode!r}")
+        raise ValueError(f"load.path is required for restore_mode={mode!r}")
     strict_load = bool(config.get("strict", True) if strict is None else strict)
     allow_mismatch = bool(
         config.get("allow_protocol_mismatch", False)
@@ -128,14 +128,14 @@ def restore_checkpoint(
     )
 
 
-def _restore_config(checkpoint: Any) -> dict[str, Any]:
-    if checkpoint is None:
+def _load_config(load: Any) -> dict[str, Any]:
+    if load is None:
         return {"restore_mode": "none"}
-    if OmegaConf.is_config(checkpoint):
-        return dict(OmegaConf.to_container(checkpoint, resolve=True))
-    if isinstance(checkpoint, dict):
-        return dict(checkpoint)
-    raise TypeError("checkpoint config must be a mapping or OmegaConf container")
+    if OmegaConf.is_config(load):
+        return dict(OmegaConf.to_container(load, resolve=True))
+    if isinstance(load, dict):
+        return dict(load)
+    raise TypeError("load config must be a mapping or OmegaConf container")
 
 
 def _verify_hash(
