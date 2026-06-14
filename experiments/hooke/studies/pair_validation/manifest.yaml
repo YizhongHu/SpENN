@@ -1,63 +1,175 @@
 # =============================================================================
-# Hooke pair validation study manifest (PR8.2 protocol contract)
+# Hooke pair validation/final-benchmark study manifest (PR8.3)
 # =============================================================================
 #
-# This manifest declares the validation scan, deterministic selection policy,
-# and final-evaluation orchestration inputs for the Hooke pair benchmark.
-# Changing this manifest after running the study implies a new study version.
+# Static policy manifest. Changing it after launching a study means a new study
+# version. Concrete checkpoint paths live only in generated job manifests.
 
 study:
-  name: hooke_pair_validation_v1
+  name: hooke_pair_validation
+  version: v2
   purpose: validation_scan
   sector: singlet
 
-# Base training config expanded by the launcher (one run per grid point).
-train_config: experiments/hooke/configs/benchmark/pair_train.yaml
+configs:
+  train: experiments/hooke/studies/pair_validation/configs/pair_train.yaml
+  eval: experiments/hooke/studies/pair_validation/configs/pair_eval.yaml
 
-# Held-out final-evaluation template used by evaluate_selected.py.
-final_eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
+paths:
+  report_root: experiments/hooke/studies/pair_validation/reports
 
-# Grid axes are resolved-config keys (OmegaConf dotted paths).
-grid:
-  runtime.seed: [3, 9, 11]
-  optimizer_params.lr: [3.0e-4, 1.0e-3, 3.0e-3]
-  model_params.channels: [8, 32, 128]
-  model_params.layers: [1]
-  model_params.gate_activation: [silu, sigmoid]
-
-# Grid key holding the replicate seed; all other grid keys define a config
-# group for selection.
-seed_key: runtime.seed
-
-validation:
-  namespace: validation
-  sampler_namespace: validation/sampler
-  exact_reference_energy_allowed: false
-
-launcher:
-  run_root: outputs/hooke_pair_validation_v1
-  hydra_sweep_dir: slurm_logs/hooke_pair_validation_v1
-  job_name: hooke-pv-v1
-  slurm:
-    gpu:
-      partition: kozinsky_gpu,seas_gpu
-      gres: gpu:1
-      cpus_per_task: 4
-      mem_gb: 16
-      timeout_min: 480
-      array_parallelism: null
-    cpu:
+profiles:
+  cpu:
+    device: cpu
+    uv_environment: .venv
+    uv_extras: [cpu, submitit]
+    slurm:
       partition: sapphire,kozinsky,seas_compute
       gres: null
       cpus_per_task: 4
       mem_gb: 16
       timeout_min: 480
       array_parallelism: null
+  test:
+    device: cpu
+    uv_environment: .venv
+    uv_extras: [cpu, submitit]
+    slurm:
+      partition: test
+      gres: null
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 15
+      array_parallelism: null
+  gpu:
+    device: cuda
+    uv_environment: .venv-gpu
+    uv_extras: [cu126, submitit]
+    slurm:
+      partition: kozinsky_gpu,seas_gpu
+      gres: gpu:1
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 480
+      array_parallelism: null
+  gpu_test:
+    device: cuda
+    uv_environment: .venv-gpu
+    uv_extras: [cu126, submitit]
+    slurm:
+      partition: gpu_test
+      gres: gpu:1
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 15
+      array_parallelism: null
+
+phases:
+  validation_train:
+    base_config: train
+    orchestrator: train
+    mode: cartesian
+    run_root: ${paths.report_root}/01_train/outputs
+    slurm_log_dir: ${paths.report_root}/01_train/slurm_logs
+    job_name: hooke-pv-validation-train
+    overrides:
+      fixed:
+        study.name: ${study.name}
+        study.version: ${study.version}
+        study.phase: validation_train
+      sweep:
+        runtime.seed: [3, 9, 11]
+        optimizer_params.lr: [3.0e-4, 1.0e-4, 1.0e-3, 3.0e-3]
+        model_params.channels: [8, 16, 32, 64]
+        model_params.layers: [1]
+        model_params.gate_activation: [silu, sigmoid, tanh]
+    smoke:
+      enabled: true
+      select: first
+      overlay:
+        training.max_steps: 2
+        sampler_params.n_walkers: 128
+        sampler_params.burn_in: 10
+        sampler_params.n_steps: 5
+        validation_sampler_params.n_walkers: 128
+        validation_sampler_params.burn_in: 10
+        validation_sampler_params.n_steps: 5
+        checkpoint.every_n_steps: 1
+        checkpoint.save_final: true
+
+  final_train:
+    base_config: train
+    orchestrator: train
+    mode: cartesian
+    run_root: ${paths.report_root}/04_final_train/outputs
+    slurm_log_dir: ${paths.report_root}/04_final_train/slurm_logs
+    job_name: hooke-pv-final-train
+    overrides:
+      fixed:
+        study.name: ${study.name}
+        study.version: ${study.version}
+        study.phase: final_train
+      from_selection:
+        optimizer_params.lr: selected.optimizer_params.lr
+        model_params.channels: selected.model_params.channels
+        model_params.layers: selected.model_params.layers
+        model_params.gate_activation: selected.model_params.gate_activation
+      sweep:
+        runtime.seed: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+    smoke:
+      enabled: true
+      select: first
+      overlay:
+        training.max_steps: 2
+        sampler_params.n_walkers: 128
+        sampler_params.burn_in: 10
+        sampler_params.n_steps: 5
+        validation_sampler_params.n_walkers: 128
+        validation_sampler_params.burn_in: 10
+        validation_sampler_params.n_steps: 5
+        checkpoint.every_n_steps: 1
+        checkpoint.save_final: true
+
+  final_eval:
+    base_config: eval
+    orchestrator: eval
+    mode: rows
+    run_root: ${paths.report_root}/05_final_eval/outputs
+    slurm_log_dir: ${paths.report_root}/05_final_eval/slurm_logs
+    job_name: hooke-pv-final-eval
+    overrides:
+      fixed:
+        study.name: ${study.name}
+        study.version: ${study.version}
+        study.phase: final_eval
+        load.mode: model_only
+        load.strict: true
+        load.allow_protocol_mismatch: false
+      from_selection:
+        model_params.channels: selected.model_params.channels
+        model_params.layers: selected.model_params.layers
+        model_params.gate_activation: selected.model_params.gate_activation
+      from_rows:
+        runtime.seed: eval_seed
+        evaluation.training_seed: train_seed
+        load.path: checkpoint_path
+        sampler_params.n_walkers: sampler_n_walkers
+        sampler_params.burn_in: sampler_burn_in
+        sampler_params.n_steps: sampler_n_steps
+        sampler_params.proposal_scale: sampler_proposal_scale
+    smoke:
+      enabled: true
+      select: first
+      overlay:
+        sampler_params.n_walkers: 128
+        sampler_params.burn_in: 10
+        sampler_params.n_steps: 5
 
 system:
   n_particles: 2
 
 selection:
+  source_phase: validation_train
   metric: validation/energy
   aggregate: median
   failed_run_value: inf
@@ -86,13 +198,10 @@ geometry_warnings:
   min_electron_distance_q01: 1.0e-4
 
 final_evaluation:
-  training_seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+  source_phase: final_train
   eval_seeds: [100000, 100001, 100002, 100003, 100004, 100005, 100006, 100007, 100008, 100009]
   sampler:
     n_walkers: 8192
     burn_in: 1000
     n_steps: 500
     proposal_scale: 0.35
-  launcher:
-    hydra_sweep_dir: slurm_logs/hooke_pair_final_v1
-    job_name_prefix: hooke-final-v1

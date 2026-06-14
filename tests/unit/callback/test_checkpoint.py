@@ -9,6 +9,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
+import spenn.checkpoint.restore as restore_module
 from spenn.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
     checkpoint_hashes,
@@ -106,6 +107,12 @@ def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) 
     assert report.loaded_model is True
     assert report.loaded_optimizer is False
     assert report.loaded_sampler is False
+
+
+def test_restore_runtime_device_check_normalizes_unindexed_cuda() -> None:
+    assert restore_module._canonical_runtime_device("cuda") == torch.device("cuda:0")
+    assert restore_module._canonical_runtime_device(torch.device("cuda:0")) == torch.device("cuda:0")
+    assert restore_module._canonical_runtime_device("cpu") == torch.device("cpu")
 
 
 def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:

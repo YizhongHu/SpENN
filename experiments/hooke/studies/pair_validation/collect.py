@@ -12,6 +12,25 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+try:
+    from .study_manifest import (
+        collect_report_dir,
+        phase_run_root,
+        phase_study_name,
+        phase_study_phase,
+        phase_study_version,
+        run_kind_for_dir,
+    )
+except ImportError:  # pragma: no cover - direct script execution
+    from study_manifest import (
+        collect_report_dir,
+        phase_run_root,
+        phase_study_name,
+        phase_study_phase,
+        phase_study_version,
+        run_kind_for_dir,
+    )
+
 REQUIRED_COLUMNS = (
     "run_dir",
     "status",
@@ -19,6 +38,8 @@ REQUIRED_COLUMNS = (
     "status/exception_type",
     "status/exception_message",
     "study_name",
+    "study_version",
+    "study_phase",
     "config_id",
     "runtime.seed",
     "optimizer_params.lr",
@@ -80,6 +101,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir=args.output_dir,
         run_dirs=args.run_dirs,
         allow_other_studies=args.allow_other_studies,
+        include_smoke=args.include_smoke,
+        phase=args.phase,
     )
     return 0
 
@@ -87,10 +110,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 def collect_runs(
     *,
     manifest_path: str | Path,
-    run_root: str | Path,
-    output_dir: str | Path,
+    output_dir: str | Path | None = None,
+    run_root: str | Path | None = None,
     run_dirs: Sequence[str | Path] | None = None,
     allow_other_studies: bool = False,
+    include_smoke: bool = False,
+    phase: str = "validation_train",
 ) -> list[dict[str, Any]]:
     """Collect validation run directories and write ``runs.csv``/``runs.jsonl``.
 
@@ -106,22 +131,37 @@ def collect_runs(
         Optional explicit run directories.
     allow_other_studies
         If ``False``, include only runs whose resolved config has
-        ``study.name`` equal to the manifest's study name.
+        ``study.name`` equal to the manifest phase's study name.
+    include_smoke
+        Include run directories whose first staged run-id component is
+        ``smoke``. Defaults to full runs only.
+    phase
+        Manifest phase used for the default study-name filter.
     """
 
     manifest = _load_yaml(manifest_path)
-    study_name = _select(manifest, "study.name")
-    candidates = [Path(path) for path in run_dirs] if run_dirs else _discover_run_dirs(Path(run_root))
+    study_name = phase_study_name(manifest, phase)
+    study_version = phase_study_version(manifest, phase)
+    study_phase = phase_study_phase(manifest, phase)
+    root = Path(run_root) if run_root is not None else Path(phase_run_root(manifest, phase))
+    candidates = [Path(path) for path in run_dirs] if run_dirs else _discover_run_dirs(root)
+    if not include_smoke:
+        candidates = [path for path in candidates if run_kind_for_dir(root, path) != "smoke"]
 
     rows: list[dict[str, Any]] = []
     for run_dir in candidates:
         row = collect_run_dir(run_dir)
-        if not allow_other_studies and study_name and row.get("study_name") != study_name:
+        if not allow_other_studies and (
+            row.get("study_name") != study_name
+            or row.get("study_version") != study_version
+            or (row.get("study_phase") not in (None, "", study_phase))
+        ):
             continue
         rows.append(row)
 
     rows.sort(key=lambda item: str(item.get("run_dir", "")))
-    _write_outputs(rows, Path(output_dir))
+    output = Path(output_dir) if output_dir is not None else Path(collect_report_dir(manifest))
+    _write_outputs(rows, output)
     return rows
 
 
@@ -138,6 +178,8 @@ def collect_run_dir(run_dir: str | Path) -> dict[str, Any]:
     row: dict[str, Any] = {column: None for column in REQUIRED_COLUMNS}
     row["run_dir"] = str(run_path)
     row["study_name"] = _select(cfg, "study.name")
+    row["study_version"] = _select(cfg, "study.version")
+    row["study_phase"] = _select(cfg, "study.phase")
     row["config_id"] = _select(cfg, "study.config_id")
 
     for field in CONFIG_FIELDS:
@@ -162,10 +204,12 @@ def collect_run_dir(run_dir: str | Path) -> dict[str, Any]:
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--run-root", required=True, type=Path)
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--phase", default="validation_train")
+    parser.add_argument("--run-root", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--run-dirs", nargs="*", type=Path)
     parser.add_argument("--allow-other-studies", action="store_true")
+    parser.add_argument("--include-smoke", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -273,7 +317,7 @@ def _write_outputs(rows: list[dict[str, Any]], output_dir: Path) -> None:
     extra_columns = sorted({key for row in rows for key in row if key not in REQUIRED_COLUMNS})
     columns = [*REQUIRED_COLUMNS, *extra_columns]
     with (output_dir / "runs.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _csv_value(row.get(key)) for key in columns})

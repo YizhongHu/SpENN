@@ -1,192 +1,83 @@
-# Hooke Pair Validation Methods
+# Hooke Pair Study Methods
 
-This document describes the `hooke_pair_validation_v1` experiment protocol. See
-[README.md](README.md) for the command runbook.
+Validation is used only for selection. Final evaluation is reported after the
+selection policy freezes.
 
-## Study Role
+Only `orchestrate.py` launches SpENN. Run
+`uv run python experiments/hooke/studies/pair_validation/orchestrate.py --help`
+or `-h` for usage and examples.
 
-The study selects one Hooke-pair model/protocol from a validation scan and then
-freezes that choice for held-out final evaluation.
+The manifest separates stable `study.name` from `study.version`. Orchestrated
+runs record `study.name`, `study.version`, and `study.phase`; scripts read true
+run/report/Slurm directories from the manifest instead of constructing them from
+local naming assumptions.
 
-Validation is used only for selection. It does not use exact reference energy.
-Final evaluation happens after selection is frozen, so it may report exact
-reference-energy comparisons.
+Generated artifacts live under numbered report stages:
+`01_train`, `02_collect`, `03_select`, `04_final_train`, and `05_final_eval`.
+Run outputs are flat below each stage `outputs/` directory. The first run-id
+component is `smoke` or `full`, so smoke runs remain distinguishable even when a
+collector discovers runs by walking `resolved_config.yaml` files. Collectors
+default to `full` runs; `--include-smoke` is reserved for smoke diagnostics.
 
-Local run directories and generated CSV, JSON, and Markdown reports are
-authoritative. W&B is visualization only and is not used as the source of the
-selection decision.
+Canonical train/eval configs for this study live under
+`experiments/hooke/studies/pair_validation/configs/`. Copies under
+`experiments/hooke/configs/benchmark/` are legacy test/reference configs, not
+the study source of truth.
 
-## Protocol Source
+`collect.py`, `select.py`, `plan_final.py`, and `collect_final.py` process
+files only.
 
-[manifest.yaml](manifest.yaml) is the protocol contract. It declares the study
-name, training config, final-evaluation template, grid axes, seed axis,
-selection rule, eligibility checks, geometry-warning policy, final seeds, final
-sampler settings, and default Slurm resources.
+## Manifest
 
-Changing the manifest after running the study implies a new study version.
-
-## Validation Scan
-
-Validation scan runs use
-`experiments/hooke/configs/benchmark/pair_train.yaml`. Each grid point runs a
-normal `spenn.runner.Train` job, writes local run artifacts, saves directory
-checkpoints under `checkpoints/`, and runs a train-end validation callback with
-an independent validation sampler.
-
-The manifest grid is:
-
-```text
-runtime.seed: [3, 9, 11]
-optimizer_params.lr: [3.0e-4, 1.0e-3, 3.0e-3]
-model_params.channels: [8, 32, 128]
-model_params.layers: [1]
-model_params.gate_activation: [silu, sigmoid]
-```
-
-The seed key is `runtime.seed`. All other grid keys define the non-seed config
-group used for selection.
-
-Validation metrics are logged under:
-
-```text
-validation/*
-validation/sampler/*
-validation/perf/*
-```
-
-The validation callback must not log exact-reference selection metrics such as
-`validation/energy_error`, `validation/energy_abs_error`, or
-`validation/reference_energy`.
-
-## Launcher Behavior
-
-Validation jobs are submitted with Hydra Submitit. The shell launcher reads the
-manifest, expands one Hydra multirun job per manifest grid point, runs
-`uv sync --extra ... --extra submitit`, activates `.venv` or `.venv-gpu`, and
-then uses direct `python -u run.py ...` commands inside the job.
-
-Real CPU submissions default to `sapphire,kozinsky,seas_compute`. Real GPU
-submissions default to `kozinsky_gpu,seas_gpu`. Cluster smoke uses the real
-final Submitit launcher with [final_smoke_inputs.csv](final_smoke_inputs.csv),
-the smaller test partitions (`test` for CPU and `gpu_test` for GPU),
-`ARRAY_PARALLELISM=1`, a 15-minute timeout, and the W&B project
-`SpENN-QMC-test`.
-
-The smoke philosophy is deliberately strict: do not add a separate smoke
-launcher or smoke manifest when the real launcher can express the check. Smoke
-should change only the inputs table and resource environment variables. Model
-size, sampler size, training length, run IDs, and checkpoint paths belong in
-the smoke inputs command columns so the final launcher remains the behavior
-under test.
-
-CPU smoke runs every row in the smoke-input grid. GPU smoke uses `job_index=0`
-because `gpu_test` has a small job-count cap; `ARRAY_PARALLELISM=1` limits
-concurrency but does not shrink the submitted Hydra sweep. The launcher escapes partition commas for Hydra; Slurm still receives
-the normal comma-separated partition list. Smoke run IDs and matching checkpoint paths receive a
-time-and-git-hash suffix at launch time so repeated smoke submissions do not
-overwrite or collide with previous checkpoints.
-
-Each Submitit task is shaped like:
-
-```bash
-python -u run.py \
-  --config experiments/hooke/configs/benchmark/pair_train.yaml \
-  run.root=outputs/hooke_pair_validation_v1 \
-  study.name=hooke_pair_validation_v1 \
-  study.config_id=<non-seed-config-id> \
-  runtime.device=<cpu-or-cuda> \
-  runtime.seed=<manifest-grid-seed> \
-  optimizer_params.lr=<manifest-grid-lr> \
-  model_params.channels=<manifest-grid-channels> \
-  model_params.layers=<manifest-grid-layers> \
-  model_params.gate_activation=<manifest-grid-gate>
-```
-
-## Collection
-
-`collect.py` normalizes local run outputs into `runs.csv` and `runs.jsonl`.
-It reads raw run artifacts and does not delete, move, rewrite, or repair run
-directories.
-
-By default, the collector includes only runs whose resolved config has:
+The static manifest uses phase-local overrides.sweep entries. The validation
+scan includes:
 
 ```yaml
-study:
-  name: hooke_pair_validation_v1
+runtime.seed: [3, 9, 11]
+optimizer_params.lr: [3.0e-4, 1.0e-4, 1.0e-3, 3.0e-3]
+model_params.channels: [8, 16, 32, 64]
+model_params.layers: [1]
+model_params.gate_activation: [silu, sigmoid, tanh]
 ```
+
+Smoke runs are target jobs plus manifest smoke overlays. There are no separate
+canonical smoke commands for this study layer. Slurm submissions are direct
+`sbatch --array` launches; the orchestrator prints the array command and the
+first concrete job command in `--dry-run` mode.
 
 ## Selection Rule
 
-The primary selection metric is median `validation/energy` across validation
-training seeds. Failed runs, missing metrics, and missing validation outputs
-count as `+inf`, so incomplete candidates cannot silently win.
+Selection groups runs by non-seed hyperparameters and treats `runtime.seed` as a
+replicate. Failed, missing, or ineligible seeds count as `+inf` validation
+energy. The primary metric is median `validation/energy`. Exact-reference
+metrics such as `validation/energy_abs_error` and `eval/energy_abs_error` are
+forbidden for selection.
 
-Eligibility requires configured integrity, gradient, and equivariance checks to
-pass, and requires a finite local-energy fraction of `1.0`.
-
-A lower median energy clearly beats another candidate only when it wins by the
-manifest margin:
-
-```text
-max(
-  2 * sqrt(stderr_a^2 + stderr_b^2),
-  0.25 * max(iqr_a, iqr_b),
-  1.0e-4,
-)
-```
-
-The lowest raw median energy is therefore not always the selected config. If
-another candidate is within the computed margin, the candidates form a
-primary-energy cohort and are tied for selection purposes. The selection report
-records the lowest-energy candidate, the selected config, an energy-ranking
-table, and a tie-breaker-ranking table so this distinction is visible.
-
-Within the primary-energy cohort, tie-breakers are applied in order:
-
-```text
-lower median validation/energy_variance
-lower validation-energy IQR across seeds
-lower median validation/energy_stderr
-fewer sampler-geometry warnings
-smaller model_params.channels
-lower median runtime/wall_time_sec
-```
-
-Geometry diagnostics are warnings and tie-breakers, not a primary objective.
+When primary medians are inside the declared margin, tie-breakers apply in
+manifest order: lower median validation/energy_variance, lower validation energy
+IQR, lower median stderr, fewer geometry warnings, smaller model, then shorter
+wall time.
 
 ## Final Evaluation
 
-Final evaluation uses held-out training seeds `100` through `109` and held-out
-evaluation seeds `100000` through `100009`.
-
-`evaluate_selected.py` generates final training configs, final evaluation
-configs, a final-evaluation manifest, command files, and an input table for the
-final Submitit launcher.
-
-Generated final evaluation configs load the selected final-training checkpoint
-explicitly:
+`plan_final.py` creates `04_final_train/plans/final_train_jobs.jsonl`,
+`05_final_eval/plans/smoke_eval_jobs.jsonl`, and
+`05_final_eval/plans/final_eval_jobs.jsonl`. Final eval is row-based because
+each row carries a specific checkpoint path. Final eval rows are paired
+one-to-one, not Cartesian: completed final-train checkpoints are sorted by train
+seed and zipped with `final_evaluation.eval_seeds`. Eval rows use:
 
 ```yaml
 load:
-  path: /path/to/checkpoints/latest.json
   mode: model_only
   strict: true
   allow_protocol_mismatch: false
 ```
 
-Checkpoint loading remains runner-owned and explicit; it is not hidden inside
-model instantiation.
-
-Final training and final evaluation are launched as separate stages. The real
-final evaluation stage checks that configured checkpoint paths exist before
-running unless `require_checkpoint=false` is passed for an operational dry run.
+`collect_final.py` writes the final benchmark CSV/JSON/Markdown artifacts.
 
 ## Reproducibility
 
-Keep the manifest version, git SHA, Slurm logs, `run_start.json`,
-`resolved_config.yaml`, `metadata.json`, `status.json`, metric files, checkpoint
-manifests, selection report, final-evaluation manifest, final run summaries, and
-local run directories.
-
-Generated real-run artifacts should not be committed as canonical source files.
-Tiny fixtures for tests are fine.
+Keep the static manifest, generated job manifests, run directories, collection
+tables, selected config, and final reports together. Slurm logs should be kept
+with the same report directory whenever possible.

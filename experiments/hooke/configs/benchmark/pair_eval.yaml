@@ -1,51 +1,21 @@
 # =============================================================================
-#  SpENN | Legacy Hooke pair smoke evaluation test config
-# -----------------------------------------------------------------------------
-#  experiment : hooke_pair_smoke        runner : spenn.runner.Evaluate
-#  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
+# Legacy Hooke pair benchmark-shaped evaluation test config
 # =============================================================================
 #
 # Purpose:
-#   Cheap end-to-end sampled-evaluation sanity check for the two-electron Hooke
-#   system. Exercises the Evaluate runner, EnergyEvaluation diagnostics, and
-#   the eval metric namespaces against a freshly initialized SpENN ansatz.
-#   Legacy test config; study-owned canonical configs live under
-#   experiments/hooke/studies/.
+#   Evaluation of the model/protocol selected by the pair
+#   validation study (experiments/hooke/studies/pair_validation/). Restores a
+#   trained checkpoint, samples with the large final-evaluation sampler, and
+#   reports eval/* metrics including exact-reference error.
+#   Legacy test/reference copy: the study-local source of truth is
+#   experiments/hooke/studies/pair_validation/configs/pair_eval.yaml.
 #
-# Workflow position:
+# PR8.3 orchestrators apply manifest/job-row overrides to this one base config.
+# Each run remains a normal configured run:
 #
-#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  study configs
-#   (VMC training)                      (this legacy test file) (canonical work)
-#
-# ---- BEGIN AI-FACED CONFIG GUIDANCE ----
-#
-# This config is intended for:
-#   - verifying Evaluate runner wiring (sampler -> local energy -> diagnostics)
-#   - checking eval metric namespaces (eval, eval/sampler, eval/perf,
-#     diagnostics/energy)
-#   - producing local CSV/JSONL metrics for inspection
-#
-# This config is not intended for:
-#   - benchmark-quality energies (the ansatz here is untrained)
-#   - final scientific evaluation
-#   - architecture comparison
-#
-# The reported eval/energy_abs_error against `references.exact_energy` is
-# expected to be large; it documents the metric path, not model quality.
-#
-# ----- END AI-FACED CONFIG GUIDANCE -----
-#
-# Config style:
-#   The first half of this file contains parameter blocks: readable knobs that
-#   are not instantiated directly. The second half contains component specs:
-#   Hydra-instantiated objects that reference the parameter blocks.
-#
-# Example:
-#
-#   parameter: <value>
-#
-#   component:
-#     need_parameter: ${parameter}
+#   uv run python run.py --config experiments/hooke/configs/benchmark/pair_eval.yaml \
+#     load.path=<checkpoint> runtime.seed=100000 \
+#     study.name=hooke_pair_validation study.version=v2 study.phase=final_eval
 #
 # =============================================================================
 
@@ -58,45 +28,51 @@
 # Experiment identity
 # -----------------------------------------------------------------------------
 experiment:
-  name: hooke_pair_smoke
+  name: hooke_pair_benchmark
   sector: pair
-  run_name: hooke_pair_smoke_eval
+  run_name: hooke_pair_benchmark_final_eval
+
+
+# -----------------------------------------------------------------------------
+# Study provenance
+# -----------------------------------------------------------------------------
+# Orchestration sets study provenance so final-benchmark summaries can group
+# eval runs; these fields land in resolved_config.yaml.
+study:
+  name: null
+  version: null
+  phase: final_eval
+  config_id: null
 
 
 # -----------------------------------------------------------------------------
 # Run directory
 # -----------------------------------------------------------------------------
-# They will be automatically populated by the runner. Users can optionally specify
-# them to control the directory structure or for debugging.
 run:
   root: outputs
   run_id: null
   dir: null
-  # IANA timezone used for human-readable run IDs, metadata, and status files.
-  # The code default is UTC; Harvard cluster logs use New York time here.
   timezone: America/New_York
 
 
 # -----------------------------------------------------------------------------
 # Runtime
 # -----------------------------------------------------------------------------
+# runtime.seed is the *evaluation* seed: it seeds the evaluation sampler and
+# must come from the manifest's final_evaluation.eval_seeds, never from the
+# validation seeds.
 runtime:
-  seed: 0
-  device: cpu
+  seed: 100000
+  device: cuda
   dtype: float64
 
 
 # -----------------------------------------------------------------------------
 # Terminal logging
 # -----------------------------------------------------------------------------
-# Configures terminal UI
 terminal:
   enabled: true
   level: info
-  # `color`:
-  #   auto   - use color when appropriate
-  #   always - force ANSI color, including in SLURM logs
-  #   never  - disable ANSI color
   color: auto
   rich: auto
   # `progress` should remain false for SLURM-compatible, line-oriented logs.
@@ -106,52 +82,24 @@ terminal:
 # -----------------------------------------------------------------------------
 # Optional W&B dashboard tracking
 # -----------------------------------------------------------------------------
-#
-# W&B is an optional dashboard/monitoring projection.
-# Local CSV/JSONL logs and the run directory remain authoritative.
-#
-# Default policy:
-#   - log scalar metrics
-#   - log compact config/provenance metadata
-#   - do not upload checkpoints, traces, or raw batches
-#   - do not upload per-sample arrays
-#
-# To enable W&B:
-#   1. Install optional W&B support.
-#   2. Authenticate with `wandb login` or set `WANDB_API_KEY`.
-#   3. Uncomment the WandB logger in the `loggers:` section at the bottom.
-#
+# W&B is a dashboard projection only; the local run directory stays
+# authoritative and the final benchmark summary never reads W&B.
 wandb:
-  project: spenn-qmc-test
+  project: SpENN-QMC
   entity: null
-  # Use the SpENN run id as the W&B run name so dashboard runs map 1:1 to
-  # local run directories. Populated by run setup before loggers instantiate.
   name: ${run.run_id}
-  # online   - stream metrics to W&B
-  # offline  - write locally and sync later with `wandb sync`
-  # disabled - no-op, if supported by the logger
   mode: online
-  group: ${experiment.name}
+  group: ${study.name}_${study.version}_${study.phase}
   job_type: eval
   tags:
-    - hooke
-    - smoke
-    - eval
+    - hooke-pair
     - ${runtime.device}
-
-  # W&B should mirror scalar metrics using the canonical namespace/key path:
-  #   namespace = eval/sampler
-  #   key       = acceptance_rate
-  #   W&B name  = eval/sampler/acceptance_rate
+    - "study:${study.name}"
+    - "study_version:${study.version}"
+    - "study_phase:${study.phase}"
   mirror_scalars: true
-
-  # Add a small curated dashboard/* layer for easy visualization.
   dashboard_aliases: true
-
-  # Add numeric health/* flags such as health/run_ok when derivable.
   health_flags: true
-
-  # Keep artifact upload off by default. Checkpoints remain local.
   log_artifacts: false
 
 
@@ -163,7 +111,6 @@ system:
   n_particles: 2
   spatial_dim: 3
   omega: 0.5
-  # to-be changed: spin can be free and optimized by runner
   spin:
     n_up: 1
     n_down: 1
@@ -172,7 +119,8 @@ system:
 # -----------------------------------------------------------------------------
 # Reference values
 # -----------------------------------------------------------------------------
-# Reference energies belong in evaluation/reference context, never in `system`.
+# Exact-reference comparison is allowed here (and only here): final evaluation
+# reports eval/energy_error and eval/energy_abs_error after the protocol froze.
 references:
   # Exact ground-state energy of the omega=0.5 Hooke singlet (Taut 1993).
   exact_energy: 2.0
@@ -181,53 +129,61 @@ references:
 # -----------------------------------------------------------------------------
 # Model scale
 # -----------------------------------------------------------------------------
+# Template defaults only: final evaluation configs should set `model:` to the
+# explicit model spec of the training run. Checkpoint restore is runner-owned
+# through the top-level `load` block, so checkpoints are never hidden model
+# factories.
+gate_targets:
+  silu: torch.nn.SiLU
+  sigmoid: torch.nn.Sigmoid
+
 model_params:
-  # `max_order`:
-  #   Maximum real feature body order used by the embedding/model.
   max_order: 2
-  # `max_virtual_order`:
-  #   Maximum virtual order used by equivariant mixing/path aggregation.
   max_virtual_order: 2
-  # `channels`:
-  #   Feature channel count throughout this model.
-  channels: 4
-  # `hidden_channels` and `num_hidden_layers`:
-  #   Embedding MLP size.
-  hidden_channels: 8
+  channels: 8
+  hidden_channels: 16
   num_hidden_layers: 1
+  layers: 1
+  gate_activation: silu
   include_spins: true
-  # `mixing_implementation`:
-  #   SpENN supports multiple mixing implementations. This config uses the slow
-  #   reference implementation to maximize test coverage.
-  mixing_implementation: slow
+  mixing_implementation: vectorized
   mixing_initial_weight: 0.5
   # Fixed Hooke Gaussian tail: exp(-(omega / 2) * sum_i |r_i|^2).
   harmonic_confinement_coefficient: 0.25
 
 
 # -----------------------------------------------------------------------------
-# Sampler scale
+# Final evaluation sampler scale
 # -----------------------------------------------------------------------------
+# Deliberately larger than the validation sampler. PR8.3 tooling preserves the
+# manifest-declared protocol through row overrides.
 sampler_params:
-  # `n_walkers`:
-  #   Number of configurations sampled for evaluation.
-  n_walkers: 32
-  # `burn_in`:
-  #   Number of initial MCMC updates before collecting samples.
-  burn_in: 20
-  # `n_steps`:
-  #   Number of MCMC updates used between returned samples.
-  n_steps: 5
-  # `proposal_scale`:
-  #   Gaussian proposal scale for Metropolis moves.
-  proposal_scale: 0.5
+  n_walkers: 8192
+  burn_in: 1000
+  n_steps: 500
+  proposal_scale: 0.35
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint restore
+# -----------------------------------------------------------------------------
+load:
+  # Path may be a checkpoint root containing latest.json, latest.json itself,
+  # or a complete step_000000-style checkpoint directory.
+  path: ???
+  mode: model_only
+  strict: true
+  allow_protocol_mismatch: false
 
 
 # -----------------------------------------------------------------------------
 # Evaluation
 # -----------------------------------------------------------------------------
 evaluation:
-  return_terms: true # If true, compute/log named Hamiltonian term contributions.
+  # Provenance only: the training seed of the restored checkpoint, recorded in
+  # resolved_config.yaml for the final benchmark summary.
+  training_seed: null
+  return_terms: true
 
 
 # -----------------------------------------------------------------------------
@@ -245,15 +201,12 @@ timing:
 # -----------------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------------
-#
-# The runner owns the high-level lifecycle for this run.
-#
-# Evaluate samples once, evaluates the local energy, and feeds one shared
-# EvaluationContext to every configured diagnostic. Diagnostics do not
-# resample, log, or write artifacts themselves.
+# Evaluate samples once from the restored model and feeds one shared
+# EvaluationContext to the EnergyEvaluation diagnostic.
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
+  load: ${load}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
   return_terms: ${evaluation.return_terms}
@@ -267,13 +220,9 @@ runner:
 # -----------------------------------------------------------------------------
 # Model
 # -----------------------------------------------------------------------------
-#
-# SpENNWaveFunction is the evaluated ansatz. This smoke config evaluates a
-# freshly initialized model; benchmark evaluation configs should restore
-# trained weights instead.
 model:
   _target_: spenn.nn.SpENNWaveFunction
-  trace_name: spenn # Name for traceable SpENN components.
+  trace_name: spenn
 
   embedding:
     _target_: spenn.nn.Embedding
@@ -301,7 +250,7 @@ model:
       activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
-          _target_: torch.nn.SiLU
+          _target_: ${gate_targets.${model_params.gate_activation}}
 
       path_aggregation:
         _target_: spenn.nn.PathAggregation
@@ -363,23 +312,17 @@ sampler:
 # -----------------------------------------------------------------------------
 # Callbacks
 # -----------------------------------------------------------------------------
-# Callbacks own lifecycle side effects, timing, and human-facing status.
-#
-# Loggers own persistent machine-readable metrics.
 callbacks:
-  # Save the authored config at run start.
   - _target_: spenn.callback.ConfigSnapshot
     triggers:
       - run_start
     output_path: ${run.dir}/config.yaml
 
-  # Save the fully resolved config at run start.
   - _target_: spenn.callback.ResolvedConfigSnapshot
     triggers:
       - run_start
     output_path: ${run.dir}/resolved_config.yaml
 
-  # Save run metadata, including start/end/failure lifecycle information.
   - _target_: spenn.callback.Metadata
     triggers:
       - run_start
@@ -387,7 +330,6 @@ callbacks:
       - exception
     output_path: ${run.dir}/metadata.json
 
-  # Save compact lifecycle status and write the [eval] terminal summary line.
   - _target_: spenn.callback.Status
     triggers:
       - run_start
@@ -396,7 +338,7 @@ callbacks:
       - exception
     output_path: ${run.dir}/status.json
 
-  # Whole-run wall-clock timing: runtime/wall_time_sec and unix timestamps.
+  # Whole-run wall-clock timing: runtime/wall_time_sec.
   - _target_: spenn.callback.RunTiming
     triggers:
       - run_start
@@ -424,15 +366,8 @@ callbacks:
 # -----------------------------------------------------------------------------
 # Loggers
 # -----------------------------------------------------------------------------
-# Local metrics are authoritative.
-#
-# CSV uses long-form scalar records:
-#   step, namespace, key, value
-#
-# JSONL stores structured records for easier downstream parsing.
-#
-# W&B, when enabled, is only a dashboard projection of scalar metrics and compact
-# provenance. It should not upload checkpoints/traces/raw batches by default.
+# Local metrics are authoritative. The final benchmark summary reads only the
+# run directories; W&B is optional visualization.
 loggers:
   - _target_: spenn.logging.CSV
     path: ${run.dir}/metrics.csv
@@ -440,9 +375,8 @@ loggers:
   - _target_: spenn.logging.JSONL
     path: ${run.dir}/metrics.jsonl
 
-  # Optional W&B dashboard logger.
-  #
-  # Uncomment this block only when optional W&B support is installed.
+  # Optional W&B dashboard logger. Uncomment only when optional W&B support is
+  # installed (`uv sync --extra cu126 --extra wandb`) and you are authenticated.
   #
   # - _target_: spenn.logging.WandB
   #   project: ${wandb.project}
@@ -456,10 +390,3 @@ loggers:
   #   dashboard_aliases: ${wandb.dashboard_aliases}
   #   health_flags: ${wandb.health_flags}
   #   log_artifacts: ${wandb.log_artifacts}
-  #   # Compact provenance mirrored into the W&B run config: links the dashboard
-  #   # run back to the authoritative local run directory.
-  #   config:
-  #     run_id: ${run.run_id}
-  #     run_dir: ${run.dir}
-  #     experiment: ${experiment.name}
-  #     sector: ${experiment.sector}

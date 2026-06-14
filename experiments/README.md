@@ -34,8 +34,8 @@ directory.
 experiments/
   hooke/
     configs/
-      smoke/        cheap end-to-end sanity configs
-      benchmark/    benchmark-quality training configs
+      smoke/        legacy cheap end-to-end test configs
+      benchmark/    legacy benchmark-shaped test/reference configs
     studies/
       pair_validation/   validation scan: manifest, collector, selector
 ```

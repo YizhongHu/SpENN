@@ -6,7 +6,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
+# Generated run artifacts at any depth.
 outputs/
+reports/
+slurm_logs/
 wandb/
 .vscode/
 docs/_build/
@@ -16,4 +19,3 @@ experiments/*/slurm/logs/
 experiments/hooke/slurm/logs/*.out
 experiments/hooke/slurm/logs/*.err
 experiments/*/*/plots/
-slurm_logs/

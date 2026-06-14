@@ -1,340 +1,280 @@
 # Hooke Pair Validation Study
 
-This is the runbook for `hooke_pair_validation_v1`. Experiment details are in
-[methods.md](methods.md).
+Only `orchestrate.py` launches SpENN. Collectors, selectors, and planners read
+and write files only.
 
-Run commands from the repository root. Keep local run directories, generated
-reports, checkpoints, and `slurm_logs/`.
+The study has one train base config and one eval base config:
 
-## Quick Start
+- `experiments/hooke/studies/pair_validation/configs/pair_train.yaml`
+- `experiments/hooke/studies/pair_validation/configs/pair_eval.yaml`
 
-First, run the local CPU smoke on this node:
+All scientific variation comes from `manifest.yaml` phase overrides or generated
+job rows.
 
-```bash
-uv run pytest -q \
-  tests/integration/hooke/test_pair_validation_study.py::test_local_smoke_pipeline_runs_collects_selects_and_plans
-```
+`study.name` is stable across reruns of the same protocol family; `study.version`
+is the versioned study instance. Every launched run records both fields plus
+`study.phase`. True run, report, and Slurm directories live only in
+`manifest.yaml`.
 
-On the cluster, submit the CPU final-launcher smoke before launching the real
-scan:
+The legacy test/reference files under `experiments/hooke/configs/benchmark/`
+are noncanonical copies; this study uses the configs above.
 
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
-  DEVICE=cpu STAGE=final_train PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
-```
+## Phase Flow
 
-After the CPU `final_train` smoke finishes, run its CPU `final_eval` smoke.
-Then run the single-index GPU smoke commands below. If all smoke stages finish
-successfully and write metrics under `outputs/`, launch the validation scan:
+1. local CPU `smoke_train`
+2. optional GPU `smoke_train`
+3. SLURM `smoke_train`
+4. `validation_train`
+5. `collect.py`
+6. `select.py`
+7. `plan_final.py --phase final_train`
+8. `final_train` smoke/launch through train orchestrators
+9. `collect_final.py` for final-train checkpoints
+10. `plan_final.py --phase smoke_eval`
+11. `smoke_eval`
+12. `plan_final.py --phase final_eval`
+13. `final_eval`
+14. `collect_final.py`
 
-```bash
-DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
-```
+## Smoke Train
 
-Use `DEVICE=cpu` only when you intentionally want the CPU Slurm profile.
-
-## Local Checks
-
-Run the whole pair-validation test file:
-
-```bash
-uv run pytest -q tests/integration/hooke/test_pair_validation_study.py
-```
-
-Run launcher contract tests:
+See all orchestration options:
 
 ```bash
-uv run pytest -q \
-  tests/integration/hooke/test_pair_validation_study.py::test_submitit_launcher_has_cpu_and_gpu_slurm_overrides \
-  tests/integration/hooke/test_pair_validation_study.py::test_final_submitit_launcher_has_cpu_and_gpu_slurm_overrides
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py --help
 ```
-
-Dry-run validation Submitit locally without Slurm submission:
 
 ```bash
-DEVICE=cpu HYDRA_LAUNCHER=submitit_local \
-  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-  dry_run=true job_index=0
-
-DEVICE=cuda HYDRA_LAUNCHER=submitit_local \
-  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
-  dry_run=true job_index=0
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind train \
+  --backend slurm \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --phase smoke_train \
+  --profile gpu \
+  --dry-run
 ```
 
-These commands run `uv sync --extra ... --extra submitit`, activate `.venv` or
-`.venv-gpu`, expand one Hydra job, print the direct Python command, and stop
-before training because `dry_run=true`.
+`smoke_train` is the target train phase plus its manifest `smoke.overlay`.
+It uses the same base config and override-generation path as the real train
+phase.
 
-## Cluster Smoke
+SLURM smoke launches use the manifest test profiles: `--profile cpu` submits to
+the `test` partition and `--profile gpu` submits to `gpu_test`. In `--dry-run`
+mode the orchestrator prints the exact `sbatch --array` command plus the first
+array-task command.
 
-Smoke must exercise the real final launcher. Do not add a separate smoke
-launcher or smoke manifest unless the final launcher cannot express the check.
-The only differences from a real final launch should be:
+For real launches, the run Python comes from the manifest profile
+`uv_environment` (`.venv` or `.venv-gpu`) unless `--python` is supplied.
 
-```text
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv
-PARTITION=test or gpu_test
-ARRAY_PARALLELISM=1
-TIMEOUT_MIN=15
-```
-
-The smoke grid and tiny model/sampler/training sizes live in
-[final_smoke_inputs.csv](final_smoke_inputs.csv). Edit the command columns there
-when smoke needs to cover a new model-size knob.
-
-FASRC `gpu_test` policy is stricter than `test`: it has a small submitted-job
-cap, and `ARRAY_PARALLELISM=1` does not reduce the number of Hydra jobs being
-submitted. Keep GPU smoke to `job_index=0` even when the smoke inputs grow; CPU
-smoke submits every row in `final_smoke_inputs.csv`.
-
-Smoke run IDs are suffixed at launch time with
-`<device>_<YYYYMMDD_HHMMSS>_<git-sha>`, so retries do not collide with old
-checkpoints. The training smoke writes the suffix to
-`slurm_logs/hooke_pair_final_v1/smoke_<device>.run_suffix`; evaluation smoke
-reuses that suffix. Set `RUN_SUFFIX=...` only when you want to target a specific
-smoke run.
-
-Submit the CPU training smoke:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
-  DEVICE=cpu STAGE=final_train PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
-```
-
-After CPU training smoke checkpoints exist, submit the CPU evaluation smoke:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
-  DEVICE=cpu STAGE=final_eval PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
-```
-
-Submit one GPU training smoke job:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
-  DEVICE=cuda STAGE=final_train PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  job_index=0
-```
-
-After that GPU training smoke checkpoint exists, submit one GPU evaluation
-smoke job:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
-  DEVICE=cuda STAGE=final_eval PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  job_index=0
-```
-
-Command-expansion dry run:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
-  DEVICE=cpu STAGE=final_train HYDRA_LAUNCHER=submitit_local \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  dry_run=true job_index=0
-```
-
-Check `slurm_logs/hooke_pair_final_v1/` and `outputs/hooke_pair_final_smoke/`
-after each smoke. The smoke inputs define a tiny grid over seed and channel
-count; it is intentionally small enough to run often. CPU smoke submits every
-row, while GPU smoke runs one representative index because of `gpu_test` submit
-limits. Both paths run one tiny benchmark-config training step, load checkpoints
-with `load.mode=model_only`, and use the W&B project `SpENN-QMC-test`.
+Study launches use flat run directories under the stage `outputs/` directory.
+The first run-id folder is always `smoke/` or `full/`, for example
+`01_train/outputs/smoke/<config_id>/seed=<seed>/...` and
+`01_train/outputs/full/<config_id>/seed=<seed>/...`.
+Collectors read only `full/` runs by default; pass `--include-smoke` when a
+smoke run table is wanted for debugging.
 
 ## Validation Scan
 
-Submit the real validation scan on GPU:
-
 ```bash
-DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind train \
+  --backend slurm \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --phase validation_train \
+  --profile gpu
 ```
 
-For a CPU validation scan:
+Validation happens inside Train at `train_end` and logs `validation/*`,
+`validation/sampler/*`, and `validation/perf/*`. Selection must not use exact
+reference errors.
 
-```bash
-DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
-```
-
-The launcher reads [manifest.yaml](manifest.yaml), expands the declared grid,
-and submits one Hydra Submitit job per grid point. Real CPU runs default to
-`sapphire,kozinsky,seas_compute`; real GPU runs default to
-`kozinsky_gpu,seas_gpu`. The launcher escapes partition commas for Hydra; Slurm
-still receives the normal comma-separated partition list.
-
-## Collect And Select
-
-After validation jobs finish, collect local run artifacts:
+## Collect
 
 ```bash
 uv run python experiments/hooke/studies/pair_validation/collect.py \
   --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
-  --run-root outputs \
-  --output-dir experiments/hooke/studies/pair_validation/reports
+  --phase validation_train \
+  --output-dir experiments/hooke/studies/pair_validation/reports/02_collect
 ```
 
-Select the winning non-seed config:
+The default run root is
+`experiments/hooke/studies/pair_validation/reports/01_train/outputs`, and the
+default output directory is
+`experiments/hooke/studies/pair_validation/reports/02_collect`.
+
+## Select
 
 ```bash
 uv run python experiments/hooke/studies/pair_validation/select.py \
   --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
-  --runs experiments/hooke/studies/pair_validation/reports/runs.csv \
-  --output-dir experiments/hooke/studies/pair_validation/reports
+  --runs experiments/hooke/studies/pair_validation/reports/02_collect/runs.csv \
+  --output-dir experiments/hooke/studies/pair_validation/reports/03_select
 ```
 
-Review:
+`select.py` writes `selection.csv`, `selection.jsonl`,
+`selection_report.md`, and `selected_config.yaml`. It does not plan final jobs.
 
-```text
-experiments/hooke/studies/pair_validation/reports/selection_report.md
-experiments/hooke/studies/pair_validation/reports/selected_config.yaml
+## Final Planning
+
+Plan final training:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/plan_final.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --phase final_train \
+  --output-dir experiments/hooke/studies/pair_validation/reports/04_final_train/plans
 ```
+
+Smoke the selected final-train protocol:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind train \
+  --backend slurm \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --phase smoke_train \
+  --target-phase final_train \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --profile gpu \
+  --dry-run
+
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind train \
+  --backend slurm \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --phase smoke_train \
+  --target-phase final_train \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --profile gpu
+```
+
+Launch final training:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind train \
+  --backend slurm \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --phase final_train \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --profile gpu
+```
+
+After final training produces checkpoints, collect the final-train table:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/collect_final.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --final-train-root experiments/hooke/studies/pair_validation/reports/04_final_train/outputs
+```
+
+Plan the eval smoke row and run it:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/plan_final.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --final-train-runs experiments/hooke/studies/pair_validation/reports/04_final_train/final_train_runs.csv \
+  --phase smoke_eval \
+  --output-dir experiments/hooke/studies/pair_validation/reports/05_final_eval/plans
+
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind eval \
+  --backend slurm \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --phase smoke_eval \
+  --jobs experiments/hooke/studies/pair_validation/reports/05_final_eval/plans/smoke_eval_jobs.jsonl \
+  --profile gpu
+```
+
+After eval smoke passes, plan and launch final eval rows:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/plan_final.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/reports/03_select/selected_config.yaml \
+  --final-train-runs experiments/hooke/studies/pair_validation/reports/04_final_train/final_train_runs.csv \
+  --phase final_eval \
+  --output-dir experiments/hooke/studies/pair_validation/reports/05_final_eval/plans
+```
+
+`final_eval_jobs.jsonl` contains row-specific `load.path` values and uses
+`load.mode=model_only`. It is intentionally not Cartesian: completed final-train
+checkpoints are sorted by train seed and paired one-to-one with
+`final_evaluation.eval_seeds`, so train seed `100` uses eval seed `100000`, train
+seed `101` uses eval seed `100001`, and so on.
 
 ## Final Benchmark
 
-Generate final training and evaluation configs:
-
 ```bash
-uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
+uv run python experiments/hooke/studies/pair_validation/orchestrate.py \
+  --kind eval \
+  --backend slurm \
   --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
-  --selected-config experiments/hooke/studies/pair_validation/reports/selected_config.yaml \
-  --run-root outputs \
-  --output-dir experiments/hooke/studies/pair_validation/reports \
-  --dry-run
-```
+  --phase final_eval \
+  --jobs experiments/hooke/studies/pair_validation/reports/05_final_eval/plans/final_eval_jobs.jsonl \
+  --profile gpu
 
-Smoke-test the final launcher locally after `final_eval_inputs.csv` exists:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
-  DEVICE=cpu HYDRA_LAUNCHER=submitit_local STAGE=final_train \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  dry_run=true job_index=0
-
-INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
-  DEVICE=cuda HYDRA_LAUNCHER=submitit_local STAGE=final_eval \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  dry_run=true job_index=0
-```
-
-Smoke-test one final Slurm job per phase:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
-  DEVICE=cuda HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
-  STAGE=final_train \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  dry_run=true job_index=0
-
-INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
-  DEVICE=cuda HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
-  STAGE=final_eval \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
-  dry_run=true job_index=0
-```
-
-Submit final training:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
-  DEVICE=cuda STAGE=final_train \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
-```
-
-Submit final evaluation only after final training checkpoints exist:
-
-```bash
-INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
-  DEVICE=cuda STAGE=final_eval \
-  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
-```
-
-Collect final benchmark summaries:
-
-```bash
-uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
+uv run python experiments/hooke/studies/pair_validation/collect_final.py \
   --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
-  --selected-config experiments/hooke/studies/pair_validation/reports/selected_config.yaml \
-  --run-root outputs \
-  --output-dir experiments/hooke/studies/pair_validation/reports \
-  --collect
+  --final-train-root experiments/hooke/studies/pair_validation/reports/04_final_train/outputs \
+  --final-eval-root experiments/hooke/studies/pair_validation/reports/05_final_eval/outputs \
+  --final-eval-jobs experiments/hooke/studies/pair_validation/reports/05_final_eval/plans/final_eval_jobs.jsonl
 ```
+
+`collect_final.py` writes final train/eval tables plus
+`final_benchmark_summary.csv`, `final_benchmark_summary.json`, and
+`final_benchmark_report.md`.
+
+## Sync Reports
+
+Use `sync_reports.py` to mirror the manifest report directory into another
+location while keeping the snapshot compact. The destination is replaced on each
+run. Slurm log directories and training checkpoints are skipped. Eval runs keep
+only `checkpoints/latest.json` plus the checkpoint step directory referenced by
+that file.
+
+Preview the copy plan:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/sync_reports.py \
+  ${MStore}/spenn-studies/hooke/pair_validation_v2/reports_snapshot \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --dry-run \
+  --verbose
+```
+
+Write the snapshot:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/sync_reports.py \
+  ${MStore}/spenn-studies/hooke/pair_validation_v2/reports_snapshot \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml
+```
+
+Pass `--source` to mirror a report directory other than the one in
+`manifest.yaml`.
 
 ## Outputs To Keep
 
-Validation reports:
+- `manifest.yaml`
+- `01_train/outputs/<run_id>/`, `01_train/slurm_logs/`
+- `02_collect/runs.csv`, `02_collect/runs.jsonl`
+- `03_select/selection.csv`, `03_select/selection.jsonl`
+- `03_select/selection_report.md`, `03_select/selected_config.yaml`
+- `04_final_train/plans/final_train_manifest.yaml`
+- `04_final_train/plans/final_train_jobs.jsonl`
+- `04_final_train/final_train_runs.csv`, `04_final_train/final_train_runs.jsonl`
+- `04_final_train/outputs/<run_id>/`, `04_final_train/slurm_logs/`
+- `05_final_eval/plans/smoke_eval_manifest.yaml`
+- `05_final_eval/plans/smoke_eval_jobs.jsonl`
+- `05_final_eval/plans/final_eval_manifest.yaml`
+- `05_final_eval/plans/final_eval_jobs.jsonl`
+- `05_final_eval/final_eval_runs.csv`, `05_final_eval/final_eval_runs.jsonl`
+- `05_final_eval/final_benchmark_summary.csv`
+- `05_final_eval/final_benchmark_summary.json`
+- `05_final_eval/final_benchmark_report.md`
 
-```text
-runs.csv
-runs.jsonl
-selection.csv
-selected_config.yaml
-selection_report.md
-```
-
-Final planning outputs:
-
-```text
-final_train_configs/
-final_eval_configs/
-final_eval_commands.sh
-final_eval_manifest.yaml
-final_eval_inputs.csv
-```
-
-Final summary outputs:
-
-```text
-final_eval_runs.csv
-final_benchmark_summary.csv
-final_benchmark_summary.json
-final_benchmark_report.md
-```
-
-For every real run, keep:
-
-```text
-run_start.json
-resolved_config.yaml
-metadata.json
-status.json
-metrics.csv
-metrics.jsonl
-events.jsonl
-checkpoints/
-slurm_logs/
-```
-
-## Reference
-
-The manifest owns the study name, grid, validation seed axis, selection rule,
-eligibility checks, geometry-warning policy, final-evaluation seeds, and default
-Slurm resources. Changing [manifest.yaml](manifest.yaml) after running the
-study implies a new study version.
-
-Validation uses `experiments/hooke/configs/benchmark/pair_train.yaml`.
-Validation metrics are logged under `validation/*`, `validation/sampler/*`, and
-`validation/perf/*`. Validation does not use exact reference energy.
-
-Selection uses median `validation/energy` across validation training seeds.
-Failed or missing seeds count as `+inf`. Exact-reference metrics such as
-`validation/energy_abs_error` are forbidden for selection. W&B is visualization only.
-Local run directories and generated reports are authoritative.
-
-Final evaluation uses held-out training seeds `100` through `109` and held-out
-evaluation seeds `100000` through `100009`. Generated eval configs load
-checkpoints explicitly:
-
-```yaml
-load:
-  path: /path/to/checkpoints/latest.json
-  mode: model_only
-  strict: true
-  allow_protocol_mismatch: false
-```
-
-The final eval phase checks checkpoint paths before running unless
-`require_checkpoint=false` is passed for a dry operational test.
+W&B is visualization only. Local run directories and reports are authoritative.

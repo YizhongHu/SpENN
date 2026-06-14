@@ -13,12 +13,18 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+try:
+    from .study_manifest import collect_report_dir, expected_validation_seeds, select_report_dir
+except ImportError:  # pragma: no cover - direct script execution
+    from study_manifest import collect_report_dir, expected_validation_seeds, select_report_dir
+
 GROUP_KEYS = (
     "optimizer_params.lr",
     "model_params.channels",
     "model_params.layers",
     "model_params.gate_activation",
 )
+REPORT_TOP_CANDIDATE_LIMIT = 10
 
 FORBIDDEN_SELECTION_METRICS = {
     "validation/energy_error",
@@ -61,25 +67,31 @@ def main(argv: Sequence[str] | None = None) -> int:
 def select_runs(
     *,
     manifest_path: str | Path,
-    runs_path: str | Path,
-    output_dir: str | Path,
+    runs_path: str | Path | None = None,
+    output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Select a deterministic winner and write selection artifacts."""
 
     manifest = _load_yaml(manifest_path)
     _validate_selection_contract(manifest)
+    if runs_path is None:
+        runs_path = Path(collect_report_dir(manifest)) / "runs.csv"
     rows = _read_runs_csv(runs_path)
     candidates = _aggregate_candidates(rows, manifest)
     if not candidates:
         raise ValueError("no candidate rows found in runs.csv")
 
     winner, tied, decisions = _choose_winner(candidates, manifest)
-    output = Path(output_dir)
+    output = Path(output_dir) if output_dir is not None else Path(select_report_dir(manifest))
     output.mkdir(parents=True, exist_ok=True)
     _write_selection_csv(candidates, winner, output / "selection.csv")
+    _write_selection_jsonl(candidates, winner, output / "selection.jsonl")
     selected = _selected_config(manifest, winner, tied, decisions, runs_path, output)
     OmegaConf.save(config=OmegaConf.create(selected), f=output / "selected_config.yaml", resolve=False)
-    (output / "selection_report.md").write_text(_selection_report(manifest, winner, tied, decisions), encoding="utf-8")
+    (output / "selection_report.md").write_text(
+        _selection_report(manifest, candidates, winner, tied, decisions),
+        encoding="utf-8",
+    )
     return selected
 
 
@@ -159,8 +171,8 @@ def parse_bool(value: Any) -> bool:
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--runs", required=True, type=Path)
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--runs", type=Path)
+    parser.add_argument("--output-dir", type=Path, default=None)
     return parser.parse_args(argv)
 
 
@@ -170,10 +182,10 @@ def _validate_selection_contract(manifest: Mapping[str, Any]) -> None:
     if metric in FORBIDDEN_SELECTION_METRICS:
         raise ValueError(f"selection metric {metric!r} uses exact-reference error and is forbidden")
     if metric != "validation/energy":
-        raise ValueError("PR8.2 selector only supports selection.metric=validation/energy")
+        raise ValueError("PR8.3 selector only supports selection.metric=validation/energy")
     aggregate = str(selection.get("aggregate", "median"))
     if aggregate != "median":
-        raise ValueError("PR8.2 selector only supports selection.aggregate=median")
+        raise ValueError("PR8.3 selector only supports selection.aggregate=median")
 
 
 def _aggregate_candidates(rows: list[dict[str, Any]], manifest: Mapping[str, Any]) -> list[Candidate]:
@@ -341,7 +353,7 @@ def _write_selection_csv(candidates: list[Candidate], winner: Candidate, path: P
         "geometry_warning_count",
     )
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
         writer.writeheader()
         for candidate in candidates:
             row = {
@@ -363,6 +375,14 @@ def _write_selection_csv(candidates: list[Candidate], winner: Candidate, path: P
             writer.writerow(row)
 
 
+def _write_selection_jsonl(candidates: list[Candidate], winner: Candidate, path: Path) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for candidate in candidates:
+            payload = _candidate_payload(candidate, selected=candidate is winner)
+            handle.write(json.dumps(_jsonable(payload), sort_keys=True, allow_nan=False))
+            handle.write("\n")
+
+
 def _selected_config(
     manifest: Mapping[str, Any],
     winner: Candidate,
@@ -371,9 +391,12 @@ def _selected_config(
     runs_path: str | Path,
     output_dir: Path,
 ) -> dict[str, Any]:
+    nested_hyperparameters = _nested_hyperparameters(winner.hyperparameters)
     return {
         "study": {
             "name": _select(manifest, "study.name"),
+            "version": _select(manifest, "study.version"),
+            "source_phase": _select(manifest, "selection.source_phase") or "validation_train",
             "source_runs": str(runs_path),
             "selection_report": str(output_dir / "selection_report.md"),
         },
@@ -386,6 +409,7 @@ def _selected_config(
         },
         "selected": {
             "config_id": winner.config_id,
+            **nested_hyperparameters,
             "hyperparameters": winner.hyperparameters,
             "n_success": winner.n_success,
             "n_failed": winner.n_failed,
@@ -411,135 +435,253 @@ def _validation_run_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _candidate_payload(candidate: Candidate, *, selected: bool) -> dict[str, Any]:
+    return {
+        "selected": selected,
+        "config_id": candidate.config_id,
+        "hyperparameters": candidate.hyperparameters,
+        "n_expected": candidate.n_expected,
+        "n_present": candidate.n_present,
+        "n_success": candidate.n_success,
+        "n_failed": candidate.n_failed,
+        "n_missing_seed": candidate.n_missing_seed,
+        "median_validation_energy": _finite_or_text(candidate.median_energy),
+        "median_validation_energy_stderr": _finite_or_text(candidate.median_energy_stderr),
+        "validation_energy_iqr": _finite_or_text(candidate.energy_iqr),
+        "median_validation_energy_variance": _finite_or_text(candidate.median_energy_variance),
+        "median_wall_time_sec": _finite_or_text(candidate.median_wall_time_sec),
+        "geometry_warning_count": candidate.geometry_warning_count,
+        "geometry_warnings": candidate.geometry_warnings,
+    }
+
+
+def _nested_hyperparameters(hyperparameters: Mapping[str, Any]) -> dict[str, Any]:
+    nested: dict[str, Any] = {}
+    for key, value in hyperparameters.items():
+        current = nested
+        parts = str(key).split(".")
+        for part in parts[:-1]:
+            child = current.setdefault(part, {})
+            if not isinstance(child, dict):
+                raise ValueError(f"hyperparameter path collides with scalar: {key}")
+            current = child
+        current[parts[-1]] = value
+    return nested
+
+
 def _selection_report(
     manifest: Mapping[str, Any],
+    candidates: Sequence[Candidate],
     winner: Candidate,
     tied: list[Candidate],
     decisions: list[str],
 ) -> str:
-    cohort = sorted(tied, key=lambda candidate: (candidate.median_energy, candidate.key)) or [winner]
-    energy_leader = cohort[0]
+    finite = [candidate for candidate in candidates if math.isfinite(candidate.median_energy)]
+    energy_leader = min(finite, key=lambda candidate: (candidate.median_energy, candidate.key))
+    final_ranked = _final_ranking(candidates, tied, manifest)
+    status_counts = _run_status_counts(candidates)
+    expected_runs = sum(candidate.n_expected for candidate in candidates)
+    found_runs = sum(candidate.n_present for candidate in candidates)
     lines = [
-        "# Hooke Pair Validation Selection",
+        f"# Selection report: {_select(manifest, 'study.name')} {_select(manifest, 'study.version')}",
         "",
-        "## Decision",
+        "## Summary",
         "",
+        f"- Expected runs: `{expected_runs}`",
+        f"- Found runs: `{found_runs}`",
+        "- Completed / failed / missing metrics / missing validation: "
+        f"`{status_counts.get('completed', 0)} / {status_counts.get('failed', 0)} / "
+        f"{status_counts.get('missing_metrics', 0)} / {status_counts.get('missing_validation', 0)}`",
+        f"- Selection metric: median `validation/energy`",
         f"- Selected config: `{winner.config_id}`",
+        f"- Final rank: `1` of `{len(candidates)}`",
         f"- Lowest median `validation/energy`: `{energy_leader.config_id}` (`{_format_number(energy_leader.median_energy)}`)",
-        f"- Primary-energy cohort size: `{len(cohort)}`",
-        "- Top median `validation/energy` can still be tied within the selection margin; "
-        "tie-breakers decide within that cohort.",
+        f"- Primary-energy cohort size: `{len(tied)}`",
         "- Validation is used for model/protocol selection and does not use exact-reference energy.",
-        "- Failed, missing-validation, missing-metrics, ineligible, or missing seed replicates count as `+inf` validation energy.",
         "",
-        "## Selected Hyperparameters",
+        "## Selected config",
         "",
     ]
-    for key, value in winner.hyperparameters.items():
-        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(_hyperparameter_table(winner))
     lines.extend(
         [
             "",
-            "## Selected Config Metrics",
+            "## Top candidates",
             "",
-            f"- median `validation/energy`: `{_format_number(winner.median_energy)}`",
-            f"- median `validation/energy_stderr`: `{_format_number(winner.median_energy_stderr)}`",
-            f"- validation energy IQR: `{_format_number(winner.energy_iqr)}`",
-            f"- median `validation/energy_variance`: `{_format_number(winner.median_energy_variance)}`",
-            f"- successful seeds: `{winner.n_success}`",
-            f"- failed or missing seeds: `{winner.n_failed}`",
-            "",
-            "## Energy Ranking",
-            "",
-            "The lowest-energy candidate clearly beats another candidate only if "
-            "`leader_median_energy + selection_margin < candidate_median_energy`.",
+            f"Top {min(REPORT_TOP_CANDIDATE_LIMIT, len(final_ranked))} candidates sorted by final ranking.",
             "",
         ]
     )
-    lines.extend(_energy_ranking_table(cohort, energy_leader, winner, manifest))
+    lines.extend(_top_candidates_table(final_ranked[:REPORT_TOP_CANDIDATE_LIMIT]))
     lines.extend(
         [
             "",
-            "## Tie-Breaker Ranking",
-            "",
-            "Tie-breakers are applied left to right after the energy-margin cohort is formed.",
+            "## Decision rule",
             "",
         ]
     )
-    lines.extend(_tie_breaker_table(cohort, winner, manifest))
-    if decisions:
-        lines.extend(["", "Tie-breaker trace:"])
-        lines.extend(f"- {decision}" for decision in decisions)
-    lines.extend(["", "## Geometry Warnings", ""])
-    if winner.geometry_warnings:
-        lines.extend(f"- {message}" for message in winner.geometry_warnings)
-    else:
-        lines.append("- None for the selected config.")
+    lines.extend(_decision_rule_lines(manifest))
+    lines.extend(["", "## Why this config won", ""])
+    lines.extend(_why_config_won_lines(winner, energy_leader, tied, decisions, manifest))
+    lines.extend(["", "## Warnings", ""])
+    lines.extend(_warning_lines(candidates, winner, status_counts))
+    lines.extend(
+        [
+            "",
+            "## Artifacts",
+            "",
+            "- runs.csv",
+            "- runs.jsonl",
+            "- selection.csv",
+            "- selection.jsonl",
+            "- selected_config.yaml",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
-def _energy_ranking_table(
-    cohort: Sequence[Candidate],
-    energy_leader: Candidate,
-    winner: Candidate,
+def _final_ranking(
+    candidates: Sequence[Candidate],
+    tied: Sequence[Candidate],
     manifest: Mapping[str, Any],
-) -> list[str]:
-    rows = [
-        "| energy rank | selected | config_id | median energy | delta vs leader | margin vs leader | n_success | n_failed | n_missing_seed |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for index, candidate in enumerate(cohort, start=1):
-        delta = candidate.median_energy - energy_leader.median_energy
-        margin = 0.0 if candidate is energy_leader else selection_margin(energy_leader, candidate, manifest)
-        rows.append(
-            "| "
-            + " | ".join(
-                [
-                    str(index),
-                    "yes" if candidate is winner else "no",
-                    f"`{candidate.config_id}`",
-                    _format_number(candidate.median_energy),
-                    _format_number(delta),
-                    _format_number(margin),
-                    str(candidate.n_success),
-                    str(candidate.n_failed),
-                    str(candidate.n_missing_seed),
-                ]
-            )
-            + " |"
-        )
-    return rows
-
-
-def _tie_breaker_table(cohort: Sequence[Candidate], winner: Candidate, manifest: Mapping[str, Any]) -> list[str]:
+) -> list[Candidate]:
     tie_breakers = _tie_breakers(manifest)
-    ordered = sorted(
-        cohort,
+    tied_ids = {id(candidate) for candidate in tied}
+    ranked_tied = sorted(
+        tied,
         key=lambda candidate: tuple(_breaker_value(candidate, breaker) for breaker in tie_breakers) + candidate.key,
     )
+    remaining = [candidate for candidate in candidates if id(candidate) not in tied_ids]
+    finite_remaining = sorted(
+        [candidate for candidate in remaining if math.isfinite(candidate.median_energy)],
+        key=lambda candidate: (candidate.median_energy, candidate.key),
+    )
+    nonfinite_remaining = sorted(
+        [candidate for candidate in remaining if not math.isfinite(candidate.median_energy)],
+        key=lambda candidate: candidate.key,
+    )
+    return ranked_tied + finite_remaining + nonfinite_remaining
+
+
+def _hyperparameter_table(candidate: Candidate) -> list[str]:
     rows = [
-        "| tie-break rank | selected | config_id | median variance | energy IQR | median stderr | geometry warnings | channels | median wall time sec |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| hyperparameter | value |",
+        "| --- | --- |",
     ]
-    for index, candidate in enumerate(ordered, start=1):
+    for key in GROUP_KEYS:
+        rows.append(f"| `{key}` | `{candidate.hyperparameters.get(key)}` |")
+    return rows
+
+
+def _top_candidates_table(candidates: Sequence[Candidate]) -> list[str]:
+    rows = [
+        "| rank | config_id | lr | channels | layers | gate activation | median energy | stderr | IQR | failures | geometry warnings |",
+        "| ---: | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for index, candidate in enumerate(candidates, start=1):
         rows.append(
             "| "
             + " | ".join(
                 [
                     str(index),
-                    "yes" if candidate is winner else "no",
                     f"`{candidate.config_id}`",
-                    _format_number(candidate.median_energy_variance),
-                    _format_number(candidate.energy_iqr),
-                    _format_number(candidate.median_energy_stderr),
-                    str(candidate.geometry_warning_count),
+                    _format_number(_as_float(candidate.hyperparameters.get("optimizer_params.lr"), default=math.inf)),
                     _format_number(_as_float(candidate.hyperparameters.get("model_params.channels"), default=math.inf)),
-                    _format_number(candidate.median_wall_time_sec),
+                    _format_number(_as_float(candidate.hyperparameters.get("model_params.layers"), default=math.inf)),
+                    f"`{candidate.hyperparameters.get('model_params.gate_activation')}`",
+                    _format_number(candidate.median_energy),
+                    _format_number(candidate.median_energy_stderr),
+                    _format_number(candidate.energy_iqr),
+                    str(candidate.n_failed),
+                    str(candidate.geometry_warning_count),
                 ]
             )
             + " |"
         )
     return rows
+
+
+def _decision_rule_lines(manifest: Mapping[str, Any]) -> list[str]:
+    selection = _selection_block(manifest)
+    margin = selection.get("margin") if isinstance(selection.get("margin"), Mapping) else {}
+    stderr_multiplier = float(margin.get("stderr_multiplier", 2.0))
+    seed_iqr_fraction = float(margin.get("seed_iqr_fraction", 0.25))
+    floor = float(selection.get("absolute_energy_floor", 1.0e-4))
+    tie_breakers = ", ".join(f"`{breaker}`" for breaker in _tie_breakers(manifest))
+    return [
+        "- Primary metric: median `validation/energy`; lower is better.",
+        "- Eligibility: completed run, required checks pass, full finite local-energy fraction, and finite validation energy.",
+        "- Failed, missing-validation, missing-metrics, ineligible, or missing-seed replicates count as `+inf` before aggregation.",
+        "- Margin: "
+        f"`max({stderr_multiplier:g} * sqrt(stderr_a^2 + stderr_b^2), "
+        f"{seed_iqr_fraction:g} * max(IQR_a, IQR_b), {floor:g})`.",
+        "- A candidate clearly loses to the energy leader only if "
+        "`leader_median_energy + selection_margin < candidate_median_energy`.",
+        f"- Tie-breakers inside the primary-energy cohort: {tie_breakers}.",
+    ]
+
+
+def _why_config_won_lines(
+    winner: Candidate,
+    energy_leader: Candidate,
+    tied: Sequence[Candidate],
+    decisions: Sequence[str],
+    manifest: Mapping[str, Any],
+) -> list[str]:
+    lines = [f"- `{winner.config_id}` is first in the final ranking."]
+    if winner is energy_leader and len(tied) == 1:
+        lines.append("- It had the lowest median validation energy and cleared the configured selection margin.")
+    elif winner is energy_leader:
+        lines.append("- It was also the lowest-energy candidate, then remained best after tie-breakers.")
+    else:
+        delta = winner.median_energy - energy_leader.median_energy
+        margin = selection_margin(energy_leader, winner, manifest)
+        lines.append(
+            f"- `{energy_leader.config_id}` had the lowest median energy, but its "
+            f"`{_format_number(delta)}` lead over the selected config was inside the "
+            f"`{_format_number(margin)}` selection margin."
+        )
+    separating = next((decision for decision in decisions[1:] if "remaining=" in decision), None)
+    if separating is not None:
+        lines.append(f"- First separating tie-breaker: {separating}.")
+    elif decisions:
+        lines.append(f"- Decision trace: {decisions[-1]}")
+    return lines
+
+
+def _run_status_counts(candidates: Sequence[Candidate]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        for row in candidate.rows:
+            status = str(row.get("status") or "missing").strip().lower()
+            counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _warning_lines(
+    candidates: Sequence[Candidate],
+    winner: Candidate,
+    status_counts: Mapping[str, int],
+) -> list[str]:
+    failed_or_ineligible = sum(candidate.n_failed for candidate in candidates)
+    missing_seed = sum(candidate.n_missing_seed for candidate in candidates)
+    incomplete_configs = sum(1 for candidate in candidates if candidate.n_success < candidate.n_expected)
+    geometry_configs = sum(1 for candidate in candidates if candidate.geometry_warning_count > 0)
+    geometry_messages = sum(candidate.geometry_warning_count for candidate in candidates)
+    lines = [
+        f"- Failed, ineligible, or missing-seed replicates: `{failed_or_ineligible}`.",
+        f"- Missing seed replicates: `{missing_seed}`.",
+        f"- Missing-metrics runs: `{status_counts.get('missing_metrics', 0)}`.",
+        f"- Missing-validation runs: `{status_counts.get('missing_validation', 0)}`.",
+        f"- Candidate groups with incomplete eligibility: `{incomplete_configs}`.",
+        f"- Geometry warnings: `{geometry_messages}` messages across `{geometry_configs}` candidate groups.",
+    ]
+    if winner.geometry_warnings:
+        joined = "; ".join(winner.geometry_warnings)
+        lines.append(f"- Selected config geometry warnings: {joined}.")
+    else:
+        lines.append("- Selected config geometry warnings: none.")
+    return lines
 
 
 def _read_runs_csv(path: str | Path) -> list[dict[str, Any]]:
@@ -571,10 +713,7 @@ def _tie_breakers(manifest: Mapping[str, Any]) -> list[str]:
 
 
 def _expected_seeds(manifest: Mapping[str, Any]) -> list[str]:
-    seed_key = str(manifest.get("seed_key") or "runtime.seed")
-    grid = manifest.get("grid") if isinstance(manifest.get("grid"), Mapping) else {}
-    seeds = grid.get(seed_key, []) if isinstance(grid, Mapping) else []
-    return [_key_text(seed) for seed in seeds]
+    return expected_validation_seeds(manifest)
 
 
 def _infer_n_particles(row: Mapping[str, Any], manifest: Mapping[str, Any]) -> int | None:
@@ -717,6 +856,16 @@ def _format_number(value: float) -> str:
 
 def _finite_or_text(value: float) -> float | str:
     return value if math.isfinite(value) else _format_number(value)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return "inf" if value > 0 else "-inf"
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 __all__ = [
