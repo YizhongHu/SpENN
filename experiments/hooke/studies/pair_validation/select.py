@@ -255,12 +255,10 @@ def _choose_winner(
         decisions.append("Lowest median validation/energy clearly beats every other finite candidate.")
         return leader, tied, decisions
 
-    margin_notes = [
-        f"{leader.config_id} vs {candidate.config_id}: margin={selection_margin(leader, candidate, manifest):.6g}"
-        for candidate in tied
-        if candidate is not leader
-    ]
-    decisions.append("Top candidates are within the selection margin: " + "; ".join(margin_notes))
+    decisions.append(
+        "Primary median validation/energy does not clearly separate the "
+        f"{len(tied)} candidates in the primary-energy cohort; see cohort table for margins."
+    )
     remaining = list(tied)
     for breaker in _tie_breakers(manifest):
         best_value = min(_breaker_value(candidate, breaker) for candidate in remaining)
@@ -419,12 +417,20 @@ def _selection_report(
     tied: list[Candidate],
     decisions: list[str],
 ) -> str:
+    cohort = sorted(tied, key=lambda candidate: (candidate.median_energy, candidate.key)) or [winner]
+    energy_leader = cohort[0]
     lines = [
         "# Hooke Pair Validation Selection",
         "",
-        f"Selected config: `{winner.config_id}`",
+        "## Decision",
         "",
-        "Validation is used for model/protocol selection and does not use exact-reference energy.",
+        f"- Selected config: `{winner.config_id}`",
+        f"- Lowest median `validation/energy`: `{energy_leader.config_id}` (`{_format_number(energy_leader.median_energy)}`)",
+        f"- Primary-energy cohort size: `{len(cohort)}`",
+        "- Top median `validation/energy` can still be tied within the selection margin; "
+        "tie-breakers decide within that cohort.",
+        "- Validation is used for model/protocol selection and does not use exact-reference energy.",
+        "- Failed, missing-validation, missing-metrics, ineligible, or missing seed replicates count as `+inf` validation energy.",
         "",
         "## Selected Hyperparameters",
         "",
@@ -434,35 +440,106 @@ def _selection_report(
     lines.extend(
         [
             "",
-            "## Primary Metric",
+            "## Selected Config Metrics",
             "",
             f"- median `validation/energy`: `{_format_number(winner.median_energy)}`",
             f"- median `validation/energy_stderr`: `{_format_number(winner.median_energy_stderr)}`",
             f"- validation energy IQR: `{_format_number(winner.energy_iqr)}`",
             f"- median `validation/energy_variance`: `{_format_number(winner.median_energy_variance)}`",
+            f"- successful seeds: `{winner.n_success}`",
+            f"- failed or missing seeds: `{winner.n_failed}`",
             "",
-            "## Selection Margin And Tie-Breakers",
+            "## Energy Ranking",
+            "",
+            "The lowest-energy candidate clearly beats another candidate only if "
+            "`leader_median_energy + selection_margin < candidate_median_energy`.",
             "",
         ]
     )
-    if len(tied) > 1:
-        leader = min(tied, key=lambda candidate: (candidate.median_energy, candidate.key))
-        for candidate in tied:
-            if candidate is not leader:
-                lines.append(
-                    f"- `{leader.config_id}` vs `{candidate.config_id}` margin: "
-                    f"`{_format_number(selection_margin(leader, candidate, manifest))}`"
-                )
-    else:
-        lines.append("- No within-margin tie among top candidates.")
-    for decision in decisions:
-        lines.append(f"- {decision}")
+    lines.extend(_energy_ranking_table(cohort, energy_leader, winner, manifest))
+    lines.extend(
+        [
+            "",
+            "## Tie-Breaker Ranking",
+            "",
+            "Tie-breakers are applied left to right after the energy-margin cohort is formed.",
+            "",
+        ]
+    )
+    lines.extend(_tie_breaker_table(cohort, winner, manifest))
+    if decisions:
+        lines.extend(["", "Tie-breaker trace:"])
+        lines.extend(f"- {decision}" for decision in decisions)
     lines.extend(["", "## Geometry Warnings", ""])
     if winner.geometry_warnings:
         lines.extend(f"- {message}" for message in winner.geometry_warnings)
     else:
         lines.append("- None for the selected config.")
     return "\n".join(lines) + "\n"
+
+
+def _energy_ranking_table(
+    cohort: Sequence[Candidate],
+    energy_leader: Candidate,
+    winner: Candidate,
+    manifest: Mapping[str, Any],
+) -> list[str]:
+    rows = [
+        "| energy rank | selected | config_id | median energy | delta vs leader | margin vs leader | n_success | n_failed | n_missing_seed |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for index, candidate in enumerate(cohort, start=1):
+        delta = candidate.median_energy - energy_leader.median_energy
+        margin = 0.0 if candidate is energy_leader else selection_margin(energy_leader, candidate, manifest)
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    str(index),
+                    "yes" if candidate is winner else "no",
+                    f"`{candidate.config_id}`",
+                    _format_number(candidate.median_energy),
+                    _format_number(delta),
+                    _format_number(margin),
+                    str(candidate.n_success),
+                    str(candidate.n_failed),
+                    str(candidate.n_missing_seed),
+                ]
+            )
+            + " |"
+        )
+    return rows
+
+
+def _tie_breaker_table(cohort: Sequence[Candidate], winner: Candidate, manifest: Mapping[str, Any]) -> list[str]:
+    tie_breakers = _tie_breakers(manifest)
+    ordered = sorted(
+        cohort,
+        key=lambda candidate: tuple(_breaker_value(candidate, breaker) for breaker in tie_breakers) + candidate.key,
+    )
+    rows = [
+        "| tie-break rank | selected | config_id | median variance | energy IQR | median stderr | geometry warnings | channels | median wall time sec |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for index, candidate in enumerate(ordered, start=1):
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    str(index),
+                    "yes" if candidate is winner else "no",
+                    f"`{candidate.config_id}`",
+                    _format_number(candidate.median_energy_variance),
+                    _format_number(candidate.energy_iqr),
+                    _format_number(candidate.median_energy_stderr),
+                    str(candidate.geometry_warning_count),
+                    _format_number(_as_float(candidate.hyperparameters.get("model_params.channels"), default=math.inf)),
+                    _format_number(candidate.median_wall_time_sec),
+                ]
+            )
+            + " |"
+        )
+    return rows
 
 
 def _read_runs_csv(path: str | Path) -> list[dict[str, Any]]:

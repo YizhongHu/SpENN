@@ -174,7 +174,11 @@ def test_selector_groups_failed_seeds_and_writes_outputs(tmp_path: Path) -> None
     assert rows["small"]["median validation/energy"] == "1.1"
     assert (tmp_path / "selection" / "selection.csv").exists()
     assert (tmp_path / "selection" / "selected_config.yaml").exists()
-    assert "selection margin" in (tmp_path / "selection" / "selection_report.md").read_text().lower()
+    report = (tmp_path / "selection" / "selection_report.md").read_text()
+    assert "selection margin" in report.lower()
+    assert "Energy Ranking" in report
+    assert "Tie-Breaker Ranking" in report
+    assert "+inf" in report
 
 
 def test_selector_refuses_all_failed_or_ineligible_study(tmp_path: Path) -> None:
@@ -223,6 +227,33 @@ def test_within_margin_uses_variance_tie_breaker(tmp_path: Path) -> None:
         [_run_row(seed=seed, channels=32, energy=1.0, variance=0.1) for seed in (3, 9, 11)],
     )
     assert winner == "ch32"
+
+
+def test_selection_report_distinguishes_energy_leader_from_final_winner(tmp_path: Path) -> None:
+    runs_csv = _write_runs_csv(
+        tmp_path,
+        [
+            *[
+                _run_row(seed=seed, channels=8, energy=1.0, variance=0.2, config_id="low_energy")
+                for seed in (3, 9, 11)
+            ],
+            *[
+                _run_row(seed=seed, channels=32, energy=1.00005, variance=0.1, config_id="low_variance")
+                for seed in (3, 9, 11)
+            ],
+        ],
+    )
+
+    selected = select.select_runs(manifest_path=MANIFEST, runs_path=runs_csv, output_dir=tmp_path / "selection")
+    report = (tmp_path / "selection" / "selection_report.md").read_text()
+
+    assert selected["selected"]["config_id"] == "low_variance"
+    assert "Selected config: `low_variance`" in report
+    assert "Lowest median `validation/energy`: `low_energy`" in report
+    assert "Top median `validation/energy` can still be tied" in report
+    assert "| 2 | yes | `low_variance` |" in report
+    assert "| 1 | yes | `low_variance` | 0.1 |" in report
+    assert "validation/energy_variance: best=0.1; remaining=low_variance" in report
 
 
 def test_if_variance_tied_lower_seed_iqr_wins(tmp_path: Path) -> None:
@@ -661,6 +692,8 @@ def test_methods_documents_experiment_protocol() -> None:
     assert "GPU smoke uses `job_index=0`" in text
     assert "does not shrink the submitted Hydra sweep" in text
     assert "time-and-git-hash suffix" in text
+    assert "primary-energy cohort" in text
+    assert "lowest raw median energy is therefore not always the selected config" in text.lower()
     assert "escapes partition commas for Hydra" in text
     assert "`gpu_test`" in text
     assert "validation/energy_abs_error" in text

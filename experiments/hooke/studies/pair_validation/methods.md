@@ -135,7 +135,13 @@ max(
 )
 ```
 
-Within that margin, tie-breakers are applied in order:
+The lowest raw median energy is therefore not always the selected config. If
+another candidate is within the computed margin, the candidates form a
+primary-energy cohort and are tied for selection purposes. The selection report
+records the lowest-energy candidate, the selected config, an energy-ranking
+table, and a tie-breaker-ranking table so this distinction is visible.
+
+Within the primary-energy cohort, tie-breakers are applied in order:
 
 ```text
 lower median validation/energy_variance
