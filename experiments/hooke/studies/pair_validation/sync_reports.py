@@ -43,6 +43,12 @@ class SyncSummary:
     skipped_slurm_log_files: int
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def copied_mb(self) -> float:
+        """Return copied bytes as MiB for human-readable summaries."""
+
+        return self.copied_bytes / (1024 * 1024)
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe summary."""
 
@@ -52,7 +58,7 @@ class SyncSummary:
             "dry_run": self.dry_run,
             "scanned_files": self.scanned_files,
             "copied_files": self.copied_files,
-            "copied_bytes": self.copied_bytes,
+            "copied_mb": round(self.copied_mb, 3),
             "skipped_checkpoint_files": self.skipped_checkpoint_files,
             "skipped_slurm_log_files": self.skipped_slurm_log_files,
             "warnings": list(self.warnings),
@@ -63,10 +69,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the reports-sync CLI."""
 
     args = _parse_args(argv)
-    source = resolve_source(args.manifest, args.source)
+    manifest = load_yaml(args.manifest)
+    source = resolve_source(args.manifest, args.source, manifest=manifest)
+    checkpoint_roots = eval_checkpoint_roots(manifest, args.manifest, source)
     summary = sync_reports(
         source=source,
         destination=args.destination,
+        checkpoint_roots=checkpoint_roots,
         dry_run=args.dry_run,
         verbose=args.verbose,
     )
@@ -74,15 +83,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def resolve_source(manifest_path: str | Path, source: str | Path | None = None) -> Path:
+def resolve_source(
+    manifest_path: str | Path,
+    source: str | Path | None = None,
+    *,
+    manifest: dict[str, Any] | None = None,
+) -> Path:
     """Resolve the report source from an explicit path or the manifest."""
 
     if source is not None:
         return Path(source).resolve()
-    manifest = load_yaml(manifest_path)
-    raw = Path(report_root(manifest))
+    data = manifest if manifest is not None else load_yaml(manifest_path)
+    return _resolve_manifest_path(report_root(data), manifest_path)
+
+
+def eval_checkpoint_roots(
+    manifest: dict[str, Any],
+    manifest_path: str | Path,
+    source: str | Path,
+) -> tuple[Path, ...]:
+    """Return source-local eval roots where latest checkpoints are retained."""
+
+    source_root = Path(source).resolve()
+    manifest_report_root = _resolve_manifest_path(report_root(manifest), manifest_path)
+    roots: list[Path] = []
+    phases = manifest.get("phases")
+    if not isinstance(phases, dict):
+        return ()
+    for block in phases.values():
+        if not isinstance(block, dict) or block.get("orchestrator") != "eval":
+            continue
+        raw_run_root = block.get("run_root")
+        if not raw_run_root:
+            continue
+        manifest_run_root = _resolve_manifest_path(str(raw_run_root), manifest_path)
+        if _is_relative_to(manifest_run_root, manifest_report_root):
+            roots.append(source_root / manifest_run_root.relative_to(manifest_report_root))
+        else:
+            roots.append(manifest_run_root)
+    return tuple(root.resolve() for root in roots)
+
+
+def _resolve_manifest_path(raw_path: str | Path, manifest_path: str | Path) -> Path:
+    raw = Path(raw_path)
     if raw.is_absolute():
-        return raw
+        return raw.resolve()
     cwd_candidate = raw.resolve()
     if cwd_candidate.exists():
         return cwd_candidate
@@ -94,21 +139,22 @@ def sync_reports(
     *,
     source: str | Path,
     destination: str | Path,
+    checkpoint_roots: Sequence[str | Path] = (),
     dry_run: bool = False,
     verbose: bool = False,
 ) -> SyncSummary:
     """Mirror report files into ``destination``.
 
     The destination is replaced as a mirror. Slurm log directories are skipped,
-    and checkpoint directories keep only ``latest.json`` plus the step directory
-    referenced by that pointer.
+    training checkpoints are skipped, and eval checkpoint directories keep only
+    ``latest.json`` plus the step directory referenced by that pointer.
     """
 
     source_root = Path(source).resolve()
     destination_root = Path(destination).resolve()
     _validate_roots(source_root, destination_root)
 
-    plan = build_sync_plan(source_root)
+    plan = build_sync_plan(source_root, checkpoint_roots=checkpoint_roots)
     copied_bytes = sum(path.lstat().st_size for path in plan.files)
     if verbose:
         for path in plan.files:
@@ -134,11 +180,16 @@ def sync_reports(
     )
 
 
-def build_sync_plan(source: str | Path) -> SyncPlan:
+def build_sync_plan(
+    source: str | Path,
+    *,
+    checkpoint_roots: Sequence[str | Path] = (),
+) -> SyncPlan:
     """Return files to copy from ``source``."""
 
     source_root = Path(source).resolve()
-    latest_dirs, warnings = _latest_checkpoint_dirs(source_root)
+    retention_roots = tuple(Path(root).resolve() for root in checkpoint_roots)
+    latest_dirs, warnings = _latest_checkpoint_dirs(source_root, retention_roots)
     files: list[Path] = []
     skipped_checkpoint = 0
     skipped_slurm = 0
@@ -161,10 +212,18 @@ def build_sync_plan(source: str | Path) -> SyncPlan:
     )
 
 
-def _latest_checkpoint_dirs(source_root: Path) -> tuple[dict[Path, Path | None], list[str]]:
+def _latest_checkpoint_dirs(
+    source_root: Path,
+    retention_roots: Sequence[Path],
+) -> tuple[dict[Path, Path | None], list[str]]:
     latest_dirs: dict[Path, Path | None] = {}
     warnings: list[str] = []
-    for latest_json in sorted(source_root.rglob(f"{CHECKPOINT_DIRNAME}/{LATEST_JSON}")):
+    latest_paths: list[Path] = []
+    for root in retention_roots:
+        if not _is_relative_to(root, source_root) or not root.exists():
+            continue
+        latest_paths.extend(root.rglob(f"{CHECKPOINT_DIRNAME}/{LATEST_JSON}"))
+    for latest_json in sorted(latest_paths):
         checkpoint_root = latest_json.parent.resolve()
         try:
             data = json.loads(latest_json.read_text(encoding="utf-8"))
@@ -195,6 +254,8 @@ def _skip_reason(path: Path, source_root: Path, latest_dirs: dict[Path, Path | N
 
     checkpoint_index = rel_parts.index(CHECKPOINT_DIRNAME)
     checkpoint_root = source_root.joinpath(*rel_parts[: checkpoint_index + 1]).resolve()
+    if checkpoint_root not in latest_dirs:
+        return "checkpoint"
     if path.name == LATEST_JSON and path.parent.resolve() == checkpoint_root:
         return None
     latest_dir = latest_dirs.get(checkpoint_root)
@@ -247,7 +308,7 @@ def _print_summary(summary: SyncSummary) -> None:
     print(f"destination: {summary.destination}")
     print(f"dry_run: {str(summary.dry_run).lower()}")
     print(f"copied_files: {summary.copied_files}")
-    print(f"copied_bytes: {summary.copied_bytes}")
+    print(f"copied_mb: {summary.copied_mb:.3f}")
     print(f"skipped_checkpoint_files: {summary.skipped_checkpoint_files}")
     print(f"skipped_slurm_log_files: {summary.skipped_slurm_log_files}")
     for warning in summary.warnings:
@@ -286,6 +347,7 @@ __all__ = [
     "SyncPlan",
     "SyncSummary",
     "build_sync_plan",
+    "eval_checkpoint_roots",
     "main",
     "resolve_source",
     "sync_reports",

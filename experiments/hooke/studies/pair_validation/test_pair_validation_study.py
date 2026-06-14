@@ -127,39 +127,40 @@ def test_study_scripts_do_not_hardcode_manifest_names_or_directories() -> None:
             assert pattern not in text, f"{script} hardcodes {pattern!r}"
 
 
-def test_sync_reports_mirrors_reports_without_logs_or_old_checkpoints(tmp_path: Path) -> None:
+def test_sync_reports_keeps_eval_latest_checkpoints_only(tmp_path: Path) -> None:
     source = tmp_path / "reports"
     destination = tmp_path / "snapshot"
-    run_dir = source / "01_train" / "outputs" / "full" / "ch8" / "seed=3"
-    checkpoint_root = run_dir / "checkpoints"
-    old_checkpoint = checkpoint_root / "step_000001"
-    latest_checkpoint = checkpoint_root / "step_000002"
-    old_checkpoint.mkdir(parents=True)
-    latest_checkpoint.mkdir()
-    (run_dir / "status.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
-    (run_dir / "metrics.jsonl").write_text("{}\n", encoding="utf-8")
-    (checkpoint_root / "latest.json").write_text(
-        json.dumps({"checkpoint_dir": latest_checkpoint.name}),
-        encoding="utf-8",
+    train_run = source / "01_train" / "outputs" / "full" / "ch8" / "seed=3"
+    eval_run = (
+        source
+        / "05_final_eval"
+        / "outputs"
+        / "full"
+        / "ch8"
+        / "train_seed=100_eval_seed=100000"
     )
-    (old_checkpoint / "model.pt").write_text("old", encoding="utf-8")
-    (old_checkpoint / "manifest.json").write_text("old manifest", encoding="utf-8")
-    (latest_checkpoint / "model.pt").write_text("latest", encoding="utf-8")
-    (latest_checkpoint / "manifest.json").write_text("latest manifest", encoding="utf-8")
+    _write_checkpointed_report_run(train_run)
+    _write_checkpointed_report_run(eval_run)
     slurm_dir = source / "01_train" / "slurm_logs"
     slurm_dir.mkdir(parents=True)
     (slurm_dir / "22707654_0.out").write_text("log", encoding="utf-8")
     destination.mkdir()
     (destination / "stale.txt").write_text("stale", encoding="utf-8")
 
-    summary = sync_reports.sync_reports(source=source, destination=destination)
+    summary = sync_reports.sync_reports(
+        source=source,
+        destination=destination,
+        checkpoint_roots=(source / "05_final_eval" / "outputs",),
+    )
 
-    assert summary.copied_files == 5
-    assert summary.skipped_checkpoint_files == 2
+    assert summary.copied_files == 7
+    assert summary.skipped_checkpoint_files == 7
     assert summary.skipped_slurm_log_files == 1
+    assert "copied_mb" in summary.to_dict()
+    assert "copied_bytes" not in summary.to_dict()
     assert not (destination / "stale.txt").exists()
     assert (destination / "01_train" / "outputs" / "full" / "ch8" / "seed=3" / "status.json").exists()
-    assert (
+    assert not (
         destination
         / "01_train"
         / "outputs"
@@ -169,7 +170,7 @@ def test_sync_reports_mirrors_reports_without_logs_or_old_checkpoints(tmp_path: 
         / "checkpoints"
         / "latest.json"
     ).exists()
-    assert (
+    assert not (
         destination
         / "01_train"
         / "outputs"
@@ -180,13 +181,34 @@ def test_sync_reports_mirrors_reports_without_logs_or_old_checkpoints(tmp_path: 
         / "step_000002"
         / "model.pt"
     ).exists()
-    assert not (
+    assert (
         destination
-        / "01_train"
+        / "05_final_eval"
         / "outputs"
         / "full"
         / "ch8"
-        / "seed=3"
+        / "train_seed=100_eval_seed=100000"
+        / "checkpoints"
+        / "latest.json"
+    ).exists()
+    assert (
+        destination
+        / "05_final_eval"
+        / "outputs"
+        / "full"
+        / "ch8"
+        / "train_seed=100_eval_seed=100000"
+        / "checkpoints"
+        / "step_000002"
+        / "model.pt"
+    ).exists()
+    assert not (
+        destination
+        / "05_final_eval"
+        / "outputs"
+        / "full"
+        / "ch8"
+        / "train_seed=100_eval_seed=100000"
         / "checkpoints"
         / "step_000001"
         / "model.pt"
@@ -197,10 +219,30 @@ def test_sync_reports_mirrors_reports_without_logs_or_old_checkpoints(tmp_path: 
     dry_summary = sync_reports.sync_reports(
         source=source,
         destination=dry_destination,
+        checkpoint_roots=(source / "05_final_eval" / "outputs",),
         dry_run=True,
     )
     assert dry_summary.copied_files == summary.copied_files
     assert not dry_destination.exists()
+
+
+def test_sync_reports_derives_eval_checkpoint_roots_from_manifest(tmp_path: Path) -> None:
+    manifest = OmegaConf.load(MANIFEST)
+    manifest.paths.report_root = str(tmp_path / "manifest-reports")
+    manifest.phases.validation_train.run_root = "${paths.report_root}/01_train/outputs"
+    manifest.phases.final_train.run_root = "${paths.report_root}/04_final_train/outputs"
+    manifest.phases.final_eval.run_root = "${paths.report_root}/05_final_eval/outputs"
+    manifest_path = tmp_path / "manifest.yaml"
+    OmegaConf.save(manifest, manifest_path, resolve=True)
+    source = tmp_path / "actual-reports"
+
+    roots = sync_reports.eval_checkpoint_roots(
+        study_manifest.load_yaml(manifest_path),
+        manifest_path,
+        source,
+    )
+
+    assert roots == ((source / "05_final_eval" / "outputs").resolve(),)
 
 
 def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> None:
@@ -791,6 +833,24 @@ def _write_local_smoke_manifest(tmp_path: Path) -> Path:
     path = tmp_path / "manifest.yaml"
     OmegaConf.save(manifest, path, resolve=True)
     return path
+
+
+def _write_checkpointed_report_run(run_dir: Path) -> None:
+    checkpoint_root = run_dir / "checkpoints"
+    old_checkpoint = checkpoint_root / "step_000001"
+    latest_checkpoint = checkpoint_root / "step_000002"
+    old_checkpoint.mkdir(parents=True)
+    latest_checkpoint.mkdir()
+    (run_dir / "status.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    (run_dir / "metrics.jsonl").write_text("{}\n", encoding="utf-8")
+    (checkpoint_root / "latest.json").write_text(
+        json.dumps({"checkpoint_dir": latest_checkpoint.name}),
+        encoding="utf-8",
+    )
+    (old_checkpoint / "model.pt").write_text("old", encoding="utf-8")
+    (old_checkpoint / "manifest.json").write_text("old manifest", encoding="utf-8")
+    (latest_checkpoint / "model.pt").write_text("latest", encoding="utf-8")
+    (latest_checkpoint / "manifest.json").write_text("latest manifest", encoding="utf-8")
 
 
 def _fake_run(

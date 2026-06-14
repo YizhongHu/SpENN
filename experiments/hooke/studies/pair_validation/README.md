@@ -232,9 +232,9 @@ uv run python experiments/hooke/studies/pair_validation/collect_final.py \
 
 Use `sync_reports.py` to mirror the manifest report directory into another
 location while keeping the snapshot compact. The destination is replaced on each
-run. Slurm log directories are skipped, and each run keeps only
-`checkpoints/latest.json` plus the checkpoint step directory referenced by that
-file.
+run. Slurm log directories and training checkpoints are skipped. Eval runs keep
+only `checkpoints/latest.json` plus the checkpoint step directory referenced by
+that file.
 
 Preview the copy plan:
 
