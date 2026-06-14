@@ -1,26 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Hydra Submitit launcher for the Hooke pair validation scan (study v1)
+# Hydra Submitit launcher for Hooke pair final benchmark jobs
 # =============================================================================
 #
-# This script is intentionally a thin environment/setup wrapper. The study
-# manifest owns the train config, study name, grid axes, run root, and default
-# Slurm resources; launch_submitit.py turns that manifest into a Hydra Submitit
-# multirun.
+# Final benchmark launch is intentionally split into two phases:
 #
-# Submit from the repo root or from this file's directory:
+#   STAGE=final_train bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+#   STAGE=final_eval  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 #
-#   bash experiments/hooke/studies/pair_validation/launch_array.sh
-#
-# CPU example:
-#
-#   DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
-#
-# Extra Hydra overrides can be appended after `--`, for example:
-#
-#   bash experiments/hooke/studies/pair_validation/launch_array.sh -- dry_run=true
-#
-# Keep slurm_logs/ around for reproducibility.
+# `final_eval` should be launched only after final training checkpoints exist.
 
 set -euo pipefail
 
@@ -29,8 +17,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$REPO_ROOT"
 
 MANIFEST="${MANIFEST:-experiments/hooke/studies/pair_validation/manifest.yaml}"
-LAUNCHER="experiments/hooke/studies/pair_validation/launch_submitit.py"
+INPUTS="${INPUTS:-experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv}"
+LAUNCHER="experiments/hooke/studies/pair_validation/launch_final_submitit.py"
 DEVICE="${DEVICE:-cuda}"
+STAGE="${STAGE:-final_train}"
 HYDRA_LAUNCHER="${HYDRA_LAUNCHER:-submitit_slurm}"
 
 hydra_value() {
@@ -70,11 +60,41 @@ case "$DEVICE" in
     ;;
 esac
 
+case "$STAGE" in
+  final_train|final_eval)
+    ;;
+  *)
+    echo "Unsupported STAGE=${STAGE}; expected 'final_train' or 'final_eval'." >&2
+    exit 2
+    ;;
+esac
+
 export UV_PROJECT_ENVIRONMENT="$VENV"
+
+RUN_SUFFIX="${RUN_SUFFIX:-}"
+if [[ "$(basename "$INPUTS")" == "final_smoke_inputs.csv" ]]; then
+  RUN_SUFFIX_FILE="${RUN_SUFFIX_FILE:-slurm_logs/hooke_pair_final_v1/smoke_${DEVICE}.run_suffix}"
+  mkdir -p "$(dirname "$RUN_SUFFIX_FILE")"
+  if [[ -z "$RUN_SUFFIX" ]]; then
+    if [[ "$STAGE" == "final_eval" ]]; then
+      if [[ -s "$RUN_SUFFIX_FILE" ]]; then
+        RUN_SUFFIX="$(<"$RUN_SUFFIX_FILE")"
+      else
+        echo "No smoke RUN_SUFFIX found for final_eval. Run final_train first or set RUN_SUFFIX explicitly." >&2
+        echo "Expected suffix file: ${RUN_SUFFIX_FILE}" >&2
+        exit 2
+      fi
+    else
+      GIT_HASH="$(git rev-parse --short=8 HEAD 2>/dev/null || printf 'nogit')"
+      RUN_STAMP="$(TZ=America/New_York date +%Y%m%d_%H%M%S)"
+      RUN_SUFFIX="${DEVICE}_${RUN_STAMP}_${GIT_HASH}"
+    fi
+  fi
+  printf '%s\n' "$RUN_SUFFIX" > "$RUN_SUFFIX_FILE"
+fi
 
 SYNC_EXTRAS=(--extra "$EXTRA" --extra submitit)
 if [[ -n "${SPENN_EXTRA_EXTRAS:-}" ]]; then
-  # Space-separated extra names, e.g. SPENN_EXTRA_EXTRAS="wandb".
   for extra in $SPENN_EXTRA_EXTRAS; do
     SYNC_EXTRAS+=(--extra "$extra")
   done
@@ -83,15 +103,20 @@ fi
 uv sync "${SYNC_EXTRAS[@]}"
 source "$VENV/bin/activate"
 
-JOB_INDEX_SWEEP="$(python "$LAUNCHER" --manifest "$MANIFEST" --print-job-index-sweep)"
+JOB_INDEX_SWEEP="$(python "$LAUNCHER" --inputs "$INPUTS" --stage "$STAGE" --print-job-index-sweep)"
 JOB_INDEX="${EXPLICIT_JOB_INDEX:-$JOB_INDEX_SWEEP}"
 MANIFEST_HYDRA_OVERRIDES=()
 if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
   mapfile -t MANIFEST_HYDRA_OVERRIDES < <(
-    python "$LAUNCHER" --manifest "$MANIFEST" --device "$DEVICE" --print-hydra-overrides
+    python "$LAUNCHER" \
+      --manifest "$MANIFEST" \
+      --inputs "$INPUTS" \
+      --stage "$STAGE" \
+      --device "$DEVICE" \
+      --print-hydra-overrides
   )
 else
-  MANIFEST_HYDRA_OVERRIDES+=("hydra.sweep.dir=${HYDRA_SWEEP_DIR:-/tmp/rhu/spenn_submitit_local}")
+  MANIFEST_HYDRA_OVERRIDES+=("hydra.sweep.dir=${HYDRA_SWEEP_DIR:-/tmp/rhu/spenn_final_submitit_local}/${STAGE}")
 fi
 
 HYDRA_OVERRIDES=(
@@ -103,7 +128,6 @@ if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
   HYDRA_OVERRIDES+=("hydra.launcher.setup=[\"cd ${REPO_ROOT}\",\"source ${REPO_ROOT}/${VENV}/bin/activate\"]")
 fi
 
-# Optional one-off resource overrides without editing the manifest.
 if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
   [[ -n "${PARTITION:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.partition=$(hydra_value "$PARTITION")")
   if [[ "${GRES+x}" == "x" ]]; then
@@ -118,18 +142,28 @@ fi
 [[ -n "${CPUS_PER_TASK:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.cpus_per_task=${CPUS_PER_TASK}")
 [[ -n "${MEM_GB:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.mem_gb=${MEM_GB}")
 [[ -n "${TIMEOUT_MIN:-}" ]] && HYDRA_OVERRIDES+=("hydra.launcher.timeout_min=${TIMEOUT_MIN}")
-[[ -n "${RUN_ROOT:-}" ]] && HYDRA_OVERRIDES+=("run_root=${RUN_ROOT}")
 
 echo "manifest=${MANIFEST}"
+echo "inputs=${INPUTS}"
+echo "stage=${STAGE}"
 echo "device=${DEVICE}"
 echo "venv=${VENV}"
 echo "hydra_launcher=${HYDRA_LAUNCHER}"
 echo "job_index=${JOB_INDEX}"
+echo "run_suffix=${RUN_SUFFIX:-<none>}"
+
+LAUNCH_OVERRIDES=(
+  "inputs=${INPUTS}"
+  "stage=${STAGE}"
+  "device=${DEVICE}"
+  "job_index=${JOB_INDEX}"
+)
+if [[ -n "$RUN_SUFFIX" ]]; then
+  LAUNCH_OVERRIDES+=("run_suffix=${RUN_SUFFIX}")
+fi
 
 HYDRA_FULL_ERROR=1 python "$LAUNCHER" \
   --multirun \
-  "manifest=${MANIFEST}" \
-  "device=${DEVICE}" \
-  "job_index=${JOB_INDEX}" \
+  "${LAUNCH_OVERRIDES[@]}" \
   "${HYDRA_OVERRIDES[@]}" \
   "${PASSTHROUGH_ARGS[@]}"

@@ -1,11 +1,10 @@
 # =============================================================================
-# Hooke pair validation study manifest (protocol contract)
+# Hooke pair validation study manifest (PR8.2 protocol contract)
 # =============================================================================
 #
-# This manifest declares the PR8.1 validation-scan protocol: the grid and the
-# durable checkpoint/run-artifact policy. Selection and final-evaluation
-# orchestration are deferred to PR8.2 and should consume the local artifacts
-# written by these runs.
+# This manifest declares the validation scan, deterministic selection policy,
+# and final-evaluation orchestration inputs for the Hooke pair benchmark.
+# Changing this manifest after running the study implies a new study version.
 
 study:
   name: hooke_pair_validation_v1
@@ -14,6 +13,9 @@ study:
 
 # Base training config expanded by the launcher (one run per grid point).
 train_config: experiments/hooke/configs/benchmark/pair_train.yaml
+
+# Held-out final-evaluation template used by evaluate_selected.py.
+final_eval_config: experiments/hooke/configs/benchmark/pair_final_eval.yaml
 
 # Grid axes are resolved-config keys (OmegaConf dotted paths).
 grid:
@@ -32,19 +34,65 @@ validation:
   sampler_namespace: validation/sampler
   exact_reference_energy_allowed: false
 
-checkpoint_artifacts:
-  schema_version: 1
-  load_modes: [none, model_only, train_resume]
-  directory_layout: true
-  require_complete_marker: true
-  latest_pointer: latest.json
-  save_model_state_dict: true
-  save_optimizer_state_dict: true
-  save_trainer_state: true
-  save_sampler_mcmc_state: true
-  save_rng_state: true
+launcher:
+  run_root: outputs/hooke_pair_validation_v1
+  hydra_sweep_dir: slurm_logs/hooke_pair_validation_v1
+  job_name: hooke-pv-v1
+  slurm:
+    gpu:
+      partition: kozinsky_gpu,seas_gpu
+      gres: gpu:1
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 480
+      array_parallelism: null
+    cpu:
+      partition: sapphire,kozinsky,seas_compute
+      gres: null
+      cpus_per_task: 4
+      mem_gb: 16
+      timeout_min: 480
+      array_parallelism: null
 
-run_durability:
-  write_run_start_json: true
-  environment_policy: allowlist
-  keep_slurm_logs: true
+system:
+  n_particles: 2
+
+selection:
+  metric: validation/energy
+  aggregate: median
+  failed_run_value: inf
+  absolute_energy_floor: 1.0e-4
+  margin:
+    stderr_multiplier: 2.0
+    seed_iqr_fraction: 0.25
+  tie_breakers:
+    - validation/energy_variance
+    - validation_energy_iqr
+    - validation/energy_stderr
+    - geometry_warning_count
+    - model_params.channels
+    - runtime/wall_time_sec
+
+eligibility:
+  require:
+    - checks/data_integrity/passed
+    - checks/gradient/passed
+    - checks/equivariance/full_model/passed
+  local_energy_finite_fraction: 1.0
+
+geometry_warnings:
+  require_radius_q99: true
+  require_electron_distance_q01_for_n_particles_ge: 2
+  min_electron_distance_q01: 1.0e-4
+
+final_evaluation:
+  training_seeds: [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+  eval_seeds: [100000, 100001, 100002, 100003, 100004, 100005, 100006, 100007, 100008, 100009]
+  sampler:
+    n_walkers: 8192
+    burn_in: 1000
+    n_steps: 500
+    proposal_scale: 0.35
+  launcher:
+    hydra_sweep_dir: slurm_logs/hooke_pair_final_v1
+    job_name_prefix: hooke-final-v1

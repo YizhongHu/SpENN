@@ -1,0 +1,18 @@
+inputs: experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv
+stage: final_train
+job_index: 0
+device: cuda
+python: python
+run_suffix: ""
+dry_run: false
+require_checkpoint: true
+
+hydra:
+  job:
+    name: hooke-final-v1
+    chdir: false
+  run:
+    dir: slurm_logs/hooke_pair_final_v1/single
+  sweep:
+    dir: slurm_logs/hooke_pair_final_v1
+    subdir: ${stage}/${hydra.job.num}

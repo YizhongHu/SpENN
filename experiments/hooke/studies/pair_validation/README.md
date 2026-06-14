@@ -1,112 +1,300 @@
-# Hooke pair validation study (`hooke_pair_validation_v1`)
+# Hooke Pair Validation Study
 
-This directory records the PR8 validation-scan protocol for the Hooke pair
-benchmark. In PR8.1, the canonical deliverable is durable training/run
-artifacts and runner-owned checkpoint restore. Benchmark post-processing
-scripts are intentionally deferred to PR8.2.
+This is the runbook for `hooke_pair_validation_v1`. Experiment details are in
+[methods.md](methods.md).
 
-Local run directories are authoritative. W&B may be used for visualization,
-but W&B clicks are not a source of protocol, checkpoint, or selection truth.
+Run commands from the repository root. Keep local run directories, generated
+reports, checkpoints, and `slurm_logs/`.
 
-## Scope
+## Quick Start
 
-PR8.1 keeps this study boring:
-
-```text
-launch validation training runs
-run train-end validation inside each training job
-write durable checkpoint directories
-write early run_start.json breadcrumbs
-keep SLURM logs and local run outputs for reproducibility
-```
-
-Deferred to PR8.2:
-
-```text
-collect.py
-select.py
-evaluate_selected.py
-selection reports
-final evaluation command generation
-final benchmark summaries
-```
-
-Validation is used for later model/protocol selection. Validation does not use
-the exact Hooke reference energy. Final evaluation is separate and may compare
-against the exact Hooke reference only after selection is frozen.
-
-## Launching The Scan
-
-[launch_array.sh](launch_array.sh) maps `SLURM_ARRAY_TASK_ID` onto the manifest
-grid and launches one training run per task. From the repository root:
+First, run the local CPU smoke on this node:
 
 ```bash
-mkdir -p slurm_logs
-sbatch experiments/hooke/studies/pair_validation/launch_array.sh
+uv run pytest -q \
+  tests/integration/hooke/test_pair_validation_study.py::test_local_smoke_pipeline_runs_collects_selects_and_plans
 ```
 
-CPU example:
+On the cluster, submit the CPU final-launcher smoke before launching the real
+scan:
 
 ```bash
-DEVICE=cpu sbatch -p sapphire --gres="" \
-  experiments/hooke/studies/pair_validation/launch_array.sh
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_train PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-The arrays in `launch_array.sh` must mirror [manifest.yaml](manifest.yaml).
-Changing the grid means creating a new study version.
+After the CPU `final_train` smoke finishes, run its CPU `final_eval` smoke.
+Then run the single-index GPU smoke commands below. If all smoke stages finish
+successfully and write metrics under `outputs/`, launch the validation scan:
 
-## Checkpoint Artifacts
+```bash
+DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
+```
 
-Training runs use `spenn.callback.Checkpoint`, which writes package-owned
-directory checkpoints through `spenn.checkpoint`:
+Use `DEVICE=cpu` only when you intentionally want the CPU Slurm profile.
+
+## Local Checks
+
+Run the whole pair-validation test file:
+
+```bash
+uv run pytest -q tests/integration/hooke/test_pair_validation_study.py
+```
+
+Run launcher contract tests:
+
+```bash
+uv run pytest -q \
+  tests/integration/hooke/test_pair_validation_study.py::test_submitit_launcher_has_cpu_and_gpu_slurm_overrides \
+  tests/integration/hooke/test_pair_validation_study.py::test_final_submitit_launcher_has_cpu_and_gpu_slurm_overrides
+```
+
+Dry-run validation Submitit locally without Slurm submission:
+
+```bash
+DEVICE=cpu HYDRA_LAUNCHER=submitit_local \
+  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
+  dry_run=true job_index=0
+
+DEVICE=cuda HYDRA_LAUNCHER=submitit_local \
+  bash experiments/hooke/studies/pair_validation/launch_array.sh -- \
+  dry_run=true job_index=0
+```
+
+These commands run `uv sync --extra ... --extra submitit`, activate `.venv` or
+`.venv-gpu`, expand one Hydra job, print the direct Python command, and stop
+before training because `dry_run=true`.
+
+## Cluster Smoke
+
+Smoke must exercise the real final launcher. Do not add a separate smoke
+launcher or smoke manifest unless the final launcher cannot express the check.
+The only differences from a real final launch should be:
 
 ```text
-checkpoints/
-  step_000100/
-    manifest.json
-    resolved_config.yaml
-    model.pt
-    optimizer.pt
-    trainer.json
-    sampler.pt
-    rng.pt
-    COMPLETE
-  latest.json
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv
+PARTITION=test or gpu_test
+ARRAY_PARALLELISM=1
+TIMEOUT_MIN=15
 ```
 
-A checkpoint directory is valid only when `COMPLETE` is present. `latest.json`
-replaces symlink or `latest.pt` tracking. Checkpoints store state dicts and
-metadata; they do not pickle full model objects and do not instantiate models.
+The smoke grid and tiny model/sampler/training sizes live in
+[final_smoke_inputs.csv](final_smoke_inputs.csv). Edit the command columns there
+when smoke needs to cover a new model-size knob.
 
-Restore intent is runner-owned:
+FASRC `gpu_test` policy is stricter than `test`: it has a small submitted-job
+cap, and `ARRAY_PARALLELISM=1` does not reduce the number of Hydra jobs being
+submitted. Keep GPU smoke to `job_index=0` even when the smoke inputs grow; CPU
+smoke submits every row in `final_smoke_inputs.csv`.
 
-```yaml
-load:
-  path: null
-  mode: none   # none | model_only | train_resume
-  strict: true
-  allow_protocol_mismatch: false
+Smoke run IDs are suffixed at launch time with
+`<device>_<YYYYMMDD_HHMMSS>_<git-sha>`, so retries do not collide with old
+checkpoints. The training smoke writes the suffix to
+`slurm_logs/hooke_pair_final_v1/smoke_<device>.run_suffix`; evaluation smoke
+reuses that suffix. Set `RUN_SUFFIX=...` only when you want to target a specific
+smoke run.
+
+Submit the CPU training smoke:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_train PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-`model_only` is for `Evaluate`. `train_resume` is for `Train`. Config
-instantiates objects first; checkpoint restore loads state into those objects.
+After CPU training smoke checkpoints exist, submit the CPU evaluation smoke:
 
-Checkpoint writing policy stays under `checkpoint` in train configs:
-
-```yaml
-checkpoint:
-  every_n_steps: 500
-  keep_last: 3
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_eval PARTITION=test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
 ```
 
-## Run Durability
+Submit one GPU training smoke job:
 
-Each run writes `run_start.json` early, before long training begins. It records
-the run id, run directory, study identity, command, git sha/branch/dirty flag,
-hostname, cwd, selected SLURM metadata, and a small allowlist of environment
-fields. It intentionally does not dump full `os.environ` or secrets.
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cuda STAGE=final_train PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  job_index=0
+```
 
-Keep these local files with the SLURM logs:
+After that GPU training smoke checkpoint exists, submit one GPU evaluation
+smoke job:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cuda STAGE=final_eval PARTITION=gpu_test ARRAY_PARALLELISM=1 TIMEOUT_MIN=15 \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  job_index=0
+```
+
+Command-expansion dry run:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/final_smoke_inputs.csv \
+  DEVICE=cpu STAGE=final_train HYDRA_LAUNCHER=submitit_local \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0
+```
+
+Check `slurm_logs/hooke_pair_final_v1/` and `outputs/hooke_pair_final_smoke/`
+after each smoke. The smoke inputs define a tiny grid over seed and channel
+count; it is intentionally small enough to run often. CPU smoke submits every
+row, while GPU smoke runs one representative index because of `gpu_test` submit
+limits. Both paths run one tiny benchmark-config training step, load checkpoints
+with `load.mode=model_only`, and use the W&B project `SpENN-QMC-test`.
+
+## Validation Scan
+
+Submit the real validation scan on GPU:
+
+```bash
+DEVICE=cuda bash experiments/hooke/studies/pair_validation/launch_array.sh
+```
+
+For a CPU validation scan:
+
+```bash
+DEVICE=cpu bash experiments/hooke/studies/pair_validation/launch_array.sh
+```
+
+The launcher reads [manifest.yaml](manifest.yaml), expands the declared grid,
+and submits one Hydra Submitit job per grid point. Real CPU runs default to
+`sapphire,kozinsky,seas_compute`; real GPU runs default to
+`kozinsky_gpu,seas_gpu`. The launcher escapes partition commas for Hydra; Slurm
+still receives the normal comma-separated partition list.
+
+## Collect And Select
+
+After validation jobs finish, collect local run artifacts:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/collect.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --run-root outputs \
+  --output-dir experiments/hooke/studies/pair_validation/reports
+```
+
+Select the winning non-seed config:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/select.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --runs experiments/hooke/studies/pair_validation/reports/runs.csv \
+  --output-dir experiments/hooke/studies/pair_validation/reports
+```
+
+Review:
+
+```text
+experiments/hooke/studies/pair_validation/reports/selection_report.md
+experiments/hooke/studies/pair_validation/reports/selected_config.yaml
+```
+
+## Final Benchmark
+
+Generate final training and evaluation configs:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/reports/selected_config.yaml \
+  --run-root outputs \
+  --output-dir experiments/hooke/studies/pair_validation/reports \
+  --dry-run
+```
+
+Smoke-test the final launcher locally after `final_eval_inputs.csv` exists:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  DEVICE=cpu HYDRA_LAUNCHER=submitit_local STAGE=final_train \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0
+
+INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  DEVICE=cuda HYDRA_LAUNCHER=submitit_local STAGE=final_eval \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0
+```
+
+Smoke-test one final Slurm job per phase:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  DEVICE=cuda HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
+  STAGE=final_train \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0
+
+INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  DEVICE=cuda HYDRA_LAUNCHER=submitit_slurm ARRAY_PARALLELISM=1 \
+  STAGE=final_eval \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh -- \
+  dry_run=true job_index=0
+```
+
+Submit final training:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  DEVICE=cuda STAGE=final_train \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+```
+
+Submit final evaluation only after final training checkpoints exist:
+
+```bash
+INPUTS=experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv \
+  DEVICE=cuda STAGE=final_eval \
+  bash experiments/hooke/studies/pair_validation/launch_final_submitit.sh
+```
+
+Collect final benchmark summaries:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/evaluate_selected.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --selected-config experiments/hooke/studies/pair_validation/reports/selected_config.yaml \
+  --run-root outputs \
+  --output-dir experiments/hooke/studies/pair_validation/reports \
+  --collect
+```
+
+## Outputs To Keep
+
+Validation reports:
+
+```text
+runs.csv
+runs.jsonl
+selection.csv
+selected_config.yaml
+selection_report.md
+```
+
+Final planning outputs:
+
+```text
+final_train_configs/
+final_eval_configs/
+final_eval_commands.sh
+final_eval_manifest.yaml
+final_eval_inputs.csv
+```
+
+Final summary outputs:
+
+```text
+final_eval_runs.csv
+final_benchmark_summary.csv
+final_benchmark_summary.json
+final_benchmark_report.md
+```
+
+For every real run, keep:
 
 ```text
 run_start.json
@@ -115,14 +303,38 @@ metadata.json
 status.json
 metrics.csv
 metrics.jsonl
-checkpoints/*/manifest.json
-checkpoints/*/COMPLETE
-checkpoints/latest.json
+events.jsonl
+checkpoints/
+slurm_logs/
 ```
 
-## PR8.2 Handoff
+## Reference
 
-PR8.2 should consume the durable checkpoint interface introduced here. Its
-post-processing scripts should read local run directories and checkpoint
-manifests, never infer model architecture from checkpoint keys, and never use
-W&B as the source of selection or benchmark decisions.
+The manifest owns the study name, grid, validation seed axis, selection rule,
+eligibility checks, geometry-warning policy, final-evaluation seeds, and default
+Slurm resources. Changing [manifest.yaml](manifest.yaml) after running the
+study implies a new study version.
+
+Validation uses `experiments/hooke/configs/benchmark/pair_train.yaml`.
+Validation metrics are logged under `validation/*`, `validation/sampler/*`, and
+`validation/perf/*`. Validation does not use exact reference energy.
+
+Selection uses median `validation/energy` across validation training seeds.
+Failed or missing seeds count as `+inf`. Exact-reference metrics such as
+`validation/energy_abs_error` are forbidden for selection. W&B is visualization only.
+Local run directories and generated reports are authoritative.
+
+Final evaluation uses held-out training seeds `100` through `109` and held-out
+evaluation seeds `100000` through `100009`. Generated eval configs load
+checkpoints explicitly:
+
+```yaml
+load:
+  path: /path/to/checkpoints/latest.json
+  mode: model_only
+  strict: true
+  allow_protocol_mismatch: false
+```
+
+The final eval phase checks checkpoint paths before running unless
+`require_checkpoint=false` is passed for a dry operational test.
