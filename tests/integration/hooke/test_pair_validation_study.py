@@ -82,12 +82,19 @@ def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> 
         "missing-metrics": "missing_metrics",
         "missing-validation": "missing_validation",
     }
+    failed_row = next(row for row in rows if Path(row["run_dir"]).name == "failed")
+    assert failed_row["status/current_event"] == "exception"
+    assert failed_row["status/exception_type"] == "RuntimeError"
+    assert failed_row["status/exception_message"] == "synthetic failure"
     assert rows[0]["wandb/run_id"] is None
     assert (completed / "resolved_config.yaml").read_text() == before
 
     with (tmp_path / "reports" / "runs.csv").open("r", encoding="utf-8", newline="") as handle:
-        fieldnames = csv.DictReader(handle).fieldnames
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        csv_rows = {Path(row["run_dir"]).name: row for row in reader}
     assert set(collect.REQUIRED_COLUMNS) <= set(fieldnames or [])
+    assert csv_rows["failed"]["status/exception_message"] == "synthetic failure"
 
     rows_with_other = collect.collect_runs(
         manifest_path=MANIFEST,
@@ -712,8 +719,24 @@ def _fake_run(
         "system": {"n_particles": 2, "spin": {"n_up": 1, "n_down": 1}},
     }
     OmegaConf.save(OmegaConf.create(cfg), run_dir / "resolved_config.yaml", resolve=True)
-    (run_dir / "status.json").write_text(json.dumps({"status": status}), encoding="utf-8")
-    (run_dir / "metadata.json").write_text(json.dumps({"status": status, "git_commit": "abc123"}), encoding="utf-8")
+    status_record = {"status": status}
+    metadata_record = {"status": status, "git_commit": "abc123"}
+    if status == "failed":
+        status_record.update(
+            {
+                "current_event": "exception",
+                "exception_type": "RuntimeError",
+                "exception_message": "synthetic failure",
+            }
+        )
+        metadata_record.update(
+            {
+                "exception_type": "RuntimeError",
+                "exception_message": "synthetic failure",
+            }
+        )
+    (run_dir / "status.json").write_text(json.dumps(status_record), encoding="utf-8")
+    (run_dir / "metadata.json").write_text(json.dumps(metadata_record), encoding="utf-8")
     (run_dir / "run_start.json").write_text(json.dumps({"git": {"sha": "abc123"}}), encoding="utf-8")
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir()

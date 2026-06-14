@@ -15,6 +15,9 @@ from omegaconf import OmegaConf
 REQUIRED_COLUMNS = (
     "run_dir",
     "status",
+    "status/current_event",
+    "status/exception_type",
+    "status/exception_message",
     "study_name",
     "config_id",
     "runtime.seed",
@@ -144,6 +147,7 @@ def collect_run_dir(run_dir: str | Path) -> dict[str, Any]:
 
     row.update(metrics)
     row["status"] = _classify_status(run_path, metrics, metadata, status_artifact)
+    row.update(_status_debug_fields(status_artifact, metadata))
     row["git/sha"] = _select(run_start, "git.sha") or metadata.get("git_commit")
     row["wandb/run_id"] = _select(metadata, "wandb.run_id") or _select(metadata, "wandb_run_id")
     latest_path = run_path / "checkpoints" / "latest.json"
@@ -248,6 +252,16 @@ def _classify_status(
     if "completed" in status_values:
         return "completed"
     return "incomplete"
+
+
+def _status_debug_fields(status_artifact: Mapping[str, Any], metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Return failure/debug fields copied from durable status artifacts."""
+
+    return {
+        "status/current_event": status_artifact.get("current_event"),
+        "status/exception_type": status_artifact.get("exception_type") or metadata.get("exception_type"),
+        "status/exception_message": status_artifact.get("exception_message") or metadata.get("exception_message"),
+    }
 
 
 def _has_metric_file(run_dir: Path) -> bool:
