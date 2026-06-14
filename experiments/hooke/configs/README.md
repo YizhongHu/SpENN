@@ -1,17 +1,27 @@
-# Hooke experiment configs
+# Legacy Hooke Test Configs
 
-Canonical configs for the Hooke pair workflow. Each config is a self-contained,
-readable experiment card: everything one run needs lives in one file, with no
-Hydra defaults composition.
+This directory contains legacy test/reference configs for quick Hooke checks.
+They are self-contained experiment cards, but they are not canonical study
+configs.
 
 ## Layout
 
 ```text
 experiments/hooke/configs/
   smoke/
-    pair_train.yaml   # cheap end-to-end VMC training sanity check
-    pair_eval.yaml    # cheap sampled-evaluation sanity check
+    pair_train.yaml   # legacy cheap VMC training test config
+    pair_eval.yaml    # legacy cheap sampled-evaluation test config
+  benchmark/
+    pair_train.yaml   # legacy benchmark-shaped test/reference config
+    pair_eval.yaml    # legacy benchmark-shaped test/reference config
+  preflight/
+    pair_train_cpu.yaml   # legacy CPU preflight test config
+    pair_train_gpu.yaml   # legacy GPU preflight test config
 ```
+
+Study-owned canonical configs live next to their study manifests. For the Hooke
+pair-validation study, use
+`experiments/hooke/studies/pair_validation/configs/`.
 
 SLURM submission scripts for these configs live in
 [`experiments/hooke/slurm/`](../slurm/).
@@ -21,10 +31,10 @@ SLURM submission scripts for these configs live in
 From the repository root:
 
 ```bash
-# Train (CPU smoke):
+# Train with a legacy CPU smoke test config:
 uv run python -u run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 
-# Evaluate (CPU smoke):
+# Evaluate with a legacy CPU smoke test config:
 uv run python -u run.py --config experiments/hooke/configs/smoke/pair_eval.yaml
 ```
 
@@ -38,7 +48,7 @@ uv run python -u run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 
 ## Config anatomy
 
-Every canonical config has two halves.
+Every legacy test config has two halves.
 
 ### Parameter blocks
 
@@ -124,9 +134,9 @@ The local run directory is the authoritative record. W&B, when enabled, is only
 a dashboard projection of scalar metrics; it never replaces the local CSV/JSONL
 logs and does not receive checkpoints, traces, or raw batches by default.
 
-## Why canonical configs are self-contained
+## Why These Legacy Configs Are Self-Contained
 
-Smoke and benchmark configs deliberately avoid Hydra defaults composition:
+Legacy smoke, preflight, and benchmark-shaped configs deliberately avoid Hydra defaults composition:
 
 - One file answers "what exactly did this run do?" without chasing overrides
   across a config tree.

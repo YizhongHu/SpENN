@@ -46,19 +46,35 @@ class ArtifactManager:
         Experiment sector or suite name.
     run_id : str
         Unique run identifier.
+    layout : {"nested", "flat"}
+        Directory layout. ``nested`` writes
+        ``root/experiment/sector/run_id``; ``flat`` writes ``root/run_id``.
     """
 
-    def __init__(self, root: Path | str, experiment: str, sector: str, run_id: str) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        experiment: str,
+        sector: str,
+        run_id: str,
+        *,
+        layout: str = "nested",
+    ) -> None:
         root_path = Path(root)
         self.root = root_path if root_path.is_absolute() else ROOT / root_path
         self.experiment = str(experiment)
         self.sector = str(sector)
         self.run_id = str(run_id)
+        self.layout = str(layout)
+        if self.layout not in {"nested", "flat"}:
+            raise ValueError(f"unsupported artifact layout {self.layout!r}; expected 'nested' or 'flat'")
 
     @property
     def run_dir(self) -> Path:
         """Return the run directory path."""
 
+        if self.layout == "flat":
+            return self.root / self.run_id
         return self.root / self.experiment / self.sector / self.run_id
 
     def make_dirs(self) -> None:
