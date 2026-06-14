@@ -43,6 +43,7 @@ select = _load_script("select")
 plan_final = _load_script("plan_final")
 collect_final = _load_script("collect_final")
 orchestrate = _load_script("orchestrate")
+sync_reports = _load_script("sync_reports")
 
 
 def test_manifest_uses_phase_schema_and_one_train_eval_config() -> None:
@@ -116,6 +117,7 @@ def test_study_scripts_do_not_hardcode_manifest_names_or_directories() -> None:
         "plan_final.py",
         "select.py",
         "study_manifest.py",
+        "sync_reports.py",
     )
     forbidden = ("hooke_pair", "reports/hooke", "outputs/hooke", "slurm_logs/hooke")
 
@@ -123,6 +125,82 @@ def test_study_scripts_do_not_hardcode_manifest_names_or_directories() -> None:
         text = (STUDY_DIR / script).read_text(encoding="utf-8")
         for pattern in forbidden:
             assert pattern not in text, f"{script} hardcodes {pattern!r}"
+
+
+def test_sync_reports_mirrors_reports_without_logs_or_old_checkpoints(tmp_path: Path) -> None:
+    source = tmp_path / "reports"
+    destination = tmp_path / "snapshot"
+    run_dir = source / "01_train" / "outputs" / "full" / "ch8" / "seed=3"
+    checkpoint_root = run_dir / "checkpoints"
+    old_checkpoint = checkpoint_root / "step_000001"
+    latest_checkpoint = checkpoint_root / "step_000002"
+    old_checkpoint.mkdir(parents=True)
+    latest_checkpoint.mkdir()
+    (run_dir / "status.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    (run_dir / "metrics.jsonl").write_text("{}\n", encoding="utf-8")
+    (checkpoint_root / "latest.json").write_text(
+        json.dumps({"checkpoint_dir": latest_checkpoint.name}),
+        encoding="utf-8",
+    )
+    (old_checkpoint / "model.pt").write_text("old", encoding="utf-8")
+    (old_checkpoint / "manifest.json").write_text("old manifest", encoding="utf-8")
+    (latest_checkpoint / "model.pt").write_text("latest", encoding="utf-8")
+    (latest_checkpoint / "manifest.json").write_text("latest manifest", encoding="utf-8")
+    slurm_dir = source / "01_train" / "slurm_logs"
+    slurm_dir.mkdir(parents=True)
+    (slurm_dir / "22707654_0.out").write_text("log", encoding="utf-8")
+    destination.mkdir()
+    (destination / "stale.txt").write_text("stale", encoding="utf-8")
+
+    summary = sync_reports.sync_reports(source=source, destination=destination)
+
+    assert summary.copied_files == 5
+    assert summary.skipped_checkpoint_files == 2
+    assert summary.skipped_slurm_log_files == 1
+    assert not (destination / "stale.txt").exists()
+    assert (destination / "01_train" / "outputs" / "full" / "ch8" / "seed=3" / "status.json").exists()
+    assert (
+        destination
+        / "01_train"
+        / "outputs"
+        / "full"
+        / "ch8"
+        / "seed=3"
+        / "checkpoints"
+        / "latest.json"
+    ).exists()
+    assert (
+        destination
+        / "01_train"
+        / "outputs"
+        / "full"
+        / "ch8"
+        / "seed=3"
+        / "checkpoints"
+        / "step_000002"
+        / "model.pt"
+    ).exists()
+    assert not (
+        destination
+        / "01_train"
+        / "outputs"
+        / "full"
+        / "ch8"
+        / "seed=3"
+        / "checkpoints"
+        / "step_000001"
+        / "model.pt"
+    ).exists()
+    assert not (destination / "01_train" / "slurm_logs" / "22707654_0.out").exists()
+
+    dry_destination = tmp_path / "dry-snapshot"
+    dry_summary = sync_reports.sync_reports(
+        source=source,
+        destination=dry_destination,
+        dry_run=True,
+    )
+    assert dry_summary.copied_files == summary.copied_files
+    assert not dry_destination.exists()
 
 
 def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> None:
@@ -649,6 +727,7 @@ def test_readme_documents_phase_flow() -> None:
         "Select",
         "Final Planning",
         "Final Benchmark",
+        "Sync Reports",
         "Outputs To Keep",
     ):
         assert f"## {section}" in text

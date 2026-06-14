@@ -228,6 +228,35 @@ uv run python experiments/hooke/studies/pair_validation/collect_final.py \
 `final_benchmark_summary.csv`, `final_benchmark_summary.json`, and
 `final_benchmark_report.md`.
 
+## Sync Reports
+
+Use `sync_reports.py` to mirror the manifest report directory into another
+location while keeping the snapshot compact. The destination is replaced on each
+run. Slurm log directories are skipped, and each run keeps only
+`checkpoints/latest.json` plus the checkpoint step directory referenced by that
+file.
+
+Preview the copy plan:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/sync_reports.py \
+  ${MStore}/spenn-studies/hooke/pair_validation_v2/reports_snapshot \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
+  --dry-run \
+  --verbose
+```
+
+Write the snapshot:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/sync_reports.py \
+  ${MStore}/spenn-studies/hooke/pair_validation_v2/reports_snapshot \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml
+```
+
+Pass `--source` to mirror a report directory other than the one in
+`manifest.yaml`.
+
 ## Outputs To Keep
 
 - `manifest.yaml`
