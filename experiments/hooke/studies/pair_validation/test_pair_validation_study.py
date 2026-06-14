@@ -44,6 +44,7 @@ plan_final = _load_script("plan_final")
 collect_final = _load_script("collect_final")
 orchestrate = _load_script("orchestrate")
 sync_reports = _load_script("sync_reports")
+plot_final = _load_script("plot_final")
 
 
 def test_manifest_uses_phase_schema_and_one_train_eval_config() -> None:
@@ -534,6 +535,9 @@ def test_collect_final_writes_tables_summary_and_report(tmp_path: Path) -> None:
     assert result["summary"]["final_eval_completed"] == 1
     assert result["summary"]["final_eval_failed_or_incomplete"] == 0
     assert result["summary"]["energy_mean"] == pytest.approx(2.01)
+    row = result["final_eval_runs"][0]
+    assert row["eval/virial_residual"] == pytest.approx(2.0 * 0.7 - 2.0 * 0.8 + 0.5)
+    assert row["artifact/pair_distance_probe_exists"] is True
     assert (tmp_path / "reports" / "final_train_runs.csv").exists()
     assert (tmp_path / "reports" / "final_eval_runs.jsonl").exists()
     assert (tmp_path / "reports" / "final_benchmark_summary.csv").exists()
@@ -551,6 +555,51 @@ def test_collect_final_writes_tables_summary_and_report(tmp_path: Path) -> None:
         include_smoke=True,
     )
     assert with_smoke["summary"]["final_eval_completed"] == 2
+
+
+def test_collect_final_strict_artifacts_fails_on_missing_required_artifact(tmp_path: Path) -> None:
+    selected_config = _write_selected_config(tmp_path)
+    train_root = tmp_path / "final_train"
+    eval_root = tmp_path / "final_eval"
+    checkpoint = _fake_final_train_run(train_root, seed=100)
+    eval_run = _fake_eval_run(eval_root, checkpoint_path=checkpoint, training_seed=100, eval_seed=100000)
+    (eval_run / "diagnostics" / "pair_distance_probe" / "probe.csv").unlink()
+
+    with pytest.raises(FileNotFoundError, match="pair_distance_probe"):
+        collect_final.collect_final(
+            manifest_path=MANIFEST,
+            selected_config_path=selected_config,
+            final_train_root=train_root,
+            final_eval_root=eval_root,
+            output_dir=tmp_path / "reports",
+            strict_artifacts=True,
+        )
+
+
+def test_plot_final_writes_tables_plots_and_report_from_collected_files(tmp_path: Path) -> None:
+    selected_config = _write_selected_config(tmp_path)
+    train_root = tmp_path / "final_train"
+    eval_root = tmp_path / "final_eval"
+    checkpoint = _fake_final_train_run(train_root, seed=100)
+    _fake_eval_run(eval_root, checkpoint_path=checkpoint, training_seed=100, eval_seed=100000)
+    collect_final.collect_final(
+        manifest_path=MANIFEST,
+        selected_config_path=selected_config,
+        final_train_root=train_root,
+        final_eval_root=eval_root,
+        output_dir=tmp_path / "reports",
+    )
+
+    result = plot_final.plot_final(manifest_path=MANIFEST, final_eval_dir=tmp_path / "reports")
+
+    assert (tmp_path / "reports" / "tables" / "energy_reference.csv").exists()
+    assert (tmp_path / "reports" / "tables" / "artifact_summary.csv").exists()
+    assert (tmp_path / "reports" / "plots" / "energy_by_run.png").exists()
+    assert (tmp_path / "reports" / "plots" / "probe_pair_distance_logabs.png").exists()
+    report = (tmp_path / "reports" / "final_benchmark_report.md").read_text()
+    assert "Hooke pair final benchmark report" in report
+    assert "Position-Exchange Check" in report
+    assert result["warnings"] == []
 
 
 def test_orchestrator_jobs_and_dry_run_contracts(tmp_path: Path) -> None:
@@ -780,6 +829,7 @@ def test_readme_documents_phase_flow() -> None:
     assert "orchestrate_eval_slurm.sh" not in text
     assert "plan_final.py" in text
     assert "collect_final.py" in text
+    assert "plot_final.py" in text
     assert "experiments/hooke/studies/pair_validation/configs/pair_train.yaml" in text
     assert "experiments/hooke/studies/pair_validation/configs/pair_eval.yaml" in text
     assert "evaluate_selected.py" not in text
@@ -1099,8 +1149,48 @@ def _fake_eval_run(root: Path, *, checkpoint_path: Path, training_seed: int, eva
                 "energy": 2.01,
                 "energy_stderr": 0.02,
                 "energy_variance": 0.3,
+                "reference_energy": 2.0,
                 "energy_error": 0.01,
                 "energy_abs_error": 0.01,
+                "energy_term_kinetic": 0.7,
+                "energy_term_harmonic_trap": 0.8,
+                "energy_term_electron_electron": 0.5,
+                "local_energy_finite_fraction": 1.0,
+                "local_energy_q001": 1.8,
+                "local_energy_q01": 1.85,
+                "local_energy_q05": 1.9,
+                "local_energy_q50": 2.0,
+                "local_energy_q95": 2.1,
+                "local_energy_q99": 2.15,
+                "local_energy_q999": 2.2,
+                "local_energy_nonfinite_count": 0,
+                "local_energy_error_q001": -0.2,
+                "local_energy_error_q01": -0.15,
+                "local_energy_error_q05": -0.1,
+                "local_energy_error_q50": 0.0,
+                "local_energy_error_q95": 0.1,
+                "local_energy_error_q99": 0.15,
+                "local_energy_error_q999": 0.2,
+                "local_energy_error_mean": 0.01,
+                "local_energy_abs_error_mean": 0.05,
+                "probe_pair_distance/local_energy_max_abs_error": 0.2,
+                "probe_pair_distance/local_energy_q95_abs_error": 0.15,
+                "probe_pair_distance/nonfinite_count": 0,
+                "probe_center_of_mass/local_energy_max_abs_error": 0.2,
+                "probe_center_of_mass/local_energy_q95_abs_error": 0.15,
+                "probe_center_of_mass/nonfinite_count": 0,
+                "checks/exchange/logabs_max_abs_error": 0.0,
+                "checks/exchange/logabs_mean_abs_error": 0.0,
+                "checks/exchange/sign_failure_count": 0,
+                "checks/exchange/nonfinite_count": 0,
+                "checks/rotation/logabs_max_abs_error": 0.0,
+                "checks/rotation/logabs_mean_abs_error": 0.0,
+                "checks/rotation/local_energy_max_abs_error": 0.0,
+                "checks/rotation/local_energy_mean_abs_error": 0.0,
+                "checks/rotation/nonfinite_count": 0,
+                "checks/trace_equivariance/max_abs_error": 0.0,
+                "checks/trace_equivariance/mean_abs_error": 0.0,
+                "checks/trace_equivariance/failure_count": 0,
             },
         },
         {
@@ -1119,4 +1209,109 @@ def _fake_eval_run(root: Path, *, checkpoint_path: Path, training_seed: int, eva
         for record in records:
             handle.write(json.dumps(record))
             handle.write("\n")
+    _write_fake_diagnostics(run_dir)
     return run_dir
+
+
+def _write_fake_diagnostics(run_dir: Path) -> None:
+    diagnostics = run_dir / "diagnostics"
+    energy = diagnostics / "energy"
+    pair = diagnostics / "pair_distance_probe"
+    com = diagnostics / "center_of_mass_probe"
+    exchange = diagnostics / "exchange"
+    rotation = diagnostics / "rotation"
+    trace = diagnostics / "trace_equivariance"
+    for directory in (energy, pair, com, exchange, rotation, trace):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    _write_csv(
+        energy / "sampled_eval_table.csv",
+        [
+            {
+                "sample_index": 0,
+                "local_energy": 2.0,
+                "local_energy_error": 0.0,
+                "kinetic_energy": 0.7,
+                "harmonic_trap_energy": 0.8,
+                "electron_electron_energy": 0.5,
+                "electron_distance": 1.0,
+                "center_of_mass_radius": 0.0,
+                "radius_e1": 0.5,
+                "radius_e2": 0.5,
+                "position_norm_max": 0.5,
+                "logabs": -0.1,
+                "sign": 1.0,
+                "finite": True,
+            }
+        ],
+    )
+    probe_rows = [
+        {
+            "probe_index": index,
+            "pair_distance": 0.1 + index * 0.1,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_logabs": -0.1 * index,
+            "model_sign": 1.0,
+            "model_relative_abs_psi": 1.0 - 0.1 * index,
+            "model_local_energy": 2.0 + 0.01 * index,
+            "model_local_energy_error": 0.01 * index,
+            "kinetic_energy": 0.7,
+            "harmonic_trap_energy": 0.8,
+            "electron_electron_energy": 0.5,
+            "finite": True,
+            "exact_logabs": -0.1 * index,
+            "exact_relative_abs_psi": 1.0 - 0.1 * index,
+            "exact_local_energy": 2.0,
+            "aligned_logabs_error": 0.0,
+            "relative_abs_psi_error": 0.0,
+        }
+        for index in range(3)
+    ]
+    _write_csv(pair / "probe.csv", probe_rows)
+    _write_csv(
+        com / "probe.csv",
+        [
+            {
+                **row,
+                "center_of_mass_radius": row["pair_distance"],
+                "pair_distance": 1.0,
+            }
+            for row in probe_rows
+        ],
+    )
+    _write_jsonl(exchange / "trace.jsonl", [{"contract": "symmetric_spatial_singlet", "logabs_abs_error": 0.0}])
+    _write_jsonl(rotation / "trace.jsonl", [{"check_type": "spatial_rotation", "logabs_abs_error": 0.0}])
+    _write_jsonl(trace / "trace.jsonl", [{"check_type": "semantic_trace_equivariance", "max_abs_error": 0.0}])
+    (diagnostics / "index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_dir": str(run_dir),
+                "artifacts": [
+                    {"name": "sampled_eval_table", "kind": "csv", "path": "diagnostics/energy/sampled_eval_table.csv", "enabled": True, "expected": False, "exists": True, "readable": True, "rows": 1},
+                    {"name": "pair_distance_probe", "kind": "csv", "path": "diagnostics/pair_distance_probe/probe.csv", "enabled": True, "expected": True, "exists": True, "readable": True, "rows": 3},
+                    {"name": "center_of_mass_probe", "kind": "csv", "path": "diagnostics/center_of_mass_probe/probe.csv", "enabled": True, "expected": True, "exists": True, "readable": True, "rows": 3},
+                    {"name": "exchange_trace", "kind": "jsonl", "path": "diagnostics/exchange/trace.jsonl", "enabled": True, "expected": True, "exists": True, "readable": True, "rows": 1},
+                    {"name": "rotation_trace", "kind": "jsonl", "path": "diagnostics/rotation/trace.jsonl", "enabled": True, "expected": True, "exists": True, "readable": True, "rows": 1},
+                    {"name": "trace_equivariance_trace", "kind": "jsonl", "path": "diagnostics/trace_equivariance/trace.jsonl", "enabled": True, "expected": True, "exists": True, "readable": True, "rows": 1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    columns = list(rows[0]) if rows else []
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True))
+            handle.write("\n")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, TypeAlias
 
 import torch
@@ -35,6 +36,8 @@ class EvaluationContext:
         Sampler diagnostics gathered while collecting ``batch``.
     hamiltonian_terms : Mapping[str, HamiltonianTerm]
         Normalized Hamiltonian terms keyed by their public metric names.
+    run_dir : pathlib.Path or None, optional
+        Active run directory when diagnostics may write bounded artifacts.
     """
 
     model: object
@@ -44,6 +47,7 @@ class EvaluationContext:
     local_energy_terms: Mapping[str, torch.Tensor] | None
     sampler_stats: Mapping[str, JsonScalar]
     hamiltonian_terms: Mapping[str, HamiltonianTerm]
+    run_dir: Path | None = None
 
 
 class Diagnostic(Protocol):

@@ -186,6 +186,50 @@ evaluation:
 
 
 # -----------------------------------------------------------------------------
+# Physics-sanity diagnostics
+# -----------------------------------------------------------------------------
+diagnostic_params:
+  quantiles: [0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]
+
+  sampled_eval_table:
+    enabled: false
+    max_samples: 100000
+    selection: stride
+
+  pair_distance_probe:
+    enabled: true
+    r12_min: 1.0e-4
+    r12_max: 8.0
+    n_points: 200
+    n_directions: 3
+    center_of_mass_radii: [0.0, 0.5, 1.0]
+    include_exact_wavefunction: true
+
+  center_of_mass_probe:
+    enabled: true
+    com_radius_min: 0.0
+    com_radius_max: 8.0
+    n_points: 200
+    pair_distance: 1.0
+    n_directions: 3
+    include_exact_wavefunction: true
+
+  exchange:
+    enabled: true
+    max_samples: 1024
+    exchange_contract: symmetric_spatial_singlet
+
+  rotation:
+    enabled: true
+    max_samples: 1024
+    n_rotations: 8
+
+  trace_equivariance:
+    enabled: true
+    max_samples: 1024
+
+
+# -----------------------------------------------------------------------------
 # Timing
 # -----------------------------------------------------------------------------
 timing:
@@ -214,6 +258,54 @@ runner:
       name: energy
       reference_energy: ${references.exact_energy}
       include_terms: true
+      quantiles: ${diagnostic_params.quantiles}
+      include_local_energy_error_quantiles: true
+      sampled_eval_table: ${diagnostic_params.sampled_eval_table}
+      artifact_path: ${run.dir}/diagnostics/energy/sampled_eval_table.csv
+
+    - _target_: spenn.diagnostics.HookePairDistanceProbe
+      name: pair_distance_probe
+      artifact_path: ${run.dir}/diagnostics/pair_distance_probe/probe.csv
+      reference_energy: ${references.exact_energy}
+      include_exact_wavefunction: ${diagnostic_params.pair_distance_probe.include_exact_wavefunction}
+      r12_min: ${diagnostic_params.pair_distance_probe.r12_min}
+      r12_max: ${diagnostic_params.pair_distance_probe.r12_max}
+      n_points: ${diagnostic_params.pair_distance_probe.n_points}
+      n_directions: ${diagnostic_params.pair_distance_probe.n_directions}
+      center_of_mass_radii: ${diagnostic_params.pair_distance_probe.center_of_mass_radii}
+      enabled: ${diagnostic_params.pair_distance_probe.enabled}
+
+    - _target_: spenn.diagnostics.HookePairCenterOfMassProbe
+      name: center_of_mass_probe
+      artifact_path: ${run.dir}/diagnostics/center_of_mass_probe/probe.csv
+      reference_energy: ${references.exact_energy}
+      include_exact_wavefunction: ${diagnostic_params.center_of_mass_probe.include_exact_wavefunction}
+      com_radius_min: ${diagnostic_params.center_of_mass_probe.com_radius_min}
+      com_radius_max: ${diagnostic_params.center_of_mass_probe.com_radius_max}
+      n_points: ${diagnostic_params.center_of_mass_probe.n_points}
+      pair_distance: ${diagnostic_params.center_of_mass_probe.pair_distance}
+      n_directions: ${diagnostic_params.center_of_mass_probe.n_directions}
+      enabled: ${diagnostic_params.center_of_mass_probe.enabled}
+
+    - _target_: spenn.diagnostics.PositionExchangeDiagnostic
+      name: exchange
+      artifact_path: ${run.dir}/diagnostics/exchange/trace.jsonl
+      exchange_contract: ${diagnostic_params.exchange.exchange_contract}
+      max_samples: ${diagnostic_params.exchange.max_samples}
+      enabled: ${diagnostic_params.exchange.enabled}
+
+    - _target_: spenn.diagnostics.RotationDiagnostic
+      name: rotation
+      artifact_path: ${run.dir}/diagnostics/rotation/trace.jsonl
+      max_samples: ${diagnostic_params.rotation.max_samples}
+      n_rotations: ${diagnostic_params.rotation.n_rotations}
+      enabled: ${diagnostic_params.rotation.enabled}
+
+    - _target_: spenn.diagnostics.TraceEquivarianceDiagnostic
+      name: trace_equivariance
+      artifact_path: ${run.dir}/diagnostics/trace_equivariance/trace.jsonl
+      max_samples: ${diagnostic_params.trace_equivariance.max_samples}
+      enabled: ${diagnostic_params.trace_equivariance.enabled}
 
 
 # -----------------------------------------------------------------------------

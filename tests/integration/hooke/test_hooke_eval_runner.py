@@ -534,7 +534,7 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     variance_max = float(cfg.validation.variance_max)
 
     # Reference-energy comparison is owned by the evaluation diagnostic.
-    assert "reference_energy" not in metrics
+    assert metrics["reference_energy"] == pytest.approx(exact_energy)
     assert "abs_energy_error" not in metrics
     assert abs(metrics["energy_error"]) < energy_atol
     assert metrics["energy_abs_error"] < energy_atol

@@ -164,6 +164,14 @@ phases:
         sampler_params.n_walkers: 128
         sampler_params.burn_in: 10
         sampler_params.n_steps: 5
+        diagnostic_params.sampled_eval_table.enabled: true
+        diagnostic_params.sampled_eval_table.max_samples: 1000
+        diagnostic_params.pair_distance_probe.n_points: 16
+        diagnostic_params.center_of_mass_probe.n_points: 16
+        diagnostic_params.exchange.max_samples: 128
+        diagnostic_params.rotation.max_samples: 128
+        diagnostic_params.rotation.n_rotations: 2
+        diagnostic_params.trace_equivariance.max_samples: 128
 
 system:
   n_particles: 2
@@ -205,3 +213,28 @@ final_evaluation:
     burn_in: 1000
     n_steps: 500
     proposal_scale: 0.35
+
+physics_sanity:
+  source_phase: final_eval
+  artifacts:
+    sampled_eval_table:
+      required: false
+    pair_distance_probe:
+      required: true
+    center_of_mass_probe:
+      required: true
+    exchange_trace:
+      required: true
+    rotation_trace:
+      required: true
+    trace_equivariance_trace:
+      required: true
+  thresholds:
+    require_local_energy_finite_fraction: 1.0
+    max_virial_relative_residual_warn: 5.0e-2
+    max_exchange_logabs_error_warn: 1.0e-6
+    max_rotation_logabs_error_warn: 1.0e-6
+    max_rotation_local_energy_error_warn: 1.0e-5
+    max_trace_equivariance_error_warn: 1.0e-6
+  plots:
+    max_scatter_points: 50000

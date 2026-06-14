@@ -178,6 +178,7 @@ class Validation(Callback):
                 local_energy_terms=term_energies,
                 sampler_stats=dict(sampler_stats),
                 hamiltonian_terms=normalized_terms,
+                run_dir=_context_run_dir(event.context),
             )
             metrics = evaluate_diagnostics(self.diagnostics, evaluation, step=0 if step is None else step)
         finally:
@@ -199,6 +200,13 @@ class Validation(Callback):
             step=step,
             namespace=f"{self.namespace}/perf",
         )
+
+
+def _context_run_dir(context):
+    try:
+        return context.run_dir
+    except AttributeError:
+        return None
 
 
 __all__ = ["Validation"]

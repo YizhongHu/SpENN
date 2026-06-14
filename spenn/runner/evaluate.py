@@ -121,6 +121,7 @@ class Evaluate(Runner):
             local_energy_terms=term_energies,
             sampler_stats=dict(sampler_stats),
             hamiltonian_terms=normalized_terms,
+            run_dir=_context_run_dir(context),
         )
         metrics = evaluate_diagnostics(
             self.diagnostics,
@@ -154,6 +155,13 @@ def _load_mode(load) -> str:
     if hasattr(load, "get"):
         return str(load.get("mode", "none"))
     return "none"
+
+
+def _context_run_dir(context: RunContext):
+    try:
+        return context.run_dir
+    except AttributeError:
+        return None
 
 
 __all__ = ["Evaluate"]
