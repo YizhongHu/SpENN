@@ -29,6 +29,22 @@ hydra_value() {
   printf '%s' "${value//,/\\,}"
 }
 
+PASSTHROUGH_ARGS=()
+EXPLICIT_JOB_INDEX=""
+for arg in "$@"; do
+  case "$arg" in
+    job_index=*)
+      EXPLICIT_JOB_INDEX="${arg#job_index=}"
+      ;;
+    *)
+      PASSTHROUGH_ARGS+=("$arg")
+      ;;
+  esac
+done
+if [[ "${#PASSTHROUGH_ARGS[@]}" -eq 1 && "${PASSTHROUGH_ARGS[0]}" == "--" ]]; then
+  PASSTHROUGH_ARGS=()
+fi
+
 case "$DEVICE" in
   cuda)
     VENV="${VENV:-.venv-gpu}"
@@ -88,6 +104,7 @@ uv sync "${SYNC_EXTRAS[@]}"
 source "$VENV/bin/activate"
 
 JOB_INDEX_SWEEP="$(python "$LAUNCHER" --inputs "$INPUTS" --stage "$STAGE" --print-job-index-sweep)"
+JOB_INDEX="${EXPLICIT_JOB_INDEX:-$JOB_INDEX_SWEEP}"
 MANIFEST_HYDRA_OVERRIDES=()
 if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
   mapfile -t MANIFEST_HYDRA_OVERRIDES < <(
@@ -132,14 +149,14 @@ echo "stage=${STAGE}"
 echo "device=${DEVICE}"
 echo "venv=${VENV}"
 echo "hydra_launcher=${HYDRA_LAUNCHER}"
-echo "job_index=${JOB_INDEX_SWEEP}"
+echo "job_index=${JOB_INDEX}"
 echo "run_suffix=${RUN_SUFFIX:-<none>}"
 
 LAUNCH_OVERRIDES=(
   "inputs=${INPUTS}"
   "stage=${STAGE}"
   "device=${DEVICE}"
-  "job_index=${JOB_INDEX_SWEEP}"
+  "job_index=${JOB_INDEX}"
 )
 if [[ -n "$RUN_SUFFIX" ]]; then
   LAUNCH_OVERRIDES+=("run_suffix=${RUN_SUFFIX}")
@@ -149,4 +166,4 @@ HYDRA_FULL_ERROR=1 python "$LAUNCHER" \
   --multirun \
   "${LAUNCH_OVERRIDES[@]}" \
   "${HYDRA_OVERRIDES[@]}" \
-  "$@"
+  "${PASSTHROUGH_ARGS[@]}"

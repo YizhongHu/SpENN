@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -466,6 +467,80 @@ def test_submitit_shell_launcher_uses_sync_activate_and_hydra_submitit() -> None
     assert "SLURM_ARRAY_TASK_ID" not in text
     assert "uv run" not in text
     assert "SEEDS=(" not in text
+
+
+@pytest.mark.parametrize(
+    ("script_name", "extra_env"),
+    [
+        ("launch_array.sh", {}),
+        (
+            "launch_final_submitit.sh",
+            {
+                "INPUTS": "experiments/hooke/studies/pair_validation/reports/final_eval_inputs.csv",
+                "STAGE": "final_train",
+            },
+        ),
+    ],
+)
+def test_submitit_shell_launchers_honor_explicit_job_index_override(
+    tmp_path: Path,
+    script_name: str,
+    extra_env: dict[str, str],
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture_args = tmp_path / "python_args.txt"
+    fake_venv = tmp_path / "venv"
+    (fake_venv / "bin").mkdir(parents=True)
+    (fake_venv / "bin" / "activate").write_text("", encoding="utf-8")
+
+    uv = fake_bin / "uv"
+    uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    uv.chmod(0o755)
+
+    python = fake_bin / "python"
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        "for arg in \"$@\"; do\n"
+        "  if [[ \"$arg\" == \"--print-job-index-sweep\" ]]; then\n"
+        "    printf '0,1,2\\n'\n"
+        "    exit 0\n"
+        "  fi\n"
+        "  if [[ \"$arg\" == \"--print-hydra-overrides\" ]]; then\n"
+        "    exit 0\n"
+        "  fi\n"
+        "done\n"
+        "printf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "VENV": str(fake_venv),
+        "DEVICE": "cpu",
+        "HYDRA_LAUNCHER": "submitit_local",
+        "HYDRA_SWEEP_DIR": str(tmp_path / "sweep"),
+        "CAPTURE_ARGS": str(capture_args),
+        **extra_env,
+    }
+    result = subprocess.run(
+        ["bash", str(STUDY_DIR / script_name), "--", "dry_run=true", "job_index=0"],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "job_index=0\n" in result.stdout
+    assert "job_index=0,1,2" not in result.stdout
+    final_args = capture_args.read_text(encoding="utf-8").splitlines()
+    assert final_args.count("job_index=0") == 1
+    assert "job_index=0,1,2" not in final_args
+    assert "dry_run=true" in final_args
 
 
 def test_final_smoke_inputs_use_real_final_launcher_path() -> None:

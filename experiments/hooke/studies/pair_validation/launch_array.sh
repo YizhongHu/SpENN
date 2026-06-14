@@ -39,6 +39,22 @@ hydra_value() {
   printf '%s' "${value//,/\\,}"
 }
 
+PASSTHROUGH_ARGS=()
+EXPLICIT_JOB_INDEX=""
+for arg in "$@"; do
+  case "$arg" in
+    job_index=*)
+      EXPLICIT_JOB_INDEX="${arg#job_index=}"
+      ;;
+    *)
+      PASSTHROUGH_ARGS+=("$arg")
+      ;;
+  esac
+done
+if [[ "${#PASSTHROUGH_ARGS[@]}" -eq 1 && "${PASSTHROUGH_ARGS[0]}" == "--" ]]; then
+  PASSTHROUGH_ARGS=()
+fi
+
 case "$DEVICE" in
   cuda)
     VENV="${VENV:-.venv-gpu}"
@@ -68,6 +84,7 @@ uv sync "${SYNC_EXTRAS[@]}"
 source "$VENV/bin/activate"
 
 JOB_INDEX_SWEEP="$(python "$LAUNCHER" --manifest "$MANIFEST" --print-job-index-sweep)"
+JOB_INDEX="${EXPLICIT_JOB_INDEX:-$JOB_INDEX_SWEEP}"
 MANIFEST_HYDRA_OVERRIDES=()
 if [[ "$HYDRA_LAUNCHER" == "submitit_slurm" ]]; then
   mapfile -t MANIFEST_HYDRA_OVERRIDES < <(
@@ -107,12 +124,12 @@ echo "manifest=${MANIFEST}"
 echo "device=${DEVICE}"
 echo "venv=${VENV}"
 echo "hydra_launcher=${HYDRA_LAUNCHER}"
-echo "job_index=${JOB_INDEX_SWEEP}"
+echo "job_index=${JOB_INDEX}"
 
 HYDRA_FULL_ERROR=1 python "$LAUNCHER" \
   --multirun \
   "manifest=${MANIFEST}" \
   "device=${DEVICE}" \
-  "job_index=${JOB_INDEX_SWEEP}" \
+  "job_index=${JOB_INDEX}" \
   "${HYDRA_OVERRIDES[@]}" \
-  "$@"
+  "${PASSTHROUGH_ARGS[@]}"
