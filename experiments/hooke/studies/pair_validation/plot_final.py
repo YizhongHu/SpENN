@@ -25,6 +25,9 @@ ARTIFACT_NAMES = (
     "rotation_trace",
     "trace_equivariance_trace",
 )
+REPORT_SIGNIFICANT_DIGITS = 4
+REPORT_SCIENTIFIC_ABS_THRESHOLD = 1.0e-2
+REPORT_SCIENTIFIC_MIN_SIGNIFICANT_DIGITS = 3
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -93,6 +96,7 @@ def plot_final(
         rows=rows,
         summary=summary_rows[0] if summary_rows else {},
         artifact_rows=artifact_rows,
+        tables_dir=tables_dir,
         warnings=outputs["warnings"],
     )
     report_path = report_dir / "final_benchmark_report.md"
@@ -397,6 +401,7 @@ def _report(
     rows: Sequence[Mapping[str, Any]],
     summary: Mapping[str, Any],
     artifact_rows: Sequence[Mapping[str, Any]],
+    tables_dir: Path,
     warnings: Sequence[str],
 ) -> str:
     completed = [row for row in rows if row.get("status") == "completed"]
@@ -427,8 +432,9 @@ def _report(
         "",
         _markdown_table(_energy_reference_preview(rows)),
         "",
-        "- plots/energy_by_run.png",
-        "- plots/energy_error_by_run.png",
+        _plot_image("Energy by run", "plots/energy_by_run.png"),
+        "",
+        _plot_image("Energy error by run", "plots/energy_error_by_run.png"),
         "",
         "## Local-Energy Scalar Diagnostics",
         "",
@@ -438,9 +444,17 @@ def _report(
     if any(_as_bool(row.get("artifact/sampled_eval_table_exists")) for row in rows):
         lines.extend(
             [
-                "- plots/local_energy_histogram.png",
-                "- plots/local_energy_vs_electron_distance.png",
-                "- plots/local_energy_vs_center_of_mass_radius.png",
+                _plot_image("Local energy histogram", "plots/local_energy_histogram.png"),
+                "",
+                _plot_image(
+                    "Local energy vs electron distance",
+                    "plots/local_energy_vs_electron_distance.png",
+                ),
+                "",
+                _plot_image(
+                    "Local energy vs center of mass radius",
+                    "plots/local_energy_vs_center_of_mass_radius.png",
+                ),
                 "",
             ]
         )
@@ -455,33 +469,89 @@ def _report(
         [
             "## Energy Components And Virial",
             "",
-            "- tables/energy_components_and_virial.csv",
+            _markdown_csv_table(
+                tables_dir / "energy_components_and_virial.csv",
+                first_columns=("quantity", "mean", "median", "min", "max"),
+            ),
             "",
             "## Pair-Distance Probe",
             "",
-            "- tables/pair_distance_probe_summary.csv",
-            "- plots/probe_pair_distance_local_energy.png",
-            "- plots/probe_pair_distance_logabs.png",
-            "- plots/probe_pair_distance_relative_abs_psi.png",
-            "- plots/probe_cusp_slope.png",
+            _markdown_csv_table(
+                tables_dir / "pair_distance_probe_summary.csv",
+                first_columns=(
+                    "run",
+                    "max_local_energy_abs_error",
+                    "q95_local_energy_abs_error",
+                    "nonfinite_count",
+                    "max_aligned_logabs_error",
+                    "max_relative_abs_psi_error",
+                    "estimated_cusp_slope",
+                ),
+            ),
+            "",
+            _plot_image(
+                "Pair-distance probe local energy",
+                "plots/probe_pair_distance_local_energy.png",
+            ),
+            "",
+            _plot_image("Pair-distance probe logabs", "plots/probe_pair_distance_logabs.png"),
+            "",
+            _plot_image(
+                "Pair-distance probe relative abs psi",
+                "plots/probe_pair_distance_relative_abs_psi.png",
+            ),
+            "",
+            _plot_image("Cusp slope", "plots/probe_cusp_slope.png"),
             "",
             "## Center-Of-Mass Probe",
             "",
-            "- tables/center_of_mass_probe_summary.csv",
-            "- plots/probe_center_of_mass_logabs.png",
-            "- plots/probe_center_of_mass_relative_abs_psi.png",
+            _markdown_csv_table(
+                tables_dir / "center_of_mass_probe_summary.csv",
+                first_columns=(
+                    "run",
+                    "max_local_energy_abs_error",
+                    "q95_local_energy_abs_error",
+                    "nonfinite_count",
+                    "max_aligned_logabs_error",
+                    "max_relative_abs_psi_error",
+                ),
+            ),
+            "",
+            _plot_image("Center-of-mass probe logabs", "plots/probe_center_of_mass_logabs.png"),
+            "",
+            _plot_image(
+                "Center-of-mass probe relative abs psi",
+                "plots/probe_center_of_mass_relative_abs_psi.png",
+            ),
             "",
             "## Position-Exchange Check",
             "",
-            "- tables/exchange_summary.csv",
+            _markdown_csv_table(
+                tables_dir / "exchange_summary.csv",
+                first_columns=("run", "contract", "max_abs_error", "mean_abs_error", "failure_count", "nonfinite_count"),
+            ),
             "",
             "## Rotation Check",
             "",
-            "- tables/rotation_summary.csv",
+            _markdown_csv_table(
+                tables_dir / "rotation_summary.csv",
+                first_columns=(
+                    "run",
+                    "check_type",
+                    "max_abs_error",
+                    "mean_abs_error",
+                    "local_energy_max_abs_error",
+                    "local_energy_mean_abs_error",
+                    "nonfinite_count",
+                ),
+            ),
             "",
             "## Trace Equivariance Check",
             "",
-            "- tables/trace_equivariance_summary.csv",
+            _markdown_csv_table(
+                tables_dir / "trace_equivariance_summary.csv",
+                first_columns=("run", "check_type", "max_abs_error", "mean_abs_error", "failure_count"),
+            ),
             "",
             "## Warnings",
             "",
@@ -504,6 +574,64 @@ def _report(
     )
     lines.extend(f"- {row.get('path')}" for row in artifact_rows if row.get("artifact_name") == "diagnostics_index" and row.get("exists"))
     return "\n".join(lines) + "\n"
+
+
+def _plot_image(alt_text: str, path: str) -> str:
+    return f"![{alt_text}]({path})"
+
+
+def _markdown_csv_table(
+    path: Path,
+    *,
+    first_columns: Sequence[str] = (),
+    max_rows: int = 25,
+) -> str:
+    rows = _read_csv(path)
+    if len(rows) > max_rows:
+        return f"- {path.parent.name}/{path.name} ({len(rows)} rows)"
+    compact_rows = [_compact_report_table_row(row) for row in rows]
+    ordered_rows = [_order_row(row, first_columns) for row in compact_rows]
+    return _markdown_table(_drop_empty_columns(ordered_rows))
+
+
+def _compact_report_table_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    if "run_dir" in row:
+        output["run"] = _compact_run_label(row.get("run_dir"))
+    for key, value in row.items():
+        if key == "run_dir":
+            continue
+        output[key] = value
+    return output
+
+
+def _compact_run_label(value: Any) -> str:
+    text = str(value or "")
+    name = Path(text).name
+    if name.startswith("train_seed=") and "_eval_seed=" in name:
+        train_seed, eval_seed = name.removeprefix("train_seed=").split("_eval_seed=", 1)
+        return f"{train_seed}/{eval_seed}"
+    return name or text
+
+
+def _order_row(row: Mapping[str, Any], first_columns: Sequence[str]) -> dict[str, Any]:
+    output = {column: row.get(column, "") for column in first_columns if column in row}
+    for key, value in row.items():
+        if key not in output:
+            output[key] = value
+    return output
+
+
+def _drop_empty_columns(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    columns = list(rows[0].keys())
+    kept_columns = [
+        column
+        for column in columns
+        if any(row.get(column) not in (None, "") for row in rows)
+    ]
+    return [{column: row.get(column, "") for column in kept_columns} for row in rows]
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -736,6 +864,11 @@ def _energy_reference_preview(rows: Sequence[Mapping[str, Any]]) -> list[dict[st
             "reference": row.get("eval/reference_energy", ""),
             "error": row.get("eval/energy_error", ""),
             "abs_error": row.get("eval/energy_abs_error", ""),
+            "kinetic": row.get("eval/energy_term_kinetic", ""),
+            "harmonic_trap": row.get("eval/energy_term_harmonic_trap", ""),
+            "electron_electron": row.get("eval/energy_term_electron_electron", ""),
+            "virial_residual": row.get("eval/virial_residual", ""),
+            "virial_rel": row.get("eval/virial_relative_residual", ""),
         }
         for row in rows[:10]
     ]
@@ -759,10 +892,106 @@ def _markdown_table(rows: Sequence[Mapping[str, Any]]) -> str:
     if not rows:
         return "|  |\n| --- |\n|  |"
     columns = list(rows[0].keys())
+    numeric_modes = {column: _markdown_numeric_mode(rows, column) for column in columns}
     lines = ["| " + " | ".join(columns) + " |", "| " + " | ".join("---" for _ in columns) + " |"]
     for row in rows:
-        lines.append("| " + " | ".join(str(row.get(column, "")) for column in columns) + " |")
+        lines.append(
+            "| "
+            + " | ".join(
+                _markdown_cell(row.get(column, ""), numeric_mode=numeric_modes[column])
+                for column in columns
+            )
+            + " |"
+        )
     return "\n".join(lines)
+
+
+def _markdown_numeric_mode(rows: Sequence[Mapping[str, Any]], column: str) -> tuple[str, int | None, int | None] | None:
+    values = [row.get(column) for row in rows]
+    if not any(isinstance(value, float) for value in values):
+        return None
+    finite_values = [
+        abs(float(value))
+        for value in values
+        if _is_report_number(value) and math.isfinite(float(value))
+    ]
+    if any(0.0 < value < REPORT_SCIENTIFIC_ABS_THRESHOLD for value in finite_values):
+        nonzero_values = [value for value in finite_values if value > 0.0]
+        closest = min(nonzero_values) if nonzero_values else 0.0
+        exponent = math.floor(math.log10(closest)) if closest > 0.0 else 0
+        decimals = _scientific_decimal_places(closest, exponent)
+        return ("scientific", exponent, decimals)
+    return ("fixed", None, None)
+
+
+def _markdown_cell(value: Any, *, numeric_mode: tuple[str, int | None, int | None] | None = None) -> str:
+    if value is None:
+        return ""
+    if numeric_mode is not None and _is_report_number(value):
+        value = _format_report_number(
+            float(value),
+            mode=numeric_mode[0],
+            exponent=numeric_mode[1],
+            decimals=numeric_mode[2],
+        )
+    return str(value).replace("\n", "<br>").replace("|", "\\|")
+
+
+def _is_report_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _format_report_number(
+    value: float,
+    *,
+    mode: str,
+    exponent: int | None = None,
+    decimals: int | None = None,
+) -> str:
+    if math.isnan(value):
+        return "nan"
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    if mode == "scientific":
+        if exponent is None:
+            exponent = math.floor(math.log10(abs(value))) if value != 0.0 else 0
+        if decimals is None:
+            decimals = REPORT_SCIENTIFIC_MIN_SIGNIFICANT_DIGITS - 1
+        return _truncate_scientific(value, exponent=exponent, decimals=decimals)
+    return _truncate_fixed_significant(value, significant_digits=REPORT_SIGNIFICANT_DIGITS)
+
+
+def _truncate_fixed_significant(value: float, *, significant_digits: int) -> str:
+    if value == 0.0:
+        return "0"
+    sign = "-" if value < 0.0 else ""
+    magnitude = abs(value)
+    exponent = math.floor(math.log10(magnitude))
+    decimals = significant_digits - exponent - 1
+    if decimals >= 0:
+        factor = 10.0**decimals
+        truncated = math.trunc(magnitude * factor) / factor
+        return f"{sign}{truncated:.{decimals}f}"
+    factor = 10.0 ** (-decimals)
+    truncated = math.trunc(magnitude / factor) * factor
+    return f"{sign}{truncated:.0f}"
+
+
+def _scientific_decimal_places(value: float, exponent: int) -> int:
+    if value == 0.0:
+        return REPORT_SCIENTIFIC_MIN_SIGNIFICANT_DIGITS - 1
+    mantissa = abs(value) / (10.0**exponent)
+    mantissa_exponent = math.floor(math.log10(mantissa)) if mantissa > 0.0 else 0
+    return max(0, REPORT_SCIENTIFIC_MIN_SIGNIFICANT_DIGITS - mantissa_exponent - 1)
+
+
+def _truncate_scientific(value: float, *, exponent: int, decimals: int) -> str:
+    if value == 0.0:
+        return f"{0.0:.{decimals}f}e{exponent:+03d}"
+    mantissa = value / (10.0**exponent)
+    factor = 10.0**decimals
+    truncated = math.trunc(mantissa * factor) / factor
+    return f"{truncated:.{decimals}f}e{exponent:+03d}"
 
 
 __all__ = ["main", "plot_final"]

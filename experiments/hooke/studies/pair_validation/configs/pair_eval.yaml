@@ -204,6 +204,7 @@ diagnostic_params:
     n_directions: 3
     center_of_mass_radii: [0.0, 0.5, 1.0]
     include_exact_wavefunction: true
+    local_energy_chunk_size: 256
 
   center_of_mass_probe:
     enabled: true
@@ -213,6 +214,7 @@ diagnostic_params:
     pair_distance: 1.0
     n_directions: 3
     include_exact_wavefunction: true
+    local_energy_chunk_size: 256
 
   exchange:
     enabled: true
@@ -223,6 +225,7 @@ diagnostic_params:
     enabled: true
     max_samples: 1024
     n_rotations: 8
+    local_energy_chunk_size: 256
 
   trace_equivariance:
     enabled: true
@@ -273,6 +276,7 @@ runner:
       n_points: ${diagnostic_params.pair_distance_probe.n_points}
       n_directions: ${diagnostic_params.pair_distance_probe.n_directions}
       center_of_mass_radii: ${diagnostic_params.pair_distance_probe.center_of_mass_radii}
+      local_energy_chunk_size: ${diagnostic_params.pair_distance_probe.local_energy_chunk_size}
       enabled: ${diagnostic_params.pair_distance_probe.enabled}
 
     - _target_: spenn.diagnostics.HookePairCenterOfMassProbe
@@ -285,6 +289,7 @@ runner:
       n_points: ${diagnostic_params.center_of_mass_probe.n_points}
       pair_distance: ${diagnostic_params.center_of_mass_probe.pair_distance}
       n_directions: ${diagnostic_params.center_of_mass_probe.n_directions}
+      local_energy_chunk_size: ${diagnostic_params.center_of_mass_probe.local_energy_chunk_size}
       enabled: ${diagnostic_params.center_of_mass_probe.enabled}
 
     - _target_: spenn.diagnostics.PositionExchangeDiagnostic
@@ -299,6 +304,7 @@ runner:
       artifact_path: ${run.dir}/diagnostics/rotation/trace.jsonl
       max_samples: ${diagnostic_params.rotation.max_samples}
       n_rotations: ${diagnostic_params.rotation.n_rotations}
+      local_energy_chunk_size: ${diagnostic_params.rotation.local_energy_chunk_size}
       enabled: ${diagnostic_params.rotation.enabled}
 
     - _target_: spenn.diagnostics.TraceEquivarianceDiagnostic

@@ -13,9 +13,8 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.diagnostics.artifacts import update_diagnostic_index
-from spenn.diagnostics.base import EvaluationContext, JsonScalar
+from spenn.diagnostics.base import EvaluationContext, JsonScalar, evaluate_local_energy_in_chunks
 from spenn.equivariance.checks import TraceEquivarianceChecker
-from spenn.physics.hamiltonian import local_energy
 
 
 class PositionExchangeDiagnostic:
@@ -99,12 +98,14 @@ class RotationDiagnostic:
         artifact_path: str | Path | None = None,
         max_samples: int = 1024,
         n_rotations: int = 8,
+        local_energy_chunk_size: int = 256,
         enabled: bool = True,
     ) -> None:
         self.name = str(name)
         self.artifact_path = None if artifact_path is None else Path(artifact_path)
         self.max_samples = int(max_samples)
         self.n_rotations = int(n_rotations)
+        self.local_energy_chunk_size = int(local_energy_chunk_size)
         self.enabled = bool(enabled)
 
     def evaluate(self, context: EvaluationContext) -> Mapping[str, JsonScalar]:
@@ -127,7 +128,16 @@ class RotationDiagnostic:
         with torch.no_grad():
             original_output = context.model(batch)
             rotated_output = context.model(rotated_batch)
-        rotated_energy = local_energy(context.hamiltonian_terms, context.model, rotated_batch, return_terms=False).detach()
+        rotated_energy_result = evaluate_local_energy_in_chunks(
+            context.hamiltonian_terms,
+            context.model,
+            rotated_batch,
+            return_terms=False,
+            chunk_size=self.local_energy_chunk_size,
+        )
+        if not isinstance(rotated_energy_result, torch.Tensor):
+            raise TypeError("rotation local_energy(return_terms=False) must return a torch.Tensor")
+        rotated_energy = rotated_energy_result.detach()
         original_energy = context.local_energy.detach().reshape(-1)[indices].to(device=rotated_energy.device, dtype=rotated_energy.dtype)
         rows = []
         logabs_errors = []

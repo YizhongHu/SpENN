@@ -599,7 +599,32 @@ def test_plot_final_writes_tables_plots_and_report_from_collected_files(tmp_path
     report = (tmp_path / "reports" / "final_benchmark_report.md").read_text()
     assert "Hooke pair final benchmark report" in report
     assert "Position-Exchange Check" in report
+    assert "| train_seed | eval_seed | energy | stderr | reference | error | abs_error | kinetic | harmonic_trap | electron_electron | virial_residual | virial_rel |" in report
+    assert "![Energy by run](plots/energy_by_run.png)" in report
+    assert "![Energy by run](plots/energy_by_run.png)\n\n![Energy error by run]" in report
+    assert "- plots/energy_by_run.png" not in report
+    assert "![Pair-distance probe logabs](plots/probe_pair_distance_logabs.png)" in report
+    assert "| quantity | mean | median | min | max |" in report
+    assert "| run | contract | max_abs_error | mean_abs_error | failure_count | nonfinite_count |" in report
+    assert "\n\n![Pair-distance probe local energy](plots/probe_pair_distance_local_energy.png)" in report
+    assert "![Pair-distance probe logabs](plots/probe_pair_distance_logabs.png)\n\n![Pair-distance probe relative abs psi]" in report
+    assert "- tables/energy_components_and_virial.csv" not in report
+    assert "- tables/exchange_summary.csv" not in report
     assert result["warnings"] == []
+
+
+def test_report_markdown_table_formats_numeric_columns() -> None:
+    table = plot_final._markdown_table(
+        [
+            {"label": "large", "regular": 2.011085943, "tiny": 8.881784197e-16, "mixed": 2.011085943},
+            {"label": "huge", "regular": 121.3793763, "tiny": 1.776356839e-15, "mixed": 0.0034819705},
+            {"label": "small", "regular": 0.097190397, "tiny": 0.0, "mixed": 0.0},
+        ]
+    )
+
+    assert "| large | 2.011 | 8.88e-16 | 2011.08e-03 |" in table
+    assert "| huge | 121.3 | 17.76e-16 | 3.48e-03 |" in table
+    assert "| small | 0.09719 | 0.00e-16 | 0.00e-03 |" in table
 
 
 def test_orchestrator_jobs_and_dry_run_contracts(tmp_path: Path) -> None:

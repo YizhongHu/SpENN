@@ -372,6 +372,17 @@ class _ConstantEnergyTerm:
         return LocalEnergyResult(total=values, terms={"internal": values})
 
 
+class _RequiresGradEnergyTerm:
+    """Hamiltonian term whose output has a graph unless Evaluate detaches it."""
+
+    name = "grad_term"
+
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        positions = batch.positions.detach().clone().requires_grad_(True)
+        values = positions.square().sum(dim=(1, 2))
+        return LocalEnergyResult(total=values, terms={"internal": values})
+
+
 class _SharedContextProbe:
     """Diagnostic stub proving Evaluate passes shared state instead of resampling."""
 
@@ -391,6 +402,18 @@ class _SharedContextProbe:
             "probe_batch_size": int(context.local_energy.numel()),
             "probe_logabs_sum": float(context.wavefunction_output.logabs.sum().item()),
         }
+
+
+class _DetachProbe:
+    """Diagnostic stub checking Evaluate does not retain autograd graphs."""
+
+    name = "detach_probe"
+
+    def evaluate(self, context: EvaluationContext) -> dict[str, int]:
+        assert context.local_energy.requires_grad is False
+        assert context.local_energy_terms is not None
+        assert all(value.requires_grad is False for value in context.local_energy_terms.values())
+        return {"detached": 1}
 
 
 def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
@@ -470,6 +493,24 @@ def test_evaluate_runs_energy_diagnostics_from_shared_context_once() -> None:
     assert sampler_records[0]["n_walkers"] == 3
     assert "energy_mean" not in metrics
     assert not any(key.startswith("sampler.") for key in metrics)
+
+
+def test_evaluate_detaches_shared_local_energy_before_diagnostics() -> None:
+    context = _RecordingContext([])
+    sampler = _StaticSampler(torch.ones(2, 2, 1, dtype=torch.float64))
+    runner = Evaluate(
+        model=_QuadraticModel(),
+        sampler=sampler,
+        hamiltonian_terms={"grad_term": _RequiresGradEnergyTerm()},
+        diagnostics=[_DetachProbe()],
+        return_terms=True,
+    )
+
+    result = runner.run(context)
+
+    assert result.status == "completed"
+    metrics = [m for ns, m in context.records if ns == "eval"][0]
+    assert metrics["detached"] == 1
 
 
 def test_energy_evaluation_fails_when_terms_were_not_returned() -> None:

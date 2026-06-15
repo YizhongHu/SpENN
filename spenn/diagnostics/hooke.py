@@ -13,8 +13,8 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.diagnostics.artifacts import update_diagnostic_index
-from spenn.diagnostics.base import EvaluationContext, JsonScalar
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy
+from spenn.diagnostics.base import EvaluationContext, JsonScalar, evaluate_local_energy_in_chunks
+from spenn.physics.hamiltonian import LocalEnergyResult
 from spenn.physics.hooke import HookeSingletExact
 
 
@@ -33,6 +33,7 @@ class HookePairDistanceProbe:
         n_points: int = 200,
         n_directions: int = 3,
         center_of_mass_radii: Sequence[float] = (0.0, 0.5, 1.0),
+        local_energy_chunk_size: int = 256,
         enabled: bool = True,
     ) -> None:
         self.name = str(name)
@@ -45,6 +46,7 @@ class HookePairDistanceProbe:
         self.n_points = int(n_points)
         self.n_directions = int(n_directions)
         self.center_of_mass_radii = tuple(float(value) for value in center_of_mass_radii)
+        self.local_energy_chunk_size = int(local_energy_chunk_size)
         self.enabled = bool(enabled)
 
     def evaluate(self, context: EvaluationContext) -> Mapping[str, JsonScalar]:
@@ -70,6 +72,7 @@ class HookePairDistanceProbe:
             reference_energy=self.reference_energy,
             include_exact_wavefunction=self.include_exact_wavefunction,
             exact_wavefunction=self.exact_wavefunction,
+            local_energy_chunk_size=self.local_energy_chunk_size,
         )
         _write_probe_csv(path, rows, include_exact=self.include_exact_wavefunction)
         _register_artifact(context, name=self.name, path=path, created_by=type(self).__name__)
@@ -96,6 +99,7 @@ class HookePairCenterOfMassProbe:
         n_points: int = 200,
         pair_distance: float = 1.0,
         n_directions: int = 3,
+        local_energy_chunk_size: int = 256,
         enabled: bool = True,
     ) -> None:
         self.name = str(name)
@@ -108,6 +112,7 @@ class HookePairCenterOfMassProbe:
         self.n_points = int(n_points)
         self.pair_distance = float(pair_distance)
         self.n_directions = int(n_directions)
+        self.local_energy_chunk_size = int(local_energy_chunk_size)
         self.enabled = bool(enabled)
 
     def evaluate(self, context: EvaluationContext) -> Mapping[str, JsonScalar]:
@@ -133,6 +138,7 @@ class HookePairCenterOfMassProbe:
             reference_energy=self.reference_energy,
             include_exact_wavefunction=self.include_exact_wavefunction,
             exact_wavefunction=self.exact_wavefunction,
+            local_energy_chunk_size=self.local_energy_chunk_size,
         )
         _write_probe_csv(path, rows, include_exact=self.include_exact_wavefunction)
         _register_artifact(context, name=self.name, path=path, created_by=type(self).__name__)
@@ -214,12 +220,19 @@ def _evaluate_probe_rows(
     reference_energy: float | None,
     include_exact_wavefunction: bool,
     exact_wavefunction: object,
+    local_energy_chunk_size: int,
 ) -> list[dict[str, Any]]:
     if not positions:
         return []
     stacked = torch.stack([row["positions"] for row in positions])
     batch = _batch_like(context, stacked)
-    model_result = local_energy(context.hamiltonian_terms, context.model, batch, return_terms=True)
+    model_result = evaluate_local_energy_in_chunks(
+        context.hamiltonian_terms,
+        context.model,
+        batch,
+        return_terms=True,
+        chunk_size=local_energy_chunk_size,
+    )
     if not isinstance(model_result, LocalEnergyResult):
         raise TypeError("probe local_energy(return_terms=True) must return LocalEnergyResult")
     with torch.no_grad():
@@ -227,7 +240,13 @@ def _evaluate_probe_rows(
     exact_result = None
     exact_output = None
     if include_exact_wavefunction:
-        exact_result = local_energy(context.hamiltonian_terms, exact_wavefunction, batch, return_terms=True)
+        exact_result = evaluate_local_energy_in_chunks(
+            context.hamiltonian_terms,
+            exact_wavefunction,
+            batch,
+            return_terms=True,
+            chunk_size=local_energy_chunk_size,
+        )
         if not isinstance(exact_result, LocalEnergyResult):
             raise TypeError("exact probe local_energy(return_terms=True) must return LocalEnergyResult")
         with torch.no_grad():

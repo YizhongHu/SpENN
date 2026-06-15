@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 import torch
 
+import spenn.diagnostics.base as diagnostics_base
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.diagnostics import (
     EvaluationContext,
@@ -86,6 +87,36 @@ def test_hooke_pair_distance_probe_writes_required_and_exact_columns(tmp_path: P
     assert metrics["probe_pair_distance/nonfinite_count"] == 0
 
 
+def test_hooke_pair_distance_probe_chunks_local_energy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _context(tmp_path)
+    calls = []
+
+    def fake_local_energy(terms, wavefunction, batch, *, return_terms=False):
+        calls.append(batch.batch_size)
+        values = torch.arange(batch.batch_size, device=batch.device, dtype=batch.dtype)
+        return LocalEnergyResult(
+            total=values,
+            terms={
+                "kinetic": values,
+                "harmonic_trap": values,
+                "electron_electron": values,
+            },
+        )
+
+    monkeypatch.setattr(diagnostics_base, "local_energy", fake_local_energy)
+
+    HookePairDistanceProbe(
+        r12_min=0.1,
+        r12_max=1.0,
+        n_points=5,
+        n_directions=1,
+        center_of_mass_radii=[0.0],
+        local_energy_chunk_size=2,
+    ).evaluate(context)
+
+    assert calls == [2, 2, 1, 2, 2, 1]
+
+
 def test_hooke_center_of_mass_probe_writes_artifact_and_index(tmp_path: Path) -> None:
     context = _context(tmp_path)
 
@@ -121,6 +152,21 @@ def test_rotation_diagnostic_writes_trace_and_scalar_metrics(tmp_path: Path) -> 
     assert metrics["checks/rotation/nonfinite_count"] == 0
     assert metrics["checks/rotation/logabs_max_abs_error"] == pytest.approx(0.0, abs=1.0e-10)
     assert (tmp_path / "diagnostics" / "rotation" / "trace.jsonl").exists()
+
+
+def test_rotation_diagnostic_chunks_rotated_local_energy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _context(tmp_path)
+    calls = []
+
+    def fake_local_energy(terms, wavefunction, batch, *, return_terms=False):
+        calls.append(batch.batch_size)
+        return torch.arange(batch.batch_size, device=batch.device, dtype=batch.dtype)
+
+    monkeypatch.setattr(diagnostics_base, "local_energy", fake_local_energy)
+
+    RotationDiagnostic(max_samples=2, n_rotations=3, local_energy_chunk_size=2).evaluate(context)
+
+    assert calls == [2, 2, 2]
 
 
 class _FermionicToy(EquivariantMap):
