@@ -613,6 +613,241 @@ def test_plot_final_writes_tables_plots_and_report_from_collected_files(tmp_path
     assert result["warnings"] == []
 
 
+def test_pair_probe_local_energy_grid_groups_models_and_sorts_paths(tmp_path: Path) -> None:
+    rows = [
+        {
+            "run_dir": "outputs/train_seed=101_eval_seed=100001",
+            "config_id": "cfg",
+            "training_seed": 101,
+            "eval_seed": 100001,
+            "load.path": "checkpoint-101",
+            "pair_distance": 0.3,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_local_energy": 2.3,
+            "exact_local_energy": 2.0,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "pair_distance": 0.2,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_local_energy": 2.2,
+            "exact_local_energy": 2.0,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "pair_distance": 0.1,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_local_energy": 2.1,
+            "exact_local_energy": 2.0,
+        },
+    ]
+
+    groups = plot_final._pair_probe_model_groups(rows)
+
+    assert [label for label, _ in groups] == ["train_seed=100", "train_seed=101"]
+    assert plot_final._pair_probe_path_values(groups[0][1]) == [[(0.1, 2.1), (0.2, 2.2)]]
+    assert plot_final._pair_probe_local_energy_grid(rows, tmp_path / "grid.png") == str(tmp_path / "grid.png")
+    assert (tmp_path / "grid.png").exists()
+
+
+def test_pair_probe_logabs_grid_groups_models_and_exact_com_curves(tmp_path: Path) -> None:
+    rows = [
+        {
+            "run_dir": "outputs/train_seed=101_eval_seed=100001",
+            "config_id": "cfg",
+            "training_seed": 101,
+            "eval_seed": 100001,
+            "load.path": "checkpoint-101",
+            "pair_distance": 0.1,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_logabs": -0.3,
+            "model_relative_abs_psi": 0.75,
+            "exact_logabs": -0.1,
+            "exact_relative_abs_psi": 0.9,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "pair_distance": 0.2,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_logabs": -0.2,
+            "model_relative_abs_psi": 0.8,
+            "exact_logabs": -0.2,
+            "exact_relative_abs_psi": 0.8,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "pair_distance": 0.1,
+            "center_of_mass_radius": 0.0,
+            "direction_id": 0,
+            "model_logabs": -0.1,
+            "model_relative_abs_psi": 0.9,
+            "exact_logabs": -0.1,
+            "exact_relative_abs_psi": 0.9,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "pair_distance": 0.2,
+            "center_of_mass_radius": 0.5,
+            "direction_id": 0,
+            "model_logabs": -0.4,
+            "model_relative_abs_psi": 0.6,
+            "exact_logabs": -0.325,
+            "exact_relative_abs_psi": 0.6,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "pair_distance": 0.1,
+            "center_of_mass_radius": 0.5,
+            "direction_id": 0,
+            "model_logabs": -0.3,
+            "model_relative_abs_psi": 0.7,
+            "exact_logabs": -0.225,
+            "exact_relative_abs_psi": 0.7,
+        },
+    ]
+    groups = plot_final._pair_probe_model_groups(rows)
+
+    assert [label for label, _ in groups] == ["train_seed=100", "train_seed=101"]
+    assert plot_final._pair_probe_path_values(groups[0][1], y_key="model_logabs") == [
+        [(0.1, -0.1), (0.2, -0.2)],
+        [(0.1, -0.3), (0.2, -0.4)],
+    ]
+    assert plot_final._pair_probe_exact_logabs_curves(rows) == [
+        (0.0, [(0.1, -0.1), (0.2, -0.2)]),
+        (0.5, [(0.1, -0.225), (0.2, -0.325)]),
+    ]
+    assert plot_final._pair_probe_exact_relative_abs_psi_curves(rows) == [
+        (0.0, [(0.1, 0.9), (0.2, 0.8)]),
+        (0.5, [(0.1, 0.7), (0.2, 0.6)]),
+    ]
+    assert plot_final._pair_probe_slope_values(groups[0][1], y_key="model_logabs") == [
+        [(0.15000000000000002, -1.0)],
+        [(0.15000000000000002, -1.0000000000000002)],
+    ]
+    assert plot_final._pair_probe_logabs_grid(rows, tmp_path / "logabs_grid.png") == str(tmp_path / "logabs_grid.png")
+    assert plot_final._pair_probe_relative_abs_psi_grid(rows, tmp_path / "relative_grid.png") == str(tmp_path / "relative_grid.png")
+    assert plot_final._cusp_plot(rows, tmp_path / "cusp_grid.png") == str(tmp_path / "cusp_grid.png")
+    assert (tmp_path / "logabs_grid.png").exists()
+    assert (tmp_path / "relative_grid.png").exists()
+    assert (tmp_path / "cusp_grid.png").exists()
+
+
+def test_center_probe_grid_groups_by_pair_distance(tmp_path: Path) -> None:
+    rows = [
+        {
+            "run_dir": "outputs/train_seed=101_eval_seed=100001",
+            "config_id": "cfg",
+            "training_seed": 101,
+            "eval_seed": 100001,
+            "load.path": "checkpoint-101",
+            "center_of_mass_radius": 0.1,
+            "pair_distance": 1.0,
+            "direction_id": 0,
+            "model_logabs": -0.5,
+            "exact_logabs": -0.1,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "center_of_mass_radius": 0.2,
+            "pair_distance": 2.0,
+            "direction_id": 0,
+            "model_logabs": -0.4,
+            "exact_logabs": -0.4,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "center_of_mass_radius": 0.2,
+            "pair_distance": 1.0,
+            "direction_id": 0,
+            "model_logabs": -0.2,
+            "exact_logabs": -0.2,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "center_of_mass_radius": 0.1,
+            "pair_distance": 1.0,
+            "direction_id": 0,
+            "model_logabs": -0.1,
+            "exact_logabs": -0.1,
+        },
+        {
+            "run_dir": "outputs/train_seed=100_eval_seed=100000",
+            "config_id": "cfg",
+            "training_seed": 100,
+            "eval_seed": 100000,
+            "load.path": "checkpoint-100",
+            "center_of_mass_radius": 0.1,
+            "pair_distance": 2.0,
+            "direction_id": 0,
+            "model_logabs": -0.3,
+            "exact_logabs": -0.3,
+        },
+    ]
+    groups = plot_final._pair_probe_model_groups(rows)
+
+    assert [label for label, _ in groups] == ["train_seed=100", "train_seed=101"]
+    assert plot_final._center_probe_path_values(groups[0][1], y_key="model_logabs") == [
+        [(0.1, -0.1), (0.2, -0.2)],
+        [(0.1, -0.3), (0.2, -0.4)],
+    ]
+    assert plot_final._center_probe_exact_curves(rows, y_key="exact_logabs") == [
+        (1.0, [(0.1, -0.1), (0.2, -0.2)]),
+        (2.0, [(0.1, -0.3), (0.2, -0.4)]),
+    ]
+    assert (
+        plot_final._center_probe_grid(
+            rows,
+            tmp_path / "center_grid.png",
+            y_key="model_logabs",
+            exact_key="exact_logabs",
+            ylabel="model_logabs",
+        )
+        == str(tmp_path / "center_grid.png")
+    )
+    assert (tmp_path / "center_grid.png").exists()
+
+
 def test_report_markdown_table_formats_numeric_columns() -> None:
     table = plot_final._markdown_table(
         [

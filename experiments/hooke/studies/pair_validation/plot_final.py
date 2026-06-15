@@ -293,9 +293,9 @@ def _write_pair_probe_plots(rows: Sequence[Mapping[str, Any]], plots_dir: Path) 
     if not rows:
         return []
     plots = []
-    plots.append(_scatter_plot(rows, "pair_distance", "model_local_energy", plots_dir / "probe_pair_distance_local_energy.png", hline=_first_finite(rows, "exact_local_energy")))
-    plots.append(_scatter_plot(rows, "pair_distance", "model_logabs", plots_dir / "probe_pair_distance_logabs.png", exact_key="exact_logabs", sign_key="model_sign"))
-    plots.append(_scatter_plot(rows, "pair_distance", "model_relative_abs_psi", plots_dir / "probe_pair_distance_relative_abs_psi.png", exact_key="exact_relative_abs_psi", sign_key="model_sign"))
+    plots.append(_pair_probe_local_energy_grid(rows, plots_dir / "probe_pair_distance_local_energy.png"))
+    plots.append(_pair_probe_logabs_grid(rows, plots_dir / "probe_pair_distance_logabs.png"))
+    plots.append(_pair_probe_relative_abs_psi_grid(rows, plots_dir / "probe_pair_distance_relative_abs_psi.png"))
     plots.append(_cusp_plot(rows, plots_dir / "probe_cusp_slope.png"))
     return plots
 
@@ -304,8 +304,20 @@ def _write_center_probe_plots(rows: Sequence[Mapping[str, Any]], plots_dir: Path
     if not rows:
         return []
     return [
-        _scatter_plot(rows, "center_of_mass_radius", "model_logabs", plots_dir / "probe_center_of_mass_logabs.png", exact_key="exact_logabs", sign_key="model_sign"),
-        _scatter_plot(rows, "center_of_mass_radius", "model_relative_abs_psi", plots_dir / "probe_center_of_mass_relative_abs_psi.png", exact_key="exact_relative_abs_psi", sign_key="model_sign"),
+        _center_probe_grid(
+            rows,
+            plots_dir / "probe_center_of_mass_logabs.png",
+            y_key="model_logabs",
+            exact_key="exact_logabs",
+            ylabel="model_logabs",
+        ),
+        _center_probe_grid(
+            rows,
+            plots_dir / "probe_center_of_mass_relative_abs_psi.png",
+            y_key="model_relative_abs_psi",
+            exact_key="exact_relative_abs_psi",
+            ylabel="model_relative_abs_psi",
+        ),
     ]
 
 
@@ -366,32 +378,417 @@ def _scatter_plot(
     return str(path)
 
 
-def _cusp_plot(rows: Sequence[Mapping[str, Any]], path: Path) -> str:
+def _pair_probe_local_energy_grid(rows: Sequence[Mapping[str, Any]], path: Path) -> str:
+    model_groups = _pair_probe_model_groups(rows)
     plt = _pyplot()
-    by_group: dict[tuple[Any, Any], list[tuple[float, float]]] = {}
-    for row in rows:
-        key = (row.get("direction_id"), row.get("center_of_mass_radius"))
-        pair = (_as_float(row.get("pair_distance")), _as_float(row.get("model_logabs")))
-        if all(math.isfinite(value) for value in pair):
-            by_group.setdefault(key, []).append(pair)
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    for key, values in by_group.items():
-        values = sorted(values)
-        slopes = []
-        xs = []
-        for (x0, y0), (x1, y1) in zip(values, values[1:]):
-            if x1 != x0:
-                xs.append(0.5 * (x0 + x1))
-                slopes.append((y1 - y0) / (x1 - x0))
-        if xs:
-            ax.plot(xs, slopes, linewidth=1, alpha=0.7, label=str(key))
-    ax.axhline(0.5, color="black", linewidth=1, linestyle="--")
-    ax.set_xlabel("pair_distance")
-    ax.set_ylabel("d log|psi| / d r12")
+    n_models = max(len(model_groups), 1)
+    n_cols = min(4, math.ceil(math.sqrt(n_models)))
+    n_rows = math.ceil(n_models / n_cols)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.0 * n_cols, 3.0 * n_rows),
+        sharex=True,
+        sharey=False,
+        squeeze=False,
+    )
+    axes_list = list(axes.flat)
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0"])
+    for index, (label, model_rows) in enumerate(model_groups):
+        ax = axes_list[index]
+        color = colors[index % len(colors)]
+        for values in _pair_probe_path_values(model_rows):
+            x_values = [x for x, _ in values]
+            y_values = [y for _, y in values]
+            ax.plot(
+                x_values,
+                y_values,
+                color=color,
+                linewidth=0.9,
+                marker="o",
+                markersize=2.0,
+                alpha=0.75,
+            )
+        exact_energy = _first_finite(model_rows, "exact_local_energy")
+        if exact_energy is not None and math.isfinite(exact_energy):
+            ax.axhline(exact_energy, color="black", linewidth=1, linestyle="--")
+        ax.set_title(label, fontsize=9)
+        ax.grid(alpha=0.2)
+    for ax in axes_list[len(model_groups):]:
+        ax.axis("off")
+    fig.supxlabel("pair_distance")
+    fig.supylabel("model_local_energy")
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
     return str(path)
+
+
+def _pair_probe_logabs_grid(rows: Sequence[Mapping[str, Any]], path: Path) -> str:
+    return _pair_probe_curve_grid(
+        rows,
+        path,
+        y_key="model_logabs",
+        exact_key="exact_logabs",
+        ylabel="model_logabs",
+        sharey=True,
+    )
+
+
+def _pair_probe_relative_abs_psi_grid(rows: Sequence[Mapping[str, Any]], path: Path) -> str:
+    return _pair_probe_curve_grid(
+        rows,
+        path,
+        y_key="model_relative_abs_psi",
+        exact_key="exact_relative_abs_psi",
+        ylabel="model_relative_abs_psi",
+        sharey=True,
+    )
+
+
+def _pair_probe_curve_grid(
+    rows: Sequence[Mapping[str, Any]],
+    path: Path,
+    *,
+    y_key: str,
+    exact_key: str,
+    ylabel: str,
+    sharey: bool,
+) -> str:
+    model_groups = _pair_probe_model_groups(rows)
+    exact_curves = _pair_probe_exact_curves(rows, y_key=exact_key)
+    plt = _pyplot()
+    n_models = max(len(model_groups), 1)
+    n_cols = min(4, math.ceil(math.sqrt(n_models)))
+    n_rows = math.ceil(n_models / n_cols)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.0 * n_cols, 3.0 * n_rows),
+        sharex=True,
+        sharey=sharey,
+        squeeze=False,
+    )
+    axes_list = list(axes.flat)
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0"])
+    exact_colors = ["black", "0.35", "0.6", "0.8"]
+    for index, (label, model_rows) in enumerate(model_groups):
+        ax = axes_list[index]
+        color = colors[index % len(colors)]
+        model_label_used = False
+        for values in _pair_probe_path_values(model_rows, y_key=y_key):
+            x_values = [x for x, _ in values]
+            y_values = [y for _, y in values]
+            ax.plot(
+                x_values,
+                y_values,
+                color=color,
+                linewidth=0.8,
+                marker="o",
+                markersize=1.8,
+                alpha=0.55,
+                label="model" if index == 0 and not model_label_used else None,
+            )
+            model_label_used = True
+        for curve_index, (center_of_mass, values) in enumerate(exact_curves):
+            x_values = [x for x, _ in values]
+            y_values = [y for _, y in values]
+            ax.plot(
+                x_values,
+                y_values,
+                color=exact_colors[curve_index % len(exact_colors)],
+                linewidth=1.0,
+                linestyle="--",
+                alpha=0.9,
+                label=f"exact COM={center_of_mass:g}" if index == 0 else None,
+            )
+        ax.set_title(label, fontsize=9)
+        ax.grid(alpha=0.2)
+        if index == 0 and ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=6)
+    for ax in axes_list[len(model_groups):]:
+        ax.axis("off")
+    fig.supxlabel("pair_distance")
+    fig.supylabel(ylabel)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return str(path)
+
+
+def _center_probe_grid(
+    rows: Sequence[Mapping[str, Any]],
+    path: Path,
+    *,
+    y_key: str,
+    exact_key: str,
+    ylabel: str,
+) -> str:
+    model_groups = _pair_probe_model_groups(rows)
+    exact_curves = _center_probe_exact_curves(rows, y_key=exact_key)
+    pair_distances = [pair_distance for pair_distance, _ in exact_curves]
+    plt = _pyplot()
+    n_models = max(len(model_groups), 1)
+    n_cols = min(4, math.ceil(math.sqrt(n_models)))
+    n_rows = math.ceil(n_models / n_cols)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.0 * n_cols, 3.0 * n_rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axes_list = list(axes.flat)
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0"])
+    pair_colors = {pair_distance: colors[index % len(colors)] for index, pair_distance in enumerate(pair_distances)}
+    for index, (label, model_rows) in enumerate(model_groups):
+        ax = axes_list[index]
+        model_labels_used: set[float] = set()
+        for path_key, values in _center_probe_path_series(model_rows, y_key=y_key):
+            pair_distance = _as_float(path_key[1])
+            color = pair_colors.get(pair_distance, colors[0])
+            x_values = [x for x, _ in values]
+            y_values = [y for _, y in values]
+            model_label = f"model r12={pair_distance:g}"
+            ax.plot(
+                x_values,
+                y_values,
+                color=color,
+                linewidth=0.8,
+                marker="o",
+                markersize=1.8,
+                alpha=0.55,
+                label=model_label if index == 0 and pair_distance not in model_labels_used else None,
+            )
+            model_labels_used.add(pair_distance)
+        for pair_distance, values in exact_curves:
+            color = pair_colors.get(pair_distance, "black")
+            x_values = [x for x, _ in values]
+            y_values = [y for _, y in values]
+            ax.plot(
+                x_values,
+                y_values,
+                color=color,
+                linewidth=1.0,
+                linestyle="--",
+                alpha=0.9,
+                label=f"exact r12={pair_distance:g}" if index == 0 else None,
+            )
+        ax.set_title(label, fontsize=9)
+        ax.grid(alpha=0.2)
+        if index == 0 and ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=6)
+    for ax in axes_list[len(model_groups):]:
+        ax.axis("off")
+    fig.supxlabel("center_of_mass_radius")
+    fig.supylabel(ylabel)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return str(path)
+
+
+def _pair_probe_model_groups(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[tuple[str, list[Mapping[str, Any]]]]:
+    grouped: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
+    exemplars: dict[tuple[Any, ...], Mapping[str, Any]] = {}
+    for row in rows:
+        key = _model_group_key(row)
+        grouped.setdefault(key, []).append(row)
+        exemplars.setdefault(key, row)
+    return [
+        (_model_group_label(exemplars[key]), grouped[key])
+        for key in sorted(grouped, key=lambda item: _model_group_label(exemplars[item]))
+    ]
+
+
+def _model_group_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    config_id = row.get("config_id")
+    training_seed = row.get("training_seed")
+    load_path = row.get("load.path")
+    if any(value not in (None, "") for value in (config_id, training_seed, load_path)):
+        return (config_id, training_seed, load_path)
+    return (row.get("run_dir", ""),)
+
+
+def _model_group_label(row: Mapping[str, Any]) -> str:
+    training_seed = row.get("training_seed")
+    if training_seed not in (None, ""):
+        return f"train_seed={training_seed}"
+    return _compact_run_label(row.get("run_dir")) or "model"
+
+
+def _pair_probe_path_values(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str = "model_local_energy",
+) -> list[list[tuple[float, float]]]:
+    return [
+        values
+        for _, values in _probe_path_series(
+            rows,
+            x_key="pair_distance",
+            y_key=y_key,
+            path_keys=("eval_seed", "center_of_mass_radius", "direction_id"),
+        )
+    ]
+
+
+def _center_probe_path_values(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str,
+) -> list[list[tuple[float, float]]]:
+    return [values for _, values in _center_probe_path_series(rows, y_key=y_key)]
+
+
+def _center_probe_path_series(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str,
+) -> list[tuple[tuple[Any, ...], list[tuple[float, float]]]]:
+    return _probe_path_series(
+        rows,
+        x_key="center_of_mass_radius",
+        y_key=y_key,
+        path_keys=("eval_seed", "pair_distance", "direction_id"),
+    )
+
+
+def _probe_path_series(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+    path_keys: Sequence[str],
+) -> list[tuple[tuple[Any, ...], list[tuple[float, float]]]]:
+    by_path: dict[tuple[Any, ...], list[tuple[float, float]]] = {}
+    for row in rows:
+        x_value = _as_float(row.get(x_key))
+        y_value = _as_float(row.get(y_key))
+        if not (math.isfinite(x_value) and math.isfinite(y_value)):
+            continue
+        path_key = tuple(row.get(key) for key in path_keys)
+        by_path.setdefault(path_key, []).append((x_value, y_value))
+    return [
+        (key, sorted(values, key=lambda item: item[0]))
+        for key, values in sorted(by_path.items(), key=lambda item: tuple(str(part) for part in item[0]))
+    ]
+
+
+def _pair_probe_exact_logabs_curves(rows: Sequence[Mapping[str, Any]]) -> list[tuple[float, list[tuple[float, float]]]]:
+    return _pair_probe_exact_curves(rows, y_key="exact_logabs")
+
+
+def _pair_probe_exact_relative_abs_psi_curves(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[tuple[float, list[tuple[float, float]]]]:
+    return _pair_probe_exact_curves(rows, y_key="exact_relative_abs_psi")
+
+
+def _pair_probe_exact_curves(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str,
+) -> list[tuple[float, list[tuple[float, float]]]]:
+    return _probe_exact_curves(
+        rows,
+        x_key="pair_distance",
+        y_key=y_key,
+        group_key="center_of_mass_radius",
+    )
+
+
+def _center_probe_exact_curves(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str,
+) -> list[tuple[float, list[tuple[float, float]]]]:
+    return _probe_exact_curves(
+        rows,
+        x_key="center_of_mass_radius",
+        y_key=y_key,
+        group_key="pair_distance",
+    )
+
+
+def _probe_exact_curves(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+    group_key: str,
+) -> list[tuple[float, list[tuple[float, float]]]]:
+    by_point: dict[tuple[float, float], list[float]] = {}
+    for row in rows:
+        group_value = _as_float(row.get(group_key))
+        x_value = _as_float(row.get(x_key))
+        y_value = _as_float(row.get(y_key))
+        if not all(math.isfinite(value) for value in (group_value, x_value, y_value)):
+            continue
+        by_point.setdefault((group_value, x_value), []).append(y_value)
+
+    by_group: dict[float, list[tuple[float, float]]] = {}
+    for (group_value, x_value), values in by_point.items():
+        by_group.setdefault(group_value, []).append((x_value, _median(values)))
+    return [
+        (group_value, sorted(values, key=lambda item: item[0]))
+        for group_value, values in sorted(by_group.items())
+    ]
+
+
+def _cusp_plot(rows: Sequence[Mapping[str, Any]], path: Path) -> str:
+    model_groups = _pair_probe_model_groups(rows)
+    plt = _pyplot()
+    n_models = max(len(model_groups), 1)
+    n_cols = min(4, math.ceil(math.sqrt(n_models)))
+    n_rows = math.ceil(n_models / n_cols)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.0 * n_cols, 3.0 * n_rows),
+        sharex=True,
+        sharey=False,
+        squeeze=False,
+    )
+    axes_list = list(axes.flat)
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0"])
+    for index, (label, model_rows) in enumerate(model_groups):
+        ax = axes_list[index]
+        color = colors[index % len(colors)]
+        for values in _pair_probe_slope_values(model_rows, y_key="model_logabs"):
+            x_values = [x for x, _ in values]
+            y_values = [y for _, y in values]
+            ax.plot(x_values, y_values, color=color, linewidth=0.9, marker="o", markersize=1.8, alpha=0.65)
+        ax.axhline(0.5, color="black", linewidth=1, linestyle="--")
+        ax.set_title(label, fontsize=9)
+        ax.grid(alpha=0.2)
+    for ax in axes_list[len(model_groups):]:
+        ax.axis("off")
+    fig.supxlabel("pair_distance")
+    fig.supylabel("d log|psi| / d r12")
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return str(path)
+
+
+def _pair_probe_slope_values(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str,
+) -> list[list[tuple[float, float]]]:
+    slopes = []
+    for values in _pair_probe_path_values(rows, y_key=y_key):
+        path_slopes = []
+        for (x0, y0), (x1, y1) in zip(values, values[1:]):
+            if x1 != x0:
+                path_slopes.append((0.5 * (x0 + x1), (y1 - y0) / (x1 - x0)))
+        if path_slopes:
+            slopes.append(path_slopes)
+    return slopes
 
 
 def _report(
@@ -662,7 +1059,16 @@ def _read_artifact_csvs(rows: Sequence[Mapping[str, Any]], artifact_name: str) -
     combined = []
     for row in rows:
         for item in _read_csv_if_present(row.get(f"artifact/{artifact_name}")):
-            combined.append({"run_dir": row.get("run_dir", ""), **item})
+            combined.append(
+                {
+                    "run_dir": row.get("run_dir", ""),
+                    "config_id": row.get("config_id", ""),
+                    "training_seed": row.get("training_seed", ""),
+                    "eval_seed": row.get("eval_seed", ""),
+                    "load.path": row.get("load.path", ""),
+                    **item,
+                }
+            )
     return combined
 
 
