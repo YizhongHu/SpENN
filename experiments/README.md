@@ -37,5 +37,6 @@ experiments/
       smoke/        legacy cheap end-to-end test configs
       benchmark/    legacy benchmark-shaped test/reference configs
     studies/
+      exact_cusp_diagnostics/  exact Hooke singlet local-energy/cusp diagnostic
       pair_validation/   validation scan: manifest, collector, selector
 ```
