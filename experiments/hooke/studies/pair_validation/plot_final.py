@@ -471,12 +471,18 @@ def _pair_probe_curve_grid(
     )
     axes_list = list(axes.flat)
     colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["C0"])
-    exact_colors = ["black", "0.35", "0.6", "0.8"]
+    center_colors = _pair_probe_center_colors(
+        colors,
+        model_groups=model_groups,
+        exact_curves=exact_curves,
+        y_key=y_key,
+    )
     for index, (label, model_rows) in enumerate(model_groups):
         ax = axes_list[index]
-        color = colors[index % len(colors)]
-        model_label_used = False
-        for values in _pair_probe_path_values(model_rows, y_key=y_key):
+        model_labels_used: set[float] = set()
+        for path_key, values in _pair_probe_path_series(model_rows, y_key=y_key):
+            center_of_mass = _as_float(path_key[1])
+            color = center_colors.get(center_of_mass, colors[0])
             x_values = [x for x, _ in values]
             y_values = [y for _, y in values]
             ax.plot(
@@ -487,16 +493,20 @@ def _pair_probe_curve_grid(
                 marker="o",
                 markersize=1.8,
                 alpha=0.55,
-                label="model" if index == 0 and not model_label_used else None,
+                label=(
+                    f"model COM={center_of_mass:g}"
+                    if index == 0 and math.isfinite(center_of_mass) and center_of_mass not in model_labels_used
+                    else None
+                ),
             )
-            model_label_used = True
-        for curve_index, (center_of_mass, values) in enumerate(exact_curves):
+            model_labels_used.add(center_of_mass)
+        for center_of_mass, values in exact_curves:
             x_values = [x for x, _ in values]
             y_values = [y for _, y in values]
             ax.plot(
                 x_values,
                 y_values,
-                color=exact_colors[curve_index % len(exact_colors)],
+                color=center_colors.get(center_of_mass, "black"),
                 linewidth=1.0,
                 linestyle="--",
                 alpha=0.9,
@@ -625,15 +635,36 @@ def _pair_probe_path_values(
     *,
     y_key: str = "model_local_energy",
 ) -> list[list[tuple[float, float]]]:
-    return [
-        values
-        for _, values in _probe_path_series(
-            rows,
-            x_key="pair_distance",
-            y_key=y_key,
-            path_keys=("eval_seed", "center_of_mass_radius", "direction_id"),
-        )
-    ]
+    return [values for _, values in _pair_probe_path_series(rows, y_key=y_key)]
+
+
+def _pair_probe_path_series(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    y_key: str = "model_local_energy",
+) -> list[tuple[tuple[Any, ...], list[tuple[float, float]]]]:
+    return _probe_path_series(
+        rows,
+        x_key="pair_distance",
+        y_key=y_key,
+        path_keys=("eval_seed", "center_of_mass_radius", "direction_id"),
+    )
+
+
+def _pair_probe_center_colors(
+    colors: Sequence[str],
+    *,
+    model_groups: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
+    exact_curves: Sequence[tuple[float, Sequence[tuple[float, float]]]],
+    y_key: str,
+) -> dict[float, str]:
+    centers = {center for center, _ in exact_curves if math.isfinite(center)}
+    for _, model_rows in model_groups:
+        for path_key, _ in _pair_probe_path_series(model_rows, y_key=y_key):
+            center = _as_float(path_key[1])
+            if math.isfinite(center):
+                centers.add(center)
+    return {center: colors[index % len(colors)] for index, center in enumerate(sorted(centers))}
 
 
 def _center_probe_path_values(

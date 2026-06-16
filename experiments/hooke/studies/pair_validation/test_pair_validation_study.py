@@ -745,6 +745,12 @@ def test_pair_probe_logabs_grid_groups_models_and_exact_com_curves(tmp_path: Pat
         (0.0, [(0.1, -0.1), (0.2, -0.2)]),
         (0.5, [(0.1, -0.225), (0.2, -0.325)]),
     ]
+    assert plot_final._pair_probe_center_colors(
+        ["C0", "C1"],
+        model_groups=groups,
+        exact_curves=plot_final._pair_probe_exact_logabs_curves(rows),
+        y_key="model_logabs",
+    ) == {0.0: "C0", 0.5: "C1"}
     assert plot_final._pair_probe_exact_relative_abs_psi_curves(rows) == [
         (0.0, [(0.1, 0.9), (0.2, 0.8)]),
         (0.5, [(0.1, 0.7), (0.2, 0.6)]),
