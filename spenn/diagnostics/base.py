@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 import torch
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, local_energy
+from spenn.evaluation.calculators.local_energy import evaluate_local_energy_in_chunks
+from spenn.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult
 
 JsonScalar: TypeAlias = bool | int | float | str | None
 
@@ -149,73 +150,3 @@ def _validate_json_scalar(diagnostic_name: str, key: str, value: object) -> None
         f"got {type(value).__name__}"
     )
 
-
-def evaluate_local_energy_in_chunks(
-    terms: Mapping[str, HamiltonianTerm],
-    wavefunction,
-    batch: ElectronBatch,
-    *,
-    return_terms: bool = False,
-    chunk_size: int | None = None,
-) -> torch.Tensor | LocalEnergyResult:
-    """Evaluate local energy on bounded batches and detach each chunk."""
-
-    flat = batch.flatten_samples()
-    batch_size = flat.batch_size
-    if batch_size == 0:
-        total = torch.empty(0, device=flat.device, dtype=flat.dtype)
-        return LocalEnergyResult(total=total, terms={}) if return_terms else total
-
-    size = batch_size if chunk_size is None or int(chunk_size) <= 0 else int(chunk_size)
-    total_chunks: list[torch.Tensor] = []
-    term_chunks: dict[str, list[torch.Tensor]] = {}
-    term_order: tuple[str, ...] | None = None
-    for start in range(0, batch_size, size):
-        chunk = _slice_flat_batch(flat, start, min(start + size, batch_size))
-        result = local_energy(terms, wavefunction, chunk, return_terms=return_terms)
-        if return_terms:
-            if not isinstance(result, LocalEnergyResult):
-                raise TypeError("local_energy(return_terms=True) must return LocalEnergyResult")
-            chunk_terms = tuple(result.terms)
-            if term_order is None:
-                term_order = chunk_terms
-            elif chunk_terms != term_order:
-                raise ValueError("chunked local-energy terms changed between chunks")
-            total_chunks.append(result.total.detach())
-            for name, value in result.terms.items():
-                term_chunks.setdefault(name, []).append(value.detach())
-        else:
-            if not isinstance(result, torch.Tensor):
-                raise TypeError("local_energy(return_terms=False) must return a torch.Tensor")
-            total_chunks.append(result.detach())
-        del result
-    total = torch.cat(total_chunks, dim=0)
-    if not return_terms:
-        return total
-    terms_out = {name: torch.cat(chunks, dim=0) for name, chunks in term_chunks.items()}
-    return LocalEnergyResult(total=total, terms=terms_out)
-
-
-def _slice_flat_batch(batch: ElectronBatch, start: int, end: int) -> ElectronBatch:
-    positions = batch.positions[start:end]
-    spins = None if batch.spins is None else batch.spins[start:end]
-    nuclear_positions = batch.nuclear_positions
-    if nuclear_positions is not None and nuclear_positions.ndim == 3 and nuclear_positions.shape[0] == batch.batch_size:
-        nuclear_positions = nuclear_positions[start:end]
-    nuclear_charges = batch.nuclear_charges
-    if nuclear_charges is not None and nuclear_charges.ndim == 2 and nuclear_charges.shape[0] == batch.batch_size:
-        nuclear_charges = nuclear_charges[start:end]
-    aux: dict[str, Any] = {}
-    for key, value in batch.aux.items():
-        if isinstance(value, torch.Tensor) and value.shape[:1] == (batch.batch_size,):
-            aux[key] = value[start:end]
-        else:
-            aux[key] = value
-    return ElectronBatch(
-        positions=positions,
-        system=batch.system,
-        nuclear_positions=nuclear_positions,
-        nuclear_charges=nuclear_charges,
-        spins=spins,
-        aux=aux,
-    )

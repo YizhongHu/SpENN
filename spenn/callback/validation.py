@@ -57,9 +57,10 @@ class Validation(Callback):
         self,
         triggers: Iterable[str],
         *,
-        sampler,
-        hamiltonian_terms,
+        sampler=None,
+        hamiltonian_terms=None,
         diagnostics: Sequence[object] | None = None,
+        evaluator: object | None = None,
         namespace: str = "validation",
         return_terms: bool = False,
         **kwargs: Any,
@@ -79,6 +80,10 @@ class Validation(Callback):
         self.sampler = sampler
         self.hamiltonian_terms = hamiltonian_terms
         self.return_terms = bool(return_terms)
+        self.evaluator = evaluator
+        if evaluator is not None:
+            self.diagnostics = ()
+            return
         if diagnostics is None:
             raise ValueError(
                 "Validation requires at least one diagnostic. Configure EnergyEvaluation "
@@ -119,6 +124,10 @@ class Validation(Callback):
         self._run_validation(event)
 
     def _run_validation(self, event: Event) -> None:
+        if self.evaluator is not None:
+            self._run_evaluator_validation(event)
+            return
+
         from spenn.dependencies import require_torch
         from spenn.diagnostics import EvaluationContext, evaluate_diagnostics
         from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
@@ -200,6 +209,64 @@ class Validation(Callback):
             step=step,
             namespace=f"{self.namespace}/perf",
         )
+
+    def _run_evaluator_validation(self, event: Event) -> None:
+        start = time.perf_counter()
+
+        model = event.payload.get("model")
+        if model is None:
+            model = getattr(event.state, "model", None)
+        if model is None:
+            raise ValueError(
+                f"Validation requires the {event.name!r} event to provide the trained model "
+                "in its payload or state"
+            )
+
+        was_training = bool(getattr(model, "training", False))
+        if hasattr(model, "eval"):
+            model.eval()
+        try:
+            result = self.evaluator.evaluate(
+                model=model,
+                context=event.context,
+                emit=lambda name, *, payload=None: event.context.emit_event(name, state=event.state, payload=payload),
+            )
+        finally:
+            if was_training and hasattr(model, "train"):
+                model.train()
+
+        step = event.step
+        if step is None:
+            value = getattr(event.state, "step", None)
+            step = None if value is None else int(value)
+
+        for task in result.task_results:
+            if task.metrics:
+                event.context.log(dict(task.metrics), step=step, namespace=task.namespace)
+                sampler_metrics = {
+                    key.removeprefix("sampler_"): value
+                    for key, value in task.metrics.items()
+                    if key.startswith("sampler_")
+                }
+                if sampler_metrics:
+                    event.context.log(sampler_metrics, step=step, namespace=f"{self.namespace}/sampler")
+            event.context.log(
+                {
+                    "task_success": task.status == "success",
+                    "task_failed": task.status in {"failed", "partial_failed"},
+                    "task_required": task.required,
+                },
+                step=step,
+                namespace=f"{task.namespace}/status",
+            )
+        event.context.log(
+            {"wall_time_sec": time.perf_counter() - start},
+            step=step,
+            namespace=f"{self.namespace}/perf",
+        )
+        if result.status == "failed":
+            failures = "; ".join(f"{failure.component}: {failure.message}" for failure in result.failures)
+            raise RuntimeError(f"validation evaluator failed: {failures}")
 
 
 def _context_run_dir(context):

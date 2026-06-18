@@ -19,8 +19,6 @@ def _cfg(tmp_path: Path, **extra) -> OmegaConf:
         "runner": {
             "_target_": "spenn.runner.Evaluate",
             "model": None,
-            "sampler": None,
-            "hamiltonian_terms": [],
         },
     }
     base.update(extra)
@@ -28,7 +26,7 @@ def _cfg(tmp_path: Path, **extra) -> OmegaConf:
 
 
 def test_run_from_config_returns_one_on_handled_failure(tmp_path: Path) -> None:
-    # Evaluate with sampler=None fails inside run(); default behavior returns 1.
+    # Evaluate without an evaluator fails during runner instantiation; default behavior returns 1.
     assert run_from_config(_cfg(tmp_path), config_path="x", command="t") == 1
 
 
@@ -74,15 +72,14 @@ def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(
         runner={
             "_target_": "spenn.runner.Evaluate",
             "model": None,
-            "sampler": None,
-            "hamiltonian_terms": [],
             "load": "${load}",
-            "diagnostics": [
-                {
-                    "_target_": "spenn.diagnostics.EnergyEvaluation",
-                    "name": "energy",
-                }
-            ],
+            "evaluator": "${evaluator}",
+        },
+        evaluator={
+            "_target_": "spenn.evaluation.Evaluator",
+            "namespace": "eval",
+            "phase": "eval",
+            "tasks": [],
         },
     )
 

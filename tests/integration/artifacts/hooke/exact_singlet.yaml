@@ -17,17 +17,46 @@ system:
   omega: 0.5
 references:
   exact_energy: 2.0
+evaluation:
+  phase: eval
+  namespace: eval
+  seed: ${runtime.seed}
+  artifact_level: summaries
+  task_failure_policy: continue
+  return_terms: true
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
-  sampler: ${sampler}
-  hamiltonian_terms: ${hamiltonian_terms}
-  diagnostics:
-  - _target_: spenn.diagnostics.EnergyEvaluation
+  evaluator: ${evaluator}
+evaluator:
+  _target_: spenn.evaluation.Evaluator
+  namespace: ${evaluation.namespace}
+  phase: ${evaluation.phase}
+  seed: ${evaluation.seed}
+  artifact_level: ${evaluation.artifact_level}
+  task_failure_policy: ${evaluation.task_failure_policy}
+  tasks:
+  - ${evaluation_tasks.energy}
+evaluation_tasks:
+  energy:
     name: energy
-    reference_energy: ${references.exact_energy}
-    include_terms: true
-  return_terms: true
+    namespace: ${evaluation.namespace}/energy
+    required: true
+    generator:
+      _target_: spenn.evaluation.generators.MCMCGenerator
+      sampler: ${sampler}
+      seed: ${evaluation.seed}
+    calculators:
+    - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+      hamiltonian_terms: ${hamiltonian_terms}
+      return_terms: ${evaluation.return_terms}
+    summaries:
+    - _target_: spenn.evaluation.summaries.LocalEnergySummary
+    - _target_: spenn.evaluation.summaries.HamiltonianTermSummary
+    - _target_: spenn.evaluation.summaries.SamplerStatsSummary
+    - _target_: spenn.evaluation.summaries.ReferenceEnergySummary
+      reference_energy: ${references.exact_energy}
 model:
   _target_: spenn.physics.hooke.HookeSingletExact
 hamiltonian_terms:
@@ -70,6 +99,8 @@ callbacks:
 - _target_: spenn.callback.RunTiming
 - _target_: spenn.callback.EvaluationTiming
 - _target_: spenn.callback.DiagnosticTiming
+- _target_: spenn.callback.ArtifactIndex
+- _target_: spenn.callback.FailureLog
 - _target_: spenn.callback.Status
   triggers:
   - run_start
