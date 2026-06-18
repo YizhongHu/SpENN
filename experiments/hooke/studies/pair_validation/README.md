@@ -228,6 +228,18 @@ uv run python experiments/hooke/studies/pair_validation/collect_final.py \
 `final_benchmark_summary.csv`, `final_benchmark_summary.json`, and
 `final_benchmark_report.md`.
 
+Generate physics-sanity tables, plots, and the expanded final report from the
+collected final-eval files:
+
+```bash
+uv run python experiments/hooke/studies/pair_validation/plot_final.py \
+  --manifest experiments/hooke/studies/pair_validation/manifest.yaml
+```
+
+`plot_final.py` is file-only: it reads `final_eval_runs.csv`, summary files,
+and indexed diagnostic artifacts. It does not load checkpoints, models, or exact
+wavefunctions.
+
 ## Sync Reports
 
 Use `sync_reports.py` to mirror the manifest report directory into another
@@ -276,5 +288,7 @@ Pass `--source` to mirror a report directory other than the one in
 - `05_final_eval/final_benchmark_summary.csv`
 - `05_final_eval/final_benchmark_summary.json`
 - `05_final_eval/final_benchmark_report.md`
+- `05_final_eval/tables/`
+- `05_final_eval/plots/`
 
 W&B is visualization only. Local run directories and reports are authoritative.

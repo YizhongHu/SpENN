@@ -106,7 +106,8 @@ class Evaluate(Runner):
 
         normalized_terms = normalize_hamiltonian_terms(self.hamiltonian_terms)
         energy_result = local_energy(normalized_terms, self.model, batch, return_terms=self.return_terms)
-        total_energy, term_energies = _split_local_energy_result(energy_result)
+        total_energy, term_energies = _detach_local_energy_result(energy_result)
+        del energy_result
 
         # PR6 keeps `wavefunction_output` in the shared context. Local-energy
         # terms may already evaluate the model internally; a future local-energy
@@ -121,6 +122,7 @@ class Evaluate(Runner):
             local_energy_terms=term_energies,
             sampler_stats=dict(sampler_stats),
             hamiltonian_terms=normalized_terms,
+            run_dir=_context_run_dir(context),
         )
         metrics = evaluate_diagnostics(
             self.diagnostics,
@@ -148,12 +150,29 @@ def _split_local_energy_result(
     return result, None
 
 
+def _detach_local_energy_result(
+    result: LocalEnergyResult | torch.Tensor,
+) -> tuple[torch.Tensor, Mapping[str, torch.Tensor] | None]:
+    """Detach sampled local-energy tensors before sharing them with diagnostics."""
+
+    total, terms = _split_local_energy_result(result)
+    detached_terms = None if terms is None else {name: value.detach() for name, value in terms.items()}
+    return total.detach(), detached_terms
+
+
 def _load_mode(load) -> str:
     if load is None:
         return "none"
     if hasattr(load, "get"):
         return str(load.get("mode", "none"))
     return "none"
+
+
+def _context_run_dir(context: RunContext):
+    try:
+        return context.run_dir
+    except AttributeError:
+        return None
 
 
 __all__ = ["Evaluate"]
