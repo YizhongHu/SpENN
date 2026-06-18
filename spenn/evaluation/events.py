@@ -12,7 +12,6 @@ def task_payload(task: EvaluationTask) -> dict[str, object]:
     return {
         "task_name": task.name,
         "task_namespace": task.namespace,
-        "required": task.required,
     }
 
 

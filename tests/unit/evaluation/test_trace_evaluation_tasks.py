@@ -35,7 +35,6 @@ from spenn.trace import ParticleTensor, trace_value
 
 def _context(tmp_path: Path) -> EvaluationContext:
     return EvaluationContext(
-        phase="validation",
         namespace="validation/full_model_equivariance",
         artifact_level="metrics_only",
         task_failure_policy="continue",
@@ -43,6 +42,7 @@ def _context(tmp_path: Path) -> EvaluationContext:
         dtype=torch.float64,
         seed=0,
         output_dir=tmp_path,
+        task_output_dir=tmp_path,
         metadata={},
     )
 

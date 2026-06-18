@@ -15,9 +15,8 @@ class ReferenceEnergySummary:
     name = "reference_energy"
     required_fields = frozenset({"local_energy"})
 
-    def __init__(self, *, reference_energy: float, allow_phase: str = "eval") -> None:
+    def __init__(self, *, reference_energy: float) -> None:
         self.reference_energy = float(reference_energy)
-        self.allow_phase = str(allow_phase)
 
     def summarize(
         self,
@@ -28,11 +27,6 @@ class ReferenceEnergySummary:
     ) -> SummaryResult:
         """Return reference-energy comparison metrics."""
 
-        if context.phase != self.allow_phase:
-            raise ValueError(
-                f"ReferenceEnergySummary is only allowed in phase {self.allow_phase!r}; "
-                f"got {context.phase!r}"
-            )
         local = bundle.local_energy
         if local is None:
             raise ValueError("ReferenceEnergySummary requires bundle.local_energy")

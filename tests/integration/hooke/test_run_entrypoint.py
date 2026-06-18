@@ -10,7 +10,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 ROOT = Path(__file__).resolve().parents[3]
-CONFIG = ROOT / "tests" / "integration" / "artifacts" / "hooke" / "exact_singlet.yaml"
+CONFIG = ROOT / "tests" / "integration" / "artifacts" / "hooke" / "exact_singlet_eval.yaml"
 RUN_GLOB = "hooke_exact/singlet"
 
 

@@ -254,7 +254,6 @@ class Validation(Callback):
                 {
                     "task_success": task.status == "success",
                     "task_failed": task.status in {"failed", "partial_failed"},
-                    "task_required": task.required,
                 },
                 step=step,
                 namespace=f"{task.namespace}/status",

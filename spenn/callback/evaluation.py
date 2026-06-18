@@ -50,7 +50,6 @@ class ArtifactIndex(Callback):
             "name": payload.get("name"),
             "namespace": namespace,
             "status": payload.get("status"),
-            "required": payload.get("required"),
             "artifacts": payload.get("artifacts", []),
         }
         self._write(event.context)
@@ -59,7 +58,6 @@ class ArtifactIndex(Callback):
         path = self._path(context)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "phase": _phase_from_tasks(self._tasks.values()),
             "tasks": list(self._tasks.values()),
         }
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -134,15 +132,6 @@ class FailureLog(Callback):
         if self.path is not None:
             return self.path
         return Path(context.run_dir) / "diagnostics" / "failures.jsonl"
-
-
-def _phase_from_tasks(tasks) -> str | None:
-    for task in tasks:
-        namespace = str(task.get("namespace", ""))
-        root = namespace.split("/", 1)[0]
-        if root:
-            return root
-    return None
 
 
 __all__ = ["ArtifactIndex", "FailureLog"]

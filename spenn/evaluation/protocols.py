@@ -11,14 +11,13 @@ import torch
 
 from spenn.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
 from spenn.evaluation.results import SummaryResult
-from spenn.evaluation.task import ArtifactLevel, EvaluationPhase, FailurePolicy
+from spenn.evaluation.task import ArtifactLevel, FailurePolicy
 
 
 @dataclass(frozen=True)
 class EvaluationContext:
     """Evaluator-local context shared by one task's components."""
 
-    phase: EvaluationPhase
     namespace: str
     artifact_level: ArtifactLevel
     task_failure_policy: FailurePolicy
@@ -26,6 +25,7 @@ class EvaluationContext:
     dtype: torch.dtype | None
     seed: int | None
     output_dir: Path
+    task_output_dir: Path
     metadata: Mapping[str, Any]
 
 

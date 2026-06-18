@@ -14,7 +14,7 @@ from spenn.evaluation.bundle import EvaluationBundle
 from spenn.evaluation.events import component_failure_payload, task_payload, task_result_payload
 from spenn.evaluation.protocols import EvaluationContext
 from spenn.evaluation.results import ArtifactRecord, EvaluationFailure, EvaluationResult, MetricScalar, TaskResult
-from spenn.evaluation.task import ArtifactLevel, EvaluationPhase, EvaluationTask, FailurePolicy, coerce_task
+from spenn.evaluation.task import ArtifactLevel, EvaluationTask, FailurePolicy, coerce_task
 
 
 class Evaluator:
@@ -27,7 +27,6 @@ class Evaluator:
         namespace: str,
         artifact_level: ArtifactLevel = "metrics_only",
         task_failure_policy: FailurePolicy = "continue",
-        phase: EvaluationPhase | None = None,
         seed: int | None = None,
     ) -> None:
         self.tasks = tuple(coerce_task(task) for task in tasks)
@@ -40,7 +39,6 @@ class Evaluator:
             raise ValueError(f"unsupported task_failure_policy {task_failure_policy!r}")
         self.artifact_level = artifact_level
         self.task_failure_policy = task_failure_policy
-        self.phase = _phase_from_namespace(self.namespace) if phase is None else phase
         self.seed = seed
 
     def evaluate(
@@ -58,11 +56,16 @@ class Evaluator:
         failures: list[EvaluationFailure] = []
         artifacts: list[ArtifactRecord] = []
 
+        run_dir = _context_run_dir(context)
         for task in self.tasks:
+            task_output_dir = task.output_dir if task.output_dir is not None else (
+                (run_dir / task.name) if run_dir is not None else Path(task.name)
+            )
             task_context = replace(
                 base_context,
                 namespace=task.namespace,
                 artifact_level=task.artifact_level or base_context.artifact_level,
+                task_output_dir=task_output_dir,
             )
             result = self._evaluate_task(model=model, task=task, context=task_context, emit=emit)
             task_results.append(result)
@@ -88,7 +91,6 @@ class Evaluator:
         run_dir = _context_run_dir(context)
         output_dir = run_dir / "diagnostics" if run_dir is not None else Path("diagnostics")
         return EvaluationContext(
-            phase=self.phase,
             namespace=self.namespace,
             artifact_level=self.artifact_level,
             task_failure_policy=self.task_failure_policy,
@@ -96,6 +98,7 @@ class Evaluator:
             dtype=dtype,
             seed=self.seed,
             output_dir=output_dir,
+            task_output_dir=output_dir,
             metadata={},
         )
 
@@ -201,7 +204,6 @@ def _task_result(
         name=task.name,
         namespace=task.namespace,
         status=status,  # type: ignore[arg-type]
-        required=task.required,
         metrics=dict(metrics),
         artifacts=tuple(artifacts),
         failures=tuple(failures),
@@ -216,7 +218,6 @@ def _summary_dependencies_present(summary: object, bundle: EvaluationBundle) -> 
 def _missing_dependency_failure(context: EvaluationContext, *, task: EvaluationTask, summary: object) -> EvaluationFailure:
     required = sorted(getattr(summary, "required_fields", frozenset()))
     return EvaluationFailure(
-        phase=context.phase,
         task=task.name,
         component=_component_name(summary),
         component_type="summary",
@@ -235,7 +236,6 @@ def _failure(
     exc: Exception,
 ) -> EvaluationFailure:
     return EvaluationFailure(
-        phase=context.phase,
         task=task.name,
         component=_component_name(component),
         component_type=component_type,  # type: ignore[arg-type]
@@ -260,20 +260,11 @@ def _merge_metrics(target: dict[str, MetricScalar], values: Mapping[str, MetricS
 
 
 def _aggregate_status(task_results: Sequence[TaskResult]) -> str:
-    required_failed = any(task.required and task.status in {"failed", "partial_failed"} for task in task_results)
-    any_warning = any(task.status in {"failed", "partial_failed", "skipped"} for task in task_results)
-    if required_failed:
+    if any(task.status == "failed" for task in task_results):
         return "failed"
-    if any_warning:
+    if any(task.status in {"partial_failed", "skipped"} for task in task_results):
         return "success_with_warnings"
     return "success"
-
-
-def _phase_from_namespace(namespace: str) -> str:
-    root = namespace.split("/", 1)[0]
-    if root in {"validation", "eval"}:
-        return root
-    raise ValueError("Evaluator phase must be configured when namespace is not validation/* or eval/*")
 
 
 def _torch_device(value: object) -> torch.device | None:

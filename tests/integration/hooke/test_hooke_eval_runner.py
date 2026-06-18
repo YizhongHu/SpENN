@@ -52,7 +52,7 @@ def test_evaluate_requires_evaluator() -> None:
         Evaluate(model=None)
 
 
-@pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
+@pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])
 def test_evaluate_config_is_root_owned_and_uses_evaluator(fixture: str) -> None:
     cfg = OmegaConf.load(FIXTURES / fixture)
     assert "callbacks" in cfg and "loggers" in cfg
@@ -60,8 +60,8 @@ def test_evaluate_config_is_root_owned_and_uses_evaluator(fixture: str) -> None:
     assert "loggers" not in cfg.runner
     assert cfg.runner.evaluator == "${evaluator}"
     assert cfg.evaluator.namespace == "${evaluation.namespace}"
-    assert cfg.evaluation.phase == "eval"
     assert "exact_energy" not in cfg.system
+    assert "phase" not in cfg.evaluation
 
     raw = OmegaConf.to_container(cfg, resolve=False)
     assert raw["evaluator"]["tasks"] == ["${evaluation_tasks.energy}"]
@@ -82,7 +82,6 @@ def test_instantiate_runner_uses_normal_hydra_recursion_for_evaluator(monkeypatc
                 "evaluator": {
                     "_target_": "spenn.evaluation.Evaluator",
                     "namespace": "eval",
-                    "phase": "eval",
                     "tasks": [],
                 },
             }
@@ -108,7 +107,6 @@ def test_train_config_with_evaluator_fails_as_normal_constructor_error() -> None
                 "evaluator": {
                     "_target_": "spenn.evaluation.Evaluator",
                     "namespace": "eval",
-                    "phase": "eval",
                     "tasks": [],
                 },
             }
@@ -404,7 +402,6 @@ def _energy_evaluator(
         summaries.append(ReferenceEnergySummary(reference_energy=reference_energy))
     return Evaluator(
         namespace="eval",
-        phase="eval",
         tasks=[
             EvaluationTask(
                 name="energy",
@@ -431,7 +428,7 @@ def _metrics(run_root: Path, namespace: str) -> dict:
 
 @pytest.mark.parametrize(
     ("fixture", "exact_energy"),
-    [("exact_singlet.yaml", 2.0), ("exact_triplet.yaml", 1.25)],
+    [("exact_singlet_eval.yaml", 2.0), ("exact_triplet_eval.yaml", 1.25)],
 )
 def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_energy: float) -> None:
     config_path = FIXTURES / fixture
@@ -469,7 +466,7 @@ def _namespace_records(run_root: Path, namespace: str) -> list[dict]:
     return [record["metrics"] for record in records if record.get("namespace") == namespace]
 
 
-@pytest.mark.parametrize("fixture", ["exact_singlet.yaml", "exact_triplet.yaml"])
+@pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])
 def test_hooke_eval_runner_writes_standard_artifacts(tmp_path, fixture: str) -> None:
     config_path = FIXTURES / fixture
     cfg = OmegaConf.load(config_path)

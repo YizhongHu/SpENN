@@ -100,7 +100,6 @@ def _log_result(context: RunContext, result: EvaluationResult) -> None:
         status_metrics: dict[str, Any] = {
             "task_success": task.status == "success",
             "task_failed": task.status in {"failed", "partial_failed"},
-            "task_required": task.required,
         }
         if task.metrics:
             context.log(dict(task.metrics), step=0, namespace=task.namespace)

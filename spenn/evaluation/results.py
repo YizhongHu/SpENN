@@ -36,7 +36,6 @@ class ArtifactRecord:
 class EvaluationFailure:
     """Structured failure captured while running an evaluation component."""
 
-    phase: str
     task: str | None
     component: str | None
     component_type: ComponentType
@@ -48,7 +47,6 @@ class EvaluationFailure:
         """Return a JSON-safe failure mapping."""
 
         return {
-            "phase": self.phase,
             "task": self.task,
             "component": self.component,
             "component_type": self.component_type,
@@ -74,7 +72,6 @@ class TaskResult:
     name: str
     namespace: str
     status: TaskStatus
-    required: bool
     metrics: dict[str, MetricScalar]
     artifacts: tuple[ArtifactRecord, ...]
     failures: tuple[EvaluationFailure, ...]
@@ -86,7 +83,6 @@ class TaskResult:
             "name": self.name,
             "namespace": self.namespace,
             "status": self.status,
-            "required": self.required,
             "metrics": dict(self.metrics),
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "failures": [failure.to_dict() for failure in self.failures],

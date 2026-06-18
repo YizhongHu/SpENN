@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, TypeAlias
 
 ArtifactLevel: TypeAlias = Literal["metrics_only", "summaries", "records"]
 FailurePolicy: TypeAlias = Literal["continue", "fail_fast"]
-EvaluationPhase: TypeAlias = Literal["validation", "eval"]
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ class EvaluationTask:
     generator: object
     calculators: Sequence[object]
     summaries: Sequence[object]
-    required: bool = True
+    output_dir: Path | None = None
     artifact_level: ArtifactLevel | None = None
 
 
@@ -42,15 +42,17 @@ def coerce_task(spec: EvaluationTask | Mapping[str, object]) -> EvaluationTask:
         raise ValueError(f"evaluation task {name!r} requires a generator")
     calculators = tuple(spec.get("calculators", ()) or ())
     summaries = tuple(spec.get("summaries", ()) or ())
+    output_dir_raw = spec.get("output_dir")
+    output_dir = Path(str(output_dir_raw)) if output_dir_raw is not None else None
     return EvaluationTask(
         name=name,
         namespace=namespace,
         generator=generator,
         calculators=calculators,
         summaries=summaries,
-        required=bool(spec.get("required", True)),
+        output_dir=output_dir,
         artifact_level=spec.get("artifact_level"),  # type: ignore[arg-type]
     )
 
 
-__all__ = ["ArtifactLevel", "EvaluationPhase", "EvaluationTask", "FailurePolicy", "coerce_task"]
+__all__ = ["ArtifactLevel", "EvaluationTask", "FailurePolicy", "coerce_task"]
