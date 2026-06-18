@@ -9,11 +9,19 @@ from spenn.evaluation.generators.hooke import (
     TailGridGenerator,
 )
 from spenn.evaluation.generators.mcmc import MCMCGenerator
+from spenn.evaluation.generators.orbits import (
+    ExchangeOrbitGenerator,
+    PermutationOrbitGenerator,
+    RotationOrbitGenerator,
+)
 
 __all__ = [
     "CuspGridGenerator",
+    "ExchangeOrbitGenerator",
     "HookeOrbitalGenerator",
     "MCMCGenerator",
+    "PermutationOrbitGenerator",
+    "RotationOrbitGenerator",
     "StratifiedGeometryGenerator",
     "TailGridGenerator",
 ]

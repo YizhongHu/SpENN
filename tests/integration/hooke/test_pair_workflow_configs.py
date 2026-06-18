@@ -100,7 +100,7 @@ def test_legacy_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> None:
 
 
 def test_legacy_eval_config_runs_and_emits_energy_metrics(tmp_path: Path) -> None:
-    """The legacy eval config runs EnergyEvaluation with reference errors."""
+    """The legacy eval config runs the evaluator energy task with reference errors."""
 
     run_dir = _run_config(EVAL_CONFIG, tmp_path)
 
@@ -109,12 +109,11 @@ def test_legacy_eval_config_runs_and_emits_energy_metrics(tmp_path: Path) -> Non
     assert json.loads((run_dir / "status.json").read_text())["status"] == "completed"
 
     namespaces = _metrics_by_namespace(run_dir)
-    assert {"energy", "energy_stderr", "energy_error", "energy_abs_error"} <= namespaces["eval"]
+    assert {"local_energy_mean", "energy_error", "energy_abs_error"} <= namespaces["eval/energy"]
     # return_terms=true + include_terms=true produce per-term decompositions.
-    assert "energy_term_kinetic" in namespaces["eval"]
-    # Sampler stats use the namespaced path, not dotted keys inside "eval".
-    assert "acceptance_rate" in namespaces["eval/sampler"]
-    assert not any("." in key for key in namespaces["eval"])
+    assert "term/kinetic_mean" in namespaces["eval/energy"]
+    assert "sampler_acceptance_rate" in namespaces["eval/energy"]
+    assert not any("." in key for key in namespaces["eval/energy"])
     assert "wall_time_sec" in namespaces["eval/perf"]
     assert "time_sec" in namespaces["diagnostics/energy"]
     assert "wall_time_sec" in namespaces["runtime"]

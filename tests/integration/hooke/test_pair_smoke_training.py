@@ -60,7 +60,7 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
     for expected in (
         "train",
         "train/sampler",
-        "validation",
+        "validation/energy",
         "validation/sampler",
         "validation/perf",
         "checks/data_integrity",
@@ -82,9 +82,9 @@ def test_pair_smoke_training_validation_and_geometry_metrics(tmp_path) -> None:
         if line.strip()
     ]
 
-    validation = [r["metrics"] for r in records if r.get("namespace") == "validation"]
+    validation = [r["metrics"] for r in records if r.get("namespace") == "validation/energy"]
     assert validation, "no validation records"
-    assert "energy" in validation[-1]
+    assert "local_energy_mean" in validation[-1]
     # Exact-reference comparison is reserved for final evaluation (eval/*).
     assert "energy_error" not in validation[-1]
     assert "energy_abs_error" not in validation[-1]
