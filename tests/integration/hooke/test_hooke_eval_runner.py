@@ -489,3 +489,50 @@ def test_hooke_eval_runner_writes_standard_artifacts(tmp_path, fixture: str) -> 
 
     status = json.loads((run_dir / "status.json").read_text())
     assert status["status"] == "completed"
+
+
+def test_hooke_exact_evaluation_stack_runs_from_yaml_fixture(tmp_path) -> None:
+    """The full Generator->Calculator->Summary stack runs on exact Hooke from YAML.
+
+    This is a correctness test for the evaluation implementation: the same
+    deterministic task stack used for learned-model validation is exercised on
+    the analytic Hooke singlet, where every diagnostic has a known answer.
+    """
+
+    config_path = FIXTURES / "hooke_exact_evaluation.yaml"
+    cfg = OmegaConf.load(config_path)
+    cfg.run.root = str(tmp_path)
+
+    exit_code = run_from_config(cfg, config_path=str(config_path), command="pytest")
+    assert exit_code == 0
+
+    # Exact local energy E_L = 2.0 everywhere finite, for every geometry task.
+    # The exact singlet is nodeless (sign=+1) so every finite configuration has
+    # a finite local energy. The variance tolerance is looser for the cusp task:
+    # at r12=1e-5 the autograd Laplacian sums 1/r12 terms that cancel to give
+    # E_L=2.0, and float64 catastrophic cancellation leaves a small residual.
+    variance_tol = {"cusp": 1.0e-6, "tail": 1.0e-8, "stratified_geometry": 1.0e-8, "energy": 1.0e-8}
+    for task in ("cusp", "tail", "stratified_geometry", "energy"):
+        metrics = _metrics(tmp_path, f"hooke_exact/{task}")
+        assert metrics["local_energy_finite_fraction"] == 1.0, task
+        assert metrics["local_energy_nonfinite_count"] == 0, task
+        assert metrics["local_energy_mean"] == pytest.approx(2.0, abs=1.0e-3), task
+        assert metrics["local_energy_variance"] < variance_tol[task], task
+
+    # Opposite-spin cusp: even slope -> 1/2; near-coalescence C_{-1} -> 0.
+    cusp = _metrics(tmp_path, "hooke_exact/cusp")
+    assert cusp["cusp_even_slope_mean"] == pytest.approx(0.5, abs=1.0e-3)
+    assert cusp["cusp_even_slope_abs_error"] < 1.0e-3
+    assert cusp["c_minus_1_abs_max"] < 1.0e-3
+
+    # Reference energy comparison (eval-only summary, no phase gate).
+    energy = _metrics(tmp_path, "hooke_exact/energy")
+    assert energy["reference_energy"] == pytest.approx(2.0)
+    assert energy["energy_abs_error"] < 1.0e-4
+
+    # Each task writes under its resolved task output directory.
+    run_dirs = list(tmp_path.glob("hooke_exact_stack/*/*"))
+    assert len(run_dirs) == 1, f"expected one run dir, found {run_dirs}"
+    run_dir = run_dirs[0]
+    for task in ("cusp", "tail", "stratified_geometry", "energy"):
+        assert (run_dir / task).is_dir(), f"missing task output dir: {task}"

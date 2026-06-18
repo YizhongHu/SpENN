@@ -38,7 +38,7 @@ class SampledRecordWriter:
     ) -> SummaryResult:
         """Write records only when enabled and artifact level permits records."""
 
-        path = context.output_dir / namespace / self.filename
+        path = context.task_output_dir / self.filename
         if not self.enabled or context.artifact_level != "records":
             return SummaryResult(
                 metrics={},
