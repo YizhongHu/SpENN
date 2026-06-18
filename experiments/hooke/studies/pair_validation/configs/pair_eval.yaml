@@ -179,6 +179,11 @@ load:
 # Evaluation
 # -----------------------------------------------------------------------------
 evaluation:
+  phase: eval
+  namespace: eval
+  seed: ${runtime.seed}
+  artifact_level: summaries
+  task_failure_policy: continue
   # Provenance only: the training seed of the restored checkpoint, recorded in
   # resolved_config.yaml for the final benchmark summary.
   training_seed: null
@@ -247,71 +252,202 @@ timing:
 # -----------------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------------
-# Evaluate samples once from the restored model and feeds one shared
-# EvaluationContext to the EnergyEvaluation diagnostic.
+# Evaluate restores one frozen model and delegates all energy, physics, and
+# trace checks to composable EvaluationTasks.
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
   load: ${load}
-  sampler: ${sampler}
-  hamiltonian_terms: ${hamiltonian_terms}
-  return_terms: ${evaluation.return_terms}
-  diagnostics:
-    - _target_: spenn.diagnostics.EnergyEvaluation
-      name: energy
-      reference_energy: ${references.exact_energy}
-      include_terms: true
-      quantiles: ${diagnostic_params.quantiles}
-      include_local_energy_error_quantiles: true
-      sampled_eval_table: ${diagnostic_params.sampled_eval_table}
-      artifact_path: ${run.dir}/diagnostics/energy/sampled_eval_table.csv
+  evaluator: ${evaluator}
 
-    - _target_: spenn.diagnostics.HookePairDistanceProbe
-      name: pair_distance_probe
-      artifact_path: ${run.dir}/diagnostics/pair_distance_probe/probe.csv
-      reference_energy: ${references.exact_energy}
-      include_exact_wavefunction: ${diagnostic_params.pair_distance_probe.include_exact_wavefunction}
+
+evaluator:
+  _target_: spenn.evaluation.Evaluator
+  namespace: ${evaluation.namespace}
+  phase: ${evaluation.phase}
+  seed: ${evaluation.seed}
+  artifact_level: ${evaluation.artifact_level}
+  task_failure_policy: ${evaluation.task_failure_policy}
+  tasks:
+    - ${evaluation_tasks.energy}
+    - ${evaluation_tasks.cusp}
+    - ${evaluation_tasks.tail}
+    - ${evaluation_tasks.exchange}
+    - ${evaluation_tasks.rotation}
+    - ${evaluation_tasks.full_model_equivariance}
+    - ${evaluation_tasks.trace_equivariance}
+    - ${evaluation_tasks.feature_trace}
+    - ${evaluation_tasks.readout_trace}
+
+
+evaluation_tasks:
+  energy:
+    name: energy
+    namespace: ${evaluation.namespace}/energy
+    required: true
+    artifact_level: ${evaluation.artifact_level}
+    generator:
+      _target_: spenn.evaluation.generators.MCMCGenerator
+      sampler: ${sampler}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+        quantiles: ${diagnostic_params.quantiles}
+      - _target_: spenn.evaluation.summaries.HamiltonianTermSummary
+      - _target_: spenn.evaluation.summaries.SamplerStatsSummary
+      - _target_: spenn.evaluation.summaries.ReferenceEnergySummary
+        reference_energy: ${references.exact_energy}
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+        enabled: ${diagnostic_params.sampled_eval_table.enabled}
+        max_samples: ${diagnostic_params.sampled_eval_table.max_samples}
+
+  cusp:
+    name: cusp
+    namespace: ${evaluation.namespace}/cusp
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.CuspGridGenerator
       r12_min: ${diagnostic_params.pair_distance_probe.r12_min}
       r12_max: ${diagnostic_params.pair_distance_probe.r12_max}
       n_points: ${diagnostic_params.pair_distance_probe.n_points}
       n_directions: ${diagnostic_params.pair_distance_probe.n_directions}
       center_of_mass_radii: ${diagnostic_params.pair_distance_probe.center_of_mass_radii}
-      local_energy_chunk_size: ${diagnostic_params.pair_distance_probe.local_energy_chunk_size}
-      enabled: ${diagnostic_params.pair_distance_probe.enabled}
+      paired_directions: true
+      spin_pair: opposite
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: false
+        chunk_size: ${diagnostic_params.pair_distance_probe.local_energy_chunk_size}
+      - _target_: spenn.evaluation.calculators.RadialLogAbsDerivativeCalculator
+        chunk_size: ${diagnostic_params.pair_distance_probe.local_energy_chunk_size}
+    summaries:
+      - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
+      - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
+      - _target_: spenn.evaluation.summaries.PathologyCountSummary
 
-    - _target_: spenn.diagnostics.HookePairCenterOfMassProbe
-      name: center_of_mass_probe
-      artifact_path: ${run.dir}/diagnostics/center_of_mass_probe/probe.csv
-      reference_energy: ${references.exact_energy}
-      include_exact_wavefunction: ${diagnostic_params.center_of_mass_probe.include_exact_wavefunction}
-      com_radius_min: ${diagnostic_params.center_of_mass_probe.com_radius_min}
-      com_radius_max: ${diagnostic_params.center_of_mass_probe.com_radius_max}
+  tail:
+    name: tail
+    namespace: ${evaluation.namespace}/tail
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.TailGridGenerator
+      radius_min: ${diagnostic_params.center_of_mass_probe.com_radius_min}
+      radius_max: ${diagnostic_params.center_of_mass_probe.com_radius_max}
       n_points: ${diagnostic_params.center_of_mass_probe.n_points}
       pair_distance: ${diagnostic_params.center_of_mass_probe.pair_distance}
       n_directions: ${diagnostic_params.center_of_mass_probe.n_directions}
-      local_energy_chunk_size: ${diagnostic_params.center_of_mass_probe.local_energy_chunk_size}
-      enabled: ${diagnostic_params.center_of_mass_probe.enabled}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: false
+        chunk_size: ${diagnostic_params.center_of_mass_probe.local_energy_chunk_size}
+    summaries:
+      - _target_: spenn.evaluation.summaries.TailStabilitySummary
+      - _target_: spenn.evaluation.summaries.PathologyCountSummary
 
-    - _target_: spenn.diagnostics.PositionExchangeDiagnostic
-      name: exchange
-      artifact_path: ${run.dir}/diagnostics/exchange/trace.jsonl
-      exchange_contract: ${diagnostic_params.exchange.exchange_contract}
-      max_samples: ${diagnostic_params.exchange.max_samples}
-      enabled: ${diagnostic_params.exchange.enabled}
+  exchange:
+    name: exchange
+    namespace: ${evaluation.namespace}/exchange
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.ExchangeOrbitGenerator
+      base_generator:
+        _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+        n_samples: ${diagnostic_params.exchange.max_samples}
+        seed: ${evaluation.seed}
+      exchange: opposite_spin_pair
+    calculators:
+      - _target_: spenn.evaluation.calculators.ExchangeSymmetryCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
 
-    - _target_: spenn.diagnostics.RotationDiagnostic
-      name: rotation
-      artifact_path: ${run.dir}/diagnostics/rotation/trace.jsonl
-      max_samples: ${diagnostic_params.rotation.max_samples}
+  rotation:
+    name: rotation
+    namespace: ${evaluation.namespace}/rotation
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.RotationOrbitGenerator
+      base_generator:
+        _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+        n_samples: ${diagnostic_params.rotation.max_samples}
+        seed: ${evaluation.seed}
       n_rotations: ${diagnostic_params.rotation.n_rotations}
-      local_energy_chunk_size: ${diagnostic_params.rotation.local_energy_chunk_size}
-      enabled: ${diagnostic_params.rotation.enabled}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.RotationConsistencyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        chunk_size: ${diagnostic_params.rotation.local_energy_chunk_size}
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
 
-    - _target_: spenn.diagnostics.TraceEquivarianceDiagnostic
-      name: trace_equivariance
-      artifact_path: ${run.dir}/diagnostics/trace_equivariance/trace.jsonl
-      max_samples: ${diagnostic_params.trace_equivariance.max_samples}
-      enabled: ${diagnostic_params.trace_equivariance.enabled}
+  full_model_equivariance:
+    name: full_model_equivariance
+    namespace: ${evaluation.namespace}/full_model_equivariance
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      base_generator:
+        _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+        n_samples: ${diagnostic_params.trace_equivariance.max_samples}
+        seed: ${evaluation.seed}
+      n_permutations: 1
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.FullModelEquivarianceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
+
+  trace_equivariance:
+    name: trace_equivariance
+    namespace: ${evaluation.namespace}/trace_equivariance
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      base_generator:
+        _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+        n_samples: ${diagnostic_params.trace_equivariance.max_samples}
+        seed: ${evaluation.seed}
+      n_permutations: 1
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.TraceEquivarianceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TraceEquivarianceSummary
+
+  feature_trace:
+    name: feature_trace
+    namespace: ${evaluation.namespace}/feature_trace
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      n_samples: ${diagnostic_params.trace_equivariance.max_samples}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.FeatureTraceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.FeatureTraceSummary
+
+  readout_trace:
+    name: readout_trace
+    namespace: ${evaluation.namespace}/readout_trace
+    required: false
+    generator:
+      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      n_samples: ${diagnostic_params.trace_equivariance.max_samples}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.ReadoutTraceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.ReadoutTraceSummary
 
 
 # -----------------------------------------------------------------------------
@@ -457,7 +593,14 @@ callbacks:
       - diagnostic_start
       - diagnostic_end
       - diagnostic_failed
+      - task_start
+      - task_end
+      - task_failed
     cuda_synchronize: ${timing.cuda_synchronize}
+
+  - _target_: spenn.callback.ArtifactIndex
+
+  - _target_: spenn.callback.FailureLog
 
 
 # -----------------------------------------------------------------------------

@@ -178,7 +178,7 @@ system:
 
 selection:
   source_phase: validation_train
-  metric: validation/energy
+  metric: validation/energy/local_energy_mean
   aggregate: median
   failed_run_value: inf
   absolute_energy_floor: 1.0e-4
@@ -186,9 +186,9 @@ selection:
     stderr_multiplier: 2.0
     seed_iqr_fraction: 0.25
   tie_breakers:
-    - validation/energy_variance
+    - validation/energy/local_energy_variance
     - validation_energy_iqr
-    - validation/energy_stderr
+    - validation/energy/local_energy_stderr
     - geometry_warning_count
     - model_params.channels
     - runtime/wall_time_sec

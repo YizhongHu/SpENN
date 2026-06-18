@@ -27,8 +27,8 @@ GROUP_KEYS = (
 REPORT_TOP_CANDIDATE_LIMIT = 10
 
 FORBIDDEN_SELECTION_METRICS = {
-    "validation/energy_error",
-    "validation/energy_abs_error",
+    "validation/energy/energy_error",
+    "validation/energy/energy_abs_error",
     "eval/energy_error",
     "eval/energy_abs_error",
 }
@@ -178,11 +178,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def _validate_selection_contract(manifest: Mapping[str, Any]) -> None:
     selection = _selection_block(manifest)
-    metric = str(selection.get("metric", "validation/energy"))
+    metric = str(selection.get("metric", "validation/energy/local_energy_mean"))
     if metric in FORBIDDEN_SELECTION_METRICS:
         raise ValueError(f"selection metric {metric!r} uses exact-reference error and is forbidden")
-    if metric != "validation/energy":
-        raise ValueError("PR8.3 selector only supports selection.metric=validation/energy")
+    if metric != "validation/energy/local_energy_mean":
+        raise ValueError("PR8.3 selector only supports selection.metric=validation/energy/local_energy_mean")
     aggregate = str(selection.get("aggregate", "median"))
     if aggregate != "median":
         raise ValueError("PR8.3 selector only supports selection.aggregate=median")
@@ -219,9 +219,9 @@ def _aggregate_candidates(rows: list[dict[str, Any]], manifest: Mapping[str, Any
             warnings.extend(f"seed {seed}: {message}" for message in row_warnings)
             if _is_eligible(row, manifest):
                 n_success += 1
-                energy_values.append(_as_float(row.get("validation/energy"), default=math.inf))
-                stderr_values.append(_as_float(row.get("validation/energy_stderr"), default=math.inf))
-                variance_values.append(_as_float(row.get("validation/energy_variance"), default=math.inf))
+                energy_values.append(_as_float(row.get("validation/energy/local_energy_mean"), default=math.inf))
+                stderr_values.append(_as_float(row.get("validation/energy/local_energy_stderr"), default=math.inf))
+                variance_values.append(_as_float(row.get("validation/energy/local_energy_variance"), default=math.inf))
                 wall_time_values.append(_as_float(row.get("runtime/wall_time_sec"), default=math.inf))
             else:
                 n_failed += 1
@@ -257,18 +257,18 @@ def _choose_winner(
 ) -> tuple[Candidate, list[Candidate], list[str]]:
     finite = [candidate for candidate in candidates if math.isfinite(candidate.median_energy)]
     if not finite:
-        raise ValueError("no candidate has a finite eligible median validation/energy; refusing to select a winner")
+        raise ValueError("no candidate has a finite eligible median validation/energy/local_energy_mean; refusing to select a winner")
 
     ordered = sorted(finite, key=lambda candidate: (candidate.median_energy, candidate.key))
     leader = ordered[0]
     tied = [candidate for candidate in ordered if candidate is leader or not _clearly_beats(leader, candidate, manifest)]
     decisions: list[str] = []
     if len(tied) == 1:
-        decisions.append("Lowest median validation/energy clearly beats every other finite candidate.")
+        decisions.append("Lowest median validation/energy/local_energy_mean clearly beats every other finite candidate.")
         return leader, tied, decisions
 
     decisions.append(
-        "Primary median validation/energy does not clearly separate the "
+        "Primary median validation/energy/local_energy_mean does not clearly separate the "
         f"{len(tied)} candidates in the primary-energy cohort; see cohort table for margins."
     )
     remaining = list(tied)
@@ -300,11 +300,11 @@ def _clearly_beats(a: Candidate, b: Candidate, manifest: Mapping[str, Any]) -> b
 
 
 def _breaker_value(candidate: Candidate, breaker: str) -> float:
-    if breaker == "validation/energy_variance":
+    if breaker == "validation/energy/local_energy_variance":
         return candidate.median_energy_variance
     if breaker == "validation_energy_iqr":
         return candidate.energy_iqr
-    if breaker == "validation/energy_stderr":
+    if breaker == "validation/energy/local_energy_stderr":
         return candidate.median_energy_stderr
     if breaker == "geometry_warning_count":
         return float(candidate.geometry_warning_count)
@@ -329,10 +329,10 @@ def _is_eligible(row: Mapping[str, Any], manifest: Mapping[str, Any]) -> bool:
         if not parse_bool(row.get(str(key))):
             return False
     required_fraction = eligibility.get("local_energy_finite_fraction", 1.0)
-    actual_fraction = _as_float(row.get("validation/local_energy_finite_fraction"), default=math.nan)
+    actual_fraction = _as_float(row.get("validation/energy/local_energy_finite_fraction"), default=math.nan)
     if not math.isfinite(actual_fraction) or not math.isclose(actual_fraction, float(required_fraction), rel_tol=0.0, abs_tol=1.0e-12):
         return False
-    return math.isfinite(_as_float(row.get("validation/energy"), default=math.inf))
+    return math.isfinite(_as_float(row.get("validation/energy/local_energy_mean"), default=math.inf))
 
 
 def _write_selection_csv(candidates: list[Candidate], winner: Candidate, path: Path) -> None:
@@ -345,7 +345,7 @@ def _write_selection_csv(candidates: list[Candidate], winner: Candidate, path: P
         "n_success",
         "n_failed",
         "n_missing_seed",
-        "median validation/energy",
+        "median validation/energy/local_energy_mean",
         "median_energy_stderr",
         "energy_iqr",
         "median_energy_variance",
@@ -364,7 +364,7 @@ def _write_selection_csv(candidates: list[Candidate], winner: Candidate, path: P
                 "n_success": candidate.n_success,
                 "n_failed": candidate.n_failed,
                 "n_missing_seed": candidate.n_missing_seed,
-                "median validation/energy": _csv_number(candidate.median_energy),
+                "median validation/energy/local_energy_mean": _csv_number(candidate.median_energy),
                 "median_energy_stderr": _csv_number(candidate.median_energy_stderr),
                 "energy_iqr": _csv_number(candidate.energy_iqr),
                 "median_energy_variance": _csv_number(candidate.median_energy_variance),
@@ -401,7 +401,7 @@ def _selected_config(
             "selection_report": str(output_dir / "selection_report.md"),
         },
         "selection": {
-            "metric": "validation/energy",
+            "metric": "validation/energy/local_energy_mean",
             "aggregate": "median",
             "selected_config_id": winner.config_id,
             "tied_config_ids": [candidate.config_id for candidate in tied],
@@ -429,8 +429,8 @@ def _validation_run_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "training_seed": row.get("runtime.seed"),
         "status": row.get("status"),
         "checkpoint_path": row.get("checkpoint/latest_path"),
-        "validation_energy": row.get("validation/energy"),
-        "validation_energy_stderr": row.get("validation/energy_stderr"),
+        "validation_energy": row.get("validation/energy/local_energy_mean"),
+        "validation_energy_stderr": row.get("validation/energy/local_energy_stderr"),
         "git_sha": row.get("git/sha"),
     }
 
@@ -492,10 +492,10 @@ def _selection_report(
         "- Completed / failed / missing metrics / missing validation: "
         f"`{status_counts.get('completed', 0)} / {status_counts.get('failed', 0)} / "
         f"{status_counts.get('missing_metrics', 0)} / {status_counts.get('missing_validation', 0)}`",
-        f"- Selection metric: median `validation/energy`",
+        f"- Selection metric: median `validation/energy/local_energy_mean`",
         f"- Selected config: `{winner.config_id}`",
         f"- Final rank: `1` of `{len(candidates)}`",
-        f"- Lowest median `validation/energy`: `{energy_leader.config_id}` (`{_format_number(energy_leader.median_energy)}`)",
+        f"- Lowest median `validation/energy/local_energy_mean`: `{energy_leader.config_id}` (`{_format_number(energy_leader.median_energy)}`)",
         f"- Primary-energy cohort size: `{len(tied)}`",
         "- Validation is used for model/protocol selection and does not use exact-reference energy.",
         "",
@@ -609,7 +609,7 @@ def _decision_rule_lines(manifest: Mapping[str, Any]) -> list[str]:
     floor = float(selection.get("absolute_energy_floor", 1.0e-4))
     tie_breakers = ", ".join(f"`{breaker}`" for breaker in _tie_breakers(manifest))
     return [
-        "- Primary metric: median `validation/energy`; lower is better.",
+        "- Primary metric: median `validation/energy/local_energy_mean`; lower is better.",
         "- Eligibility: completed run, required checks pass, full finite local-energy fraction, and finite validation energy.",
         "- Failed, missing-validation, missing-metrics, ineligible, or missing-seed replicates count as `+inf` before aggregation.",
         "- Margin: "
@@ -702,9 +702,9 @@ def _selection_block(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _tie_breakers(manifest: Mapping[str, Any]) -> list[str]:
     tie_breakers = _selection_block(manifest).get("tie_breakers") or (
-        "validation/energy_variance",
+        "validation/energy/local_energy_variance",
         "validation_energy_iqr",
-        "validation/energy_stderr",
+        "validation/energy/local_energy_stderr",
         "geometry_warning_count",
         "model_params.channels",
         "runtime/wall_time_sec",

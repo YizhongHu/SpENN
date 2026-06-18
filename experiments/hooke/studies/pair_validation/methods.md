@@ -49,12 +49,12 @@ first concrete job command in `--dry-run` mode.
 
 Selection groups runs by non-seed hyperparameters and treats `runtime.seed` as a
 replicate. Failed, missing, or ineligible seeds count as `+inf` validation
-energy. The primary metric is median `validation/energy`. Exact-reference
-metrics such as `validation/energy_abs_error` and `eval/energy_abs_error` are
+energy. The primary metric is median `validation/energy/local_energy_mean`. Exact-reference
+metrics such as `validation/energy/energy_abs_error` and `eval/energy/energy_abs_error` are
 forbidden for selection.
 
 When primary medians are inside the declared margin, tie-breakers apply in
-manifest order: lower median validation/energy_variance, lower validation energy
+manifest order: lower median `validation/energy/local_energy_variance`, lower validation energy
 IQR, lower median stderr, fewer geometry warnings, smaller model, then shorter
 wall time.
 

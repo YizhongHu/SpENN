@@ -7,8 +7,9 @@
 #
 # Purpose:
 #   Cheap end-to-end sampled-evaluation sanity check for the two-electron Hooke
-#   system. Exercises the Evaluate runner, EnergyEvaluation diagnostics, and
-#   the eval metric namespaces against a freshly initialized SpENN ansatz.
+#   system. Exercises the Evaluate runner, the composable energy evaluation
+#   task, and the eval metric namespaces against a freshly initialized SpENN
+#   ansatz.
 #   Legacy test config; study-owned canonical configs live under
 #   experiments/hooke/studies/.
 #
@@ -20,7 +21,7 @@
 # ---- BEGIN AI-FACED CONFIG GUIDANCE ----
 #
 # This config is intended for:
-#   - verifying Evaluate runner wiring (sampler -> local energy -> diagnostics)
+#   - verifying Evaluate runner wiring (sampler -> local energy -> summaries)
 #   - checking eval metric namespaces (eval, eval/sampler, eval/perf,
 #     diagnostics/energy)
 #   - producing local CSV/JSONL metrics for inspection
@@ -227,6 +228,11 @@ sampler_params:
 # Evaluation
 # -----------------------------------------------------------------------------
 evaluation:
+  phase: eval
+  namespace: eval
+  seed: ${runtime.seed}
+  artifact_level: summaries
+  task_failure_policy: continue
   return_terms: true # If true, compute/log named Hamiltonian term contributions.
 
 
@@ -248,20 +254,49 @@ timing:
 #
 # The runner owns the high-level lifecycle for this run.
 #
-# Evaluate samples once, evaluates the local energy, and feeds one shared
-# EvaluationContext to every configured diagnostic. Diagnostics do not
-# resample, log, or write artifacts themselves.
+# Evaluate delegates local-energy calculation and summaries to the configured
+# energy EvaluationTask. The task owns computation; callbacks/loggers own
+# lifecycle side effects and persistence.
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
-  sampler: ${sampler}
-  hamiltonian_terms: ${hamiltonian_terms}
-  return_terms: ${evaluation.return_terms}
-  diagnostics:
-    - _target_: spenn.diagnostics.EnergyEvaluation
-      name: energy
-      reference_energy: ${references.exact_energy}
-      include_terms: true
+  evaluator: ${evaluator}
+
+
+# -----------------------------------------------------------------------------
+# Evaluator
+# -----------------------------------------------------------------------------
+evaluator:
+  _target_: spenn.evaluation.Evaluator
+  namespace: ${evaluation.namespace}
+  phase: ${evaluation.phase}
+  seed: ${evaluation.seed}
+  artifact_level: ${evaluation.artifact_level}
+  task_failure_policy: ${evaluation.task_failure_policy}
+  tasks:
+    - ${evaluation_tasks.energy}
+
+
+evaluation_tasks:
+  energy:
+    name: energy
+    namespace: ${evaluation.namespace}/energy
+    required: true
+    generator:
+      _target_: spenn.evaluation.generators.MCMCGenerator
+      sampler: ${sampler}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.HamiltonianTermSummary
+      - _target_: spenn.evaluation.summaries.SamplerStatsSummary
+      - _target_: spenn.evaluation.summaries.ReferenceEnergySummary
+        reference_energy: ${references.exact_energy}
 
 
 # -----------------------------------------------------------------------------
@@ -418,7 +453,14 @@ callbacks:
       - diagnostic_start
       - diagnostic_end
       - diagnostic_failed
+      - task_start
+      - task_end
+      - task_failed
     cuda_synchronize: ${timing.cuda_synchronize}
+
+  - _target_: spenn.callback.ArtifactIndex
+
+  - _target_: spenn.callback.FailureLog
 
 
 # -----------------------------------------------------------------------------

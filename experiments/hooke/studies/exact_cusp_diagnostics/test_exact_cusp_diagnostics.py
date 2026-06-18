@@ -1,8 +1,7 @@
-"""Tests for the exact Hooke cusp diagnostics experiment."""
+"""Tests for the exact Hooke cusp evaluation experiment."""
 
 from __future__ import annotations
 
-import csv
 import importlib.util
 import json
 import sys
@@ -34,7 +33,7 @@ def _load_script(name: str) -> ModuleType:
 plot_pair_distance = _load_script("plot_pair_distance")
 
 
-def test_config_wires_exact_singlet_eval_and_pair_probe() -> None:
+def test_config_wires_exact_singlet_eval_and_cusp_task() -> None:
     cfg = OmegaConf.load(CONFIG)
 
     assert cfg.experiment.name == "exact_cusp_diagnostics"
@@ -44,14 +43,12 @@ def test_config_wires_exact_singlet_eval_and_pair_probe() -> None:
     assert cfg.runtime.dtype == "float64"
     assert cfg.model._target_ == "spenn.physics.hooke.HookeSingletExact"
     assert cfg.runner._target_ == "spenn.runner.Evaluate"
-    assert cfg.runner.return_terms is True
+    assert cfg.runner.evaluator == "${evaluator}"
 
-    runner = OmegaConf.to_container(cfg.runner, resolve=False)
-    diagnostics = runner["diagnostics"]
-    assert diagnostics[0]["_target_"] == "spenn.diagnostics.EnergyEvaluation"
-    assert diagnostics[0]["reference_energy"] == "${references.exact_energy}"
-    assert diagnostics[1]["_target_"] == "spenn.diagnostics.HookePairDistanceProbe"
-    assert diagnostics[1]["artifact_path"] == "${run.dir}/diagnostics/pair_distance_probe/probe.csv"
+    raw = OmegaConf.to_container(cfg, resolve=False)
+    assert raw["evaluator"]["tasks"] == ["${evaluation_tasks.energy}", "${evaluation_tasks.cusp}"]
+    assert raw["evaluation_tasks"]["energy"]["summaries"][-1]["_target_"] == "spenn.evaluation.summaries.ReferenceEnergySummary"
+    assert raw["evaluation_tasks"]["cusp"]["generator"]["_target_"] == "spenn.evaluation.generators.CuspGridGenerator"
 
     # Experiment scripts may read files, but should not import SpENN internals.
     script = (STUDY_DIR / "plot_pair_distance.py").read_text(encoding="utf-8")
@@ -60,7 +57,7 @@ def test_config_wires_exact_singlet_eval_and_pair_probe() -> None:
 
 
 @pytest.mark.integration
-def test_exact_eval_writes_probe_and_plot(tmp_path: Path) -> None:
+def test_exact_eval_writes_energy_and_cusp_metrics(tmp_path: Path) -> None:
     pytest.importorskip("torch")
     cfg = OmegaConf.load(CONFIG)
     cfg.run.root = str(tmp_path)
@@ -76,28 +73,19 @@ def test_exact_eval_writes_probe_and_plot(tmp_path: Path) -> None:
     assert run_from_config(cfg, config_path=str(CONFIG), command="pytest exact cusp diagnostics") == 0
 
     run_dir = tmp_path / "exact_cusp_diagnostics" / "singlet" / "test_exact_cusp"
-    metrics = _eval_metrics(run_dir)
-    assert metrics["reference_energy"] == pytest.approx(2.0)
-    assert metrics["energy"] == pytest.approx(2.0, abs=1.0e-4)
-    assert metrics["energy_variance"] < 1.0e-8
-    assert metrics["local_energy_finite_fraction"] == 1.0
-
-    probe_csv = run_dir / "diagnostics" / "pair_distance_probe" / "probe.csv"
-    with probe_csv.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    assert len(rows) == 5
-    assert {"pair_distance", "model_local_energy", "exact_local_energy"}.issubset(rows[0])
-    energies = [float(row["model_local_energy"]) for row in rows]
-    assert all(abs(value - 2.0) < 1.0e-4 for value in energies)
-
-    output = plot_pair_distance.plot_pair_distance(run_dir=run_dir)
-    assert output == run_dir / "diagnostics" / "pair_distance_probe" / "model_local_energy_vs_pair_distance.png"
-    assert output.exists()
+    energy = _metrics(run_dir, "eval/energy")
+    cusp = _metrics(run_dir, "eval/cusp")
+    assert energy["reference_energy"] == pytest.approx(2.0)
+    assert energy["local_energy_mean"] == pytest.approx(2.0, abs=1.0e-4)
+    assert energy["local_energy_variance"] < 1.0e-8
+    assert energy["local_energy_finite_fraction"] == 1.0
+    assert cusp["c_minus_1_abs_max"] < 1.0e-4
+    assert cusp["cusp_even_slope_abs_error"] < 1.0e-4
 
 
-def _eval_metrics(run_dir: Path) -> dict:
+def _metrics(run_dir: Path, namespace: str) -> dict:
     metrics_path = run_dir / "metrics.jsonl"
     records = [json.loads(line) for line in metrics_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    eval_records = [record["metrics"] for record in records if record.get("namespace") == "eval"]
-    assert eval_records
-    return eval_records[-1]
+    matches = [record["metrics"] for record in records if record.get("namespace") == namespace]
+    assert matches
+    return matches[-1]
