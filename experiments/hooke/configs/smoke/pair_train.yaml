@@ -595,14 +595,12 @@ callbacks:
     evaluator:
       _target_: spenn.evaluation.Evaluator
       namespace: ${validation.namespace}
-      phase: validation
       seed: ${runtime.seed}
       artifact_level: metrics_only
       task_failure_policy: continue
       tasks:
         - name: energy
           namespace: ${validation.namespace}/energy
-          required: false
           generator:
             _target_: spenn.evaluation.generators.MCMCGenerator
             sampler: ${validation_sampler}

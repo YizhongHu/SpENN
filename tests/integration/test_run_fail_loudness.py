@@ -78,7 +78,6 @@ def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(
         evaluator={
             "_target_": "spenn.evaluation.Evaluator",
             "namespace": "eval",
-            "phase": "eval",
             "tasks": [],
         },
     )

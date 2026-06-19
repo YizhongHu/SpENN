@@ -180,7 +180,6 @@ load:
 # Evaluation
 # -----------------------------------------------------------------------------
 evaluation:
-  phase: eval
   namespace: eval
   seed: ${runtime.seed}
   artifact_level: summaries
@@ -218,7 +217,6 @@ runner:
 evaluator:
   _target_: spenn.evaluation.Evaluator
   namespace: ${evaluation.namespace}
-  phase: ${evaluation.phase}
   seed: ${evaluation.seed}
   artifact_level: ${evaluation.artifact_level}
   task_failure_policy: ${evaluation.task_failure_policy}
@@ -230,7 +228,6 @@ evaluation_tasks:
   energy:
     name: energy
     namespace: ${evaluation.namespace}/energy
-    required: true
     generator:
       _target_: spenn.evaluation.generators.MCMCGenerator
       sampler: ${sampler}

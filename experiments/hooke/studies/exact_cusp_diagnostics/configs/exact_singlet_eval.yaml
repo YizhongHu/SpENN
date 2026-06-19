@@ -58,7 +58,6 @@ diagnostic_params:
     local_energy_chunk_size: 256
 
 evaluation:
-  phase: eval
   namespace: eval
   seed: ${runtime.seed}
   artifact_level: summaries
@@ -76,7 +75,6 @@ runner:
 evaluator:
   _target_: spenn.evaluation.Evaluator
   namespace: ${evaluation.namespace}
-  phase: ${evaluation.phase}
   seed: ${evaluation.seed}
   artifact_level: ${evaluation.artifact_level}
   task_failure_policy: ${evaluation.task_failure_policy}
@@ -88,7 +86,6 @@ evaluation_tasks:
   energy:
     name: energy
     namespace: ${evaluation.namespace}/energy
-    required: true
     generator:
       _target_: spenn.evaluation.generators.MCMCGenerator
       sampler: ${sampler}
@@ -109,7 +106,6 @@ evaluation_tasks:
   cusp:
     name: cusp
     namespace: ${evaluation.namespace}/cusp
-    required: true
     generator:
       _target_: spenn.evaluation.generators.CuspGridGenerator
       r12_min: ${diagnostic_params.pair_distance_probe.r12_min}

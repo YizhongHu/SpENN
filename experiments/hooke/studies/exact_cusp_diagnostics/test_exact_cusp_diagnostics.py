@@ -43,9 +43,9 @@ def test_config_wires_exact_singlet_eval_and_cusp_task() -> None:
     assert cfg.runtime.dtype == "float64"
     assert cfg.model._target_ == "spenn.physics.hooke.HookeSingletExact"
     assert cfg.runner._target_ == "spenn.runner.Evaluate"
-    assert cfg.runner.evaluator == "${evaluator}"
 
     raw = OmegaConf.to_container(cfg, resolve=False)
+    assert raw["runner"]["evaluator"] == "${evaluator}"
     assert raw["evaluator"]["tasks"] == ["${evaluation_tasks.energy}", "${evaluation_tasks.cusp}"]
     assert raw["evaluation_tasks"]["energy"]["summaries"][-1]["_target_"] == "spenn.evaluation.summaries.ReferenceEnergySummary"
     assert raw["evaluation_tasks"]["cusp"]["generator"]["_target_"] == "spenn.evaluation.generators.CuspGridGenerator"

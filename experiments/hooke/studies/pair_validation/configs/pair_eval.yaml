@@ -179,7 +179,6 @@ load:
 # Evaluation
 # -----------------------------------------------------------------------------
 evaluation:
-  phase: eval
   namespace: eval
   seed: ${runtime.seed}
   artifact_level: summaries
@@ -264,7 +263,6 @@ runner:
 evaluator:
   _target_: spenn.evaluation.Evaluator
   namespace: ${evaluation.namespace}
-  phase: ${evaluation.phase}
   seed: ${evaluation.seed}
   artifact_level: ${evaluation.artifact_level}
   task_failure_policy: ${evaluation.task_failure_policy}
@@ -284,7 +282,6 @@ evaluation_tasks:
   energy:
     name: energy
     namespace: ${evaluation.namespace}/energy
-    required: true
     artifact_level: ${evaluation.artifact_level}
     generator:
       _target_: spenn.evaluation.generators.MCMCGenerator
@@ -309,7 +306,6 @@ evaluation_tasks:
   cusp:
     name: cusp
     namespace: ${evaluation.namespace}/cusp
-    required: false
     generator:
       _target_: spenn.evaluation.generators.CuspGridGenerator
       r12_min: ${diagnostic_params.pair_distance_probe.r12_min}
@@ -335,7 +331,6 @@ evaluation_tasks:
   tail:
     name: tail
     namespace: ${evaluation.namespace}/tail
-    required: false
     generator:
       _target_: spenn.evaluation.generators.TailGridGenerator
       radius_min: ${diagnostic_params.center_of_mass_probe.com_radius_min}
@@ -357,7 +352,6 @@ evaluation_tasks:
   exchange:
     name: exchange
     namespace: ${evaluation.namespace}/exchange
-    required: false
     generator:
       _target_: spenn.evaluation.generators.ExchangeOrbitGenerator
       base_generator:
@@ -373,7 +367,6 @@ evaluation_tasks:
   rotation:
     name: rotation
     namespace: ${evaluation.namespace}/rotation
-    required: false
     generator:
       _target_: spenn.evaluation.generators.RotationOrbitGenerator
       base_generator:
@@ -392,7 +385,6 @@ evaluation_tasks:
   full_model_equivariance:
     name: full_model_equivariance
     namespace: ${evaluation.namespace}/full_model_equivariance
-    required: false
     generator:
       _target_: spenn.evaluation.generators.PermutationOrbitGenerator
       base_generator:
@@ -409,7 +401,6 @@ evaluation_tasks:
   trace_equivariance:
     name: trace_equivariance
     namespace: ${evaluation.namespace}/trace_equivariance
-    required: false
     generator:
       _target_: spenn.evaluation.generators.PermutationOrbitGenerator
       base_generator:
@@ -426,7 +417,6 @@ evaluation_tasks:
   feature_trace:
     name: feature_trace
     namespace: ${evaluation.namespace}/feature_trace
-    required: false
     generator:
       _target_: spenn.evaluation.generators.HookeOrbitalGenerator
       n_samples: ${diagnostic_params.trace_equivariance.max_samples}
@@ -439,7 +429,6 @@ evaluation_tasks:
   readout_trace:
     name: readout_trace
     namespace: ${evaluation.namespace}/readout_trace
-    required: false
     generator:
       _target_: spenn.evaluation.generators.HookeOrbitalGenerator
       n_samples: ${diagnostic_params.trace_equivariance.max_samples}
