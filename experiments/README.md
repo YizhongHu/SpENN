@@ -39,5 +39,8 @@ experiments/
     studies/
       channel64_diagnosis/     why 64-channel validation configs lost in 02_collect
       exact_cusp_diagnostics/  exact Hooke singlet local-energy/cusp diagnostic
-      pair_validation/   validation scan: manifest, collector, selector
 ```
+
+The old `hooke/studies/pair_validation/` tree was removed during the PR8.5-8.7
+evaluation rewrite because it depended on the retired diagnostics/probe stack.
+Use the new evaluator fixtures and future preflight study path instead.

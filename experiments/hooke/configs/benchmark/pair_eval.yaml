@@ -3,19 +3,17 @@
 # =============================================================================
 #
 # Purpose:
-#   Evaluation of the model/protocol selected by the pair
-#   validation study (experiments/hooke/studies/pair_validation/). Restores a
-#   trained checkpoint, samples with the large final-evaluation sampler, and
-#   reports eval/* metrics including exact-reference error.
-#   Legacy test/reference copy: the study-local source of truth is
-#   experiments/hooke/studies/pair_validation/configs/pair_eval.yaml.
+#   Legacy standalone evaluation check. Restores a trained checkpoint, samples
+#   with the large final-evaluation sampler, and reports eval/* metrics
+#   including exact-reference error.
 #
-# PR8.3 orchestrators apply manifest/job-row overrides to this one base config.
-# Each run remains a normal configured run:
+# The old pair-validation study-local config was removed with the retired
+# diagnostics/probe stack. New study configs should use the evaluator task stack.
+# This file remains only as a benchmark-shaped test/reference config:
 #
 #   uv run python run.py --config experiments/hooke/configs/benchmark/pair_eval.yaml \
 #     load.path=<checkpoint> runtime.seed=100000 \
-#     study.name=hooke_pair_validation study.version=v2 study.phase=final_eval
+#     study.name=hooke_pair_benchmark study.version=legacy study.phase=final_eval
 #
 # =============================================================================
 

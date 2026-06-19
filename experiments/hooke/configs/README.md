@@ -19,9 +19,10 @@ experiments/hooke/configs/
     pair_train_gpu.yaml   # legacy GPU preflight test config
 ```
 
-Study-owned canonical configs live next to their study manifests. For the Hooke
-pair-validation study, use
-`experiments/hooke/studies/pair_validation/configs/`.
+The old Hooke pair-validation study configs were removed because they depended
+on the retired diagnostics/probe stack. Replacement study-level preflight
+configs should use the new evaluator task stack rather than copying these
+legacy test configs.
 
 SLURM submission scripts for these configs live in
 [`experiments/hooke/slurm/`](../slurm/).

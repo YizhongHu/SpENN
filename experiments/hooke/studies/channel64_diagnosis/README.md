@@ -4,9 +4,10 @@
 >
 > This study consumes the pair-validation collect/select outputs
 > (`pair_validation/reports/02_collect/runs.csv`, `03_select/selection.csv`),
-> which are produced by the pre-PR8.5 pipeline. That pipeline is now legacy (see
-> `../pair_validation/README.md`), so this study no longer works end to end
-> against the current PR8.5–PR8.7 evaluation stack.
+> which were produced by the pre-PR8.5 pipeline. The corresponding
+> `pair_validation` study source was removed from the current branch because it
+> depended on the retired diagnostics/probe stack, so this study no longer works
+> end to end against the current PR8.5–PR8.7 evaluation stack.
 >
 > - **Last commit on the hooke branch where this study worked:**
 >   `25360a6638d537fc10b526e70abb940c4d13e01d`
@@ -57,7 +58,7 @@ substantially higher variance.
 uv run python experiments/hooke/studies/channel64_diagnosis/analyze.py
 ```
 
-The script reads:
+The script reads archived files from the removed legacy pair-validation study:
 
 ```text
 experiments/hooke/studies/pair_validation/reports/02_collect/runs.csv

@@ -25,9 +25,11 @@ is trained at 10 seeds (`runtime.seed = 100..109`) and then evaluated. Seeds
 **105, 106, 107** "explode". This study finds *what* explodes and shows that the
 three seeds have **different** underlying defects.
 
-All numbers below come from the artifacts already produced on the H200 runs and
-synced into `pair_validation/reports/`; the scripts here only read those CSVs
-(no model checkpoints are needed). Reproduce with:
+All numbers below come from artifacts produced by the removed legacy
+pair-validation study and synced into `pair_validation/reports/` in the original
+run environment. The scripts here only read those archived CSVs and probe files
+(no model checkpoints are needed); they are not runnable in a clean checkout
+unless that archived report snapshot is restored. Reproduce with:
 
 ```bash
 uv run --extra cpu python experiments/hooke/studies/seed_explosion/probe.py            # training is healthy
