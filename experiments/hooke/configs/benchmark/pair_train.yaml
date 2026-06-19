@@ -490,35 +490,8 @@ callbacks:
         atol: ${checks.equivariance.atol}
         rtol: ${checks.equivariance.rtol}
 
-  # Train-end validation with an independent sampler. Logs validation/* and
-  # validation/sampler/* metrics for model/protocol selection; never uses the
-  # exact reference energy.
-  - _target_: spenn.callback.Validation
-    triggers:
-      - train_end
-    namespace: ${validation.namespace}
-    evaluator:
-      _target_: spenn.evaluation.Evaluator
-      namespace: ${validation.namespace}
-      seed: ${runtime.seed}
-      artifact_level: metrics_only
-      task_failure_policy: continue
-      tasks:
-        - name: energy
-          namespace: ${validation.namespace}/energy
-          generator:
-            _target_: spenn.evaluation.generators.MCMCGenerator
-            sampler: ${validation_sampler}
-            seed: ${runtime.seed}
-          calculators:
-            - _target_: spenn.evaluation.calculators.WavefunctionCalculator
-            - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
-              hamiltonian_terms: ${hamiltonian_terms}
-              return_terms: ${validation.return_terms}
-          summaries:
-            - _target_: spenn.evaluation.summaries.LocalEnergySummary
-            - _target_: spenn.evaluation.summaries.HamiltonianTermSummary
-            - _target_: spenn.evaluation.summaries.SamplerStatsSummary
+  # Train-end validation has been removed. Run evaluation separately via the
+  # Evaluate runner + Evaluator instead of a train-then-validate callback.
 
   - _target_: spenn.callback.Checkpoint
     triggers:

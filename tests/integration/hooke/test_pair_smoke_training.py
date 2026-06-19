@@ -3,7 +3,8 @@
 Drives ``run_from_config`` through the real Train runner -> SpENNWaveFunction ->
 MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with DataIntegrity,
 GradientStats, SamplerHealth, RuntimeEquivariance (full_model + trace),
-train-end Validation, Checkpoint, and CSV/JSONL logging. No convergence or
+Checkpoint, and CSV/JSONL logging. Train-end validation has been removed;
+evaluation runs separately via the Evaluate runner. No convergence or
 reference-energy assertions.
 """
 
@@ -60,9 +61,6 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
     for expected in (
         "train",
         "train/sampler",
-        "validation/energy",
-        "validation/sampler",
-        "validation/perf",
         "checks/data_integrity",
         "checks/gradient",
         "checks/sampler",
@@ -71,9 +69,11 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
     ):
         assert expected in namespaces, f"missing namespace: {expected}"
     assert "checks/data_validity" not in namespaces
+    # Train-end validation was removed; no validation/* namespaces are emitted.
+    assert not any(str(ns).startswith("validation") for ns in namespaces)
 
 
-def test_pair_smoke_training_validation_and_geometry_metrics(tmp_path) -> None:
+def test_pair_smoke_training_geometry_metrics(tmp_path) -> None:
     run_dir = _run(tmp_path)
 
     records = [
@@ -82,17 +82,8 @@ def test_pair_smoke_training_validation_and_geometry_metrics(tmp_path) -> None:
         if line.strip()
     ]
 
-    validation = [r["metrics"] for r in records if r.get("namespace") == "validation/energy"]
-    assert validation, "no validation records"
-    assert "local_energy_mean" in validation[-1]
-    # Exact-reference comparison is reserved for final evaluation (eval/*).
-    assert "energy_error" not in validation[-1]
-    assert "energy_abs_error" not in validation[-1]
-    assert "reference_energy" not in validation[-1]
-
-    # Geometry diagnostics ride along with sampler stats in both phases.
-    for namespace in ("train/sampler", "validation/sampler"):
-        sampler_records = [r["metrics"] for r in records if r.get("namespace") == namespace]
-        assert sampler_records, f"no {namespace} records"
-        for key in ("radius_mean", "radius_q99", "electron_distance_q01", "position_rms"):
-            assert key in sampler_records[-1], f"missing {namespace}/{key}"
+    # Geometry diagnostics ride along with training sampler stats.
+    sampler_records = [r["metrics"] for r in records if r.get("namespace") == "train/sampler"]
+    assert sampler_records, "no train/sampler records"
+    for key in ("radius_mean", "radius_q99", "electron_distance_q01", "position_rms"):
+        assert key in sampler_records[-1], f"missing train/sampler/{key}"
