@@ -37,7 +37,7 @@ run:
   layout: flat
   run_id: null
   dir: null
-  timezone: UTC
+  timezone: null  # orchestrator injects run.timezone; null falls back to UTC for direct runs
 
 runtime:
   seed: ${run_parameters.seed}

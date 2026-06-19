@@ -9,171 +9,57 @@ The orchestrator does not hand-write per-variant YAML and does not emit bespoke
 optional ``submitit`` backend hands those commands to the Submitit launcher,
 which owns Slurm script generation.
 
+The orchestrator is the source of truth for the study timezone (``--timezone``,
+default America/New_York): it stamps attempt ids and the manifest ``created_at``
+with it, and overrides ``run.timezone`` in the compiled commands when the run
+config declares a different zone.
+
 Stage layout (under ``results_root``)::
 
-    00_grid/attempts/{attempt_id}/{manifest.json, commands.sh, grid.yaml,
-                                   pair_stability.yaml, jobs/{run_id}.json}
-    01_train/{run_id}/attempts/{attempt_id}/...
-    02_validation/{run_id}/attempts/{attempt_id}/...
-    03_collect/attempts/{attempt_id}/...
-    04_select/attempts/{attempt_id}/...
+    00_grid/{attempt_id}/{manifest.json, commands.sh, grid.yaml,
+                          pair_stability.yaml, jobs/{run_id}.json}
+    01_train/{run_id}/{attempt_id}/...
+    02_validation/{run_id}/{attempt_id}/...
+    03_collect/{attempt_id}/...
+    04_select/{attempt_id}/...
 
 ``run.dir`` for a train/validation attempt is realized by the flat run layout:
-``run.root = results_root/<stage>`` and ``run.run_id = <run_id>/attempts/<attempt_id>``.
+``run.root = results_root/<stage>`` and ``run.run_id = <run_id>/<attempt_id>``.
 """
 
 from __future__ import annotations
 
 import argparse
 import itertools
-import json
-import re
 import shlex
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
-# Stage directory names; the numbers document artifact inheritance order.
-STAGE_GRID = "00_grid"
-STAGE_TRAIN = "01_train"
-STAGE_VALIDATION = "02_validation"
-STAGE_COLLECT = "03_collect"
-STAGE_SELECT = "04_select"
-
-# Grid axis order (also the deterministic Cartesian-product nesting order).
-GRID_AXES = ("architecture", "normalization", "lr", "channels", "seed")
+from run_utils import (
+    DEFAULT_STUDY_TIMEZONE,
+    GRID_AXES,
+    STAGE_TRAIN,
+    STAGE_VALIDATION,
+    STAGE_GRID,
+    grid_attempt_dir,
+    new_attempt_id,
+    resolve_timezone,
+    run_id_for,
+    stage_dir,
+    train_attempt_dir,
+    train_run_dir,
+    validation_attempt_dir,
+    validation_run_dir,
+    write_json,
+    write_latest,
+)
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_GRID = STUDY_DIR / "configs" / "grid.yaml"
-
-
-# ---------------------------------------------------------------------------
-# Identifiers and formatting
-# ---------------------------------------------------------------------------
-def utc_attempt_id(moment: datetime | None = None) -> str:
-    """Return a UTC attempt id of the form ``YYYYMMDDTHHMMSSZ``."""
-
-    moment = moment or datetime.now(timezone.utc)
-    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def format_lr(lr: float) -> str:
-    """Return a compact, deterministic learning-rate label, e.g. ``1e-3``."""
-
-    mantissa, _, exponent = f"{float(lr):.1e}".partition("e")
-    mantissa = mantissa.rstrip("0").rstrip(".")
-    return f"{mantissa}e{int(exponent)}"
-
-
-def run_id_for(point: dict[str, Any]) -> str:
-    """Return the deterministic run id for one grid point."""
-
-    return (
-        f"arch-{point['architecture']}"
-        f"_norm-{point['normalization']}"
-        f"_lr-{format_lr(point['lr'])}"
-        f"_ch-{int(point['channels'])}"
-        f"_seed-{int(point['seed'])}"
-    )
-
-
-_RUN_ID_PATTERN = re.compile(
-    r"^arch-(?P<architecture>.+)_norm-(?P<normalization>[^_]+)"
-    r"_lr-(?P<lr>[^_]+)_ch-(?P<channels>\d+)_seed-(?P<seed>\d+)$"
-)
-
-
-def parse_run_id(run_id: str) -> dict[str, Any]:
-    """Recover the grid choices encoded in a run id."""
-
-    match = _RUN_ID_PATTERN.match(run_id)
-    if match is None:
-        raise ValueError(f"run id {run_id!r} does not match the pair_stability convention")
-    fields = match.groupdict()
-    return {
-        "architecture": fields["architecture"],
-        "normalization": fields["normalization"],
-        "lr": fields["lr"],
-        "channels": int(fields["channels"]),
-        "seed": int(fields["seed"]),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Small IO helpers
-# ---------------------------------------------------------------------------
-def write_json(path: Path, payload: Any) -> None:
-    """Write ``payload`` as pretty JSON, creating parent directories."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
-
-
-def read_json(path: Path) -> Any:
-    """Read JSON from ``path``."""
-
-    return json.loads(Path(path).read_text())
-
-
-def write_latest(stage_dir: Path, attempt_id: str) -> None:
-    """Record the most recent attempt id for a stage.
-
-    Writes a portable ``latest.json`` pointer and additionally attempts a
-    ``latest`` symlink (best effort; durable provenance uses explicit attempt
-    ids, never ``latest``).
-    """
-
-    write_json(stage_dir / "latest.json", {"attempt_id": attempt_id, "path": f"attempts/{attempt_id}"})
-    link = stage_dir / "latest"
-    try:
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(Path("attempts") / attempt_id, target_is_directory=True)
-    except OSError:
-        # Symlinks may be unsupported on the target filesystem; latest.json suffices.
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Stage path layout
-# ---------------------------------------------------------------------------
-def stage_dir(results_root: str | Path, stage: str) -> Path:
-    """Return the directory for a numbered stage."""
-
-    return Path(results_root) / stage
-
-
-def grid_attempt_dir(results_root: str | Path, attempt_id: str) -> Path:
-    """Return the ``00_grid`` attempt directory."""
-
-    return stage_dir(results_root, STAGE_GRID) / "attempts" / attempt_id
-
-
-def train_run_dir(results_root: str | Path, run_id: str) -> Path:
-    """Return the per-run-id directory under ``01_train``."""
-
-    return stage_dir(results_root, STAGE_TRAIN) / run_id
-
-
-def validation_run_dir(results_root: str | Path, run_id: str) -> Path:
-    """Return the per-run-id directory under ``02_validation``."""
-
-    return stage_dir(results_root, STAGE_VALIDATION) / run_id
-
-
-def train_attempt_dir(results_root: str | Path, run_id: str, attempt_id: str) -> Path:
-    """Return the train attempt directory for a run id."""
-
-    return train_run_dir(results_root, run_id) / "attempts" / attempt_id
-
-
-def validation_attempt_dir(results_root: str | Path, run_id: str, attempt_id: str) -> Path:
-    """Return the validation attempt directory for a run id."""
-
-    return validation_run_dir(results_root, run_id) / "attempts" / attempt_id
 
 
 # ---------------------------------------------------------------------------
@@ -238,17 +124,25 @@ def _run_parameter_overrides(point: dict[str, Any]) -> list[str]:
 
 
 def train_overrides(
-    point: dict[str, Any], *, run_id: str, attempt_id: str, results_root: str | Path
+    point: dict[str, Any],
+    *,
+    run_id: str,
+    attempt_id: str,
+    results_root: str | Path,
+    timezone: str | None = None,
 ) -> list[str]:
     """Return scalar Hydra-style overrides for one train job."""
 
-    return [
+    overrides = [
         *_run_parameter_overrides(point),
         f"run.root={stage_dir(results_root, STAGE_TRAIN)}",
         "run.layout=flat",
-        f"run.run_id={run_id}/attempts/{attempt_id}",
+        f"run.run_id={run_id}/{attempt_id}",
         f"study.attempt_id={attempt_id}",
     ]
+    if timezone is not None:
+        overrides.append(f"run.timezone={timezone}")
+    return overrides
 
 
 def validation_overrides(
@@ -258,17 +152,21 @@ def validation_overrides(
     attempt_id: str,
     results_root: str | Path,
     checkpoint_path: str | Path,
+    timezone: str | None = None,
 ) -> list[str]:
     """Return scalar Hydra-style overrides for one validation job."""
 
-    return [
+    overrides = [
         *_run_parameter_overrides(point),
         f"load.path={checkpoint_path}",
         f"run.root={stage_dir(results_root, STAGE_VALIDATION)}",
         "run.layout=flat",
-        f"run.run_id={run_id}/attempts/{attempt_id}",
+        f"run.run_id={run_id}/{attempt_id}",
         f"study.attempt_id={attempt_id}",
     ]
+    if timezone is not None:
+        overrides.append(f"run.timezone={timezone}")
+    return overrides
 
 
 def command_for(config: str | Path, overrides: Sequence[str], *, python: str = "python") -> list[str]:
@@ -289,13 +187,16 @@ def build_jobs(
     tags_by_architecture: dict[str, list[str]],
     launcher: str,
     python: str = "python",
+    timezone: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return one manifest job record per grid point."""
 
     jobs = []
     for point in points:
         run_id = run_id_for(point)
-        overrides = train_overrides(point, run_id=run_id, attempt_id=attempt_id, results_root=results_root)
+        overrides = train_overrides(
+            point, run_id=run_id, attempt_id=attempt_id, results_root=results_root, timezone=timezone
+        )
         jobs.append(
             {
                 "run_id": run_id,
@@ -395,6 +296,7 @@ def plan_validation_attempt(
     validation_attempt_id: str,
     validation_config: str | Path,
     python: str = "python",
+    timezone: str | None = None,
 ) -> dict[str, Any]:
     """Plan one validation attempt and record the train attempt it consumes.
 
@@ -425,6 +327,7 @@ def plan_validation_attempt(
         attempt_id=validation_attempt_id,
         results_root=results_root,
         checkpoint_path=checkpoint_path,
+        timezone=timezone,
     )
     return {
         "run_id": run_id,
@@ -485,7 +388,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grid", default=str(DEFAULT_GRID), help="Grid YAML path.")
     parser.add_argument("--config", default=None, help="Train config path (defaults to grid.config).")
     parser.add_argument("--results-root", default=None, help="Results root (defaults to grid.results_root).")
-    parser.add_argument("--attempt-id", default=None, help="UTC attempt id (defaults to now).")
+    parser.add_argument(
+        "--attempt-id", default=None, help="Attempt id in the study timezone (defaults to now)."
+    )
+    parser.add_argument(
+        "--timezone",
+        default=DEFAULT_STUDY_TIMEZONE,
+        help=(
+            "IANA timezone owned by the orchestrator: stamps attempt ids and "
+            "overrides run.timezone when it differs (default America/New_York)."
+        ),
+    )
     parser.add_argument("--tags", nargs="*", default=None, help="Only include architectures with all of these tags.")
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of planned jobs.")
     parser.add_argument("--python", default=sys.executable or "python", help="Python executable for commands.")
@@ -513,8 +426,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = args.config or grid_data["config"]
     results_root = args.results_root or grid_data["results_root"]
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
-    attempt_id = args.attempt_id or utc_attempt_id()
-    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # The orchestrator owns the timezone: it stamps the attempt id / created_at
+    # and always injects it as a run.timezone override on the compiled commands.
+    tz = resolve_timezone(args.timezone)
+    attempt_id = args.attempt_id or new_attempt_id(tz=tz)
+    created_at = datetime.now(tz).isoformat(timespec="seconds")
 
     points = expand_grid(grid_data["grid"])
     config_obj = OmegaConf.load(config)
@@ -539,6 +456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         tags_by_architecture=tags_by_arch,
         launcher=args.backend,
         python=args.python,
+        timezone=args.timezone,
     )
     attempt = write_grid_attempt(
         results_root=results_root,

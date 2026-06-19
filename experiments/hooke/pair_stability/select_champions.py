@@ -14,12 +14,13 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
-from orchestrator import (
+from run_utils import (
     STAGE_COLLECT,
     STAGE_SELECT,
+    attempt_ids,
+    new_attempt_id,
     read_json,
     stage_dir,
-    utc_attempt_id,
     write_json,
 )
 
@@ -105,13 +106,13 @@ def select_champions(
 def _resolve_collection_attempt(results_root: Path, collection_attempt_id: str | None) -> str:
     if collection_attempt_id is not None:
         return collection_attempt_id
-    latest = stage_dir(results_root, STAGE_COLLECT) / "latest.json"
+    collect_dir = stage_dir(results_root, STAGE_COLLECT)
+    latest = collect_dir / "latest.json"
     if latest.is_file():
         return str(read_json(latest).get("attempt_id"))
-    attempts = stage_dir(results_root, STAGE_COLLECT) / "attempts"
-    ids = sorted(child.name for child in attempts.iterdir() if child.is_dir()) if attempts.is_dir() else []
+    ids = attempt_ids(collect_dir)
     if not ids:
-        raise FileNotFoundError(f"no collection attempts under {attempts}")
+        raise FileNotFoundError(f"no collection attempts under {collect_dir}")
     return ids[-1]
 
 
@@ -128,13 +129,13 @@ def select(
 
     results_root = Path(results_root)
     collection_attempt_id = _resolve_collection_attempt(results_root, collection_attempt_id)
-    select_attempt_id = select_attempt_id or utc_attempt_id()
-    collection_dir = stage_dir(results_root, STAGE_COLLECT) / "attempts" / collection_attempt_id
+    select_attempt_id = select_attempt_id or new_attempt_id()
+    collection_dir = stage_dir(results_root, STAGE_COLLECT) / collection_attempt_id
 
     rows = read_summary(collection_dir)
     selection = select_champions(rows, metric=metric, mode=mode, group_by=group_by)
 
-    attempt = stage_dir(results_root, STAGE_SELECT) / "attempts" / select_attempt_id
+    attempt = stage_dir(results_root, STAGE_SELECT) / select_attempt_id
     attempt.mkdir(parents=True, exist_ok=True)
 
     champions = selection["champions"]

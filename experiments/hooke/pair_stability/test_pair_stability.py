@@ -27,7 +27,40 @@ if str(STUDY_DIR) not in sys.path:
 
 import collect  # noqa: E402
 import orchestrator  # noqa: E402
+import run_utils  # noqa: E402
 import select_champions  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Attempt-id timezone / format
+# ---------------------------------------------------------------------------
+def test_new_attempt_id_uses_study_timezone() -> None:
+    import re
+    from datetime import datetime
+
+    # Study timestamps share the run-log wall clock (America/New_York).
+    assert str(run_utils.STUDY_TIMEZONE) == "America/New_York"
+    # Summer is EDT (-0400), winter is EST (-0500); ids stay dir-safe.
+    summer = datetime(2026, 6, 19, 0, 0, 0, tzinfo=run_utils.STUDY_TIMEZONE)
+    winter = datetime(2026, 1, 15, 0, 0, 0, tzinfo=run_utils.STUDY_TIMEZONE)
+    assert run_utils.new_attempt_id(summer) == "20260619T000000-0400"
+    assert run_utils.new_attempt_id(winter) == "20260115T000000-0500"
+    # The no-arg form is study-local and matches the id grammar.
+    assert re.fullmatch(r"\d{8}T\d{6}[+-]\d{4}", run_utils.new_attempt_id())
+
+
+def test_attempt_ids_sorted_and_skips_latest(tmp_path: Path) -> None:
+    base = tmp_path / "stage"
+    (base / "20260101T000000-0500").mkdir(parents=True)
+    (base / "20260619T000000-0400").mkdir()
+    (base / "latest.json").write_text("{}")
+    try:
+        (base / "latest").symlink_to("20260619T000000-0400")
+    except OSError:
+        pass
+    # Chronological by name; the latest symlink and latest.json are excluded.
+    assert run_utils.attempt_ids(base) == ["20260101T000000-0500", "20260619T000000-0400"]
+    assert run_utils.attempt_ids(base / "missing") == []
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +121,7 @@ def _small_grid(tmp_path: Path) -> Path:
 
 
 TARGET_RUN_ID = "arch-hermite_o3_envelope_norm-N2_lr-1e-3_ch-16_seed-0"
-ATTEMPT = "20260619T000000Z"
+ATTEMPT = "20260619T000000-0400"
 
 
 def _plan(tmp_path: Path) -> Path:
@@ -134,7 +167,7 @@ def test_manifest_train_and_validation_dirs_follow_expected_layout(tmp_path: Pat
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     assert job["train_dir"] == str(results_root / "01_train" / TARGET_RUN_ID)
     assert job["validation_dir"] == str(results_root / "02_validation" / TARGET_RUN_ID)
-    assert job["train_attempt_dir"] == str(results_root / "01_train" / TARGET_RUN_ID / "attempts" / ATTEMPT)
+    assert job["train_attempt_dir"] == str(results_root / "01_train" / TARGET_RUN_ID / ATTEMPT)
 
 
 def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
@@ -145,7 +178,7 @@ def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
     assert "run.py" in commands
     assert "--config" in commands
     assert "run_parameters.architecture=hermite_o3_envelope" in commands
-    assert f"run.run_id={TARGET_RUN_ID}/attempts/{ATTEMPT}" in commands
+    assert f"run.run_id={TARGET_RUN_ID}/{ATTEMPT}" in commands
 
 
 def test_train_run_dir_uses_stage_attempt_layout(tmp_path: Path) -> None:
@@ -155,7 +188,24 @@ def test_train_run_dir_uses_stage_attempt_layout(tmp_path: Path) -> None:
     overrides = job["overrides"]
     assert f"run.root={results_root / '01_train'}" in overrides
     assert "run.layout=flat" in overrides
-    assert f"run.run_id={TARGET_RUN_ID}/attempts/{ATTEMPT}" in overrides
+    assert f"run.run_id={TARGET_RUN_ID}/{ATTEMPT}" in overrides
+
+
+def test_orchestrator_always_injects_run_timezone_override(tmp_path: Path) -> None:
+    grid = _small_grid(tmp_path)
+    # The orchestrator owns the timezone and always injects it (the config is null).
+    orchestrator.main(
+        ["--grid", str(grid), "--results-root", str(tmp_path / "a"), "--attempt-id", ATTEMPT, "--backend", "plan"]
+    )
+    commands = (orchestrator.grid_attempt_dir(tmp_path / "a", ATTEMPT) / "commands.sh").read_text()
+    assert "run.timezone=America/New_York" in commands
+    # --timezone selects the injected zone.
+    orchestrator.main(
+        ["--grid", str(grid), "--results-root", str(tmp_path / "b"), "--attempt-id", ATTEMPT,
+         "--backend", "plan", "--timezone", "UTC"]
+    )
+    commands_utc = (orchestrator.grid_attempt_dir(tmp_path / "b", ATTEMPT) / "commands.sh").read_text()
+    assert "run.timezone=UTC" in commands_utc
 
 
 def test_validation_records_source_train_attempt(tmp_path: Path) -> None:
@@ -242,7 +292,7 @@ def test_collect_reads_eval_diagnostics_from_validation_attempts(tmp_path: Path)
 
     result = collect.collect(results_root=results_root, collect_attempt_id="C1")
     attempt = Path(result["attempt_dir"])
-    assert attempt == results_root / "03_collect" / "attempts" / "C1"
+    assert attempt == results_root / "03_collect" / "C1"
 
     summary_rows = list(_read_csv(attempt / "summary.csv"))
     by_run = {row["run_id"]: row for row in summary_rows}
@@ -262,7 +312,7 @@ def test_collect_reads_eval_diagnostics_from_validation_attempts(tmp_path: Path)
 
 def test_select_champions_reads_collection_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
-    collection = results_root / "03_collect" / "attempts" / "C1"
+    collection = results_root / "03_collect" / "C1"
     collection.mkdir(parents=True, exist_ok=True)
     rows = [
         {"run_id": "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16_seed-0", "architecture": "hermite_o3_envelope",
@@ -279,7 +329,7 @@ def test_select_champions_reads_collection_attempt(tmp_path: Path) -> None:
 
     result = select_champions.select(results_root=results_root, collection_attempt_id="C1", select_attempt_id="S1")
     attempt = Path(result["attempt_dir"])
-    assert attempt == results_root / "04_select" / "attempts" / "S1"
+    assert attempt == results_root / "04_select" / "S1"
 
     source = json.loads((attempt / "source_collection_attempt.json").read_text())
     assert source["collection_attempt_id"] == "C1"
@@ -300,7 +350,7 @@ def test_pair_stability_smoke_run_instantiates_one_grid_point(tmp_path: Path) ->
     cfg = OmegaConf.load(PAIR_STABILITY)
     cfg.runtime.device = "cpu"
     cfg.run.root = str(tmp_path)
-    cfg.run.run_id = f"smoke/attempts/{ATTEMPT}"
+    cfg.run.run_id = f"smoke/{ATTEMPT}"
     cfg.run_parameters.architecture = "hermite_o2_envelope"
     cfg.run_parameters.normalization = "N1"
     cfg.run_parameters.channels = 4
@@ -317,7 +367,7 @@ def test_pair_stability_smoke_run_instantiates_one_grid_point(tmp_path: Path) ->
     exit_code = run_from_config(cfg, config_path=str(PAIR_STABILITY), command="pytest")
     assert exit_code == 0
 
-    run_dir = tmp_path / "smoke" / "attempts" / ATTEMPT
+    run_dir = tmp_path / "smoke" / ATTEMPT
     status = json.loads((run_dir / "status.json").read_text())
     assert status["status"] == "completed"
     assert (run_dir / "checkpoints" / "latest.json").is_file()

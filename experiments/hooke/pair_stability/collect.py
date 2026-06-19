@@ -1,6 +1,6 @@
 """Collect pair-stability validation attempts into a summary table (PR8.8).
 
-Walks ``02_validation/{run_id}/attempts/*`` (the latest attempt per run id),
+Walks ``02_validation/{run_id}/*`` (the latest attempt per run id),
 reads each attempt's status, evaluation metrics, and recorded train-attempt
 provenance, and writes a ``03_collect`` attempt with ``summary.csv``,
 ``failures.csv``, ``collection_report.json``, and explicit source pointers to
@@ -17,15 +17,16 @@ from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
-from orchestrator import (
+from run_utils import (
     STAGE_COLLECT,
     STAGE_GRID,
     STAGE_VALIDATION,
+    attempt_ids,
     grid_attempt_dir,
+    new_attempt_id,
     parse_run_id,
     read_json,
     stage_dir,
-    utc_attempt_id,
     validation_run_dir,
     write_json,
 )
@@ -54,12 +55,9 @@ CORE_COLUMNS = (
 
 
 def latest_attempt_id(run_dir: Path) -> str | None:
-    """Return the most recent attempt id under ``run_dir/attempts``."""
+    """Return the most recent attempt id directly under ``run_dir``."""
 
-    attempts = run_dir / "attempts"
-    if not attempts.is_dir():
-        return None
-    ids = sorted(child.name for child in attempts.iterdir() if child.is_dir())
+    ids = attempt_ids(run_dir)
     return ids[-1] if ids else None
 
 
@@ -160,7 +158,8 @@ def _run_ids(results_root: Path, grid_attempt_id: str | None) -> list[str]:
     validation_root = stage_dir(results_root, STAGE_VALIDATION)
     if not validation_root.is_dir():
         return []
-    return sorted(child.name for child in validation_root.iterdir() if (child / "attempts").is_dir())
+    # A validation run dir is any child that holds at least one attempt directory.
+    return sorted(child.name for child in validation_root.iterdir() if attempt_ids(child))
 
 
 def collect(
@@ -172,7 +171,7 @@ def collect(
     """Collect validation attempts and write a ``03_collect`` attempt."""
 
     results_root = Path(results_root)
-    collect_attempt_id = collect_attempt_id or utc_attempt_id()
+    collect_attempt_id = collect_attempt_id or new_attempt_id()
     grid_attempt_id = _resolve_grid_attempt(results_root, grid_attempt_id)
 
     rows: list[dict[str, Any]] = []
@@ -182,13 +181,13 @@ def collect(
         attempt_id = latest_attempt_id(run_dir)
         if attempt_id is None:
             continue
-        attempt_dir = run_dir / "attempts" / attempt_id
+        attempt_dir = run_dir / attempt_id
         rows.append(collect_validation_attempt(run_id, attempt_id, attempt_dir))
         consumed.append(
             {"run_id": run_id, "validation_attempt_id": attempt_id, "validation_attempt_dir": str(attempt_dir)}
         )
 
-    attempt = stage_dir(results_root, STAGE_COLLECT) / "attempts" / collect_attempt_id
+    attempt = stage_dir(results_root, STAGE_COLLECT) / collect_attempt_id
     attempt.mkdir(parents=True, exist_ok=True)
 
     metric_columns = sorted({key for row in rows for key in row if key not in CORE_COLUMNS})

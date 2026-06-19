@@ -19,8 +19,8 @@ grid:
     - raw_envelope
     - hermite_o2_envelope
     - hermite_o3_envelope
-    - orbital_s1_envelope
-    - orbital_s2_envelope
+    # - orbital_s1_envelope
+    # - orbital_s2_envelope
 
   normalization:
     - N0
@@ -44,5 +44,5 @@ grid:
     - 0
     - 1
     - 2
-    - 3
-    - 4
+    # - 3
+    # - 4

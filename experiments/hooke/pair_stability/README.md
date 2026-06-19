@@ -104,8 +104,15 @@ grid point into scalar overrides for the canonical `run.py` entrypoint and:
   (`submitit.AutoExecutor`), which owns Slurm script generation. Requires the
   optional `submitit` extra (`uv sync --extra submitit`).
 
+The orchestrator is the source of truth for the study timezone (`--timezone`,
+default `America/New_York`): it stamps attempt ids and the manifest
+`created_at`, and always injects it as a `run.timezone` override on the
+compiled commands. The configs set `run.timezone: null`, so an orchestrated run
+takes its zone only from the orchestrator (a direct `run.py` run with no
+override falls back to spenn's `UTC` default).
+
 ```bash
-# Plan the grid (dry run): writes results/00_grid/attempts/<attempt_id>/
+# Plan the grid (dry run): writes results/00_grid/<attempt_id>/
 uv run python experiments/hooke/pair_stability/orchestrator.py
 
 # Plan only the "main"-tagged architectures
@@ -125,7 +132,8 @@ run_parameters.channels=16
 run_parameters.seed=0
 run.root=experiments/hooke/pair_stability/results/01_train
 run.layout=flat
-run.run_id=<run_id>/attempts/<attempt_id>
+run.run_id=<run_id>/<attempt_id>
+run.timezone=America/New_York   # always injected; --timezone selects the zone
 ```
 
 With the flat run layout, `run.dir = run.root / run.run_id`, which realizes the
@@ -147,32 +155,37 @@ consumed; provenance uses explicit attempt ids, never `latest`):
 
 ```
 00_grid attempt
-   -> 01_train/{run_id}/attempts/{attempt_id}
-        -> 02_validation/{run_id}/attempts/{attempt_id}/source_train_attempt.json
-             -> 03_collect/attempts/{attempt_id}/source_validation_attempts.json
-                  -> 04_select/attempts/{attempt_id}/source_collection_attempt.json
+   -> 01_train/{run_id}/{attempt_id}
+        -> 02_validation/{run_id}/{attempt_id}/source_train_attempt.json
+             -> 03_collect/{attempt_id}/source_validation_attempts.json
+                  -> 04_select/{attempt_id}/source_collection_attempt.json
 ```
 
-Rerunnable units are indexed by UTC attempt ids of the form
-`YYYYMMDDTHHMMSSZ`. Detailed layout:
+Every directory under a stage (or under a stage's run id) is an attempt, so
+there is no intermediate `attempts/` path segment.
+
+Rerunnable units are indexed by attempt ids of the form
+`YYYYMMDDTHHMMSS-0400` in the orchestrator's timezone (America/New_York by
+default), which is also injected as the `run.timezone` override, so attempt ids
+and run logs share one wall clock. Detailed layout:
 
 ```
 results/
   00_grid/
-    attempts/{attempt_id}/
+    {attempt_id}/
       manifest.json          # planned/submitted jobs (the durable run list)
       commands.sh            # exact run.py commands
       grid.yaml              # snapshot of the grid
       pair_stability.yaml    # snapshot of the train config
       jobs/{run_id}.json     # per-job spec
-    latest.json -> attempts/{attempt_id}
-  01_train/{run_id}/attempts/{attempt_id}/   # config.yaml, checkpoints/, metrics, status.json, ...
-  02_validation/{run_id}/attempts/{attempt_id}/
-      source_train_attempt.json              # train attempt + checkpoint consumed
+    latest.json -> {attempt_id}
+  01_train/{run_id}/{attempt_id}/   # config.yaml, checkpoints/, metrics, status.json, ...
+  02_validation/{run_id}/{attempt_id}/
+      source_train_attempt.json     # train attempt + checkpoint consumed
       cusp/ tail/ stratified_geometry/ hooke_orbital/ energy/   # per-task output_dir
       diagnostics/index.json, status.json, metrics.*
-  03_collect/attempts/{attempt_id}/          # summary.csv, failures.csv, collection_report.json, source_*.json
-  04_select/attempts/{attempt_id}/           # champions.csv, selection_report.json, source_collection_attempt.json
+  03_collect/{attempt_id}/          # summary.csv, failures.csv, collection_report.json, source_*.json
+  04_select/{attempt_id}/           # champions.csv, selection_report.json, source_collection_attempt.json
 ```
 
 ### Manifest
@@ -201,14 +214,20 @@ metrics (`metrics.jsonl`), and `source_train_attempt.json`, and writes
 reads a `03_collect` summary and writes per-architecture champions and a
 selection report, recording the collection attempt it consumed.
 
+The study scripts (`orchestrator.py`, `collect.py`, `select_champions.py`)
+share their stage-layout vocabulary, attempt-id/timezone helpers, run-id
+grammar, JSON IO, and staged-directory path helpers through `run_utils.py`;
+each script keeps only its own stage logic.
+
 ## Tests
 
 - Reusable model/component math is tested under `tests/unit/model/`
   (`test_electron_basis.py`, `test_feature_normalization.py`,
   `test_pair_stability_config_choices.py`).
 - Study orchestration and file layout are tested in `test_pair_stability.py`
-  (grid/choice consistency, dry-run manifest, staged layout, attempt
-  provenance, and a one-grid-point smoke run through the normal run path).
+  (grid/choice consistency, attempt-id timezone, the `attempt_ids` listing, the
+  `run.timezone` override, dry-run manifest, staged layout, attempt provenance,
+  and a one-grid-point smoke run through the normal run path).
 
 ## Relationship to `pair_validation`
 
