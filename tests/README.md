@@ -16,16 +16,21 @@ tests/unit/training/
 Integration tests live under `tests/integration/`, grouped by workflow or domain:
 
 ```text
-tests/integration/hooke/
+tests/integration/evaluation/
+tests/integration/experiments/
 tests/integration/training/
 ```
+
+Do not add test modules under a `hooke/` integration directory. Hooke-specific
+fixtures can live under `tests/integration/artifacts/hooke/`; executable tests
+belong in the workflow directory they exercise.
 
 Test-owned configs and small fixtures that reproduce integration results live
 under `tests/integration/artifacts/`:
 
 ```text
-tests/integration/artifacts/hooke/exact_singlet.yaml
-tests/integration/artifacts/hooke/exact_triplet.yaml
+tests/integration/artifacts/hooke/exact_singlet_eval.yaml
+tests/integration/artifacts/hooke/exact_triplet_eval.yaml
 tests/integration/artifacts/hooke/pair_train.yaml
 tests/integration/artifacts/training/vmc_smoke.yaml
 ```

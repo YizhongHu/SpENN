@@ -14,10 +14,10 @@ from spenn.evaluation.protocols import EvaluationContext
 from spenn.physics.hamiltonian import HamiltonianTerm, normalize_hamiltonian_terms
 
 
-class FullModelEquivarianceCalculator:
-    """Compare scalar model outputs under particle permutations."""
+class FullModelAntisymmetryCalculator:
+    """Compare full model outputs under fermionic particle permutations."""
 
-    name = "full_model_equivariance"
+    name = "full_model_antisymmetry"
 
     def __init__(self, *, atol: float = 1.0e-6, rtol: float = 1.0e-6, compare_sign: bool = True) -> None:
         self.atol = float(atol)
@@ -40,7 +40,6 @@ class FullModelEquivarianceCalculator:
             bundle.generated.metadata,
             "permutation_parity",
             like=original_output.sign,
-            default=1.0,
         )
         expected_sign = original_output.sign.reshape(-1) * parity.reshape(-1)
         sign_mismatch = torch.zeros_like(expected_sign, dtype=torch.bool)
@@ -65,10 +64,10 @@ class FullModelEquivarianceCalculator:
         )
 
 
-class ExchangeSymmetryCalculator:
+class SpatialExchangeSymmetryCalculator:
     """Compare Hooke spatial-singlet outputs under coordinate exchange."""
 
-    name = "exchange_symmetry"
+    name = "spatial_exchange_symmetry"
 
     def __init__(self, *, atol: float = 1.0e-6, rtol: float = 1.0e-6, compare_sign: bool = True) -> None:
         self.atol = float(atol)
@@ -243,19 +242,18 @@ def _metadata_vector(
     key: str,
     *,
     like: torch.Tensor,
-    default: float,
 ) -> torch.Tensor:
     value = metadata.get(key)
     if value is None:
-        return torch.full((like.numel(),), default, device=like.device, dtype=like.dtype)
+        raise ValueError(f"metadata field {key!r} is required")
     if not isinstance(value, torch.Tensor):
         raise ValueError(f"metadata field {key!r} must be a tensor")
     return value.to(device=like.device, dtype=like.dtype).reshape(-1)
 
 
 __all__ = [
-    "ExchangeSymmetryCalculator",
-    "FullModelEquivarianceCalculator",
+    "FullModelAntisymmetryCalculator",
     "RotationConsistencyCalculator",
+    "SpatialExchangeSymmetryCalculator",
     "split_paired_batch",
 ]

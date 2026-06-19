@@ -86,6 +86,7 @@ evaluation_tasks:
   energy:
     name: energy
     namespace: ${evaluation.namespace}/energy
+    output_dir: ${run.dir}/energy
     generator:
       _target_: spenn.evaluation.generators.MCMCGenerator
       sampler: ${sampler}
@@ -106,6 +107,7 @@ evaluation_tasks:
   cusp:
     name: cusp
     namespace: ${evaluation.namespace}/cusp
+    output_dir: ${run.dir}/cusp
     generator:
       _target_: spenn.evaluation.generators.CuspGridGenerator
       r12_min: ${diagnostic_params.pair_distance_probe.r12_min}

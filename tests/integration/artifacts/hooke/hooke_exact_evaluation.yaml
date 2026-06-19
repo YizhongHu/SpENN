@@ -83,8 +83,10 @@ evaluation_tasks:
       chunk_size: 128
     - _target_: spenn.evaluation.calculators.WavefunctionCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.TailStabilitySummary
-      local_energy_abs_threshold: 10.0
+    - _target_: spenn.evaluation.summaries.LocalEnergySummary
+    - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+      abs_threshold: 10.0
+    - _target_: spenn.evaluation.summaries.PathologyCountSummary
     - _target_: spenn.evaluation.summaries.SampledRecordWriter
   stratified_geometry:
     name: stratified_geometry

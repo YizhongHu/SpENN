@@ -25,8 +25,10 @@ def test_yaml_configs_do_not_reintroduce_evaluation_phase_or_required_keys() -> 
                 for key in ("required", "phase"):
                     if key in node:
                         offenders.append(_format_offender(path, (*node_path, key)))
+                if "output_dir" not in node:
+                    offenders.append(_format_offender(path, (*node_path, "output_dir")))
 
-    assert offenders == [], "stale evaluation config keys found:\n" + "\n".join(offenders)
+    assert offenders == [], "stale or incomplete evaluation task config keys found:\n" + "\n".join(offenders)
 
 
 def _yaml_config_paths() -> Iterator[Path]:

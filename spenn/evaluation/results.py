@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
@@ -19,17 +20,18 @@ class ArtifactRecord:
 
     name: str
     kind: str
-    path: str | Path
-    enabled: bool = True
-    expected: bool = True
-    metadata: dict[str, JsonScalar] | None = None
+    path: Path
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe artifact mapping."""
 
-        data = asdict(self)
-        data["path"] = str(self.path)
-        return data
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "path": str(self.path),
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass(frozen=True)

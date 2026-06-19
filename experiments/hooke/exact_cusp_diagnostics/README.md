@@ -7,7 +7,7 @@ writes a deterministic pair-distance probe for cusp inspection.
 Run the evaluation:
 
 ```bash
-uv run python run.py --config experiments/hooke/studies/exact_cusp_diagnostics/configs/exact_singlet_eval.yaml
+uv run python run.py --config experiments/hooke/exact_cusp_diagnostics/configs/exact_singlet_eval.yaml
 ```
 
 The run directory is printed in the terminal status output and recorded in
@@ -15,7 +15,7 @@ The run directory is printed in the terminal status output and recorded in
 
 Plot local energy over pair distance:
 ```bash
-uv run python experiments/hooke/studies/exact_cusp_diagnostics/plot_pair_distance.py \
+uv run python experiments/hooke/exact_cusp_diagnostics/plot_pair_distance.py \
   --run-dir outputs/exact_cusp_diagnostics/singlet/2026-06-15_232651_exact_cusp_diagnostics_eval_281e94
 ```
 

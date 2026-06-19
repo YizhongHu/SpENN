@@ -56,11 +56,8 @@ class Evaluator:
         failures: list[EvaluationFailure] = []
         artifacts: list[ArtifactRecord] = []
 
-        run_dir = _context_run_dir(context)
         for task in self.tasks:
-            task_output_dir = task.output_dir if task.output_dir is not None else (
-                (run_dir / task.name) if run_dir is not None else Path(task.name)
-            )
+            task_output_dir = Path(task.output_dir)
             # Materialize the task directory before running so summaries can write
             # task-local artifacts without each re-creating it.
             task_output_dir.mkdir(parents=True, exist_ok=True)
@@ -91,8 +88,7 @@ class Evaluator:
     def _context_from_run_context(self, context: Any) -> EvaluationContext:
         device = _torch_device(getattr(getattr(context, "metadata", None), "device", None))
         dtype = _torch_dtype(getattr(getattr(context, "metadata", None), "dtype", None))
-        run_dir = _context_run_dir(context)
-        suite_output_dir = run_dir / "diagnostics" if run_dir is not None else Path("diagnostics")
+        run_dir = _context_run_dir(context) or Path(".")
         return EvaluationContext(
             namespace=self.namespace,
             artifact_level=self.artifact_level,
@@ -100,8 +96,8 @@ class Evaluator:
             device=device,
             dtype=dtype,
             seed=self.seed,
-            suite_output_dir=suite_output_dir,
-            task_output_dir=suite_output_dir,
+            run_dir=run_dir,
+            task_output_dir=run_dir,
             metadata={},
         )
 

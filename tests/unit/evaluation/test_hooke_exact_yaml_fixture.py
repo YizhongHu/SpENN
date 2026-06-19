@@ -45,7 +45,7 @@ def _context(tmp_path: Path) -> EvaluationContext:
         device=torch.device("cpu"),
         dtype=torch.float64,
         seed=0,
-        suite_output_dir=tmp_path,
+        run_dir=tmp_path,
         task_output_dir=tmp_path,
         metadata={},
     )
@@ -163,7 +163,7 @@ def test_hooke_exact_coalescence_c_minus_one_is_zero(tmp_path: Path) -> None:
 
 
 def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
-    """Evaluator resolves task_output_dir to run_dir / task.name for each task."""
+    """Evaluator passes explicit task output directories through context."""
 
     recorded: list[Path] = []
 
@@ -198,6 +198,7 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
             EvaluationTask(
                 name="cusp",
                 namespace="eval/cusp",
+                output_dir=tmp_path / "cusp",
                 generator=_NullGenerator(),
                 calculators=[],
                 summaries=[_DirRecordSummary()],
@@ -205,6 +206,7 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
             EvaluationTask(
                 name="tail",
                 namespace="eval/tail",
+                output_dir=tmp_path / "tail",
                 generator=_NullGenerator(),
                 calculators=[],
                 summaries=[_DirRecordSummary()],

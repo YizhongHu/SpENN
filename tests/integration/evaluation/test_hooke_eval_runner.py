@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -409,6 +408,7 @@ def _energy_evaluator(
             EvaluationTask(
                 name="energy",
                 namespace="eval/energy",
+                output_dir=Path("/tmp/rhu/spenn_eval_tests/energy"),
                 generator=MCMCGenerator(sampler=sampler),
                 calculators=[
                     WavefunctionCalculator(),
@@ -549,9 +549,9 @@ def test_hooke_exact_evaluation_stack_runs_from_yaml_fixture(tmp_path) -> None:
     assert cusp["c_minus_1_abs_max"] < 1.0e-3
 
     tail = _metrics(tmp_path, "hooke_exact/tail")
-    assert tail["tail_outlier_count"] == 0
-    assert math.isfinite(tail["logabs_q01"])
-    assert math.isfinite(tail["logabs_q99"])
+    assert tail["stability_outlier_count"] == 0
+    assert tail["stability_abs_threshold"] == pytest.approx(10.0)
+    assert tail["nonfinite_logabs_count"] == 0
 
     for task in ("stratified_geometry", "hooke_orbital"):
         metrics = _metrics(tmp_path, f"hooke_exact/{task}")

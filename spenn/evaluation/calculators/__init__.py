@@ -10,20 +10,20 @@ from spenn.evaluation.calculators.trace import (
     TraceEquivarianceCalculator,
 )
 from spenn.evaluation.calculators.transforms import (
-    ExchangeSymmetryCalculator,
-    FullModelEquivarianceCalculator,
+    FullModelAntisymmetryCalculator,
     RotationConsistencyCalculator,
+    SpatialExchangeSymmetryCalculator,
 )
 from spenn.evaluation.calculators.wavefunction import WavefunctionCalculator
 
 __all__ = [
-    "ExchangeSymmetryCalculator",
     "FeatureTraceCalculator",
-    "FullModelEquivarianceCalculator",
+    "FullModelAntisymmetryCalculator",
     "LocalEnergyCalculator",
     "RadialLogAbsDerivativeCalculator",
     "ReadoutTraceCalculator",
     "RotationConsistencyCalculator",
+    "SpatialExchangeSymmetryCalculator",
     "TraceEquivarianceCalculator",
     "WavefunctionCalculator",
 ]

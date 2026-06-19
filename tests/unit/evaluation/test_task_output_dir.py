@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import torch
+import pytest
 from torch import nn
 
 from spenn.evaluation import Evaluator, EvaluationTask
@@ -53,7 +54,24 @@ def _run_context(run_dir: Path) -> Any:
     return ctx
 
 
-def test_evaluator_defaults_task_output_dir_to_run_dir_slash_task_name(tmp_path: Path) -> None:
+def test_evaluator_requires_explicit_task_output_dir() -> None:
+    with pytest.raises(ValueError, match="output_dir"):
+        Evaluator(
+            namespace="eval",
+            tasks=[
+                {
+                    "name": "energy",
+                    "namespace": "eval/energy",
+                    "generator": _NullGenerator(),
+                    "calculators": [],
+                    "summaries": [],
+                }
+            ],
+        )
+
+
+def test_task_output_dir_is_respected(tmp_path: Path) -> None:
+    explicit_dir = tmp_path / "energy"
     recorder = _RecordingOutputDirSummary()
     evaluator = Evaluator(
         namespace="eval",
@@ -61,6 +79,7 @@ def test_evaluator_defaults_task_output_dir_to_run_dir_slash_task_name(tmp_path:
             EvaluationTask(
                 name="energy",
                 namespace="eval/energy",
+                output_dir=explicit_dir,
                 generator=_NullGenerator(),
                 calculators=[],
                 summaries=[recorder],
@@ -68,7 +87,7 @@ def test_evaluator_defaults_task_output_dir_to_run_dir_slash_task_name(tmp_path:
         ],
     )
     evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=lambda *a, **kw: None)
-    assert recorder.recorded_task_output_dir == tmp_path / "energy"
+    assert recorder.recorded_task_output_dir == explicit_dir
 
 
 def test_task_output_dir_override_is_respected(tmp_path: Path) -> None:
@@ -80,10 +99,10 @@ def test_task_output_dir_override_is_respected(tmp_path: Path) -> None:
             EvaluationTask(
                 name="energy",
                 namespace="eval/energy",
+                output_dir=custom_dir,
                 generator=_NullGenerator(),
                 calculators=[],
                 summaries=[recorder],
-                output_dir=custom_dir,
             )
         ],
     )

@@ -20,9 +20,9 @@ from spenn.evaluation.generators import CuspGridGenerator, TailGridGenerator
 from spenn.evaluation.protocols import EvaluationContext
 from spenn.evaluation.summaries import (
     CoalescenceDivergenceSummary,
+    LocalEnergyStabilitySummary,
     OppositeSpinCuspSummary,
     PathologyCountSummary,
-    TailStabilitySummary,
 )
 
 
@@ -34,7 +34,7 @@ def _context(tmp_path: Path) -> EvaluationContext:
         device=torch.device("cpu"),
         dtype=torch.float64,
         seed=0,
-        suite_output_dir=tmp_path,
+        run_dir=tmp_path,
         task_output_dir=tmp_path,
         metadata={},
     )
@@ -146,7 +146,7 @@ def test_tail_grid_and_pathology_summaries_report_finite_metrics(tmp_path: Path)
         ),
     )
 
-    tail_metrics = TailStabilitySummary().summarize(
+    stability_metrics = LocalEnergyStabilitySummary(abs_threshold=10.0).summarize(
         bundle=bundle,
         context=_context(tmp_path),
         namespace="validation/tail",
@@ -158,8 +158,26 @@ def test_tail_grid_and_pathology_summaries_report_finite_metrics(tmp_path: Path)
     ).metrics
 
     assert generated.batch.positions.shape == (3, 2, 3)
-    assert tail_metrics["local_energy_nonfinite_count"] == 1
+    assert stability_metrics["stability_outlier_count"] == 0
+    assert stability_metrics["stability_n_finite"] == 2
     assert pathology_metrics["nonfinite_local_energy_count"] == 1
+
+
+def test_local_energy_stability_summary_requires_explicit_threshold() -> None:
+    with pytest.raises(TypeError):
+        LocalEnergyStabilitySummary()  # type: ignore[call-arg]
+
+
+def test_tail_grid_log_spacing_requires_positive_radius_min() -> None:
+    with pytest.raises(ValueError, match="radius_min"):
+        TailGridGenerator(
+            radius_min=0.0,
+            radius_max=2.0,
+            n_points=3,
+            pair_distance=0.5,
+            n_directions=1,
+            spacing="log",
+        )
 
 
 def test_old_hooke_probe_names_are_not_public() -> None:

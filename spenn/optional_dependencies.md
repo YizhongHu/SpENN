@@ -15,7 +15,7 @@ CPU work uses the default `.venv` and the `cpu` Torch extra:
 
 ```bash
 uv sync --extra cpu
-uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+uv run --extra cpu pytest tests/unit/physics/test_local_energy.py
 ```
 
 ## GPU Environment
@@ -25,7 +25,7 @@ CUDA work uses a separate environment selected by `UV_PROJECT_ENVIRONMENT`:
 ```bash
 export UV_PROJECT_ENVIRONMENT=.venv-gpu
 uv sync --extra cu126
-uv run --extra cu126 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+uv run --extra cu126 pytest tests/unit/dependencies/test_torch_optional.py
 ```
 
 Use `cu128` or `cu130` instead if that is the CUDA Torch build you want. Keep

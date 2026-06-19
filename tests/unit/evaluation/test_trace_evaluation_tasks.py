@@ -11,11 +11,11 @@ from torch import nn
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.evaluation.bundle import GeneratedConfigurations
 from spenn.evaluation.calculators import (
-    ExchangeSymmetryCalculator,
     FeatureTraceCalculator,
-    FullModelEquivarianceCalculator,
+    FullModelAntisymmetryCalculator,
     ReadoutTraceCalculator,
     RotationConsistencyCalculator,
+    SpatialExchangeSymmetryCalculator,
     TraceEquivarianceCalculator,
 )
 from spenn.evaluation.generators import (
@@ -35,13 +35,13 @@ from spenn.trace import ParticleTensor, trace_value
 
 def _context(tmp_path: Path) -> EvaluationContext:
     return EvaluationContext(
-        namespace="validation/full_model_equivariance",
+        namespace="validation/full_model_antisymmetry",
         artifact_level="metrics_only",
         task_failure_policy="continue",
         device=torch.device("cpu"),
         dtype=torch.float64,
         seed=0,
-        suite_output_dir=tmp_path,
+        run_dir=tmp_path,
         task_output_dir=tmp_path,
         metadata={},
     )
@@ -89,13 +89,13 @@ class _SymmetricTraceModel(nn.Module):
         return WavefunctionOutput(logabs=logabs, sign=sign, aux={"K": matrix})
 
 
-def test_permutation_orbit_and_full_model_equivariance_summary(tmp_path: Path) -> None:
+def test_permutation_orbit_and_full_model_antisymmetry_summary(tmp_path: Path) -> None:
     generated = PermutationOrbitGenerator(
         base_generator=_StaticGenerator(),
         permutations=[torch.tensor([1, 0])],
     ).generate(model=None, context=_context(tmp_path))
 
-    bundle = FullModelEquivarianceCalculator().calculate(
+    bundle = FullModelAntisymmetryCalculator().calculate(
         model=_FermionicModel(),
         bundle=_bundle(generated),
         context=_context(tmp_path),
@@ -103,12 +103,23 @@ def test_permutation_orbit_and_full_model_equivariance_summary(tmp_path: Path) -
     metrics = TransformConsistencySummary().summarize(
         bundle=bundle,
         context=_context(tmp_path),
-        namespace="validation/full_model_equivariance",
+        namespace="validation/full_model_antisymmetry",
     ).metrics
 
     assert generated.batch.sample_shape == (2, 2)
     assert metrics["logabs_max_abs_error"] == pytest.approx(0.0)
     assert metrics["sign_failure_count"] == 0
+
+
+def test_full_model_antisymmetry_requires_permutation_parity(tmp_path: Path) -> None:
+    generated = ExchangeOrbitGenerator(base_generator=_StaticGenerator()).generate(model=None, context=_context(tmp_path))
+
+    with pytest.raises(ValueError, match="permutation_parity"):
+        FullModelAntisymmetryCalculator().calculate(
+            model=_SymmetricTraceModel(),
+            bundle=_bundle(generated),
+            context=_context(tmp_path),
+        )
 
 
 def test_rotation_and_exchange_transform_summaries(tmp_path: Path) -> None:
@@ -129,7 +140,7 @@ def test_rotation_and_exchange_transform_summaries(tmp_path: Path) -> None:
     ).metrics
 
     exchange_generated = ExchangeOrbitGenerator(base_generator=_StaticGenerator()).generate(model=None, context=_context(tmp_path))
-    exchange_bundle = ExchangeSymmetryCalculator().calculate(
+    exchange_bundle = SpatialExchangeSymmetryCalculator().calculate(
         model=_SymmetricTraceModel(),
         bundle=_bundle(exchange_generated),
         context=_context(tmp_path),

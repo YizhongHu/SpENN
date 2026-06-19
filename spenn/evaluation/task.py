@@ -17,10 +17,10 @@ class EvaluationTask:
 
     name: str
     namespace: str
+    output_dir: Path | str
     generator: object
     calculators: Sequence[object]
     summaries: Sequence[object]
-    output_dir: Path | None = None
     artifact_level: ArtifactLevel | None = None
 
 
@@ -41,6 +41,7 @@ def coerce_task(spec: EvaluationTask | Mapping[str, object]) -> EvaluationTask:
     """
 
     if isinstance(spec, EvaluationTask):
+        _validate_output_dir(spec.name, spec.output_dir)
         return spec
     if not isinstance(spec, Mapping):
         raise TypeError(f"evaluation tasks must be EvaluationTask or mapping, got {type(spec)!r}")
@@ -57,22 +58,28 @@ def coerce_task(spec: EvaluationTask | Mapping[str, object]) -> EvaluationTask:
         raise ValueError("evaluation task requires a non-empty name")
     if not namespace:
         raise ValueError(f"evaluation task {name!r} requires a non-empty namespace")
+    output_dir_raw = spec.get("output_dir")
+    output_dir = _validate_output_dir(name, output_dir_raw)
     generator = spec.get("generator")
     if generator is None:
         raise ValueError(f"evaluation task {name!r} requires a generator")
     calculators = tuple(spec.get("calculators", ()) or ())
     summaries = tuple(spec.get("summaries", ()) or ())
-    output_dir_raw = spec.get("output_dir")
-    output_dir = Path(str(output_dir_raw)) if output_dir_raw is not None else None
     return EvaluationTask(
         name=name,
         namespace=namespace,
+        output_dir=output_dir,
         generator=generator,
         calculators=calculators,
         summaries=summaries,
-        output_dir=output_dir,
         artifact_level=spec.get("artifact_level"),  # type: ignore[arg-type]
     )
+
+
+def _validate_output_dir(name: str, value: object) -> Path:
+    if value is None or str(value).strip() == "":
+        raise ValueError(f"evaluation task {name!r} requires output_dir")
+    return Path(str(value))
 
 
 __all__ = ["ArtifactLevel", "EvaluationTask", "FailurePolicy", "coerce_task"]

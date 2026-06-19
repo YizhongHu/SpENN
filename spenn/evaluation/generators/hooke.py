@@ -130,6 +130,10 @@ class TailGridGenerator:
         self.n_directions = int(n_directions)
         self.seed = seed
         self.spacing = spacing
+        if self.spacing not in ("linear", "log"):
+            raise ValueError(f"unsupported spacing {self.spacing!r}")
+        if self.spacing == "log" and self.radius_min <= 0.0:
+            raise ValueError("TailGridGenerator requires radius_min > 0 for log spacing")
         self.spatial_dim = int(spatial_dim)
 
     def generate(self, *, model: torch.nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:

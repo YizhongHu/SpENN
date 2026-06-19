@@ -1,4 +1,24 @@
-"""Primitive values shared across evaluation generators, calculators, and summaries."""
+"""Typed primitive outputs shared across evaluation components.
+
+``EvaluationBundle`` is intentionally not a generic dict.
+
+A field belongs here only if it is a reusable primitive output produced by
+calculators and consumed by multiple summaries/tasks. Derived diagnostic metrics
+do not belong in the bundle.
+
+Good bundle fields include:
+
+- generated configurations
+- wavefunction values
+- local-energy values
+- derivative values
+- transform comparison values
+- trace records
+
+Do not add fields such as ``cusp_even_slope``, ``c_minus_1_abs``,
+``tail_outlier_count``, ``pfaffian_near_zero_count``, or ``feature_rms_q95``.
+Those are summary outputs, not shared primitive calculator outputs.
+"""
 
 from __future__ import annotations
 

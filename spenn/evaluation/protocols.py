@@ -24,7 +24,7 @@ class EvaluationContext:
     device: torch.device | None
     dtype: torch.dtype | None
     seed: int | None
-    suite_output_dir: Path
+    run_dir: Path
     task_output_dir: Path
     metadata: Mapping[str, Any]
 

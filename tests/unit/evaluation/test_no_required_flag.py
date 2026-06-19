@@ -56,11 +56,25 @@ def test_coerce_task_rejects_unknown_key() -> None:
         )
 
 
+def test_coerce_task_requires_output_dir() -> None:
+    with pytest.raises(ValueError, match="output_dir"):
+        coerce_task(
+            {
+                "name": "energy",
+                "namespace": "eval/energy",
+                "generator": object(),
+                "calculators": [],
+                "summaries": [],
+            }
+        )
+
+
 def test_evaluation_task_constructor_rejects_required_kwarg() -> None:
     with pytest.raises(TypeError):
         EvaluationTask(  # type: ignore[call-arg]
             name="energy",
             namespace="eval/energy",
+            output_dir="energy",
             generator=object(),
             calculators=[],
             summaries=[],

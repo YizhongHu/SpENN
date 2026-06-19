@@ -40,19 +40,7 @@ class SampledRecordWriter:
 
         path = context.task_output_dir / self.filename
         if not self.enabled or context.artifact_level != "records":
-            return SummaryResult(
-                metrics={},
-                artifacts=(
-                    ArtifactRecord(
-                        name="sampled_eval_table",
-                        kind="csv",
-                        path=path,
-                        enabled=False,
-                        expected=False,
-                        metadata={"warning": "disabled"},
-                    ),
-                ),
-            )
+            return SummaryResult(metrics={})
         local = bundle.local_energy
         wavefunction = bundle.wavefunction
         if local is None or wavefunction is None:
@@ -87,8 +75,6 @@ class SampledRecordWriter:
                     name="sampled_eval_table",
                     kind="csv",
                     path=path,
-                    enabled=True,
-                    expected=False,
                     metadata={"rows": len(indices), "n_positions": int(flat.batch_size)},
                 ),
             ),

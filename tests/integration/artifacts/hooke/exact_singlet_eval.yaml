@@ -39,6 +39,7 @@ evaluation_tasks:
   energy:
     name: energy
     namespace: ${evaluation.namespace}/energy
+    output_dir: ${run.dir}/energy
     generator:
       _target_: spenn.evaluation.generators.MCMCGenerator
       sampler: ${sampler}

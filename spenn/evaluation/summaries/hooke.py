@@ -9,7 +9,6 @@ import torch
 from spenn.evaluation.bundle import DerivativeValues, EvaluationBundle
 from spenn.evaluation.protocols import EvaluationContext
 from spenn.evaluation.results import MetricScalar, SummaryResult
-from spenn.evaluation.summaries.local_energy import summarize_values
 
 
 class CoalescenceDivergenceSummary:
@@ -117,14 +116,19 @@ class OppositeSpinCuspSummary:
         )
 
 
-class TailStabilitySummary:
-    """Summarize local-energy and logabs pathologies on tail grids."""
+class LocalEnergyStabilitySummary:
+    """Count absolute local-energy outliers against an explicit threshold."""
 
-    name = "tail_stability"
-    required_fields = frozenset({"local_energy", "wavefunction"})
+    name = "local_energy_stability"
+    required_fields = frozenset({"local_energy"})
 
-    def __init__(self, *, local_energy_abs_threshold: float | None = None) -> None:
-        self.local_energy_abs_threshold = None if local_energy_abs_threshold is None else float(local_energy_abs_threshold)
+    def __init__(self, *, abs_threshold: float, prefix: str = "stability") -> None:
+        self.abs_threshold = float(abs_threshold)
+        if not math.isfinite(self.abs_threshold) or self.abs_threshold < 0.0:
+            raise ValueError("abs_threshold must be a finite non-negative value")
+        self.prefix = str(prefix).strip()
+        if not self.prefix:
+            raise ValueError("prefix must be non-empty")
 
     def summarize(
         self,
@@ -133,30 +137,21 @@ class TailStabilitySummary:
         context: EvaluationContext,
         namespace: str,
     ) -> SummaryResult:
-        """Return tail-specific scalar metrics."""
+        """Return distribution-agnostic local-energy stability counters."""
 
         del context, namespace
         local = bundle.local_energy
-        wavefunction = bundle.wavefunction
-        if local is None or wavefunction is None:
-            raise ValueError("TailStabilitySummary requires local_energy and wavefunction")
-        energy_metrics = summarize_values(
-            local.local_energy,
-            quantiles=(0.01, 0.95, 0.99),
-            prefix="local_energy",
-        )
-        logabs_metrics = summarize_values(
-            wavefunction.logabs,
-            quantiles=(0.01, 0.99),
-            prefix="logabs",
-        )
+        if local is None:
+            raise ValueError("LocalEnergyStabilitySummary requires local_energy")
         finite_energy = local.local_energy[torch.isfinite(local.local_energy)]
-        threshold = self.local_energy_abs_threshold
-        if threshold is None:
-            threshold = float(torch.quantile(finite_energy.abs(), torch.tensor(0.99, device=finite_energy.device, dtype=finite_energy.dtype)).item()) if finite_energy.numel() else math.inf
-        outliers = int((finite_energy.abs() > threshold).sum().item()) if finite_energy.numel() else 0
-        metrics = {**energy_metrics, **logabs_metrics, "tail_outlier_count": outliers}
-        return SummaryResult(metrics=metrics)
+        outliers = int((finite_energy.abs() > self.abs_threshold).sum().item()) if finite_energy.numel() else 0
+        return SummaryResult(
+            metrics={
+                f"{self.prefix}_abs_threshold": self.abs_threshold,
+                f"{self.prefix}_n_finite": int(finite_energy.numel()),
+                f"{self.prefix}_outlier_count": outliers,
+            }
+        )
 
 
 class PathologyCountSummary:
@@ -268,7 +263,7 @@ def _quantile(values: torch.Tensor, q: float) -> float:
 
 __all__ = [
     "CoalescenceDivergenceSummary",
+    "LocalEnergyStabilitySummary",
     "OppositeSpinCuspSummary",
     "PathologyCountSummary",
-    "TailStabilitySummary",
 ]
