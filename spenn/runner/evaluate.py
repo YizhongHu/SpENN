@@ -78,7 +78,7 @@ class Evaluate(Runner):
             context=context,
             emit=lambda name, *, payload=None: self.emit(name, context, payload=payload),
         )
-        _log_result(context, result)
+        _log_result(context, result, namespace=self.evaluator.namespace)
 
         self.emit("evaluate_end", context, payload=result.to_payload())
         self.emit("run_end", context)
@@ -93,9 +93,17 @@ def _load_mode(load) -> str:
     return "none"
 
 
-def _log_result(context: RunContext, result: EvaluationResult) -> None:
+def _log_result(context: RunContext, result: EvaluationResult, *, namespace: str) -> None:
     """Log task metrics in their task namespaces."""
 
+    context.log(
+        {
+            "suite_success": result.status == "success",
+            "suite_failed": result.status == "failed",
+        },
+        step=0,
+        namespace=f"{namespace}/status",
+    )
     for task in result.task_results:
         status_metrics: dict[str, Any] = {
             "task_success": task.status == "success",

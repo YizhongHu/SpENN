@@ -71,7 +71,7 @@ class TaskResult:
 
     name: str
     namespace: str
-    output_dir: str
+    output_dir: Path
     status: TaskStatus
     metrics: dict[str, MetricScalar]
     artifacts: tuple[ArtifactRecord, ...]
@@ -83,7 +83,7 @@ class TaskResult:
         return {
             "name": self.name,
             "namespace": self.namespace,
-            "output_dir": self.output_dir,
+            "output_dir": str(self.output_dir),
             "status": self.status,
             "metrics": dict(self.metrics),
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -468,6 +469,12 @@ def _namespace_records(run_root: Path, namespace: str) -> list[dict]:
     return [record["metrics"] for record in records if record.get("namespace") == namespace]
 
 
+def _only_run_dir_with_status(run_root: Path, run_name: str) -> Path:
+    status_files = list((run_root / run_name).glob("**/status.json"))
+    assert len(status_files) == 1, f"expected one status.json under {run_name}, found {status_files}"
+    return status_files[0].parent
+
+
 @pytest.mark.parametrize("fixture", ["exact_singlet_eval.yaml", "exact_triplet_eval.yaml"])
 def test_hooke_eval_runner_writes_standard_artifacts(tmp_path, fixture: str) -> None:
     config_path = FIXTURES / fixture
@@ -513,28 +520,72 @@ def test_hooke_exact_evaluation_stack_runs_from_yaml_fixture(tmp_path) -> None:
     # a finite local energy. The variance tolerance is looser for the cusp task:
     # at r12=1e-5 the autograd Laplacian sums 1/r12 terms that cancel to give
     # E_L=2.0, and float64 catastrophic cancellation leaves a small residual.
-    variance_tol = {"cusp": 1.0e-6, "tail": 1.0e-8, "stratified_geometry": 1.0e-8, "energy": 1.0e-8}
-    for task in ("cusp", "tail", "stratified_geometry", "energy"):
+    variance_tol = {
+        "cusp": 1.0e-6,
+        "tail": 1.0e-8,
+        "stratified_geometry": 1.0e-8,
+        "hooke_orbital": 1.0e-8,
+        "energy": 1.0e-8,
+    }
+    tasks = ("cusp", "tail", "stratified_geometry", "hooke_orbital", "energy")
+    for task in tasks:
         metrics = _metrics(tmp_path, f"hooke_exact/{task}")
         assert metrics["local_energy_finite_fraction"] == 1.0, task
         assert metrics["local_energy_nonfinite_count"] == 0, task
         assert metrics["local_energy_mean"] == pytest.approx(2.0, abs=1.0e-3), task
         assert metrics["local_energy_variance"] < variance_tol[task], task
+        assert metrics["local_energy_q01"] == pytest.approx(2.0, abs=1.0e-3), task
+        assert metrics["local_energy_q99"] == pytest.approx(2.0, abs=1.0e-3), task
+        status_metrics = _metrics(tmp_path, f"hooke_exact/{task}/status")
+        assert status_metrics["task_success"] is True, task
+        assert status_metrics["task_failed"] is False, task
 
     # Opposite-spin cusp: even slope -> 1/2; near-coalescence C_{-1} -> 0.
     cusp = _metrics(tmp_path, "hooke_exact/cusp")
     assert cusp["cusp_even_slope_mean"] == pytest.approx(0.5, abs=1.0e-3)
     assert cusp["cusp_even_slope_abs_error"] < 1.0e-3
+    assert cusp["cusp_odd_slant_mean_abs"] < 1.0e-8
+    assert cusp["cusp_odd_slant_max_abs"] < 1.0e-8
     assert cusp["c_minus_1_abs_max"] < 1.0e-3
 
-    # Reference energy comparison (eval-only summary, no phase gate).
+    tail = _metrics(tmp_path, "hooke_exact/tail")
+    assert tail["tail_outlier_count"] == 0
+    assert math.isfinite(tail["logabs_q01"])
+    assert math.isfinite(tail["logabs_q99"])
+
+    for task in ("stratified_geometry", "hooke_orbital"):
+        metrics = _metrics(tmp_path, f"hooke_exact/{task}")
+        assert metrics["nonfinite_local_energy_count"] == 0, task
+        assert metrics["large_abs_local_energy_count"] == 0, task
+        assert metrics["nonfinite_logabs_count"] == 0, task
+        assert metrics["pathology_count"] == 0, task
+
+    # Reference energy comparison: included by this exact-Hooke correctness
+    # config. There is no phase gate; ordinary validation configs omit it.
     energy = _metrics(tmp_path, "hooke_exact/energy")
     assert energy["reference_energy"] == pytest.approx(2.0)
     assert energy["energy_abs_error"] < 1.0e-4
 
-    # Each task writes under its resolved task output directory.
-    run_dirs = list(tmp_path.glob("hooke_exact_stack/*/*"))
-    assert len(run_dirs) == 1, f"expected one run dir, found {run_dirs}"
-    run_dir = run_dirs[0]
-    for task in ("cusp", "tail", "stratified_geometry", "energy"):
+    suite_status = _metrics(tmp_path, "hooke_exact/status")
+    assert suite_status["suite_success"] is True
+    assert suite_status["suite_failed"] is False
+
+    run_dir = _only_run_dir_with_status(tmp_path, "hooke_exact_stack")
+    status = json.loads((run_dir / "status.json").read_text())
+    assert status["status"] == "completed"
+    failures = run_dir / "diagnostics" / "failures.jsonl"
+    assert not failures.exists() or failures.read_text().strip() == ""
+
+    index = json.loads((run_dir / "diagnostics" / "index.json").read_text())
+    indexed = {task["name"]: task for task in index["tasks"]}
+    assert set(indexed) == set(tasks)
+    assert all(task["status"] == "success" for task in indexed.values())
+
+    # Each task writes under its resolved task output directory and the index
+    # records that same task-local location.
+    for task in tasks:
+        task_dir = run_dir / task
         assert (run_dir / task).is_dir(), f"missing task output dir: {task}"
+        assert (task_dir / "sampled_eval_table.csv").is_file(), task
+        assert Path(indexed[task]["output_dir"]) == task_dir
+        assert any(Path(artifact["path"]) == task_dir / "sampled_eval_table.csv" for artifact in indexed[task]["artifacts"])

@@ -113,7 +113,7 @@ class Evaluator:
         context: EvaluationContext,
         emit: Callable[..., None],
     ) -> TaskResult:
-        output_dir = str(context.task_output_dir)
+        output_dir = context.task_output_dir
         emit("task_start", payload=task_payload(task, output_dir=output_dir))
         failures: list[EvaluationFailure] = []
         artifacts: list[ArtifactRecord] = []
@@ -130,7 +130,15 @@ class Evaluator:
             failures.append(failure)
             result = _task_result(task, output_dir, "failed", metrics, artifacts, failures)
             emit("task_failed", payload=task_result_payload(result))
-            emit("generator_failed", payload=component_failure_payload(task=task, component_name=_component_name(task.generator), failure=failure))
+            emit(
+                "generator_failed",
+                payload=component_failure_payload(
+                    task=task,
+                    component_name=_component_name(task.generator),
+                    failure=failure,
+                    output_dir=output_dir,
+                ),
+            )
             return result
 
         for calculator in task.calculators:
@@ -146,6 +154,7 @@ class Evaluator:
                         task=task,
                         component_name=_component_name(calculator),
                         failure=failure,
+                        output_dir=output_dir,
                     ),
                 )
                 if context.task_failure_policy == "fail_fast":
@@ -165,6 +174,7 @@ class Evaluator:
                             task=task,
                             component_name=_component_name(summary),
                             failure=failure,
+                            output_dir=output_dir,
                         ),
                     )
                     continue
@@ -180,6 +190,7 @@ class Evaluator:
                             task=task,
                             component_name=_component_name(summary),
                             failure=failure,
+                            output_dir=output_dir,
                         ),
                     )
                     continue
@@ -200,7 +211,7 @@ class Evaluator:
 
 def _task_result(
     task: EvaluationTask,
-    output_dir: str,
+    output_dir: Path,
     status: str,
     metrics: Mapping[str, MetricScalar],
     artifacts: Sequence[ArtifactRecord],

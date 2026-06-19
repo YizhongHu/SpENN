@@ -142,7 +142,7 @@ class TailStabilitySummary:
             raise ValueError("TailStabilitySummary requires local_energy and wavefunction")
         energy_metrics = summarize_values(
             local.local_energy,
-            quantiles=(0.95, 0.99),
+            quantiles=(0.01, 0.95, 0.99),
             prefix="local_energy",
         )
         logabs_metrics = summarize_values(
@@ -186,7 +186,6 @@ class PathologyCountSummary:
         metrics: dict[str, MetricScalar] = {
             "nonfinite_local_energy_count": int(nonfinite_energy.sum().item()),
             "large_abs_local_energy_count": int((torch.isfinite(energy) & (energy.abs() > self.large_abs_local_energy_threshold)).sum().item()),
-            "finite_fraction": float((~nonfinite_energy).sum().item() / energy.numel()) if energy.numel() else 0.0,
             "pathology_count": int(nonfinite_energy.sum().item()),
         }
         wavefunction = bundle.wavefunction

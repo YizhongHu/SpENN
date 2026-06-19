@@ -10,7 +10,7 @@ from spenn.evaluation.results import SummaryResult
 
 
 class ReferenceEnergySummary:
-    """Compare sampled energy against an eval-only reference energy."""
+    """Compare sampled energy against a configured reference energy."""
 
     name = "reference_energy"
     required_fields = frozenset({"local_energy"})
