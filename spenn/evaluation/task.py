@@ -24,13 +24,33 @@ class EvaluationTask:
     artifact_level: ArtifactLevel | None = None
 
 
+_ALLOWED_TASK_KEYS = frozenset(
+    {"name", "namespace", "generator", "calculators", "summaries", "output_dir", "artifact_level"}
+)
+# Keys from the removed phase/required compatibility layer: reject loudly so
+# stale configs surface during migration instead of carrying dead semantics.
+_FORBIDDEN_TASK_KEYS = frozenset({"required", "phase"})
+
+
 def coerce_task(spec: EvaluationTask | Mapping[str, object]) -> EvaluationTask:
-    """Coerce a Hydra-style mapping into an `EvaluationTask`."""
+    """Coerce a Hydra-style mapping into an `EvaluationTask`.
+
+    Unknown task keys are rejected. ``required`` and ``phase`` belonged to the
+    removed compatibility layer and are rejected explicitly so stale configs
+    fail loudly rather than silently preserving dead semantics.
+    """
 
     if isinstance(spec, EvaluationTask):
         return spec
     if not isinstance(spec, Mapping):
         raise TypeError(f"evaluation tasks must be EvaluationTask or mapping, got {type(spec)!r}")
+    keys = {str(key) for key in spec}
+    forbidden = sorted(keys & _FORBIDDEN_TASK_KEYS)
+    if forbidden:
+        raise ValueError(f"evaluation task must not define removed key(s): {forbidden}")
+    unknown = sorted(keys - _ALLOWED_TASK_KEYS)
+    if unknown:
+        raise ValueError(f"evaluation task has unknown key(s): {unknown}")
     name = str(spec.get("name", "")).strip()
     namespace = str(spec.get("namespace", "")).strip("/")
     if not name:

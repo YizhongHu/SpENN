@@ -20,16 +20,40 @@ def test_task_result_has_no_required_field() -> None:
     assert "required" not in fields
 
 
-def test_coerce_task_ignores_required_key() -> None:
-    task = coerce_task(
-        {
-            "name": "energy",
-            "namespace": "eval/energy",
-            "generator": object(),
-            "required": True,  # legacy key — should be silently ignored
-        }
-    )
-    assert not hasattr(task, "required")
+def test_coerce_task_rejects_required_key() -> None:
+    with pytest.raises(ValueError, match="required"):
+        coerce_task(
+            {
+                "name": "energy",
+                "namespace": "eval/energy",
+                "generator": object(),
+                "required": True,  # removed key — must be rejected, not ignored
+            }
+        )
+
+
+def test_coerce_task_rejects_phase_key() -> None:
+    with pytest.raises(ValueError, match="phase"):
+        coerce_task(
+            {
+                "name": "energy",
+                "namespace": "eval/energy",
+                "generator": object(),
+                "phase": "eval",
+            }
+        )
+
+
+def test_coerce_task_rejects_unknown_key() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        coerce_task(
+            {
+                "name": "energy",
+                "namespace": "eval/energy",
+                "generator": object(),
+                "bogus": 1,
+            }
+        )
 
 
 def test_evaluation_task_constructor_rejects_required_kwarg() -> None:

@@ -395,11 +395,11 @@ def _energy_evaluator(
     return_terms: bool = False,
     reference_energy: float | None = None,
 ) -> Evaluator:
-    summaries = [
-        LocalEnergySummary(),
-        HamiltonianTermSummary(),
-        SamplerStatsSummary(),
-    ]
+    summaries = [LocalEnergySummary(), SamplerStatsSummary()]
+    # HamiltonianTermSummary requires per-term energies; only include it when the
+    # calculator actually produces them, else it (correctly) fails the task.
+    if return_terms:
+        summaries.insert(1, HamiltonianTermSummary())
     if reference_energy is not None:
         summaries.append(ReferenceEnergySummary(reference_energy=reference_energy))
     return Evaluator(

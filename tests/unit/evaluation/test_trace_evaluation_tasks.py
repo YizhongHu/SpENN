@@ -41,7 +41,7 @@ def _context(tmp_path: Path) -> EvaluationContext:
         device=torch.device("cpu"),
         dtype=torch.float64,
         seed=0,
-        output_dir=tmp_path,
+        suite_output_dir=tmp_path,
         task_output_dir=tmp_path,
         metadata={},
     )

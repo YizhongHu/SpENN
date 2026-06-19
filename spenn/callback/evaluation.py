@@ -49,6 +49,7 @@ class ArtifactIndex(Callback):
         self._tasks[namespace] = {
             "name": payload.get("name"),
             "namespace": namespace,
+            "output_dir": payload.get("output_dir"),
             "status": payload.get("status"),
             "artifacts": payload.get("artifacts", []),
         }
@@ -78,12 +79,14 @@ class FailureLog(Callback):
             "calculator_failed",
             "summary_failed",
             "artifact_failed",
-            "task_failed",
         ),
         *,
         path: str | Path | None = None,
         **kwargs: Any,
     ) -> None:
+        # Record component-level failure events only. The aggregate ``task_failed``
+        # event repeats the same EvaluationFailure objects, so handling both would
+        # write each failure twice; status/ArtifactIndex consume the aggregate.
         super().__init__(triggers, **kwargs)
         self.path = None if path is None else Path(path)
 
@@ -106,16 +109,6 @@ class FailureLog(Callback):
         """Record an artifact failure."""
 
         self._record_failure(event)
-
-    def on_task_failed(self, event: Event) -> None:
-        """Record task-level failures from the task result payload."""
-
-        task_result = event.payload.get("task_result")
-        if not isinstance(task_result, dict):
-            return
-        for failure in task_result.get("failures", []) or []:
-            if isinstance(failure, dict):
-                self._append(event.context, failure)
 
     def _record_failure(self, event: Event) -> None:
         failure = event.payload.get("failure")

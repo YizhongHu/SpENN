@@ -61,6 +61,9 @@ class Evaluator:
             task_output_dir = task.output_dir if task.output_dir is not None else (
                 (run_dir / task.name) if run_dir is not None else Path(task.name)
             )
+            # Materialize the task directory before running so summaries can write
+            # task-local artifacts without each re-creating it.
+            task_output_dir.mkdir(parents=True, exist_ok=True)
             task_context = replace(
                 base_context,
                 namespace=task.namespace,
@@ -89,7 +92,7 @@ class Evaluator:
         device = _torch_device(getattr(getattr(context, "metadata", None), "device", None))
         dtype = _torch_dtype(getattr(getattr(context, "metadata", None), "dtype", None))
         run_dir = _context_run_dir(context)
-        output_dir = run_dir / "diagnostics" if run_dir is not None else Path("diagnostics")
+        suite_output_dir = run_dir / "diagnostics" if run_dir is not None else Path("diagnostics")
         return EvaluationContext(
             namespace=self.namespace,
             artifact_level=self.artifact_level,
@@ -97,8 +100,8 @@ class Evaluator:
             device=device,
             dtype=dtype,
             seed=self.seed,
-            output_dir=output_dir,
-            task_output_dir=output_dir,
+            suite_output_dir=suite_output_dir,
+            task_output_dir=suite_output_dir,
             metadata={},
         )
 
@@ -110,7 +113,8 @@ class Evaluator:
         context: EvaluationContext,
         emit: Callable[..., None],
     ) -> TaskResult:
-        emit("task_start", payload=task_payload(task))
+        output_dir = str(context.task_output_dir)
+        emit("task_start", payload=task_payload(task, output_dir=output_dir))
         failures: list[EvaluationFailure] = []
         artifacts: list[ArtifactRecord] = []
         metrics: dict[str, MetricScalar] = {}
@@ -124,9 +128,10 @@ class Evaluator:
         except Exception as exc:
             failure = _failure(context, task=task, component=task.generator, component_type="generator", exc=exc)
             failures.append(failure)
-            emit("task_failed", payload={**task_result_payload(_task_result(task, "failed", metrics, artifacts, failures))})
+            result = _task_result(task, output_dir, "failed", metrics, artifacts, failures)
+            emit("task_failed", payload=task_result_payload(result))
             emit("generator_failed", payload=component_failure_payload(task=task, component_name=_component_name(task.generator), failure=failure))
-            return _task_result(task, "failed", metrics, artifacts, failures)
+            return result
 
         for calculator in task.calculators:
             try:
@@ -187,7 +192,7 @@ class Evaluator:
             status = "partial_failed"
         else:
             status = "success"
-        task_result = _task_result(task, status, metrics, artifacts, failures)
+        task_result = _task_result(task, output_dir, status, metrics, artifacts, failures)
         event_name = "task_failed" if status in {"failed", "partial_failed"} else "task_end"
         emit(event_name, payload=task_result_payload(task_result))
         return task_result
@@ -195,6 +200,7 @@ class Evaluator:
 
 def _task_result(
     task: EvaluationTask,
+    output_dir: str,
     status: str,
     metrics: Mapping[str, MetricScalar],
     artifacts: Sequence[ArtifactRecord],
@@ -203,6 +209,7 @@ def _task_result(
     return TaskResult(
         name=task.name,
         namespace=task.namespace,
+        output_dir=output_dir,
         status=status,  # type: ignore[arg-type]
         metrics=dict(metrics),
         artifacts=tuple(artifacts),
@@ -260,9 +267,12 @@ def _merge_metrics(target: dict[str, MetricScalar], values: Mapping[str, MetricS
 
 
 def _aggregate_status(task_results: Sequence[TaskResult]) -> str:
-    if any(task.status == "failed" for task in task_results):
+    # Any configured task failure (full or partial) fails the suite; there is no
+    # `required` flag to downgrade it. `success_with_warnings` is reserved for
+    # non-task-critical issues (e.g. skipped tasks), not broken evaluation tasks.
+    if any(task.status in {"failed", "partial_failed"} for task in task_results):
         return "failed"
-    if any(task.status in {"partial_failed", "skipped"} for task in task_results):
+    if any(task.status == "skipped" for task in task_results):
         return "success_with_warnings"
     return "success"
 
