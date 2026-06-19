@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from typing import Any
 
 from spenn.artifacts import RunContext, RunResult
 from spenn.checkpoint import restore_checkpoint_with_events
-from spenn.diagnostics import EvaluationContext, evaluate_diagnostics, validate_diagnostics
 from spenn.dependencies import require_torch
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, normalize_hamiltonian_terms
+from spenn.evaluation import EvaluationResult, Evaluator
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
 
@@ -16,62 +15,43 @@ torch = require_torch(feature="evaluation runner")
 
 
 class Evaluate(Runner):
-    """Generic sampled diagnostic evaluation runner.
-
-    `Evaluate` owns sampling and shared evaluation work for one configured
-    model/system. Diagnostics consume an `EvaluationContext`; they do not
-    resample, log, emit callbacks, or write artifacts.
-
-    Sampler contract assumed by this runner::
-
-        walkers, sampler_stats = sampler.collect_samples(model, device=runtime_device)
-        batch = walkers.make_batch()
+    """Generic evaluation runner that delegates task execution to `Evaluator`.
 
     Parameters
     ----------
     model : callable
         Wavefunction model returning ``WavefunctionOutput``.
-    sampler : object
-        Sampler exposing ``collect_samples(model, device=...) -> (walkers, stats)``.
-    hamiltonian_terms : sequence or mapping
-        Hamiltonian terms summed by `local_energy`. A
-        ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the
-        public term names for decomposition and metrics; a sequence derives
-        unique names from term class names.
-    diagnostics : sequence of Diagnostic, optional
-        Diagnostics to evaluate from the shared `EvaluationContext`. At least
-        one diagnostic is required; configure `EnergyEvaluation` for energy
-        summaries.
-    return_terms : bool, optional
-        Whether to request per-term local-energy components from `local_energy`.
+    load : object or None, optional
+        Checkpoint restore config. Evaluation accepts ``mode: model_only`` and
+        rejects training-resume restores.
+    evaluator : Evaluator
+        Composable task evaluator. It owns generators, calculators, summaries,
+        and task failure policy.
+    construction_seed : int or None, optional
+        Optional seed applied before model materialization checks.
     """
 
     def __init__(
         self,
         model,
-        sampler,
-        hamiltonian_terms,
-        diagnostics: Sequence[object] | None = None,
-        return_terms: bool = False,
         load=None,
+        evaluator: Evaluator | None = None,
+        construction_seed: int | None = None,
     ) -> None:
         self.model = model
-        self.sampler = sampler
-        # Keep the configured form (sequence or ``dict[str, term]``);
-        # ``local_energy`` normalizes it (see ``normalize_hamiltonian_terms``).
-        self.hamiltonian_terms = hamiltonian_terms
-        if diagnostics is None or not tuple(diagnostics):
-            raise ValueError(
-                "Evaluate requires at least one diagnostic. Configure EnergyEvaluation to report energy metrics."
-            )
-        self.diagnostics = validate_diagnostics(diagnostics)
-        self.return_terms = bool(return_terms)
         self.load = load
+        if evaluator is None:
+            raise ValueError("Evaluate requires an evaluator")
+        self.evaluator = evaluator
+        self.construction_seed = None if construction_seed is None else int(construction_seed)
 
     def run(self, context: RunContext) -> RunResult:
-        """Sample configurations, evaluate local energy, and log metrics."""
+        """Prepare the model, delegate evaluation, and log task metrics."""
 
         self.emit("run_start", context)
+
+        if self.construction_seed is not None:
+            torch.manual_seed(self.construction_seed)
 
         if _is_torch_module(self.model):
             _place_module_for_runtime(self.model, context)
@@ -85,7 +65,6 @@ class Evaluate(Runner):
             report = restore_checkpoint_with_events(
                 load=self.load,
                 model=self.model,
-                sampler=self.sampler,
                 context=context,
                 emit=self.emit,
             )
@@ -94,70 +73,16 @@ class Evaluate(Runner):
                 self.model.eval()
 
         self.emit("evaluate_start", context)
-
-        # No torch.no_grad: local-energy evaluation needs position derivatives.
-        walkers, sampler_stats = self.sampler.collect_samples(
-            self.model,
-            device=context.metadata.device,
-        )
-        batch = walkers.make_batch()
-
-        self.emit("samples_collected", context, payload={"sampler_stats": dict(sampler_stats)})
-
-        normalized_terms = normalize_hamiltonian_terms(self.hamiltonian_terms)
-        energy_result = local_energy(normalized_terms, self.model, batch, return_terms=self.return_terms)
-        total_energy, term_energies = _detach_local_energy_result(energy_result)
-        del energy_result
-
-        # PR6 keeps `wavefunction_output` in the shared context. Local-energy
-        # terms may already evaluate the model internally; a future local-energy
-        # API can avoid this extra no-grad forward when diagnostics do not need it.
-        with torch.no_grad():
-            wavefunction_output = self.model(batch)
-        evaluation = EvaluationContext(
+        result = self.evaluator.evaluate(
             model=self.model,
-            batch=batch,
-            wavefunction_output=wavefunction_output,
-            local_energy=total_energy,
-            local_energy_terms=term_energies,
-            sampler_stats=dict(sampler_stats),
-            hamiltonian_terms=normalized_terms,
-            run_dir=_context_run_dir(context),
-        )
-        metrics = evaluate_diagnostics(
-            self.diagnostics,
-            evaluation,
+            context=context,
             emit=lambda name, *, payload=None: self.emit(name, context, payload=payload),
         )
+        _log_result(context, result, namespace=self.evaluator.namespace)
 
-        context.log(metrics, step=0, namespace="eval")
-        if sampler_stats:
-            context.log(dict(sampler_stats), step=0, namespace="eval/sampler")
-
-        self.emit("evaluate_end", context, payload={"metrics": metrics})
+        self.emit("evaluate_end", context, payload=result.to_payload())
         self.emit("run_end", context)
-        return RunResult(status="completed")
-
-
-
-def _split_local_energy_result(
-    result: LocalEnergyResult | torch.Tensor,
-) -> tuple[torch.Tensor, Mapping[str, torch.Tensor] | None]:
-    """Return ``(total, terms_or_none)`` from a local-energy result."""
-
-    if isinstance(result, LocalEnergyResult):
-        return result.total, result.terms
-    return result, None
-
-
-def _detach_local_energy_result(
-    result: LocalEnergyResult | torch.Tensor,
-) -> tuple[torch.Tensor, Mapping[str, torch.Tensor] | None]:
-    """Detach sampled local-energy tensors before sharing them with diagnostics."""
-
-    total, terms = _split_local_energy_result(result)
-    detached_terms = None if terms is None else {name: value.detach() for name, value in terms.items()}
-    return total.detach(), detached_terms
+        return RunResult(status="completed" if result.status != "failed" else "failed")
 
 
 def _load_mode(load) -> str:
@@ -168,11 +93,25 @@ def _load_mode(load) -> str:
     return "none"
 
 
-def _context_run_dir(context: RunContext):
-    try:
-        return context.run_dir
-    except AttributeError:
-        return None
+def _log_result(context: RunContext, result: EvaluationResult, *, namespace: str) -> None:
+    """Log task metrics in their task namespaces."""
+
+    context.log(
+        {
+            "suite_success": result.status == "success",
+            "suite_failed": result.status == "failed",
+        },
+        step=0,
+        namespace=f"{namespace}/status",
+    )
+    for task in result.task_results:
+        status_metrics: dict[str, Any] = {
+            "task_success": task.status == "success",
+            "task_failed": task.status in {"failed", "partial_failed"},
+        }
+        if task.metrics:
+            context.log(dict(task.metrics), step=0, namespace=task.namespace)
+        context.log(status_metrics, step=0, namespace=f"{task.namespace}/status")
 
 
 __all__ = ["Evaluate"]

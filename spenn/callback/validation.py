@@ -8,15 +8,21 @@ from typing import Any
 
 from .base import Callback, Event
 
-# Namespaces owned by other phases; validation must not log into them.
+# Namespaces owned by other runtime components; validation must not log into them.
 _RESERVED_NAMESPACES = ("train", "eval", "checks")
 
-# Exact-reference comparison belongs to final evaluation (eval/*) only.
+# Exact-reference comparison belongs to configs that intentionally include it.
 _FORBIDDEN_METRICS = ("energy_error", "energy_abs_error", "reference_energy")
 
 
 class Validation(Callback):
-    """Run an independent validation sampler on the trained model.
+    """Legacy train-end validation callback (diagnostics-based).
+
+    Retained only for the legacy pair-validation study. New configs must not
+    run train-then-validate through this callback; use the ``Evaluate`` runner
+    with an ``Evaluator`` instead. The removed evaluator path is not available.
+
+    Run an independent validation sampler on the trained model.
 
     Listens to ``train_end`` (and optionally ``step_end`` with
     ``every_n_steps``), draws fresh samples from a validation sampler that is
@@ -27,8 +33,8 @@ class Validation(Callback):
     Validation estimates energy and uncertainty for model/protocol/checkpoint
     selection. It must not compare against an exact reference energy, select
     hyperparameters, or mutate model/optimizer/trainer state; selection is
-    owned by study scripts reading run outputs, and exact-reference reporting
-    is owned by final evaluation.
+    owned by study scripts reading run outputs. Reference comparison is handled
+    by dedicated evaluation configs that intentionally include it.
 
     Parameters
     ----------
@@ -57,8 +63,8 @@ class Validation(Callback):
         self,
         triggers: Iterable[str],
         *,
-        sampler,
-        hamiltonian_terms,
+        sampler=None,
+        hamiltonian_terms=None,
         diagnostics: Sequence[object] | None = None,
         namespace: str = "validation",
         return_terms: bool = False,
@@ -73,7 +79,7 @@ class Validation(Callback):
         root = namespace.split("/", 1)[0]
         if root in _RESERVED_NAMESPACES:
             raise ValueError(
-                f"Validation namespace {namespace!r} collides with the reserved {root!r} phase namespace"
+                f"Validation namespace {namespace!r} collides with the reserved {root!r} metric namespace"
             )
         self.namespace = namespace
         self.sampler = sampler
@@ -89,7 +95,7 @@ class Validation(Callback):
             if getattr(diagnostic, "reference_energy", None) is not None:
                 raise ValueError(
                     f"validation diagnostic {diagnostic.name!r} sets reference_energy; exact-reference "
-                    "comparison belongs to final evaluation (eval/*), never to validation"
+                    "comparison belongs to dedicated evaluation configs, never to validation"
                 )
 
     def should_run(self, event: Event) -> bool:
@@ -189,7 +195,7 @@ class Validation(Callback):
         if forbidden:
             raise ValueError(
                 f"validation diagnostics produced exact-reference metrics {forbidden}; these are "
-                "only allowed in final evaluation (eval/*)"
+                "only allowed in dedicated evaluation configs"
             )
 
         event.context.log(metrics, step=step, namespace=self.namespace)
@@ -200,7 +206,6 @@ class Validation(Callback):
             step=step,
             namespace=f"{self.namespace}/perf",
         )
-
 
 def _context_run_dir(context):
     try:

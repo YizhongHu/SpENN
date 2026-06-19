@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from spenn.equivariance import EquivariantMap
-from spenn.equivariance.trace import EquivarianceTrace, EquivarianceTraceWarning
+from spenn.trace import Trace, TraceWarning
 
 
 class ToyMap(EquivariantMap):
@@ -40,7 +40,7 @@ def _x() -> torch.Tensor:
 def test_forward_is_normal_and_silent_without_active_trace() -> None:
     module = ToyMap(trace_name="toy")
     with warnings.catch_warnings():
-        warnings.simplefilter("error", EquivarianceTraceWarning)
+        warnings.simplefilter("error", TraceWarning)
         output = module(_x())
 
     torch.testing.assert_close(output, _x() * 2)
@@ -48,7 +48,7 @@ def test_forward_is_normal_and_silent_without_active_trace() -> None:
 
 def test_active_trace_records_named_output() -> None:
     module = ToyMap(trace_name="toy")
-    with EquivarianceTrace.capture() as trace:
+    with Trace.capture() as trace:
         module(_x())
 
     assert trace.keys() == ("toy/output",)
@@ -57,7 +57,7 @@ def test_active_trace_records_named_output() -> None:
 
 def test_trace_output_false_records_nothing() -> None:
     module = ToyMap(trace_name="toy", trace_output=False)
-    with EquivarianceTrace.capture() as trace:
+    with Trace.capture() as trace:
         module(_x())
 
     assert len(trace) == 0
@@ -65,7 +65,7 @@ def test_trace_output_false_records_nothing() -> None:
 
 def test_capture_with_model_uses_module_path() -> None:
     model = ToyModel()
-    with EquivarianceTrace.capture(model=model) as trace:
+    with Trace.capture(model=model) as trace:
         model(_x())
 
     assert trace.keys() == ("layer/output",)
@@ -74,7 +74,7 @@ def test_capture_with_model_uses_module_path() -> None:
 def test_explicit_trace_name_overrides_module_path() -> None:
     model = ToyModel()
     model.layer.trace_name = "custom_layer"
-    with EquivarianceTrace.capture(model=model) as trace:
+    with Trace.capture(model=model) as trace:
         model(_x())
 
     assert "custom_layer/output" in trace
@@ -84,8 +84,8 @@ def test_explicit_trace_name_overrides_module_path() -> None:
 def test_unnamed_map_uses_fallback_name_and_warns() -> None:
     first = ToyMap()
     second = ToyMap()
-    with pytest.warns(EquivarianceTraceWarning):
-        with EquivarianceTrace.capture() as trace:
+    with pytest.warns(TraceWarning):
+        with Trace.capture() as trace:
             first(_x())
             second(_x())
 
@@ -95,7 +95,7 @@ def test_unnamed_map_uses_fallback_name_and_warns() -> None:
 def test_manual_internal_trace_records_hidden_and_output() -> None:
     model = nn.Module()
     model.add_module("layer", HiddenMap())
-    with EquivarianceTrace.capture(model=model) as trace:
+    with Trace.capture(model=model) as trace:
         model.layer(_x())
 
     assert trace.keys() == ("layer/hidden", "layer/output")

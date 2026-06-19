@@ -239,7 +239,7 @@ class TraceEquivarianceChecker:
     def run(self, state: Any) -> EquivarianceCheckResult:
         """Run the trace-based equivariance check against ``state``."""
 
-        from spenn.equivariance.trace import EquivarianceTrace
+        from spenn.trace import Trace
 
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
@@ -282,14 +282,14 @@ class TraceEquivarianceChecker:
         output_failed = False
 
         with torch.no_grad():
-            with EquivarianceTrace.capture(model=model) as trace_a:
+            with Trace.capture(model=model) as trace_a:
                 output_a = model(batch)
             n_trace_entries = len(trace_a)
             keys_a = set(trace_a.keys())
 
             for permutation in permutations:
                 permuted_batch = apply_particle_permutation(batch, permutation)
-                with EquivarianceTrace.capture(model=model) as trace_b:
+                with Trace.capture(model=model) as trace_b:
                     output_b = model(permuted_batch)
                 keys_b = set(trace_b.keys())
                 missing_keys |= keys_a - keys_b

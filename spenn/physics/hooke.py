@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 
 
-class HookeSingletExact:
+class HookeSingletExact(nn.Module):
     """Exact spatial wavefunction for the two-electron Hooke singlet (omega=1/2).
 
     psi(r1, r2) = (1 + r12/2) * exp(-r1^2/4 - r2^2/4)
@@ -17,7 +18,7 @@ class HookeSingletExact:
     omega: float = 0.5
     exact_energy: float = 2.0
 
-    def __call__(self, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
         pos = batch.flatten_samples().positions  # [B, 2, 3]
         r1_sq = pos[:, 0, :].square().sum(-1)
         r2_sq = pos[:, 1, :].square().sum(-1)
@@ -27,7 +28,7 @@ class HookeSingletExact:
         return WavefunctionOutput(logabs=logabs, sign=sign)
 
 
-class HookeTripletExact:
+class HookeTripletExact(nn.Module):
     """Exact spatial wavefunction for the two-electron Hooke triplet (omega=1/4).
 
     psi(r1, r2) = (z1 - z2) * (1 + r12/4) * exp(-r1^2/8 - r2^2/8)
@@ -39,7 +40,7 @@ class HookeTripletExact:
     omega: float = 0.25
     exact_energy: float = 1.25
 
-    def __call__(self, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
         pos = batch.flatten_samples().positions  # [B, 2, 3]
         r1_sq = pos[:, 0, :].square().sum(-1)
         r2_sq = pos[:, 1, :].square().sum(-1)
