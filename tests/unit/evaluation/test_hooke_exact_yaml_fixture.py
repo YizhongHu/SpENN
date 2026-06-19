@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from omegaconf import OmegaConf
+from torch import nn
 
 from spenn.evaluation import Evaluator, EvaluationTask
 from spenn.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
@@ -32,7 +33,7 @@ from spenn.physics.hooke import HookeSingletExact
 from spenn.physics.kinetic import KineticEnergy
 from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
 
-FIXTURES = Path(__file__).resolve().parents[3] / "integration" / "artifacts" / "hooke"
+FIXTURES = Path(__file__).resolve().parents[2] / "integration" / "artifacts" / "hooke"
 SINGLET_FIXTURE = FIXTURES / "exact_singlet_eval.yaml"
 
 
@@ -102,9 +103,12 @@ def test_hooke_exact_local_energy_is_constant_under_evaluation_stack(tmp_path: P
 def test_hooke_exact_cusp_even_slope_matches_half(tmp_path: Path) -> None:
     """OppositeSpinCuspSummary on exact Hooke should give cusp_even_slope ≈ 0.5."""
 
+    # The summary reads the slope at the smallest r12 per antipodal pair, and
+    # d/dr12 log|Phi| = -r12/4 + 1/(2+r12) only approaches 1/2 as r12 -> 0.
+    # At r12=1e-5 the offset from 1/2 is ~2.5e-6 (within tolerance below).
     generated = CuspGridGenerator(
         n_points=8,
-        r12_min=0.01,
+        r12_min=1.0e-5,
         r12_max=0.5,
         n_directions=4,
         center_of_mass_radii=[0.0, 0.3],
@@ -207,7 +211,7 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
             ),
         ],
     )
-    evaluator.evaluate(model=None, context=ctx, emit=lambda *a, **kw: None)
+    evaluator.evaluate(model=nn.Identity(), context=ctx, emit=lambda *a, **kw: None)
 
     assert recorded[0] == tmp_path / "cusp"
     assert recorded[1] == tmp_path / "tail"

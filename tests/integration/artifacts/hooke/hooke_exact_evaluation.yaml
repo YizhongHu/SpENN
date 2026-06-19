@@ -82,7 +82,6 @@ evaluation_tasks:
       chunk_size: 128
     - _target_: spenn.evaluation.calculators.WavefunctionCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.LocalEnergySummary
     - _target_: spenn.evaluation.summaries.TailStabilitySummary
     - _target_: spenn.evaluation.summaries.SampledRecordWriter
   stratified_geometry:
