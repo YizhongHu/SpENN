@@ -44,6 +44,22 @@ class CuspGridGenerator:
         self.dtype = _dtype(dtype)
         self.device = None if device is None else torch.device(device)
         self.spatial_dim = int(spatial_dim)
+        if self.n_points <= 0:
+            raise ValueError("CuspGridGenerator requires n_points > 0")
+        if self.r12_min <= 0.0:
+            raise ValueError("CuspGridGenerator requires r12_min > 0")
+        if self.r12_max <= self.r12_min:
+            raise ValueError("CuspGridGenerator requires r12_max > r12_min")
+        if self.n_directions <= 0:
+            raise ValueError("CuspGridGenerator requires n_directions > 0")
+        if not self.center_of_mass_radii:
+            raise ValueError("CuspGridGenerator requires at least one center_of_mass_radius")
+        if any(radius < 0.0 for radius in self.center_of_mass_radii):
+            raise ValueError("CuspGridGenerator requires non-negative center_of_mass_radii")
+        if self.spin_pair not in ("opposite", "same"):
+            raise ValueError("CuspGridGenerator spin_pair must be 'opposite' or 'same'")
+        if self.spatial_dim <= 0:
+            raise ValueError("CuspGridGenerator requires spatial_dim > 0")
 
     def generate(self, *, model: torch.nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
         """Return a log-spaced pair-distance cusp grid."""
@@ -132,9 +148,21 @@ class TailGridGenerator:
         self.spacing = spacing
         if self.spacing not in ("linear", "log"):
             raise ValueError(f"unsupported spacing {self.spacing!r}")
+        if self.n_points <= 0:
+            raise ValueError("TailGridGenerator requires n_points > 0")
+        if self.radius_min < 0.0:
+            raise ValueError("TailGridGenerator requires radius_min >= 0")
+        if self.radius_max <= self.radius_min:
+            raise ValueError("TailGridGenerator requires radius_max > radius_min")
+        if self.pair_distance <= 0.0:
+            raise ValueError("TailGridGenerator requires pair_distance > 0")
+        if self.n_directions <= 0:
+            raise ValueError("TailGridGenerator requires n_directions > 0")
         if self.spacing == "log" and self.radius_min <= 0.0:
             raise ValueError("TailGridGenerator requires radius_min > 0 for log spacing")
         self.spatial_dim = int(spatial_dim)
+        if self.spatial_dim <= 0:
+            raise ValueError("TailGridGenerator requires spatial_dim > 0")
 
     def generate(self, *, model: torch.nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
         """Return a center-of-mass tail grid."""
@@ -191,6 +219,12 @@ class StratifiedGeometryGenerator:
         self.seed = int(seed)
         self.bounds = dict(bounds)
         self.spatial_dim = int(spatial_dim)
+        if self.n_samples <= 0:
+            raise ValueError("StratifiedGeometryGenerator requires n_samples > 0")
+        _normalized_weights(self.strata)
+        _validate_stratified_bounds(self.bounds)
+        if self.spatial_dim <= 0:
+            raise ValueError("StratifiedGeometryGenerator requires spatial_dim > 0")
 
     def generate(self, *, model: torch.nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
         """Return seeded random configurations with stratum bookkeeping."""
@@ -248,6 +282,14 @@ class HookeOrbitalGenerator:
         self.seed = int(seed)
         self.envelope_scale = envelope_scale
         self.spatial_dim = int(spatial_dim)
+        if self.n_samples <= 0:
+            raise ValueError("HookeOrbitalGenerator requires n_samples > 0")
+        if self.omega <= 0.0:
+            raise ValueError("HookeOrbitalGenerator requires omega > 0")
+        if self.envelope_scale is not None and float(self.envelope_scale) <= 0.0:
+            raise ValueError("HookeOrbitalGenerator requires envelope_scale > 0")
+        if self.spatial_dim <= 0:
+            raise ValueError("HookeOrbitalGenerator requires spatial_dim > 0")
 
     def generate(self, *, model: torch.nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
         """Return seeded samples from a Hooke-inspired Gaussian envelope."""
@@ -355,6 +397,29 @@ def _sample_geometry_for_stratum(
     r12 = _uniform(r12_min, r12_max, generator=generator)
     radius = _uniform(radius_min, radius_max, generator=generator)
     return r12, radius
+
+
+def _validate_stratified_bounds(bounds: Mapping[str, object]) -> None:
+    flat_keys = {"r12_min", "r12_max", "radius_min", "radius_max"}
+    present = sorted(flat_keys.intersection(str(key) for key in bounds))
+    if present:
+        raise ValueError(
+            "StratifiedGeometryGenerator bounds must be nested under 'default' "
+            f"or stratum names; flat bound keys are unsupported: {present}"
+        )
+    for name, config in bounds.items():
+        if not isinstance(config, Mapping):
+            raise ValueError(f"StratifiedGeometryGenerator bounds for {name!r} must be a mapping")
+        r12_min, r12_max = _range(config, {}, "r12", fallback=(0.2, 3.0))
+        radius_min, radius_max = _range(config, {}, "radius", fallback=(0.0, 4.0))
+        if r12_min <= 0.0:
+            raise ValueError(f"StratifiedGeometryGenerator bounds for {name!r} require r12_min > 0")
+        if r12_max <= r12_min:
+            raise ValueError(f"StratifiedGeometryGenerator bounds for {name!r} require r12_max > r12_min")
+        if radius_min < 0.0:
+            raise ValueError(f"StratifiedGeometryGenerator bounds for {name!r} require radius_min >= 0")
+        if radius_max <= radius_min:
+            raise ValueError(f"StratifiedGeometryGenerator bounds for {name!r} require radius_max > radius_min")
 
 
 def _range(config: Mapping[str, object], default: Mapping[str, object], name: str, *, fallback: tuple[float, float]) -> tuple[float, float]:

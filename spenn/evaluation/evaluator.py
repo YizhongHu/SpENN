@@ -57,7 +57,7 @@ class Evaluator:
         artifacts: list[ArtifactRecord] = []
 
         for task in self.tasks:
-            task_output_dir = Path(task.output_dir)
+            task_output_dir = _resolve_task_output_dir(task.output_dir, run_dir=base_context.run_dir)
             # Materialize the task directory before running so summaries can write
             # task-local artifacts without each re-creating it.
             task_output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +176,7 @@ class Evaluator:
                     continue
                 try:
                     result = summary.summarize(bundle=bundle, context=context, namespace=task.namespace)
+                    _merge_metrics(metrics, result.metrics, component_name=_component_name(summary))
                 except Exception as exc:
                     failure = _failure(context, task=task, component=summary, component_type="summary", exc=exc)
                     failures.append(failure)
@@ -190,7 +191,6 @@ class Evaluator:
                         ),
                     )
                     continue
-                _merge_metrics(metrics, result.metrics, component_name=_component_name(summary))
                 artifacts.extend(result.artifacts)
 
         if task_failed:
@@ -271,6 +271,13 @@ def _merge_metrics(target: dict[str, MetricScalar], values: Mapping[str, MetricS
         if key in target:
             raise ValueError(f"metric key collision for {key!r} from {component_name or 'summary'}")
         target[key] = value
+
+
+def _resolve_task_output_dir(value: Path | str, *, run_dir: Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return Path(run_dir) / path
 
 
 def _aggregate_status(task_results: Sequence[TaskResult]) -> str:

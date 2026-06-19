@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +22,16 @@ class ArtifactRecord:
     name: str
     kind: str
     path: Path
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, JsonScalar] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Reject metadata values that cannot be serialized as JSON scalars."""
+
+        for key, value in self.metadata.items():
+            if not isinstance(key, str):
+                raise TypeError("ArtifactRecord metadata keys must be strings")
+            if not _is_json_scalar(value):
+                raise TypeError(f"ArtifactRecord metadata value for {key!r} is not a JSON scalar")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe artifact mapping."""
@@ -113,6 +123,14 @@ class EvaluationResult:
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "failures": [failure.to_dict() for failure in self.failures],
         }
+
+
+def _is_json_scalar(value: object) -> bool:
+    if value is None or isinstance(value, (bool, int, str)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return False
 
 
 __all__ = [

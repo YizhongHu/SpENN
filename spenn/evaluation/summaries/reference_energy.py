@@ -1,4 +1,4 @@
-"""Reference-energy summaries for final evaluation."""
+"""Reference-energy summaries for configs that include reference comparison."""
 
 from __future__ import annotations
 

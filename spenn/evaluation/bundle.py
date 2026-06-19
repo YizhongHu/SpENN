@@ -94,6 +94,8 @@ class TraceComparisonValues:
     max_abs_error: torch.Tensor
     mean_abs_error: torch.Tensor
     failure_count: int
+    compared_entry_count: int
+    comparison_error_count: int
     missing_key_count: int
     extra_key_count: int
     records: Sequence[Mapping[str, Any]]

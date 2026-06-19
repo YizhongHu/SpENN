@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
@@ -16,13 +17,14 @@ from spenn.evaluation.bundle import (
     LocalEnergyValues,
     WavefunctionValues,
 )
-from spenn.evaluation.generators import CuspGridGenerator, TailGridGenerator
+from spenn.evaluation.generators import CuspGridGenerator, StratifiedGeometryGenerator, TailGridGenerator
 from spenn.evaluation.protocols import EvaluationContext
 from spenn.evaluation.summaries import (
     CoalescenceDivergenceSummary,
+    LocalEnergyPathologySummary,
     LocalEnergyStabilitySummary,
     OppositeSpinCuspSummary,
-    PathologyCountSummary,
+    SampledRecordWriter,
 )
 
 
@@ -151,7 +153,7 @@ def test_tail_grid_and_pathology_summaries_report_finite_metrics(tmp_path: Path)
         context=_context(tmp_path),
         namespace="validation/tail",
     ).metrics
-    pathology_metrics = PathologyCountSummary().summarize(
+    pathology_metrics = LocalEnergyPathologySummary().summarize(
         bundle=bundle,
         context=_context(tmp_path),
         namespace="validation/pathology",
@@ -161,6 +163,7 @@ def test_tail_grid_and_pathology_summaries_report_finite_metrics(tmp_path: Path)
     assert stability_metrics["stability_outlier_count"] == 0
     assert stability_metrics["stability_n_finite"] == 2
     assert pathology_metrics["nonfinite_local_energy_count"] == 1
+    assert pathology_metrics["local_energy_pathology_count"] == 1
 
 
 def test_local_energy_stability_summary_requires_explicit_threshold() -> None:
@@ -178,6 +181,82 @@ def test_tail_grid_log_spacing_requires_positive_radius_min() -> None:
             n_directions=1,
             spacing="log",
         )
+
+
+def test_cusp_grid_validates_distance_bounds() -> None:
+    with pytest.raises(ValueError, match="r12_min"):
+        CuspGridGenerator(
+            n_points=3,
+            r12_min=0.0,
+            r12_max=1.0,
+            n_directions=2,
+            center_of_mass_radii=[0.0],
+        )
+    with pytest.raises(ValueError, match="r12_max"):
+        CuspGridGenerator(
+            n_points=3,
+            r12_min=1.0,
+            r12_max=1.0,
+            n_directions=2,
+            center_of_mass_radii=[0.0],
+        )
+
+
+def test_stratified_geometry_rejects_flat_bounds() -> None:
+    with pytest.raises(ValueError, match="flat bound"):
+        StratifiedGeometryGenerator(
+            n_samples=4,
+            strata={"bulk": 1.0},
+            seed=0,
+            bounds={"r12_min": 1.0e-4, "r12_max": 6.0, "radius_max": 8.0},
+        )
+
+
+def test_sampled_record_writer_includes_scalar_generator_metadata(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    context = EvaluationContext(
+        namespace=context.namespace,
+        artifact_level="records",
+        task_failure_policy=context.task_failure_policy,
+        device=context.device,
+        dtype=context.dtype,
+        seed=context.seed,
+        run_dir=context.run_dir,
+        task_output_dir=tmp_path,
+        metadata=context.metadata,
+    )
+    generated = TailGridGenerator(
+        radius_min=1.0,
+        radius_max=2.0,
+        n_points=2,
+        pair_distance=0.5,
+        n_directions=1,
+    ).generate(model=None, context=context)
+    local_energy = torch.full((2,), 2.0, dtype=torch.float64)
+    bundle = EvaluationBundle(
+        generated=generated,
+        local_energy=LocalEnergyValues(
+            local_energy=local_energy,
+            finite_mask=torch.isfinite(local_energy),
+            term_energies=None,
+        ),
+        wavefunction=WavefunctionValues(
+            logabs=torch.zeros(2, dtype=torch.float64),
+            sign=torch.ones(2, dtype=torch.float64),
+        ),
+    )
+
+    result = SampledRecordWriter(max_samples=2).summarize(
+        bundle=bundle,
+        context=context,
+        namespace="validation/tail",
+    )
+
+    path = result.artifacts[0].path
+    rows = list(csv.DictReader(path.read_text(encoding="utf-8").splitlines()))
+    assert float(rows[0]["radius"]) == pytest.approx(1.0)
+    assert rows[0]["direction_id"] == "0"
+    assert float(rows[0]["pair_distance"]) == pytest.approx(0.5)
 
 
 def test_old_hooke_probe_names_are_not_public() -> None:

@@ -56,6 +56,8 @@ class TraceEquivarianceCalculator:
         missing_count = 0
         extra_count = 0
         failure_count = 0
+        compared_entry_count = 0
+        comparison_error_count = 0
         for image, indices in _permutation_groups(permutation_images).items():
             permutation = Permutation(image)
             original_group = _select_batch(original, indices)
@@ -79,6 +81,7 @@ class TraceEquivarianceCalculator:
             for key in extra:
                 records.append({"key": key, "status": "extra", "permutation": image})
             for key in sorted(keys_a & keys_b):
+                compared_entry_count += 1
                 try:
                     expected = apply_particle_permutation(entries_a[key].value, permutation)
                     actual = entries_b[key].value
@@ -90,6 +93,7 @@ class TraceEquivarianceCalculator:
                 except Exception as exc:
                     close = False
                     error = math.inf
+                    comparison_error_count += 1
                     records.append(
                         {
                             "key": key,
@@ -123,6 +127,8 @@ class TraceEquivarianceCalculator:
                 max_abs_error=max_error,
                 mean_abs_error=mean_error,
                 failure_count=failure_count,
+                compared_entry_count=compared_entry_count,
+                comparison_error_count=comparison_error_count,
                 missing_key_count=missing_count,
                 extra_key_count=extra_count,
                 records=tuple(records),

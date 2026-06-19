@@ -46,6 +46,24 @@ class _RecordingOutputDirSummary:
         return SummaryResult(metrics={})
 
 
+class _MetricSummary:
+    name = "metric"
+    required_fields: frozenset[str] = frozenset()
+
+    def __init__(self, key: str, value: float) -> None:
+        self.key = key
+        self.value = value
+
+    def summarize(
+        self,
+        *,
+        bundle: EvaluationBundle,
+        context: EvaluationContext,
+        namespace: str,
+    ) -> SummaryResult:
+        return SummaryResult(metrics={self.key: self.value})
+
+
 def _run_context(run_dir: Path) -> Any:
     ctx = SimpleNamespace()
     ctx.run_dir = run_dir
@@ -108,3 +126,53 @@ def test_task_output_dir_override_is_respected(tmp_path: Path) -> None:
     )
     evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=lambda *a, **kw: None)
     assert recorder.recorded_task_output_dir == custom_dir
+
+
+def test_relative_task_output_dir_is_resolved_against_run_dir(tmp_path: Path) -> None:
+    recorder = _RecordingOutputDirSummary()
+    evaluator = Evaluator(
+        namespace="eval",
+        tasks=[
+            EvaluationTask(
+                name="energy",
+                namespace="eval/energy",
+                output_dir="energy",
+                generator=_NullGenerator(),
+                calculators=[],
+                summaries=[recorder],
+            )
+        ],
+    )
+
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=lambda *a, **kw: None)
+
+    assert recorder.recorded_task_output_dir == tmp_path / "energy"
+    assert result.task_results[0].output_dir == tmp_path / "energy"
+
+
+def test_duplicate_summary_metrics_are_structured_task_failures(tmp_path: Path) -> None:
+    events: list[str] = []
+    evaluator = Evaluator(
+        namespace="eval",
+        tasks=[
+            EvaluationTask(
+                name="energy",
+                namespace="eval/energy",
+                output_dir=tmp_path / "energy",
+                generator=_NullGenerator(),
+                calculators=[],
+                summaries=[_MetricSummary("duplicate", 1.0), _MetricSummary("duplicate", 2.0)],
+            )
+        ],
+    )
+
+    result = evaluator.evaluate(
+        model=nn.Linear(1, 1),
+        context=_run_context(tmp_path),
+        emit=lambda name, **kw: events.append(name),
+    )
+
+    assert result.status == "failed"
+    assert result.task_results[0].status == "partial_failed"
+    assert result.task_results[0].failures[0].error_type == "ValueError"
+    assert "summary_failed" in events

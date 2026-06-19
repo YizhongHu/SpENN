@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from spenn.evaluation.summaries.hooke import (
     CoalescenceDivergenceSummary,
+    LocalEnergyPathologySummary,
     LocalEnergyStabilitySummary,
     OppositeSpinCuspSummary,
-    PathologyCountSummary,
 )
 from spenn.evaluation.summaries.local_energy import LocalEnergySummary
 from spenn.evaluation.summaries.metadata import SamplerStatsSummary
@@ -24,10 +24,10 @@ __all__ = [
     "CoalescenceDivergenceSummary",
     "FeatureTraceSummary",
     "HamiltonianTermSummary",
+    "LocalEnergyPathologySummary",
     "LocalEnergyStabilitySummary",
     "LocalEnergySummary",
     "OppositeSpinCuspSummary",
-    "PathologyCountSummary",
     "ReadoutTraceSummary",
     "ReferenceEnergySummary",
     "SampledRecordWriter",

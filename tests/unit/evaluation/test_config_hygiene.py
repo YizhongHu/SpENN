@@ -27,15 +27,16 @@ def test_yaml_configs_do_not_reintroduce_evaluation_phase_or_required_keys() -> 
                         offenders.append(_format_offender(path, (*node_path, key)))
                 if "output_dir" not in node:
                     offenders.append(_format_offender(path, (*node_path, "output_dir")))
+                elif not _is_run_rooted_output_dir(node["output_dir"]):
+                    offenders.append(_format_offender(path, (*node_path, "output_dir")))
 
     assert offenders == [], "stale or incomplete evaluation task config keys found:\n" + "\n".join(offenders)
 
 
 def _yaml_config_paths() -> Iterator[Path]:
     roots = (
-        REPO_ROOT / "experiments" / "hooke",
-        REPO_ROOT / "tests" / "fixtures",
-        REPO_ROOT / "tests" / "integration" / "artifacts",
+        REPO_ROOT / "experiments",
+        REPO_ROOT / "tests",
     )
     for root in roots:
         if root.exists():
@@ -55,3 +56,8 @@ def _walk_mappings(data: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[tupl
 
 def _format_offender(path: Path, keys: tuple[str, ...]) -> str:
     return f"{path.relative_to(REPO_ROOT)}:{'.'.join(keys)}"
+
+
+def _is_run_rooted_output_dir(value: object) -> bool:
+    text = str(value).strip()
+    return text.startswith("${run.dir}/") or Path(text).is_absolute()

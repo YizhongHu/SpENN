@@ -37,10 +37,11 @@ class CoalescenceDivergenceSummary:
         r12 = _tensor_metadata(metadata, "r12", like=local.local_energy)
         direction_id = _long_metadata(metadata, "direction_id", like=local.local_energy)
         center_id = _optional_long_metadata(metadata, "center_of_mass_id", like=local.local_energy)
+        direction_sign = _optional_long_metadata(metadata, "direction_sign", like=local.local_energy)
         c_values: list[float] = []
         failures = 0
-        for key in _group_keys(direction_id, center_id):
-            mask = _group_mask(direction_id, center_id, key)
+        for key in _group_keys(direction_id, center_id, direction_sign):
+            mask = _group_mask(direction_id, center_id, direction_sign, key)
             c_value = _fit_c_minus_one(r12[mask], local.local_energy.reshape(-1)[mask], self.max_fit_points)
             if c_value is None:
                 failures += 1
@@ -154,10 +155,10 @@ class LocalEnergyStabilitySummary:
         )
 
 
-class PathologyCountSummary:
+class LocalEnergyPathologySummary:
     """Count nonfinite wavefunction and local-energy pathologies."""
 
-    name = "pathology_count"
+    name = "local_energy_pathology"
     required_fields = frozenset({"local_energy"})
 
     def __init__(self, *, large_abs_local_energy_threshold: float = 1.0e3) -> None:
@@ -175,20 +176,22 @@ class PathologyCountSummary:
         del context, namespace
         local = bundle.local_energy
         if local is None:
-            raise ValueError("PathologyCountSummary requires local_energy")
+            raise ValueError("LocalEnergyPathologySummary requires local_energy")
         energy = local.local_energy.detach().reshape(-1)
         nonfinite_energy = ~torch.isfinite(energy)
+        large_abs_energy = torch.isfinite(energy) & (energy.abs() > self.large_abs_local_energy_threshold)
+        nonfinite_energy_count = int(nonfinite_energy.sum().item())
+        large_abs_energy_count = int(large_abs_energy.sum().item())
         metrics: dict[str, MetricScalar] = {
-            "nonfinite_local_energy_count": int(nonfinite_energy.sum().item()),
-            "large_abs_local_energy_count": int((torch.isfinite(energy) & (energy.abs() > self.large_abs_local_energy_threshold)).sum().item()),
-            "pathology_count": int(nonfinite_energy.sum().item()),
+            "nonfinite_local_energy_count": nonfinite_energy_count,
+            "large_abs_local_energy_count": large_abs_energy_count,
+            "local_energy_pathology_count": nonfinite_energy_count + large_abs_energy_count,
         }
         wavefunction = bundle.wavefunction
         if wavefunction is not None:
             logabs = wavefunction.logabs.detach().reshape(-1)
             nonfinite_logabs = ~torch.isfinite(logabs)
             metrics["nonfinite_logabs_count"] = int(nonfinite_logabs.sum().item())
-            metrics["pathology_count"] += int(nonfinite_logabs.sum().item())
         else:
             metrics["nonfinite_logabs_count"] = 0
         return SummaryResult(metrics=metrics)
@@ -223,17 +226,38 @@ def _optional_long_metadata(metadata, key: str, *, like: torch.Tensor) -> torch.
     return value.to(device=like.device, dtype=torch.long).reshape(-1)
 
 
-def _group_keys(direction_id: torch.Tensor, center_id: torch.Tensor | None) -> set[tuple[int, int]]:
+def _group_keys(
+    direction_id: torch.Tensor,
+    center_id: torch.Tensor | None,
+    direction_sign: torch.Tensor | None,
+) -> set[tuple[int, int, int | None]]:
     if center_id is None:
-        return {(0, int(value)) for value in torch.unique(direction_id).tolist()}
-    return {(int(c), int(d)) for c, d in zip(center_id.tolist(), direction_id.tolist(), strict=True)}
+        center_values = torch.zeros_like(direction_id)
+    else:
+        center_values = center_id
+    if direction_sign is None:
+        return {
+            (int(c), int(d), None)
+            for c, d in zip(center_values.tolist(), direction_id.tolist(), strict=True)
+        }
+    return {
+        (int(c), int(d), int(s))
+        for c, d, s in zip(center_values.tolist(), direction_id.tolist(), direction_sign.tolist(), strict=True)
+    }
 
 
-def _group_mask(direction_id: torch.Tensor, center_id: torch.Tensor | None, key: tuple[int, int]) -> torch.Tensor:
-    center_key, direction_key = key
+def _group_mask(
+    direction_id: torch.Tensor,
+    center_id: torch.Tensor | None,
+    direction_sign: torch.Tensor | None,
+    key: tuple[int, int, int | None],
+) -> torch.Tensor:
+    center_key, direction_key, sign_key = key
     mask = direction_id == direction_key
     if center_id is not None:
         mask = mask & (center_id == center_key)
+    if direction_sign is not None and sign_key is not None:
+        mask = mask & (direction_sign == sign_key)
     return mask
 
 
@@ -263,7 +287,7 @@ def _quantile(values: torch.Tensor, q: float) -> float:
 
 __all__ = [
     "CoalescenceDivergenceSummary",
+    "LocalEnergyPathologySummary",
     "LocalEnergyStabilitySummary",
     "OppositeSpinCuspSummary",
-    "PathologyCountSummary",
 ]

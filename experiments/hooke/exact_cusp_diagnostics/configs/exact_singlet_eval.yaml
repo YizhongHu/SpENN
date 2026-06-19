@@ -128,7 +128,7 @@ evaluation_tasks:
     summaries:
       - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
       - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
-      - _target_: spenn.evaluation.summaries.PathologyCountSummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
 
 model:
   _target_: spenn.physics.hooke.HookeSingletExact

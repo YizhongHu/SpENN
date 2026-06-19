@@ -86,7 +86,7 @@ evaluation_tasks:
     - _target_: spenn.evaluation.summaries.LocalEnergySummary
     - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
       abs_threshold: 10.0
-    - _target_: spenn.evaluation.summaries.PathologyCountSummary
+    - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
     - _target_: spenn.evaluation.summaries.SampledRecordWriter
   stratified_geometry:
     name: stratified_geometry
@@ -127,7 +127,7 @@ evaluation_tasks:
     - _target_: spenn.evaluation.calculators.WavefunctionCalculator
     summaries:
     - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.PathologyCountSummary
+    - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
     - _target_: spenn.evaluation.summaries.SampledRecordWriter
   hooke_orbital:
     name: hooke_orbital
@@ -146,7 +146,7 @@ evaluation_tasks:
     - _target_: spenn.evaluation.calculators.WavefunctionCalculator
     summaries:
     - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.PathologyCountSummary
+    - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
     - _target_: spenn.evaluation.summaries.SampledRecordWriter
   energy:
     name: energy

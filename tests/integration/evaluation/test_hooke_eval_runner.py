@@ -558,7 +558,7 @@ def test_hooke_exact_evaluation_stack_runs_from_yaml_fixture(tmp_path) -> None:
         assert metrics["nonfinite_local_energy_count"] == 0, task
         assert metrics["large_abs_local_energy_count"] == 0, task
         assert metrics["nonfinite_logabs_count"] == 0, task
-        assert metrics["pathology_count"] == 0, task
+        assert metrics["local_energy_pathology_count"] == 0, task
 
     # Reference energy comparison: included by this exact-Hooke correctness
     # config. There is no phase gate; ordinary validation configs omit it.

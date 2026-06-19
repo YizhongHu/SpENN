@@ -71,6 +71,8 @@ class TraceEquivarianceSummary:
                 "max_abs_error": _max(finite),
                 "mean_abs_error": _mean(finite),
                 "failure_count": int(values.failure_count),
+                "compared_entry_count": int(values.compared_entry_count),
+                "comparison_error_count": int(values.comparison_error_count),
                 "missing_key_count": int(values.missing_key_count),
                 "extra_key_count": int(values.extra_key_count),
             }

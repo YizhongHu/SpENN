@@ -172,6 +172,8 @@ def test_trace_equivariance_calculator_compares_particle_tensor(tmp_path: Path) 
     ).metrics
 
     assert metrics["failure_count"] == 0
+    assert metrics["compared_entry_count"] > 0
+    assert metrics["comparison_error_count"] == 0
     assert metrics["max_abs_error"] == pytest.approx(0.0)
 
 
