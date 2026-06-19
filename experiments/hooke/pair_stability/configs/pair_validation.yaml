@@ -1,0 +1,436 @@
+# =============================================================================
+# Hooke pair-stability study validation/evaluation base config (PR8.8)
+# =============================================================================
+#
+# Restores a trained pair-stability checkpoint and runs the EvaluationTask-based
+# physical-correctness suite (cusp, tail, stratified geometry, Hooke orbital,
+# energy). The architecture/normalization choice MUST match the trained run, so
+# the orchestrator passes the same run_parameters used at training time.
+#
+#   uv run python run.py --config experiments/hooke/pair_stability/configs/pair_validation.yaml \
+#     run_parameters.architecture=hermite_o3_envelope run_parameters.normalization=N2 \
+#     run_parameters.lr=1.0e-3 run_parameters.channels=16 run_parameters.seed=0 \
+#     load.path=<train_checkpoint> \
+#     run.root=experiments/hooke/pair_stability/results/02_validation \
+#     run.layout=flat run.run_id=<run_id>/attempts/<attempt_id>
+# =============================================================================
+
+experiment:
+  name: hooke_pair_stability
+  sector: pair
+  run_name: hooke_pair_stability_validation
+
+study:
+  name: pair_stability
+  stage: "02_validation"
+  attempt_id: null
+  config_id: null
+
+run:
+  root: experiments/hooke/pair_stability/results/02_validation
+  layout: flat
+  run_id: null
+  dir: null
+  timezone: UTC
+
+runtime:
+  seed: ${run_parameters.seed}
+  device: cuda
+  dtype: float64
+
+terminal:
+  enabled: true
+  level: info
+  color: auto
+  rich: auto
+  progress: false
+
+system:
+  name: hooke_pair
+  n_particles: 2
+  spatial_dim: 3
+  omega: 0.5
+  spin:
+    n_up: 1
+    n_down: 1
+
+references:
+  # Exact ground-state energy of the omega=0.5 Hooke singlet (Taut 1993).
+  exact_energy: 2.0
+
+# Scalar run parameters; must match the trained run being evaluated.
+run_parameters:
+  architecture: hermite_o3_envelope
+  normalization: N0
+  lr: 1.0e-3
+  channels: 16
+  seed: 0
+
+# Structured choice libraries (identical to pair_stability.yaml so the restored
+# checkpoint maps onto the same architecture and normalization).
+choices:
+  architecture:
+    raw_envelope:
+      basis:
+        _target_: spenn.nn.RawCoordinateBasis
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main]
+    hermite_o2_envelope:
+      basis:
+        _target_: spenn.nn.HookeHermiteBasis
+        omega: ${system.omega}
+        max_order: 2
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main]
+    hermite_o3_envelope:
+      basis:
+        _target_: spenn.nn.HookeHermiteBasis
+        omega: ${system.omega}
+        max_order: 3
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main]
+    orbital_s1_envelope:
+      basis:
+        _target_: spenn.nn.HookeOrbitalBasis
+        omega: ${system.omega}
+        max_shell: 1
+        include_gaussian_factor: true
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main, orbital_with_envelope]
+    orbital_s2_envelope:
+      basis:
+        _target_: spenn.nn.HookeOrbitalBasis
+        omega: ${system.omega}
+        max_shell: 2
+        include_gaussian_factor: true
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main, orbital_with_envelope]
+    hermite_o4_envelope:
+      basis:
+        _target_: spenn.nn.HookeHermiteBasis
+        omega: ${system.omega}
+        max_order: 4
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [diagnostic]
+    orbital_s3_envelope:
+      basis:
+        _target_: spenn.nn.HookeOrbitalBasis
+        omega: ${system.omega}
+        max_shell: 3
+        include_gaussian_factor: true
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [diagnostic, orbital_with_envelope]
+  normalization:
+    N0:
+      mode: none
+      norm: null
+    N1:
+      mode: post_embedding
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+    N2:
+      mode: post_feature_layer
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+    N3:
+      mode: update
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+    N4:
+      mode: pre_readout
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+
+gate_targets:
+  silu: torch.nn.SiLU
+  sigmoid: torch.nn.Sigmoid
+  tanh: torch.nn.Tanh
+
+model_params:
+  max_order: 2
+  max_virtual_order: 2
+  channels: ${run_parameters.channels}
+  hidden_channels: 16
+  num_hidden_layers: 1
+  layers: 1
+  gate_activation: silu
+  mixing_implementation: vectorized
+  mixing_initial_weight: 0.5
+
+evaluation:
+  namespace: eval
+  seed: ${runtime.seed}
+  artifact_level: summaries
+  task_failure_policy: continue
+  return_terms: true
+
+load:
+  # Set by the orchestrator to the train attempt's checkpoint.
+  path: ???
+  mode: model_only
+  strict: true
+  allow_protocol_mismatch: false
+
+timing:
+  cuda_synchronize: false
+
+# =============================================================================
+# Component specs
+# =============================================================================
+runner:
+  _target_: spenn.runner.Evaluate
+  model: ${model}
+  load: ${load}
+  evaluator: ${evaluator}
+
+evaluator:
+  _target_: spenn.evaluation.Evaluator
+  namespace: ${evaluation.namespace}
+  seed: ${evaluation.seed}
+  artifact_level: ${evaluation.artifact_level}
+  task_failure_policy: ${evaluation.task_failure_policy}
+  tasks:
+    - ${evaluation_tasks.cusp}
+    - ${evaluation_tasks.tail}
+    - ${evaluation_tasks.stratified_geometry}
+    - ${evaluation_tasks.hooke_orbital}
+    - ${evaluation_tasks.energy}
+
+evaluation_tasks:
+  cusp:
+    name: cusp
+    namespace: ${evaluation.namespace}/cusp
+    output_dir: ${run.dir}/cusp
+    generator:
+      _target_: spenn.evaluation.generators.CuspGridGenerator
+      n_points: 32
+      r12_min: 1.0e-4
+      r12_max: 1.0e-1
+      n_directions: 8
+      center_of_mass_radii: [0.0, 0.5, 1.0]
+      paired_directions: true
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: spenn.evaluation.calculators.RadialLogAbsDerivativeCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
+      - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+  tail:
+    name: tail
+    namespace: ${evaluation.namespace}/tail
+    output_dir: ${run.dir}/tail
+    generator:
+      _target_: spenn.evaluation.generators.TailGridGenerator
+      radius_min: 0.5
+      radius_max: 8.0
+      n_points: 32
+      pair_distance: 1.0
+      n_directions: 8
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+  stratified_geometry:
+    name: stratified_geometry
+    namespace: ${evaluation.namespace}/stratified_geometry
+    output_dir: ${run.dir}/stratified_geometry
+    generator:
+      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      n_samples: 256
+      seed: ${evaluation.seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+  hooke_orbital:
+    name: hooke_orbital
+    namespace: ${evaluation.namespace}/hooke_orbital
+    output_dir: ${run.dir}/hooke_orbital
+    generator:
+      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      n_samples: 256
+      omega: ${system.omega}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+  energy:
+    name: energy
+    namespace: ${evaluation.namespace}/energy
+    output_dir: ${run.dir}/energy
+    generator:
+      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      n_samples: 256
+      omega: ${system.omega}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.ReferenceEnergySummary
+        reference_energy: ${references.exact_energy}
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+
+# -----------------------------------------------------------------------------
+# Model: identical wiring to pair_stability.yaml so the checkpoint restores.
+# -----------------------------------------------------------------------------
+model:
+  _target_: spenn.nn.SpENNWaveFunction
+  trace_name: spenn
+  basis: ${choices.architecture.${run_parameters.architecture}.basis}
+  embedding:
+    _target_: spenn.nn.Embedding
+    max_order: ${model_params.max_order}
+    spatial_dim: ${system.spatial_dim}
+    out_channels: ${model_params.channels}
+    hidden_channels: ${model_params.hidden_channels}
+    num_hidden_layers: ${model_params.num_hidden_layers}
+    include_spins: false
+    in_features: ${spenn.basis_feature_dim:${model.basis}}
+  layers:
+    - _target_: spenn.nn.SpENNLayer
+      mixing:
+        _target_: spenn.nn.EquivariantMixing
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+        implementation: ${model_params.mixing_implementation}
+        initial_weight: ${model_params.mixing_initial_weight}
+      fourier:
+        _target_: spenn.reps.FourierTransform
+      activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: ${gate_targets.${model_params.gate_activation}}
+      path_aggregation:
+        _target_: spenn.nn.PathAggregation
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+      inverse_fourier:
+        _target_: spenn.reps.InverseFourierTransform
+      update:
+        _target_: spenn.nn.ResidualUpdate
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - ${choices.architecture.${run_parameters.architecture}.envelope}
+      - _target_: spenn.nn.ElectronElectronCusp
+  feature_normalization:
+    _target_: spenn.nn.FeatureNormalization
+    mode: ${choices.normalization.${run_parameters.normalization}.mode}
+    norm: ${choices.normalization.${run_parameters.normalization}.norm}
+  readout:
+    _target_: spenn.nn.readout.PfaffianReadout
+    channels: ${model_params.channels}
+
+hamiltonian_terms:
+  kinetic:
+    _target_: spenn.physics.kinetic.KineticEnergy
+  harmonic_trap:
+    _target_: spenn.physics.potential.HarmonicTrap
+    omega: ${system.omega}
+  electron_electron:
+    _target_: spenn.physics.potential.ElectronElectronInteraction
+
+callbacks:
+  - _target_: spenn.callback.ConfigSnapshot
+    triggers: [run_start]
+    output_path: ${run.dir}/config.yaml
+  - _target_: spenn.callback.ResolvedConfigSnapshot
+    triggers: [run_start]
+    output_path: ${run.dir}/resolved_config.yaml
+  - _target_: spenn.callback.Metadata
+    triggers: [run_start, run_end, exception]
+    output_path: ${run.dir}/metadata.json
+  - _target_: spenn.callback.Status
+    triggers: [run_start, run_end, evaluate_end, exception]
+    output_path: ${run.dir}/status.json
+  - _target_: spenn.callback.RunTiming
+    triggers: [run_start, run_end, exception]
+    cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.EvaluationTiming
+    triggers: [evaluate_start, evaluate_end, exception]
+    cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.DiagnosticTiming
+    triggers: [diagnostic_start, diagnostic_end, diagnostic_failed]
+    cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.ArtifactIndex
+  - _target_: spenn.callback.FailureLog
+
+loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl

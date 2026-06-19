@@ -24,8 +24,13 @@ from spenn.artifacts import (
     write_run_start_artifact,
 )
 from spenn.callback import configure_terminal_logging
+from spenn.config import register_resolvers
 from spenn.dependencies import OptionalDependencyError, require_torch
 from spenn.runner import Runner
+
+# Register custom OmegaConf resolvers (e.g. spenn.basis_feature_dim) before any
+# config is loaded or resolved on the run path.
+register_resolvers()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
