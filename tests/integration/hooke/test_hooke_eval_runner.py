@@ -58,12 +58,12 @@ def test_evaluate_config_is_root_owned_and_uses_evaluator(fixture: str) -> None:
     assert "callbacks" in cfg and "loggers" in cfg
     assert "callbacks" not in cfg.runner
     assert "loggers" not in cfg.runner
-    assert cfg.runner.evaluator == "${evaluator}"
-    assert cfg.evaluator.namespace == "${evaluation.namespace}"
     assert "exact_energy" not in cfg.system
     assert "phase" not in cfg.evaluation
 
     raw = OmegaConf.to_container(cfg, resolve=False)
+    assert raw["runner"]["evaluator"] == "${evaluator}"
+    assert raw["evaluator"]["namespace"] == "${evaluation.namespace}"
     assert raw["evaluator"]["tasks"] == ["${evaluation_tasks.energy}"]
     assert raw["evaluation_tasks"]["energy"]["generator"]["_target_"] == "spenn.evaluation.generators.MCMCGenerator"
     assert raw["evaluation_tasks"]["energy"]["summaries"][-1]["_target_"] == "spenn.evaluation.summaries.ReferenceEnergySummary"
@@ -378,6 +378,8 @@ class _NoopTrainer:
 
 
 class _ConstantEnergyTerm:
+    name = "constant"
+
     def __init__(self, values) -> None:
         self.values = torch.as_tensor(values, dtype=torch.float64)
 
