@@ -259,17 +259,19 @@ wavefunctions.
 
 ## Sync Reports
 
-Use `sync_reports.py` to mirror the manifest report directory into another
-location while keeping the snapshot compact. The destination is replaced on each
-run. Slurm log directories and training checkpoints are skipped. Eval runs keep
-only `checkpoints/latest.json` plus the checkpoint step directory referenced by
-that file.
+Use `sync_reports.py` to mirror the whole study directory (scripts, configs,
+`manifest.yaml`, and the `reports` run tree) into another location while keeping
+the snapshot compact. By default the source is the directory containing the
+manifest, not just `reports`. The destination is replaced on each run. Skipped:
+`__pycache__`, slurm log directories, and first-round/training checkpoints. Each
+final-eval run keeps only `checkpoints/latest.json` plus the checkpoint step
+directory that file references.
 
 Preview the copy plan:
 
 ```bash
 uv run python experiments/hooke/studies/pair_validation/sync_reports.py \
-  ${MStore}/spenn-studies/hooke/pair_validation_v2/reports_snapshot \
+  ${MStore}/spenn-studies/hooke/pair_validation_v2/study_snapshot \
   --manifest experiments/hooke/studies/pair_validation/manifest.yaml \
   --dry-run \
   --verbose
@@ -279,12 +281,12 @@ Write the snapshot:
 
 ```bash
 uv run python experiments/hooke/studies/pair_validation/sync_reports.py \
-  ${MStore}/spenn-studies/hooke/pair_validation_v2/reports_snapshot \
+  ${MStore}/spenn-studies/hooke/pair_validation_v2/study_snapshot \
   --manifest experiments/hooke/studies/pair_validation/manifest.yaml
 ```
 
-Pass `--source` to mirror a report directory other than the one in
-`manifest.yaml`.
+Pass `--source` to mirror a directory other than the manifest's study
+directory (e.g. an already-relocated `reports` copy).
 
 ## Outputs To Keep
 
