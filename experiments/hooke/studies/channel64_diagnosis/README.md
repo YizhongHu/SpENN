@@ -1,5 +1,18 @@
 # Channel-64 diagnosis
 
+> **⚠️ LEGACY — not maintained against the current evaluation stack.**
+>
+> This study consumes the pair-validation collect/select outputs
+> (`pair_validation/reports/02_collect/runs.csv`, `03_select/selection.csv`),
+> which are produced by the pre-PR8.5 pipeline. That pipeline is now legacy (see
+> `../pair_validation/README.md`), so this study no longer works end to end
+> against the current PR8.5–PR8.7 evaluation stack.
+>
+> - **Last commit on the hooke branch where this study worked:**
+>   `25360a6638d537fc10b526e70abb940c4d13e01d`
+>   (`[codex] Hooke 8.4 evaluation diagnostics for physical correctness (#53)`).
+> - Kept for reference only; migration to the new evaluation stack is deferred.
+
 This study diagnoses why the 64-channel candidates in
 `pair_validation/reports/02_collect` did not win final selection.
 

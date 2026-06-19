@@ -246,6 +246,33 @@ def test_sync_reports_derives_eval_checkpoint_roots_from_manifest(tmp_path: Path
     assert roots == ((source / "05_final_eval" / "outputs").resolve(),)
 
 
+def test_resolve_source_defaults_to_whole_study_directory(tmp_path: Path) -> None:
+    study_dir = tmp_path / "study"
+    study_dir.mkdir()
+    manifest_path = study_dir / "manifest.yaml"
+    manifest_path.write_text("paths:\n  report_root: study/reports\n", encoding="utf-8")
+
+    resolved = sync_reports.resolve_source(manifest_path)
+
+    assert resolved == study_dir.resolve()
+
+
+def test_sync_reports_mirrors_study_dir_and_skips_pycache(tmp_path: Path) -> None:
+    source = tmp_path / "study"
+    (source / "__pycache__").mkdir(parents=True)
+    (source / "__pycache__" / "sync_reports.cpython-314.pyc").write_text("x", encoding="utf-8")
+    (source / "sync_reports.py").write_text("# script\n", encoding="utf-8")
+    (source / "reports" / "01_train").mkdir(parents=True)
+    (source / "reports" / "01_train" / "summary.json").write_text("{}", encoding="utf-8")
+
+    summary = sync_reports.sync_reports(source=source, destination=tmp_path / "snapshot")
+
+    assert (tmp_path / "snapshot" / "sync_reports.py").exists()
+    assert (tmp_path / "snapshot" / "reports" / "01_train" / "summary.json").exists()
+    assert not (tmp_path / "snapshot" / "__pycache__").exists()
+    assert summary.copied_files == 2
+
+
 def test_collector_normalizes_filters_and_preserves_raw_runs(tmp_path: Path) -> None:
     run_root = tmp_path / "outputs"
     completed = _fake_run(run_root, "completed", study_name="hooke_pair_validation", status="completed")
@@ -383,7 +410,7 @@ def test_selector_groups_failed_seeds_and_writes_outputs(tmp_path: Path) -> None
     with (tmp_path / "selection" / "selection.csv").open("r", encoding="utf-8", newline="") as handle:
         rows = {row["config_id"]: row for row in csv.DictReader(handle)}
     assert rows["small"]["n_failed"] == "1"
-    assert rows["small"]["median validation/energy/local_energy_mean"] == "1.1"
+    assert rows["small"]["median validation/energy"] == "1.1"
     assert (tmp_path / "selection" / "selection.jsonl").exists()
     assert (tmp_path / "selection" / "selected_config.yaml").exists()
     report = (tmp_path / "selection" / "selection_report.md").read_text()
@@ -412,7 +439,7 @@ def test_selector_refuses_all_failed_or_ineligible_study(tmp_path: Path) -> None
 
 def test_selector_rejects_forbidden_exact_reference_metric(tmp_path: Path) -> None:
     manifest = OmegaConf.load(MANIFEST)
-    manifest.selection.metric = "validation/energy/energy_abs_error"
+    manifest.selection.metric = "validation/energy_abs_error"
     manifest_path = tmp_path / "manifest.yaml"
     OmegaConf.save(manifest, manifest_path, resolve=True)
     runs_csv = _write_runs_csv(tmp_path, [_run_row(seed=3, channels=8, energy=1.0)])
@@ -1057,13 +1084,7 @@ def test_pair_eval_template_uses_pr81_load_contract() -> None:
     assert cfg.load.strict is True
     assert cfg.load.allow_protocol_mismatch is False
     assert raw["runner"]["model"] == "${model}"
-    assert raw["runner"]["evaluator"] == "${evaluator}"
-    assert raw["evaluator"]["tasks"][0] == "${evaluation_tasks.energy}"
-    assert "${evaluation_tasks.full_model_equivariance}" in raw["evaluator"]["tasks"]
-    assert raw["evaluation_tasks"]["full_model_equivariance"]["calculators"][0]["_target_"] == (
-        "spenn.evaluation.calculators.FullModelEquivarianceCalculator"
-    )
-    assert raw["evaluation_tasks"]["energy"]["summaries"][-2]["_target_"] == "spenn.evaluation.summaries.ReferenceEnergySummary"
+    assert cfg.runner.diagnostics[0]._target_ == "spenn.diagnostics.EnergyEvaluation"
     assert "load_model_checkpoint" not in text
 
 
@@ -1227,11 +1248,11 @@ def _fake_run(
             records.append(
                 {
                     "step": 1,
-                    "namespace": "validation/energy",
+                    "namespace": "validation",
                     "metrics": {
-                        "local_energy_mean": 1.0,
-                        "local_energy_stderr": 0.01,
-                        "local_energy_variance": 0.1,
+                        "energy": 1.0,
+                        "energy_stderr": 0.01,
+                        "energy_variance": 0.1,
                         "local_energy_finite_fraction": 1.0,
                     },
                 }
@@ -1299,10 +1320,10 @@ def _run_row(
         "system.n_electrons": 2,
         "system.spin.n_up": 1,
         "system.spin.n_down": 1,
-        "validation/energy/local_energy_mean": "" if energy is None else energy,
-        "validation/energy/local_energy_stderr": stderr,
-        "validation/energy/local_energy_variance": variance,
-        "validation/energy/local_energy_finite_fraction": finite_fraction,
+        "validation/energy": "" if energy is None else energy,
+        "validation/energy_stderr": stderr,
+        "validation/energy_variance": variance,
+        "validation/local_energy_finite_fraction": finite_fraction,
         "validation/sampler/radius_q99": 2.0,
         "validation/sampler/radius_max": 2.5,
         "validation/sampler/electron_distance_q01": 0.2,
@@ -1340,7 +1361,7 @@ def _write_selected_config(tmp_path: Path) -> Path:
             "source_runs": str(tmp_path / "runs.csv"),
             "selection_report": str(tmp_path / "selection_report.md"),
         },
-        "selection": {"selected_config_id": "ch8", "metric": "validation/energy/local_energy_mean"},
+        "selection": {"selected_config_id": "ch8", "metric": "validation/energy"},
         "selected": {
             "config_id": "ch8",
             "optimizer_params": {"lr": 0.001},

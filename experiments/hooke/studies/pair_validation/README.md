@@ -1,5 +1,22 @@
 # Hooke Pair Validation Study
 
+> **⚠️ LEGACY — not maintained against the current evaluation stack.**
+>
+> This study was built around the pre-PR8.5 diagnostics/probe pipeline. The
+> PR8.5–PR8.7 composable evaluation rewrite changed the metric namespaces and
+> artifact layout, so the collectors/selectors/planners here no longer match
+> what `spenn.runner.Evaluate` produces. The whole directory has been restored
+> to its last-working state and is kept for reference only.
+>
+> - **Last commit on the hooke branch where this study worked:**
+>   `25360a6638d537fc10b526e70abb940c4d13e01d`
+>   (`[codex] Hooke 8.4 evaluation diagnostics for physical correctness (#53)`).
+>   Check it out to run the study end to end against the matching SpENN code.
+> - The self-contained unit tests (file-based collect/select/plan/sync) still
+>   pass on the current branch; the real orchestration against live runs does not.
+> - Migration to the new evaluation stack is deferred; do not assume the scripts
+>   below reflect current SpENN behavior.
+
 Only `orchestrate.py` launches SpENN. Collectors, selectors, and planners read
 and write files only.
 

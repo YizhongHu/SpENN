@@ -496,28 +496,13 @@ callbacks:
     triggers:
       - train_end
     namespace: ${validation.namespace}
-    evaluator:
-      _target_: spenn.evaluation.Evaluator
-      namespace: ${validation.namespace}
-      seed: ${runtime.seed}
-      artifact_level: metrics_only
-      task_failure_policy: continue
-      tasks:
-        - name: energy
-          namespace: ${validation.namespace}/energy
-          generator:
-            _target_: spenn.evaluation.generators.MCMCGenerator
-            sampler: ${validation_sampler}
-            seed: ${runtime.seed}
-          calculators:
-            - _target_: spenn.evaluation.calculators.WavefunctionCalculator
-            - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
-              hamiltonian_terms: ${hamiltonian_terms}
-              return_terms: ${validation.return_terms}
-          summaries:
-            - _target_: spenn.evaluation.summaries.LocalEnergySummary
-            - _target_: spenn.evaluation.summaries.HamiltonianTermSummary
-            - _target_: spenn.evaluation.summaries.SamplerStatsSummary
+    sampler: ${validation_sampler}
+    hamiltonian_terms: ${hamiltonian_terms}
+    return_terms: ${validation.return_terms}
+    diagnostics:
+      - _target_: spenn.diagnostics.EnergyEvaluation
+        name: energy
+        include_terms: true
 
   - _target_: spenn.callback.Checkpoint
     triggers:

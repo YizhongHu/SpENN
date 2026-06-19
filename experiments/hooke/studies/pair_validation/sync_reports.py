@@ -1,4 +1,10 @@
-"""Mirror pair-validation reports while keeping only compact run artifacts."""
+"""Mirror the pair-validation study directory while keeping compact artifacts.
+
+By default the source is the whole study directory (scripts, configs, manifest,
+and the ``reports`` run tree), not just the reports subtree. Training/scan
+("first-round") checkpoints, slurm logs, and ``__pycache__`` are dropped; only
+the latest checkpoint referenced by each final-eval ``latest.json`` is retained.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ except ImportError:  # pragma: no cover - direct script execution
 CHECKPOINT_DIRNAME = "checkpoints"
 LATEST_JSON = "latest.json"
 SLURM_LOG_DIRNAMES = {"slurm", "slurm_logs"}
+PYCACHE_DIRNAME = "__pycache__"
 
 
 @dataclass(frozen=True)
@@ -89,12 +96,16 @@ def resolve_source(
     *,
     manifest: dict[str, Any] | None = None,
 ) -> Path:
-    """Resolve the report source from an explicit path or the manifest."""
+    """Resolve the sync source from an explicit path or the manifest.
 
+    With no explicit ``source`` the whole study directory (the manifest's
+    parent) is mirrored, not just the ``reports`` subtree.
+    """
+
+    del manifest  # the default source is structural, not manifest-derived
     if source is not None:
         return Path(source).resolve()
-    data = manifest if manifest is not None else load_yaml(manifest_path)
-    return _resolve_manifest_path(report_root(data), manifest_path)
+    return Path(manifest_path).resolve().parent
 
 
 def eval_checkpoint_roots(
@@ -117,7 +128,11 @@ def eval_checkpoint_roots(
         if not raw_run_root:
             continue
         manifest_run_root = _resolve_manifest_path(str(raw_run_root), manifest_path)
-        if _is_relative_to(manifest_run_root, manifest_report_root):
+        if _is_relative_to(manifest_run_root, source_root):
+            # Source already contains the real run root (e.g. syncing the whole study dir).
+            roots.append(manifest_run_root)
+        elif _is_relative_to(manifest_run_root, manifest_report_root):
+            # Source is a relocated copy of the report root: remap onto it.
             roots.append(source_root / manifest_run_root.relative_to(manifest_report_root))
         else:
             roots.append(manifest_run_root)
@@ -197,6 +212,8 @@ def build_sync_plan(
         if not (path.is_file() or path.is_symlink()):
             continue
         reason = _skip_reason(path, source_root, latest_dirs)
+        if reason == "pycache":
+            continue
         if reason == "slurm_logs":
             skipped_slurm += 1
             continue
@@ -247,6 +264,8 @@ def _latest_checkpoint_dirs(
 
 def _skip_reason(path: Path, source_root: Path, latest_dirs: dict[Path, Path | None]) -> str | None:
     rel_parts = path.relative_to(source_root).parts
+    if PYCACHE_DIRNAME in rel_parts or path.suffix == ".pyc":
+        return "pycache"
     if any(part in SLURM_LOG_DIRNAMES for part in rel_parts):
         return "slurm_logs"
     if CHECKPOINT_DIRNAME not in rel_parts:

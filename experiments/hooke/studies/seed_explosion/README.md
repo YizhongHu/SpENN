@@ -1,5 +1,18 @@
 # Seed explosion study: final-train seeds 105 / 106 / 107
 
+> **⚠️ LEGACY — not maintained against the current evaluation stack.**
+>
+> The analysis scripts here read the old diagnostics/probe artifacts
+> (`diagnostics/pair_distance_probe/probe.csv`,
+> `diagnostics/center_of_mass_probe/probe.csv`) produced by the pre-PR8.5
+> pipeline. The PR8.5–PR8.7 composable evaluation rewrite no longer emits those
+> files, so this study no longer works end to end.
+>
+> - **Last commit on the hooke branch where this study worked:**
+>   `25360a6638d537fc10b526e70abb940c4d13e01d`
+>   (`[codex] Hooke 8.4 evaluation diagnostics for physical correctness (#53)`).
+> - Kept for reference only; migration to the new evaluation stack is deferred.
+
 ## Question
 
 In the `hooke_pair_validation` (v2) study, the selected final-train config

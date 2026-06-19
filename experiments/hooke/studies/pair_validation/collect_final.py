@@ -54,79 +54,101 @@ FINAL_EVAL_COLUMNS = (
     "eval_seed",
     "load.path",
     "checkpoint_exists",
-    "eval/energy/local_energy_mean",
-    "eval/energy/local_energy_stderr",
-    "eval/energy/local_energy_variance",
-    "eval/energy/reference_energy",
-    "eval/energy/energy_error",
-    "eval/energy/energy_abs_error",
-    "eval/energy/term/kinetic_mean",
-    "eval/energy/term/harmonic_trap_mean",
-    "eval/energy/term/electron_electron_mean",
-    "eval/energy/local_energy_finite_fraction",
-    "eval/energy/local_energy_q001",
-    "eval/energy/local_energy_q01",
-    "eval/energy/local_energy_q05",
-    "eval/energy/local_energy_q50",
-    "eval/energy/local_energy_q95",
-    "eval/energy/local_energy_q99",
-    "eval/energy/local_energy_q999",
-    "eval/energy/local_energy_min",
-    "eval/energy/local_energy_max",
-    "eval/energy/local_energy_n_finite",
-    "eval/energy/local_energy_n_total",
-    "eval/energy/local_energy_nonfinite_count",
+    "eval/energy",
+    "eval/energy_stderr",
+    "eval/energy_variance",
+    "eval/reference_energy",
+    "eval/energy_error",
+    "eval/energy_abs_error",
+    "eval/energy_term_kinetic",
+    "eval/energy_term_harmonic_trap",
+    "eval/energy_term_electron_electron",
+    "eval/local_energy_finite_fraction",
+    "eval/local_energy_q001",
+    "eval/local_energy_q01",
+    "eval/local_energy_q05",
+    "eval/local_energy_q50",
+    "eval/local_energy_q95",
+    "eval/local_energy_q99",
+    "eval/local_energy_q999",
+    "eval/local_energy_min",
+    "eval/local_energy_max",
+    "eval/local_energy_n_finite",
+    "eval/local_energy_n_total",
+    "eval/local_energy_nonfinite_count",
+    "eval/local_energy_error_q001",
+    "eval/local_energy_error_q01",
+    "eval/local_energy_error_q05",
+    "eval/local_energy_error_q50",
+    "eval/local_energy_error_q95",
+    "eval/local_energy_error_q99",
+    "eval/local_energy_error_q999",
+    "eval/local_energy_error_min",
+    "eval/local_energy_error_max",
+    "eval/local_energy_error_mean",
+    "eval/local_energy_abs_error_mean",
     "eval/virial_residual",
     "eval/virial_relative_residual",
-    "eval/cusp/c_minus_1_abs_max",
-    "eval/cusp/c_minus_1_abs_q95",
-    "eval/cusp/cusp_even_slope_abs_error",
-    "eval/cusp/cusp_even_slope_abs_error_max",
-    "eval/cusp/nonfinite_local_energy_count",
-    "eval/tail/local_energy_q95",
-    "eval/tail/local_energy_q99",
-    "eval/tail/local_energy_finite_fraction",
-    "eval/tail/nonfinite_local_energy_count",
-    "eval/tail/tail_outlier_count",
-    "eval/exchange/logabs_max_abs_error",
-    "eval/exchange/logabs_mean_abs_error",
-    "eval/exchange/sign_failure_count",
-    "eval/exchange/failure_count",
-    "eval/rotation/logabs_max_abs_error",
-    "eval/rotation/logabs_mean_abs_error",
-    "eval/rotation/local_energy_max_abs_error",
-    "eval/rotation/local_energy_mean_abs_error",
-    "eval/rotation/sign_failure_count",
-    "eval/rotation/failure_count",
-    "eval/full_model_equivariance/logabs_max_abs_error",
-    "eval/full_model_equivariance/logabs_mean_abs_error",
-    "eval/full_model_equivariance/sign_failure_count",
-    "eval/full_model_equivariance/failure_count",
-    "eval/trace_equivariance/max_abs_error",
-    "eval/trace_equivariance/mean_abs_error",
-    "eval/trace_equivariance/failure_count",
-    "eval/trace_equivariance/missing_key_count",
-    "eval/trace_equivariance/extra_key_count",
-    "eval/feature_trace/feature_rms_max",
-    "eval/feature_trace/feature_rms_q95",
-    "eval/feature_trace/feature_max_abs_max",
-    "eval/feature_trace/feature_nonfinite_count",
-    "eval/readout_trace/pfaffian_near_zero_count",
-    "eval/readout_trace/condition_number_q95",
-    "eval/readout_trace/condition_number_max",
-    "eval/readout_trace/readout_nonfinite_count",
+    "eval/probe_pair_distance/local_energy_max_abs_error",
+    "eval/probe_pair_distance/local_energy_q95_abs_error",
+    "eval/probe_pair_distance/nonfinite_count",
+    "eval/probe_center_of_mass/local_energy_max_abs_error",
+    "eval/probe_center_of_mass/local_energy_q95_abs_error",
+    "eval/probe_center_of_mass/nonfinite_count",
+    "eval/checks/exchange/logabs_max_abs_error",
+    "eval/checks/exchange/logabs_mean_abs_error",
+    "eval/checks/exchange/sign_failure_count",
+    "eval/checks/exchange/nonfinite_count",
+    "eval/checks/rotation/logabs_max_abs_error",
+    "eval/checks/rotation/logabs_mean_abs_error",
+    "eval/checks/rotation/local_energy_max_abs_error",
+    "eval/checks/rotation/local_energy_mean_abs_error",
+    "eval/checks/rotation/nonfinite_count",
+    "eval/checks/trace_equivariance/max_abs_error",
+    "eval/checks/trace_equivariance/mean_abs_error",
+    "eval/checks/trace_equivariance/failure_count",
     "artifact/diagnostics_index",
     "artifact/sampled_eval_table",
+    "artifact/pair_distance_probe",
+    "artifact/center_of_mass_probe",
+    "artifact/exchange_trace",
+    "artifact/rotation_trace",
+    "artifact/trace_equivariance_trace",
     "artifact/diagnostics_index_exists",
     "artifact/sampled_eval_table_exists",
+    "artifact/pair_distance_probe_exists",
+    "artifact/center_of_mass_probe_exists",
+    "artifact/exchange_trace_exists",
+    "artifact/rotation_trace_exists",
+    "artifact/trace_equivariance_trace_exists",
     "artifact/diagnostics_index_readable",
     "artifact/sampled_eval_table_readable",
+    "artifact/pair_distance_probe_readable",
+    "artifact/center_of_mass_probe_readable",
+    "artifact/exchange_trace_readable",
+    "artifact/rotation_trace_readable",
+    "artifact/trace_equivariance_trace_readable",
     "artifact/diagnostics_index_enabled",
     "artifact/sampled_eval_table_enabled",
+    "artifact/pair_distance_probe_enabled",
+    "artifact/center_of_mass_probe_enabled",
+    "artifact/exchange_trace_enabled",
+    "artifact/rotation_trace_enabled",
+    "artifact/trace_equivariance_trace_enabled",
     "artifact/diagnostics_index_expected",
     "artifact/sampled_eval_table_expected",
+    "artifact/pair_distance_probe_expected",
+    "artifact/center_of_mass_probe_expected",
+    "artifact/exchange_trace_expected",
+    "artifact/rotation_trace_expected",
+    "artifact/trace_equivariance_trace_expected",
     "artifact/diagnostics_index_warning",
     "artifact/sampled_eval_table_warning",
+    "artifact/pair_distance_probe_warning",
+    "artifact/center_of_mass_probe_warning",
+    "artifact/exchange_trace_warning",
+    "artifact/rotation_trace_warning",
+    "artifact/trace_equivariance_trace_warning",
     "eval/sampler/acceptance_rate",
     "eval/sampler/n_walkers",
     "eval/sampler/burn_in",
@@ -302,7 +324,7 @@ def _classify_eval_status(
     }
     if not collect._has_metric_file(run_dir):
         return "missing_metrics"
-    if metrics.get("eval/energy/local_energy_mean") is None:
+    if metrics.get("eval/energy") is None:
         return "missing_eval"
     if "completed" in status_values:
         return "completed"
@@ -318,9 +340,9 @@ def _verify_job_checkpoints(path: str | Path) -> None:
 
 
 def _derive_virial_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
-    kinetic = _as_float(row.get("eval/energy/term/kinetic_mean"), default=math.nan)
-    harmonic = _as_float(row.get("eval/energy/term/harmonic_trap_mean"), default=math.nan)
-    electron_electron = _as_float(row.get("eval/energy/term/electron_electron_mean"), default=math.nan)
+    kinetic = _as_float(row.get("eval/energy_term_kinetic"), default=math.nan)
+    harmonic = _as_float(row.get("eval/energy_term_harmonic_trap"), default=math.nan)
+    electron_electron = _as_float(row.get("eval/energy_term_electron_electron"), default=math.nan)
     if not all(math.isfinite(value) for value in (kinetic, harmonic, electron_electron)):
         return {"eval/virial_residual": None, "eval/virial_relative_residual": None}
     residual = 2.0 * kinetic - 2.0 * harmonic + electron_electron
@@ -331,7 +353,12 @@ def _derive_virial_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
 
 _KNOWN_ARTIFACT_DEFAULTS = {
     "diagnostics_index": "diagnostics/index.json",
-    "sampled_eval_table": "diagnostics/eval/energy/sampled_eval_table.csv",
+    "sampled_eval_table": "diagnostics/energy/sampled_eval_table.csv",
+    "pair_distance_probe": "diagnostics/pair_distance_probe/probe.csv",
+    "center_of_mass_probe": "diagnostics/center_of_mass_probe/probe.csv",
+    "exchange_trace": "diagnostics/exchange/trace.jsonl",
+    "rotation_trace": "diagnostics/rotation/trace.jsonl",
+    "trace_equivariance_trace": "diagnostics/trace_equivariance/trace.jsonl",
 }
 
 
@@ -351,16 +378,11 @@ def _collect_artifact_columns(run_dir: Path, *, requirements: Mapping[str, bool]
     columns: dict[str, Any] = {}
     index_path = run_dir / "diagnostics" / "index.json"
     index_payload = collect._load_json_if_present(index_path)
-    index_entries: dict[str, Mapping[str, Any]] = {}
-    for entry in index_payload.get("artifacts", []) or []:
-        if isinstance(entry, Mapping) and entry.get("name"):
-            index_entries[str(entry.get("name"))] = entry
-    for task in index_payload.get("tasks", []) or []:
-        if not isinstance(task, Mapping):
-            continue
-        for entry in task.get("artifacts", []) or []:
-            if isinstance(entry, Mapping) and entry.get("name"):
-                index_entries[str(entry.get("name"))] = entry
+    index_entries = {
+        str(entry.get("name")): entry
+        for entry in index_payload.get("artifacts", [])
+        if isinstance(entry, Mapping) and entry.get("name")
+    }
     index_entry = {
         "path": "diagnostics/index.json",
         "enabled": True,
@@ -421,11 +443,11 @@ def _summary(
     selected: Mapping[str, Any],
 ) -> dict[str, Any]:
     completed = [row for row in final_eval_rows if row.get("status") == "completed"]
-    energies = [_as_float(row.get("eval/energy/local_energy_mean"), default=math.nan) for row in completed]
+    energies = [_as_float(row.get("eval/energy"), default=math.nan) for row in completed]
     finite_energies = [value for value in energies if math.isfinite(value)]
-    errors = [_as_float(row.get("eval/energy/energy_abs_error"), default=math.nan) for row in completed]
+    errors = [_as_float(row.get("eval/energy_abs_error"), default=math.nan) for row in completed]
     finite_errors = [value for value in errors if math.isfinite(value)]
-    stderrs = [_as_float(row.get("eval/energy/local_energy_stderr"), default=math.nan) for row in completed]
+    stderrs = [_as_float(row.get("eval/energy_stderr"), default=math.nan) for row in completed]
     finite_stderrs = [value for value in stderrs if math.isfinite(value)]
     return {
         "selected_config_id": _select(selected, "selected.config_id") or "",
@@ -514,7 +536,7 @@ def _report(
 
 def _results_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     table = [
-        "| train_seed | eval_seed | eval/energy/local_energy_mean | stderr | abs_error | acceptance_rate |",
+        "| train_seed | eval_seed | eval/energy | eval/energy_stderr | eval/energy_abs_error | acceptance_rate |",
         "| ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
@@ -524,9 +546,9 @@ def _results_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
                 [
                     str(row.get("training_seed") or ""),
                     str(row.get("eval_seed") or ""),
-                    _format(row.get("eval/energy/local_energy_mean")),
-                    _format(row.get("eval/energy/local_energy_stderr")),
-                    _format(row.get("eval/energy/energy_abs_error")),
+                    _format(row.get("eval/energy")),
+                    _format(row.get("eval/energy_stderr")),
+                    _format(row.get("eval/energy_abs_error")),
                     _format(row.get("eval/sampler/acceptance_rate")),
                 ]
             )

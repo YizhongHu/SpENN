@@ -50,10 +50,10 @@ REQUIRED_COLUMNS = (
     "system.n_electrons",
     "system.spin.n_up",
     "system.spin.n_down",
-    "validation/energy/local_energy_mean",
-    "validation/energy/local_energy_stderr",
-    "validation/energy/local_energy_variance",
-    "validation/energy/local_energy_finite_fraction",
+    "validation/energy",
+    "validation/energy_stderr",
+    "validation/energy_variance",
+    "validation/local_energy_finite_fraction",
     "validation/sampler/acceptance_rate",
     "validation/sampler/n_walkers",
     "validation/sampler/burn_in",
@@ -88,7 +88,7 @@ CONFIG_FIELDS = (
     "system.spin.n_down",
 )
 
-REQUIRED_VALIDATION_METRIC = "validation/energy/local_energy_mean"
+REQUIRED_VALIDATION_METRIC = "validation/energy"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
