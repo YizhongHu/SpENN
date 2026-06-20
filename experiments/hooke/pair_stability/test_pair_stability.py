@@ -242,6 +242,54 @@ def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
     assert job["launcher"] is None
 
 
+def test_orchestrator_smoke_submits_two_short_runs_with_smoke_attempt_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root = _plan(tmp_path)
+    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    first_run_id = manifest["jobs"][0]["run_id"]
+    submitted_commands = []
+
+    def fake_submit_local(commands, *, repo_root: Path):
+        submitted_commands.extend(commands)
+        return [f"local-smoke-{index}" for index, _ in enumerate(commands)]
+
+    monkeypatch.setattr(orchestrator, "_submit_local", fake_submit_local)
+    code = orchestrator.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--grid-attempt-id",
+            ATTEMPT,
+            "--backend",
+            "local",
+            "--cuda",
+            "--smoke",
+        ]
+    )
+
+    assert code == 0
+    assert len(submitted_commands) == 2
+    script = submitted_commands[0][2]
+    smoke_attempt = f"{ATTEMPT}-smoke"
+    assert "export UV_PROJECT_ENVIRONMENT=.venv-gpu" in script
+    assert "uv sync --extra cu126" in script
+    assert f"run.run_id={first_run_id}/{smoke_attempt}" in script
+    assert f"study.attempt_id={smoke_attempt}" in script
+    assert "runtime.device=cuda" in script
+    assert "training.max_steps=2" in script
+    assert "sampler_params.n_walkers=128" in script
+    assert "validation_sampler_params.n_steps=5" in script
+    assert "checkpoint.every_n_steps=1" in script
+
+    smoke_attempt_dir = results_root / "01_train" / first_run_id / smoke_attempt
+    source = json.loads((smoke_attempt_dir / "source_grid_attempt.json").read_text())
+    assert source["grid_attempt_id"] == ATTEMPT
+    submission = json.loads((smoke_attempt_dir / "submission.json").read_text())
+    assert submission["launcher_job_id"] == "local-smoke-0"
+    assert f"run.run_id={first_run_id}/{smoke_attempt}" in submission["submitted_command"]
+
+
 def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
     planned_python = str(ROOT / ".venv" / "bin" / "python")
     submitted = orchestrator._environment_shell_command(
@@ -302,6 +350,15 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     cuda_slurm = orchestrator._slurm_parameters(cuda_args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert cuda_slurm["gpus_per_node"] == 1
+    smoke_cpu = orchestrator._slurm_parameters(cpu_args, profile="cpu", smoke=True)
+    assert smoke_cpu["slurm_partition"] == "test"
+    assert smoke_cpu["timeout_min"] == 15
+    assert smoke_cpu["mem_gb"] == 16
+    assert smoke_cpu["cpus_per_task"] == 4
+    smoke_cuda = orchestrator._slurm_parameters(cuda_args, profile="cuda", smoke=True)
+    assert smoke_cuda["slurm_partition"] == "gpu_test"
+    assert smoke_cuda["timeout_min"] == 15
+    assert smoke_cuda["gpus_per_node"] == 1
 
     submitted = orchestrator._environment_shell_command(
         ["python", "-u", "run.py", "--config", "cfg.yaml", "x=y"],

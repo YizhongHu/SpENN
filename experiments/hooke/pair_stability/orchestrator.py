@@ -30,6 +30,28 @@ DEFAULT_CPU_EXTRA = "cpu"
 DEFAULT_CUDA_EXTRA = "cu126"
 DEFAULT_CPU_PARTITION = "seas_compute,kozinsky_lab,sapphire"
 DEFAULT_CUDA_PARTITION = "seas_gpu,kozinsky_gpu"
+DEFAULT_SMOKE_CPU_PARTITION = "test"
+DEFAULT_SMOKE_CUDA_PARTITION = "gpu_test"
+DEFAULT_TIMEOUT_MIN = 480
+DEFAULT_MEM_GB = 32
+DEFAULT_CPUS = 8
+SMOKE_JOB_LIMIT = 2
+SMOKE_TIMEOUT_MIN = 15
+SMOKE_MEM_GB = 16
+SMOKE_CPUS = 4
+SMOKE_OVERRIDES = {
+    "training.max_steps": 2,
+    "training.log_every_n_steps": 1,
+    "sampler_params.n_walkers": 128,
+    "sampler_params.burn_in": 10,
+    "sampler_params.n_steps": 5,
+    "validation_sampler_params.n_walkers": 128,
+    "validation_sampler_params.burn_in": 10,
+    "validation_sampler_params.n_steps": 5,
+    "checks.every_n_steps": 1,
+    "checkpoint.every_n_steps": 1,
+    "status.every_n_steps": 1,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +122,63 @@ def _activated_python_command(command: Sequence[str]) -> list[str]:
 def _with_runtime_device(command: Sequence[str], *, device: str) -> list[str]:
     """Return ``command`` with a final runtime.device override."""
 
-    command = [str(part) for part in command if not str(part).startswith("runtime.device=")]
-    command.append(f"runtime.device={device}")
+    return _with_overrides(command, {"runtime.device": device})
+
+
+def _with_overrides(command: Sequence[str], overrides: dict[str, object]) -> list[str]:
+    """Return ``command`` with final scalar OmegaConf overrides appended."""
+
+    prefixes = tuple(f"{key}=" for key in overrides)
+    command = [str(part) for part in command if not str(part).startswith(prefixes)]
+    command.extend(f"{key}={value}" for key, value in overrides.items())
     return command
+
+
+def _smoke_attempt_id(grid_attempt_id: str) -> str:
+    """Return a train attempt id that clearly marks smoke execution."""
+
+    return f"{grid_attempt_id}-smoke"
+
+
+def _smoke_run_id(run_id: str, grid_attempt_id: str) -> str:
+    """Return the flat-layout run id for a smoke train attempt."""
+
+    return f"{run_id}/{_smoke_attempt_id(grid_attempt_id)}"
+
+
+def _smoke_job(job: dict[str, Any], *, grid_attempt_id: str) -> dict[str, Any]:
+    """Return a manifest job copy redirected to its smoke attempt directory."""
+
+    job = dict(job)
+    train_dir = Path(str(job["train_dir"]))
+    job["train_attempt_dir"] = str(train_dir / _smoke_attempt_id(grid_attempt_id))
+    return job
+
+
+def _launch_jobs(jobs: Sequence[dict[str, Any]], *, grid_attempt_id: str, smoke: bool) -> list[dict[str, Any]]:
+    """Return the jobs selected for this launch."""
+
+    if not smoke:
+        return [dict(job) for job in jobs]
+    return [_smoke_job(job, grid_attempt_id=grid_attempt_id) for job in list(jobs)[:SMOKE_JOB_LIMIT]]
+
+
+def _smoke_overrides(job: dict[str, Any], *, grid_attempt_id: str) -> dict[str, object]:
+    """Return smoke-only command overrides for one selected job."""
+
+    return {
+        **SMOKE_OVERRIDES,
+        "run.run_id": _smoke_run_id(str(job["run_id"]), grid_attempt_id),
+        "study.attempt_id": _smoke_attempt_id(grid_attempt_id),
+    }
+
+
+def _execution_command(command: Sequence[str], job: dict[str, Any], *, grid_attempt_id: str, smoke: bool) -> list[str]:
+    """Return the run command after launch-mode overrides are applied."""
+
+    if not smoke:
+        return [str(part) for part in command]
+    return _with_overrides(command, _smoke_overrides(job, grid_attempt_id=grid_attempt_id))
 
 
 def _environment_shell_command(
@@ -182,17 +258,19 @@ def _environment_defaults(profile: str) -> tuple[str, list[str], str]:
     return DEFAULT_CPU_UV_ENVIRONMENT, [DEFAULT_CPU_EXTRA], "cpu"
 
 
-def _slurm_parameters(args: argparse.Namespace, *, profile: str) -> dict[str, Any]:
+def _slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = False) -> dict[str, Any]:
     """Return Submitit Slurm parameters for the selected profile."""
 
     partition = args.slurm_partition or (
-        DEFAULT_CUDA_PARTITION if profile == "cuda" else DEFAULT_CPU_PARTITION
+        (DEFAULT_SMOKE_CUDA_PARTITION if profile == "cuda" else DEFAULT_SMOKE_CPU_PARTITION)
+        if smoke
+        else (DEFAULT_CUDA_PARTITION if profile == "cuda" else DEFAULT_CPU_PARTITION)
     )
     slurm = {
         "slurm_partition": partition,
-        "timeout_min": args.slurm_timeout_min,
-        "mem_gb": args.slurm_mem_gb,
-        "cpus_per_task": args.slurm_cpus,
+        "timeout_min": args.slurm_timeout_min or (SMOKE_TIMEOUT_MIN if smoke else DEFAULT_TIMEOUT_MIN),
+        "mem_gb": args.slurm_mem_gb or (SMOKE_MEM_GB if smoke else DEFAULT_MEM_GB),
+        "cpus_per_task": args.slurm_cpus or (SMOKE_CPUS if smoke else DEFAULT_CPUS),
         "tasks_per_node": 1,
     }
     if profile == "cuda":
@@ -255,6 +333,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--grid-attempt-id", default=None, help="Grid attempt to launch (defaults to latest).")
     parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help=(
+            "Submit two short smoke jobs with smoke-marked attempt ids, small "
+            "samplers, two train steps, and 15-minute test partitions."
+        ),
+    )
+    parser.add_argument(
         "--backend",
         choices=["local", "submitit"],
         required=True,
@@ -286,9 +372,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--slurm-gpus", type=int, default=None, help="CUDA only; defaults to 1 with --cuda.")
-    parser.add_argument("--slurm-timeout-min", type=int, default=480)
-    parser.add_argument("--slurm-mem-gb", type=int, default=32)
-    parser.add_argument("--slurm-cpus", type=int, default=8)
+    parser.add_argument("--slurm-timeout-min", type=int, default=None)
+    parser.add_argument("--slurm-mem-gb", type=int, default=None)
+    parser.add_argument("--slurm-cpus", type=int, default=None)
     parser.add_argument(
         "--uv-environment",
         default=None,
@@ -315,8 +401,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     results_root = _repo_path(args.results_root, repo_root)
     grid_attempt_id = resolve_grid_attempt_id(results_root, args.grid_attempt_id)
     manifest = load_grid_manifest(results_root, grid_attempt_id)
-    jobs = list(manifest.get("jobs", []))
-    commands = [_command_for_job(job) for job in jobs]
+    jobs = _launch_jobs(list(manifest.get("jobs", [])), grid_attempt_id=grid_attempt_id, smoke=args.smoke)
+    commands = [
+        _execution_command(_command_for_job(job), job, grid_attempt_id=grid_attempt_id, smoke=args.smoke)
+        for job in jobs
+    ]
     uv_environment, uv_extras, runtime_device = _environment_defaults(args.profile)
     uv_environment = args.uv_environment or (
         args.gpu_uv_environment if args.profile == "cuda" else None
@@ -342,9 +431,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         job_ids = _submit_submitit(
             submitted_commands,
-            log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / grid_attempt_id,
-            job_name="hooke-pair-stability",
-            slurm=_slurm_parameters(args, profile=args.profile),
+            log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / (
+                _smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
+            ),
+            job_name="hooke-pair-stability-smoke" if args.smoke else "hooke-pair-stability",
+            slurm=_slurm_parameters(args, profile=args.profile, smoke=args.smoke),
         )
 
     write_train_submission_records(
@@ -357,7 +448,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         job_ids=job_ids,
         submitted_commands=submitted_commands,
     )
-    print(f"[pair_stability] launched {len(job_ids)} train jobs from 00_grid/{grid_attempt_id} via {args.backend}")
+    mode = "smoke train" if args.smoke else "train"
+    print(f"[pair_stability] launched {len(job_ids)} {mode} jobs from 00_grid/{grid_attempt_id} via {args.backend}")
     return 0
 
 

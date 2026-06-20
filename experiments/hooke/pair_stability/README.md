@@ -136,7 +136,27 @@ uv run python experiments/hooke/pair_stability/plan.py --tags main
 
 ### Launch options
 
-Standard CUDA Submitit launch:
+Smoke launch before the real scan:
+
+```bash
+# CUDA Submitit smoke: two jobs, gpu_test partition, 15 minute limit
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cuda --smoke
+
+# CPU Submitit smoke: two jobs, test partition, 15 minute limit
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cpu --smoke
+
+# Local smoke, useful on an interactive node
+uv run python experiments/hooke/pair_stability/orchestrator.py \
+  --backend local --cuda --smoke
+```
+
+`--smoke` submits only the first two planned grid jobs, appends `-smoke` to the
+train attempt id, and overlays short-run settings (`training.max_steps=2`,
+128 walkers, short burn-in/chain lengths, and checkpoint/status every step).
+
+Standard CUDA Submitit launch after smoke passes:
 
 ```bash
 # Submit the latest 00_grid attempt on the GPU partition
