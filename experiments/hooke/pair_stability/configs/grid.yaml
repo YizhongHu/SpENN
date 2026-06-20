@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # The grid is architecture x normalization x lr x channels x seed. The
-# orchestrator translates each grid point into scalar Hydra-style overrides for
+# planner translates each grid point into scalar OmegaConf-style overrides for
 # the canonical run entrypoint (run.py). Every architecture key must exist in
 # choices.architecture of pair_stability.yaml; raw_no_envelope and the other
 # no-envelope variants are intentionally excluded from the main scan.

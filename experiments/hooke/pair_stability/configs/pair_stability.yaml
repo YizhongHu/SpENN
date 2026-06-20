@@ -4,14 +4,14 @@
 #
 # Pair-stability scan over model-side inductive bias (input basis +
 # Gaussian envelope) and feature normalization. The public override surface is
-# scalar: the orchestrator selects an architecture/normalization choice by key
+# scalar: the planner selects an architecture/normalization choice by key
 # and sets lr/channels/seed, e.g.
 #
 #   uv run python run.py --config experiments/hooke/pair_stability/configs/pair_stability.yaml \
 #     run_parameters.architecture=hermite_o3_envelope run_parameters.normalization=N2 \
 #     run_parameters.lr=1.0e-3 run_parameters.channels=16 run_parameters.seed=0 \
 #     run.root=experiments/hooke/pair_stability/results/01_train \
-#     run.layout=flat run.run_id=<run_id>/attempts/<attempt_id>
+#     run.layout=flat run.run_id=<run_id>/<attempt_id>
 #
 # `model.basis`, `model.envelope`, and `model.feature_normalization` are
 # resolved from the structured choice libraries below using the selected keys.
@@ -32,12 +32,12 @@ study:
 
 run:
   root: experiments/hooke/pair_stability/results/01_train
-  # Flat layout means run.dir = run.root / run.run_id. The orchestrator sets
-  # run.run_id to "<run_id>/attempts/<attempt_id>" to realize the staged layout.
+  # Flat layout means run.dir = run.root / run.run_id. The planner sets
+  # run.run_id to "<run_id>/<attempt_id>" to realize the staged layout.
   layout: flat
   run_id: null
   dir: null
-  timezone: null  # orchestrator injects run.timezone; null falls back to UTC for direct runs
+  timezone: null  # planner injects run.timezone; null falls back to UTC for direct runs
 
 runtime:
   seed: ${run_parameters.seed}

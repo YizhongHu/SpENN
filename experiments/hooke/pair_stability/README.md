@@ -93,36 +93,34 @@ One mode is scanned at a time.
 
 This repo's run entrypoint (`run.py`) is a plain OmegaConf launcher, **not** a
 `@hydra.main` app, so there is no Hydra Submitit command path to reuse and no
-study-specific `sbatch` code is added. Instead the orchestrator compiles each
-grid point into scalar overrides for the canonical `run.py` entrypoint and:
+study-specific `sbatch` code is added. The workflow is split into two strict
+stages:
 
-- `--backend plan` (default) — writes the `00_grid` attempt (manifest +
-  `commands.sh`) and submits nothing.
-- `--backend local` — runs the compiled `run.py` commands sequentially
-  (smoke/local).
-- `--backend submitit` — hands the same commands to the Submitit launcher
-  (`submitit.AutoExecutor`), which owns Slurm script generation. Requires the
-  optional `submitit` extra (`uv sync --extra submitit`).
+- `plan.py` writes the `00_grid` attempt (manifest + `commands.sh`) and submits
+  nothing.
+- `orchestrator.py` reads an existing `00_grid` attempt and launches those exact
+  train commands into `01_train` with `--backend local` or `--backend submitit`.
+  It does not expand grids or rewrite the `00_grid` manifest.
 
-The orchestrator is the source of truth for the study timezone (`--timezone`,
-default `America/New_York`): it stamps attempt ids and the manifest
-`created_at`, and always injects it as a `run.timezone` override on the
-compiled commands. The configs set `run.timezone: null`, so an orchestrated run
-takes its zone only from the orchestrator (a direct `run.py` run with no
-override falls back to spenn's `UTC` default).
+The planner is the source of truth for the study timezone (`--timezone`, default
+`America/New_York`): it stamps attempt ids and the manifest `created_at`, and
+always injects it as a `run.timezone` override on the compiled commands. The
+configs set `run.timezone: null`, so a planned run takes its zone only from
+`plan.py` (a direct `run.py` run with no override falls back to spenn's `UTC`
+default).
 
 ```bash
 # Plan the grid (dry run): writes results/00_grid/<attempt_id>/
-uv run python experiments/hooke/pair_stability/orchestrator.py
+uv run python experiments/hooke/pair_stability/plan.py
 
 # Plan only the "main"-tagged architectures
-uv run python experiments/hooke/pair_stability/orchestrator.py --tags main
+uv run python experiments/hooke/pair_stability/plan.py --tags main
 
-# Submit on the GPU partition via the Submitit launcher
+# Submit the latest 00_grid attempt on the GPU partition via Submitit
 uv run python experiments/hooke/pair_stability/orchestrator.py --backend submitit
 ```
 
-Each grid point becomes scalar overrides, e.g.:
+Each planned grid point becomes scalar overrides, e.g.:
 
 ```
 run_parameters.architecture=hermite_o3_envelope
@@ -165,7 +163,7 @@ Every directory under a stage (or under a stage's run id) is an attempt, so
 there is no intermediate `attempts/` path segment.
 
 Rerunnable units are indexed by attempt ids of the form
-`YYYYMMDDTHHMMSS-0400` in the orchestrator's timezone (America/New_York by
+`YYYYMMDDTHHMMSS-0400` in the planner's timezone (America/New_York by
 default), which is also injected as the `run.timezone` override, so attempt ids
 and run logs share one wall clock. Detailed layout:
 
@@ -179,7 +177,7 @@ results/
       pair_stability.yaml    # snapshot of the train config
       jobs/{run_id}.json     # per-job spec
     latest.json -> {attempt_id}
-  01_train/{run_id}/{attempt_id}/   # config.yaml, checkpoints/, metrics, status.json, ...
+  01_train/{run_id}/{attempt_id}/   # source_grid_attempt.json, submission.json, config.yaml, checkpoints/, ...
   02_validation/{run_id}/{attempt_id}/
       source_train_attempt.json     # train attempt + checkpoint consumed
       cusp/ tail/ stratified_geometry/ hooke_orbital/ energy/   # per-task output_dir
@@ -190,12 +188,11 @@ results/
 
 ### Manifest
 
-`00_grid/.../manifest.json` is the durable record of planned jobs, written
-before submission. Each job records its `run_id`, `train_dir`, `validation_dir`,
-the exact scalar `overrides`, the `command`, the resolved `choices`, the
-architecture `tags`, and submission fields (`submitted`, `launcher`,
-`launcher_job_id`). `commands.sh` contains the exact commands the orchestrator
-would run or did run.
+`00_grid/.../manifest.json` is the durable record of planned jobs. Each job
+records its `run_id`, `train_dir`, `validation_dir`, the exact scalar
+`overrides`, the `command`, the resolved `choices`, and the architecture `tags`.
+Submission fields are initialized but not updated there; `orchestrator.py`
+records launch provenance under each `01_train/{run_id}/{attempt_id}/`.
 
 ## Collect and select
 
@@ -214,10 +211,10 @@ metrics (`metrics.jsonl`), and `source_train_attempt.json`, and writes
 reads a `03_collect` summary and writes per-architecture champions and a
 selection report, recording the collection attempt it consumed.
 
-The study scripts (`orchestrator.py`, `collect.py`, `select_champions.py`)
-share their stage-layout vocabulary, attempt-id/timezone helpers, run-id
-grammar, JSON IO, and staged-directory path helpers through `run_utils.py`;
-each script keeps only its own stage logic.
+The study scripts (`plan.py`, `orchestrator.py`, `collect.py`,
+`select_champions.py`) share their stage-layout vocabulary,
+attempt-id/timezone helpers, run-id grammar, JSON IO, and staged-directory path
+helpers through `run_utils.py`; each script keeps only its own stage logic.
 
 ## Tests
 
@@ -226,8 +223,9 @@ each script keeps only its own stage logic.
   `test_pair_stability_config_choices.py`).
 - Study orchestration and file layout are tested in `test_pair_stability.py`
   (grid/choice consistency, attempt-id timezone, the `attempt_ids` listing, the
-  `run.timezone` override, dry-run manifest, staged layout, attempt provenance,
-  and a one-grid-point smoke run through the normal run path).
+  `run.timezone` override, planner manifest, strict train orchestration,
+  staged layout, attempt provenance, and a one-grid-point smoke run through the
+  normal run path).
 
 ## Relationship to `pair_validation`
 

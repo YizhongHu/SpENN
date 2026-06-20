@@ -1,7 +1,7 @@
 """Shared utilities for the pair-stability study scripts (PR8.8).
 
 The stage-layout vocabulary, timezone/attempt-id helpers, run-id grammar, JSON
-IO, and staged-directory path helpers used by ``orchestrator.py``,
+IO, and staged-directory path helpers used by ``plan.py``, ``orchestrator.py``,
 ``collect.py``, and ``select_champions.py``. Kept stdlib-only so every study
 script can import it without pulling in torch.
 
@@ -43,15 +43,11 @@ GRID_AXES = ("architecture", "normalization", "lr", "channels", "seed")
 # ---------------------------------------------------------------------------
 # Timezone and attempt ids
 # ---------------------------------------------------------------------------
-# The orchestrator is the source of truth for the study timezone; study
+# The planner is the source of truth for the study timezone; study
 # timestamps (attempt ids, manifest ``created_at``) and the ``run.timezone``
-# override it injects all derive from it. ``orchestrator --timezone`` overrides
+# override it injects all derive from it. ``plan.py --timezone`` overrides
 # this default.
 DEFAULT_STUDY_TIMEZONE = "America/New_York"
-# spenn's run-config default (``spenn.artifacts.DEFAULT_RUN_TIMEZONE``); the
-# orchestrator overrides ``run.timezone`` only when its timezone differs from
-# what a run config declares.
-DEFAULT_RUN_TIMEZONE = "UTC"
 
 
 def resolve_timezone(name: str | None = None) -> ZoneInfo:

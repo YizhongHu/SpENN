@@ -5,14 +5,14 @@
 # Restores a trained pair-stability checkpoint and runs the EvaluationTask-based
 # physical-correctness suite (cusp, tail, stratified geometry, Hooke orbital,
 # energy). The architecture/normalization choice MUST match the trained run, so
-# the orchestrator passes the same run_parameters used at training time.
+# validation planning passes the same run_parameters used at training time.
 #
 #   uv run python run.py --config experiments/hooke/pair_stability/configs/pair_validation.yaml \
 #     run_parameters.architecture=hermite_o3_envelope run_parameters.normalization=N2 \
 #     run_parameters.lr=1.0e-3 run_parameters.channels=16 run_parameters.seed=0 \
 #     load.path=<train_checkpoint> \
 #     run.root=experiments/hooke/pair_stability/results/02_validation \
-#     run.layout=flat run.run_id=<run_id>/attempts/<attempt_id>
+#     run.layout=flat run.run_id=<run_id>/<attempt_id>
 # =============================================================================
 
 experiment:
@@ -31,7 +31,7 @@ run:
   layout: flat
   run_id: null
   dir: null
-  timezone: null  # orchestrator injects run.timezone; null falls back to UTC for direct runs
+  timezone: null  # planner injects run.timezone; null falls back to UTC for direct runs
 
 runtime:
   seed: ${run_parameters.seed}
@@ -197,7 +197,7 @@ evaluation:
   return_terms: true
 
 load:
-  # Set by the orchestrator to the train attempt's checkpoint.
+  # Set by validation planning to the train attempt's checkpoint.
   path: ???
   mode: model_only
   strict: true

@@ -1,9 +1,9 @@
 """Study-level tests for the pair-stability experiment package (PR8.8).
 
-These cover grid/choice consistency, orchestrator dry-run artifacts, staged
-results layout, attempt provenance, and a one-grid-point smoke run through the
-normal run path. Reusable model-component math is tested under ``tests/`` and is
-intentionally not retested here.
+These cover grid/choice consistency, planner artifacts, staged results layout,
+attempt provenance, and a one-grid-point smoke run through the normal run path.
+Reusable model-component math is tested under ``tests/`` and is intentionally
+not retested here.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ if str(STUDY_DIR) not in sys.path:
 
 import collect  # noqa: E402
 import orchestrator  # noqa: E402
+import plan  # noqa: E402
 import run_utils  # noqa: E402
 import select_champions  # noqa: E402
 
@@ -69,12 +70,12 @@ def test_attempt_ids_sorted_and_skips_latest(tmp_path: Path) -> None:
 def test_grid_values_exist_in_choices() -> None:
     grid = OmegaConf.load(GRID)
     config = OmegaConf.load(PAIR_STABILITY)
-    points = orchestrator.expand_grid(OmegaConf.to_container(grid.grid, resolve=True))
+    points = plan.expand_grid(OmegaConf.to_container(grid.grid, resolve=True))
     # validate_grid raises if any architecture/normalization is unknown.
-    orchestrator.validate_grid(points, config)
+    plan.validate_grid(points, config)
 
-    architectures = set(orchestrator.architecture_tags(config))
-    normalizations = orchestrator.normalization_names(config)
+    architectures = set(plan.architecture_tags(config))
+    normalizations = plan.normalization_names(config)
     for axis_value in grid.grid.architecture:
         assert str(axis_value) in architectures
     for axis_value in grid.grid.normalization:
@@ -97,7 +98,7 @@ def test_main_architectures_all_include_gaussian_envelope() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator dry run / manifest / layout
+# Planner manifest / layout
 # ---------------------------------------------------------------------------
 def _small_grid(tmp_path: Path) -> Path:
     """Write a tiny grid (including a known target run) pointing at real configs."""
@@ -127,16 +128,14 @@ ATTEMPT = "20260619T000000-0400"
 def _plan(tmp_path: Path) -> Path:
     grid = _small_grid(tmp_path)
     results_root = tmp_path / "results"
-    code = orchestrator.main(
-        ["--grid", str(grid), "--results-root", str(results_root), "--attempt-id", ATTEMPT, "--backend", "plan"]
-    )
+    code = plan.main(["--grid", str(grid), "--results-root", str(results_root), "--attempt-id", ATTEMPT])
     assert code == 0
     return results_root
 
 
-def test_orchestrator_dry_run_writes_grid_attempt(tmp_path: Path) -> None:
+def test_plan_writes_grid_attempt(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    attempt = orchestrator.grid_attempt_dir(results_root, ATTEMPT)
+    attempt = run_utils.grid_attempt_dir(results_root, ATTEMPT)
     assert (attempt / "manifest.json").is_file()
     assert (attempt / "commands.sh").is_file()
     assert (attempt / "grid.yaml").is_file()
@@ -147,7 +146,7 @@ def test_orchestrator_dry_run_writes_grid_attempt(tmp_path: Path) -> None:
 
 def test_manifest_contains_expected_run_ids_and_overrides(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((orchestrator.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     run_ids = {job["run_id"] for job in manifest["jobs"]}
     assert TARGET_RUN_ID in run_ids
     assert manifest["n_jobs"] == 4  # 2 architectures x 2 normalizations
@@ -163,7 +162,7 @@ def test_manifest_contains_expected_run_ids_and_overrides(tmp_path: Path) -> Non
 
 def test_manifest_train_and_validation_dirs_follow_expected_layout(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((orchestrator.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     assert job["train_dir"] == str(results_root / "01_train" / TARGET_RUN_ID)
     assert job["validation_dir"] == str(results_root / "02_validation" / TARGET_RUN_ID)
@@ -174,7 +173,7 @@ def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
     # The repo has no @hydra.main app, so submission uses the canonical run.py
     # command path (handed to the Submitit launcher by the submitit backend).
     results_root = _plan(tmp_path)
-    commands = (orchestrator.grid_attempt_dir(results_root, ATTEMPT) / "commands.sh").read_text()
+    commands = (run_utils.grid_attempt_dir(results_root, ATTEMPT) / "commands.sh").read_text()
     assert "run.py" in commands
     assert "--config" in commands
     assert "run_parameters.architecture=hermite_o3_envelope" in commands
@@ -183,7 +182,7 @@ def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
 
 def test_train_run_dir_uses_stage_attempt_layout(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((orchestrator.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     overrides = job["overrides"]
     assert f"run.root={results_root / '01_train'}" in overrides
@@ -191,48 +190,76 @@ def test_train_run_dir_uses_stage_attempt_layout(tmp_path: Path) -> None:
     assert f"run.run_id={TARGET_RUN_ID}/{ATTEMPT}" in overrides
 
 
-def test_orchestrator_always_injects_run_timezone_override(tmp_path: Path) -> None:
+def test_plan_always_injects_run_timezone_override(tmp_path: Path) -> None:
     grid = _small_grid(tmp_path)
-    # The orchestrator owns the timezone and always injects it (the config is null).
-    orchestrator.main(
-        ["--grid", str(grid), "--results-root", str(tmp_path / "a"), "--attempt-id", ATTEMPT, "--backend", "plan"]
-    )
-    commands = (orchestrator.grid_attempt_dir(tmp_path / "a", ATTEMPT) / "commands.sh").read_text()
+    # The planner owns the timezone and always injects it (the config is null).
+    plan.main(["--grid", str(grid), "--results-root", str(tmp_path / "a"), "--attempt-id", ATTEMPT])
+    commands = (run_utils.grid_attempt_dir(tmp_path / "a", ATTEMPT) / "commands.sh").read_text()
     assert "run.timezone=America/New_York" in commands
     # --timezone selects the injected zone.
-    orchestrator.main(
-        ["--grid", str(grid), "--results-root", str(tmp_path / "b"), "--attempt-id", ATTEMPT,
-         "--backend", "plan", "--timezone", "UTC"]
+    plan.main(
+        ["--grid", str(grid), "--results-root", str(tmp_path / "b"), "--attempt-id", ATTEMPT, "--timezone", "UTC"]
     )
-    commands_utc = (orchestrator.grid_attempt_dir(tmp_path / "b", ATTEMPT) / "commands.sh").read_text()
+    commands_utc = (run_utils.grid_attempt_dir(tmp_path / "b", ATTEMPT) / "commands.sh").read_text()
     assert "run.timezone=UTC" in commands_utc
+
+
+def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root = _plan(tmp_path)
+    submitted_commands = []
+
+    def fake_submit_local(commands, *, repo_root: Path):
+        submitted_commands.extend(commands)
+        return [f"local-{index}" for index, _ in enumerate(commands)]
+
+    monkeypatch.setattr(orchestrator, "_submit_local", fake_submit_local)
+    code = orchestrator.main(
+        ["--results-root", str(results_root), "--grid-attempt-id", ATTEMPT, "--backend", "local"]
+    )
+    assert code == 0
+    assert len(submitted_commands) == 4
+
+    train_attempt = results_root / "01_train" / TARGET_RUN_ID / ATTEMPT
+    source = json.loads((train_attempt / "source_grid_attempt.json").read_text())
+    assert source["grid_attempt_id"] == ATTEMPT
+    assert source["run_id"] == TARGET_RUN_ID
+    submission = json.loads((train_attempt / "submission.json").read_text())
+    assert submission["launcher"] == "local"
+    assert submission["launcher_job_id"] == "local-3"
+
+    # The train orchestrator reads 00_grid but does not mutate the planned manifest.
+    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
+    assert job["submitted"] is False
+    assert job["launcher"] is None
 
 
 def test_validation_records_source_train_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     point = {"architecture": "hermite_o3_envelope", "normalization": "N2", "lr": 1.0e-3, "channels": 16, "seed": 0}
-    jobs = orchestrator.build_jobs(
+    jobs = plan.build_jobs(
         [point],
         attempt_id="T1",
         results_root=results_root,
         config=PAIR_STABILITY,
         tags_by_architecture={"hermite_o3_envelope": ["main"]},
-        launcher="plan",
     )
-    plan = orchestrator.plan_validation_attempt(
+    validation_plan = plan.plan_validation_attempt(
         jobs[0],
         results_root=results_root,
         train_attempt_id="T1",
         validation_attempt_id="V1",
         validation_config=PAIR_VALIDATION,
     )
-    source_path = Path(plan["validation_attempt_dir"]) / "source_train_attempt.json"
+    source_path = Path(validation_plan["validation_attempt_dir"]) / "source_train_attempt.json"
     assert source_path.is_file()
     source = json.loads(source_path.read_text())
     assert source["run_id"] == TARGET_RUN_ID
     assert source["train_attempt_id"] == "T1"
     assert source["checkpoint_path"].endswith("checkpoints")
-    assert "load.path=" in plan["command"]
+    assert "load.path=" in validation_plan["command"]
 
 
 def test_pair_validation_config_model_and_tasks_instantiate() -> None:
@@ -269,7 +296,7 @@ def tmp_run_dir() -> Path:
 def _fake_validation_attempt(
     results_root: Path, run_id: str, attempt_id: str, *, status: str, energy_error: float
 ) -> None:
-    attempt = orchestrator.validation_attempt_dir(results_root, run_id, attempt_id)
+    attempt = run_utils.validation_attempt_dir(results_root, run_id, attempt_id)
     (attempt / "cusp").mkdir(parents=True, exist_ok=True)
     (attempt / "tail").mkdir(parents=True, exist_ok=True)
     (attempt / "status.json").write_text(json.dumps({"status": status}))
