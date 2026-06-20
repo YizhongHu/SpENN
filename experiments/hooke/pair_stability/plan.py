@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import itertools
 import shlex
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -341,7 +340,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--tags", nargs="*", default=None, help="Only include architectures with all of these tags.")
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of planned jobs.")
-    parser.add_argument("--python", default=sys.executable or "python", help="Python executable for commands.")
+    parser.add_argument(
+        "--python",
+        default="python",
+        help=(
+            "Python executable name recorded in planned commands. The train "
+            "orchestrator chooses the CPU/CUDA uv environment at launch time."
+        ),
+    )
     return parser.parse_args(argv)
 
 

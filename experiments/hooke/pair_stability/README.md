@@ -98,9 +98,26 @@ stages:
 
 - `plan.py` writes the `00_grid` attempt (manifest + `commands.sh`) and submits
   nothing.
-- `orchestrator.py` reads an existing `00_grid` attempt and launches those exact
-  train commands into `01_train` with `--backend local` or `--backend submitit`.
-  It does not expand grids or rewrite the `00_grid` manifest.
+- `orchestrator.py` reads an existing `00_grid` attempt and launches its train
+  commands into `01_train` with `--backend local` or `--backend submitit`. It
+  does not expand grids or rewrite the `00_grid` manifest.
+
+This runbook assumes the real scan runs on CUDA through Submitit. The CLI keeps
+CPU as the default for safety, so production launch examples pass `--cuda`
+explicitly.
+
+`orchestrator.py` owns the execution profile. `--cpu` and `--cuda` switch all
+three execution layers together:
+
+| profile  | uv environment | uv extra | runtime override | Submitit hardware default |
+|----------|----------------|----------|------------------|---------------------------|
+| `--cpu`  | `.venv`        | `cpu`    | `runtime.device=cpu`  | `slurm_partition=seas_compute,kozinsky_lab,sapphire`, no GPUs |
+| `--cuda` | `.venv-gpu`    | `cu126`  | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `gpus_per_node=1` |
+
+Each launched job syncs and activates the selected environment, then runs the
+planned command through that environment's `python`. Override the environment
+path with `--uv-environment`; pass `--uv-extra` one or more times to select
+another extra such as `cu128` or `cu130`.
 
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and
@@ -115,9 +132,51 @@ uv run python experiments/hooke/pair_stability/plan.py
 
 # Plan only the "main"-tagged architectures
 uv run python experiments/hooke/pair_stability/plan.py --tags main
+```
 
-# Submit the latest 00_grid attempt on the GPU partition via Submitit
-uv run python experiments/hooke/pair_stability/orchestrator.py --backend submitit
+### Launch options
+
+Standard CUDA Submitit launch:
+
+```bash
+# Submit the latest 00_grid attempt on the GPU partition
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cuda
+
+# Submit a specific 00_grid attempt
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cuda \
+  --grid-attempt-id 20260619T195112-0400
+```
+
+Other supported execution modes:
+
+```bash
+# CUDA local run, for an interactive GPU node or tiny smoke run
+uv run python experiments/hooke/pair_stability/orchestrator.py \
+  --backend local --cuda
+
+# CPU local run, the CLI default profile
+uv run python experiments/hooke/pair_stability/orchestrator.py \
+  --backend local --cpu
+
+# CPU Submitit run on a CPU partition
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cpu
+```
+
+Environment and Slurm overrides:
+
+```bash
+# Use a different CUDA Torch build
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cuda \
+  --uv-extra cu128
+
+# Use a different GPU partition
+uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+  --backend submitit --cuda \
+  --slurm-partition seas_gpu
 ```
 
 Each planned grid point becomes scalar overrides, e.g.:
@@ -134,8 +193,9 @@ run.run_id=<run_id>/<attempt_id>
 run.timezone=America/New_York   # always injected; --timezone selects the zone
 ```
 
-With the flat run layout, `run.dir = run.root / run.run_id`, which realizes the
-staged attempt directory.
+The execution profile adds `runtime.device=cpu` or `runtime.device=cuda` when
+launching. With the flat run layout, `run.dir = run.root / run.run_id`, which
+realizes the staged attempt directory.
 
 ## Staged results layout
 

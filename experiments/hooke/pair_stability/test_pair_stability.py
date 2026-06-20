@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,7 @@ def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
     commands = (run_utils.grid_attempt_dir(results_root, ATTEMPT) / "commands.sh").read_text()
     assert "run.py" in commands
     assert "--config" in commands
+    assert "python -u run.py" in commands
     assert "run_parameters.architecture=hermite_o3_envelope" in commands
     assert f"run.run_id={TARGET_RUN_ID}/{ATTEMPT}" in commands
 
@@ -220,6 +222,10 @@ def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
     )
     assert code == 0
     assert len(submitted_commands) == 4
+    default_script = submitted_commands[0][2]
+    assert "export UV_PROJECT_ENVIRONMENT=.venv" in default_script
+    assert "uv sync --extra cpu" in default_script
+    assert "runtime.device=cpu" in default_script
 
     train_attempt = results_root / "01_train" / TARGET_RUN_ID / ATTEMPT
     source = json.loads((train_attempt / "source_grid_attempt.json").read_text())
@@ -234,6 +240,87 @@ def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     assert job["submitted"] is False
     assert job["launcher"] is None
+
+
+def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
+    planned_python = str(ROOT / ".venv" / "bin" / "python")
+    submitted = orchestrator._environment_shell_command(
+        [planned_python, "-u", "run.py", "--config", "cfg.yaml", "runtime.device=cpu", "x=y"],
+        repo_root=ROOT,
+        uv_environment=".venv-gpu",
+        uv_extras=["cu126"],
+        device="cuda",
+    )
+
+    assert submitted[:2] == ["bash", "-lc"]
+    script = submitted[2]
+    assert f"cd {ROOT}" in script
+    assert "export UV_PROJECT_ENVIRONMENT=.venv-gpu" in script
+    assert "uv sync --extra cu126" in script
+    assert "source .venv-gpu/bin/activate" in script
+    assert "exec python -u run.py --config cfg.yaml x=y runtime.device=cuda" in script
+    assert planned_python not in script
+
+
+def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_commands = []
+    captured_parameters = []
+
+    class FakeCommandFunction:
+        def __init__(self, command):
+            self.command = command
+            captured_commands.append(command)
+
+    class FakeExecutor:
+        def __init__(self, folder: str):
+            self.folder = folder
+
+        def update_parameters(self, **kwargs):
+            self.parameters = kwargs
+            captured_parameters.append(kwargs)
+
+        def submit(self, command_function):
+            return types.SimpleNamespace(job_id=f"job-{len(captured_commands)}")
+
+    fake_submitit = types.SimpleNamespace(
+        AutoExecutor=FakeExecutor,
+        helpers=types.SimpleNamespace(CommandFunction=FakeCommandFunction),
+    )
+    monkeypatch.setitem(sys.modules, "submitit", fake_submitit)
+
+    cpu_args = orchestrator.parse_args(["--backend", "submitit"])
+    assert orchestrator._slurm_parameters(cpu_args, profile="cpu") == {
+        "slurm_partition": "seas_compute,kozinsky_lab,sapphire",
+        "timeout_min": 480,
+        "mem_gb": 32,
+        "cpus_per_task": 8,
+        "tasks_per_node": 1,
+    }
+    cuda_args = orchestrator.parse_args(["--backend", "submitit", "--cuda"])
+    cuda_slurm = orchestrator._slurm_parameters(cuda_args, profile="cuda")
+    assert cuda_slurm["slurm_partition"] == "seas_gpu,kozinsky_gpu"
+    assert cuda_slurm["gpus_per_node"] == 1
+
+    submitted = orchestrator._environment_shell_command(
+        ["python", "-u", "run.py", "--config", "cfg.yaml", "x=y"],
+        repo_root=ROOT,
+        uv_environment=".venv-gpu",
+        uv_extras=["cu126"],
+        device="cuda",
+    )
+    job_ids = orchestrator._submit_submitit(
+        [submitted],
+        log_dir=tmp_path / "logs",
+        job_name="pair-stability",
+        slurm=cuda_slurm,
+    )
+
+    assert job_ids == ["job-1"]
+    assert captured_commands == [submitted]
+    assert captured_parameters[0]["slurm_partition"] == "seas_gpu,kozinsky_gpu"
+    assert captured_parameters[0]["gpus_per_node"] == 1
 
 
 def test_validation_records_source_train_attempt(tmp_path: Path) -> None:
