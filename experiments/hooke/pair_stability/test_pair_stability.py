@@ -318,11 +318,7 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
 ) -> None:
     captured_commands = []
     captured_parameters = []
-
-    class FakeCommandFunction:
-        def __init__(self, command):
-            self.command = command
-            captured_commands.append(command)
+    captured_map_calls = []
 
     class FakeExecutor:
         def __init__(self, folder: str):
@@ -332,12 +328,13 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
             self.parameters = kwargs
             captured_parameters.append(kwargs)
 
-        def submit(self, command_function):
-            return types.SimpleNamespace(job_id=f"job-{len(captured_commands)}")
+        def map_array(self, fn, commands):
+            captured_map_calls.append(fn)
+            captured_commands.extend(commands)
+            return [types.SimpleNamespace(job_id=f"array-job_{index}") for index, _ in enumerate(commands)]
 
     fake_submitit = types.SimpleNamespace(
         AutoExecutor=FakeExecutor,
-        helpers=types.SimpleNamespace(CommandFunction=FakeCommandFunction),
     )
     monkeypatch.setitem(sys.modules, "submitit", fake_submitit)
 
@@ -348,20 +345,24 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
         "mem_gb": 32,
         "cpus_per_task": 8,
         "tasks_per_node": 1,
+        "slurm_array_parallelism": 8,
     }
     cuda_args = train.parse_args(["--backend", "submitit", "--cuda"])
     cuda_slurm = launch.slurm_parameters(cuda_args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert cuda_slurm["gpus_per_node"] == 1
+    assert cuda_slurm["slurm_array_parallelism"] == 8
     smoke_cpu = launch.slurm_parameters(cpu_args, profile="cpu", smoke=True)
     assert smoke_cpu["slurm_partition"] == "test"
     assert smoke_cpu["timeout_min"] == 15
     assert smoke_cpu["mem_gb"] == 16
     assert smoke_cpu["cpus_per_task"] == 4
+    assert smoke_cpu["slurm_array_parallelism"] == 2
     smoke_cuda = launch.slurm_parameters(cuda_args, profile="cuda", smoke=True)
     assert smoke_cuda["slurm_partition"] == "gpu_test"
     assert smoke_cuda["timeout_min"] == 15
     assert smoke_cuda["gpus_per_node"] == 1
+    assert smoke_cuda["slurm_array_parallelism"] == 2
 
     submitted = launch.environment_shell_command(
         ["python", "-u", "run.py", "--config", "cfg.yaml", "x=y"],
@@ -371,16 +372,18 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
         device="cuda",
     )
     job_ids = launch.submit_submitit(
-        [submitted],
+        [submitted, submitted],
         log_dir=tmp_path / "logs",
         job_name="pair-stability",
         slurm=cuda_slurm,
     )
 
-    assert job_ids == ["job-1"]
-    assert captured_commands == [submitted]
+    assert job_ids == ["array-job_0", "array-job_1"]
+    assert len(captured_map_calls) == 1
+    assert captured_commands == [submitted, submitted]
     assert captured_parameters[0]["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert captured_parameters[0]["gpus_per_node"] == 1
+    assert captured_parameters[0]["slurm_array_parallelism"] == 8
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:

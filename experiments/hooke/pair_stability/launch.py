@@ -26,10 +26,12 @@ DEFAULT_SMOKE_CUDA_PARTITION = "gpu_test"
 DEFAULT_TIMEOUT_MIN = 480
 DEFAULT_MEM_GB = 32
 DEFAULT_CPUS = 8
+DEFAULT_ARRAY_PARALLELISM = 8
 SMOKE_JOB_LIMIT = 2
 SMOKE_TIMEOUT_MIN = 15
 SMOKE_MEM_GB = 16
 SMOKE_CPUS = 4
+SMOKE_ARRAY_PARALLELISM = 2
 
 
 def repo_path(path: str | Path, repo_root: Path) -> Path:
@@ -176,6 +178,14 @@ def submit_local(commands: Sequence[Sequence[str]], *, repo_root: Path) -> list[
     return job_ids
 
 
+def _run_command(command: Sequence[str]) -> None:
+    """Submitit array task entrypoint for one prepared shell command."""
+
+    import submitit
+
+    submitit.helpers.CommandFunction([str(part) for part in command])()
+
+
 def submit_submitit(
     commands: Sequence[Sequence[str]],
     *,
@@ -196,7 +206,7 @@ def submit_submitit(
     log_dir.mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=str(log_dir))
     executor.update_parameters(name=job_name, **slurm)
-    jobs = [executor.submit(submitit.helpers.CommandFunction(list(command))) for command in commands]
+    jobs = executor.map_array(_run_command, [[str(part) for part in command] for command in commands])
     return [str(job.job_id) for job in jobs]
 
 
@@ -214,6 +224,8 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = Fa
         "mem_gb": args.slurm_mem_gb or (SMOKE_MEM_GB if smoke else DEFAULT_MEM_GB),
         "cpus_per_task": args.slurm_cpus or (SMOKE_CPUS if smoke else DEFAULT_CPUS),
         "tasks_per_node": 1,
+        "slurm_array_parallelism": args.slurm_array_parallelism
+        or (SMOKE_ARRAY_PARALLELISM if smoke else DEFAULT_ARRAY_PARALLELISM),
     }
     if profile == "cuda":
         slurm["gpus_per_node"] = args.slurm_gpus or 1
@@ -254,6 +266,15 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
     parser.add_argument("--slurm-timeout-min", type=int, default=None)
     parser.add_argument("--slurm-mem-gb", type=int, default=None)
     parser.add_argument("--slurm-cpus", type=int, default=None)
+    parser.add_argument(
+        "--slurm-array-parallelism",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of Submitit array tasks allowed to run at once "
+            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}, or {SMOKE_ARRAY_PARALLELISM} with --smoke)."
+        ),
+    )
     parser.add_argument(
         "--uv-environment",
         default=None,

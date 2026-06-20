@@ -123,6 +123,12 @@ planned command through that environment's `python`. Override the environment
 path with `--uv-environment`; pass `--uv-extra` one or more times to select
 another extra such as `cu128` or `cu130`.
 
+Submitit launches are always Slurm arrays via `submitit.AutoExecutor.map_array`,
+not one independent `sbatch` per planned run. The default full-run array cap is
+8 simultaneous tasks (`--slurm-array-parallelism 8`); smoke runs cap at 2. For a
+540-run grid this produces one `--array=0-539%8` submission instead of 540
+separate jobs.
+
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and
 always injects it as a `run.timezone` override on the compiled commands. The
@@ -201,6 +207,11 @@ uv run --extra submitit python experiments/hooke/pair_stability/train.py \
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda \
   --slurm-partition seas_gpu
+
+# Run at most four array tasks at a time
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
+  --backend submitit --cuda \
+  --slurm-array-parallelism 4
 ```
 
 ### Validation launch options
