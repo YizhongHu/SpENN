@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -178,14 +179,6 @@ def submit_local(commands: Sequence[Sequence[str]], *, repo_root: Path) -> list[
     return job_ids
 
 
-def _run_command(command: Sequence[str]) -> None:
-    """Submitit array task entrypoint for one prepared shell command."""
-
-    import submitit
-
-    submitit.helpers.CommandFunction([str(part) for part in command])()
-
-
 def submit_submitit(
     commands: Sequence[Sequence[str]],
     *,
@@ -206,7 +199,7 @@ def submit_submitit(
     log_dir.mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=str(log_dir))
     executor.update_parameters(name=job_name, **slurm)
-    jobs = executor.map_array(_run_command, [[str(part) for part in command] for command in commands])
+    jobs = executor.map_array(subprocess.check_call, [[str(part) for part in command] for command in commands])
     return [str(job.job_id) for job in jobs]
 
 

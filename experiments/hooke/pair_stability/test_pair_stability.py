@@ -9,6 +9,7 @@ not retested here.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -379,7 +380,7 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     )
 
     assert job_ids == ["array-job_0", "array-job_1"]
-    assert len(captured_map_calls) == 1
+    assert captured_map_calls == [subprocess.check_call]
     assert captured_commands == [submitted, submitted]
     assert captured_parameters[0]["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert captured_parameters[0]["gpus_per_node"] == 1
