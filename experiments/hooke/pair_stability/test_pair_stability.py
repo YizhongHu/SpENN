@@ -27,10 +27,12 @@ if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
 import collect  # noqa: E402
-import orchestrator  # noqa: E402
+import launch  # noqa: E402
 import plan  # noqa: E402
 import run_utils  # noqa: E402
 import select_champions  # noqa: E402
+import train  # noqa: E402
+import validate  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,7 @@ def test_plan_writes_grid_attempt(tmp_path: Path) -> None:
     assert (attempt / "commands.sh").is_file()
     assert (attempt / "grid.yaml").is_file()
     assert (attempt / "pair_stability.yaml").is_file()
+    assert (attempt / "pair_validation.yaml").is_file()
     assert (attempt / "jobs" / f"{TARGET_RUN_ID}.json").is_file()
     assert (results_root / "00_grid" / "latest.json").is_file()
 
@@ -206,7 +209,7 @@ def test_plan_always_injects_run_timezone_override(tmp_path: Path) -> None:
     assert "run.timezone=UTC" in commands_utc
 
 
-def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
+def test_train_consumes_grid_attempt_and_writes_submission_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results_root = _plan(tmp_path)
@@ -216,8 +219,8 @@ def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
         submitted_commands.extend(commands)
         return [f"local-{index}" for index, _ in enumerate(commands)]
 
-    monkeypatch.setattr(orchestrator, "_submit_local", fake_submit_local)
-    code = orchestrator.main(
+    monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    code = train.main(
         ["--results-root", str(results_root), "--grid-attempt-id", ATTEMPT, "--backend", "local"]
     )
     assert code == 0
@@ -235,14 +238,14 @@ def test_orchestrator_consumes_grid_attempt_and_writes_train_submission_records(
     assert submission["launcher"] == "local"
     assert submission["launcher_job_id"] == "local-3"
 
-    # The train orchestrator reads 00_grid but does not mutate the planned manifest.
+    # The train launcher reads 00_grid but does not mutate the planned manifest.
     manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     assert job["submitted"] is False
     assert job["launcher"] is None
 
 
-def test_orchestrator_smoke_submits_two_short_runs_with_smoke_attempt_ids(
+def test_train_smoke_submits_two_short_runs_with_smoke_attempt_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results_root = _plan(tmp_path)
@@ -254,8 +257,8 @@ def test_orchestrator_smoke_submits_two_short_runs_with_smoke_attempt_ids(
         submitted_commands.extend(commands)
         return [f"local-smoke-{index}" for index, _ in enumerate(commands)]
 
-    monkeypatch.setattr(orchestrator, "_submit_local", fake_submit_local)
-    code = orchestrator.main(
+    monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    code = train.main(
         [
             "--results-root",
             str(results_root),
@@ -292,7 +295,7 @@ def test_orchestrator_smoke_submits_two_short_runs_with_smoke_attempt_ids(
 
 def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
     planned_python = str(ROOT / ".venv" / "bin" / "python")
-    submitted = orchestrator._environment_shell_command(
+    submitted = launch.environment_shell_command(
         [planned_python, "-u", "run.py", "--config", "cfg.yaml", "runtime.device=cpu", "x=y"],
         repo_root=ROOT,
         uv_environment=".venv-gpu",
@@ -338,36 +341,36 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     )
     monkeypatch.setitem(sys.modules, "submitit", fake_submitit)
 
-    cpu_args = orchestrator.parse_args(["--backend", "submitit"])
-    assert orchestrator._slurm_parameters(cpu_args, profile="cpu") == {
+    cpu_args = train.parse_args(["--backend", "submitit"])
+    assert launch.slurm_parameters(cpu_args, profile="cpu") == {
         "slurm_partition": "seas_compute,kozinsky_lab,sapphire",
         "timeout_min": 480,
         "mem_gb": 32,
         "cpus_per_task": 8,
         "tasks_per_node": 1,
     }
-    cuda_args = orchestrator.parse_args(["--backend", "submitit", "--cuda"])
-    cuda_slurm = orchestrator._slurm_parameters(cuda_args, profile="cuda")
+    cuda_args = train.parse_args(["--backend", "submitit", "--cuda"])
+    cuda_slurm = launch.slurm_parameters(cuda_args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert cuda_slurm["gpus_per_node"] == 1
-    smoke_cpu = orchestrator._slurm_parameters(cpu_args, profile="cpu", smoke=True)
+    smoke_cpu = launch.slurm_parameters(cpu_args, profile="cpu", smoke=True)
     assert smoke_cpu["slurm_partition"] == "test"
     assert smoke_cpu["timeout_min"] == 15
     assert smoke_cpu["mem_gb"] == 16
     assert smoke_cpu["cpus_per_task"] == 4
-    smoke_cuda = orchestrator._slurm_parameters(cuda_args, profile="cuda", smoke=True)
+    smoke_cuda = launch.slurm_parameters(cuda_args, profile="cuda", smoke=True)
     assert smoke_cuda["slurm_partition"] == "gpu_test"
     assert smoke_cuda["timeout_min"] == 15
     assert smoke_cuda["gpus_per_node"] == 1
 
-    submitted = orchestrator._environment_shell_command(
+    submitted = launch.environment_shell_command(
         ["python", "-u", "run.py", "--config", "cfg.yaml", "x=y"],
         repo_root=ROOT,
         uv_environment=".venv-gpu",
         uv_extras=["cu126"],
         device="cuda",
     )
-    job_ids = orchestrator._submit_submitit(
+    job_ids = launch.submit_submitit(
         [submitted],
         log_dir=tmp_path / "logs",
         job_name="pair-stability",
@@ -380,7 +383,14 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     assert captured_parameters[0]["gpus_per_node"] == 1
 
 
-def test_validation_records_source_train_attempt(tmp_path: Path) -> None:
+def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
+    checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "latest.json").write_text(json.dumps({"path": "step_000000"}))
+    return checkpoint_dir
+
+
+def test_validate_records_source_train_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     point = {"architecture": "hermite_o3_envelope", "normalization": "N2", "lr": 1.0e-3, "channels": 16, "seed": 0}
     jobs = plan.build_jobs(
@@ -390,20 +400,53 @@ def test_validation_records_source_train_attempt(tmp_path: Path) -> None:
         config=PAIR_STABILITY,
         tags_by_architecture={"hermite_o3_envelope": ["main"]},
     )
-    validation_plan = plan.plan_validation_attempt(
-        jobs[0],
+    _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T1")
+    args = validate.parse_args(["--backend", "local", "--train-attempt-id", "T1", "--attempt-id", "V1"])
+    validation_jobs, skipped = validate.plan_validation_jobs(
+        jobs,
+        args=args,
         results_root=results_root,
-        train_attempt_id="T1",
-        validation_attempt_id="V1",
+        grid_attempt_id="G1",
         validation_config=PAIR_VALIDATION,
     )
+    assert skipped == []
+    validation_plan = validation_jobs[0]
     source_path = Path(validation_plan["validation_attempt_dir"]) / "source_train_attempt.json"
     assert source_path.is_file()
     source = json.loads(source_path.read_text())
     assert source["run_id"] == TARGET_RUN_ID
+    assert source["grid_attempt_id"] == "G1"
     assert source["train_attempt_id"] == "T1"
     assert source["checkpoint_path"].endswith("checkpoints")
     assert "load.path=" in validation_plan["command"]
+
+
+def test_validate_auto_selection_ignores_smoke_train_attempts(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    point = {"architecture": "hermite_o3_envelope", "normalization": "N2", "lr": 1.0e-3, "channels": 16, "seed": 0}
+    jobs = plan.build_jobs(
+        [point],
+        attempt_id="T1",
+        results_root=results_root,
+        config=PAIR_STABILITY,
+        tags_by_architecture={"hermite_o3_envelope": ["main"]},
+    )
+    _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T1")
+    _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T2-smoke")
+
+    assert validate.latest_train_attempt_id(results_root, TARGET_RUN_ID, smoke=False) == "T1"
+    assert validate.latest_train_attempt_id(results_root, TARGET_RUN_ID, smoke=True) == "T2-smoke"
+
+    args = validate.parse_args(["--backend", "local", "--attempt-id", "V1"])
+    validation_jobs, skipped = validate.plan_validation_jobs(
+        jobs,
+        args=args,
+        results_root=results_root,
+        grid_attempt_id="G1",
+        validation_config=PAIR_VALIDATION,
+    )
+    assert skipped == []
+    assert validation_jobs[0]["train_attempt_id"] == "T1"
 
 
 def test_pair_validation_config_model_and_tasks_instantiate() -> None:

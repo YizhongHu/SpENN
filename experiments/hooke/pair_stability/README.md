@@ -93,21 +93,25 @@ One mode is scanned at a time.
 
 This repo's run entrypoint (`run.py`) is a plain OmegaConf launcher, **not** a
 `@hydra.main` app, so there is no Hydra Submitit command path to reuse and no
-study-specific `sbatch` code is added. The workflow is split into two strict
-stages:
+study-specific `sbatch` code is added. The workflow is split into strict stage
+entrypoints:
 
 - `plan.py` writes the `00_grid` attempt (manifest + `commands.sh`) and submits
   nothing.
-- `orchestrator.py` reads an existing `00_grid` attempt and launches its train
+- `train.py` reads an existing `00_grid` attempt and launches its train
   commands into `01_train` with `--backend local` or `--backend submitit`. It
   does not expand grids or rewrite the `00_grid` manifest.
+- `validate.py` reads `00_grid`, consumes selected `01_train` attempts, writes
+  `source_train_attempt.json`, and launches validation into `02_validation`.
+- `launch.py` is shared by `train.py` and `validate.py`; it owns local/Submitit
+  execution, uv sync/activation, CPU/CUDA profile defaults, and Slurm resources.
 
 This runbook assumes the real scan runs on CUDA through Submitit. The CLI keeps
 CPU as the default for safety, so production launch examples pass `--cuda`
 explicitly.
 
-`orchestrator.py` owns the execution profile. `--cpu` and `--cuda` switch all
-three execution layers together:
+`train.py` and `validate.py` share the same execution profile. `--cpu` and
+`--cuda` switch all three execution layers together:
 
 | profile  | uv environment | uv extra | runtime override | Submitit hardware default |
 |----------|----------------|----------|------------------|---------------------------|
@@ -134,21 +138,21 @@ uv run python experiments/hooke/pair_stability/plan.py
 uv run python experiments/hooke/pair_stability/plan.py --tags main
 ```
 
-### Launch options
+### Train launch options
 
-Smoke launch before the real scan:
+Train smoke before the real scan:
 
 ```bash
 # CUDA Submitit smoke: two jobs, gpu_test partition, 15 minute limit
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda --smoke
 
 # CPU Submitit smoke: two jobs, test partition, 15 minute limit
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cpu --smoke
 
 # Local smoke, useful on an interactive node
-uv run python experiments/hooke/pair_stability/orchestrator.py \
+uv run python experiments/hooke/pair_stability/train.py \
   --backend local --cuda --smoke
 ```
 
@@ -160,11 +164,11 @@ Standard CUDA Submitit launch after smoke passes:
 
 ```bash
 # Submit the latest 00_grid attempt on the GPU partition
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda
 
 # Submit a specific 00_grid attempt
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda \
   --grid-attempt-id 20260619T195112-0400
 ```
@@ -173,15 +177,15 @@ Other supported execution modes:
 
 ```bash
 # CUDA local run, for an interactive GPU node or tiny smoke run
-uv run python experiments/hooke/pair_stability/orchestrator.py \
+uv run python experiments/hooke/pair_stability/train.py \
   --backend local --cuda
 
 # CPU local run, the CLI default profile
-uv run python experiments/hooke/pair_stability/orchestrator.py \
+uv run python experiments/hooke/pair_stability/train.py \
   --backend local --cpu
 
 # CPU Submitit run on a CPU partition
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cpu
 ```
 
@@ -189,14 +193,47 @@ Environment and Slurm overrides:
 
 ```bash
 # Use a different CUDA Torch build
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda \
   --uv-extra cu128
 
 # Use a different GPU partition
-uv run --extra submitit python experiments/hooke/pair_stability/orchestrator.py \
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda \
   --slurm-partition seas_gpu
+```
+
+### Validation launch options
+
+Smoke validation after the train smoke:
+
+```bash
+# CUDA Submitit validation smoke: first two jobs, gpu_test, 15 minute limit
+uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
+  --backend submitit --cuda --smoke
+
+# CPU Submitit validation smoke: first two jobs, test, 15 minute limit
+uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
+  --backend submitit --cpu --smoke
+```
+
+`validate.py --smoke` looks for smoke-marked train attempts, writes smoke-marked
+validation attempts, and overlays small evaluation grids. Real validation does
+not auto-select smoke train attempts.
+
+Standard CUDA Submitit validation after training finishes:
+
+```bash
+# Validate the latest non-smoke train attempts for the latest 00_grid attempt
+uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
+  --backend submitit --cuda
+
+# Validate an exact train attempt and write an exact validation attempt id
+uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
+  --backend submitit --cuda \
+  --grid-attempt-id 20260619T195112-0400 \
+  --train-attempt-id 20260619T195112-0400 \
+  --attempt-id 20260620T090000-0400
 ```
 
 Each planned grid point becomes scalar overrides, e.g.:
@@ -255,6 +292,7 @@ results/
       commands.sh            # exact run.py commands
       grid.yaml              # snapshot of the grid
       pair_stability.yaml    # snapshot of the train config
+      pair_validation.yaml   # snapshot of the validation config
       jobs/{run_id}.json     # per-job spec
     latest.json -> {attempt_id}
   01_train/{run_id}/{attempt_id}/   # source_grid_attempt.json, submission.json, config.yaml, checkpoints/, ...
@@ -271,8 +309,10 @@ results/
 `00_grid/.../manifest.json` is the durable record of planned jobs. Each job
 records its `run_id`, `train_dir`, `validation_dir`, the exact scalar
 `overrides`, the `command`, the resolved `choices`, and the architecture `tags`.
-Submission fields are initialized but not updated there; `orchestrator.py`
-records launch provenance under each `01_train/{run_id}/{attempt_id}/`.
+Submission fields are initialized but not updated there; `train.py` records
+launch provenance under each `01_train/{run_id}/{attempt_id}/`, and
+`validate.py` records validation launch provenance under
+`02_validation/{run_id}/{attempt_id}/`.
 
 ## Collect and select
 
@@ -291,10 +331,11 @@ metrics (`metrics.jsonl`), and `source_train_attempt.json`, and writes
 reads a `03_collect` summary and writes per-architecture champions and a
 selection report, recording the collection attempt it consumed.
 
-The study scripts (`plan.py`, `orchestrator.py`, `collect.py`,
+The study scripts (`plan.py`, `train.py`, `validate.py`, `collect.py`,
 `select_champions.py`) share their stage-layout vocabulary,
 attempt-id/timezone helpers, run-id grammar, JSON IO, and staged-directory path
-helpers through `run_utils.py`; each script keeps only its own stage logic.
+helpers through `run_utils.py`; `train.py` and `validate.py` additionally share
+execution mechanics through `launch.py`.
 
 ## Tests
 

@@ -31,7 +31,6 @@ from run_utils import (
     GRID_AXES,
     STAGE_GRID,
     STAGE_TRAIN,
-    STAGE_VALIDATION,
     grid_attempt_dir,
     new_attempt_id,
     resolve_timezone,
@@ -39,7 +38,6 @@ from run_utils import (
     stage_dir,
     train_attempt_dir,
     train_run_dir,
-    validation_attempt_dir,
     validation_run_dir,
     write_json,
     write_latest,
@@ -123,30 +121,6 @@ def train_overrides(
     overrides = [
         *_run_parameter_overrides(point),
         f"run.root={stage_dir(results_root, STAGE_TRAIN)}",
-        "run.layout=flat",
-        f"run.run_id={run_id}/{attempt_id}",
-        f"study.attempt_id={attempt_id}",
-    ]
-    if timezone is not None:
-        overrides.append(f"run.timezone={timezone}")
-    return overrides
-
-
-def validation_overrides(
-    point: dict[str, Any],
-    *,
-    run_id: str,
-    attempt_id: str,
-    results_root: str | Path,
-    checkpoint_path: str | Path,
-    timezone: str | None = None,
-) -> list[str]:
-    """Return scalar OmegaConf-style overrides for one validation job."""
-
-    overrides = [
-        *_run_parameter_overrides(point),
-        f"load.path={checkpoint_path}",
-        f"run.root={stage_dir(results_root, STAGE_VALIDATION)}",
         "run.layout=flat",
         f"run.run_id={run_id}/{attempt_id}",
         f"study.attempt_id={attempt_id}",
@@ -261,10 +235,14 @@ def write_grid_attempt(
     config_text = Path(config).read_text() if Path(config).exists() else ""
     (attempt / "pair_stability.yaml").write_text(config_text)
 
-    # Exact commands that the train orchestrator will read from this attempt.
+    # Exact commands that train.py will read from this attempt.
     lines = ["#!/usr/bin/env bash", "set -euo pipefail", "", f"# pair_stability 00_grid attempt {attempt_id}", ""]
     lines += [job["command"] for job in jobs]
     (attempt / "commands.sh").write_text("\n".join(lines) + "\n")
+
+    validation_config = grid_data.get("validation_config") if isinstance(grid_data, dict) else None
+    if validation_config is not None and Path(validation_config).exists():
+        (attempt / "pair_validation.yaml").write_text(Path(validation_config).read_text())
 
     # Per-job specs for downstream stages.
     for job in jobs:
@@ -272,49 +250,6 @@ def write_grid_attempt(
 
     write_latest(stage_dir(results_root, STAGE_GRID), attempt_id)
     return attempt
-
-
-def plan_validation_attempt(
-    job: dict[str, Any],
-    *,
-    results_root: str | Path,
-    train_attempt_id: str,
-    validation_attempt_id: str,
-    validation_config: str | Path,
-    python: str = "python",
-    timezone: str | None = None,
-) -> dict[str, Any]:
-    """Plan one validation attempt and record the train attempt it consumes."""
-
-    run_id = str(job["run_id"])
-    point = {axis: job["choices"][axis] for axis in GRID_AXES}
-    train_attempt = train_attempt_dir(results_root, run_id, train_attempt_id)
-    checkpoint_path = train_attempt / "checkpoints"
-    validation_attempt = validation_attempt_dir(results_root, run_id, validation_attempt_id)
-
-    source = {
-        "run_id": run_id,
-        "train_attempt_id": train_attempt_id,
-        "train_dir": str(train_run_dir(results_root, run_id)),
-        "train_attempt_dir": str(train_attempt),
-        "checkpoint_path": str(checkpoint_path),
-    }
-    write_json(validation_attempt / "source_train_attempt.json", source)
-
-    overrides = validation_overrides(
-        point,
-        run_id=run_id,
-        attempt_id=validation_attempt_id,
-        results_root=results_root,
-        checkpoint_path=checkpoint_path,
-        timezone=timezone,
-    )
-    return {
-        "run_id": run_id,
-        "validation_attempt_dir": str(validation_attempt),
-        "source_train_attempt": source,
-        "command": shlex.join(command_for(validation_config, overrides, python=python)),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +280,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="python",
         help=(
             "Python executable name recorded in planned commands. The train "
-            "orchestrator chooses the CPU/CUDA uv environment at launch time."
+            "launcher chooses the CPU/CUDA uv environment at launch time."
         ),
     )
     return parser.parse_args(argv)

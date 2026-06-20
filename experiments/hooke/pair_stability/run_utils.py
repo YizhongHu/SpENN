@@ -1,9 +1,9 @@
 """Shared utilities for the pair-stability study scripts (PR8.8).
 
 The stage-layout vocabulary, timezone/attempt-id helpers, run-id grammar, JSON
-IO, and staged-directory path helpers used by ``plan.py``, ``orchestrator.py``,
-``collect.py``, and ``select_champions.py``. Kept stdlib-only so every study
-script can import it without pulling in torch.
+IO, and staged-directory path helpers used by ``plan.py``, ``train.py``,
+``validate.py``, ``collect.py``, and ``select_champions.py``. Kept stdlib-only
+so every study script can import it without pulling in torch.
 
 Result layout (under ``results_root``)::
 
