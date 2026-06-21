@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from spenn.data.batch import ElectronBatch
 from spenn.data.indices import no_repeated_particle_mask, tuple_particle_inputs
 from spenn.data.real import RealFeature, zero_block
+from spenn.nn.basis import ElectronBasisFeatures
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.mlp import MLP
@@ -52,6 +53,11 @@ class Embedding(EquivariantMap):
         Per-particle auxiliary feature widths keyed by ``ElectronBatch.aux``.
         Values must have shape ``[*sample_shape, n_electrons, channels]`` with
         the configured channel count.
+    in_features : int or None, optional
+        Explicit per-particle input width. When set, the order MLPs are sized
+        for this width instead of the derived coordinate/spin/aux width; use it
+        when an :class:`spenn.nn.ElectronBasis` supplies ``one_body`` features
+        whose width is ``basis.out_features``.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -69,6 +75,7 @@ class Embedding(EquivariantMap):
         mlps: Mapping[int, nn.Module] | None = None,
         include_spins: bool = True,
         aux_feature_channels: Mapping[str, int] | None = None,
+        in_features: int | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -82,9 +89,20 @@ class Embedding(EquivariantMap):
         self.include_spins = bool(include_spins)
         aux_feature_channels = {} if aux_feature_channels is None else dict(aux_feature_channels)
         self.aux_feature_channels = _normalize_aux_feature_channels(aux_feature_channels)
-        self.particle_input_channels = self.spatial_dim + (1 if self.include_spins else 0) + sum(
+        # When an ElectronBasis supplies pre-built per-particle features, the
+        # input width is the basis ``out_features`` rather than the raw
+        # coordinate/spin/aux width. ``in_features`` overrides the derived width
+        # so the order MLPs are sized for the basis path.
+        derived_channels = self.spatial_dim + (1 if self.include_spins else 0) + sum(
             self.aux_feature_channels.values()
         )
+        if in_features is not None:
+            if int(in_features) <= 0:
+                raise ValueError(f"in_features must be positive, got {in_features}")
+            self.particle_input_channels = int(in_features)
+        else:
+            self.particle_input_channels = derived_channels
+        self.in_features = None if in_features is None else int(in_features)
         self.order_mlps = nn.ModuleDict()
         supplied = {} if mlps is None else {int(order): module for order, module in mlps.items()}
         for order in range(1, self.max_order + 1):
@@ -104,24 +122,44 @@ class Embedding(EquivariantMap):
         if unknown:
             raise ValueError(f"mlps contains orders outside [1, {self.max_order}]: {unknown}")
 
-    def forward_impl(self, batch: ElectronBatch) -> RealFeature:
-        """Embed an electron batch as persistent real tuple features."""
+    def forward_impl(self, inputs: ElectronBatch | ElectronBasisFeatures) -> RealFeature:
+        """Embed electron inputs as persistent real tuple features.
 
-        flat = batch.flatten_samples()
-        particle_vectors = _particle_vectors(
-            flat,
-            spatial_dim=self.spatial_dim,
-            include_spins=self.include_spins,
-            aux_feature_channels=self.aux_feature_channels,
-        )
-        blocks = [zero_block(batch_size=flat.batch_size, device=flat.device, dtype=flat.dtype)]
+        Accepts either a raw :class:`ElectronBatch` (the per-particle vector is
+        built from coordinates, spins, and aux features) or an
+        :class:`ElectronBasisFeatures` whose ``one_body`` tensor is used directly
+        as the per-particle vector. The tuple construction, per-order MLPs, and
+        repeated-particle masking are identical for both paths.
+        """
+
+        if isinstance(inputs, ElectronBasisFeatures):
+            particle_vectors = inputs.one_body.reshape(-1, inputs.n_electrons, inputs.n_features)
+            n_electrons = inputs.n_electrons
+        else:
+            flat = inputs.flatten_samples()
+            particle_vectors = _particle_vectors(
+                flat,
+                spatial_dim=self.spatial_dim,
+                include_spins=self.include_spins,
+                aux_feature_channels=self.aux_feature_channels,
+            )
+            n_electrons = flat.n_electrons
+        if particle_vectors.shape[-1] != self.particle_input_channels:
+            raise ValueError(
+                f"Embedding expected per-particle width {self.particle_input_channels}, "
+                f"got {particle_vectors.shape[-1]}"
+            )
+        batch_size = int(particle_vectors.shape[0])
+        device = particle_vectors.device
+        dtype = particle_vectors.dtype
+        blocks = [zero_block(batch_size=batch_size, device=device, dtype=dtype)]
         for order in range(1, self.max_order + 1):
-            inputs = tuple_particle_inputs(particle_vectors, order)
-            block = self.order_mlps[str(order)](inputs).movedim(-1, 1)
-            block = block * no_repeated_particle_mask(flat.n_electrons, order, device=flat.device).reshape(
+            tuple_inputs = tuple_particle_inputs(particle_vectors, order)
+            block = self.order_mlps[str(order)](tuple_inputs).movedim(-1, 1)
+            block = block * no_repeated_particle_mask(n_electrons, order, device=device).reshape(
                 1,
                 1,
-                *((flat.n_electrons,) * order),
+                *((n_electrons,) * order),
             ).to(dtype=block.dtype)
             blocks.append(block)
         return RealFeature(blocks)

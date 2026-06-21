@@ -9,7 +9,7 @@ from torch import nn
 from spenn.data.irrep import IrrepInteraction
 from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
-from spenn.nn.activation import Activation, GatedNormActivation
+from spenn.nn.activation import Activation, GaussianActivation, GatedNormActivation
 from spenn.reps import specht_irrep
 
 
@@ -30,6 +30,20 @@ def _interaction() -> tuple[IrrepInteraction, Partition, torch.Tensor]:
 
 def test_activation_modules_inherit_activation_template() -> None:
     assert issubclass(GatedNormActivation, Activation)
+
+
+def test_gaussian_activation_matches_a_exp_ax_squared() -> None:
+    activation = GaussianActivation(amplitude=2.0, quadratic_coefficient=-0.5).to(dtype=torch.float64)
+    x = torch.tensor([-2.0, 0.0, 3.0], dtype=torch.float64)
+
+    torch.testing.assert_close(activation(x), 2.0 * torch.exp(-0.5 * x.square()))
+
+
+def test_gaussian_activation_can_make_coefficients_trainable() -> None:
+    activation = GaussianActivation(amplitude=2.0, quadratic_coefficient=-0.5, trainable=True)
+
+    assert isinstance(activation.amplitude, nn.Parameter)
+    assert isinstance(activation.quadratic_coefficient, nn.Parameter)
 
 
 def test_gated_norm_activation_uses_configured_gate_module_and_preserves_shape() -> None:

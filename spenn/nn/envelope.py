@@ -179,6 +179,35 @@ class HarmonicConfinement(Envelope):
         return output
 
 
+class HookeGaussianEnvelope(HarmonicConfinement):
+    """Gaussian ground-state envelope for the Hooke / harmonic oscillator.
+
+    This is :class:`HarmonicConfinement` parametrized by the oscillator
+    frequency ``omega`` instead of a raw coefficient. The fixed ground-state
+    Gaussian uses ``coefficient = omega / 2``, contributing
+
+    ``log |psi| <- log |psi| - (omega / 2) * sum_i |r_i|^2``.
+
+    It supplies the common output-side asymptotic prior shared by every main
+    architecture choice in the pair-stability study.
+
+    Parameters
+    ----------
+    omega : float
+        Positive oscillator frequency.
+    enabled : bool, optional
+        Whether this envelope contributes to the output.
+    trainable : bool, optional
+        Whether to optimize the coefficient through a softplus parametrization.
+    """
+
+    def __init__(self, *, omega: float, enabled: bool = True, trainable: bool = False) -> None:
+        if omega <= 0.0:
+            raise ValueError(f"omega must be positive, got {omega}")
+        super().__init__(enabled=enabled, coefficient=float(omega) / 2.0, trainable=trainable)
+        self.omega = float(omega)
+
+
 class ElectronElectronCusp(Envelope):
     """Spin-aware analytic electron-electron cusp envelope.
 
@@ -297,5 +326,6 @@ __all__ = [
     "ElectronElectronCusp",
     "Envelope",
     "HarmonicConfinement",
+    "HookeGaussianEnvelope",
     "rational_pair_cusp",
 ]

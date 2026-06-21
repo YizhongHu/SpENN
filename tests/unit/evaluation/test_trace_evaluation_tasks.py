@@ -177,6 +177,20 @@ def test_trace_equivariance_calculator_compares_particle_tensor(tmp_path: Path) 
     assert metrics["max_abs_error"] == pytest.approx(0.0)
 
 
+def test_trace_equivariance_rejects_vacuous_trace(tmp_path: Path) -> None:
+    generated = PermutationOrbitGenerator(
+        base_generator=_StaticGenerator(),
+        permutations=[torch.tensor([1, 0])],
+    ).generate(model=None, context=_context(tmp_path))
+
+    with pytest.raises(ValueError, match="zero trace entries"):
+        TraceEquivarianceCalculator().calculate(
+            model=_FermionicModel(),
+            bundle=_bundle(generated),
+            context=_context(tmp_path),
+        )
+
+
 def test_feature_and_readout_trace_summaries(tmp_path: Path) -> None:
     generated = _StaticGenerator().generate(model=None, context=_context(tmp_path))
     feature_bundle = FeatureTraceCalculator(slots=["features"]).calculate(
