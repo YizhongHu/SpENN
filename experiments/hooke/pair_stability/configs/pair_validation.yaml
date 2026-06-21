@@ -3,8 +3,8 @@
 # =============================================================================
 #
 # Restores a trained pair-stability checkpoint and runs the EvaluationTask-based
-# physical-correctness suite (cusp, tail, stratified geometry, Hooke orbital,
-# energy). The architecture/normalization choice MUST match the trained run, so
+# physical-correctness suite (cusp, tail, stratified geometry, Hooke orbital).
+# The architecture/normalization choice MUST match the trained run, so
 # validation planning passes the same run_parameters used at training time.
 #
 #   uv run python run.py --config experiments/hooke/pair_stability/configs/pair_validation.yaml \
@@ -53,10 +53,6 @@ system:
   spin:
     n_up: 1
     n_down: 1
-
-references:
-  # Exact ground-state energy of the omega=0.5 Hooke singlet (Taut 1993).
-  exact_energy: 2.0
 
 # Scalar run parameters; must match the trained run being evaluated.
 run_parameters:
@@ -226,7 +222,6 @@ evaluator:
     - ${evaluation_tasks.tail}
     - ${evaluation_tasks.stratified_geometry}
     - ${evaluation_tasks.hooke_orbital}
-    - ${evaluation_tasks.energy}
 
 evaluation_tasks:
   cusp:
@@ -320,26 +315,6 @@ evaluation_tasks:
     summaries:
       - _target_: spenn.evaluation.summaries.LocalEnergySummary
       - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
-      - _target_: spenn.evaluation.summaries.SampledRecordWriter
-  energy:
-    name: energy
-    namespace: ${evaluation.namespace}/energy
-    output_dir: ${run.dir}/energy
-    generator:
-      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
-      n_samples: 256
-      omega: ${system.omega}
-      seed: ${evaluation.seed}
-    calculators:
-      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
-        hamiltonian_terms: ${hamiltonian_terms}
-        return_terms: ${evaluation.return_terms}
-        chunk_size: 256
-      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
-    summaries:
-      - _target_: spenn.evaluation.summaries.LocalEnergySummary
-      - _target_: spenn.evaluation.summaries.ReferenceEnergySummary
-        reference_energy: ${references.exact_energy}
       - _target_: spenn.evaluation.summaries.SampledRecordWriter
 
 # -----------------------------------------------------------------------------

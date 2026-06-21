@@ -84,7 +84,7 @@ One mode is scanned at a time.
   `choices.normalization`) using the selected keys.
 - `configs/pair_validation.yaml` — `EvaluationTask`-based validation/evaluation
   base. Restores a trained checkpoint and runs the physical-correctness suite
-  (`cusp`, `tail`, `stratified_geometry`, `hooke_orbital`, `energy`). The
+  (`cusp`, `tail`, `stratified_geometry`, `hooke_orbital`). The
   architecture/normalization must match the trained run.
 - `configs/grid.yaml` — the `architecture x normalization x lr x channels x seed`
   grid.
@@ -125,8 +125,8 @@ another extra such as `cu128` or `cu130`.
 
 Submitit launches are always Slurm arrays via `submitit.AutoExecutor.map_array`,
 not one independent `sbatch` per planned run. The default full-run array cap is
-8 simultaneous tasks (`--slurm-array-parallelism 8`); smoke runs cap at 2. For a
-540-run grid this produces one `--array=0-539%8` submission instead of 540
+16 simultaneous tasks (`--slurm-array-parallelism 16`); smoke runs cap at 2. For a
+540-run grid this produces one `--array=0-539%16` submission instead of 540
 separate jobs.
 
 The planner is the source of truth for the study timezone (`--timezone`, default
@@ -309,7 +309,7 @@ results/
   01_train/{run_id}/{attempt_id}/   # source_grid_attempt.json, submission.json, config.yaml, checkpoints/, ...
   02_validation/{run_id}/{attempt_id}/
       source_train_attempt.json     # train attempt + checkpoint consumed
-      cusp/ tail/ stratified_geometry/ hooke_orbital/ energy/   # per-task output_dir
+      cusp/ tail/ stratified_geometry/ hooke_orbital/   # per-task output_dir
       diagnostics/index.json, status.json, metrics.*
   03_collect/{attempt_id}/          # summary.csv, failures.csv, collection_report.json, source_*.json
   04_select/{attempt_id}/           # champions.csv, selection_report.json, source_collection_attempt.json
@@ -331,16 +331,20 @@ launch provenance under each `01_train/{run_id}/{attempt_id}/`, and
 # Collect the latest validation attempt per run id into a 03_collect attempt
 uv run python experiments/hooke/pair_stability/collect.py
 
-# Select one champion per architecture (lowest eval reference-energy error)
-uv run python experiments/hooke/pair_stability/select_champions.py \
-  --metric eval/energy/reference_abs_error --mode min
+# Select one champion per architecture by the study's local-energy hierarchy
+uv run python experiments/hooke/pair_stability/select_champions.py
 ```
 
 `collect.py` walks `02_validation`, reads each attempt's status, evaluation
 metrics (`metrics.jsonl`), and `source_train_attempt.json`, and writes
 `summary.csv` / `failures.csv` plus collection provenance. `select_champions.py`
 reads a `03_collect` summary and writes per-architecture champions and a
-selection report, recording the collection attempt it consumed.
+selection report, recording the collection attempt it consumed. The default
+selector compares local-energy means with their standard-error bars in this
+order: `stratified_geometry`, `tail`, `cusp`, `hooke_orbital`. If the current
+leader's error bar overlaps another row's error bar, those rows remain tied and
+the next local-energy task breaks the tie. If the hierarchy is exhausted, the
+shortest available wall time wins.
 
 The study scripts (`plan.py`, `train.py`, `validate.py`, `collect.py`,
 `select_champions.py`) share their stage-layout vocabulary,

@@ -1,9 +1,10 @@
 """Select pair-stability champions from a collection attempt (PR8.8).
 
 Reads a ``03_collect`` summary table and selects one champion per architecture
-(plus an overall champion) by a configurable metric, writing a ``04_select``
-attempt with ``champions.csv``, ``selection_report.json``, and an explicit
-pointer to the collection attempt consumed.
+(plus an overall champion) by the study's ordered local-energy hierarchy. Energy
+means whose standard-error bars overlap stay tied and advance to the next
+diagnostic; wall time breaks any remaining tie. An explicit scalar metric can
+still be passed for debugging overrides.
 """
 
 from __future__ import annotations
@@ -26,9 +27,8 @@ from run_utils import (
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
-# Lower reference energy error is better; this metric is emitted by the energy
-# task's ReferenceEnergySummary. Override with --metric/--mode as needed.
-DEFAULT_METRIC = "eval/energy/reference_abs_error"
+ENERGY_TASK_ORDER = ("stratified_geometry", "tail", "cusp", "hooke_orbital")
+WALL_TIME_METRICS = ("runtime/wall_time_sec", "eval/perf/wall_time_sec")
 SUCCESS_STATUSES = {"completed", "success"}
 
 
@@ -58,8 +58,113 @@ def _metric_value(row: dict[str, Any], metric: str, *, mode: str) -> float:
     return value
 
 
+def _as_float(value: Any, *, default: float = math.inf) -> float:
+    """Return ``value`` as a finite float, or ``default``."""
+
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _energy_mean_metric(task: str) -> str:
+    return f"eval/{task}/local_energy_mean"
+
+
+def _energy_stderr_metric(task: str) -> str:
+    return f"eval/{task}/local_energy_stderr"
+
+
+def _task_has_energy(rows: Sequence[dict[str, Any]], task: str) -> bool:
+    """Return whether any row has a finite energy for ``task``."""
+
+    metric = _energy_mean_metric(task)
+    return any(math.isfinite(_as_float(row.get(metric))) for row in rows)
+
+
+def _clearly_beats(a: dict[str, Any], b: dict[str, Any], task: str) -> bool:
+    """Return whether row ``a`` beats row ``b`` by non-overlapping error bars."""
+
+    mean_metric = _energy_mean_metric(task)
+    stderr_metric = _energy_stderr_metric(task)
+    a_mean = _as_float(a.get(mean_metric))
+    b_mean = _as_float(b.get(mean_metric))
+    if not math.isfinite(a_mean) or not math.isfinite(b_mean):
+        return math.isfinite(a_mean) and not math.isfinite(b_mean)
+    a_stderr = max(0.0, _as_float(a.get(stderr_metric), default=0.0))
+    b_stderr = max(0.0, _as_float(b.get(stderr_metric), default=0.0))
+    return a_mean + a_stderr < b_mean - b_stderr
+
+
+def _wall_time(row: dict[str, Any]) -> float:
+    for metric in WALL_TIME_METRICS:
+        value = _as_float(row.get(metric))
+        if math.isfinite(value):
+            return value
+    return math.inf
+
+
+def _row_label(row: dict[str, Any]) -> str:
+    return str(row.get("run_id", ""))
+
+
+def _select_by_energy_ladder(rows: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], list[str], str, str]:
+    """Select a row by ordered local-energy diagnostics and wall-time fallback."""
+
+    remaining = list(rows)
+    decisions: list[str] = []
+    selected_metric = ""
+    selected_value = ""
+
+    for task in ENERGY_TASK_ORDER:
+        if not _task_has_energy(remaining, task):
+            decisions.append(f"{task}: skipped, no finite local-energy metric in the current cohort")
+            continue
+        metric = _energy_mean_metric(task)
+        finite_rows = [row for row in remaining if math.isfinite(_as_float(row.get(metric)))]
+        if not finite_rows:
+            decisions.append(f"{task}: skipped, no finite local-energy metric in the current cohort")
+            continue
+        leader = min(finite_rows, key=lambda row: (_as_float(row.get(metric)), _row_label(row)))
+        next_remaining = [row for row in finite_rows if row is leader or not _clearly_beats(leader, row, task)]
+        selected_metric = metric
+        selected_value = str(leader.get(metric, ""))
+        if len(next_remaining) == 1:
+            decisions.append(f"{task}: {_row_label(leader)} clearly wins by non-overlapping error bars")
+            return leader, decisions, selected_metric, selected_value
+        decisions.append(
+            f"{task}: {len(next_remaining)} rows remain because their error bars overlap the leader"
+        )
+        remaining = next_remaining
+
+    selected_metric = "wall_time_sec"
+    leader = min(remaining, key=lambda row: (_wall_time(row), _row_label(row)))
+    selected_value = "" if not math.isfinite(_wall_time(leader)) else str(_wall_time(leader))
+    if len(remaining) == 1:
+        decisions.append("all energy tie-breakers reduced the cohort to one row")
+    else:
+        decisions.append("energy tie-breakers exhausted; selected the shortest available wall time")
+    return leader, decisions, selected_metric, selected_value
+
+
+def _select_by_single_metric(
+    rows: Sequence[dict[str, Any]], *, metric: str, mode: str
+) -> tuple[dict[str, Any], list[str], str, str]:
+    """Select a row by one scalar metric for explicit CLI overrides."""
+
+    def sort_key(row: dict[str, Any]) -> tuple[float, str]:
+        value = _metric_value(row, metric, mode=mode)
+        return (value if mode == "min" else -value, _row_label(row))
+
+    best = min(rows, key=sort_key)
+    return best, [f"selected by explicit scalar metric {metric!r} ({mode})"], metric, str(best.get(metric, ""))
+
+
 def select_champions(
-    rows: Sequence[dict[str, Any]], *, metric: str, mode: str, group_by: str = "architecture"
+    rows: Sequence[dict[str, Any]], *, metric: str | None = None, mode: str = "min", group_by: str = "architecture"
 ) -> dict[str, Any]:
     """Select the best row per group plus the overall best."""
 
@@ -70,17 +175,20 @@ def select_champions(
     if used_fallback:
         candidates = list(rows)
 
-    def sort_key(row: dict[str, Any]) -> tuple[float, str]:
-        value = _metric_value(row, metric, mode=mode)
-        return (value if mode == "min" else -value, str(row.get("run_id", "")))
-
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in candidates:
         groups.setdefault(str(row.get(group_by, "")), []).append(row)
 
     champions = []
+    decisions_by_group: dict[str, list[str]] = {}
     for group, group_rows in sorted(groups.items()):
-        best = min(group_rows, key=sort_key)
+        if metric is None:
+            best, decisions, selected_metric, selected_value = _select_by_energy_ladder(group_rows)
+        else:
+            best, decisions, selected_metric, selected_value = _select_by_single_metric(
+                group_rows, metric=metric, mode=mode
+            )
+        decisions_by_group[group] = decisions
         champions.append(
             {
                 group_by: group,
@@ -89,15 +197,30 @@ def select_champions(
                 "lr": best.get("lr", ""),
                 "channels": best.get("channels", ""),
                 "seed": best.get("seed", ""),
-                "metric": metric,
-                "metric_value": best.get(metric, ""),
+                "metric": selected_metric,
+                "metric_value": selected_value,
             }
         )
 
-    overall = min(candidates, key=sort_key) if candidates else None
+    if candidates:
+        if metric is None:
+            overall, overall_decisions, overall_metric, overall_metric_value = _select_by_energy_ladder(candidates)
+        else:
+            overall, overall_decisions, overall_metric, overall_metric_value = _select_by_single_metric(
+                candidates, metric=metric, mode=mode
+            )
+    else:
+        overall = None
+        overall_decisions = []
+        overall_metric = ""
+        overall_metric_value = ""
     return {
         "champions": champions,
         "overall_champion": None if overall is None else overall.get("run_id", ""),
+        "overall_metric": overall_metric,
+        "overall_metric_value": overall_metric_value,
+        "overall_decisions": overall_decisions,
+        "decisions_by_group": decisions_by_group,
         "used_status_fallback": used_fallback,
         "n_candidates": len(candidates),
     }
@@ -121,7 +244,7 @@ def select(
     results_root: str | Path,
     collection_attempt_id: str | None = None,
     select_attempt_id: str | None = None,
-    metric: str = DEFAULT_METRIC,
+    metric: str | None = None,
     mode: str = "min",
     group_by: str = "architecture",
 ) -> dict[str, Any]:
@@ -155,9 +278,15 @@ def select(
         "metric": metric,
         "mode": mode,
         "group_by": group_by,
+        "energy_task_order": list(ENERGY_TASK_ORDER),
+        "wall_time_metrics": list(WALL_TIME_METRICS),
         "n_candidates": selection["n_candidates"],
         "n_champions": len(champions),
         "overall_champion": selection["overall_champion"],
+        "overall_metric": selection["overall_metric"],
+        "overall_metric_value": selection["overall_metric_value"],
+        "overall_decisions": selection["overall_decisions"],
+        "decisions_by_group": selection["decisions_by_group"],
         "used_status_fallback": selection["used_status_fallback"],
         "champions": champions,
     }
@@ -172,7 +301,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--collection-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None, help="Select attempt id (defaults to now).")
-    parser.add_argument("--metric", default=DEFAULT_METRIC)
+    parser.add_argument(
+        "--metric",
+        default=None,
+        help="Optional scalar metric override. By default, use the ordered local-energy tie-breaker ladder.",
+    )
     parser.add_argument("--mode", choices=["min", "max"], default="min")
     parser.add_argument("--group-by", default="architecture")
     return parser.parse_args(argv)

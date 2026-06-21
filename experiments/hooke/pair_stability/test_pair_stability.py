@@ -346,13 +346,13 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
         "mem_gb": 32,
         "cpus_per_task": 8,
         "tasks_per_node": 1,
-        "slurm_array_parallelism": 8,
+        "slurm_array_parallelism": launch.DEFAULT_ARRAY_PARALLELISM,
     }
     cuda_args = train.parse_args(["--backend", "submitit", "--cuda"])
     cuda_slurm = launch.slurm_parameters(cuda_args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert cuda_slurm["gpus_per_node"] == 1
-    assert cuda_slurm["slurm_array_parallelism"] == 8
+    assert cuda_slurm["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
     smoke_cpu = launch.slurm_parameters(cpu_args, profile="cpu", smoke=True)
     assert smoke_cpu["slurm_partition"] == "test"
     assert smoke_cpu["timeout_min"] == 15
@@ -384,7 +384,7 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     assert captured_commands == [submitted, submitted]
     assert captured_parameters[0]["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert captured_parameters[0]["gpus_per_node"] == 1
-    assert captured_parameters[0]["slurm_array_parallelism"] == 8
+    assert captured_parameters[0]["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
@@ -470,7 +470,6 @@ def test_pair_validation_config_model_and_tasks_instantiate() -> None:
         "tail",
         "stratified_geometry",
         "hooke_orbital",
-        "energy",
     ]
     # Every evaluation task routes its artifacts under the validation run dir.
     for task in evaluator.tasks:
@@ -485,17 +484,18 @@ def tmp_run_dir() -> Path:
 # Collection / selection
 # ---------------------------------------------------------------------------
 def _fake_validation_attempt(
-    results_root: Path, run_id: str, attempt_id: str, *, status: str, energy_error: float
+    results_root: Path, run_id: str, attempt_id: str, *, status: str, stratified_energy: float
 ) -> None:
     attempt = run_utils.validation_attempt_dir(results_root, run_id, attempt_id)
     (attempt / "cusp").mkdir(parents=True, exist_ok=True)
     (attempt / "tail").mkdir(parents=True, exist_ok=True)
+    (attempt / "stratified_geometry").mkdir(parents=True, exist_ok=True)
     (attempt / "status.json").write_text(json.dumps({"status": status}))
     (attempt / "source_train_attempt.json").write_text(
         json.dumps({"run_id": run_id, "train_attempt_id": "T1", "checkpoint_path": "ckpt"})
     )
     records = [
-        {"namespace": "eval/energy", "metrics": {"reference_abs_error": energy_error, "energy_mean": 2.0}},
+        {"namespace": "eval/stratified_geometry", "metrics": {"local_energy_mean": stratified_energy}},
         {"namespace": "eval/cusp", "metrics": {"opposite_spin_cusp_slope": -0.5}},
     ]
     (attempt / "metrics.jsonl").write_text("\n".join(json.dumps(record) for record in records) + "\n")
@@ -505,8 +505,8 @@ def test_collect_reads_eval_diagnostics_from_validation_attempts(tmp_path: Path)
     results_root = tmp_path / "results"
     good = "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16_seed-0"
     bad = "arch-raw_envelope_norm-N0_lr-1e-3_ch-8_seed-1"
-    _fake_validation_attempt(results_root, good, "V1", status="completed", energy_error=0.01)
-    _fake_validation_attempt(results_root, bad, "V1", status="failed", energy_error=5.0)
+    _fake_validation_attempt(results_root, good, "V1", status="completed", stratified_energy=1.95)
+    _fake_validation_attempt(results_root, bad, "V1", status="failed", stratified_energy=5.0)
 
     result = collect.collect(results_root=results_root, collect_attempt_id="C1")
     attempt = Path(result["attempt_dir"])
@@ -515,7 +515,7 @@ def test_collect_reads_eval_diagnostics_from_validation_attempts(tmp_path: Path)
     summary_rows = list(_read_csv(attempt / "summary.csv"))
     by_run = {row["run_id"]: row for row in summary_rows}
     assert set(by_run) == {good, bad}
-    assert by_run[good]["eval/energy/reference_abs_error"] == "0.01"
+    assert by_run[good]["eval/stratified_geometry/local_energy_mean"] == "1.95"
     assert by_run[good]["train_attempt_id"] == "T1"
     assert by_run[good]["architecture"] == "hermite_o3_envelope"
     assert int(by_run[good]["n_diagnostics"]) >= 2
@@ -535,13 +535,20 @@ def test_select_champions_reads_collection_attempt(tmp_path: Path) -> None:
     rows = [
         {"run_id": "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16_seed-0", "architecture": "hermite_o3_envelope",
          "normalization": "N0", "lr": "1e-3", "channels": "16", "seed": "0", "status": "completed",
-         "eval/energy/reference_abs_error": "0.01"},
+         "eval/stratified_geometry/local_energy_mean": "1.90",
+         "eval/stratified_geometry/local_energy_stderr": "0.20",
+         "eval/tail/local_energy_mean": "2.40",
+         "eval/tail/local_energy_stderr": "0.01"},
         {"run_id": "arch-hermite_o3_envelope_norm-N2_lr-1e-3_ch-16_seed-0", "architecture": "hermite_o3_envelope",
          "normalization": "N2", "lr": "1e-3", "channels": "16", "seed": "0", "status": "completed",
-         "eval/energy/reference_abs_error": "0.20"},
+         "eval/stratified_geometry/local_energy_mean": "1.95",
+         "eval/stratified_geometry/local_energy_stderr": "0.20",
+         "eval/tail/local_energy_mean": "1.70",
+         "eval/tail/local_energy_stderr": "0.01"},
         {"run_id": "arch-raw_envelope_norm-N0_lr-1e-3_ch-8_seed-0", "architecture": "raw_envelope",
          "normalization": "N0", "lr": "1e-3", "channels": "8", "seed": "0", "status": "completed",
-         "eval/energy/reference_abs_error": "0.05"},
+         "eval/stratified_geometry/local_energy_mean": "3.0",
+         "eval/stratified_geometry/local_energy_stderr": "0.01"},
     ]
     _write_csv(collection / "summary.csv", rows)
 
@@ -553,10 +560,32 @@ def test_select_champions_reads_collection_attempt(tmp_path: Path) -> None:
     assert source["collection_attempt_id"] == "C1"
 
     champions = {row["architecture"]: row for row in _read_csv(attempt / "champions.csv")}
-    # Per architecture, the lowest reference error wins.
-    assert champions["hermite_o3_envelope"]["run_id"].endswith("norm-N0_lr-1e-3_ch-16_seed-0")
+    # Stratified geometry overlaps, so tail local energy breaks the tie.
+    assert champions["hermite_o3_envelope"]["run_id"].endswith("norm-N2_lr-1e-3_ch-16_seed-0")
+    assert champions["hermite_o3_envelope"]["metric"] == "eval/tail/local_energy_mean"
     report = json.loads((attempt / "selection_report.json").read_text())
-    assert report["overall_champion"].endswith("norm-N0_lr-1e-3_ch-16_seed-0")
+    assert report["metric"] is None
+    assert report["energy_task_order"] == ["stratified_geometry", "tail", "cusp", "hooke_orbital"]
+    assert report["overall_champion"].endswith("norm-N2_lr-1e-3_ch-16_seed-0")
+
+
+def test_select_champions_falls_back_to_wall_time_after_energy_ties() -> None:
+    rows = [
+        {"run_id": "slow", "architecture": "raw_envelope", "status": "completed", "runtime/wall_time_sec": "20.0"},
+        {"run_id": "fast", "architecture": "raw_envelope", "status": "completed", "runtime/wall_time_sec": "10.0"},
+    ]
+    for row in rows:
+        for task in select_champions.ENERGY_TASK_ORDER:
+            row[f"eval/{task}/local_energy_mean"] = "2.0"
+            row[f"eval/{task}/local_energy_stderr"] = "0.1"
+
+    selection = select_champions.select_champions(rows)
+
+    assert selection["overall_champion"] == "fast"
+    assert selection["overall_metric"] == "wall_time_sec"
+    champion = selection["champions"][0]
+    assert champion["run_id"] == "fast"
+    assert champion["metric"] == "wall_time_sec"
 
 
 # ---------------------------------------------------------------------------
