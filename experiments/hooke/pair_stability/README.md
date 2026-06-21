@@ -83,8 +83,10 @@ One mode is scanned at a time.
   from the structured choice libraries (`choices.architecture`,
   `choices.normalization`) using the selected keys.
 - `configs/pair_validation.yaml` — `EvaluationTask`-based validation/evaluation
-  base. Restores a trained checkpoint and runs the physical-correctness suite
-  (`cusp`, `tail`, `stratified_geometry`, `hooke_orbital`). The
+  base. Restores a trained checkpoint and runs physical local-energy probes
+  (`cusp`, `tail`, `stratified_geometry`, `hooke_orbital`), full-model
+  antisymmetry, trace equivariance, and feature/readout trace-stability tasks.
+  It does not include exact/reference energy comparison. The
   architecture/normalization must match the trained run.
 - `configs/grid.yaml` — the `architecture x normalization x lr x channels x seed`
   grid.
@@ -309,7 +311,9 @@ results/
   01_train/{run_id}/{attempt_id}/   # source_grid_attempt.json, submission.json, config.yaml, checkpoints/, ...
   02_validation/{run_id}/{attempt_id}/
       source_train_attempt.json     # train attempt + checkpoint consumed
-      cusp/ tail/ stratified_geometry/ hooke_orbital/   # per-task output_dir
+      cusp/ tail/ stratified_geometry/ hooke_orbital/   # local-energy probes
+      full_model_antisymmetry/ trace_equivariance/      # transform/trace checks
+      feature_trace_stability/ readout_trace_stability/ # internal stability checks
       diagnostics/index.json, status.json, metrics.*
   03_collect/{attempt_id}/          # summary.csv, failures.csv, collection_report.json, source_*.json
   04_select/{attempt_id}/           # champions.csv, selection_report.json, source_collection_attempt.json

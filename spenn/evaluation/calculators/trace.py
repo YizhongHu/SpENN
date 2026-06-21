@@ -116,6 +116,8 @@ class TraceEquivarianceCalculator:
                     errors.append(error)
                 if not close:
                     failure_count += 1
+        if compared_entry_count == 0:
+            raise ValueError("TraceEquivarianceCalculator compared zero trace entries")
         device = original.device
         dtype = original.dtype
         error_tensor = torch.tensor(errors, device=device, dtype=dtype)

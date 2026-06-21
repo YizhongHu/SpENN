@@ -156,7 +156,9 @@ class ElectronBasis(EquivariantMap):
             "include_spin": self.include_spin,
             "out_features": self.out_features,
         }
-        return ElectronBasisFeatures(one_body=one_body, metadata=metadata)
+        features = ElectronBasisFeatures(one_body=one_body, metadata=metadata)
+        self.trace("features", features)
+        return features
 
 
 class RawCoordinateBasis(ElectronBasis):

@@ -3,7 +3,10 @@
 # =============================================================================
 #
 # Restores a trained pair-stability checkpoint and runs the EvaluationTask-based
-# physical-correctness suite (cusp, tail, stratified geometry, Hooke orbital).
+# physical-correctness suite (cusp, tail, stratified geometry, Hooke orbital)
+# plus transform/trace stability tasks already implemented in the evaluation
+# stack. Reference-energy comparisons are intentionally not part of this
+# validation config.
 # The architecture/normalization choice MUST match the trained run, so
 # validation planning passes the same run_parameters used at training time.
 #
@@ -222,6 +225,10 @@ evaluator:
     - ${evaluation_tasks.tail}
     - ${evaluation_tasks.stratified_geometry}
     - ${evaluation_tasks.hooke_orbital}
+    - ${evaluation_tasks.full_model_antisymmetry}
+    - ${evaluation_tasks.trace_equivariance}
+    - ${evaluation_tasks.feature_trace_stability}
+    - ${evaluation_tasks.readout_trace_stability}
 
 evaluation_tasks:
   cusp:
@@ -295,6 +302,8 @@ evaluation_tasks:
       - _target_: spenn.evaluation.calculators.WavefunctionCalculator
     summaries:
       - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
       - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
       - _target_: spenn.evaluation.summaries.SampledRecordWriter
   hooke_orbital:
@@ -314,8 +323,90 @@ evaluation_tasks:
       - _target_: spenn.evaluation.calculators.WavefunctionCalculator
     summaries:
       - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
       - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
       - _target_: spenn.evaluation.summaries.SampledRecordWriter
+  full_model_antisymmetry:
+    name: full_model_antisymmetry
+    namespace: ${evaluation.namespace}/full_model_antisymmetry
+    output_dir: ${run.dir}/full_model_antisymmetry
+    generator:
+      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 128
+        seed: ${evaluation.seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.FullModelAntisymmetryCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
+  trace_equivariance:
+    name: trace_equivariance
+    namespace: ${evaluation.namespace}/trace_equivariance
+    output_dir: ${run.dir}/trace_equivariance
+    generator:
+      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 64
+        seed: ${evaluation.seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.TraceEquivarianceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TraceEquivarianceSummary
+  feature_trace_stability:
+    name: feature_trace_stability
+    namespace: ${evaluation.namespace}/feature_trace_stability
+    output_dir: ${run.dir}/feature_trace_stability
+    generator:
+      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      n_samples: 128
+      seed: ${evaluation.seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.FeatureTraceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.FeatureTraceSummary
+  readout_trace_stability:
+    name: readout_trace_stability
+    namespace: ${evaluation.namespace}/readout_trace_stability
+    output_dir: ${run.dir}/readout_trace_stability
+    generator:
+      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      n_samples: 128
+      seed: ${evaluation.seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.ReadoutTraceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.ReadoutTraceSummary
 
 # -----------------------------------------------------------------------------
 # Model: identical wiring to pair_stability.yaml so the checkpoint restores.

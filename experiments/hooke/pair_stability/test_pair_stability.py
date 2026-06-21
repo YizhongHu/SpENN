@@ -470,6 +470,10 @@ def test_pair_validation_config_model_and_tasks_instantiate() -> None:
         "tail",
         "stratified_geometry",
         "hooke_orbital",
+        "full_model_antisymmetry",
+        "trace_equivariance",
+        "feature_trace_stability",
+        "readout_trace_stability",
     ]
     # Every evaluation task routes its artifacts under the validation run dir.
     for task in evaluator.tasks:
@@ -487,9 +491,8 @@ def _fake_validation_attempt(
     results_root: Path, run_id: str, attempt_id: str, *, status: str, stratified_energy: float
 ) -> None:
     attempt = run_utils.validation_attempt_dir(results_root, run_id, attempt_id)
-    (attempt / "cusp").mkdir(parents=True, exist_ok=True)
-    (attempt / "tail").mkdir(parents=True, exist_ok=True)
-    (attempt / "stratified_geometry").mkdir(parents=True, exist_ok=True)
+    for task_name in collect.TASK_NAMES:
+        (attempt / task_name).mkdir(parents=True, exist_ok=True)
     (attempt / "status.json").write_text(json.dumps({"status": status}))
     (attempt / "source_train_attempt.json").write_text(
         json.dumps({"run_id": run_id, "train_attempt_id": "T1", "checkpoint_path": "ckpt"})
@@ -518,7 +521,7 @@ def test_collect_reads_eval_diagnostics_from_validation_attempts(tmp_path: Path)
     assert by_run[good]["eval/stratified_geometry/local_energy_mean"] == "1.95"
     assert by_run[good]["train_attempt_id"] == "T1"
     assert by_run[good]["architecture"] == "hermite_o3_envelope"
-    assert int(by_run[good]["n_diagnostics"]) >= 2
+    assert int(by_run[good]["n_diagnostics"]) == len(collect.TASK_NAMES)
 
     failures = list(_read_csv(attempt / "failures.csv"))
     assert {row["run_id"] for row in failures} == {bad}

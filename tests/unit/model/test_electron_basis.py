@@ -8,6 +8,7 @@ import torch
 from spenn.data.batch import ElectronBatch
 from spenn.nn import HookeHermiteBasis, HookeOrbitalBasis, RawCoordinateBasis
 from spenn.nn.basis import ElectronBasisFeatures
+from spenn.trace import Trace
 from tests.helpers.equivariance import assert_equivariant_all
 
 
@@ -48,6 +49,19 @@ def test_basis_output_is_typed_features_not_batch() -> None:
         assert not isinstance(features, ElectronBatch)
         assert features.one_body.shape[:-1] == batch.positions.shape[:-1]
         assert features.n_electrons == batch.n_electrons
+
+
+def test_basis_records_features_to_trace() -> None:
+    batch = _batch()
+    basis = RawCoordinateBasis(spatial_dim=3, trace_name="basis")
+
+    with Trace.capture(model=basis) as trace:
+        basis(batch)
+
+    assert any(
+        entry.slot == "features" and isinstance(entry.value, ElectronBasisFeatures)
+        for entry in trace
+    )
 
 
 @pytest.mark.parametrize("include_spin", [True, False])

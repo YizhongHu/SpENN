@@ -34,8 +34,17 @@ from run_utils import (
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
-# Physical-correctness evaluation tasks whose presence we record per attempt.
-TASK_NAMES = ("cusp", "tail", "stratified_geometry", "hooke_orbital")
+# Evaluation tasks whose presence we record per attempt.
+TASK_NAMES = (
+    "cusp",
+    "tail",
+    "stratified_geometry",
+    "hooke_orbital",
+    "full_model_antisymmetry",
+    "trace_equivariance",
+    "feature_trace_stability",
+    "readout_trace_stability",
+)
 SUCCESS_STATUSES = {"completed", "success"}
 
 CORE_COLUMNS = (

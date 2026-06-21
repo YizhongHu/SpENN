@@ -39,6 +39,10 @@ SMOKE_VALIDATION_OVERRIDES = {
     "evaluation_tasks.tail.generator.n_directions": 2,
     "evaluation_tasks.stratified_geometry.generator.n_samples": 16,
     "evaluation_tasks.hooke_orbital.generator.n_samples": 16,
+    "evaluation_tasks.full_model_antisymmetry.generator.base_generator.n_samples": 8,
+    "evaluation_tasks.trace_equivariance.generator.base_generator.n_samples": 4,
+    "evaluation_tasks.feature_trace_stability.generator.n_samples": 8,
+    "evaluation_tasks.readout_trace_stability.generator.n_samples": 8,
 }
 
 
