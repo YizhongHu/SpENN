@@ -27,6 +27,10 @@ if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
 import collect  # noqa: E402
+import final_eval  # noqa: E402
+import final_plan  # noqa: E402
+import final_report  # noqa: E402
+import final_train  # noqa: E402
 import launch  # noqa: E402
 import plan  # noqa: E402
 import run_utils  # noqa: E402
@@ -421,6 +425,263 @@ def test_submitit_chunks_commands_evenly_and_expands_job_ids(
     assert job_ids == [f"array-job_{index}" for index in range(5) for _ in range(108)]
 
 
+def test_eval_chunks_record_partial_failures_without_aborting(tmp_path: Path) -> None:
+    commands = [
+        ["bash", "-lc", "exit 0"],
+        ["bash", "-lc", "exit 3"],
+        ["bash", "-lc", "exit 0"],
+    ]
+    row_status_paths = [tmp_path / f"row-{index}.json" for index in range(3)]
+    job_ids = launch.submit_local(
+        commands,
+        repo_root=ROOT,
+        chunk_size=3,
+        allow_partial_failures=True,
+        row_status_paths=row_status_paths,
+        chunk_status_dir=tmp_path / "chunks",
+    )
+
+    assert job_ids == ["local-chunk-0-rc0"] * 3
+    statuses = [json.loads(path.read_text())["status"] for path in row_status_paths]
+    assert statuses == ["success", "failed", "success"]
+    chunk_status = json.loads((tmp_path / "chunks" / "chunk-0000.json").read_text())
+    assert chunk_status["status"] == "partial_failed"
+    assert chunk_status["n_failed"] == 1
+
+
+def _write_selection_attempt(results_root: Path, attempt_id: str = "S1") -> Path:
+    selection = results_root / "04_select" / attempt_id
+    selection.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "architecture": "hermite_o3_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "config_id": "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16",
+            "lr": "1e-3",
+            "channels": "16",
+            "metric": "eval/stratified_geometry/local_energy_mean_seed_median",
+            "metric_value": "2.0",
+            "run_ids": "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16_seed-0",
+        },
+        {
+            "architecture": "raw_envelope",
+            "normalization": "N1",
+            "winner_kind": "feature_trace",
+            "config_id": "arch-raw_envelope_norm-N1_lr-3e-3_ch-8",
+            "lr": "3e-3",
+            "channels": "8",
+            "metric": "eval/feature_trace_stability/feature_rms_q95_seed_median",
+            "metric_value": "0.2",
+            "run_ids": "arch-raw_envelope_norm-N1_lr-3e-3_ch-8_seed-0",
+        },
+    ]
+    _write_csv(selection / "champions.csv", rows)
+    return selection
+
+
+def test_final_plan_writes_replicate_grid_with_seed_policy(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    _write_selection_attempt(results_root, "S1")
+
+    code = final_plan.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--selection-attempt-id",
+            "S1",
+            "--attempt-id",
+            "F1",
+            "--replicates",
+            "2",
+        ]
+    )
+
+    assert code == 0
+    attempt = results_root / "05_final_grid" / "F1"
+    assert (attempt / "manifest.json").is_file()
+    assert (attempt / "manifest.yaml").is_file()
+    assert (attempt / "source_selection_attempt.json").is_file()
+    assert (attempt / "source_champions.csv").is_file()
+    jobs = _read_csv(attempt / "final_jobs.csv")
+    assert len(jobs) == 4
+    first = jobs[0]
+    assert first["source_selection_attempt_id"] == "S1"
+    assert first["source_champion_id"] == "champion-0000"
+    assert first["replicate_index"] == "0"
+    assert first["final_train_sampler_seed"] == "101"
+    assert first["final_train_model_seed"] == "1001"
+    assert first["final_eval_seed"] == "10001"
+    second_rep = jobs[1]
+    assert second_rep["replicate_index"] == "1"
+    assert second_rep["final_train_sampler_seed"] == "102"
+    assert second_rep["final_train_model_seed"] == "1002"
+    assert second_rep["final_eval_seed"] == "10002"
+
+
+def _write_final_grid(tmp_path: Path) -> tuple[Path, dict]:
+    results_root = tmp_path / "results"
+    _write_selection_attempt(results_root, "S1")
+    final_plan.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--selection-attempt-id",
+            "S1",
+            "--attempt-id",
+            "F1",
+            "--replicates",
+            "1",
+            "--limit-champions",
+            "1",
+        ]
+    )
+    job = json.loads(
+        next((results_root / "05_final_grid" / "F1" / "jobs").glob("*.json")).read_text()
+    )
+    return results_root, job
+
+
+def test_final_train_consumes_final_grid_and_records_checkpoint_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root, job = _write_final_grid(tmp_path)
+    submitted_commands = []
+
+    def fake_submit_local(commands, *, repo_root: Path, chunk_size: int = launch.DEFAULT_CHUNK_SIZE):
+        submitted_commands.extend(commands)
+        return [f"local-final-{index}" for index, _ in enumerate(commands)]
+
+    monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    code = final_train.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--final-grid-attempt-id",
+            "F1",
+            "--attempt-id",
+            "TF1",
+            "--backend",
+            "local",
+        ]
+    )
+
+    assert code == 0
+    assert len(submitted_commands) == 1
+    script = submitted_commands[0][2]
+    assert "run_parameters.seed=1001" in script
+    assert "sampler.seed=101" in script
+    assert "runtime.device=cpu" in script
+    attempt = results_root / "06_final_train" / job["final_run_id"] / "TF1"
+    assert json.loads((attempt / "source_final_grid_attempt.json").read_text())["final_grid_attempt_id"] == "F1"
+    assert json.loads((attempt / "source_final_job.json").read_text())["final_train_model_seed"] == 1001
+    selected = json.loads((attempt / "selected_checkpoint.json").read_text())
+    assert selected["selection_policy"] == "latest_checkpoint_pointer"
+    assert selected["checkpoint_pointer"].endswith("checkpoints/latest.json")
+    submission = json.loads((attempt / "submission.json").read_text())
+    assert submission["launcher_job_id"] == "local-final-0"
+
+
+def _write_final_train_checkpoint(results_root: Path, final_run_id: str, attempt_id: str = "TF1") -> Path:
+    train_attempt = results_root / "06_final_train" / final_run_id / attempt_id
+    checkpoint_root = train_attempt / "checkpoints"
+    checkpoint_dir = checkpoint_root / "step_000002"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "manifest.json").write_text("{}")
+    (checkpoint_dir / "COMPLETE").write_text("complete\n")
+    (checkpoint_root / "latest.json").write_text(
+        json.dumps({"checkpoint_dir": "step_000002", "step": 2, "created_at_unix": 0.0})
+    )
+    (train_attempt / "selected_checkpoint.json").write_text(
+        json.dumps(
+            {
+                "selection_policy": "latest_checkpoint_pointer",
+                "checkpoint_dir": str(checkpoint_root),
+                "checkpoint_pointer": str(checkpoint_root / "latest.json"),
+                "resolved_checkpoint_dir": None,
+            }
+        )
+    )
+    return train_attempt
+
+
+def test_final_eval_records_exact_checkpoint_and_uses_final_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root, job = _write_final_grid(tmp_path)
+    _write_final_train_checkpoint(results_root, job["final_run_id"], "TF1")
+    submitted_commands = []
+
+    def fake_submit_local(
+        commands,
+        *,
+        repo_root: Path,
+        chunk_size: int = launch.DEFAULT_CHUNK_SIZE,
+        allow_partial_failures: bool = False,
+        row_status_paths=None,
+        chunk_status_dir=None,
+    ):
+        submitted_commands.extend(commands)
+        return [f"local-eval-{index}" for index, _ in enumerate(commands)]
+
+    monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    code = final_eval.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--final-grid-attempt-id",
+            "F1",
+            "--attempt-id",
+            "FE1",
+            "--backend",
+            "local",
+        ]
+    )
+
+    assert code == 0
+    assert len(submitted_commands) == 1
+    script = submitted_commands[0][2]
+    assert "evaluation.suite=final_eval" in script
+    assert "evaluation.seed=10001" in script
+    assert "load.path=" in script
+    assert "step_000002" in script
+    attempt = results_root / "07_final_eval" / job["final_run_id"] / "FE1"
+    checkpoint = json.loads((attempt / "evaluated_checkpoint.json").read_text())
+    assert checkpoint["resolved_checkpoint_dir"].endswith("checkpoints/step_000002")
+    submission = json.loads((attempt / "submission.json").read_text())
+    assert submission["launcher_job_id"] == "local-eval-0"
+
+
+def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None:
+    results_root, job = _write_final_grid(tmp_path)
+    attempt = results_root / "07_final_eval" / job["final_run_id"] / "FE1"
+    (attempt / "cusp").mkdir(parents=True)
+    (attempt / "status.json").write_text(json.dumps({"status": "completed"}))
+    (attempt / "source_final_job.json").write_text(json.dumps(job))
+    (attempt / "evaluated_checkpoint.json").write_text(
+        json.dumps({"resolved_checkpoint_dir": "checkpoints/step_000002"})
+    )
+    (attempt / "metrics.jsonl").write_text(
+        json.dumps({"namespace": "eval/energy", "metrics": {"energy": 2.0}}) + "\n"
+    )
+    _write_csv(attempt / "cusp" / "cusp_profiles.csv", [{"r12": "0.1", "local_energy": "2.0"}])
+
+    result = final_report.build_report(
+        results_root=results_root,
+        report_attempt_id="R1",
+        final_eval_attempt_id="FE1",
+    )
+
+    report_dir = Path(result["attempt_dir"])
+    assert report_dir == results_root / "08_final_report" / "R1"
+    champion_summary = _read_csv(report_dir / "summary_tables" / "champion_summary.csv")
+    assert champion_summary[0]["final_run_id"] == job["final_run_id"]
+    metrics = _read_csv(report_dir / "summary_tables" / "metric_summary.csv")
+    assert metrics[0]["namespace"] == "eval/energy"
+    cusp = _read_csv(report_dir / "plot_tables" / "cusp_profiles.csv")
+    assert cusp[0]["final_run_id"] == job["final_run_id"]
+
+
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
     checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -512,6 +773,32 @@ def test_pair_validation_config_model_and_tasks_instantiate() -> None:
     # Every evaluation task routes its artifacts under the validation run dir.
     for task in evaluator.tasks:
         assert str(task.output_dir).startswith(str(tmp_run_dir()))
+
+
+def test_pair_validation_final_eval_suite_is_report_grade() -> None:
+    import spenn.config  # noqa: F401 - registers the basis_feature_dim resolver
+    from hydra.utils import instantiate
+
+    cfg = OmegaConf.load(PAIR_VALIDATION)
+    cfg.evaluation.suite = "final_eval"
+    cfg.run_parameters.architecture = "hermite_o3_envelope"
+    cfg.run_parameters.normalization = "N2"
+    cfg.run_parameters.channels = 4
+    OmegaConf.update(cfg, "run.dir", str(tmp_run_dir()), force_add=True)
+    evaluator = instantiate(cfg.evaluator)
+    task_names = [task.name for task in evaluator.tasks]
+
+    assert cfg.evaluation.artifact_level == "records"
+    assert task_names[:4] == ["cusp", "tail", "stratified_geometry", "hooke_orbital"]
+    assert "energy" in task_names
+    assert "spatial_exchange_symmetry" in task_names
+    assert "rotation_consistency" in task_names
+    assert len(task_names) > 8
+    assert cfg.evaluation_tasks.final_cusp.generator.n_points > cfg.evaluation_tasks.cusp.generator.n_points
+    assert (
+        cfg.evaluation_tasks.final_stratified_geometry.generator.n_samples
+        > cfg.evaluation_tasks.stratified_geometry.generator.n_samples
+    )
 
 
 def tmp_run_dir() -> Path:

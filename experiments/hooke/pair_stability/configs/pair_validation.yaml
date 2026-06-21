@@ -190,9 +190,10 @@ model_params:
   mixing_initial_weight: 0.5
 
 evaluation:
+  suite: validation
   namespace: eval
   seed: ${runtime.seed}
-  artifact_level: summaries
+  artifact_level: ${evaluation_suites.${evaluation.suite}.artifact_level}
   task_failure_policy: continue
   return_terms: true
 
@@ -205,6 +206,13 @@ load:
 
 timing:
   cuda_synchronize: false
+
+final_eval_sampler_params:
+  n_walkers: 4096
+  burn_in: 1000
+  n_steps: 400
+  proposal_scale: 0.35
+  max_samples: 8192
 
 # =============================================================================
 # Component specs
@@ -221,15 +229,34 @@ evaluator:
   seed: ${evaluation.seed}
   artifact_level: ${evaluation.artifact_level}
   task_failure_policy: ${evaluation.task_failure_policy}
-  tasks:
-    - ${evaluation_tasks.cusp}
-    - ${evaluation_tasks.tail}
-    - ${evaluation_tasks.stratified_geometry}
-    - ${evaluation_tasks.hooke_orbital}
-    - ${evaluation_tasks.full_model_antisymmetry}
-    - ${evaluation_tasks.trace_equivariance}
-    - ${evaluation_tasks.feature_trace_stability}
-    - ${evaluation_tasks.readout_trace_stability}
+  tasks: ${evaluation_suites.${evaluation.suite}.tasks}
+
+evaluation_suites:
+  validation:
+    artifact_level: summaries
+    tasks:
+      - ${evaluation_tasks.cusp}
+      - ${evaluation_tasks.tail}
+      - ${evaluation_tasks.stratified_geometry}
+      - ${evaluation_tasks.hooke_orbital}
+      - ${evaluation_tasks.full_model_antisymmetry}
+      - ${evaluation_tasks.trace_equivariance}
+      - ${evaluation_tasks.feature_trace_stability}
+      - ${evaluation_tasks.readout_trace_stability}
+  final_eval:
+    artifact_level: records
+    tasks:
+      - ${evaluation_tasks.final_cusp}
+      - ${evaluation_tasks.final_tail}
+      - ${evaluation_tasks.final_stratified_geometry}
+      - ${evaluation_tasks.final_hooke_orbital}
+      - ${evaluation_tasks.final_mcmc_energy}
+      - ${evaluation_tasks.final_full_model_antisymmetry}
+      - ${evaluation_tasks.final_spatial_exchange_symmetry}
+      - ${evaluation_tasks.final_rotation_consistency}
+      - ${evaluation_tasks.final_trace_equivariance}
+      - ${evaluation_tasks.final_feature_trace_stability}
+      - ${evaluation_tasks.final_readout_trace_stability}
 
 evaluation_tasks:
   cusp:
@@ -409,6 +436,272 @@ evaluation_tasks:
     summaries:
       - _target_: spenn.evaluation.summaries.ReadoutTraceSummary
 
+  final_cusp:
+    name: cusp
+    namespace: ${evaluation.namespace}/cusp
+    output_dir: ${run.dir}/cusp
+    generator:
+      _target_: spenn.evaluation.generators.CuspGridGenerator
+      n_points: 96
+      r12_min: 1.0e-5
+      r12_max: 2.0e-1
+      n_directions: 16
+      center_of_mass_radii: [0.0, 0.25, 0.5, 1.0, 1.5]
+      paired_directions: true
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 512
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: spenn.evaluation.calculators.RadialLogAbsDerivativeCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
+      - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+        filename: cusp_profiles.csv
+
+  final_tail:
+    name: tail
+    namespace: ${evaluation.namespace}/tail
+    output_dir: ${run.dir}/tail
+    generator:
+      _target_: spenn.evaluation.generators.TailGridGenerator
+      radius_min: 0.5
+      radius_max: 12.0
+      n_points: 96
+      pair_distance: 1.0
+      n_directions: 16
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 512
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+        filename: tail_profiles.csv
+
+  final_stratified_geometry:
+    name: stratified_geometry
+    namespace: ${evaluation.namespace}/stratified_geometry
+    output_dir: ${run.dir}/stratified_geometry
+    generator:
+      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      n_samples: 2048
+      seed: ${evaluation.seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 512
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+        filename: stratified_metrics.csv
+
+  final_hooke_orbital:
+    name: hooke_orbital
+    namespace: ${evaluation.namespace}/hooke_orbital
+    output_dir: ${run.dir}/hooke_orbital
+    generator:
+      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      n_samples: 2048
+      omega: ${system.omega}
+      seed: ${evaluation.seed}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 512
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+        filename: hooke_orbital_metrics.csv
+
+  final_mcmc_energy:
+    name: energy
+    namespace: ${evaluation.namespace}/energy
+    output_dir: ${run.dir}/energy
+    generator:
+      _target_: spenn.evaluation.generators.MCMCGenerator
+      sampler: ${final_eval_sampler}
+      seed: ${evaluation.seed}
+      max_samples: ${final_eval_sampler_params.max_samples}
+    calculators:
+      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 512
+      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.LocalEnergySummary
+      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: spenn.evaluation.summaries.HamiltonianTermSummary
+      - _target_: spenn.evaluation.summaries.SamplerStatsSummary
+      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+        filename: mcmc_energy_samples.csv
+
+  final_full_model_antisymmetry:
+    name: full_model_antisymmetry
+    namespace: ${evaluation.namespace}/full_model_antisymmetry
+    output_dir: ${run.dir}/full_model_antisymmetry
+    generator:
+      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 512
+        seed: ${evaluation.seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.FullModelAntisymmetryCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
+      - _target_: spenn.evaluation.summaries.TransformRecordWriter
+
+  final_spatial_exchange_symmetry:
+    name: spatial_exchange_symmetry
+    namespace: ${evaluation.namespace}/spatial_exchange_symmetry
+    output_dir: ${run.dir}/spatial_exchange_symmetry
+    generator:
+      _target_: spenn.evaluation.generators.ExchangeOrbitGenerator
+      exchange: opposite_spin_pair
+      base_generator:
+        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 512
+        seed: ${evaluation.seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.SpatialExchangeSymmetryCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
+      - _target_: spenn.evaluation.summaries.TransformRecordWriter
+
+  final_rotation_consistency:
+    name: rotation_consistency
+    namespace: ${evaluation.namespace}/rotation_consistency
+    output_dir: ${run.dir}/rotation_consistency
+    generator:
+      _target_: spenn.evaluation.generators.RotationOrbitGenerator
+      n_rotations: 4
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 256
+        seed: ${evaluation.seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.RotationConsistencyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        chunk_size: 512
+    summaries:
+      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
+      - _target_: spenn.evaluation.summaries.TransformRecordWriter
+
+  final_trace_equivariance:
+    name: trace_equivariance
+    namespace: ${evaluation.namespace}/trace_equivariance
+    output_dir: ${run.dir}/trace_equivariance
+    generator:
+      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 256
+        seed: ${evaluation.seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.TraceEquivarianceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.TraceEquivarianceSummary
+      - _target_: spenn.evaluation.summaries.TraceRecordWriter
+
+  final_feature_trace_stability:
+    name: feature_trace_stability
+    namespace: ${evaluation.namespace}/feature_trace_stability
+    output_dir: ${run.dir}/feature_trace_stability
+    generator:
+      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      n_samples: 512
+      seed: ${evaluation.seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.FeatureTraceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.FeatureTraceSummary
+      - _target_: spenn.evaluation.summaries.TraceRecordWriter
+
+  final_readout_trace_stability:
+    name: readout_trace_stability
+    namespace: ${evaluation.namespace}/readout_trace_stability
+    output_dir: ${run.dir}/readout_trace_stability
+    generator:
+      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      n_samples: 512
+      seed: ${evaluation.seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-5, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 8.0, radius_min: 4.0, radius_max: 12.0}
+    calculators:
+      - _target_: spenn.evaluation.calculators.ReadoutTraceCalculator
+    summaries:
+      - _target_: spenn.evaluation.summaries.ReadoutTraceSummary
+      - _target_: spenn.evaluation.summaries.TraceRecordWriter
+
 # -----------------------------------------------------------------------------
 # Model: identical wiring to pair_stability.yaml so the checkpoint restores.
 # -----------------------------------------------------------------------------
@@ -470,6 +763,19 @@ hamiltonian_terms:
     omega: ${system.omega}
   electron_electron:
     _target_: spenn.physics.potential.ElectronElectronInteraction
+
+final_eval_sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
+  n_walkers: ${final_eval_sampler_params.n_walkers}
+  burn_in: ${final_eval_sampler_params.burn_in}
+  n_steps: ${final_eval_sampler_params.n_steps}
+  proposal_scale: ${final_eval_sampler_params.proposal_scale}
+  seed: ${evaluation.seed}
+  n_electrons: ${system.n_particles}
+  spatial_dim: ${system.spatial_dim}
+  n_up: ${system.spin.n_up}
+  n_down: ${system.spin.n_down}
+  dtype: ${runtime.dtype}
 
 callbacks:
   - _target_: spenn.callback.ConfigSnapshot

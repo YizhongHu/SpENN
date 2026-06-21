@@ -283,6 +283,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Validation attempt id (defaults to the grid attempt id, or grid-smoke with --smoke).",
     )
+    parser.add_argument(
+        "--only-ready",
+        action="store_true",
+        help="Only launch rows with eligible completed train checkpoints; this is the default readiness policy.",
+    )
     launch.add_launch_arguments(
         parser,
         smoke_help=(
@@ -331,8 +336,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[pair_stability] no validation jobs ready for 00_grid/{grid_attempt_id}")
         return 1 if manifest.get("jobs") else 0
 
+    row_status_paths = [Path(str(job["validation_attempt_dir"])) / "launcher_status.json" for job in jobs]
+    chunk_status_dir = (
+        stage_dir(results_root, STAGE_VALIDATION)
+        / "chunk_status"
+        / (launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id))
+    )
+
     if args.backend == "local":
-        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root, chunk_size=args.chunk_size)
+        job_ids = launch.submit_local(
+            submitted_commands,
+            repo_root=repo_root,
+            chunk_size=args.chunk_size,
+            allow_partial_failures=True,
+            row_status_paths=row_status_paths,
+            chunk_status_dir=chunk_status_dir,
+        )
     else:
         log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
         job_ids = launch.submit_submitit(
@@ -341,6 +360,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_name="hooke-pair-stability-validate-smoke" if args.smoke else "hooke-pair-stability-validate",
             slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
             chunk_size=args.chunk_size,
+            allow_partial_failures=True,
+            row_status_paths=row_status_paths,
+            chunk_status_dir=chunk_status_dir,
         )
 
     write_validation_submission_records(

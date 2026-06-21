@@ -12,6 +12,10 @@ Result layout (under ``results_root``)::
     02_validation/{run_id}/{attempt_id}/...
     03_collect/{attempt_id}/...
     04_select/{attempt_id}/...
+    05_final_grid/{attempt_id}/...
+    06_final_train/{final_run_id}/{attempt_id}/...
+    07_final_eval/{final_run_id}/{attempt_id}/...
+    08_final_report/{attempt_id}/...
 
 Every directory under a stage (or under a stage's run id) is an attempt, so
 there is no intermediate ``attempts/`` segment; attempt ids name the leaves
@@ -35,6 +39,10 @@ STAGE_TRAIN = "01_train"
 STAGE_VALIDATION = "02_validation"
 STAGE_COLLECT = "03_collect"
 STAGE_SELECT = "04_select"
+STAGE_FINAL_GRID = "05_final_grid"
+STAGE_FINAL_TRAIN = "06_final_train"
+STAGE_FINAL_EVAL = "07_final_eval"
+STAGE_FINAL_REPORT = "08_final_report"
 
 # Grid axis order (also the deterministic Cartesian-product nesting order).
 GRID_AXES = ("architecture", "normalization", "lr", "channels", "seed")
@@ -184,6 +192,24 @@ def validation_run_dir(results_root: str | Path, run_id: str) -> Path:
     return stage_dir(results_root, STAGE_VALIDATION) / run_id
 
 
+def final_grid_attempt_dir(results_root: str | Path, attempt_id: str) -> Path:
+    """Return the ``05_final_grid`` attempt directory."""
+
+    return stage_dir(results_root, STAGE_FINAL_GRID) / attempt_id
+
+
+def final_train_run_dir(results_root: str | Path, final_run_id: str) -> Path:
+    """Return the per-final-run-id directory under ``06_final_train``."""
+
+    return stage_dir(results_root, STAGE_FINAL_TRAIN) / final_run_id
+
+
+def final_eval_run_dir(results_root: str | Path, final_run_id: str) -> Path:
+    """Return the per-final-run-id directory under ``07_final_eval``."""
+
+    return stage_dir(results_root, STAGE_FINAL_EVAL) / final_run_id
+
+
 def train_attempt_dir(results_root: str | Path, run_id: str, attempt_id: str) -> Path:
     """Return the train attempt directory for a run id."""
 
@@ -194,6 +220,18 @@ def validation_attempt_dir(results_root: str | Path, run_id: str, attempt_id: st
     """Return the validation attempt directory for a run id."""
 
     return validation_run_dir(results_root, run_id) / attempt_id
+
+
+def final_train_attempt_dir(results_root: str | Path, final_run_id: str, attempt_id: str) -> Path:
+    """Return the final-train attempt directory for a final run id."""
+
+    return final_train_run_dir(results_root, final_run_id) / attempt_id
+
+
+def final_eval_attempt_dir(results_root: str | Path, final_run_id: str, attempt_id: str) -> Path:
+    """Return the final-eval attempt directory for a final run id."""
+
+    return final_eval_run_dir(results_root, final_run_id) / attempt_id
 
 
 def attempt_ids(parent: str | Path) -> list[str]:

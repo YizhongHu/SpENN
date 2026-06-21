@@ -9,6 +9,7 @@ construction and provenance.
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
 from pathlib import Path
@@ -199,19 +200,86 @@ def balanced_chunks(items: Sequence[T], *, chunk_size: int) -> list[list[T]]:
     return chunks
 
 
-def run_command_chunk(commands: Sequence[Sequence[str]], *, cwd: str | Path | None = None) -> None:
-    """Run a chunk of prepared commands, reporting failures after the chunk."""
+def _write_status(path: str | Path | None, payload: dict[str, Any]) -> None:
+    """Best-effort JSON status writer for launcher/chunk bookkeeping."""
+
+    if path is None:
+        return
+    status_path = Path(path)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
+
+
+def run_command_chunk(
+    commands: Sequence[Sequence[str]],
+    cwd: str | Path | None = None,
+    allow_partial_failures: bool = False,
+    row_status_paths: Sequence[str | Path | None] | None = None,
+    chunk_status_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run prepared commands sequentially inside one local/Submitit chunk.
+
+    With ``allow_partial_failures=False`` this preserves fail-fast scheduler
+    semantics for training chunks. Evaluation launchers pass
+    ``allow_partial_failures=True`` so one failed eval row records a per-row
+    failure but does not abort the rest of the chunk.
+    """
 
     failures = []
+    row_results = []
+    status_paths = list(row_status_paths or [None] * len(commands))
+    if len(status_paths) != len(commands):
+        _write_status(
+            chunk_status_path,
+            {
+                "status": "failed",
+                "n_commands": len(commands),
+                "n_failed": 0,
+                "error": "row_status_paths must match commands length",
+            },
+        )
+        raise ValueError("row_status_paths must match commands length")
     for index, command in enumerate(commands):
         command = [str(part) for part in command]
-        result = subprocess.run(
-            command,
-            cwd=str(cwd) if cwd is not None else None,
-            check=False,
+        command_text = shlex.join(command)
+        _write_status(
+            status_paths[index],
+            {"status": "running", "chunk_index": index, "command": command_text},
         )
-        if result.returncode != 0:
-            failures.append((index, result.returncode, shlex.join(command)))
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(cwd) if cwd is not None else None,
+                check=False,
+            )
+            returncode: int | None = int(result.returncode)
+            error = ""
+        except Exception as exc:
+            returncode = None
+            error = repr(exc)
+        row_status = "success" if returncode == 0 else "failed"
+        row_payload = {
+            "status": row_status,
+            "chunk_index": index,
+            "returncode": returncode,
+            "command": command_text,
+        }
+        if error:
+            row_payload["error"] = error
+        _write_status(status_paths[index], row_payload)
+        row_results.append(row_payload)
+        if row_status != "success":
+            failures.append((index, returncode, command_text))
+            if returncode is None and not allow_partial_failures:
+                break
+    chunk_status = "success" if not failures else "partial_failed"
+    chunk_payload = {
+        "status": chunk_status,
+        "n_commands": len(commands),
+        "n_failed": len(failures),
+        "rows": row_results,
+    }
+    _write_status(chunk_status_path, chunk_payload)
     if failures:
         lines = [
             f"{len(failures)} of {len(commands)} command(s) failed in this chunk:",
@@ -220,7 +288,10 @@ def run_command_chunk(commands: Sequence[Sequence[str]], *, cwd: str | Path | No
                 for index, returncode, command in failures
             ],
         ]
-        raise RuntimeError("\n".join(lines))
+        if not allow_partial_failures:
+            raise RuntimeError("\n".join(lines))
+        chunk_payload["message"] = "\n".join(lines)
+    return chunk_payload
 
 
 def _expanded_chunk_job_ids(chunk_job_ids: Sequence[str], chunks: Sequence[Sequence[Any]]) -> list[str]:
@@ -237,14 +308,27 @@ def submit_local(
     *,
     repo_root: Path,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    allow_partial_failures: bool = False,
+    row_status_paths: Sequence[str | Path | None] | None = None,
+    chunk_status_dir: str | Path | None = None,
 ) -> list[str]:
     """Run commands sequentially in-process, grouped into balanced chunks."""
 
     job_ids = []
     chunks = balanced_chunks(commands, chunk_size=chunk_size)
+    status_chunks = balanced_chunks(row_status_paths or [None] * len(commands), chunk_size=chunk_size)
     for index, chunk in enumerate(chunks):
+        chunk_status_path = None
+        if chunk_status_dir is not None:
+            chunk_status_path = Path(chunk_status_dir) / f"chunk-{index:04d}.json"
         try:
-            run_command_chunk(chunk, cwd=repo_root)
+            run_command_chunk(
+                chunk,
+                cwd=repo_root,
+                allow_partial_failures=allow_partial_failures,
+                row_status_paths=status_chunks[index],
+                chunk_status_path=chunk_status_path,
+            )
         except RuntimeError as exc:
             raise RuntimeError(f"local chunk {index} failed") from exc
         job_ids.extend([f"local-chunk-{index}-rc0"] * len(chunk))
@@ -258,6 +342,9 @@ def submit_submitit(
     job_name: str,
     slurm: dict[str, Any],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    allow_partial_failures: bool = False,
+    row_status_paths: Sequence[str | Path | None] | None = None,
+    chunk_status_dir: str | Path | None = None,
 ) -> list[str]:
     """Submit prepared commands through Submitit as balanced array chunks."""
 
@@ -276,7 +363,22 @@ def submit_submitit(
         [[str(part) for part in command] for command in chunk]
         for chunk in balanced_chunks(commands, chunk_size=chunk_size)
     ]
-    jobs = executor.map_array(run_command_chunk, command_chunks)
+    if allow_partial_failures or row_status_paths is not None or chunk_status_dir is not None:
+        status_chunks = balanced_chunks(row_status_paths or [None] * len(commands), chunk_size=chunk_size)
+        chunk_status_paths = [
+            None if chunk_status_dir is None else str(Path(chunk_status_dir) / f"chunk-{index:04d}.json")
+            for index, _chunk in enumerate(command_chunks)
+        ]
+        jobs = executor.map_array(
+            run_command_chunk,
+            command_chunks,
+            [None] * len(command_chunks),
+            [allow_partial_failures] * len(command_chunks),
+            status_chunks,
+            chunk_status_paths,
+        )
+    else:
+        jobs = executor.map_array(run_command_chunk, command_chunks)
     chunk_job_ids = [str(job.job_id) for job in jobs]
     return _expanded_chunk_job_ids(chunk_job_ids, command_chunks)
 
