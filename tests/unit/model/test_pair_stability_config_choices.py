@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 import spenn.config  # noqa: F401 - registers the basis_feature_dim resolver
+from spenn.nn import GaussianActivation
 
 ROOT = Path(__file__).resolve().parents[3]
 PAIR_STABILITY = ROOT / "experiments" / "hooke" / "pair_stability" / "configs" / "pair_stability.yaml"
@@ -78,3 +80,12 @@ def test_default_run_parameters_are_scalar() -> None:
     cfg = OmegaConf.load(PAIR_STABILITY)
     params = OmegaConf.to_container(cfg.run_parameters, resolve=True)
     assert set(params) == {"architecture", "normalization", "lr", "channels", "seed"}
+
+
+def test_gaussian_gate_activation_target_instantiates() -> None:
+    cfg = OmegaConf.load(PAIR_STABILITY)
+    cfg.model_params.gate_activation = "gaussian"
+
+    gate = instantiate(cfg.model.layers[0].activation.gate)
+
+    assert isinstance(gate, GaussianActivation)

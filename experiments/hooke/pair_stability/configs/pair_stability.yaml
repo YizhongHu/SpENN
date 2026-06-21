@@ -203,6 +203,7 @@ gate_targets:
   silu: torch.nn.SiLU
   sigmoid: torch.nn.Sigmoid
   tanh: torch.nn.Tanh
+  gaussian: spenn.nn.GaussianActivation
 
 model_params:
   max_order: 2

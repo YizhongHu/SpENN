@@ -1,6 +1,6 @@
 """Neural-network component namespace for SpENN."""
 
-from spenn.nn.activation import Activation, GatedNormActivation
+from spenn.nn.activation import Activation, GaussianActivation, GatedNormActivation
 from spenn.nn.basis import (
     ElectronBasis,
     ElectronBasisFeatures,
@@ -34,6 +34,7 @@ __all__ = [
     "Envelope",
     "EquivariantMixing",
     "FeatureNormalization",
+    "GaussianActivation",
     "GatedNormActivation",
     "HarmonicConfinement",
     "HookeGaussianEnvelope",

@@ -1,10 +1,10 @@
 """Collect pair-stability validation attempts into a summary table (PR8.8).
 
 Walks ``02_validation/{run_id}/*`` (the latest attempt per run id),
-reads each attempt's status, evaluation metrics, and recorded train-attempt
-provenance, and writes a ``03_collect`` attempt with ``summary.csv``,
-``failures.csv``, ``collection_report.json``, and explicit source pointers to
-the exact validation (and grid) attempts consumed.
+reads each attempt's status, evaluation metrics, source train-attempt metrics,
+and recorded train-attempt provenance, and writes a ``03_collect`` attempt with
+``summary.csv``, ``failures.csv``, ``collection_report.json``, and explicit
+source pointers to the exact validation (and grid) attempts consumed.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -61,6 +63,8 @@ CORE_COLUMNS = (
     "checkpoint_path",
     "n_diagnostics",
 )
+
+TRAIN_WALL_TIME_METRIC = "train/runtime/wall_time_sec"
 
 
 def latest_attempt_id(run_dir: Path) -> str | None:
@@ -122,6 +126,67 @@ def _count_diagnostics(attempt_dir: Path) -> int:
     return sum(1 for name in TASK_NAMES if (attempt_dir / name).is_dir())
 
 
+def _train_attempt_dir(source: dict[str, Any]) -> Path | None:
+    """Return the source train attempt directory recorded by validation."""
+
+    train_attempt_dir = source.get("train_attempt_dir")
+    if train_attempt_dir:
+        return Path(str(train_attempt_dir))
+    checkpoint_path = source.get("checkpoint_path")
+    if checkpoint_path:
+        checkpoint = Path(str(checkpoint_path))
+        if checkpoint.name == "checkpoints":
+            return checkpoint.parent
+    return None
+
+
+def _status_wall_time(path: Path) -> float | None:
+    """Return wall time from a status file's start/end timestamps."""
+
+    status = path / "status.json"
+    if not status.is_file():
+        return None
+    data = read_json(status)
+    start = data.get("start_time")
+    end = data.get("end_time")
+    if not start or not end:
+        return None
+    try:
+        start_dt = datetime.fromisoformat(str(start))
+        end_dt = datetime.fromisoformat(str(end))
+    except ValueError:
+        return None
+    return max(0.0, (end_dt - start_dt).total_seconds())
+
+
+def _train_metrics(source: dict[str, Any]) -> dict[str, Any]:
+    """Return metrics from the validation source train attempt."""
+
+    train_attempt = _train_attempt_dir(source)
+    if train_attempt is None:
+        return {}
+    train_metrics = {
+        f"train/{key}": value for key, value in read_metrics_jsonl(train_attempt / "metrics.jsonl").items()
+    }
+    if _as_float(train_metrics.get(TRAIN_WALL_TIME_METRIC)) is None:
+        wall_time = _status_wall_time(train_attempt)
+        if wall_time is not None:
+            train_metrics[TRAIN_WALL_TIME_METRIC] = wall_time
+    return train_metrics
+
+
+def _as_float(value: Any) -> float | None:
+    """Return ``value`` as a finite float, or ``None``."""
+
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def collect_validation_attempt(run_id: str, attempt_id: str, attempt_dir: Path) -> dict[str, Any]:
     """Build one summary row from a validation attempt directory."""
 
@@ -145,6 +210,7 @@ def collect_validation_attempt(run_id: str, attempt_id: str, attempt_dir: Path) 
         checkpoint_path=source.get("checkpoint_path", ""),
         n_diagnostics=_count_diagnostics(attempt_dir),
     )
+    row.update(_train_metrics(source))
     row.update(metrics)
     return row
 

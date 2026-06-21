@@ -22,6 +22,44 @@ class Activation(EquivariantMap):
     """
 
 
+class GaussianActivation(nn.Module):
+    """Scalar Gaussian activation ``A * exp(a * x**2)``.
+
+    Parameters
+    ----------
+    amplitude : float, optional
+        Multiplicative coefficient ``A``.
+    quadratic_coefficient : float, optional
+        Exponent coefficient ``a``.
+    trainable : bool, optional
+        Whether ``amplitude`` and ``quadratic_coefficient`` are trainable
+        parameters. If false, they are registered as buffers so device/dtype
+        moves still follow the module.
+    """
+
+    def __init__(
+        self,
+        amplitude: float = 1.0,
+        quadratic_coefficient: float = -1.0,
+        *,
+        trainable: bool = False,
+    ) -> None:
+        super().__init__()
+        amplitude_tensor = torch.tensor(float(amplitude))
+        coefficient_tensor = torch.tensor(float(quadratic_coefficient))
+        if trainable:
+            self.amplitude = nn.Parameter(amplitude_tensor)
+            self.quadratic_coefficient = nn.Parameter(coefficient_tensor)
+        else:
+            self.register_buffer("amplitude", amplitude_tensor)
+            self.register_buffer("quadratic_coefficient", coefficient_tensor)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Evaluate ``A * exp(a * x**2)`` elementwise."""
+
+        return self.amplitude * torch.exp(self.quadratic_coefficient * x.square())
+
+
 class GatedNormActivation(Activation):
     """Gate every irrep block by a module applied to invariant norms.
 
@@ -192,4 +230,4 @@ class ActivationByIrrep(Activation):
         return type(x)(blocks)
 
 
-__all__ = ["Activation", "GatedNormActivation"]
+__all__ = ["Activation", "GaussianActivation", "GatedNormActivation"]

@@ -345,20 +345,28 @@ launch provenance under each `01_train/{run_id}/{attempt_id}/`, and
 # Collect the latest validation attempt per run id into a 03_collect attempt
 uv run python experiments/hooke/pair_stability/collect.py
 
-# Select one champion per architecture by the study's local-energy hierarchy
+# Select two winners per architecture/normalization bucket
 uv run python experiments/hooke/pair_stability/select_champions.py
 ```
 
 `collect.py` walks `02_validation`, reads each attempt's status, evaluation
 metrics (`metrics.jsonl`), and `source_train_attempt.json`, and writes
 `summary.csv` / `failures.csv` plus collection provenance. `select_champions.py`
-reads a `03_collect` summary and writes per-architecture champions and a
-selection report, recording the collection attempt it consumed. The default
-selector compares local-energy means with their standard-error bars in this
-order: `stratified_geometry`, `tail`, `cusp`, `hooke_orbital`. If the current
-leader's error bar overlaps another row's error bar, those rows remain tied and
-the next local-energy task breaks the tie. If the hierarchy is exhausted, the
-shortest available wall time wins.
+reads a `03_collect` summary, treats `seed` as a replicate, aggregates rows into
+non-seed configs (`architecture`, `normalization`, `lr`, `channels`), and writes
+two `champions.csv` rows for each `architecture,normalization` bucket:
+`winner_kind=energy` and `winner_kind=feature_trace`. The energy selector ranks
+configs by seed-median local energy in this order: `stratified_geometry`,
+`tail`, `cusp`, `hooke_orbital`; overlap checks use the seed-combined
+mean and standard error for that local-energy metric. If the hierarchy is
+exhausted, the shortest median train wall time wins. `collect.py` includes the
+source train attempt metrics under a `train/` prefix, so the wall-time fallback
+uses `train/runtime/wall_time_sec`, not validation/evaluation wall time. Failed
+or missing seed replicates count as non-finite values for medians, while
+mean/stderr error bars use finite successful seeds. The feature-trace winner uses the lowest
+seed-median `eval/feature_trace_stability/feature_rms_q95`; if that config is
+already the bucket's energy winner, the next lowest finite feature-trace config
+is selected.
 
 The study scripts (`plan.py`, `train.py`, `validate.py`, `collect.py`,
 `select_champions.py`) share their stage-layout vocabulary,

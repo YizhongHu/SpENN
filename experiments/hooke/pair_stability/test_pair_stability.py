@@ -528,8 +528,24 @@ def _fake_validation_attempt(
     for task_name in collect.TASK_NAMES:
         (attempt / task_name).mkdir(parents=True, exist_ok=True)
     (attempt / "status.json").write_text(json.dumps({"status": status}))
+    train_attempt = run_utils.train_attempt_dir(results_root, run_id, "T1")
+    train_attempt.mkdir(parents=True, exist_ok=True)
+    train_records = [
+        {"namespace": "train", "metrics": {"energy": 2.5}},
+        {"namespace": "runtime", "metrics": {"wall_time_sec": 123.0}},
+    ]
+    (train_attempt / "metrics.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in train_records) + "\n"
+    )
     (attempt / "source_train_attempt.json").write_text(
-        json.dumps({"run_id": run_id, "train_attempt_id": "T1", "checkpoint_path": "ckpt"})
+        json.dumps(
+            {
+                "run_id": run_id,
+                "train_attempt_id": "T1",
+                "train_attempt_dir": str(train_attempt),
+                "checkpoint_path": str(train_attempt / "checkpoints"),
+            }
+        )
     )
     records = [
         {"namespace": "eval/stratified_geometry", "metrics": {"local_energy_mean": stratified_energy}},
@@ -553,6 +569,8 @@ def test_collect_reads_eval_diagnostics_from_validation_attempts(tmp_path: Path)
     by_run = {row["run_id"]: row for row in summary_rows}
     assert set(by_run) == {good, bad}
     assert by_run[good]["eval/stratified_geometry/local_energy_mean"] == "1.95"
+    assert by_run[good]["train/train/energy"] == "2.5"
+    assert by_run[good]["train/runtime/wall_time_sec"] == "123.0"
     assert by_run[good]["train_attempt_id"] == "T1"
     assert by_run[good]["architecture"] == "hermite_o3_envelope"
     assert int(by_run[good]["n_diagnostics"]) == len(collect.TASK_NAMES)
@@ -569,23 +587,46 @@ def test_select_champions_reads_collection_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     collection = results_root / "03_collect" / "C1"
     collection.mkdir(parents=True, exist_ok=True)
+
+    def row(
+        architecture: str,
+        normalization: str,
+        lr: str,
+        channels: str,
+        seed: int,
+        energy: float,
+        feature: float,
+        readout: float = 100.0,
+        train_wall_time: float = 10.0,
+    ) -> dict[str, str]:
+        data = {
+            "run_id": f"arch-{architecture}_norm-{normalization}_lr-{lr}_ch-{channels}_seed-{seed}",
+            "architecture": architecture,
+            "normalization": normalization,
+            "lr": lr,
+            "channels": channels,
+            "seed": str(seed),
+            "status": "completed",
+            "eval/feature_trace_stability/feature_rms_q95": str(feature),
+            "eval/readout_trace_stability/condition_number_q95": str(readout),
+            "train/runtime/wall_time_sec": str(train_wall_time),
+        }
+        for task in select_champions.ENERGY_TASK_ORDER:
+            data[f"eval/{task}/local_energy_mean"] = str(energy)
+            data[f"eval/{task}/local_energy_stderr"] = "0.01"
+        return data
+
     rows = [
-        {"run_id": "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16_seed-0", "architecture": "hermite_o3_envelope",
-         "normalization": "N0", "lr": "1e-3", "channels": "16", "seed": "0", "status": "completed",
-         "eval/stratified_geometry/local_energy_mean": "1.90",
-         "eval/stratified_geometry/local_energy_stderr": "0.20",
-         "eval/tail/local_energy_mean": "2.40",
-         "eval/tail/local_energy_stderr": "0.01"},
-        {"run_id": "arch-hermite_o3_envelope_norm-N2_lr-1e-3_ch-16_seed-0", "architecture": "hermite_o3_envelope",
-         "normalization": "N2", "lr": "1e-3", "channels": "16", "seed": "0", "status": "completed",
-         "eval/stratified_geometry/local_energy_mean": "1.95",
-         "eval/stratified_geometry/local_energy_stderr": "0.20",
-         "eval/tail/local_energy_mean": "1.70",
-         "eval/tail/local_energy_stderr": "0.01"},
-        {"run_id": "arch-raw_envelope_norm-N0_lr-1e-3_ch-8_seed-0", "architecture": "raw_envelope",
-         "normalization": "N0", "lr": "1e-3", "channels": "8", "seed": "0", "status": "completed",
-         "eval/stratified_geometry/local_energy_mean": "3.0",
-         "eval/stratified_geometry/local_energy_stderr": "0.01"},
+        row("hermite_o3_envelope", "N0", "1e-3", "16", 0, 5.0, 0.020),
+        row("hermite_o3_envelope", "N0", "1e-3", "16", 1, 5.2, 0.021),
+        row("hermite_o3_envelope", "N0", "1e-3", "16", 2, 5.4, 0.022),
+        row("hermite_o3_envelope", "N0", "3e-3", "16", 0, 2.0, 0.010, readout=40.0),
+        row("hermite_o3_envelope", "N0", "3e-3", "16", 1, 2.2, 0.011, readout=42.0),
+        row("hermite_o3_envelope", "N0", "3e-3", "16", 2, 2.4, 0.012, readout=44.0),
+        row("raw_envelope", "N1", "1e-3", "8", 0, 3.0, 0.030),
+        row("raw_envelope", "N1", "1e-3", "8", 1, 3.2, 0.031),
+        row("raw_envelope", "N1", "3e-3", "8", 0, 4.0, 0.010),
+        row("raw_envelope", "N1", "3e-3", "8", 1, 4.2, 0.011),
     ]
     _write_csv(collection / "summary.csv", rows)
 
@@ -596,20 +637,75 @@ def test_select_champions_reads_collection_attempt(tmp_path: Path) -> None:
     source = json.loads((attempt / "source_collection_attempt.json").read_text())
     assert source["collection_attempt_id"] == "C1"
 
-    champions = {row["architecture"]: row for row in _read_csv(attempt / "champions.csv")}
-    # Stratified geometry overlaps, so tail local energy breaks the tie.
-    assert champions["hermite_o3_envelope"]["run_id"].endswith("norm-N2_lr-1e-3_ch-16_seed-0")
-    assert champions["hermite_o3_envelope"]["metric"] == "eval/tail/local_energy_mean"
+    champions = _read_csv(attempt / "champions.csv")
+    assert len(champions) == 4
+    by_group_kind = {
+        (row["architecture"], row["normalization"], row["winner_kind"]): row for row in champions
+    }
+    energy = by_group_kind[("hermite_o3_envelope", "N0", "energy")]
+    assert energy["config_id"] == "arch-hermite_o3_envelope_norm-N0_lr-3e-3_ch-16"
+    assert energy["metric"] == "eval/stratified_geometry/local_energy_mean_seed_median"
+    assert energy["metric_value"] == "2.2"
+    assert energy["metric_seed_mean"] == "2.2"
+    assert float(energy["metric_seed_stderr"]) == pytest.approx(0.1154700538)
+    assert energy["stratified_geometry_energy_seed_median"] == "2.2"
+    assert energy["stratified_geometry_energy_seed_mean"] == "2.2"
+    assert float(energy["stratified_geometry_energy_seed_stderr"]) == pytest.approx(0.1154700538)
+    assert energy["tail_energy_seed_median"] == "2.2"
+    assert energy["cusp_energy_seed_median"] == "2.2"
+    assert energy["hooke_orbital_energy_seed_median"] == "2.2"
+    assert energy["feature_stability_seed_median"] == "0.011"
+    assert energy["feature_stability_seed_mean"] == "0.011"
+    assert energy["readout_stability_seed_median"] == "42"
+    assert energy["readout_stability_seed_mean"] == "42"
+    assert float(energy["readout_stability_seed_stderr"]) == pytest.approx(1.154700538)
+
+    feature = by_group_kind[("hermite_o3_envelope", "N0", "feature_trace")]
+    assert feature["config_id"] == "arch-hermite_o3_envelope_norm-N0_lr-1e-3_ch-16"
+    assert feature["metric"] == "eval/feature_trace_stability/feature_rms_q95_seed_median"
+    assert feature["feature_stability_seed_median"] == "0.021"
+    assert feature["readout_stability_seed_median"] == "100"
+
+    raw_energy = by_group_kind[("raw_envelope", "N1", "energy")]
+    raw_feature = by_group_kind[("raw_envelope", "N1", "feature_trace")]
+    assert raw_energy["config_id"] == "arch-raw_envelope_norm-N1_lr-1e-3_ch-8"
+    assert raw_feature["config_id"] == "arch-raw_envelope_norm-N1_lr-3e-3_ch-8"
+
     report = json.loads((attempt / "selection_report.json").read_text())
     assert report["metric"] is None
+    assert report["group_by"] == ["architecture", "normalization"]
+    assert report["config_keys"] == ["architecture", "normalization", "lr", "channels"]
     assert report["energy_task_order"] == ["stratified_geometry", "tail", "cusp", "hooke_orbital"]
-    assert report["overall_champion"].endswith("norm-N2_lr-1e-3_ch-16_seed-0")
+    assert report["reference_metrics"]["readout_stability"] == (
+        "eval/readout_trace_stability/condition_number_q95"
+    )
+    assert report["overall_champion"] == "arch-hermite_o3_envelope_norm-N0_lr-3e-3_ch-16"
+    assert report["feature_trace_metric"] == "eval/feature_trace_stability/feature_rms_q95_seed_median"
+    assert report["n_champions"] == 4
 
 
 def test_select_champions_falls_back_to_wall_time_after_energy_ties() -> None:
     rows = [
-        {"run_id": "slow", "architecture": "raw_envelope", "status": "completed", "runtime/wall_time_sec": "20.0"},
-        {"run_id": "fast", "architecture": "raw_envelope", "status": "completed", "runtime/wall_time_sec": "10.0"},
+        {
+            "run_id": "slow-seed-0",
+            "architecture": "raw_envelope",
+            "normalization": "N0",
+            "lr": "1e-3",
+            "channels": "8",
+            "seed": "0",
+            "status": "completed",
+            "train/runtime/wall_time_sec": "20.0",
+        },
+        {
+            "run_id": "fast-seed-0",
+            "architecture": "raw_envelope",
+            "normalization": "N0",
+            "lr": "3e-3",
+            "channels": "8",
+            "seed": "0",
+            "status": "completed",
+            "train/runtime/wall_time_sec": "10.0",
+        },
     ]
     for row in rows:
         for task in select_champions.ENERGY_TASK_ORDER:
@@ -618,11 +714,60 @@ def test_select_champions_falls_back_to_wall_time_after_energy_ties() -> None:
 
     selection = select_champions.select_champions(rows)
 
-    assert selection["overall_champion"] == "fast"
-    assert selection["overall_metric"] == "wall_time_sec"
+    assert selection["overall_champion"] == "arch-raw_envelope_norm-N0_lr-3e-3_ch-8"
+    assert selection["overall_metric"] == "train/runtime/wall_time_sec_seed_median"
     champion = selection["champions"][0]
-    assert champion["run_id"] == "fast"
-    assert champion["metric"] == "wall_time_sec"
+    assert champion["winner_kind"] == "energy"
+    assert champion["config_id"] == "arch-raw_envelope_norm-N0_lr-3e-3_ch-8"
+    assert champion["metric"] == "train/runtime/wall_time_sec_seed_median"
+
+
+def test_select_champions_feature_trace_winner_skips_overall_energy_champion() -> None:
+    rows = [
+        {
+            "run_id": "energy",
+            "architecture": "raw_envelope",
+            "normalization": "N0",
+            "lr": "1e-3",
+            "channels": "8",
+            "seed": "0",
+            "status": "completed",
+            "eval/stratified_geometry/local_energy_mean": "1.0",
+            "eval/stratified_geometry/local_energy_stderr": "0.01",
+            "eval/feature_trace_stability/feature_rms_q95": "0.01",
+        },
+        {
+            "run_id": "feature",
+            "architecture": "raw_envelope",
+            "normalization": "N0",
+            "lr": "3e-3",
+            "channels": "8",
+            "seed": "0",
+            "status": "completed",
+            "eval/stratified_geometry/local_energy_mean": "2.0",
+            "eval/stratified_geometry/local_energy_stderr": "0.01",
+            "eval/feature_trace_stability/feature_rms_q95": "0.02",
+        },
+        {
+            "run_id": "other",
+            "architecture": "raw_envelope",
+            "normalization": "N0",
+            "lr": "1e-4",
+            "channels": "8",
+            "seed": "0",
+            "status": "completed",
+            "eval/stratified_geometry/local_energy_mean": "3.0",
+            "eval/stratified_geometry/local_energy_stderr": "0.01",
+            "eval/feature_trace_stability/feature_rms_q95": "0.03",
+        },
+    ]
+
+    selection = select_champions.select_champions(rows)
+
+    assert selection["overall_champion"] == "arch-raw_envelope_norm-N0_lr-1e-3_ch-8"
+    assert selection["feature_trace_champion"] == "arch-raw_envelope_norm-N0_lr-3e-3_ch-8"
+    assert selection["feature_trace_metric"] == "eval/feature_trace_stability/feature_rms_q95_seed_median"
+    assert selection["feature_trace_metric_value"] == "0.02"
 
 
 # ---------------------------------------------------------------------------
