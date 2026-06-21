@@ -12,7 +12,7 @@ import argparse
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, TypeVar
 
 from run_utils import STAGE_GRID, attempt_ids, grid_attempt_dir, read_json, stage_dir
 
@@ -28,11 +28,14 @@ DEFAULT_TIMEOUT_MIN = 480
 DEFAULT_MEM_GB = 32
 DEFAULT_CPUS = 8
 DEFAULT_ARRAY_PARALLELISM = 16
+DEFAULT_CHUNK_SIZE = 1
 SMOKE_JOB_LIMIT = 2
 SMOKE_TIMEOUT_MIN = 15
 SMOKE_MEM_GB = 16
 SMOKE_CPUS = 4
 SMOKE_ARRAY_PARALLELISM = 2
+
+T = TypeVar("T")
 
 
 def repo_path(path: str | Path, repo_root: Path) -> Path:
@@ -165,17 +168,86 @@ def environment_shell_command(
     return ["bash", "-lc", script]
 
 
-def submit_local(commands: Sequence[Sequence[str]], *, repo_root: Path) -> list[str]:
-    """Run commands sequentially in-process."""
+def positive_int(value: str) -> int:
+    """Parse a positive integer CLI value."""
 
-    import subprocess
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
+def balanced_chunks(items: Sequence[T], *, chunk_size: int) -> list[list[T]]:
+    """Split ``items`` into evenly sized chunks no larger than ``chunk_size``."""
+
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be >= 1")
+    items = list(items)
+    if not items:
+        return []
+    n_chunks = (len(items) + chunk_size - 1) // chunk_size
+    base_size, extra = divmod(len(items), n_chunks)
+    chunks: list[list[T]] = []
+    start = 0
+    for index in range(n_chunks):
+        size = base_size + (1 if index < extra else 0)
+        chunks.append(items[start : start + size])
+        start += size
+    return chunks
+
+
+def run_command_chunk(commands: Sequence[Sequence[str]], *, cwd: str | Path | None = None) -> None:
+    """Run a chunk of prepared commands, reporting failures after the chunk."""
+
+    failures = []
+    for index, command in enumerate(commands):
+        command = [str(part) for part in command]
+        result = subprocess.run(
+            command,
+            cwd=str(cwd) if cwd is not None else None,
+            check=False,
+        )
+        if result.returncode != 0:
+            failures.append((index, result.returncode, shlex.join(command)))
+    if failures:
+        lines = [
+            f"{len(failures)} of {len(commands)} command(s) failed in this chunk:",
+            *[
+                f"  chunk item {index}: return code {returncode}; {command}"
+                for index, returncode, command in failures
+            ],
+        ]
+        raise RuntimeError("\n".join(lines))
+
+
+def _expanded_chunk_job_ids(chunk_job_ids: Sequence[str], chunks: Sequence[Sequence[Any]]) -> list[str]:
+    """Return one launcher job id per original command."""
+
+    expanded: list[str] = []
+    for job_id, chunk in zip(chunk_job_ids, chunks, strict=True):
+        expanded.extend([str(job_id)] * len(chunk))
+    return expanded
+
+
+def submit_local(
+    commands: Sequence[Sequence[str]],
+    *,
+    repo_root: Path,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+) -> list[str]:
+    """Run commands sequentially in-process, grouped into balanced chunks."""
 
     job_ids = []
-    for index, command in enumerate(commands):
-        result = subprocess.run(list(command), cwd=str(repo_root), check=False)
-        job_ids.append(f"local-{index}-rc{result.returncode}")
-        if result.returncode != 0:
-            raise RuntimeError(f"local job {index} failed: {shlex.join(command)}")
+    chunks = balanced_chunks(commands, chunk_size=chunk_size)
+    for index, chunk in enumerate(chunks):
+        try:
+            run_command_chunk(chunk, cwd=repo_root)
+        except RuntimeError as exc:
+            raise RuntimeError(f"local chunk {index} failed") from exc
+        job_ids.extend([f"local-chunk-{index}-rc0"] * len(chunk))
     return job_ids
 
 
@@ -185,8 +257,9 @@ def submit_submitit(
     log_dir: Path,
     job_name: str,
     slurm: dict[str, Any],
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> list[str]:
-    """Submit already prepared commands through Submitit."""
+    """Submit prepared commands through Submitit as balanced array chunks."""
 
     try:
         import submitit  # lazy: optional 'submitit' extra
@@ -199,8 +272,13 @@ def submit_submitit(
     log_dir.mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=str(log_dir))
     executor.update_parameters(name=job_name, **slurm)
-    jobs = executor.map_array(subprocess.check_call, [[str(part) for part in command] for command in commands])
-    return [str(job.job_id) for job in jobs]
+    command_chunks = [
+        [[str(part) for part in command] for command in chunk]
+        for chunk in balanced_chunks(commands, chunk_size=chunk_size)
+    ]
+    jobs = executor.map_array(run_command_chunk, command_chunks)
+    chunk_job_ids = [str(job.job_id) for job in jobs]
+    return _expanded_chunk_job_ids(chunk_job_ids, command_chunks)
 
 
 def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = False) -> dict[str, Any]:
@@ -259,6 +337,15 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
     parser.add_argument("--slurm-timeout-min", type=int, default=None)
     parser.add_argument("--slurm-mem-gb", type=int, default=None)
     parser.add_argument("--slurm-cpus", type=int, default=None)
+    parser.add_argument(
+        "--chunk-size",
+        type=positive_int,
+        default=DEFAULT_CHUNK_SIZE,
+        help=(
+            "Maximum desired run commands per local/Submitit chunk. Chunks are "
+            f"balanced evenly; default {DEFAULT_CHUNK_SIZE} keeps one command per array task."
+        ),
+    )
     parser.add_argument(
         "--slurm-array-parallelism",
         type=int,

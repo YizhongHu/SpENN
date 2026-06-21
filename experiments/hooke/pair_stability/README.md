@@ -127,9 +127,12 @@ another extra such as `cu128` or `cu130`.
 
 Submitit launches are always Slurm arrays via `submitit.AutoExecutor.map_array`,
 not one independent `sbatch` per planned run. The default full-run array cap is
-16 simultaneous tasks (`--slurm-array-parallelism 16`); smoke runs cap at 2. For a
-540-run grid this produces one `--array=0-539%16` submission instead of 540
-separate jobs.
+16 simultaneous array tasks (`--slurm-array-parallelism 16`); smoke runs cap at
+2. By default `--chunk-size 1`, so each planned run is one array task. Larger
+chunk sizes group multiple planned runs into one array task, and the launcher
+balances chunks evenly rather than leaving a small tail. For example, 540 runs
+with `--chunk-size 128` call for 5 chunks; instead of `128 + 128 + 128 + 128 +
+28`, each array task receives `540 / 5 = 108` runs.
 
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and
@@ -214,6 +217,11 @@ uv run --extra submitit python experiments/hooke/pair_stability/train.py \
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
   --backend submitit --cuda \
   --slurm-array-parallelism 4
+
+# Group multiple planned runs into each array task
+uv run --extra submitit python experiments/hooke/pair_stability/train.py \
+  --backend submitit --cuda \
+  --chunk-size 8
 ```
 
 ### Validation launch options
@@ -239,14 +247,16 @@ Standard CUDA Submitit validation after training finishes:
 ```bash
 # Validate the latest non-smoke train attempts for the latest 00_grid attempt
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
-  --backend submitit --cuda
+  --backend submitit --cuda \
+  --chunk-size 128
 
 # Validate an exact train attempt and write an exact validation attempt id
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
   --backend submitit --cuda \
   --grid-attempt-id 20260619T195112-0400 \
   --train-attempt-id 20260619T195112-0400 \
-  --attempt-id 20260620T090000-0400
+  --attempt-id 20260620T090000-0400 \
+  --chunk-size 128
 ```
 
 Each planned grid point becomes scalar overrides, e.g.:

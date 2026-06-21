@@ -332,7 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1 if manifest.get("jobs") else 0
 
     if args.backend == "local":
-        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root)
+        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root, chunk_size=args.chunk_size)
     else:
         log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
         job_ids = launch.submit_submitit(
@@ -340,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / log_attempt,
             job_name="hooke-pair-stability-validate-smoke" if args.smoke else "hooke-pair-stability-validate",
             slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
+            chunk_size=args.chunk_size,
         )
 
     write_validation_submission_records(

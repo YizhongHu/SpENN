@@ -9,7 +9,6 @@ not retested here.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -216,7 +215,8 @@ def test_train_consumes_grid_attempt_and_writes_submission_records(
     results_root = _plan(tmp_path)
     submitted_commands = []
 
-    def fake_submit_local(commands, *, repo_root: Path):
+    def fake_submit_local(commands, *, repo_root: Path, chunk_size: int = launch.DEFAULT_CHUNK_SIZE):
+        assert chunk_size == launch.DEFAULT_CHUNK_SIZE
         submitted_commands.extend(commands)
         return [f"local-{index}" for index, _ in enumerate(commands)]
 
@@ -254,7 +254,8 @@ def test_train_smoke_submits_two_short_runs_with_smoke_attempt_ids(
     first_run_id = manifest["jobs"][0]["run_id"]
     submitted_commands = []
 
-    def fake_submit_local(commands, *, repo_root: Path):
+    def fake_submit_local(commands, *, repo_root: Path, chunk_size: int = launch.DEFAULT_CHUNK_SIZE):
+        assert chunk_size == launch.DEFAULT_CHUNK_SIZE
         submitted_commands.extend(commands)
         return [f"local-smoke-{index}" for index, _ in enumerate(commands)]
 
@@ -317,7 +318,7 @@ def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
 def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    captured_commands = []
+    captured_chunks = []
     captured_parameters = []
     captured_map_calls = []
 
@@ -331,7 +332,7 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
 
         def map_array(self, fn, commands):
             captured_map_calls.append(fn)
-            captured_commands.extend(commands)
+            captured_chunks.extend(commands)
             return [types.SimpleNamespace(job_id=f"array-job_{index}") for index, _ in enumerate(commands)]
 
     fake_submitit = types.SimpleNamespace(
@@ -380,11 +381,44 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     )
 
     assert job_ids == ["array-job_0", "array-job_1"]
-    assert captured_map_calls == [subprocess.check_call]
-    assert captured_commands == [submitted, submitted]
+    assert captured_map_calls == [launch.run_command_chunk]
+    assert captured_chunks == [[submitted], [submitted]]
     assert captured_parameters[0]["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert captured_parameters[0]["gpus_per_node"] == 1
     assert captured_parameters[0]["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
+
+
+def test_submitit_chunks_commands_evenly_and_expands_job_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_chunks = []
+
+    class FakeExecutor:
+        def __init__(self, folder: str):
+            self.folder = folder
+
+        def update_parameters(self, **kwargs):
+            self.parameters = kwargs
+
+        def map_array(self, fn, commands):
+            assert fn is launch.run_command_chunk
+            captured_chunks.extend(commands)
+            return [types.SimpleNamespace(job_id=f"array-job_{index}") for index, _ in enumerate(commands)]
+
+    monkeypatch.setitem(sys.modules, "submitit", types.SimpleNamespace(AutoExecutor=FakeExecutor))
+
+    commands = [["bash", "-lc", f"echo {index}"] for index in range(540)]
+    job_ids = launch.submit_submitit(
+        commands,
+        log_dir=tmp_path / "logs",
+        job_name="pair-stability",
+        slurm={},
+        chunk_size=128,
+    )
+
+    assert [len(chunk) for chunk in captured_chunks] == [108, 108, 108, 108, 108]
+    assert [command for chunk in captured_chunks for command in chunk] == commands
+    assert job_ids == [f"array-job_{index}" for index in range(5) for _ in range(108)]
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:

@@ -166,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.backend == "local":
-        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root)
+        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root, chunk_size=args.chunk_size)
     else:
         log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
         job_ids = launch.submit_submitit(
@@ -174,6 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
             job_name="hooke-pair-stability-train-smoke" if args.smoke else "hooke-pair-stability-train",
             slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
+            chunk_size=args.chunk_size,
         )
 
     write_train_submission_records(
