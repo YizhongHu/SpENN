@@ -223,6 +223,7 @@ def plan_validation_jobs(
             timezone=_job_timezone(job),
         )
         command = _command_for(validation_config, overrides)
+        command = launch.with_study_timezone(command, timezone=_job_timezone(job))
         if args.smoke:
             command = launch.with_overrides(command, SMOKE_VALIDATION_OVERRIDES)
         planned.append(

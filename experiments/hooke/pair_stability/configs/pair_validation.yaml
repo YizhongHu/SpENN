@@ -34,7 +34,7 @@ run:
   layout: flat
   run_id: null
   dir: null
-  timezone: null  # planner injects run.timezone; null falls back to UTC for direct runs
+  timezone: null  # launchers inject run.timezone
 
 runtime:
   seed: ${run_parameters.seed}

@@ -114,7 +114,7 @@ def _final_train_attempt_id_for_job(
                 "--allow-production-final-train is passed"
             )
         return args.final_train_attempt_id
-    return latest_final_train_attempt_id(results_root, final_run_id, smoke=args.smoke)
+    return _latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=args.smoke)
 
 
 def _resolved_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
@@ -141,6 +141,23 @@ def _resolved_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
         "checkpoint_pointer_data": pointer_data,
         "resolved_checkpoint_dir": str(checkpoint_dir),
     }
+
+
+def _latest_ready_final_train_attempt_id(
+    results_root: str | Path,
+    final_run_id: str,
+    *,
+    smoke: bool,
+) -> str | None:
+    """Return the newest final-train attempt with a completed selected checkpoint."""
+
+    ids = attempt_ids(final_train_run_dir(results_root, final_run_id))
+    candidates = [attempt_id for attempt_id in ids if _is_smoke_attempt(attempt_id) == smoke]
+    for attempt_id in reversed(candidates):
+        train_attempt = final_train_attempt_dir(results_root, final_run_id, attempt_id)
+        if _resolved_checkpoint(train_attempt) is not None:
+            return attempt_id
+    return None
 
 
 def _run_parameter_overrides(job: dict[str, Any]) -> list[str]:
@@ -247,6 +264,7 @@ def plan_final_eval_jobs(
                 checkpoint_dir=checkpoint["resolved_checkpoint_dir"],
             ),
         )
+        command = launch.with_study_timezone(command)
         if args.smoke:
             command = launch.with_overrides(command, SMOKE_FINAL_EVAL_OVERRIDES)
         (final_eval_attempt / "command.txt").write_text(shlex.join(command) + "\n")

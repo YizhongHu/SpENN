@@ -201,7 +201,9 @@ def test_train_run_dir_uses_stage_attempt_layout(tmp_path: Path) -> None:
 
 def test_plan_always_injects_run_timezone_override(tmp_path: Path) -> None:
     grid = _small_grid(tmp_path)
-    # The planner owns the timezone and always injects it (the config is null).
+    # The launcher owns the timezone and always injects it (the config is null).
+    assert OmegaConf.load(PAIR_STABILITY).run.timezone is None
+    assert OmegaConf.load(PAIR_VALIDATION).run.timezone is None
     plan.main(["--grid", str(grid), "--results-root", str(tmp_path / "a"), "--attempt-id", ATTEMPT])
     commands = (run_utils.grid_attempt_dir(tmp_path / "a", ATTEMPT) / "commands.sh").read_text()
     assert "run.timezone=America/New_York" in commands
@@ -218,9 +220,19 @@ def test_train_consumes_grid_attempt_and_writes_submission_records(
 ) -> None:
     results_root = _plan(tmp_path)
     submitted_commands = []
+    status_paths = []
 
-    def fake_submit_local(commands, *, repo_root: Path, chunk_size: int = launch.DEFAULT_CHUNK_SIZE):
+    def fake_submit_local(
+        commands,
+        *,
+        repo_root: Path,
+        chunk_size: int = launch.DEFAULT_CHUNK_SIZE,
+        row_status_paths=None,
+        chunk_status_dir=None,
+    ):
         assert chunk_size == launch.DEFAULT_CHUNK_SIZE
+        status_paths.extend(row_status_paths or [])
+        assert chunk_status_dir == results_root / "01_train" / "chunk_status" / ATTEMPT
         submitted_commands.extend(commands)
         return [f"local-{index}" for index, _ in enumerate(commands)]
 
@@ -239,6 +251,8 @@ def test_train_consumes_grid_attempt_and_writes_submission_records(
     source = json.loads((train_attempt / "source_grid_attempt.json").read_text())
     assert source["grid_attempt_id"] == ATTEMPT
     assert source["run_id"] == TARGET_RUN_ID
+    assert (train_attempt / "command.txt").is_file()
+    assert train_attempt / "launcher_status.json" in status_paths
     submission = json.loads((train_attempt / "submission.json").read_text())
     assert submission["launcher"] == "local"
     assert submission["launcher_job_id"] == "local-3"
@@ -257,9 +271,19 @@ def test_train_smoke_submits_two_short_runs_with_smoke_attempt_ids(
     manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     first_run_id = manifest["jobs"][0]["run_id"]
     submitted_commands = []
+    status_paths = []
 
-    def fake_submit_local(commands, *, repo_root: Path, chunk_size: int = launch.DEFAULT_CHUNK_SIZE):
+    def fake_submit_local(
+        commands,
+        *,
+        repo_root: Path,
+        chunk_size: int = launch.DEFAULT_CHUNK_SIZE,
+        row_status_paths=None,
+        chunk_status_dir=None,
+    ):
         assert chunk_size == launch.DEFAULT_CHUNK_SIZE
+        status_paths.extend(row_status_paths or [])
+        assert chunk_status_dir == results_root / "01_train" / "chunk_status" / f"{ATTEMPT}-smoke"
         submitted_commands.extend(commands)
         return [f"local-smoke-{index}" for index, _ in enumerate(commands)]
 
@@ -288,15 +312,33 @@ def test_train_smoke_submits_two_short_runs_with_smoke_attempt_ids(
     assert "runtime.device=cuda" in script
     assert "training.max_steps=2" in script
     assert "sampler_params.n_walkers=128" in script
-    assert "validation_sampler_params.n_steps=5" in script
     assert "checkpoint.every_n_steps=1" in script
 
     smoke_attempt_dir = results_root / "01_train" / first_run_id / smoke_attempt
     source = json.loads((smoke_attempt_dir / "source_grid_attempt.json").read_text())
     assert source["grid_attempt_id"] == ATTEMPT
+    assert (smoke_attempt_dir / "command.txt").is_file()
+    assert smoke_attempt_dir / "launcher_status.json" in status_paths
     submission = json.loads((smoke_attempt_dir / "submission.json").read_text())
     assert submission["launcher_job_id"] == "local-smoke-0"
     assert f"run.run_id={first_run_id}/{smoke_attempt}" in submission["submitted_command"]
+
+
+def test_smoke_attempt_id_is_idempotent() -> None:
+    smoke_attempt = f"{ATTEMPT}-smoke"
+
+    assert launch.smoke_attempt_id(ATTEMPT) == smoke_attempt
+    assert launch.smoke_attempt_id(smoke_attempt) == smoke_attempt
+
+
+def test_pair_stability_train_config_has_no_train_validation_remnants() -> None:
+    cfg = OmegaConf.load(PAIR_STABILITY)
+
+    assert "validation" not in cfg
+    assert "validation_sampler_params" not in cfg
+    assert "validation_sampler" not in cfg
+    targets = [str(callback.get("_target_", "")) for callback in cfg.callbacks]
+    assert "spenn.callback.Validation" not in targets
 
 
 def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
@@ -390,6 +432,9 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     assert captured_parameters[0]["slurm_partition"] == "seas_gpu,kozinsky_gpu"
     assert captured_parameters[0]["gpus_per_node"] == 1
     assert captured_parameters[0]["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
+    assert captured_parameters[0]["slurm_setup"][0].startswith("export PYTHONPATH=")
+    assert str(STUDY_DIR) in captured_parameters[0]["slurm_setup"][0]
+    assert str(ROOT) in captured_parameters[0]["slurm_setup"][0]
 
 
 def test_submitit_chunks_commands_evenly_and_expands_job_ids(
@@ -547,8 +592,18 @@ def test_final_train_consumes_final_grid_and_records_checkpoint_selection(
 ) -> None:
     results_root, job = _write_final_grid(tmp_path)
     submitted_commands = []
+    status_paths = []
 
-    def fake_submit_local(commands, *, repo_root: Path, chunk_size: int = launch.DEFAULT_CHUNK_SIZE):
+    def fake_submit_local(
+        commands,
+        *,
+        repo_root: Path,
+        chunk_size: int = launch.DEFAULT_CHUNK_SIZE,
+        row_status_paths=None,
+        chunk_status_dir=None,
+    ):
+        status_paths.extend(row_status_paths or [])
+        assert chunk_status_dir == results_root / "06_final_train" / "chunk_status" / "TF1"
         submitted_commands.extend(commands)
         return [f"local-final-{index}" for index, _ in enumerate(commands)]
 
@@ -571,10 +626,12 @@ def test_final_train_consumes_final_grid_and_records_checkpoint_selection(
     script = submitted_commands[0][2]
     assert "run_parameters.seed=1001" in script
     assert "sampler.seed=101" in script
+    assert "run.timezone=America/New_York" in script
     assert "runtime.device=cpu" in script
     attempt = results_root / "06_final_train" / job["final_run_id"] / "TF1"
     assert json.loads((attempt / "source_final_grid_attempt.json").read_text())["final_grid_attempt_id"] == "F1"
     assert json.loads((attempt / "source_final_job.json").read_text())["final_train_model_seed"] == 1001
+    assert attempt / "launcher_status.json" in status_paths
     selected = json.loads((attempt / "selected_checkpoint.json").read_text())
     assert selected["selection_policy"] == "latest_checkpoint_pointer"
     assert selected["checkpoint_pointer"].endswith("checkpoints/latest.json")
@@ -621,6 +678,7 @@ def test_final_eval_records_exact_checkpoint_and_uses_final_suite(
         row_status_paths=None,
         chunk_status_dir=None,
     ):
+        assert chunk_size == launch.DEFAULT_CHUNK_SIZE
         submitted_commands.extend(commands)
         return [f"local-eval-{index}" for index, _ in enumerate(commands)]
 
@@ -643,6 +701,7 @@ def test_final_eval_records_exact_checkpoint_and_uses_final_suite(
     script = submitted_commands[0][2]
     assert "evaluation.suite=final_eval" in script
     assert "evaluation.seed=10001" in script
+    assert "run.timezone=America/New_York" in script
     assert "load.path=" in script
     assert "step_000002" in script
     attempt = results_root / "07_final_eval" / job["final_run_id"] / "FE1"
@@ -650,6 +709,53 @@ def test_final_eval_records_exact_checkpoint_and_uses_final_suite(
     assert checkpoint["resolved_checkpoint_dir"].endswith("checkpoints/step_000002")
     submission = json.loads((attempt / "submission.json").read_text())
     assert submission["launcher_job_id"] == "local-eval-0"
+
+
+def test_final_eval_auto_selects_latest_ready_smoke_final_train_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root, job = _write_final_grid(tmp_path)
+    good_attempt_id = "20260621T171930-0400-smoke"
+    bad_attempt_id = "20260621T171930-0400-smoke-smoke"
+    _write_final_train_checkpoint(results_root, job["final_run_id"], good_attempt_id)
+    bad_attempt = results_root / "06_final_train" / job["final_run_id"] / bad_attempt_id
+    bad_attempt.mkdir(parents=True)
+    submitted_commands = []
+
+    def fake_submit_local(
+        commands,
+        *,
+        repo_root: Path,
+        chunk_size: int = launch.DEFAULT_CHUNK_SIZE,
+        allow_partial_failures: bool = False,
+        row_status_paths=None,
+        chunk_status_dir=None,
+    ):
+        assert chunk_size == launch.DEFAULT_CHUNK_SIZE
+        submitted_commands.extend(commands)
+        return [f"local-eval-{index}" for index, _ in enumerate(commands)]
+
+    monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    code = final_eval.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--final-grid-attempt-id",
+            "F1",
+            "--backend",
+            "local",
+            "--smoke",
+        ]
+    )
+
+    assert code == 0
+    assert len(submitted_commands) == 1
+    script = submitted_commands[0][2]
+    assert f"{good_attempt_id}/checkpoints/step_000002" in script
+    assert bad_attempt_id not in script
+    attempt = results_root / "07_final_eval" / job["final_run_id"] / "F1-smoke"
+    source = json.loads((attempt / "source_final_train_attempt.json").read_text())
+    assert source["final_train_attempt_id"] == good_attempt_id
 
 
 def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None:
@@ -718,6 +824,7 @@ def test_validate_records_source_train_attempt(tmp_path: Path) -> None:
     assert source["train_attempt_id"] == "T1"
     assert source["checkpoint_path"].endswith("checkpoints")
     assert "load.path=" in validation_plan["command"]
+    assert "run.timezone=America/New_York" in validation_plan["command"]
 
 
 def test_validate_auto_selection_ignores_smoke_train_attempts(tmp_path: Path) -> None:
@@ -1074,9 +1181,6 @@ def test_pair_stability_smoke_run_instantiates_one_grid_point(tmp_path: Path) ->
     cfg.sampler_params.n_walkers = 8
     cfg.sampler_params.burn_in = 2
     cfg.sampler_params.n_steps = 2
-    cfg.validation_sampler_params.n_walkers = 8
-    cfg.validation_sampler_params.burn_in = 2
-    cfg.validation_sampler_params.n_steps = 2
     cfg.training.max_steps = 1
     cfg.checkpoint.every_n_steps = 1
 

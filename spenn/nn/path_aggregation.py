@@ -19,6 +19,20 @@ nn = require_torch_nn(feature="SpENN path aggregation")
 class PathAggregation(EquivariantMap):
     """Aggregate path-resolved irrep interactions into irrep features.
 
+    Mathematical reference: ``main.typ`` "Model Workflow", step
+    ``Obtain update with nn.PathAggregation``. After Fourier projection and
+    irrep-safe activation, the implemented map is
+
+    ``u_hat^{c,lambda}_{I;alpha,beta_out}
+      = sum_p sum_{c_in,beta_in}
+        U^{lambda}_{c,beta_out <- c_in,p,beta_in}
+        w_hat^{c_in,lambda}_{I,p;alpha,beta_in}``.
+
+    The key equivariance constraint is that ``alpha`` is the transforming
+    Specht coordinate and must pass through unchanged. The learnable map may
+    mix channels, path mechanisms, and multiplicity/beta coordinates, but it is
+    shared over particle tuple positions ``I`` and over ``alpha``.
+
     The input contract is :class:`IrrepInteraction` with blocks of shape
     ``[batch, c_in, paths, indices..., alpha, beta_in]``. The output contract is
     :class:`IrrepFeature` with blocks of shape
@@ -131,6 +145,12 @@ class PathAggregation(EquivariantMap):
         if tensor.ndim < 5:
             raise ValueError(f"PathAggregation block for {partition.parts} must have at least 5 dimensions")
         weight = self._weight_for(partition, tensor)
+        # Implements the update-aggregation formula above:
+        #   b c p I... alpha beta_in, o beta_out c p beta_in
+        #     -> b o I... alpha beta_out.
+        # There is intentionally no summation over I or alpha. Sharing the
+        # same U over I preserves particle equivariance; preserving alpha keeps
+        # the Specht irrep action intact.
         return torch.einsum("bcp...ad,oecpd->bo...ae", tensor, weight)
 
     def key(self, partition: Partition) -> str:

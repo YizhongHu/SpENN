@@ -15,7 +15,14 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
-from run_utils import STAGE_GRID, attempt_ids, grid_attempt_dir, read_json, stage_dir
+from run_utils import (
+    DEFAULT_STUDY_TIMEZONE,
+    STAGE_GRID,
+    attempt_ids,
+    grid_attempt_dir,
+    read_json,
+    stage_dir,
+)
 
 DEFAULT_CPU_UV_ENVIRONMENT = ".venv"
 DEFAULT_CUDA_UV_ENVIRONMENT = ".venv-gpu"
@@ -35,6 +42,8 @@ SMOKE_TIMEOUT_MIN = 15
 SMOKE_MEM_GB = 16
 SMOKE_CPUS = 4
 SMOKE_ARRAY_PARALLELISM = 2
+STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
 
 T = TypeVar("T")
 
@@ -101,10 +110,16 @@ def with_runtime_device(command: Sequence[str], *, device: str) -> list[str]:
     return with_overrides(command, {"runtime.device": device})
 
 
+def with_study_timezone(command: Sequence[str], *, timezone: str | None = None) -> list[str]:
+    """Return ``command`` with the study's launcher-owned timezone override."""
+
+    return with_overrides(command, {"run.timezone": timezone or DEFAULT_STUDY_TIMEZONE})
+
+
 def smoke_attempt_id(base_attempt_id: str) -> str:
     """Return an attempt id that clearly marks smoke execution."""
 
-    return f"{base_attempt_id}-smoke"
+    return base_attempt_id if base_attempt_id.endswith("-smoke") else f"{base_attempt_id}-smoke"
 
 
 def environment_defaults(profile: str) -> tuple[str, list[str], str]:
@@ -303,6 +318,32 @@ def _expanded_chunk_job_ids(chunk_job_ids: Sequence[str], chunks: Sequence[Seque
     return expanded
 
 
+def _submitit_import_path_setup() -> str:
+    """Return a Slurm setup line that makes this script module importable.
+
+    Submitit unpickles the mapped callable before the command payload runs.
+    The stage scripts import this file as top-level ``launch``, so Slurm array
+    workers must have the study directory on ``PYTHONPATH`` before Python starts.
+    """
+
+    paths = ":".join(shlex.quote(str(path)) for path in (STUDY_DIR, REPO_ROOT))
+    return f"export PYTHONPATH={paths}${{PYTHONPATH:+:$PYTHONPATH}}"
+
+
+def _with_submitit_import_path(slurm: dict[str, Any]) -> dict[str, Any]:
+    """Return Slurm parameters with the launcher import path setup prepended."""
+
+    existing = slurm.get("slurm_setup", [])
+    if isinstance(existing, str):
+        setup = [existing]
+    else:
+        setup = [str(line) for line in existing]
+    import_path_setup = _submitit_import_path_setup()
+    if import_path_setup not in setup:
+        setup = [import_path_setup, *setup]
+    return {**slurm, "slurm_setup": setup}
+
+
 def submit_local(
     commands: Sequence[Sequence[str]],
     *,
@@ -358,6 +399,7 @@ def submit_submitit(
 
     log_dir.mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=str(log_dir))
+    slurm = _with_submitit_import_path(slurm)
     executor.update_parameters(name=job_name, **slurm)
     command_chunks = [
         [[str(part) for part in command] for command in chunk]

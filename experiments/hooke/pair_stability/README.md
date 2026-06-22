@@ -155,9 +155,9 @@ by default: each eval row keeps its own durable run artifact and
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and
 always injects it as a `run.timezone` override on the compiled commands. The
-configs set `run.timezone: null`, so a planned run takes its zone only from
-`plan.py` (a direct `run.py` run with no override falls back to spenn's `UTC`
-default).
+other stage launchers default to the same zone and inject `run.timezone` when
+they build validation, final-train, and final-eval commands. The configs keep
+`run.timezone: null`; the launcher is the source of truth.
 
 ```bash
 # Plan the grid (dry run): writes results/00_grid/<attempt_id>/
@@ -347,11 +347,10 @@ uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
   --backend submitit --cuda --smoke \
   --only-ready
 
-# Production final evaluation; chunk short eval rows into fewer array tasks
+# Production final evaluation
 uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
   --backend submitit --cuda \
-  --only-ready \
-  --chunk-size 25
+  --only-ready
 ```
 
 `final_eval.py` selects `evaluation.suite=final_eval` from
@@ -361,6 +360,12 @@ stratified-geometry, and Hooke-orbital generators than validation, uses
 rotation consistency, full-model antisymmetry, trace equivariance, and
 feature/readout trace stability where supported, and writes record-level CSV
 artifacts for plotting.
+
+Keep final-eval `--chunk-size` at the default `1` unless you intentionally want
+to serialize multiple final-eval rows inside one Slurm allocation. Unlike the
+lighter validation sweep, each final-eval row is already a substantial
+report-grade evaluation bundle, so large chunks can turn a few array tasks into
+long serial workers and make timeout/debugging behavior worse.
 
 Build report tables after final evaluation:
 

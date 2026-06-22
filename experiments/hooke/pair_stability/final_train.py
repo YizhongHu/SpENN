@@ -37,9 +37,6 @@ SMOKE_FINAL_TRAIN_OVERRIDES = {
     "sampler_params.n_walkers": 128,
     "sampler_params.burn_in": 10,
     "sampler_params.n_steps": 5,
-    "validation_sampler_params.n_walkers": 128,
-    "validation_sampler_params.burn_in": 10,
-    "validation_sampler_params.n_steps": 5,
     "checks.every_n_steps": 1,
     "checkpoint.every_n_steps": 1,
     "status.every_n_steps": 1,
@@ -132,7 +129,6 @@ def final_train_overrides(
         *_run_parameter_overrides(job),
         f"runtime.seed={model_seed}",
         f"sampler.seed={sampler_seed}",
-        f"validation_sampler_params.seed={sampler_seed}",
         f"run.root={stage_dir(results_root, STAGE_FINAL_TRAIN)}",
         "run.layout=flat",
         f"run.run_id={final_run_id}/{attempt_id}",
@@ -263,7 +259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     attempt_id = _attempt_id(args, final_grid_attempt_id=final_grid_attempt_id)
     jobs = _selected_jobs(load_final_jobs(results_root, final_grid_attempt_id), smoke=args.smoke)
     commands = [
-        _command_for_job(job, config=config, attempt_id=attempt_id, results_root=results_root)
+        launch.with_study_timezone(
+            _command_for_job(job, config=config, attempt_id=attempt_id, results_root=results_root)
+        )
         for job in jobs
     ]
     if args.smoke:
@@ -292,8 +290,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[pair_stability] final grid attempt {final_grid_attempt_id} has no jobs")
         return 0
 
+    row_status_paths = [
+        final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id) / "launcher_status.json"
+        for job in jobs
+    ]
+    chunk_status_dir = stage_dir(results_root, STAGE_FINAL_TRAIN) / "chunk_status" / attempt_id
     if args.backend == "local":
-        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root, chunk_size=args.chunk_size)
+        job_ids = launch.submit_local(
+            submitted_commands,
+            repo_root=repo_root,
+            chunk_size=args.chunk_size,
+            row_status_paths=row_status_paths,
+            chunk_status_dir=chunk_status_dir,
+        )
     else:
         log_attempt = attempt_id
         job_ids = launch.submit_submitit(
@@ -302,6 +311,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_name="hooke-pair-stability-final-train-smoke" if args.smoke else "hooke-pair-stability-final-train",
             slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
             chunk_size=args.chunk_size,
+            row_status_paths=row_status_paths,
+            chunk_status_dir=chunk_status_dir,
         )
 
     write_final_train_submission_records(
