@@ -128,6 +128,10 @@ CUSP_PROFILE_COLUMNS = [
     "logabs_median",
     "logabs_q25",
     "logabs_q75",
+    "d_logabs_dr_median",
+    "d_logabs_dr_q25",
+    "d_logabs_dr_q75",
+    "target_d_logabs_dr",
     "finite_fraction",
 ]
 
@@ -692,6 +696,59 @@ def _local_energy_histograms(contexts: Sequence[dict[str, Any]]) -> list[dict[st
     return rows
 
 
+CUSP_DLOGABS_KEYS = ("d_logabs_dr", "dlogabs_dr", "radial_dlogabs", "radial_logabs_derivative")
+
+
+def _first_float(row: dict[str, Any], keys: Sequence[str]) -> float | None:
+    for key in keys:
+        value = _as_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _finite_difference(points: Sequence[tuple[float, float]], index: int) -> float | None:
+    if len(points) < 2:
+        return None
+    if index == 0:
+        left, right = points[0], points[1]
+    elif index == len(points) - 1:
+        left, right = points[-2], points[-1]
+    else:
+        left, right = points[index - 1], points[index + 1]
+    dx = right[0] - left[0]
+    if dx == 0.0:
+        return None
+    return (right[1] - left[1]) / dx
+
+
+def _fill_cusp_derivative_fallback(rows: list[dict[str, Any]]) -> None:
+    by_path: dict[tuple[str, str, str], list[tuple[float, dict[str, Any]]]] = defaultdict(list)
+    for row in rows:
+        row.setdefault("target_d_logabs_dr", "0.5")
+        if row.get("d_logabs_dr_median"):
+            continue
+        r12 = _as_float(row.get("r12"))
+        logabs = _as_float(row.get("logabs_median"))
+        if r12 is None or logabs is None:
+            continue
+        by_path[(str(row.get("final_run_id", "")), str(row.get("com_id", "")), str(row.get("direction_id", "")))].append((r12, row))
+    for path_rows in by_path.values():
+        path_rows = sorted(path_rows, key=lambda item: item[0])
+        points = [(r12, _as_float(row.get("logabs_median"))) for r12, row in path_rows]
+        finite_points = [(r12, logabs) for r12, logabs in points if logabs is not None]
+        if len(finite_points) != len(path_rows):
+            continue
+        for index, (_r12, row) in enumerate(path_rows):
+            derivative = _finite_difference(finite_points, index)
+            if derivative is None:
+                continue
+            formatted = _format_number(derivative)
+            row["d_logabs_dr_median"] = formatted
+            row["d_logabs_dr_q25"] = formatted
+            row["d_logabs_dr_q75"] = formatted
+
+
 def _cusp_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
     rows = _task_records(context, "cusp", "cusp_profiles.csv")
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -702,6 +759,7 @@ def _cusp_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
     for (com_id, direction_id, r12), group in sorted(groups.items()):
         energies = [_as_float(row.get("local_energy")) for row in group]
         logabs = [_as_float(row.get("logabs")) for row in group]
+        derivatives = [_first_float(row, CUSP_DLOGABS_KEYS) for row in group]
         out.append({
             **base,
             "com_id": com_id,
@@ -713,8 +771,13 @@ def _cusp_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
             "logabs_median": _format_number(_median(logabs)),
             "logabs_q25": _format_number(_quantile(logabs, 0.25)),
             "logabs_q75": _format_number(_quantile(logabs, 0.75)),
+            "d_logabs_dr_median": _format_number(_median(derivatives)),
+            "d_logabs_dr_q25": _format_number(_quantile(derivatives, 0.25)),
+            "d_logabs_dr_q75": _format_number(_quantile(derivatives, 0.75)),
+            "target_d_logabs_dr": "0.5",
             "finite_fraction": _format_number(_finite_fraction([row.get("finite", "True") for row in group])),
         })
+    _fill_cusp_derivative_fallback(out)
     return out
 
 
@@ -1017,6 +1080,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Collect compact final tables."""
 
     args = parse_args(argv)
+    print(f"[pair_stability] final collect results_root={args.results_root}")
+    if args.final_eval_attempt_id:
+        print(f"[pair_stability] final collect using final_eval_attempt_id={args.final_eval_attempt_id}")
+    else:
+        print("[pair_stability] final collect using latest/all ready final-eval attempts")
     result = collect_final_outputs(
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
@@ -1027,6 +1095,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"[pair_stability] final collect consumed {manifest['n_final_eval_attempts']} "
         f"final-eval attempts -> {result['attempt_dir']}"
     )
+    print("[pair_stability] final collect table rows:")
+    for filename, count in manifest["tables"].items():
+        print(f"[pair_stability]   {filename}: {count}")
     return 0
 
 

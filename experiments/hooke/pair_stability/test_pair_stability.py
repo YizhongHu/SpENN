@@ -837,7 +837,13 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
         )
         + "\n"
     )
-    _write_csv(attempt / "cusp" / "cusp_profiles.csv", [{"r12": "0.1", "local_energy": "2.0"}])
+    _write_csv(
+        attempt / "cusp" / "cusp_profiles.csv",
+        [
+            {"r12": "0.1", "local_energy": "2.0", "logabs": "0.0"},
+            {"r12": "0.2", "local_energy": "2.2", "logabs": "0.05"},
+        ],
+    )
     _write_csv(attempt / "tail" / "tail_profiles.csv", [{"radius": "1.0", "local_energy": "3.0"}])
     _write_csv(attempt / "stratified_geometry" / "stratified_metrics.csv", [{"stratum": "bulk", "local_energy": "2.1"}])
     _write_csv(attempt / "energy" / "mcmc_energy_samples.csv", [{"sample_index": "0", "local_energy": "2.4"}])
@@ -874,6 +880,8 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert histograms[0]["basis_class"] == job["basis_envelope"]
     cusp = _read_csv(collect_dir / "cusp_profile_summary.csv")
     assert cusp[0]["local_energy_median"] == "2"
+    assert cusp[0]["d_logabs_dr_median"] == "0.5"
+    assert cusp[0]["target_d_logabs_dr"] == "0.5"
     training = _read_csv(collect_dir / "training_curve_summary.csv")
     assert training[0]["acceptance_rate"] == "0.7"
 
@@ -891,23 +899,29 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "2B_stability_winner_cusp_logabs_grid.png").is_file()
     assert (report_dir / "figures" / "2C_energy_winner_cusp_finite_fraction_grid.png").is_file()
     assert (report_dir / "figures" / "2C_stability_winner_cusp_finite_fraction_grid.png").is_file()
+    assert (report_dir / "figures" / "2D_energy_winner_cusp_dlogabs_dr_grid.png").is_file()
+    assert (report_dir / "figures" / "2D_stability_winner_cusp_dlogabs_dr_grid.png").is_file()
     assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
     assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
     assert (report_dir / "figures" / "3C_tail_outlier_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_aggregate_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_aggregate_log_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_bulk_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4A_stratified_geometry_aggregate_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4A_stratified_geometry_aggregate_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4B_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4B_stratified_geometry_bulk_log_heatmap.png").is_file()
     assert (report_dir / "figures" / "5A_energy_winner_hooke_orbital_local_energy_distribution.png").is_file()
     assert (report_dir / "figures" / "5A_stability_winner_hooke_orbital_local_energy_distribution.png").is_file()
-    assert (report_dir / "figures" / "6_symmetry_logabs_error_max_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "6_symmetry_logabs_error_median_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "6_symmetry_sign_mismatch_count_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "6_symmetry_parity_mismatch_count_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "6_symmetry_finite_fraction_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "7_feature_trace_rms_q95_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "7_feature_trace_max_abs_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "7_feature_trace_nonfinite_count_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6A_symmetry_logabs_error_max_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6B_symmetry_logabs_error_median_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6C_symmetry_sign_mismatch_count_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6D_symmetry_parity_mismatch_count_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6E_symmetry_finite_fraction_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "7A_feature_trace_rms_q95_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "7B_feature_trace_max_abs_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "7C_feature_trace_nonfinite_count_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "8A_energy_winner_training_energy.png").is_file()
+    assert (report_dir / "figures" / "8B_energy_winner_abs_energy_error_semilogy.png").is_file()
+    assert (report_dir / "figures" / "8C_stability_winner_training_energy.png").is_file()
+    assert (report_dir / "figures" / "8D_stability_winner_abs_energy_error_semilogy.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
@@ -926,6 +940,63 @@ def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
     assert y_labels == ["raw"]
     assert x_labels == ["N0", "N1"]
     assert matrix == [[-0.5, 0.5]]
+
+
+def test_final_report_heatmap_transform_uses_positive_log_for_multiscale_values() -> None:
+    assert final_report._resolve_heatmap_transform([1.0, 100.0], None) == "positive_log"
+    assert final_report._resolve_heatmap_transform([0.0, 1.0, 2.0], None) == "positive_linear"
+    assert final_report._resolve_heatmap_transform([-1.0, 100.0], None) == "signed_linear"
+    assert final_report._resolve_heatmap_transform([1.0, 100.0], "signed_log") == "signed_log"
+
+
+def test_final_report_positive_heatmaps_use_monochrome_colormap() -> None:
+    class FakeAxis:
+        def __init__(self) -> None:
+            self.imshow_kwargs: list[dict[str, object]] = []
+
+        def imshow(self, _data: object, **kwargs: object) -> object:
+            self.imshow_kwargs.append(kwargs)
+            return object()
+
+        def set_xticks(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def set_yticks(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def set_title(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def text(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    linear_axis = FakeAxis()
+    final_report._draw_heatmap_axis(
+        object(),
+        linear_axis,
+        y_labels=["row"],
+        x_labels=["col"],
+        matrix=[[1.0]],
+        value_key="metric",
+        title="linear",
+        transform=None,
+        add_colorbar=False,
+    )
+    log_axis = FakeAxis()
+    final_report._draw_heatmap_axis(
+        object(),
+        log_axis,
+        y_labels=["row"],
+        x_labels=["small", "large"],
+        matrix=[[1.0, 100.0]],
+        value_key="metric",
+        title="log",
+        transform=None,
+        add_colorbar=False,
+    )
+
+    assert linear_axis.imshow_kwargs[0]["cmap"] == final_report.POSITIVE_HEATMAP_CMAP
+    assert log_axis.imshow_kwargs[0]["cmap"] == final_report.POSITIVE_HEATMAP_CMAP
 
 
 def test_final_report_winner_helpers_split_energy_and_stability_rows() -> None:
@@ -967,6 +1038,57 @@ def test_final_report_symmetry_metric_grid_splits_winners_and_symmetries(tmp_pat
     assert path.is_file()
 
 
+def test_final_report_symmetry_metric_grid_uses_row_scoped_scales(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "symmetry_grid.png"
+    captured: list[tuple[str, tuple[float, ...]]] = []
+
+    def fake_draw_heatmap_axis(_fig: object, _ax: object, **kwargs: object) -> None:
+        captured.append((str(kwargs["title"]), tuple(float(value) for value in kwargs["scale_values"])))  # type: ignore[index]
+        return None
+
+    monkeypatch.setattr(final_report, "_draw_heatmap_axis", fake_draw_heatmap_axis)
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "symmetry_task": "antisymmetry",
+            "logabs_error_max": "1.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "symmetry_task": "antisymmetry",
+            "logabs_error_max": "10.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "symmetry_task": "rotation",
+            "logabs_error_max": "1000.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "symmetry_task": "rotation",
+            "logabs_error_max": "2000.0",
+        },
+    ]
+
+    final_report._save_symmetry_metric_grid(path, rows, metric_key="logabs_error_max", title="symmetry grid")
+
+    assert path.is_file()
+    assert captured == [
+        ("antisymmetry\nenergy winners", (1.0, 10.0)),
+        ("antisymmetry\nstability winners", (1.0, 10.0)),
+        ("rotation\nenergy winners", (1000.0, 2000.0)),
+        ("rotation\nstability winners", (1000.0, 2000.0)),
+    ]
+
+
 def test_final_report_feature_trace_metric_grid_filters_trace_kind_and_splits_layers(tmp_path: Path) -> None:
     path = tmp_path / "feature_trace_grid.png"
     rows = [
@@ -1001,6 +1123,22 @@ def test_final_report_feature_trace_metric_grid_filters_trace_kind_and_splits_la
             "trace_kind": "feature_trace_stability",
             "layer": "layers.0",
             "rms_q95": "3.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "feature_normalization.norm",
+            "rms_q95": "100.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "layers.0.update_norm",
+            "rms_q95": "100.0",
         },
     ]
 
@@ -1053,22 +1191,47 @@ def test_final_report_architecture_normalization_line_grid_splits_both_axes(tmp_
     assert path.is_file()
 
 
-def test_final_report_training_curve_grid_aggregates_seed_variance(tmp_path: Path) -> None:
+def test_final_report_training_curve_grid_draws_smoothed_run_curves(tmp_path: Path) -> None:
     rows = [
-        {"basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "0", "step": "0", "energy_mean": "1.0"},
-        {"basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "1", "step": "0", "energy_mean": "3.0"},
-        {"basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "stability", "seed_index": "0", "step": "0", "energy_mean": "2.0"},
-        {"basis_class": "hermite_o2_envelope", "normalization": "N1", "winner_kind": "energy", "seed_index": "0", "step": "10", "energy_mean": "4.0"},
+        {"final_run_id": "run-a", "basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "0", "step": "0", "energy_mean": "1.0"},
+        {"final_run_id": "run-a", "basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "0", "step": "1", "energy_mean": "3.0"},
+        {"final_run_id": "run-a", "basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "0", "step": "2", "energy_mean": "5.0"},
+        {"final_run_id": "run-b", "basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "1", "step": "0", "energy_mean": "7.0"},
+        {"final_run_id": "run-c", "basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "stability", "seed_index": "0", "step": "0", "energy_mean": "2.0"},
     ]
 
-    curves = final_report._training_curve_points(rows)
-    energy_points = curves[("raw_envelope", "N0", "energy")]
-    assert energy_points[0]["mean"] == 2.0
-    assert energy_points[0]["variance"] == 2.0
+    curves = final_report._training_run_curves(rows, smooth_window=3)
+    assert sorted(key[3] for key in curves if key[:3] == ("raw_envelope", "N0", "energy")) == ["run-a", "run-b"]
+    run_a = curves[("raw_envelope", "N0", "energy", "run-a")]
+    assert [point["value"] for point in run_a] == pytest.approx([2.0, 3.0, 4.0])
+    error_curves = final_report._training_run_curves(rows, value_mode="abs_energy_error", smooth_window=1)
+    error_points = error_curves[("raw_envelope", "N0", "energy", "run-a")]
+    assert [point["value"] for point in error_points] == pytest.approx([1.0, 1.0, 3.0])
 
     path = tmp_path / "training_grid.png"
-    final_report._save_training_curve_grid(path, rows, title="training grid")
+    final_report._save_training_curve_grid(
+        path,
+        rows,
+        winner_kind="energy",
+        value_mode="energy_mean",
+        y_label="energy mean",
+        title="training grid",
+        smooth_window=3,
+    )
     assert path.is_file()
+
+    semilogy_path = tmp_path / "training_error_grid.png"
+    final_report._save_training_curve_grid(
+        semilogy_path,
+        rows,
+        winner_kind="energy",
+        value_mode="abs_energy_error",
+        y_label="abs energy error",
+        title="training error grid",
+        semilogy=True,
+        smooth_window=3,
+    )
+    assert semilogy_path.is_file()
 
 
 def test_final_report_line_plot_can_force_large_external_legend(tmp_path: Path) -> None:
@@ -1123,9 +1286,33 @@ def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> 
             "local_energy_var": 10.0,
             "architecture": "raw_envelope",
             "normalization": "N0",
-            "winner_kind": "",
+            "winner_kind": "stability",
         }
     ]
+
+
+def test_final_report_energy_variance_scatter_splits_winner_panels(tmp_path: Path) -> None:
+    path = tmp_path / "energy_variance.png"
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "energy_error": "0.1",
+            "local_energy_var": "0.2",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "feature_trace",
+            "energy_error": "0.3",
+            "local_energy_var": "0.4",
+        },
+    ]
+
+    final_report._save_energy_variance_scatter(path, rows, title="energy variance")
+
+    assert path.is_file()
 
 
 def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> None:
@@ -1172,6 +1359,33 @@ def test_final_collect_local_energy_histograms_use_group_scoped_bins(tmp_path: P
     assert min(float(row["bin_left"]) for row in outlier) == pytest.approx(1000.0)
 
 
+def test_final_collect_cusp_summary_derives_logabs_derivative(tmp_path: Path) -> None:
+    attempt = tmp_path / "attempt"
+    (attempt / "cusp").mkdir(parents=True)
+    _write_csv(
+        attempt / "cusp" / "cusp_profiles.csv",
+        [
+            {"r12": "0.1", "center_of_mass_id": "0", "direction_id": "0", "local_energy": "2.0", "logabs": "0.0"},
+            {"r12": "0.2", "center_of_mass_id": "0", "direction_id": "0", "local_energy": "2.1", "logabs": "0.05"},
+        ],
+    )
+    context = {
+        "attempt_dir": attempt,
+        "final_run_id": "run-0",
+        "job": {
+            "basis_envelope": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "replicate_index": "0",
+        },
+    }
+
+    rows = final_collect._cusp_summary(context)
+
+    assert [row["d_logabs_dr_median"] for row in rows] == ["0.5", "0.5"]
+    assert {row["target_d_logabs_dr"] for row in rows} == {"0.5"}
+
+
 def test_final_report_local_energy_bar_series_sums_seed_bins() -> None:
     centers, counts, widths = final_report._local_energy_bar_series(
         [
@@ -1185,6 +1399,89 @@ def test_final_report_local_energy_bar_series_sums_seed_bins() -> None:
     assert centers == [0.5, 2.5]
     assert counts == [5.0, 4.0]
     assert widths == [1.0, 1.0]
+
+
+def test_final_report_cusp_profile_points_collapse_directions_into_com_lines() -> None:
+    rows = []
+    for com_index in range(5):
+        for seed_index in range(2):
+            for direction_index in range(2):
+                rows.append(
+                    {
+                        "basis_class": "raw_envelope",
+                        "normalization": "N0",
+                        "winner_kind": "energy",
+                        "seed_index": str(seed_index),
+                        "com_id": str(com_index),
+                        "direction_id": str(direction_index),
+                        "r12": "1.0",
+                        "local_energy_median": str(10 * com_index + 1 + 2 * seed_index + 4 * direction_index),
+                    }
+                )
+    rows.append(
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "seed_index": "0",
+            "com_id": "0",
+            "direction_id": "0",
+            "r12": "1.0",
+            "local_energy_median": "100.0",
+        }
+    )
+
+    points = final_report._cusp_profile_points(
+        rows,
+        winner_kind="energy",
+        value_key="local_energy_median",
+    )
+
+    assert sorted(key[2] for key in points) == ["CoM 0", "CoM 1", "CoM 2", "CoM 3", "CoM 4"]
+    row = points[("raw_envelope", "N0", "CoM 0")][0]
+    assert row["r12"] == 1.0
+    assert row["mean"] == pytest.approx(4.0)
+    assert row["variance"] == pytest.approx(20.0 / 3.0)
+    assert row["n_records"] == 4
+
+
+def test_final_report_cusp_derivative_profiles_keep_com_targets() -> None:
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "com_id": "near",
+            "r12": "0.1",
+            "d_logabs_dr_median": "0.4",
+            "target_d_logabs_dr": "0.5",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "com_id": "near",
+            "r12": "0.1",
+            "d_logabs_dr_median": "0.6",
+            "target_d_logabs_dr": "0.5",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "com_id": "far",
+            "r12": "0.1",
+            "d_logabs_dr_median": "0.3",
+            "target_d_logabs_dr": "0.5",
+        },
+    ]
+
+    energy_model, energy_target = final_report._cusp_derivative_profiles(rows, winner_kind="energy")
+    stability_model, _stability_target = final_report._cusp_derivative_profiles(rows, winner_kind="stability")
+
+    assert energy_model[("raw_envelope", "N0", "CoM near")][0]["median"] == pytest.approx(0.5)
+    assert energy_target[("raw_envelope", "N0", "CoM near")][0]["median"] == pytest.approx(0.5)
+    assert stability_model[("raw_envelope", "N0", "CoM far")][0]["median"] == pytest.approx(0.3)
 
 
 def test_final_report_tail_grid_aggregates_paths_before_seed_variance() -> None:
