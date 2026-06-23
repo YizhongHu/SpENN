@@ -593,7 +593,12 @@ def _save_tail_winner_grid(
     plt.close(fig)
 
 
-def _save_line_plot(
+def _group_label(row: dict[str, Any], group_keys: Sequence[str]) -> str:
+    parts = [str(row.get(key, "")) for key in group_keys if row.get(key, "") != ""]
+    return "/".join(parts) if parts else "all"
+
+
+def _save_architecture_line_grid(
     path: Path,
     rows: Sequence[dict[str, Any]],
     *,
@@ -601,43 +606,83 @@ def _save_line_plot(
     y_key: str,
     group_keys: Sequence[str],
     title: str,
-    legend: str = "auto",
-    legend_title: str | None = None,
+    legend_title: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    groups: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
     for row in rows:
         x = _as_float(row.get(x_key))
         y = _as_float(row.get(y_key))
         if x is None or y is None:
             continue
-        label = "/".join(str(row.get(key, "")) for key in group_keys if row.get(key, "") != "")
-        groups[label or "all"].append((x, y))
+        architecture = str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
+        groups[(architecture, _group_label(row, group_keys))].append((x, y))
     if not groups:
         _save_no_data(path, title)
         return
+
+    architectures = sorted({key[0] for key in groups})
+    labels = sorted({key[1] for key in groups})
     plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(7, 4))
-    for label, values in sorted(groups.items()):
-        values = sorted(values)
-        ax.plot([point[0] for point in values], [point[1] for point in values], marker="o", label=label)
-    ax.set_xlabel(x_key)
-    ax.set_ylabel(y_key)
-    ax.set_title(title)
-    if legend == "outside":
-        ncol = max(1, math.ceil(len(groups) / 24))
-        ax.legend(
-            fontsize=6,
+    from matplotlib.lines import Line2D
+
+    n_cols = min(3, max(1, math.ceil(math.sqrt(len(architectures)))))
+    n_rows = math.ceil(len(architectures) / n_cols)
+    cmap = plt.get_cmap("tab20" if len(labels) > 10 else "tab10")
+    colors = {label: cmap(index % cmap.N) for index, label in enumerate(labels)}
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(5.0, 3.4 * n_cols), max(3.0, 2.6 * n_rows)),
+        squeeze=False,
+        sharex=True,
+        sharey=False,
+    )
+    flat_axes = [axis for axis_row in axes for axis in axis_row]
+    for index, architecture in enumerate(architectures):
+        ax = flat_axes[index]
+        plotted = False
+        for label in labels:
+            values = sorted(groups.get((architecture, label), []))
+            if not values:
+                continue
+            ax.plot(
+                [point[0] for point in values],
+                [point[1] for point in values],
+                marker="o",
+                linewidth=1.1,
+                markersize=3.0,
+                color=colors[label],
+                label=label,
+            )
+            plotted = True
+        if not plotted:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+        ax.set_title(architecture, fontsize=9)
+        ax.set_xlabel(x_key)
+        ax.set_ylabel(y_key)
+        ax.grid(True, linewidth=0.35, alpha=0.35)
+    for ax in flat_axes[len(architectures):]:
+        ax.axis("off")
+
+    handles = [
+        Line2D([0], [0], marker="o", color=colors[label], linewidth=1.1, markersize=3.0, label=label)
+        for label in labels
+    ]
+    if handles:
+        fig.legend(
+            handles,
+            labels,
             title=legend_title,
+            fontsize=6,
             title_fontsize=7,
             loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
+            bbox_to_anchor=(1.0, 0.5),
             borderaxespad=0.0,
-            ncol=ncol,
+            ncol=max(1, math.ceil(len(labels) / 28)),
         )
-    elif legend == "auto" and len(groups) <= 12:
-        ax.legend(fontsize=7, loc="best")
-    fig.tight_layout()
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 0.83 if handles else 1.0, 0.94))
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -673,20 +718,20 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("1A_log_scale_energy_error_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log")),
         ("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance")),
         ("1C_local_energy_distribution_grid.png", lambda path: _save_local_energy_distribution_grid(path, histograms, title="MCMC local-energy histograms")),
-        ("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path")),
-        ("2B_cusp_c_minus_1_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path")),
-        ("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path")),
+        ("2A_cusp_even_slope_by_com.png", lambda path: _save_architecture_line_grid(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path", legend_title="normalization / winner / CoM / direction")),
+        ("2B_cusp_c_minus_1_by_com.png", lambda path: _save_architecture_line_grid(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path", legend_title="normalization / winner / CoM / direction")),
+        ("2C_cusp_odd_slant_by_com.png", lambda path: _save_architecture_line_grid(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path", legend_title="normalization / winner / CoM / direction")),
         ("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners")),
         ("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners")),
         ("3C_tail_outlier_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
         ("4_stratified_geometry_aggregate_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error")),
         ("4_stratified_geometry_aggregate_log_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="signed_log")),
-        ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians", legend="outside", legend_title="architecture / normalization / winner / CoM bin")),
-        ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin", legend="outside", legend_title="architecture / normalization / winner / CoM bin")),
-        ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin", legend="outside", legend_title="architecture / normalization / winner / r12 bin")),
+        ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians", legend_title="normalization / winner / CoM bin")),
+        ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin", legend_title="normalization / winner / CoM bin")),
+        ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin", legend_title="normalization / winner / r12 bin")),
         ("6_symmetry_failure_counts.png", lambda path: _save_bar(path, tables["symmetry_summary.csv"], label_key="symmetry_task", value_key="sign_mismatch_count", title="Symmetry sign mismatch counts")),
         ("7_trace_failure_counts.png", lambda path: _save_bar(path, tables["trace_summary.csv"], label_key="trace_kind", value_key="comparison_error_count", title="Trace comparison error counts")),
-        ("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner")),
+        ("8_training_curves.png", lambda path: _save_architecture_line_grid(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("normalization", "winner_kind"), title="Final train energy curves", legend_title="normalization / winner")),
     ]
     for filename, writer in specs:
         writer(figures_dir / filename)
@@ -787,7 +832,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Cusp Diagnostics",
             "",
-            "Cusp tables preserve center-of-mass and direction columns when present.",
+            "Cusp tables preserve center-of-mass and direction columns when present. Figure 2 line plots split architectures into separate subplots when multiple lines are present.",
             "",
             "## Tail Diagnostics",
             "",
@@ -799,7 +844,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Hooke-Orbital Diagnostics",
             "",
-            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots place full group legends outside the plotting area.",
+            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots split architectures into separate subplots and place the remaining group legend outside the plotting area.",
             "",
             "## Symmetry Diagnostics",
             "",
@@ -811,7 +856,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Training And Resource Summary",
             "",
-            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 places the architecture/normalization/winner legend outside the plotting area.",
+            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 splits architectures into separate subplots and places the normalization/winner legend outside the plotting area.",
             "",
             "## Caveats",
             "",

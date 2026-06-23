@@ -929,22 +929,23 @@ def test_final_report_winner_split_heatmap_renders_independent_panels(tmp_path: 
     assert path.is_file()
 
 
-def test_final_report_line_plot_can_force_large_external_legend(tmp_path: Path) -> None:
-    path = tmp_path / "line_with_legend.png"
+def test_final_report_architecture_line_grid_splits_architectures(tmp_path: Path) -> None:
+    path = tmp_path / "architecture_grid.png"
     rows = [
-        {"step": "0", "energy_mean": str(index), "label": f"group-{index}"}
-        for index in range(16)
+        {"basis_class": "raw_envelope", "normalization": "N0", "step": "0", "energy_mean": "1.0"},
+        {"basis_class": "raw_envelope", "normalization": "N1", "step": "0", "energy_mean": "1.2"},
+        {"basis_class": "hermite_o2_envelope", "normalization": "N0", "step": "0", "energy_mean": "2.0"},
+        {"basis_class": "hermite_o2_envelope", "normalization": "N1", "step": "0", "energy_mean": "2.2"},
     ]
 
-    final_report._save_line_plot(
+    final_report._save_architecture_line_grid(
         path,
         rows,
         x_key="step",
         y_key="energy_mean",
-        group_keys=("label",),
-        title="large legend",
-        legend="outside",
-        legend_title="groups",
+        group_keys=("normalization",),
+        title="architecture grid",
+        legend_title="normalization",
     )
 
     assert path.is_file()
