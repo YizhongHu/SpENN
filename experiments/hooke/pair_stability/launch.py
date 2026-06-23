@@ -9,12 +9,21 @@ construction and provenance.
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
-from run_utils import STAGE_GRID, attempt_ids, grid_attempt_dir, read_json, stage_dir
+from run_utils import (
+    DEFAULT_STUDY_TIMEZONE,
+    STAGE_GRID,
+    attempt_ids,
+    grid_attempt_dir,
+    read_json,
+    stage_dir,
+)
 
 DEFAULT_CPU_UV_ENVIRONMENT = ".venv"
 DEFAULT_CUDA_UV_ENVIRONMENT = ".venv-gpu"
@@ -34,6 +43,8 @@ SMOKE_TIMEOUT_MIN = 15
 SMOKE_MEM_GB = 16
 SMOKE_CPUS = 4
 SMOKE_ARRAY_PARALLELISM = 2
+STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
 
 T = TypeVar("T")
 
@@ -60,6 +71,31 @@ def resolve_grid_attempt_id(results_root: str | Path, grid_attempt_id: str | Non
     if not ids:
         raise FileNotFoundError(f"no grid attempts under {grid_stage}")
     return ids[-1]
+
+
+def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60) -> None:
+    """Block until ``job_id`` no longer appears in ``squeue``."""
+
+    if poll_seconds < 1:
+        raise ValueError("poll_seconds must be >= 1")
+    job_id = str(job_id).strip()
+    if not job_id:
+        return
+    print(f"[pair_stability] waiting for Slurm job {job_id}")
+    while True:
+        result = subprocess.run(
+            ["squeue", "-h", "-j", job_id],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"squeue failed while waiting for {job_id}: {message}")
+        if not result.stdout.strip():
+            print(f"[pair_stability] Slurm job {job_id} is no longer queued")
+            return
+        time.sleep(poll_seconds)
 
 
 def load_grid_manifest(results_root: str | Path, grid_attempt_id: str) -> dict[str, Any]:
@@ -100,10 +136,16 @@ def with_runtime_device(command: Sequence[str], *, device: str) -> list[str]:
     return with_overrides(command, {"runtime.device": device})
 
 
+def with_study_timezone(command: Sequence[str], *, timezone: str | None = None) -> list[str]:
+    """Return ``command`` with the study's launcher-owned timezone override."""
+
+    return with_overrides(command, {"run.timezone": timezone or DEFAULT_STUDY_TIMEZONE})
+
+
 def smoke_attempt_id(base_attempt_id: str) -> str:
     """Return an attempt id that clearly marks smoke execution."""
 
-    return f"{base_attempt_id}-smoke"
+    return base_attempt_id if base_attempt_id.endswith("-smoke") else f"{base_attempt_id}-smoke"
 
 
 def environment_defaults(profile: str) -> tuple[str, list[str], str]:
@@ -199,19 +241,86 @@ def balanced_chunks(items: Sequence[T], *, chunk_size: int) -> list[list[T]]:
     return chunks
 
 
-def run_command_chunk(commands: Sequence[Sequence[str]], *, cwd: str | Path | None = None) -> None:
-    """Run a chunk of prepared commands, reporting failures after the chunk."""
+def _write_status(path: str | Path | None, payload: dict[str, Any]) -> None:
+    """Best-effort JSON status writer for launcher/chunk bookkeeping."""
+
+    if path is None:
+        return
+    status_path = Path(path)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
+
+
+def run_command_chunk(
+    commands: Sequence[Sequence[str]],
+    cwd: str | Path | None = None,
+    allow_partial_failures: bool = False,
+    row_status_paths: Sequence[str | Path | None] | None = None,
+    chunk_status_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run prepared commands sequentially inside one local/Submitit chunk.
+
+    With ``allow_partial_failures=False`` this preserves fail-fast scheduler
+    semantics for training chunks. Evaluation launchers pass
+    ``allow_partial_failures=True`` so one failed eval row records a per-row
+    failure but does not abort the rest of the chunk.
+    """
 
     failures = []
+    row_results = []
+    status_paths = list(row_status_paths or [None] * len(commands))
+    if len(status_paths) != len(commands):
+        _write_status(
+            chunk_status_path,
+            {
+                "status": "failed",
+                "n_commands": len(commands),
+                "n_failed": 0,
+                "error": "row_status_paths must match commands length",
+            },
+        )
+        raise ValueError("row_status_paths must match commands length")
     for index, command in enumerate(commands):
         command = [str(part) for part in command]
-        result = subprocess.run(
-            command,
-            cwd=str(cwd) if cwd is not None else None,
-            check=False,
+        command_text = shlex.join(command)
+        _write_status(
+            status_paths[index],
+            {"status": "running", "chunk_index": index, "command": command_text},
         )
-        if result.returncode != 0:
-            failures.append((index, result.returncode, shlex.join(command)))
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(cwd) if cwd is not None else None,
+                check=False,
+            )
+            returncode: int | None = int(result.returncode)
+            error = ""
+        except Exception as exc:
+            returncode = None
+            error = repr(exc)
+        row_status = "success" if returncode == 0 else "failed"
+        row_payload = {
+            "status": row_status,
+            "chunk_index": index,
+            "returncode": returncode,
+            "command": command_text,
+        }
+        if error:
+            row_payload["error"] = error
+        _write_status(status_paths[index], row_payload)
+        row_results.append(row_payload)
+        if row_status != "success":
+            failures.append((index, returncode, command_text))
+            if returncode is None and not allow_partial_failures:
+                break
+    chunk_status = "success" if not failures else "partial_failed"
+    chunk_payload = {
+        "status": chunk_status,
+        "n_commands": len(commands),
+        "n_failed": len(failures),
+        "rows": row_results,
+    }
+    _write_status(chunk_status_path, chunk_payload)
     if failures:
         lines = [
             f"{len(failures)} of {len(commands)} command(s) failed in this chunk:",
@@ -220,7 +329,10 @@ def run_command_chunk(commands: Sequence[Sequence[str]], *, cwd: str | Path | No
                 for index, returncode, command in failures
             ],
         ]
-        raise RuntimeError("\n".join(lines))
+        if not allow_partial_failures:
+            raise RuntimeError("\n".join(lines))
+        chunk_payload["message"] = "\n".join(lines)
+    return chunk_payload
 
 
 def _expanded_chunk_job_ids(chunk_job_ids: Sequence[str], chunks: Sequence[Sequence[Any]]) -> list[str]:
@@ -232,19 +344,58 @@ def _expanded_chunk_job_ids(chunk_job_ids: Sequence[str], chunks: Sequence[Seque
     return expanded
 
 
+def _submitit_import_path_setup() -> str:
+    """Return a Slurm setup line that makes this script module importable.
+
+    Submitit unpickles the mapped callable before the command payload runs.
+    The stage scripts import this file as top-level ``launch``, so Slurm array
+    workers must have the study directory on ``PYTHONPATH`` before Python starts.
+    """
+
+    paths = ":".join(shlex.quote(str(path)) for path in (STUDY_DIR, REPO_ROOT))
+    return f"export PYTHONPATH={paths}${{PYTHONPATH:+:$PYTHONPATH}}"
+
+
+def _with_submitit_import_path(slurm: dict[str, Any]) -> dict[str, Any]:
+    """Return Slurm parameters with the launcher import path setup prepended."""
+
+    existing = slurm.get("slurm_setup", [])
+    if isinstance(existing, str):
+        setup = [existing]
+    else:
+        setup = [str(line) for line in existing]
+    import_path_setup = _submitit_import_path_setup()
+    if import_path_setup not in setup:
+        setup = [import_path_setup, *setup]
+    return {**slurm, "slurm_setup": setup}
+
+
 def submit_local(
     commands: Sequence[Sequence[str]],
     *,
     repo_root: Path,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    allow_partial_failures: bool = False,
+    row_status_paths: Sequence[str | Path | None] | None = None,
+    chunk_status_dir: str | Path | None = None,
 ) -> list[str]:
     """Run commands sequentially in-process, grouped into balanced chunks."""
 
     job_ids = []
     chunks = balanced_chunks(commands, chunk_size=chunk_size)
+    status_chunks = balanced_chunks(row_status_paths or [None] * len(commands), chunk_size=chunk_size)
     for index, chunk in enumerate(chunks):
+        chunk_status_path = None
+        if chunk_status_dir is not None:
+            chunk_status_path = Path(chunk_status_dir) / f"chunk-{index:04d}.json"
         try:
-            run_command_chunk(chunk, cwd=repo_root)
+            run_command_chunk(
+                chunk,
+                cwd=repo_root,
+                allow_partial_failures=allow_partial_failures,
+                row_status_paths=status_chunks[index],
+                chunk_status_path=chunk_status_path,
+            )
         except RuntimeError as exc:
             raise RuntimeError(f"local chunk {index} failed") from exc
         job_ids.extend([f"local-chunk-{index}-rc0"] * len(chunk))
@@ -258,6 +409,9 @@ def submit_submitit(
     job_name: str,
     slurm: dict[str, Any],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    allow_partial_failures: bool = False,
+    row_status_paths: Sequence[str | Path | None] | None = None,
+    chunk_status_dir: str | Path | None = None,
 ) -> list[str]:
     """Submit prepared commands through Submitit as balanced array chunks."""
 
@@ -271,12 +425,28 @@ def submit_submitit(
 
     log_dir.mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=str(log_dir))
+    slurm = _with_submitit_import_path(slurm)
     executor.update_parameters(name=job_name, **slurm)
     command_chunks = [
         [[str(part) for part in command] for command in chunk]
         for chunk in balanced_chunks(commands, chunk_size=chunk_size)
     ]
-    jobs = executor.map_array(run_command_chunk, command_chunks)
+    if allow_partial_failures or row_status_paths is not None or chunk_status_dir is not None:
+        status_chunks = balanced_chunks(row_status_paths or [None] * len(commands), chunk_size=chunk_size)
+        chunk_status_paths = [
+            None if chunk_status_dir is None else str(Path(chunk_status_dir) / f"chunk-{index:04d}.json")
+            for index, _chunk in enumerate(command_chunks)
+        ]
+        jobs = executor.map_array(
+            run_command_chunk,
+            command_chunks,
+            [None] * len(command_chunks),
+            [allow_partial_failures] * len(command_chunks),
+            status_chunks,
+            chunk_status_paths,
+        )
+    else:
+        jobs = executor.map_array(run_command_chunk, command_chunks)
     chunk_job_ids = [str(job.job_id) for job in jobs]
     return _expanded_chunk_job_ids(chunk_job_ids, command_chunks)
 
@@ -289,15 +459,20 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = Fa
         if smoke
         else (DEFAULT_CUDA_PARTITION if profile == "cuda" else DEFAULT_CPU_PARTITION)
     )
+    array_parallelism = args.slurm_array_parallelism
+    if array_parallelism is None:
+        array_parallelism = SMOKE_ARRAY_PARALLELISM if smoke else DEFAULT_ARRAY_PARALLELISM
+    if array_parallelism < 0:
+        raise ValueError("slurm_array_parallelism must be >= 0")
     slurm = {
         "slurm_partition": partition,
         "timeout_min": args.slurm_timeout_min or (SMOKE_TIMEOUT_MIN if smoke else DEFAULT_TIMEOUT_MIN),
         "mem_gb": args.slurm_mem_gb or (SMOKE_MEM_GB if smoke else DEFAULT_MEM_GB),
         "cpus_per_task": args.slurm_cpus or (SMOKE_CPUS if smoke else DEFAULT_CPUS),
         "tasks_per_node": 1,
-        "slurm_array_parallelism": args.slurm_array_parallelism
-        or (SMOKE_ARRAY_PARALLELISM if smoke else DEFAULT_ARRAY_PARALLELISM),
     }
+    if array_parallelism > 0:
+        slurm["slurm_array_parallelism"] = array_parallelism
     if profile == "cuda":
         slurm["gpus_per_node"] = args.slurm_gpus or 1
     return slurm
@@ -325,6 +500,7 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         help="Run with the CUDA uv environment and runtime.device=cuda.",
     )
     parser.add_argument("--repo-root", default=None, help="Repo root for command working directory.")
+    parser.add_argument("--wait-job", default=None, help="Wait for this Slurm job id to leave the queue before planning/submitting.")
     parser.add_argument(
         "--slurm-partition",
         default=None,
@@ -352,7 +528,8 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         default=None,
         help=(
             "Maximum number of Submitit array tasks allowed to run at once "
-            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}, or {SMOKE_ARRAY_PARALLELISM} with --smoke)."
+            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}, or {SMOKE_ARRAY_PARALLELISM} with --smoke; "
+            "set 0 to omit the cap)."
         ),
     )
     parser.add_argument(

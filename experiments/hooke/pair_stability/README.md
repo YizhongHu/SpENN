@@ -1,4 +1,4 @@
-# Hooke pair-stability study (PR8.8)
+# Hooke pair-stability study (PR8.9)
 
 A pair-stability scan over **model-side inductive bias** (input basis + Gaussian
 envelope) and **feature normalization**, for the two-electron Hooke system. It
@@ -86,8 +86,11 @@ One mode is scanned at a time.
   base. Restores a trained checkpoint and runs physical local-energy probes
   (`cusp`, `tail`, `stratified_geometry`, `hooke_orbital`), full-model
   antisymmetry, trace equivariance, and feature/readout trace-stability tasks.
-  It does not include exact/reference energy comparison. The
-  architecture/normalization must match the trained run.
+  It does not include exact/reference energy comparison. The validation suite
+  is cheap screening; the named `final_eval` suite uses denser generators,
+  independent final-eval seeds, MCMC energy, exchange/rotation probes, and
+  record-level plot tables. The architecture/normalization must match the
+  trained run.
 - `configs/grid.yaml` — the `architecture x normalization x lr x channels x seed`
   grid.
 
@@ -105,8 +108,22 @@ entrypoints:
   does not expand grids or rewrite the `00_grid` manifest.
 - `validate.py` reads `00_grid`, consumes selected `01_train` attempts, writes
   `source_train_attempt.json`, and launches validation into `02_validation`.
-- `launch.py` is shared by `train.py` and `validate.py`; it owns local/Submitit
-  execution, uv sync/activation, CPU/CUDA profile defaults, and Slurm resources.
+- `collect.py` and `select_champions.py` summarize validation and select
+  champions into `03_collect` and `04_select`.
+- `final_plan.py` consumes `04_select` and writes the durable final replicate
+  grid in `05_final_grid`.
+- `final_train.py` consumes `05_final_grid` and launches statistically
+  independent final train replicates into `06_final_train`.
+- `final_eval.py` consumes `05_final_grid` plus completed `06_final_train`
+  checkpoints and launches report-grade final evaluation into `07_final_eval`.
+- `final_collect.py` consumes `05_final_grid`, `06_final_train`, and
+  `07_final_eval` artifacts and writes compact summaries into
+  `08_final_collect`.
+- `final_report.py` consumes only `08_final_collect` compact tables and writes
+  `09_final_report` report text, copied tables, and figures.
+- `launch.py` is shared by stage launchers; it owns local/Submitit execution,
+  uv sync/activation, CPU/CUDA profile defaults, Slurm resources, arrays, and
+  finite chunk workers.
 
 This runbook assumes the real scan runs on CUDA through Submitit. The CLI keeps
 CPU as the default for safety, so production launch examples pass `--cuda`
@@ -132,14 +149,54 @@ not one independent `sbatch` per planned run. The default full-run array cap is
 chunk sizes group multiple planned runs into one array task, and the launcher
 balances chunks evenly rather than leaving a small tail. For example, 540 runs
 with `--chunk-size 128` call for 5 chunks; instead of `128 + 128 + 128 + 128 +
-28`, each array task receives `540 / 5 = 108` runs.
+28`, each array task receives `540 / 5 = 108` runs. Evaluation launchers
+(`validate.py`, `final_eval.py`) continue through row failures inside a chunk
+by default: each eval row keeps its own durable run artifact and
+`launcher_status.json`, while chunk status is recorded under
+`results/<stage>/chunk_status/<attempt_id>/`.
+Use `--slurm-array-parallelism 0` to omit the Slurm array concurrency cap.
+Use `--wait-job <job_id>` on `validate.py` or `final_eval.py` to wait until an
+upstream Slurm job leaves the queue before readiness checks and submission.
 
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and
 always injects it as a `run.timezone` override on the compiled commands. The
-configs set `run.timezone: null`, so a planned run takes its zone only from
-`plan.py` (a direct `run.py` run with no override falls back to spenn's `UTC`
-default).
+other stage launchers default to the same zone and inject `run.timezone` when
+they build validation, final-train, and final-eval commands. The configs keep
+`run.timezone: null`; the launcher is the source of truth.
+
+### Attempt ids
+
+An attempt id names one rerunnable stage output. Passing `--attempt-id` to a
+stage that supports it is always the most explicit way to separate a rerun from
+earlier artifacts.
+
+Planning and reduction stages create a new timestamped attempt id when one is
+not provided: `plan.py`, `collect.py`, `select_champions.py`, `final_plan.py`,
+and `final_collect.py`. `final_report.py` is slightly different: by default it
+uses the selected `08_final_collect` attempt id because it is a deterministic
+rendering of those compact tables; pass `--attempt-id` to keep multiple report
+renderings side by side.
+
+Launch stages that fan out over planned rows inherit the source planning
+attempt by default, so their outputs can be joined directly back to the durable
+manifest:
+
+- `train.py` writes `01_train/{run_id}/{grid_attempt_id}`. It does not expose
+  `--attempt-id`; smoke training writes `{grid_attempt_id}-smoke`.
+- `validate.py` writes `02_validation/{run_id}/{grid_attempt_id}` by default,
+  or `{grid_attempt_id}-smoke` with `--smoke`. If `--attempt-id` is provided,
+  validation uses that exact id.
+- `final_train.py` writes `06_final_train/{final_run_id}/{final_grid_attempt_id}`
+  by default, or `{final_grid_attempt_id}-smoke` with `--smoke`.
+- `final_eval.py` writes `07_final_eval/{final_run_id}/{final_grid_attempt_id}`
+  by default, or `{final_grid_attempt_id}-smoke` with `--smoke`.
+
+Because these launch stages reuse inherited ids, rerunning the same source
+attempt without an explicit override targets the same per-run attempt
+directories. Use a new `--attempt-id` on validation, final-train, or final-eval
+when the intent is to keep an alternate launch attempt rather than update the
+existing one.
 
 ```bash
 # Plan the grid (dry run): writes results/00_grid/<attempt_id>/
@@ -248,6 +305,7 @@ Standard CUDA Submitit validation after training finishes:
 # Validate the latest non-smoke train attempts for the latest 00_grid attempt
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
   --backend submitit --cuda \
+  --only-ready \
   --chunk-size 128
 
 # Validate an exact train attempt and write an exact validation attempt id
@@ -256,6 +314,7 @@ uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
   --grid-attempt-id 20260619T195112-0400 \
   --train-attempt-id 20260619T195112-0400 \
   --attempt-id 20260620T090000-0400 \
+  --only-ready \
   --chunk-size 128
 ```
 
@@ -277,6 +336,149 @@ The execution profile adds `runtime.device=cpu` or `runtime.device=cuda` when
 launching. With the flat run layout, `run.dir = run.root / run.run_id`, which
 realizes the staged attempt directory.
 
+### Final-stage launch options
+
+After `collect.py` and `select_champions.py`, plan final statistical
+replicates from selected champions:
+
+```bash
+# Production final grid: default 3 final replicates per champion row
+uv run python experiments/hooke/pair_stability/final_plan.py
+
+# Smoke final grid: first 1-2 champions, one replicate each, smoke attempt id
+uv run python experiments/hooke/pair_stability/final_plan.py --smoke
+```
+
+`05_final_grid/{attempt_id}/final_jobs.csv` records the source selection
+attempt, source champion row, final run id, replicate index, selected
+architecture/normalization/lr/channels, and the final seed policy:
+
+```
+final_train_sampler_seed = 101 + replicate_index
+final_train_model_seed   = 1001 + replicate_index
+final_eval_seed          = 10001 + replicate_index
+```
+
+Launch final training:
+
+```bash
+# Smoke final training from the latest smoke final grid
+uv run --extra submitit python experiments/hooke/pair_stability/final_train.py \
+  --backend submitit --cuda --smoke
+
+# Production final training from the latest production final grid
+uv run --extra submitit python experiments/hooke/pair_stability/final_train.py \
+  --backend submitit --cuda
+```
+
+Each `06_final_train/{final_run_id}/{attempt_id}/` records
+`source_final_grid_attempt.json`, `source_final_job.json`,
+`source_champion.json`, `command.txt`, `submission.json`, and
+`selected_checkpoint.json`. The checkpoint record points to the final train
+`checkpoints/latest.json` policy; `final_eval.py` resolves that pointer and
+records the concrete checkpoint directory it evaluated.
+
+Launch final evaluation:
+
+```bash
+# Smoke final evaluation from smoke final-train attempts
+uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
+  --backend submitit --cuda --smoke \
+  --only-ready
+
+# Production final evaluation
+uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
+  --backend submitit --cuda \
+  --only-ready
+```
+
+`final_eval.py` selects `evaluation.suite=final_eval` from
+`pair_validation.yaml`. That suite is report-grade: it uses denser cusp, tail,
+stratified-geometry, and Hooke-orbital generators than validation, uses
+`final_eval_seed` for seeded generators, includes MCMC energy, spatial exchange,
+rotation consistency, full-model antisymmetry, trace equivariance, and
+feature/readout trace stability where supported, and writes record-level CSV
+artifacts for plotting.
+
+Keep final-eval `--chunk-size` at the default `1` unless you intentionally want
+to serialize multiple final-eval rows inside one Slurm allocation. Unlike the
+lighter validation sweep, each final-eval row is already a substantial
+report-grade evaluation bundle, so large chunks can turn a few array tasks into
+long serial workers and make timeout/debugging behavior worse.
+
+Collect compact final summaries after final evaluation:
+
+```bash
+uv run python experiments/hooke/pair_stability/final_collect.py
+```
+
+`final_collect.py` is data-oriented: it reads the large raw final train/eval
+artifacts and writes compact reusable tables in `08_final_collect/{attempt_id}/`
+(`run_index.csv`, `architecture_summary.csv`, `energy_by_run.csv`,
+`local_energy_histograms.csv`, `cusp_profile_summary.csv`,
+`tail_profile_summary.csv`, `stratified_summary.csv`,
+`hooke_orbital_summary.csv`, `symmetry_summary.csv`, `trace_summary.csv`,
+`training_curve_summary.csv`, and `resource_summary.csv`). It keeps
+`basis_class`, `normalization`, `winner_kind`, `seed_index`, `final_run_id`,
+and `final_eval_attempt_id` explicit; energy and stability winners are not
+merged. Its `manifest.yaml` records the fixed `final_eval_attempt_id` when all
+final-eval rows share one attempt id, and always records an exact
+`final_eval_attempts` map from `final_run_id` to attempt id.
+
+Render the final report from compact summaries:
+
+```bash
+uv run python experiments/hooke/pair_stability/final_report.py
+```
+
+`final_report.py` reads only `08_final_collect` compact tables. It writes
+`09_final_report/{attempt_id}/report.md`, `tables/*.csv`, and `figures/*.png`;
+it does not parse raw final-eval CSVs, inspect checkpoints, or rerun models.
+It also derives pair_validation-style energy-component and virial tables from
+`energy_by_run.csv`: one combined `tables/energy_components_and_virial_by_winner.csv`
+plus one per winner family under `tables/energy_components_and_virial/`.
+Runtime/resource summaries are reported separately from model-quality ranking.
+
+Create a portable snapshot of the current study code/configs plus the result
+ancestry behind the latest final report:
+
+Preview the exact transfer first (the file can be very large):
+
+```bash
+uv run python experiments/hooke/pair_stability/sync.py --dry-run ${MStore}/spenn-studies/hooke/pair_stability_v1
+```
+
+Then run the transfer:
+
+```bash
+uv run python experiments/hooke/pair_stability/sync.py ${MStore}/spenn-studies/hooke/pair_stability_v1
+```
+
+The dry run prints a planning line immediately, then prints the planned file
+count, planned MiB, traced ancestry root count broken down by stage, and
+skipped checkpoint directory count without creating the snapshot. Add
+`--verbose` to list every planned relative path once tracing finishes.
+`--dry-run` is the canonical spelling; `--dryrun` remains accepted as a legacy
+alias.
+
+`sync.py` reads `study.name` and the default results root from
+`configs/pair_stability.yaml`, resolves the latest `09_final_report`, traces
+its explicit provenance back through final collect/eval/train/grid and the
+selection/collection/grid stages, and writes a directory named
+`<study_name>_snapshot_<YYYYMMDD>T<HHMMSS>-0400` in America/New_York time.
+It never uses `latest.json` for final-eval lineage: `08_final_collect` must
+record either a fixed `final_eval_attempt_id` or an exact `final_eval_attempts`
+map, otherwise sync fails and the final collect/report should be regenerated.
+All files under traced ancestry directories are copied except checkpoint
+directories. Regular `01_train` and `02_validation` run directories are copied
+metadata-only: `config.yaml`, `resolved_config.yaml`, `metadata.json`,
+`run_start.json`, `run_stat.json`, `run_stats.json`, `status.json`,
+`launcher_status.json`, `submission.json`, and `source_*_attempt.json` are
+preserved, while metrics, events, checkpoints, and large run artifacts are
+excluded. Final-stage `06_final_train` and
+`07_final_eval` directories are still copied because they are direct inputs to
+the final report.
+
 ## Staged results layout
 
 ```
@@ -286,6 +488,11 @@ results/
   02_validation/  consumes selected 01_train attempts (evaluation attempts)
   03_collect/     consumes 02_validation attempts     (summary tables)
   04_select/      consumes 03_collect summaries        (champions)
+  05_final_grid/  consumes 04_select champions         (final replicate rows)
+  06_final_train/ consumes 05_final_grid rows          (final train attempts)
+  07_final_eval/  consumes 05_final_grid + 06_final_train (final evaluation)
+  08_final_collect/ consumes 05_final_grid + 06_final_train + 07_final_eval (compact summaries)
+  09_final_report/  consumes 08_final_collect           (report tables/figures/text)
 ```
 
 Artifact inheritance chain (each stage records exactly which earlier artifact it
@@ -297,6 +504,11 @@ consumed; provenance uses explicit attempt ids, never `latest`):
         -> 02_validation/{run_id}/{attempt_id}/source_train_attempt.json
              -> 03_collect/{attempt_id}/source_validation_attempts.json
                   -> 04_select/{attempt_id}/source_collection_attempt.json
+                       -> 05_final_grid/{attempt_id}/source_selection_attempt.json
+                            -> 06_final_train/{final_run_id}/{attempt_id}/source_final_job.json
+                                 -> 07_final_eval/{final_run_id}/{attempt_id}/evaluated_checkpoint.json
+                                      -> 08_final_collect/{attempt_id}/
+                                           -> 09_final_report/{attempt_id}/
 ```
 
 Every directory under a stage (or under a stage's run id) is an attempt, so
@@ -327,6 +539,16 @@ results/
       diagnostics/index.json, status.json, metrics.*
   03_collect/{attempt_id}/          # summary.csv, failures.csv, collection_report.json, source_*.json
   04_select/{attempt_id}/           # champions.csv, selection_report.json, source_collection_attempt.json
+  05_final_grid/{attempt_id}/        # manifest.{json,yaml}, final_jobs.csv, source_*.json
+  06_final_train/{final_run_id}/{attempt_id}/
+      source_final_grid_attempt.json, source_final_job.json, source_champion.json
+      selected_checkpoint.json, command.txt, submission.json, config.yaml, checkpoints/, ...
+  07_final_eval/{final_run_id}/{attempt_id}/
+      source_final_grid_attempt.json, source_final_train_attempt.json
+      source_final_job.json, source_champion.json, evaluated_checkpoint.json
+      command.txt, submission.json, diagnostics/, metrics.*, record CSVs
+  08_final_collect/{attempt_id}/     # compact CSV summaries, manifest.yaml
+  09_final_report/{attempt_id}/      # report.md, tables/, figures/
 ```
 
 ### Manifest
@@ -369,10 +591,11 @@ already the bucket's energy winner, the next lowest finite feature-trace config
 is selected.
 
 The study scripts (`plan.py`, `train.py`, `validate.py`, `collect.py`,
-`select_champions.py`) share their stage-layout vocabulary,
-attempt-id/timezone helpers, run-id grammar, JSON IO, and staged-directory path
-helpers through `run_utils.py`; `train.py` and `validate.py` additionally share
-execution mechanics through `launch.py`.
+`select_champions.py`, `final_plan.py`, `final_train.py`, `final_eval.py`,
+`final_collect.py`, `final_report.py`) share their stage-layout vocabulary, attempt-id/timezone
+helpers, run-id grammar, JSON IO, and staged-directory path helpers through
+`run_utils.py`; launch entrypoints additionally share execution mechanics
+through `launch.py`.
 
 ## Tests
 
@@ -382,8 +605,9 @@ execution mechanics through `launch.py`.
 - Study orchestration and file layout are tested in `test_pair_stability.py`
   (grid/choice consistency, attempt-id timezone, the `attempt_ids` listing, the
   `run.timezone` override, planner manifest, strict train orchestration,
-  staged layout, attempt provenance, and a one-grid-point smoke run through the
-  normal run path).
+  staged layout, attempt provenance, final-stage planning/train/eval/report
+  artifacts, chunked eval row status, and a one-grid-point smoke run through
+  the normal run path).
 
 ## Relationship to `pair_validation`
 

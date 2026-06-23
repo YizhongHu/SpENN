@@ -24,9 +24,6 @@ SMOKE_OVERRIDES = {
     "sampler_params.n_walkers": 128,
     "sampler_params.burn_in": 10,
     "sampler_params.n_steps": 5,
-    "validation_sampler_params.n_walkers": 128,
-    "validation_sampler_params.burn_in": 10,
-    "validation_sampler_params.n_steps": 5,
     "checks.every_n_steps": 1,
     "checkpoint.every_n_steps": 1,
     "status.every_n_steps": 1,
@@ -120,6 +117,36 @@ def write_train_submission_records(
         )
 
 
+def write_train_launch_provenance(
+    jobs: Sequence[dict[str, Any]],
+    *,
+    manifest: dict[str, Any],
+    results_root: Path,
+    grid_attempt_id: str,
+    repo_root: Path,
+    submitted_commands: Sequence[Sequence[str]],
+) -> list[Path]:
+    """Create train attempt directories before scheduler execution starts."""
+
+    manifest_path = grid_attempt_dir(results_root, grid_attempt_id) / "manifest.json"
+    grid_dir = grid_attempt_dir(results_root, grid_attempt_id)
+    row_status_paths: list[Path] = []
+    for index, job in enumerate(jobs):
+        train_attempt = _train_attempt_dir(job, manifest=manifest, repo_root=repo_root)
+        source = {
+            "run_id": str(job["run_id"]),
+            "grid_attempt_id": grid_attempt_id,
+            "grid_attempt_dir": str(grid_dir),
+            "manifest_path": str(manifest_path),
+        }
+        write_json(train_attempt / "source_grid_attempt.json", source)
+        (train_attempt / "command.txt").write_text(
+            shlex.join([str(part) for part in submitted_commands[index]]) + "\n"
+        )
+        row_status_paths.append(train_attempt / "launcher_status.json")
+    return row_status_paths
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse train command-line arguments."""
 
@@ -165,16 +192,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[pair_stability] grid attempt {grid_attempt_id} has no jobs")
         return 0
 
+    row_status_paths = write_train_launch_provenance(
+        jobs,
+        manifest=manifest,
+        results_root=results_root,
+        grid_attempt_id=grid_attempt_id,
+        repo_root=repo_root,
+        submitted_commands=submitted_commands,
+    )
+    log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
+    chunk_status_dir = stage_dir(results_root, STAGE_TRAIN) / "chunk_status" / log_attempt
     if args.backend == "local":
-        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root, chunk_size=args.chunk_size)
+        job_ids = launch.submit_local(
+            submitted_commands,
+            repo_root=repo_root,
+            chunk_size=args.chunk_size,
+            row_status_paths=row_status_paths,
+            chunk_status_dir=chunk_status_dir,
+        )
     else:
-        log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
         job_ids = launch.submit_submitit(
             submitted_commands,
             log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
             job_name="hooke-pair-stability-train-smoke" if args.smoke else "hooke-pair-stability-train",
             slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
             chunk_size=args.chunk_size,
+            row_status_paths=row_status_paths,
+            chunk_status_dir=chunk_status_dir,
         )
 
     write_train_submission_records(
