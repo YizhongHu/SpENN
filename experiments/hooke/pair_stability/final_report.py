@@ -434,6 +434,7 @@ def _record_context(
     output["final_run_id"] = final_run_id
     output["final_eval_attempt_id"] = attempt_id
     output["task"] = task
+    output["architecture"] = job.get("architecture", "")
     output["basis"] = job.get("basis_envelope", job.get("architecture", ""))
     output["normalization"] = job.get("normalization", "")
     output["winner_kind"] = job.get("winner_kind", "")
@@ -922,6 +923,78 @@ def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *,
     plt.close(fig)
 
 
+def _local_energy_distribution_groups(
+    rows: Sequence[dict[str, Any]],
+) -> tuple[list[str], list[str], dict[tuple[str, str], list[float]]]:
+    """Group local-energy samples by normalization row and architecture column."""
+
+    groups: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for row in rows:
+        local_energy = _as_float(row.get("local_energy"))
+        if local_energy is None:
+            continue
+        normalization = str(row.get("normalization", ""))
+        architecture = str(row.get("architecture", row.get("basis", "")))
+        groups[(normalization, architecture)].append(local_energy)
+    normalizations = sorted({key[0] for key in groups})
+    architectures = sorted({key[1] for key in groups})
+    return normalizations, architectures, groups
+
+
+def _histogram_bin_count(values: Sequence[float]) -> int:
+    """Return a readable per-panel histogram bin count."""
+
+    if len(values) <= 1:
+        return 1
+    return min(24, max(4, int(math.sqrt(len(values)))))
+
+
+def _save_local_energy_distribution_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    title: str,
+) -> None:
+    """Write 1C as normalization-by-architecture local-energy histograms."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalizations, architectures, groups = _local_energy_distribution_groups(rows)
+    if not groups:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    n_rows = len(normalizations)
+    n_cols = len(architectures)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(4.0, 3.2 * n_cols), max(3.0, 2.4 * n_rows)),
+        squeeze=False,
+        sharex=False,
+        sharey=False,
+    )
+    for row_index, normalization in enumerate(normalizations):
+        for col_index, architecture in enumerate(architectures):
+            ax = axes[row_index][col_index]
+            values = groups.get((normalization, architecture), [])
+            if values:
+                ax.hist(values, bins=_histogram_bin_count(values), color="#4C78A8", edgecolor="black", alpha=0.85)
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=9)
+            if row_index == 0:
+                ax.set_title(architecture, fontsize=9)
+            if col_index == 0:
+                ax.set_ylabel(f"{normalization}\ncount")
+            if row_index == n_rows - 1:
+                ax.set_xlabel("local_energy")
+            ax.grid(True, axis="y", linewidth=0.4, alpha=0.35)
+    fig.suptitle(title, y=0.98)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def _save_line_plot(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -1020,13 +1093,10 @@ def _write_figures(
         ),
         (
             "1C_local_energy_distribution_grid.png",
-            lambda path: _save_line_plot(
+            lambda path: _save_local_energy_distribution_grid(
                 path,
                 plot_rows_by_table["energy_samples.csv"],
-                x_key="sample_index",
-                y_key="local_energy",
-                group_keys=("basis", "normalization", "replicate"),
-                title="MCMC local-energy samples",
+                title="MCMC local-energy distributions",
             ),
         ),
         (

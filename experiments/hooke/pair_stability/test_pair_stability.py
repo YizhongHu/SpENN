@@ -903,6 +903,22 @@ def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> 
     ]
 
 
+def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> None:
+    normalizations, architectures, groups = final_report._local_energy_distribution_groups(
+        [
+            {"architecture": "raw_envelope", "normalization": "N1", "local_energy": "1.0"},
+            {"architecture": "raw_envelope", "normalization": "N1", "local_energy": "2.0"},
+            {"architecture": "hermite_o2_envelope", "normalization": "N0", "local_energy": "3.0"},
+            {"architecture": "hermite_o2_envelope", "normalization": "N0", "local_energy": "nan"},
+        ]
+    )
+
+    assert normalizations == ["N0", "N1"]
+    assert architectures == ["hermite_o2_envelope", "raw_envelope"]
+    assert groups[("N1", "raw_envelope")] == [1.0, 2.0]
+    assert groups[("N0", "hermite_o2_envelope")] == [3.0]
+
+
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
     checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
