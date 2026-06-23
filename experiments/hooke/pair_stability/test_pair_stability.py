@@ -951,6 +951,27 @@ def test_final_report_architecture_line_grid_splits_architectures(tmp_path: Path
     assert path.is_file()
 
 
+def test_final_report_line_plot_can_force_large_external_legend(tmp_path: Path) -> None:
+    path = tmp_path / "line_with_legend.png"
+    rows = [
+        {"step": "0", "energy_mean": str(index), "label": f"group-{index}"}
+        for index in range(16)
+    ]
+
+    final_report._save_line_plot(
+        path,
+        rows,
+        x_key="step",
+        y_key="energy_mean",
+        group_keys=("label",),
+        title="large legend",
+        legend="outside",
+        legend_title="groups",
+    )
+
+    assert path.is_file()
+
+
 def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> None:
     points = final_report._energy_variance_points(
         [

@@ -598,6 +598,54 @@ def _group_label(row: dict[str, Any], group_keys: Sequence[str]) -> str:
     return "/".join(parts) if parts else "all"
 
 
+def _save_line_plot(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+    group_keys: Sequence[str],
+    title: str,
+    legend: str = "auto",
+    legend_title: str | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for row in rows:
+        x = _as_float(row.get(x_key))
+        y = _as_float(row.get(y_key))
+        if x is None or y is None:
+            continue
+        groups[_group_label(row, group_keys)].append((x, y))
+    if not groups:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for label, values in sorted(groups.items()):
+        values = sorted(values)
+        ax.plot([point[0] for point in values], [point[1] for point in values], marker="o", label=label)
+    ax.set_xlabel(x_key)
+    ax.set_ylabel(y_key)
+    ax.set_title(title)
+    if legend == "outside":
+        ax.legend(
+            fontsize=6,
+            title=legend_title,
+            title_fontsize=7,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+            ncol=max(1, math.ceil(len(groups) / 24)),
+        )
+    elif legend == "auto" and len(groups) <= 12:
+        ax.legend(fontsize=7, loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _save_architecture_line_grid(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -718,9 +766,9 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("1A_log_scale_energy_error_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log")),
         ("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance")),
         ("1C_local_energy_distribution_grid.png", lambda path: _save_local_energy_distribution_grid(path, histograms, title="MCMC local-energy histograms")),
-        ("2A_cusp_even_slope_by_com.png", lambda path: _save_architecture_line_grid(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path", legend_title="normalization / winner / CoM / direction")),
-        ("2B_cusp_c_minus_1_by_com.png", lambda path: _save_architecture_line_grid(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path", legend_title="normalization / winner / CoM / direction")),
-        ("2C_cusp_odd_slant_by_com.png", lambda path: _save_architecture_line_grid(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path", legend_title="normalization / winner / CoM / direction")),
+        ("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path")),
+        ("2B_cusp_c_minus_1_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path")),
+        ("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path")),
         ("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners")),
         ("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners")),
         ("3C_tail_outlier_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
@@ -731,7 +779,7 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin", legend_title="normalization / winner / r12 bin")),
         ("6_symmetry_failure_counts.png", lambda path: _save_bar(path, tables["symmetry_summary.csv"], label_key="symmetry_task", value_key="sign_mismatch_count", title="Symmetry sign mismatch counts")),
         ("7_trace_failure_counts.png", lambda path: _save_bar(path, tables["trace_summary.csv"], label_key="trace_kind", value_key="comparison_error_count", title="Trace comparison error counts")),
-        ("8_training_curves.png", lambda path: _save_architecture_line_grid(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("normalization", "winner_kind"), title="Final train energy curves", legend_title="normalization / winner")),
+        ("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner")),
     ]
     for filename, writer in specs:
         writer(figures_dir / filename)
@@ -832,11 +880,11 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Cusp Diagnostics",
             "",
-            "Cusp tables preserve center-of-mass and direction columns when present. Figure 2 line plots split architectures into separate subplots when multiple lines are present.",
+            "Cusp tables preserve center-of-mass and direction columns when present.",
             "",
             "## Tail Diagnostics",
             "",
-            "Tail tables preserve path columns. Figures 3A/3B split energy and stability winners into subplot grids; each subplot draws CoM lines with seed-variance error bars for local energy and logabs, with a shared CoM legend. Exact log-amplitude references are included when collect inputs provide them.",
+            "Tail tables preserve path columns. Figures 3A/3B split energy and stability winners into subplot grids by architecture and normalization; each subplot draws CoM lines with seed-variance error bars for local energy and logabs, with a shared CoM legend. Exact log-amplitude references are included when collect inputs provide them.",
             "",
             "## Stratified Geometry Diagnostics",
             "",
@@ -856,7 +904,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Training And Resource Summary",
             "",
-            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 splits architectures into separate subplots and places the normalization/winner legend outside the plotting area.",
+            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 places the architecture/normalization/winner legend outside the plotting area.",
             "",
             "## Caveats",
             "",
