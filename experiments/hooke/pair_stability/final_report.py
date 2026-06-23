@@ -173,6 +173,49 @@ def _heatmap_matrix(
     return y_labels, x_labels, matrix
 
 
+def _draw_heatmap_axis(
+    fig: Any,
+    ax: Any,
+    *,
+    y_labels: Sequence[str],
+    x_labels: Sequence[str],
+    matrix: Sequence[Sequence[float | None]],
+    value_key: str,
+    title: str,
+    transform: str | None,
+) -> None:
+    """Draw one heatmap axis with real-scale annotations."""
+
+    from matplotlib.colors import SymLogNorm
+
+    finite_values = [value for row in matrix for value in row if value is not None]
+    if not finite_values:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10)
+        ax.set_title(title)
+        return
+
+    vmax = max(abs(value) for value in finite_values)
+    vmax = vmax if vmax > 0.0 else 1.0
+    data = [[math.nan if value is None else value for value in row] for row in matrix]
+    colorbar_label = value_key
+    if transform == "signed_log":
+        nonzero = [abs(value) for value in finite_values if value != 0.0]
+        norm = SymLogNorm(linthresh=min(nonzero), vmin=-vmax, vmax=vmax, base=10) if nonzero else None
+        image = ax.imshow(data, cmap="coolwarm", norm=norm, aspect="auto")
+        colorbar_label = f"{value_key} (symmetric log color; labels are real scale)"
+    else:
+        image = ax.imshow(data, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(x_labels)), labels=x_labels, rotation=35, ha="right")
+    ax.set_yticks(range(len(y_labels)), labels=y_labels)
+    ax.set_title(title)
+    for y_index, row in enumerate(matrix):
+        for x_index, value in enumerate(row):
+            if value is not None:
+                ax.text(x_index, y_index, f"{value:.2g}", ha="center", va="center", fontsize=8)
+    fig.colorbar(image, ax=ax, label=colorbar_label, fraction=0.046, pad=0.04)
+
+
 def _save_heatmap(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -190,29 +233,87 @@ def _save_heatmap(
         return
 
     plt = _pyplot()
-    from matplotlib.colors import SymLogNorm
 
     fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(x_labels)), max(3.5, 0.8 * len(y_labels))))
-    finite_values = [value for row in matrix for value in row if value is not None]
-    vmax = max(abs(value) for value in finite_values) if finite_values else 1.0
-    data = [[math.nan if value is None else value for value in row] for row in matrix]
-    colorbar_label = value_key
-    if transform == "signed_log":
-        nonzero = [abs(value) for value in finite_values if value != 0.0]
-        norm = SymLogNorm(linthresh=min(nonzero), vmin=-vmax, vmax=vmax, base=10) if nonzero else None
-        image = ax.imshow(data, cmap="coolwarm", norm=norm, aspect="auto")
-        colorbar_label = f"{value_key} (symmetric log color; labels are real scale)"
-    else:
-        image = ax.imshow(data, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_xticks(range(len(x_labels)), labels=x_labels, rotation=35, ha="right")
-    ax.set_yticks(range(len(y_labels)), labels=y_labels)
-    ax.set_title(title)
-    for y_index, row in enumerate(matrix):
-        for x_index, value in enumerate(row):
-            if value is not None:
-                ax.text(x_index, y_index, f"{value:.2g}", ha="center", va="center", fontsize=8)
-    fig.colorbar(image, ax=ax, label=colorbar_label)
+    _draw_heatmap_axis(
+        fig,
+        ax,
+        y_labels=y_labels,
+        x_labels=x_labels,
+        matrix=matrix,
+        value_key=value_key,
+        title=title,
+        transform=transform,
+    )
     fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _winner_order(kinds: Sequence[str]) -> list[str]:
+    preferred = ["energy", "stability"]
+    return [kind for kind in preferred if kind in kinds] + sorted(kind for kind in kinds if kind not in preferred)
+
+
+def _save_winner_split_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_key: str,
+    col_key: str,
+    value_key: str,
+    title: str,
+    transform: str | None = None,
+) -> None:
+    """Save heatmaps with winner kinds split into independent subplots."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows_by_winner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if _as_float(row.get(value_key)) is None:
+            continue
+        winner = str(row.get("winner_kind", "")).strip() or "all"
+        rows_by_winner[winner].append(row)
+    if not rows_by_winner:
+        _save_no_data(path, title)
+        return
+
+    panels = []
+    for winner in _winner_order(list(rows_by_winner)):
+        y_labels, x_labels, matrix = _heatmap_matrix(
+            rows_by_winner[winner],
+            row_key=row_key,
+            col_key=col_key,
+            value_key=value_key,
+        )
+        if matrix:
+            panels.append((winner, y_labels, x_labels, matrix))
+    if not panels:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    max_y = max(len(y_labels) for _, y_labels, _, _ in panels)
+    max_x = max(len(x_labels) for _, _, x_labels, _ in panels)
+    fig, axes = plt.subplots(
+        1,
+        len(panels),
+        figsize=(max(5.0, 4.8 * len(panels), 1.2 * max_x * len(panels)), max(3.5, 0.8 * max_y)),
+        squeeze=False,
+    )
+    for ax, (winner, y_labels, x_labels, matrix) in zip(axes[0], panels, strict=True):
+        _draw_heatmap_axis(
+            fig,
+            ax,
+            y_labels=y_labels,
+            x_labels=x_labels,
+            matrix=matrix,
+            value_key=value_key,
+            title=winner,
+            transform=transform,
+        )
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
@@ -538,21 +639,17 @@ def _save_bar(path: Path, rows: Sequence[dict[str, Any]], *, label_key: str, val
     plt.close(fig)
 
 
-def _with_basis_label(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{**row, "basis_label": _basis_label(row)} for row in rows]
-
-
 def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     written = []
-    architecture = _with_basis_label(tables["architecture_summary.csv"])
+    architecture = tables["architecture_summary.csv"]
     energy = tables["energy_by_run.csv"]
     histograms = tables["local_energy_histograms.csv"]
-    stratified = _with_basis_label(tables["stratified_summary.csv"])
+    stratified = tables["stratified_summary.csv"]
 
     specs = [
-        ("1A_real_scale_energy_error_heatmap.png", lambda path: _save_heatmap(path, architecture, row_key="basis_label", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error")),
-        ("1A_log_scale_energy_error_heatmap.png", lambda path: _save_heatmap(path, architecture, row_key="basis_label", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log")),
+        ("1A_real_scale_energy_error_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error")),
+        ("1A_log_scale_energy_error_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log")),
         ("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance")),
         ("1C_local_energy_distribution_grid.png", lambda path: _save_local_energy_distribution_grid(path, histograms, title="MCMC local-energy histograms")),
         ("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path")),
@@ -560,8 +657,9 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path")),
         ("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners")),
         ("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners")),
-        ("3C_tail_outlier_heatmap.png", lambda path: _save_heatmap(path, architecture, row_key="basis_label", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
-        ("4_stratified_geometry_aggregate_heatmap.png", lambda path: _save_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_label", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error")),
+        ("3C_tail_outlier_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
+        ("4_stratified_geometry_aggregate_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error")),
+        ("4_stratified_geometry_aggregate_log_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="signed_log")),
         ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians")),
         ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin")),
         ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin")),
@@ -577,9 +675,12 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     for stratum in strata:
         safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in stratum)
         filename = f"4_stratified_geometry_{safe}_heatmap.png"
+        log_filename = f"4_stratified_geometry_{safe}_log_heatmap.png"
         rows = [row for row in stratified if str(row.get("stratum", "")) == stratum]
-        _save_heatmap(figures_dir / filename, rows, row_key="basis_label", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}")
+        _save_winner_split_heatmap(figures_dir / filename, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}")
         written.append(filename)
+        _save_winner_split_heatmap(figures_dir / log_filename, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="signed_log")
+        written.append(log_filename)
     return written
 
 
@@ -661,7 +762,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Energy And Local-Energy Results",
             "",
-            "Energy figures use signed error relative to exact Hooke energy `E = 2`; distribution plots use collected histograms.",
+            "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps split energy and stability winners into separate subplots with independent color scales. Signed-log heatmap variants use real-scale cell labels.",
             "",
             "## Cusp Diagnostics",
             "",
@@ -673,7 +774,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Stratified Geometry Diagnostics",
             "",
-            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows.",
+            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Each Figure 4 heatmap has a real-scale and signed-log-color version, with energy and stability winners shown as separate subplots.",
             "",
             "## Hooke-Orbital Diagnostics",
             "",

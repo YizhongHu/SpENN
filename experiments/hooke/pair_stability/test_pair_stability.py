@@ -877,7 +877,9 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
     assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
     assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_aggregate_log_heatmap.png").is_file()
     assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_bulk_log_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
@@ -896,6 +898,35 @@ def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
     assert y_labels == ["raw"]
     assert x_labels == ["N0", "N1"]
     assert matrix == [[-0.5, 0.5]]
+
+
+def test_final_report_winner_split_heatmap_renders_independent_panels(tmp_path: Path) -> None:
+    path = tmp_path / "winner_split.png"
+
+    final_report._save_winner_split_heatmap(
+        path,
+        [
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "energy_error_median": "-0.25",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "stability",
+                "energy_error_median": "3.0",
+            },
+        ],
+        row_key="basis_class",
+        col_key="normalization",
+        value_key="energy_error_median",
+        title="split heatmap",
+        transform="signed_log",
+    )
+
+    assert path.is_file()
 
 
 def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> None:
