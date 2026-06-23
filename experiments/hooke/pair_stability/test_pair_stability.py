@@ -1037,6 +1037,24 @@ def test_final_report_architecture_normalization_line_grid_splits_both_axes(tmp_
     assert path.is_file()
 
 
+def test_final_report_training_curve_grid_aggregates_seed_variance(tmp_path: Path) -> None:
+    rows = [
+        {"basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "0", "step": "0", "energy_mean": "1.0"},
+        {"basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "energy", "seed_index": "1", "step": "0", "energy_mean": "3.0"},
+        {"basis_class": "raw_envelope", "normalization": "N0", "winner_kind": "stability", "seed_index": "0", "step": "0", "energy_mean": "2.0"},
+        {"basis_class": "hermite_o2_envelope", "normalization": "N1", "winner_kind": "energy", "seed_index": "0", "step": "10", "energy_mean": "4.0"},
+    ]
+
+    curves = final_report._training_curve_points(rows)
+    energy_points = curves[("raw_envelope", "N0", "energy")]
+    assert energy_points[0]["mean"] == 2.0
+    assert energy_points[0]["variance"] == 2.0
+
+    path = tmp_path / "training_grid.png"
+    final_report._save_training_curve_grid(path, rows, title="training grid")
+    assert path.is_file()
+
+
 def test_final_report_line_plot_can_force_large_external_legend(tmp_path: Path) -> None:
     path = tmp_path / "line_with_legend.png"
     rows = [

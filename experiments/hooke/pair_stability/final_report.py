@@ -1019,6 +1019,117 @@ def _save_architecture_normalization_line_grid(
     plt.close(fig)
 
 
+def _training_curve_points(rows: Sequence[dict[str, Any]]) -> dict[tuple[str, str, str], list[dict[str, float | int]]]:
+    """Return training energy curves averaged across final-training seeds."""
+
+    per_seed: dict[tuple[str, str, str, float, str], list[float]] = defaultdict(list)
+    for row in rows:
+        step = _as_float(row.get("step"))
+        value = _as_float(row.get("energy_mean"))
+        if step is None or value is None:
+            continue
+        architecture = _architecture_label(row)
+        normalization = str(row.get("normalization", "")) or "all"
+        winner = str(row.get("winner_kind", "")) or "all"
+        seed = str(row.get("seed_index", row.get("final_run_id", "")))
+        per_seed[(architecture, normalization, winner, step, seed)].append(value)
+
+    by_step: dict[tuple[str, str, str, float], list[float]] = defaultdict(list)
+    for (architecture, normalization, winner, step, _seed), values in per_seed.items():
+        mean = _mean(values)
+        if mean is not None:
+            by_step[(architecture, normalization, winner, step)].append(mean)
+
+    out: dict[tuple[str, str, str], list[dict[str, float | int]]] = defaultdict(list)
+    for (architecture, normalization, winner, step), seed_values in sorted(by_step.items()):
+        mean = _mean(seed_values)
+        variance = _variance(seed_values)
+        if mean is None or variance is None:
+            continue
+        out[(architecture, normalization, winner)].append(
+            {
+                "step": step,
+                "mean": mean,
+                "variance": variance,
+                "n_seeds": len(seed_values),
+            }
+        )
+    return out
+
+
+def _save_training_curve_grid(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
+    """Save final-training curves in a normalization-by-architecture grid."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    curves = _training_curve_points(rows)
+    if not curves:
+        _save_no_data(path, title)
+        return
+
+    architectures = sorted({key[0] for key in curves})
+    normalizations = sorted({key[1] for key in curves})
+    winners = sorted({key[2] for key in curves})
+
+    plt = _pyplot()
+    cmap = plt.get_cmap("tab10")
+    colors = {winner: cmap(index % cmap.N) for index, winner in enumerate(winners)}
+    fig, axes = plt.subplots(
+        len(normalizations),
+        len(architectures),
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        squeeze=False,
+        sharex=True,
+        sharey=False,
+    )
+    legend_handles: dict[str, Any] = {}
+    for row_index, normalization in enumerate(normalizations):
+        for col_index, architecture in enumerate(architectures):
+            ax = axes[row_index][col_index]
+            plotted = False
+            for winner in winners:
+                points = sorted(curves.get((architecture, normalization, winner), []), key=lambda item: float(item["step"]))
+                if not points:
+                    continue
+                container = ax.errorbar(
+                    [float(point["step"]) for point in points],
+                    [float(point["mean"]) for point in points],
+                    yerr=[float(point["variance"]) for point in points],
+                    marker="o",
+                    linewidth=1.1,
+                    markersize=3.0,
+                    capsize=2.0,
+                    color=colors[winner],
+                    label=winner,
+                )
+                legend_handles.setdefault(winner, container)
+                plotted = True
+            if not plotted:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+            if row_index == 0:
+                ax.set_title(architecture, fontsize=9)
+            if col_index == 0:
+                ax.set_ylabel(f"{normalization}\nenergy mean")
+            if row_index == len(normalizations) - 1:
+                ax.set_xlabel("step")
+            ax.grid(True, linewidth=0.35, alpha=0.35)
+
+    if legend_handles:
+        fig.legend(
+            list(legend_handles.values()),
+            list(legend_handles.keys()),
+            title="winner",
+            fontsize=7,
+            title_fontsize=8,
+            loc="center left",
+            bbox_to_anchor=(1.0, 0.5),
+            borderaxespad=0.0,
+        )
+    fig.suptitle(f"{title}\nLines are winner types; error bars are seed variance over final-training replicates.", y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 0.86 if legend_handles else 1.0, 0.94))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _scalar_metric_matrix(
     rows: Sequence[dict[str, Any]],
     *,
@@ -1290,7 +1401,7 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         lambda path: _save_winner_pair_scalar_metric_heatmap(path, tables["trace_summary.csv"], row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title="Trace scalar diagnostics"),
     )
 
-    add("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner"))
+    add("8_training_curves.png", lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], title="Final train energy curves"))
 
     strata = sorted({str(row.get("stratum", "")) for row in stratified if row.get("stratum", "") not in {"", "all"}})
     for stratum in strata:
@@ -1413,7 +1524,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Training And Resource Summary",
             "",
-            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 places the architecture/normalization/winner legend outside the plotting area.",
+            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 uses normalization rows and architecture columns, with energy/stability winner curves inside each subplot.",
             "",
             "## Caveats",
             "",
