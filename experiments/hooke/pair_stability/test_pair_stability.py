@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ import launch  # noqa: E402
 import plan  # noqa: E402
 import run_utils  # noqa: E402
 import select_champions  # noqa: E402
+import sync  # noqa: E402
 import train  # noqa: E402
 import validate  # noqa: E402
 
@@ -913,6 +915,9 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert cusp[0]["local_energy_median"] == "2"
     assert cusp[0]["d_logabs_dr_median"] == "0.5"
     assert cusp[0]["target_d_logabs_dr"] == "0.5"
+    tail = _read_csv(collect_dir / "tail_profile_summary.csv")
+    assert tail[0]["local_energy_q05"] == "3"
+    assert tail[0]["local_energy_q85"] == "3"
     training = _read_csv(collect_dir / "training_curve_summary.csv")
     assert training[0]["acceptance_rate"] == "0.7"
 
@@ -944,9 +949,11 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "2C_stability_winner_cusp_finite_fraction_grid.png").is_file()
     assert (report_dir / "figures" / "2D_energy_winner_cusp_dlogabs_dr_grid.png").is_file()
     assert (report_dir / "figures" / "2D_stability_winner_cusp_dlogabs_dr_grid.png").is_file()
-    assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
-    assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
-    assert (report_dir / "figures" / "3C_tail_outlier_heatmap.png").is_file()
+    assert (report_dir / "figures" / "3A_tail_energy_winner_local_energy_bars.png").is_file()
+    assert (report_dir / "figures" / "3B_tail_stability_winner_local_energy_bars.png").is_file()
+    assert (report_dir / "figures" / "3C_tail_energy_winner_logabs_grid.png").is_file()
+    assert (report_dir / "figures" / "3D_tail_stability_winner_logabs_grid.png").is_file()
+    assert (report_dir / "figures" / "3E_tail_outlier_heatmap.png").is_file()
     assert (report_dir / "figures" / "4A_stratified_geometry_aggregate_heatmap.png").is_file()
     assert (report_dir / "figures" / "4A_stratified_geometry_aggregate_log_heatmap.png").is_file()
     assert (report_dir / "figures" / "4B_stratified_geometry_bulk_heatmap.png").is_file()
@@ -1194,6 +1201,99 @@ def test_final_report_feature_trace_metric_grid_filters_trace_kind_and_splits_la
     assert path.is_file()
 
 
+def test_final_report_feature_trace_metric_grid_uses_row_scoped_scales(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "feature_trace_grid.png"
+    captured: list[tuple[str, tuple[float, ...]]] = []
+
+    def fake_draw_heatmap_axis(_fig: object, _ax: object, **kwargs: object) -> None:
+        captured.append((str(kwargs["title"]), tuple(float(value) for value in kwargs["scale_values"])))  # type: ignore[index]
+        return None
+
+    monkeypatch.setattr(final_report, "_draw_heatmap_axis", fake_draw_heatmap_axis)
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "embedding",
+            "rms_q95": "1.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "trace_kind": "feature_trace_stability",
+            "layer": "embedding",
+            "rms_q95": "10.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "layers.0",
+            "rms_q95": "1000.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "trace_kind": "feature_trace_stability",
+            "layer": "layers.0",
+            "rms_q95": "2000.0",
+        },
+    ]
+
+    final_report._save_feature_trace_metric_grid(path, rows, metric_key="rms_q95", title="feature trace")
+
+    assert path.is_file()
+    assert captured == [
+        ("embedding\nenergy winners", (1.0, 10.0)),
+        ("embedding\nstability winners", (1.0, 10.0)),
+        ("layers.0\nenergy winners", (1000.0, 2000.0)),
+        ("layers.0\nstability winners", (1000.0, 2000.0)),
+    ]
+
+
+def test_final_report_feature_trace_metric_grid_has_tick_only_colorbar_per_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import matplotlib.figure
+
+    path = tmp_path / "feature_trace_grid.png"
+    colorbar_kwargs: list[dict[str, object]] = []
+
+    def fake_colorbar(self: object, mappable: object, *args: object, **kwargs: object) -> object:
+        del self, mappable, args
+        colorbar_kwargs.append(dict(kwargs))
+        return object()
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "colorbar", fake_colorbar)
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "embedding",
+            "rms_q95": "1.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "layers.0",
+            "rms_q95": "1000.0",
+        },
+    ]
+
+    final_report._save_feature_trace_metric_grid(path, rows, metric_key="rms_q95", title="feature trace")
+
+    assert path.is_file()
+    assert len(colorbar_kwargs) == 2
+    assert all("label" not in kwargs for kwargs in colorbar_kwargs)
+
+
 def test_final_report_architecture_line_grid_splits_architectures(tmp_path: Path) -> None:
     path = tmp_path / "architecture_grid.png"
     rows = [
@@ -1422,6 +1522,172 @@ def test_final_report_virial_residual_heatmap_uses_signed_log(tmp_path: Path, mo
     assert calls[0][2]["col_key"] == "normalization"
 
 
+def test_sync_snapshot_traces_latest_final_report_ancestry_and_skips_checkpoints(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    study_dir = tmp_path / "study"
+    results_root = study_dir / "results"
+    config = study_dir / "configs" / "pair_stability.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        "study:\n  name: pair_stability_test\nrun:\n  root: results/01_train\n  timezone: America/New_York\n",
+        encoding="utf-8",
+    )
+    (study_dir / "sync.py").write_text("# current study state\n", encoding="utf-8")
+
+    report_dir = results_root / "09_final_report" / "R1"
+    collect_dir = results_root / "08_final_collect" / "C1"
+    final_eval_dir = results_root / "07_final_eval" / "final-a" / "FE1"
+    final_train_dir = results_root / "06_final_train" / "final-a" / "FT1"
+    final_grid_dir = results_root / "05_final_grid" / "FG1"
+    select_dir = results_root / "04_select" / "S1"
+    collection_dir = results_root / "03_collect" / "COL1"
+    validation_dir = results_root / "02_validation" / "run-a" / "V1"
+    train_dir = results_root / "01_train" / "run-a" / "T1"
+    grid_dir = results_root / "00_grid" / "G1"
+    unrelated_dir = results_root / "07_final_eval" / "other" / "FE1"
+
+    for directory in (
+        report_dir,
+        collect_dir,
+        final_eval_dir,
+        final_train_dir,
+        final_grid_dir,
+        select_dir,
+        collection_dir,
+        validation_dir,
+        train_dir,
+        grid_dir,
+        unrelated_dir,
+    ):
+        directory.mkdir(parents=True)
+        (directory / "status.json").write_text("{}", encoding="utf-8")
+    (results_root / "09_final_report" / "latest.json").write_text(json.dumps({"attempt_id": "R1"}), encoding="utf-8")
+    (report_dir / "final_report.json").write_text(
+        json.dumps({"final_collect_attempt_id": "C1"}),
+        encoding="utf-8",
+    )
+    (collect_dir / "manifest.yaml").write_text("final_eval_attempt_id: FE1\n", encoding="utf-8")
+    _write_csv(collect_dir / "run_index.csv", [{"final_run_id": "final-a"}])
+    (final_eval_dir / "source_final_train_attempt.json").write_text(
+        json.dumps({"final_train_attempt_dir": str(final_train_dir)}),
+        encoding="utf-8",
+    )
+    (final_eval_dir / "source_final_grid_attempt.json").write_text(
+        json.dumps({"final_grid_attempt_dir": str(final_grid_dir)}),
+        encoding="utf-8",
+    )
+    (final_train_dir / "source_final_grid_attempt.json").write_text(
+        json.dumps({"final_grid_attempt_dir": str(final_grid_dir)}),
+        encoding="utf-8",
+    )
+    (final_grid_dir / "source_selection_attempt.json").write_text(
+        json.dumps({"selection_attempt_dir": str(select_dir)}),
+        encoding="utf-8",
+    )
+    (select_dir / "source_collection_attempt.json").write_text(
+        json.dumps({"collection_attempt_id": "COL1"}),
+        encoding="utf-8",
+    )
+    (collection_dir / "source_validation_attempts.json").write_text(
+        json.dumps([{"validation_attempt_dir": str(validation_dir)}]),
+        encoding="utf-8",
+    )
+    (validation_dir / "source_train_attempt.json").write_text(
+        json.dumps({"train_attempt_dir": str(train_dir), "grid_attempt_id": "G1"}),
+        encoding="utf-8",
+    )
+    (validation_dir / "metadata.json").write_text(json.dumps({"stage": "validation"}), encoding="utf-8")
+    (validation_dir / "metrics.jsonl").write_text("{}\n", encoding="utf-8")
+    (validation_dir / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    (train_dir / "source_grid_attempt.json").write_text(
+        json.dumps({"grid_attempt_dir": str(grid_dir)}),
+        encoding="utf-8",
+    )
+    (train_dir / "metadata.json").write_text(json.dumps({"stage": "train"}), encoding="utf-8")
+    (train_dir / "run_stat.json").write_text(json.dumps({"elapsed": 1.0}), encoding="utf-8")
+    (train_dir / "metrics.jsonl").write_text("{}\n", encoding="utf-8")
+    (train_dir / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    (train_dir / "checkpoints" / "step_000001").mkdir(parents=True)
+    (train_dir / "checkpoints" / "step_000001" / "model.pt").write_text("checkpoint", encoding="utf-8")
+    (final_train_dir / "checkpoints").mkdir()
+    (final_train_dir / "checkpoints" / "latest.json").write_text("{}", encoding="utf-8")
+
+    snapshot = tmp_path / "snapshots" / "pair_stability_test_snapshot_20260623T140506-0400"
+    dry_summary = sync.sync_snapshot(
+        destination=tmp_path / "snapshots",
+        config_path=config,
+        study_dir=study_dir,
+        results_root=results_root,
+        dry_run=True,
+        moment=datetime(2026, 6, 23, 14, 5, 6, tzinfo=run_utils.resolve_timezone("America/New_York")),
+    )
+    assert dry_summary.snapshot_dir == snapshot
+    assert dry_summary.dry_run is True
+    assert dry_summary.planned_files > 0
+    assert dry_summary.planned_bytes > 0
+    assert dry_summary.copied_files == 0
+    assert dry_summary.copied_bytes == 0
+    assert dry_summary.skipped_checkpoint_dirs == 1
+    assert dry_summary.ancestry_stage_counts["09_final_report"] == 1
+    assert dry_summary.ancestry_stage_counts["07_final_eval"] == 1
+    assert "01_train" not in dry_summary.ancestry_stage_counts
+    assert "02_validation" not in dry_summary.ancestry_stage_counts
+    assert not snapshot.exists()
+
+    cli_exit_code = sync.main(
+        [
+            "--dry-run",
+            "--verbose",
+            "--config",
+            str(config),
+            "--study-dir",
+            str(study_dir),
+            "--results-root",
+            str(results_root),
+            str(tmp_path / "cli_snapshots"),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert cli_exit_code == 0
+    assert "[pair_stability] planning dry-run snapshot" in captured.err
+    assert "planned_files:" in captured.err
+    assert "planned_mb:" in captured.err
+    assert "sync.py" in captured.out
+    assert "results/09_final_report/R1/final_report.json" in captured.out
+
+    summary = sync.sync_snapshot(
+        destination=tmp_path / "snapshots",
+        config_path=config,
+        study_dir=study_dir,
+        results_root=results_root,
+        moment=datetime(2026, 6, 23, 14, 5, 6, tzinfo=run_utils.resolve_timezone("America/New_York")),
+    )
+
+    assert summary.snapshot_dir == snapshot
+    assert (snapshot / "sync.py").is_file()
+    assert (snapshot / "sync_manifest.json").is_file()
+    assert (snapshot / "results" / "09_final_report" / "R1" / "final_report.json").is_file()
+    assert (snapshot / "results" / "07_final_eval" / "final-a" / "FE1" / "status.json").is_file()
+    assert (snapshot / "results" / "00_grid" / "G1" / "status.json").is_file()
+    assert not (snapshot / "results" / "07_final_eval" / "other").exists()
+    assert (snapshot / "results" / "01_train" / "run-a" / "T1" / "metadata.json").is_file()
+    assert (snapshot / "results" / "01_train" / "run-a" / "T1" / "run_stat.json").is_file()
+    assert (snapshot / "results" / "01_train" / "run-a" / "T1" / "source_grid_attempt.json").is_file()
+    assert (snapshot / "results" / "02_validation" / "run-a" / "V1" / "metadata.json").is_file()
+    assert (snapshot / "results" / "02_validation" / "run-a" / "V1" / "source_train_attempt.json").is_file()
+    assert not (snapshot / "results" / "01_train" / "run-a" / "T1" / "metrics.jsonl").exists()
+    assert not (snapshot / "results" / "01_train" / "run-a" / "T1" / "events.jsonl").exists()
+    assert not (snapshot / "results" / "02_validation" / "run-a" / "V1" / "metrics.jsonl").exists()
+    assert not (snapshot / "results" / "02_validation" / "run-a" / "V1" / "events.jsonl").exists()
+    assert not (snapshot / "results" / "01_train" / "run-a" / "T1" / "checkpoints").exists()
+    assert not (snapshot / "results" / "06_final_train" / "final-a" / "FT1" / "checkpoints").exists()
+    assert summary.planned_files == summary.copied_files
+    assert summary.planned_bytes == summary.copied_bytes
+    assert summary.skipped_checkpoint_dirs == 1
+
+
 def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> None:
     normalizations, architectures, groups = final_report._local_energy_distribution_groups(
         [
@@ -1505,6 +1771,21 @@ def test_final_report_local_energy_bar_series_sums_seed_bins() -> None:
 
     assert centers == [0.5, 2.5]
     assert counts == [5.0, 4.0]
+    assert widths == [1.0, 1.0]
+
+
+def test_final_report_local_energy_bar_series_crops_to_weighted_q5_q85() -> None:
+    centers, counts, widths = final_report._local_energy_bar_series(
+        [
+            {"bin_left": "-0.5", "bin_right": "0.5", "bin_center": "0", "count": "1"},
+            {"bin_left": "0.5", "bin_right": "1.5", "bin_center": "1", "count": "10"},
+            {"bin_left": "1.5", "bin_right": "2.5", "bin_center": "2", "count": "10"},
+            {"bin_left": "2.5", "bin_right": "3.5", "bin_center": "3", "count": "1"},
+        ]
+    )
+
+    assert centers == [1.0, 2.0]
+    assert counts == [10.0, 10.0]
     assert widths == [1.0, 1.0]
 
 
@@ -1644,6 +1925,48 @@ def test_final_report_tail_grid_aggregates_paths_before_seed_variance() -> None:
     assert row["mean"] == pytest.approx(4.0)
     assert row["variance"] == pytest.approx(2.0)
     assert row["n_seeds"] == 2
+
+
+def test_final_report_tail_local_energy_bar_points_use_q5_q85_ranges() -> None:
+    points = final_report._tail_local_energy_bar_points(
+        [
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "com_id": "near",
+                "radius": "1.0",
+                "local_energy_median": "2.0",
+                "local_energy_q05": "1.0",
+                "local_energy_q85": "3.0",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "com_id": "near",
+                "radius": "1.0",
+                "local_energy_median": "4.0",
+                "local_energy_q05": "2.0",
+                "local_energy_q85": "8.0",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "stability",
+                "com_id": "near",
+                "radius": "1.0",
+                "local_energy_median": "100.0",
+            },
+        ],
+        winner_kind="energy",
+    )
+
+    row = points[("raw_envelope", "N0", "CoM near")][0]
+    assert row["median"] == pytest.approx(3.0)
+    assert row["low"] == pytest.approx(1.5)
+    assert row["high"] == pytest.approx(5.5)
+    assert row["n_records"] == 2
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:

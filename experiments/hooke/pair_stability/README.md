@@ -436,6 +436,43 @@ It also derives pair_validation-style energy-component and virial tables from
 plus one per winner family under `tables/energy_components_and_virial/`.
 Runtime/resource summaries are reported separately from model-quality ranking.
 
+Create a portable snapshot of the current study code/configs plus the result
+ancestry behind the latest final report:
+
+Preview the exact transfer first (the file can be very large):
+
+```bash
+uv run python experiments/hooke/pair_stability/sync.py --dry-run ${MStore}/spenn-studies/hooke/pair_stability_v1
+```
+
+Then run the transfer:
+
+```bash
+uv run python experiments/hooke/pair_stability/sync.py ${MStore}/spenn-studies/hooke/pair_stability_v1
+```
+
+The dry run prints a planning line immediately, then prints the planned file
+count, planned MiB, traced ancestry root count broken down by stage, and
+skipped checkpoint directory count without creating the snapshot. Add
+`--verbose` to list every planned relative path once tracing finishes.
+`--dry-run` is the canonical spelling; `--dryrun` remains accepted as a legacy
+alias.
+
+`sync.py` reads `study.name` and the default results root from
+`configs/pair_stability.yaml`, resolves the latest `09_final_report`, traces
+its explicit provenance back through final collect/eval/train/grid and the
+selection/collection/grid stages, and writes a directory named
+`<study_name>_snapshot_<YYYYMMDD>T<HHMMSS>-0400` in America/New_York time.
+All files under traced ancestry directories are copied except checkpoint
+directories. Regular `01_train` and `02_validation` run directories are copied
+metadata-only: `config.yaml`, `resolved_config.yaml`, `metadata.json`,
+`run_start.json`, `run_stat.json`, `run_stats.json`, `status.json`,
+`launcher_status.json`, `submission.json`, and `source_*_attempt.json` are
+preserved, while metrics, events, checkpoints, and large run artifacts are
+excluded. Final-stage `06_final_train` and
+`07_final_eval` directories are still copied because they are direct inputs to
+the final report.
+
 ## Staged results layout
 
 ```

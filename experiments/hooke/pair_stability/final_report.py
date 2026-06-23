@@ -33,6 +33,7 @@ EXACT_HOOKE_ENERGY = 2.0
 WINNER_KINDS = ("energy", "stability")
 NARROW_WINNER_HEATMAP_WIDTH_SCALE = 0.75
 POSITIVE_HEATMAP_CMAP = "Reds"
+BAR_QUANTILE_RANGE = (0.05, 0.85)
 SYMMETRY_METRICS = (
     "logabs_error_max",
     "logabs_error_median",
@@ -153,6 +154,21 @@ def _variance(values: Sequence[float]) -> float | None:
     return math.fsum((value - mean) ** 2 for value in clean) / (len(clean) - 1)
 
 
+def _quantile(values: Sequence[float], q: float) -> float | None:
+    clean = sorted(value for value in values if math.isfinite(value))
+    if not clean:
+        return None
+    if len(clean) == 1:
+        return clean[0]
+    position = (len(clean) - 1) * q
+    low = math.floor(position)
+    high = math.ceil(position)
+    if low == high:
+        return clean[int(position)]
+    weight = position - low
+    return clean[low] * (1.0 - weight) + clean[high] * weight
+
+
 def _format_number(value: float | None) -> str:
     if value is None:
         return ""
@@ -264,6 +280,7 @@ def _virial_residual_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]
     """Return virial-residual summary rows for heatmaps."""
 
     return [row for row in rows if row.get("quantity") == "virial_residual"]
+
 
 def _resolve_collect_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
@@ -672,7 +689,51 @@ def _local_energy_bar_series(rows: Sequence[dict[str, Any]]) -> tuple[list[float
         counts_by_center[center] += count
         widths_by_center[center] = (right - left) if left is not None and right is not None else 1.0
     centers = sorted(counts_by_center)
-    return centers, [counts_by_center[center] for center in centers], [widths_by_center[center] for center in centers]
+    counts = [counts_by_center[center] for center in centers]
+    widths = [widths_by_center[center] for center in centers]
+    return _crop_bar_series_to_weighted_quantiles(centers, counts, widths)
+
+
+def _weighted_quantile(values: Sequence[float], weights: Sequence[float], q: float) -> float | None:
+    """Return a weighted empirical quantile for histogram-like bar centers."""
+
+    pairs = sorted((value, weight) for value, weight in zip(values, weights, strict=True) if math.isfinite(value) and weight > 0.0)
+    if not pairs:
+        return None
+    total = math.fsum(weight for _value, weight in pairs)
+    threshold = total * q
+    cumulative = 0.0
+    for value, weight in pairs:
+        cumulative += weight
+        if cumulative >= threshold:
+            return value
+    return pairs[-1][0]
+
+
+def _crop_bar_series_to_weighted_quantiles(
+    centers: Sequence[float],
+    counts: Sequence[float],
+    widths: Sequence[float],
+    *,
+    low_q: float = BAR_QUANTILE_RANGE[0],
+    high_q: float = BAR_QUANTILE_RANGE[1],
+) -> tuple[list[float], list[float], list[float]]:
+    """Keep only bar bins whose centers are in the weighted q5-q85 range."""
+
+    if not centers:
+        return [], [], []
+    low = _weighted_quantile(centers, counts, low_q)
+    high = _weighted_quantile(centers, counts, high_q)
+    if low is None or high is None or low > high:
+        return list(centers), list(counts), list(widths)
+    cropped = [
+        (center, count, width)
+        for center, count, width in zip(centers, counts, widths, strict=True)
+        if low <= center <= high
+    ]
+    if not cropped:
+        return list(centers), list(counts), list(widths)
+    return ([item[0] for item in cropped], [item[1] for item in cropped], [item[2] for item in cropped])
 
 
 def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
@@ -1025,79 +1086,215 @@ def _tail_seed_profile_points(
     return out
 
 
-def _save_tail_winner_grid(
+def _tail_local_energy_bar_points(
+    rows: Sequence[dict[str, Any]],
+    *,
+    winner_kind: str,
+) -> dict[tuple[str, str, str], list[dict[str, float | int]]]:
+    """Return tail local-energy bar points with q5-q85 ranges."""
+
+    cells: dict[tuple[str, str, str, float], list[tuple[float, float, float]]] = defaultdict(list)
+    for row in rows:
+        if str(row.get("winner_kind", "")) != winner_kind:
+            continue
+        radius = _as_float(row.get("radius"))
+        median = _as_float(row.get("local_energy_median"))
+        if radius is None or median is None:
+            continue
+        low = _as_float(row.get("local_energy_q05"))
+        if low is None:
+            low = _as_float(row.get("local_energy_q25"))
+        high = _as_float(row.get("local_energy_q85"))
+        if high is None:
+            high = _as_float(row.get("local_energy_q75"))
+        low = median if low is None else low
+        high = median if high is None else high
+        basis = str(row.get("basis_class", row.get("basis", "")))
+        normalization = str(row.get("normalization", ""))
+        com = _com_label(row.get("com_id", row.get("center_of_mass_id", "")))
+        cells[(basis, normalization, com, radius)].append((median, low, high))
+
+    out: dict[tuple[str, str, str], list[dict[str, float | int]]] = defaultdict(list)
+    for (basis, normalization, com, radius), values in sorted(cells.items()):
+        medians = [value[0] for value in values]
+        lows = [value[1] for value in values]
+        highs = [value[2] for value in values]
+        median = _median(medians)
+        low = _median(lows)
+        high = _median(highs)
+        if median is None or low is None or high is None:
+            continue
+        out[(basis, normalization, com)].append(
+            {
+                "radius": radius,
+                "median": median,
+                "low": min(low, median),
+                "high": max(high, median),
+                "n_records": len(values),
+            }
+        )
+    return out
+
+
+def _tail_bar_width(radii: Sequence[float], n_groups: int) -> float:
+    unique = sorted({radius for radius in radii if math.isfinite(radius)})
+    gaps = [right - left for left, right in zip(unique, unique[1:], strict=False) if right > left]
+    base = min(gaps) * 0.75 if gaps else max(0.08, abs(unique[0]) * 0.08 if unique else 0.08)
+    return base / max(1, n_groups)
+
+
+def _save_tail_local_energy_bar_grid(
     path: Path,
     rows: Sequence[dict[str, Any]],
     *,
     winner_kind: str,
     title: str,
 ) -> None:
+    """Save tail local-energy medians as bars with q5-q85 ranges."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    metrics = (
-        ("local energy", "local_energy_median"),
-        ("logabs", "logabs_median"),
-    )
-    profile_by_metric = {
-        label: _tail_seed_profile_points(rows, winner_kind=winner_kind, value_key=value_key)
-        for label, value_key in metrics
-    }
-    cells = {cell for profiles in profile_by_metric.values() for cell in profiles}
-    if not cells:
+    profiles = _tail_local_energy_bar_points(rows, winner_kind=winner_kind)
+    if not profiles:
         _save_no_data(path, title)
         return
 
-    architectures = sorted({cell[0] for cell in cells})
-    normalizations = sorted({cell[1] for cell in cells})
-    com_labels = sorted({cell[2] for cell in cells})
+    architectures = sorted({cell[0] for cell in profiles})
+    normalizations = sorted({cell[1] for cell in profiles})
+    com_labels = sorted({cell[2] for cell in profiles})
 
     plt = _pyplot()
     cmap = plt.get_cmap("tab10")
     colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
-    n_rows = len(normalizations)
-    n_cols = len(metrics) * len(architectures)
     fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(max(8.0, 2.7 * n_cols), max(3.6, 2.2 * n_rows)),
+        len(normalizations),
+        len(architectures),
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
         squeeze=False,
         sharex=True,
         sharey=False,
     )
     legend_handles: dict[str, Any] = {}
-    for metric_index, (metric_label, _value_key) in enumerate(metrics):
-        profiles = profile_by_metric[metric_label]
-        for norm_index, normalization in enumerate(normalizations):
-            row_index = norm_index
-            for col_index, architecture in enumerate(architectures):
-                axis_col = metric_index * len(architectures) + col_index
-                ax = axes[row_index][axis_col]
-                plotted = False
-                for com in com_labels:
-                    points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
-                    if not points:
-                        continue
-                    container = ax.errorbar(
-                        [float(point["radius"]) for point in points],
-                        [float(point["mean"]) for point in points],
-                        yerr=[float(point["variance"]) for point in points],
-                        marker="o",
-                        linewidth=1.1,
-                        markersize=3.0,
-                        capsize=2.0,
-                        color=colors[com],
-                        label=com,
-                    )
-                    legend_handles.setdefault(com, container)
-                    plotted = True
-                if not plotted:
-                    ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-                if row_index == 0:
-                    ax.set_title(f"{metric_label}\n{architecture}", fontsize=9)
-                if col_index == 0:
-                    ax.set_ylabel(f"{normalization}\n{metric_label}\nseed mean")
-                if row_index == n_rows - 1:
-                    ax.set_xlabel("radius")
-                ax.grid(True, linewidth=0.35, alpha=0.35)
+    all_radii = [float(point["radius"]) for points in profiles.values() for point in points]
+    width = _tail_bar_width(all_radii, len(com_labels))
+    offsets = {
+        com: (index - (len(com_labels) - 1) / 2.0) * width
+        for index, com in enumerate(com_labels)
+    }
+    for row_index, normalization in enumerate(normalizations):
+        for col_index, architecture in enumerate(architectures):
+            ax = axes[row_index][col_index]
+            plotted = False
+            for com in com_labels:
+                points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
+                if not points:
+                    continue
+                xs = [float(point["radius"]) + offsets[com] for point in points]
+                ys = [float(point["median"]) for point in points]
+                lower = [max(0.0, float(point["median"]) - float(point["low"])) for point in points]
+                upper = [max(0.0, float(point["high"]) - float(point["median"])) for point in points]
+                container = ax.bar(
+                    xs,
+                    ys,
+                    width=width,
+                    yerr=[lower, upper],
+                    capsize=2.0,
+                    color=colors[com],
+                    edgecolor="black",
+                    linewidth=0.35,
+                    alpha=0.85,
+                    label=com,
+                )
+                legend_handles.setdefault(com, container)
+                plotted = True
+            if not plotted:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+            if row_index == 0:
+                ax.set_title(architecture, fontsize=9)
+            if col_index == 0:
+                ax.set_ylabel(f"{normalization}\nlocal energy")
+            if row_index == len(normalizations) - 1:
+                ax.set_xlabel("radius")
+            ax.grid(True, axis="y", linewidth=0.35, alpha=0.35)
+
+    fig.suptitle(f"{title}\nBars show median local energy; error bars show q5-q85.", y=0.995)
+    if legend_handles:
+        fig.legend(
+            list(legend_handles.values()),
+            list(legend_handles.keys()),
+            title="CoM",
+            loc="center left",
+            bbox_to_anchor=(0.99, 0.5),
+            ncol=max(1, math.ceil(len(legend_handles) / 28)),
+            fontsize=7,
+            title_fontsize=8,
+            borderaxespad=0.0,
+        )
+    fig.tight_layout(rect=(0.0, 0.0, 0.88 if legend_handles else 1.0, 0.94))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_tail_logabs_line_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    winner_kind: str,
+    title: str,
+) -> None:
+    """Save tail logabs profiles as lines."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    profiles = _tail_seed_profile_points(rows, winner_kind=winner_kind, value_key="logabs_median")
+    if not profiles:
+        _save_no_data(path, title)
+        return
+
+    architectures = sorted({cell[0] for cell in profiles})
+    normalizations = sorted({cell[1] for cell in profiles})
+    com_labels = sorted({cell[2] for cell in profiles})
+
+    plt = _pyplot()
+    cmap = plt.get_cmap("tab10")
+    colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
+    fig, axes = plt.subplots(
+        len(normalizations),
+        len(architectures),
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        squeeze=False,
+        sharex=True,
+        sharey=False,
+    )
+    legend_handles: dict[str, Any] = {}
+    for row_index, normalization in enumerate(normalizations):
+        for col_index, architecture in enumerate(architectures):
+            ax = axes[row_index][col_index]
+            plotted = False
+            for com in com_labels:
+                points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
+                if not points:
+                    continue
+                container = ax.errorbar(
+                    [float(point["radius"]) for point in points],
+                    [float(point["mean"]) for point in points],
+                    yerr=[float(point["variance"]) for point in points],
+                    marker="o",
+                    linewidth=1.1,
+                    markersize=3.0,
+                    capsize=2.0,
+                    color=colors[com],
+                    label=com,
+                )
+                legend_handles.setdefault(com, container)
+                plotted = True
+            if not plotted:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+            if row_index == 0:
+                ax.set_title(architecture, fontsize=9)
+            if col_index == 0:
+                ax.set_ylabel(f"{normalization}\nlogabs")
+            if row_index == len(normalizations) - 1:
+                ax.set_xlabel("radius")
+            ax.grid(True, linewidth=0.35, alpha=0.35)
 
     fig.suptitle(f"{title}\nLines are CoM groups; error bars are seed variance over final replicates.", y=0.995)
     if legend_handles:
@@ -1585,7 +1782,7 @@ def _save_feature_trace_metric_grid(
         return
 
     matrices = {}
-    scale_values = []
+    scale_values_by_layer: dict[str, list[float]] = defaultdict(list)
     for layer in layers:
         layer_rows = [row for row in trace_rows if str(row.get("layer", "")) == layer]
         for winner in WINNER_KINDS:
@@ -1596,8 +1793,8 @@ def _save_feature_trace_metric_grid(
                 value_key=metric_key,
             )
             matrices[(layer, winner)] = (y_labels, x_labels, matrix)
-            scale_values.extend(_matrix_values(matrix))
-    if not scale_values:
+            scale_values_by_layer[layer].extend(_matrix_values(matrix))
+    if not any(scale_values_by_layer.values()):
         _save_no_data(path, title)
         return
 
@@ -1610,8 +1807,9 @@ def _save_feature_trace_metric_grid(
         sharex=False,
         sharey=False,
     )
-    images = []
     for row_index, layer in enumerate(layers):
+        row_scale_values = scale_values_by_layer[layer]
+        row_images = []
         for col_index, winner in enumerate(WINNER_KINDS):
             ax = axes[row_index][col_index]
             y_labels, x_labels, matrix = matrices[(layer, winner)]
@@ -1624,17 +1822,22 @@ def _save_feature_trace_metric_grid(
                 value_key=metric_key,
                 title=f"{layer}\n{_winner_title(winner)}",
                 transform=None,
-                scale_values=scale_values,
+                scale_values=row_scale_values,
                 add_colorbar=False,
             )
             if image is not None:
-                images.append(image)
+                row_images.append(image)
             if col_index > 0:
                 ax.set_yticklabels([])
-    if images:
-        fig.colorbar(images[0], ax=list(axes.ravel()), label=metric_key, fraction=0.046, pad=0.04)
+        if row_images:
+            fig.colorbar(
+                row_images[0],
+                ax=list(axes[row_index]),
+                fraction=0.035,
+                pad=0.035,
+            )
     fig.suptitle(title, y=0.995)
-    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.04, top=0.94, wspace=0.65, hspace=0.75)
+    fig.subplots_adjust(left=0.08, right=0.89, bottom=0.04, top=0.94, wspace=0.65, hspace=0.75)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -1652,6 +1855,7 @@ def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *,
         transform="signed_log",
         width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE,
     )
+
 
 def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -1701,11 +1905,13 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
             _winner_filename("2D", winner, "cusp_dlogabs_dr_grid.png"),
             lambda path, winner=winner: _save_cusp_derivative_winner_grid(path, cusp_rows, winner_kind=winner, title=f"Cusp derivative profiles: {_winner_title(winner)}"),
         )
-    add("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners"))
-    add("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners"))
+    add("3A_tail_energy_winner_local_energy_bars.png", lambda path: _save_tail_local_energy_bar_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail local energy: energy winners"))
+    add("3B_tail_stability_winner_local_energy_bars.png", lambda path: _save_tail_local_energy_bar_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail local energy: stability winners"))
+    add("3C_tail_energy_winner_logabs_grid.png", lambda path: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail logabs: energy winners"))
+    add("3D_tail_stability_winner_logabs_grid.png", lambda path: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail logabs: stability winners"))
 
     add(
-        "3C_tail_outlier_heatmap.png",
+        "3E_tail_outlier_heatmap.png",
         lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
 
@@ -1812,6 +2018,7 @@ def _write_energy_component_tables(tables_dir: Path, energy_rows: Sequence[dict[
         counts[relative_path] = len(rows)
     return counts
 
+
 def build_report(
     *,
     results_root: str | Path,
@@ -1892,7 +2099,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Tail Diagnostics",
             "",
-            "Tail tables preserve path columns. Figures 3A/3B split energy and stability winners into subplot grids by architecture and normalization; each subplot draws CoM lines with seed-variance error bars for local energy and logabs, with a shared CoM legend. Exact log-amplitude references are included when collect inputs provide them.",
+            "Tail tables preserve path columns. Figures 3A/3B show local-energy bar grids for energy and stability winners; bars are grouped by CoM and their error bars show q5-q85. Figures 3C/3D show logabs line grids with seed-variance error bars. Figure 3E summarizes tail outlier fraction.",
             "",
             "## Stratified Geometry Diagnostics",
             "",
@@ -1908,7 +2115,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures. Figures 7A, 7B, and 7C focus on feature-trace stability and emit one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, energy/stability winner columns, architecture by normalization inside each subplot, and one shared color scale per metric.",
+            "See `tables/trace_summary.csv` and the trace figures. Figures 7A, 7B, and 7C focus on feature-trace stability and emit one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, energy/stability winner columns, architecture by normalization inside each subplot, and one tick-only colorbar with its own scale for every layer row.",
             "",
             "## Training And Resource Summary",
             "",
