@@ -675,11 +675,18 @@ def _local_energy_values(contexts: Sequence[dict[str, Any]]) -> dict[str, list[f
 
 def _local_energy_histograms(contexts: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     values_by_run = _local_energy_values(contexts)
-    all_values = [value for values in values_by_run.values() for value in values]
-    edges = _bin_edges(all_values)
+    group_values: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+    groups_by_run: dict[str, tuple[str, str, str]] = {}
+    for context in contexts:
+        base = _base_row(context)
+        group = (str(base.get("basis_class", "")), str(base.get("normalization", "")), str(base.get("winner_kind", "")))
+        groups_by_run[context["final_run_id"]] = group
+        group_values[group].extend(values_by_run.get(context["final_run_id"], []))
+    edges_by_group = {group: _bin_edges(values) for group, values in group_values.items()}
     rows = []
     for context in contexts:
         base = _base_row(context)
+        edges = edges_by_group.get(groups_by_run.get(context["final_run_id"], ("", "", "")), [])
         for left, right, count, density in _histogram(values_by_run.get(context["final_run_id"], []), edges):
             rows.append({**base, "bin_left": _format_number(left), "bin_right": _format_number(right), "bin_center": _format_number((left + right) / 2.0), "count": count, "density": _format_number(density)})
     return rows

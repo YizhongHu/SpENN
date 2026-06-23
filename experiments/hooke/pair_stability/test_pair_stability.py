@@ -891,8 +891,11 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "4_stability_winner_stratified_geometry_bulk_heatmap.png").is_file()
     assert (report_dir / "figures" / "5A_energy_winner_hooke_orbital_local_energy_distribution.png").is_file()
     assert (report_dir / "figures" / "5A_stability_winner_hooke_orbital_local_energy_distribution.png").is_file()
-    assert (report_dir / "figures" / "6_energy_winner_symmetry_scalar_heatmap.png").is_file()
-    assert (report_dir / "figures" / "6_stability_winner_symmetry_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "6_symmetry_logabs_error_max_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6_symmetry_logabs_error_median_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6_symmetry_sign_mismatch_count_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6_symmetry_parity_mismatch_count_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "6_symmetry_finite_fraction_heatmap_grid.png").is_file()
     assert (report_dir / "figures" / "7_energy_winner_trace_scalar_heatmap.png").is_file()
     assert (report_dir / "figures" / "7_stability_winner_trace_scalar_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
@@ -954,6 +957,37 @@ def test_final_report_scalar_metric_matrix_aggregates_multiple_metrics() -> None
     assert y_labels == ["raw_envelope/N0/exchange"]
     assert x_labels == ["logabs_error_max", "sign_mismatch_count", "finite_fraction"]
     assert matrix == [[3.0, 2.0, 1.0]]
+
+
+def test_final_report_symmetry_metric_grid_splits_winners_and_symmetries(tmp_path: Path) -> None:
+    path = tmp_path / "symmetry_grid.png"
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "symmetry_task": "full_model_antisymmetry",
+            "logabs_error_max": "0.1",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "symmetry_task": "full_model_antisymmetry",
+            "logabs_error_max": "0.2",
+        },
+        {
+            "basis_class": "hermite_o2_envelope",
+            "normalization": "N1",
+            "winner_kind": "energy",
+            "symmetry_task": "rotation_consistency",
+            "logabs_error_max": "0.3",
+        },
+    ]
+
+    final_report._save_symmetry_metric_grid(path, rows, metric_key="logabs_error_max", title="symmetry grid")
+
+    assert path.is_file()
 
 
 def test_final_report_architecture_line_grid_splits_architectures(tmp_path: Path) -> None:
@@ -1048,6 +1082,50 @@ def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> Non
     assert architectures == ["hermite_o2_envelope", "raw_envelope"]
     assert len(groups[("N1", "raw_envelope")]) == 2
     assert groups[("N0", "hermite_o2_envelope")][0]["count"] == "4"
+
+
+def test_final_collect_local_energy_histograms_use_group_scoped_bins(tmp_path: Path) -> None:
+    def context(run_id: str, architecture: str, values: list[float]) -> dict:
+        attempt = tmp_path / run_id
+        (attempt / "energy").mkdir(parents=True)
+        _write_csv(attempt / "energy" / "mcmc_energy_samples.csv", [{"local_energy": str(value)} for value in values])
+        return {
+            "final_run_id": run_id,
+            "attempt_dir": attempt,
+            "job": {
+                "basis_envelope": architecture,
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "replicate_index": "0",
+            },
+        }
+
+    rows = final_collect._local_energy_histograms(
+        [
+            context("compact", "raw_envelope", [1.0, 2.0, 3.0]),
+            context("outlier", "hermite_o3_envelope", [1000.0, 1100.0, 1200.0]),
+        ]
+    )
+    compact = [row for row in rows if row["final_run_id"] == "compact"]
+    outlier = [row for row in rows if row["final_run_id"] == "outlier"]
+
+    assert max(float(row["bin_right"]) for row in compact) == pytest.approx(3.0)
+    assert min(float(row["bin_left"]) for row in outlier) == pytest.approx(1000.0)
+
+
+def test_final_report_local_energy_bar_series_sums_seed_bins() -> None:
+    centers, counts, widths = final_report._local_energy_bar_series(
+        [
+            {"bin_left": "0", "bin_right": "1", "bin_center": "0.5", "count": "2"},
+            {"bin_left": "0", "bin_right": "1", "bin_center": "0.5", "count": "3"},
+            {"bin_left": "1", "bin_right": "2", "bin_center": "1.5", "count": "0"},
+            {"bin_left": "2", "bin_right": "3", "bin_center": "2.5", "count": "4"},
+        ]
+    )
+
+    assert centers == [0.5, 2.5]
+    assert counts == [5.0, 4.0]
+    assert widths == [1.0, 1.0]
 
 
 def test_final_report_tail_grid_aggregates_paths_before_seed_variance() -> None:

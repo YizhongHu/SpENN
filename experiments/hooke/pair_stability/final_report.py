@@ -30,6 +30,13 @@ from run_utils import (
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 WINNER_KINDS = ("energy", "stability")
+SYMMETRY_METRICS = (
+    "logabs_error_max",
+    "logabs_error_median",
+    "sign_mismatch_count",
+    "parity_mismatch_count",
+    "finite_fraction",
+)
 
 COMPACT_TABLES = (
     "run_index.csv",
@@ -156,6 +163,18 @@ def _winner_title(winner_kind: str) -> str:
 
 def _winner_filename(prefix: str, winner_kind: str, suffix: str) -> str:
     return f"{prefix}_{winner_kind}_winner_{suffix}"
+
+
+def _unique_in_order(values: Sequence[Any]) -> list[str]:
+    seen = set()
+    out = []
+    for value in values:
+        label = str(value)
+        if label == "" or label in seen:
+            continue
+        seen.add(label)
+        out.append(label)
+    return out
 
 
 def _heatmap_matrix(
@@ -354,6 +373,24 @@ def _local_energy_distribution_groups(
     return normalizations, architectures, groups
 
 
+def _local_energy_bar_series(rows: Sequence[dict[str, Any]]) -> tuple[list[float], list[float], list[float]]:
+    """Aggregate run-level histogram bins for one displayed distribution."""
+
+    counts_by_center: dict[float, float] = defaultdict(float)
+    widths_by_center: dict[float, float] = {}
+    for row in rows:
+        center = _as_float(row.get("bin_center"))
+        count = _as_float(row.get("count")) or 0.0
+        if center is None or count <= 0.0:
+            continue
+        left = _as_float(row.get("bin_left"))
+        right = _as_float(row.get("bin_right"))
+        counts_by_center[center] += count
+        widths_by_center[center] = (right - left) if left is not None and right is not None else 1.0
+    centers = sorted(counts_by_center)
+    return centers, [counts_by_center[center] for center in centers], [widths_by_center[center] for center in centers]
+
+
 def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     normalizations, architectures, groups = _local_energy_distribution_groups(rows)
@@ -370,13 +407,11 @@ def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, An
             ax = axes[row_index][col_index]
             values = groups.get((normalization, architecture), [])
             if values:
-                centers = [_as_float(row.get("bin_center")) for row in values]
-                counts = [_as_float(row.get("count")) for row in values]
-                widths = [
-                    (right - left) if (left := _as_float(row.get("bin_left"))) is not None and (right := _as_float(row.get("bin_right"))) is not None else 1.0
-                    for row in values
-                ]
-                ax.bar([value for value in centers if value is not None], [value or 0.0 for value in counts], width=widths, align="center", color="#4C78A8", edgecolor="black", alpha=0.85)
+                centers, counts, widths = _local_energy_bar_series(values)
+                if centers:
+                    ax.bar(centers, counts, width=widths, align="center", color="#4C78A8", edgecolor="black", alpha=0.85)
+                else:
+                    ax.text(0.5, 0.5, "No finite samples", ha="center", va="center", transform=ax.transAxes, fontsize=9)
             else:
                 ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=9)
             if row_index == 0:
@@ -738,6 +773,57 @@ def _save_scalar_metric_heatmap(
     plt.close(fig)
 
 
+def _save_symmetry_metric_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    metric_key: str,
+    title: str,
+) -> None:
+    """Save one symmetry metric as architecture-by-normalization heatmaps."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    symmetries = _unique_in_order(row.get("symmetry_task", "") for row in rows)
+    if not symmetries:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    fig, axes = plt.subplots(
+        len(symmetries),
+        len(WINNER_KINDS),
+        figsize=(max(7.5, 4.0 * len(WINNER_KINDS)), max(3.2, 3.0 * len(symmetries))),
+        squeeze=False,
+        sharex=False,
+        sharey=False,
+    )
+    for row_index, symmetry in enumerate(symmetries):
+        symmetry_rows = [row for row in rows if str(row.get("symmetry_task", "")) == symmetry]
+        for col_index, winner in enumerate(WINNER_KINDS):
+            ax = axes[row_index][col_index]
+            panel_rows = _winner_rows(symmetry_rows, winner)
+            y_labels, x_labels, matrix = _heatmap_matrix(
+                panel_rows,
+                row_key="basis_class",
+                col_key="normalization",
+                value_key=metric_key,
+            )
+            _draw_heatmap_axis(
+                fig,
+                ax,
+                y_labels=y_labels,
+                x_labels=x_labels,
+                matrix=matrix,
+                value_key=metric_key,
+                title=f"{symmetry}: {_winner_title(winner)}",
+                transform=None,
+            )
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     written = []
@@ -806,11 +892,13 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
             lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "r12_bin"), title=f"Hooke-orbital local energy vs CoM radius: {_winner_title(winner)}", legend_title="normalization / r12 bin"),
         )
 
-    for winner in WINNER_KINDS:
+    for metric in SYMMETRY_METRICS:
         add(
-            _winner_filename("6", winner, "symmetry_scalar_heatmap.png"),
-            lambda path, winner=winner: _save_scalar_metric_heatmap(path, _winner_rows(tables["symmetry_summary.csv"], winner), row_keys=("basis_class", "normalization", "symmetry_task"), metric_keys=("logabs_error_max", "logabs_error_median", "sign_mismatch_count", "parity_mismatch_count", "finite_fraction"), title=f"Symmetry scalar diagnostics: {_winner_title(winner)}"),
+            f"6_symmetry_{metric}_heatmap_grid.png",
+            lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}"),
         )
+
+    for winner in WINNER_KINDS:
         add(
             _winner_filename("7", winner, "trace_scalar_heatmap.png"),
             lambda path, winner=winner: _save_scalar_metric_heatmap(path, _winner_rows(tables["trace_summary.csv"], winner), row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title=f"Trace scalar diagnostics: {_winner_title(winner)}"),
@@ -933,7 +1021,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Symmetry Diagnostics",
             "",
-            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 emits separate energy/stability heatmaps for scalar symmetry diagnostics.",
+            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 emits one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, energy/stability winners as columns, and architecture by normalization inside each subplot.",
             "",
             "## Trace Diagnostics",
             "",
