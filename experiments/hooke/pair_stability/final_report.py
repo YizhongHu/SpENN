@@ -735,20 +735,86 @@ def _save_architecture_line_grid(
     plt.close(fig)
 
 
-def _save_bar(path: Path, rows: Sequence[dict[str, Any]], *, label_key: str, value_key: str, title: str) -> None:
+def _scalar_metric_matrix(
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_keys: Sequence[str],
+    metric_keys: Sequence[str],
+) -> tuple[list[str], list[str], list[list[float | None]]]:
+    """Return a matrix of seed/record means for scalar diagnostic metrics."""
+
+    cells: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for row in rows:
+        label = _group_label(row, row_keys)
+        for metric in metric_keys:
+            value = _as_float(row.get(metric))
+            if value is not None:
+                cells[(label, metric)].append(value)
+    if not cells:
+        return [], [], []
+    y_labels = sorted({key[0] for key in cells})
+    x_labels = [metric for metric in metric_keys if any((label, metric) in cells for label in y_labels)]
+    matrix = []
+    for label in y_labels:
+        matrix.append([_mean(cells.get((label, metric), [])) for metric in x_labels])
+    return y_labels, x_labels, matrix
+
+
+def _save_scalar_metric_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_keys: Sequence[str],
+    metric_keys: Sequence[str],
+    title: str,
+) -> None:
+    """Save winner-split heatmaps for tables with multiple scalar metrics."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    values = [(str(row.get(label_key, "")), _as_float(row.get(value_key))) for row in rows]
-    values = [(label, value) for label, value in values if value is not None]
-    if not values:
+    rows_by_winner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if any(_as_float(row.get(metric)) is not None for metric in metric_keys):
+            winner = str(row.get("winner_kind", "")).strip() or "all"
+            rows_by_winner[winner].append(row)
+    if not rows_by_winner:
         _save_no_data(path, title)
         return
+
+    panels = []
+    for winner in _winner_order(list(rows_by_winner)):
+        y_labels, x_labels, matrix = _scalar_metric_matrix(
+            rows_by_winner[winner],
+            row_keys=row_keys,
+            metric_keys=metric_keys,
+        )
+        if matrix:
+            panels.append((winner, y_labels, x_labels, matrix))
+    if not panels:
+        _save_no_data(path, title)
+        return
+
     plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(max(6, 0.6 * len(values)), 4))
-    ax.bar(range(len(values)), [value for _, value in values])
-    ax.set_xticks(range(len(values)), [label for label, _ in values], rotation=45, ha="right")
-    ax.set_ylabel(value_key)
-    ax.set_title(title)
-    fig.tight_layout()
+    max_y = max(len(y_labels) for _, y_labels, _, _ in panels)
+    max_x = max(len(x_labels) for _, _, x_labels, _ in panels)
+    fig, axes = plt.subplots(
+        1,
+        len(panels),
+        figsize=(max(6.0, 1.4 * max_x * len(panels), 5.2 * len(panels)), max(3.8, 0.38 * max_y)),
+        squeeze=False,
+    )
+    for ax, (winner, y_labels, x_labels, matrix) in zip(axes[0], panels, strict=True):
+        _draw_heatmap_axis(
+            fig,
+            ax,
+            y_labels=y_labels,
+            x_labels=x_labels,
+            matrix=matrix,
+            value_key="mean scalar value",
+            title=winner,
+            transform=None,
+        )
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
@@ -777,8 +843,8 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians", legend_title="normalization / winner / CoM bin")),
         ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin", legend_title="normalization / winner / CoM bin")),
         ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin", legend_title="normalization / winner / r12 bin")),
-        ("6_symmetry_failure_counts.png", lambda path: _save_bar(path, tables["symmetry_summary.csv"], label_key="symmetry_task", value_key="sign_mismatch_count", title="Symmetry sign mismatch counts")),
-        ("7_trace_failure_counts.png", lambda path: _save_bar(path, tables["trace_summary.csv"], label_key="trace_kind", value_key="comparison_error_count", title="Trace comparison error counts")),
+        ("6_symmetry_scalar_heatmap.png", lambda path: _save_scalar_metric_heatmap(path, tables["symmetry_summary.csv"], row_keys=("basis_class", "normalization", "symmetry_task"), metric_keys=("logabs_error_max", "logabs_error_median", "sign_mismatch_count", "parity_mismatch_count", "finite_fraction"), title="Symmetry scalar diagnostics")),
+        ("7_trace_scalar_heatmap.png", lambda path: _save_scalar_metric_heatmap(path, tables["trace_summary.csv"], row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title="Trace scalar diagnostics")),
         ("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner")),
     ]
     for filename, writer in specs:
@@ -896,11 +962,11 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Symmetry Diagnostics",
             "",
-            "See `tables/symmetry_summary.csv` and the symmetry figures.",
+            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 uses winner-split heatmaps for scalar symmetry diagnostics.",
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures.",
+            "See `tables/trace_summary.csv` and the trace figures. Figure 7 uses winner-split heatmaps for scalar trace diagnostics.",
             "",
             "## Training And Resource Summary",
             "",

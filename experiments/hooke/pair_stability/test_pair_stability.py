@@ -880,6 +880,8 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "4_stratified_geometry_aggregate_log_heatmap.png").is_file()
     assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
     assert (report_dir / "figures" / "4_stratified_geometry_bulk_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "6_symmetry_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "7_trace_scalar_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
@@ -927,6 +929,39 @@ def test_final_report_winner_split_heatmap_renders_independent_panels(tmp_path: 
     )
 
     assert path.is_file()
+
+
+def test_final_report_scalar_metric_matrix_aggregates_multiple_metrics() -> None:
+    y_labels, x_labels, matrix = final_report._scalar_metric_matrix(
+        [
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "symmetry_task": "exchange",
+                "logabs_error_max": "2.0",
+                "sign_mismatch_count": "1",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "symmetry_task": "exchange",
+                "logabs_error_max": "4.0",
+                "sign_mismatch_count": "3",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "symmetry_task": "exchange",
+                "finite_fraction": "1.0",
+            },
+        ],
+        row_keys=("basis_class", "normalization", "symmetry_task"),
+        metric_keys=("logabs_error_max", "sign_mismatch_count", "finite_fraction"),
+    )
+
+    assert y_labels == ["raw_envelope/N0/exchange"]
+    assert x_labels == ["logabs_error_max", "sign_mismatch_count", "finite_fraction"]
+    assert matrix == [[3.0, 2.0, 1.0]]
 
 
 def test_final_report_architecture_line_grid_splits_architectures(tmp_path: Path) -> None:
