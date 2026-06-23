@@ -37,6 +37,11 @@ SYMMETRY_METRICS = (
     "parity_mismatch_count",
     "finite_fraction",
 )
+FEATURE_TRACE_METRICS = (
+    "rms_q95",
+    "max_abs",
+    "nonfinite_count",
+)
 
 COMPACT_TABLES = (
     "run_index.csv",
@@ -1130,122 +1135,6 @@ def _save_training_curve_grid(path: Path, rows: Sequence[dict[str, Any]], *, tit
     plt.close(fig)
 
 
-def _scalar_metric_matrix(
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_keys: Sequence[str],
-    metric_keys: Sequence[str],
-) -> tuple[list[str], list[str], list[list[float | None]]]:
-    """Return a matrix of seed/record means for scalar diagnostic metrics."""
-
-    cells: dict[tuple[str, str], list[float]] = defaultdict(list)
-    for row in rows:
-        label = _group_label(row, row_keys)
-        for metric in metric_keys:
-            value = _as_float(row.get(metric))
-            if value is not None:
-                cells[(label, metric)].append(value)
-    if not cells:
-        return [], [], []
-    y_labels = sorted({key[0] for key in cells})
-    x_labels = [metric for metric in metric_keys if any((label, metric) in cells for label in y_labels)]
-    matrix = []
-    for label in y_labels:
-        matrix.append([_mean(cells.get((label, metric), [])) for metric in x_labels])
-    return y_labels, x_labels, matrix
-
-
-def _save_scalar_metric_heatmap(
-    path: Path,
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_keys: Sequence[str],
-    metric_keys: Sequence[str],
-    title: str,
-) -> None:
-    """Save a heatmap for tables with multiple scalar metrics."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    y_labels, x_labels, matrix = _scalar_metric_matrix(rows, row_keys=row_keys, metric_keys=metric_keys)
-    if not matrix:
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(max(6.0, 1.4 * len(x_labels)), max(3.8, 0.38 * len(y_labels))))
-    _draw_heatmap_axis(
-        fig,
-        ax,
-        y_labels=y_labels,
-        x_labels=x_labels,
-        matrix=matrix,
-        value_key="mean scalar value",
-        title=title,
-        transform=None,
-    )
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-
-
-def _save_winner_pair_scalar_metric_heatmap(
-    path: Path,
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_keys: Sequence[str],
-    metric_keys: Sequence[str],
-    title: str,
-) -> None:
-    """Save energy/stability scalar-metric heatmaps with one scale."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    matrices = {}
-    scale_values = []
-    max_x = 0
-    max_y = 0
-    for winner in WINNER_KINDS:
-        y_labels, x_labels, matrix = _scalar_metric_matrix(
-            _winner_rows(rows, winner),
-            row_keys=row_keys,
-            metric_keys=metric_keys,
-        )
-        matrices[winner] = (y_labels, x_labels, matrix)
-        scale_values.extend(_matrix_values(matrix))
-        max_x = max(max_x, len(x_labels))
-        max_y = max(max_y, len(y_labels))
-    if not scale_values:
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-    fig, axes = plt.subplots(1, len(WINNER_KINDS), figsize=(max(10.0, 1.2 * max_x * len(WINNER_KINDS)), max(3.8, 0.38 * max_y)), squeeze=False)
-    images = []
-    for col_index, winner in enumerate(WINNER_KINDS):
-        y_labels, x_labels, matrix = matrices[winner]
-        image = _draw_heatmap_axis(
-            fig,
-            axes[0][col_index],
-            y_labels=y_labels,
-            x_labels=x_labels,
-            matrix=matrix,
-            value_key="mean scalar value",
-            title=_winner_title(winner),
-            transform=None,
-            scale_values=scale_values,
-            add_colorbar=False,
-        )
-        if image is not None:
-            images.append(image)
-        if col_index > 0:
-            axes[0][col_index].set_yticklabels([])
-    if images:
-        fig.colorbar(images[0], ax=list(axes.ravel()), label="mean scalar value", fraction=0.046, pad=0.04)
-    fig.suptitle(title, y=0.98)
-    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.18, top=0.84, wspace=0.45)
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-
-
 def _save_symmetry_metric_grid(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -1311,6 +1200,77 @@ def _save_symmetry_metric_grid(
         fig.colorbar(images[0], ax=list(axes.ravel()), label=metric_key, fraction=0.046, pad=0.04)
     fig.suptitle(title, y=0.995)
     fig.subplots_adjust(left=0.08, right=0.86, bottom=0.08, top=0.90, wspace=0.65, hspace=0.65)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_feature_trace_metric_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    metric_key: str,
+    title: str,
+) -> None:
+    """Save one feature-trace metric as layer-by-winner heatmaps."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trace_rows = [row for row in rows if str(row.get("trace_kind", "")) == "feature_trace_stability"]
+    layers = _unique_in_order(row.get("layer", "") for row in trace_rows)
+    if not layers:
+        _save_no_data(path, title)
+        return
+
+    matrices = {}
+    scale_values = []
+    for layer in layers:
+        layer_rows = [row for row in trace_rows if str(row.get("layer", "")) == layer]
+        for winner in WINNER_KINDS:
+            y_labels, x_labels, matrix = _heatmap_matrix(
+                _winner_rows(layer_rows, winner),
+                row_key="basis_class",
+                col_key="normalization",
+                value_key=metric_key,
+            )
+            matrices[(layer, winner)] = (y_labels, x_labels, matrix)
+            scale_values.extend(_matrix_values(matrix))
+    if not scale_values:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    fig, axes = plt.subplots(
+        len(layers),
+        len(WINNER_KINDS),
+        figsize=(max(11.0, 5.5 * len(WINNER_KINDS)), max(3.2, 2.55 * len(layers))),
+        squeeze=False,
+        sharex=False,
+        sharey=False,
+    )
+    images = []
+    for row_index, layer in enumerate(layers):
+        for col_index, winner in enumerate(WINNER_KINDS):
+            ax = axes[row_index][col_index]
+            y_labels, x_labels, matrix = matrices[(layer, winner)]
+            image = _draw_heatmap_axis(
+                fig,
+                ax,
+                y_labels=y_labels,
+                x_labels=x_labels,
+                matrix=matrix,
+                value_key=metric_key,
+                title=f"{layer}\n{_winner_title(winner)}",
+                transform=None,
+                scale_values=scale_values,
+                add_colorbar=False,
+            )
+            if image is not None:
+                images.append(image)
+            if col_index > 0:
+                ax.set_yticklabels([])
+    if images:
+        fig.colorbar(images[0], ax=list(axes.ravel()), label=metric_key, fraction=0.046, pad=0.04)
+    fig.suptitle(title, y=0.995)
+    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.04, top=0.94, wspace=0.65, hspace=0.75)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -1396,10 +1356,11 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
             lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}"),
         )
 
-    add(
-        "7_trace_scalar_heatmap.png",
-        lambda path: _save_winner_pair_scalar_metric_heatmap(path, tables["trace_summary.csv"], row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title="Trace scalar diagnostics"),
-    )
+    for metric in FEATURE_TRACE_METRICS:
+        add(
+            f"7_feature_trace_{metric}_heatmap_grid.png",
+            lambda path, metric=metric: _save_feature_trace_metric_grid(path, tables["trace_summary.csv"], metric_key=metric, title=f"Feature-trace stability diagnostic: {metric}"),
+        )
 
     add("8_training_curves.png", lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], title="Final train energy curves"))
 
@@ -1520,7 +1481,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures. Figure 7 places energy and stability winner scalar trace diagnostics side by side with a shared color scale.",
+            "See `tables/trace_summary.csv` and the trace figures. Figure 7 focuses on feature-trace stability and emits one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, energy/stability winner columns, architecture by normalization inside each subplot, and one shared color scale per metric.",
             "",
             "## Training And Resource Summary",
             "",

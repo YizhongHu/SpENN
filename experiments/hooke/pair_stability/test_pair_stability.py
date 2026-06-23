@@ -769,6 +769,7 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     (attempt / "energy").mkdir()
     (attempt / "full_model_antisymmetry").mkdir()
     (attempt / "trace_equivariance").mkdir()
+    (attempt / "feature_trace_stability").mkdir()
     train_attempt.mkdir(parents=True)
     (attempt / "status.json").write_text(
         json.dumps(
@@ -845,6 +846,10 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
         [{"record_index": "0", "logabs_abs_error": "0.0"}],
     )
     _write_csv(attempt / "trace_equivariance" / "trace_records.csv", [{"key": "basis/output", "max_abs_error": "0"}])
+    _write_csv(
+        attempt / "feature_trace_stability" / "trace_records.csv",
+        [{"entry_key": "embedding/features", "q95_abs": "0.1", "max_abs": "0.2", "nonfinite_count": "0"}],
+    )
 
     collect_result = final_collect.collect_final_outputs(
         results_root=results_root,
@@ -900,7 +905,9 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "6_symmetry_sign_mismatch_count_heatmap_grid.png").is_file()
     assert (report_dir / "figures" / "6_symmetry_parity_mismatch_count_heatmap_grid.png").is_file()
     assert (report_dir / "figures" / "6_symmetry_finite_fraction_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "7_trace_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "7_feature_trace_rms_q95_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "7_feature_trace_max_abs_heatmap_grid.png").is_file()
+    assert (report_dir / "figures" / "7_feature_trace_nonfinite_count_heatmap_grid.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
@@ -927,39 +934,6 @@ def test_final_report_winner_helpers_split_energy_and_stability_rows() -> None:
     assert [row["id"] for row in final_report._winner_rows(rows, "energy")] == [1]
     assert [row["id"] for row in final_report._winner_rows(rows, "stability")] == [2, 3]
     assert final_report._winner_filename("4", "energy", "plot.png") == "4_energy_winner_plot.png"
-
-
-def test_final_report_scalar_metric_matrix_aggregates_multiple_metrics() -> None:
-    y_labels, x_labels, matrix = final_report._scalar_metric_matrix(
-        [
-            {
-                "basis_class": "raw_envelope",
-                "normalization": "N0",
-                "symmetry_task": "exchange",
-                "logabs_error_max": "2.0",
-                "sign_mismatch_count": "1",
-            },
-            {
-                "basis_class": "raw_envelope",
-                "normalization": "N0",
-                "symmetry_task": "exchange",
-                "logabs_error_max": "4.0",
-                "sign_mismatch_count": "3",
-            },
-            {
-                "basis_class": "raw_envelope",
-                "normalization": "N0",
-                "symmetry_task": "exchange",
-                "finite_fraction": "1.0",
-            },
-        ],
-        row_keys=("basis_class", "normalization", "symmetry_task"),
-        metric_keys=("logabs_error_max", "sign_mismatch_count", "finite_fraction"),
-    )
-
-    assert y_labels == ["raw_envelope/N0/exchange"]
-    assert x_labels == ["logabs_error_max", "sign_mismatch_count", "finite_fraction"]
-    assert matrix == [[3.0, 2.0, 1.0]]
 
 
 def test_final_report_symmetry_metric_grid_splits_winners_and_symmetries(tmp_path: Path) -> None:
@@ -989,6 +963,48 @@ def test_final_report_symmetry_metric_grid_splits_winners_and_symmetries(tmp_pat
     ]
 
     final_report._save_symmetry_metric_grid(path, rows, metric_key="logabs_error_max", title="symmetry grid")
+
+    assert path.is_file()
+
+
+def test_final_report_feature_trace_metric_grid_filters_trace_kind_and_splits_layers(tmp_path: Path) -> None:
+    path = tmp_path / "feature_trace_grid.png"
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "embedding",
+            "rms_q95": "1.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "stability",
+            "trace_kind": "feature_trace_stability",
+            "layer": "embedding",
+            "rms_q95": "2.0",
+        },
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N0",
+            "winner_kind": "energy",
+            "trace_kind": "trace_equivariance",
+            "layer": "embedding",
+            "rms_q95": "99.0",
+        },
+        {
+            "basis_class": "hermite_o2_envelope",
+            "normalization": "N1",
+            "winner_kind": "energy",
+            "trace_kind": "feature_trace_stability",
+            "layer": "layers.0",
+            "rms_q95": "3.0",
+        },
+    ]
+
+    final_report._save_feature_trace_metric_grid(path, rows, metric_key="rms_q95", title="feature trace")
 
     assert path.is_file()
 
