@@ -593,7 +593,17 @@ def _save_tail_winner_grid(
     plt.close(fig)
 
 
-def _save_line_plot(path: Path, rows: Sequence[dict[str, Any]], *, x_key: str, y_key: str, group_keys: Sequence[str], title: str) -> None:
+def _save_line_plot(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+    group_keys: Sequence[str],
+    title: str,
+    legend: str = "auto",
+    legend_title: str | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
     for row in rows:
@@ -614,10 +624,21 @@ def _save_line_plot(path: Path, rows: Sequence[dict[str, Any]], *, x_key: str, y
     ax.set_xlabel(x_key)
     ax.set_ylabel(y_key)
     ax.set_title(title)
-    if len(groups) <= 12:
+    if legend == "outside":
+        ncol = max(1, math.ceil(len(groups) / 24))
+        ax.legend(
+            fontsize=6,
+            title=legend_title,
+            title_fontsize=7,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+            ncol=ncol,
+        )
+    elif legend == "auto" and len(groups) <= 12:
         ax.legend(fontsize=7, loc="best")
     fig.tight_layout()
-    fig.savefig(path, dpi=160)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -660,12 +681,12 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("3C_tail_outlier_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
         ("4_stratified_geometry_aggregate_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error")),
         ("4_stratified_geometry_aggregate_log_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="signed_log")),
-        ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians")),
-        ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin")),
-        ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin")),
+        ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians", legend="outside", legend_title="architecture / normalization / winner / CoM bin")),
+        ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin", legend="outside", legend_title="architecture / normalization / winner / CoM bin")),
+        ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin", legend="outside", legend_title="architecture / normalization / winner / r12 bin")),
         ("6_symmetry_failure_counts.png", lambda path: _save_bar(path, tables["symmetry_summary.csv"], label_key="symmetry_task", value_key="sign_mismatch_count", title="Symmetry sign mismatch counts")),
         ("7_trace_failure_counts.png", lambda path: _save_bar(path, tables["trace_summary.csv"], label_key="trace_kind", value_key="comparison_error_count", title="Trace comparison error counts")),
-        ("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves")),
+        ("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner")),
     ]
     for filename, writer in specs:
         writer(figures_dir / filename)
@@ -770,7 +791,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Tail Diagnostics",
             "",
-            "Tail tables preserve path columns. Figures 3A/3B split energy and stability winners into subplot grids; each subplot draws CoM lines with seed-variance error bars for local energy and logabs. Exact log-amplitude references are included when collect inputs provide them.",
+            "Tail tables preserve path columns. Figures 3A/3B split energy and stability winners into subplot grids; each subplot draws CoM lines with seed-variance error bars for local energy and logabs, with a shared CoM legend. Exact log-amplitude references are included when collect inputs provide them.",
             "",
             "## Stratified Geometry Diagnostics",
             "",
@@ -778,7 +799,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Hooke-Orbital Diagnostics",
             "",
-            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins.",
+            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots place full group legends outside the plotting area.",
             "",
             "## Symmetry Diagnostics",
             "",
@@ -790,7 +811,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Training And Resource Summary",
             "",
-            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking.",
+            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 places the architecture/normalization/winner legend outside the plotting area.",
             "",
             "## Caveats",
             "",
