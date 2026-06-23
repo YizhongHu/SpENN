@@ -51,6 +51,27 @@ FEATURE_TRACE_EXCLUDED_LAYERS = {
     "layers.0.update_norm",
     "update_norm",
 }
+ENERGY_COMPONENT_QUANTITIES = (
+    ("kinetic", "kinetic_mean"),
+    ("harmonic_trap", "harmonic_trap_mean"),
+    ("electron_electron", "electron_electron_mean"),
+    ("total_energy", "energy_mean"),
+    ("virial_residual", "virial_residual"),
+    ("virial_relative_residual", "virial_relative_residual"),
+)
+ENERGY_COMPONENT_COLUMNS = (
+    "winner_id",
+    "basis_class",
+    "normalization",
+    "winner_kind",
+    "quantity",
+    "n",
+    "mean",
+    "median",
+    "min",
+    "max",
+)
+VIRIAL_RESIDUAL_STATS = ("mean", "median", "min", "max")
 
 COMPACT_TABLES = (
     "run_index.csv",
@@ -81,6 +102,15 @@ def _write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
     columns = sorted({key for row in rows for key in row})
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _write_csv_columns(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(columns), extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
@@ -128,6 +158,112 @@ def _format_number(value: float | None) -> str:
         return ""
     return f"{value:.12g}"
 
+
+def _finite_values(values: Sequence[Any]) -> list[float]:
+    return [value for value in (_as_float(item) for item in values) if value is not None]
+
+
+def _derive_virial_metrics(row: dict[str, Any]) -> dict[str, float | None]:
+    kinetic = _as_float(row.get("kinetic_mean"))
+    harmonic = _as_float(row.get("harmonic_trap_mean"))
+    electron_electron = _as_float(row.get("electron_electron_mean"))
+    if kinetic is None or harmonic is None or electron_electron is None:
+        return {"virial_residual": None, "virial_relative_residual": None}
+    residual = 2.0 * kinetic - 2.0 * harmonic + electron_electron
+    denominator = abs(2.0 * kinetic) + abs(2.0 * harmonic) + abs(electron_electron)
+    relative = abs(residual) / denominator if denominator else 0.0
+    return {"virial_residual": residual, "virial_relative_residual": relative}
+
+
+def _energy_component_value(row: dict[str, Any], key: str) -> float | None:
+    value = _as_float(row.get(key))
+    if value is not None:
+        return value
+    if key in {"virial_residual", "virial_relative_residual"}:
+        return _derive_virial_metrics(row)[key]
+    return None
+
+
+def _winner_id(basis_class: str, normalization: str, winner_kind: str) -> str:
+    return _safe_label(f"{basis_class}_{normalization}_{winner_kind}")
+
+
+def _aggregate_component_row(
+    *,
+    basis_class: str,
+    normalization: str,
+    winner_kind: str,
+    quantity: str,
+    values: Sequence[float],
+) -> dict[str, Any]:
+    return {
+        "winner_id": _winner_id(basis_class, normalization, winner_kind),
+        "basis_class": basis_class,
+        "normalization": normalization,
+        "winner_kind": winner_kind,
+        "quantity": quantity,
+        "n": len(values),
+        "mean": _format_number(_mean(values)),
+        "median": _format_number(_median(values)),
+        "min": _format_number(min(values) if values else None),
+        "max": _format_number(max(values) if values else None),
+    }
+
+
+def _energy_component_rows_for_group(
+    rows: Sequence[dict[str, Any]],
+    *,
+    basis_class: str,
+    normalization: str,
+    winner_kind: str,
+) -> list[dict[str, Any]]:
+    output = []
+    for quantity, key in ENERGY_COMPONENT_QUANTITIES:
+        values = _finite_values(_energy_component_value(row, key) for row in rows)
+        output.append(
+            _aggregate_component_row(
+                basis_class=basis_class,
+                normalization=normalization,
+                winner_kind=winner_kind,
+                quantity=quantity,
+                values=values,
+            )
+        )
+    return output
+
+
+def _energy_component_tables_by_winner(rows: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Return pair_validation-style energy-component tables for each winner family."""
+
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        basis_class = _architecture_label(row)
+        normalization = str(row.get("normalization", "")) or "all"
+        winner_kind = "energy" if str(row.get("winner_kind", "")).strip() == "energy" else "stability"
+        groups[(basis_class, normalization, winner_kind)].append(row)
+
+    tables = {}
+    for (basis_class, normalization, winner_kind), group_rows in sorted(groups.items()):
+        tables[_winner_id(basis_class, normalization, winner_kind)] = _energy_component_rows_for_group(
+            group_rows,
+            basis_class=basis_class,
+            normalization=normalization,
+            winner_kind=winner_kind,
+        )
+    return tables
+
+
+def _combined_energy_component_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return combined energy-component rows in stable winner-id order."""
+
+    by_winner = _energy_component_tables_by_winner(rows)
+    return [row for winner_id in sorted(by_winner) for row in by_winner[winner_id]]
+
+
+def _virial_residual_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return virial-residual summary rows for heatmaps."""
+
+    return [row for row in rows if row.get("quantity") == "virial_residual"]
 
 def _resolve_collect_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
@@ -1503,11 +1639,27 @@ def _save_feature_trace_metric_grid(
     plt.close(fig)
 
 
+def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *, stat: str) -> None:
+    """Save one signed-log virial-residual winner-pair heatmap."""
+
+    _save_winner_pair_heatmap(
+        path,
+        rows,
+        row_key="basis_class",
+        col_key="normalization",
+        value_key=stat,
+        title=f"Virial residual {stat}",
+        transform="signed_log",
+        width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE,
+    )
+
 def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     written = []
     architecture_rows = tables["architecture_summary.csv"]
     energy = tables["energy_by_run.csv"]
+    energy_components = _combined_energy_component_rows(energy)
+    virial_residual = _virial_residual_rows(energy_components)
     histograms = tables["local_energy_histograms.csv"]
     stratified = tables["stratified_summary.csv"]
 
@@ -1612,6 +1764,12 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind="stability", value_mode="abs_energy_error", y_label="abs energy error |E - 2|", title="Final-train absolute energy error: stability winners", semilogy=True),
     )
 
+    for stat_index, stat in enumerate(VIRIAL_RESIDUAL_STATS):
+        add(
+            f"{_figure_label('9', stat_index)}_virial_residual_{stat}_log_heatmap.png",
+            lambda path, stat=stat: _save_virial_residual_heatmap(path, virial_residual, stat=stat),
+        )
+
     strata = sorted({str(row.get("stratum", "")) for row in stratified if row.get("stratum", "") not in {"", "all"}})
     for stratum_index, stratum in enumerate(strata, start=1):
         label = _figure_label("4", stratum_index)
@@ -1637,6 +1795,23 @@ def _copy_tables(collect_dir: Path, tables_dir: Path, tables: dict[str, list[dic
     return counts
 
 
+def _write_energy_component_tables(tables_dir: Path, energy_rows: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """Write combined and per-winner virial tables from final MCMC energy rows."""
+
+    by_winner = _energy_component_tables_by_winner(energy_rows)
+    combined = [row for winner_id in sorted(by_winner) for row in by_winner[winner_id]]
+    counts = {"energy_components_and_virial_by_winner.csv": len(combined)}
+    _write_csv_columns(
+        tables_dir / "energy_components_and_virial_by_winner.csv",
+        combined,
+        ENERGY_COMPONENT_COLUMNS,
+    )
+    for winner_id, rows in by_winner.items():
+        relative_path = f"energy_components_and_virial/{winner_id}.csv"
+        _write_csv_columns(tables_dir / relative_path, rows, ENERGY_COMPONENT_COLUMNS)
+        counts[relative_path] = len(rows)
+    return counts
+
 def build_report(
     *,
     results_root: str | Path,
@@ -1653,6 +1828,7 @@ def build_report(
     figures_dir = report_dir / "figures"
     collect_dir, tables = _load_collect_tables(results_root, final_collect_attempt_id)
     table_counts = _copy_tables(collect_dir, tables_dir, tables)
+    table_counts.update(_write_energy_component_tables(tables_dir, tables["energy_by_run.csv"]))
     figures = _write_figures(figures_dir, tables)
 
     report = {
@@ -1708,6 +1884,8 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps place energy and stability winners side by side with a shared color scale. Figure 1B separates energy and stability winners into adjacent panels while keeping architecture color and normalization marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
             "",
+            "Energy component and virial tables are written to `tables/energy_components_and_virial_by_winner.csv` and to one pair_validation-style table per winner family under `tables/energy_components_and_virial/`. The virial residual is `2 * kinetic - 2 * harmonic_trap + electron_electron`; the relative residual divides its absolute value by the absolute component scale.",
+            "",
             "## Cusp Diagnostics",
             "",
             "Cusp tables preserve center-of-mass and direction columns when present. Figures 2A/2B/2C emit separate energy/stability grids for sampled local-energy, log-amplitude, and finite-fraction profiles against `r12`; directions and seeds are pooled so each subplot has one line per CoM and variance error bars aggregate all compact direction/seed records. Figure 2D emits separate energy/stability grids for `d_logabs_dr_median` against `r12`, with normalization rows, architecture columns, solid CoM model lines, and dashed target derivative references.",
@@ -1735,6 +1913,10 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "## Training And Resource Summary",
             "",
             "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figures 8A and 8C show one smoothed training-energy curve per final-training run for energy and stability winners; Figures 8B and 8D show the corresponding semilogy absolute energy error curves with one shared vertical axis per grid.",
+            "",
+            "## Virial Diagnostics",
+            "",
+            "See `tables/energy_components_and_virial_by_winner.csv`. Figures 9A, 9B, 9C, and 9D show virial-residual mean, median, minimum, and maximum. Heatmaps place energy and stability winners side by side with signed-log color scales; cell labels remain on the real signed scale.",
             "",
             "## Caveats",
             "",

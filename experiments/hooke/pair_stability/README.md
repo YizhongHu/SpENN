@@ -431,6 +431,9 @@ uv run python experiments/hooke/pair_stability/final_report.py
 `final_report.py` reads only `08_final_collect` compact tables. It writes
 `09_final_report/{attempt_id}/report.md`, `tables/*.csv`, and `figures/*.png`;
 it does not parse raw final-eval CSVs, inspect checkpoints, or rerun models.
+It also derives pair_validation-style energy-component and virial tables from
+`energy_by_run.csv`: one combined `tables/energy_components_and_virial_by_winner.csv`
+plus one per winner family under `tables/energy_components_and_virial/`.
 Runtime/resource summaries are reported separately from model-quality ranking.
 
 ## Staged results layout

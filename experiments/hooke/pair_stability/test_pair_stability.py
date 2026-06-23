@@ -840,6 +840,9 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
                             "local_energy_mean": 2.5,
                             "local_energy_stderr": 0.1,
                             "local_energy_variance": 0.2,
+                            "term/kinetic_mean": 0.7,
+                            "term/harmonic_trap_mean": 0.8,
+                            "term/electron_electron_mean": 0.5,
                         },
                     }
                 ),
@@ -900,6 +903,10 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert run_index[0]["train_wall_time_sec"] == "5"
     energy_by_run = _read_csv(collect_dir / "energy_by_run.csv")
     assert energy_by_run[0]["energy_error"] == "0.5"
+    assert energy_by_run[0]["kinetic_mean"] == "0.7"
+    assert energy_by_run[0]["harmonic_trap_mean"] == "0.8"
+    assert energy_by_run[0]["electron_electron_mean"] == "0.5"
+    assert float(energy_by_run[0]["virial_residual"]) == pytest.approx(0.3)
     histograms = _read_csv(collect_dir / "local_energy_histograms.csv")
     assert histograms[0]["basis_class"] == job["basis_envelope"]
     cusp = _read_csv(collect_dir / "cusp_profile_summary.csv")
@@ -913,6 +920,18 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert report_dir == results_root / "09_final_report" / "R1"
     copied_energy = _read_csv(report_dir / "tables" / "energy_by_run.csv")
     assert copied_energy[0]["energy_error"] == "0.5"
+    virial = _read_csv(report_dir / "tables" / "energy_components_and_virial_by_winner.csv")
+    assert [row["quantity"] for row in virial] == [
+        "kinetic",
+        "harmonic_trap",
+        "electron_electron",
+        "total_energy",
+        "virial_residual",
+        "virial_relative_residual",
+    ]
+    assert virial[0]["winner_id"] == "hermite_o3_envelope_N0_energy"
+    assert float(virial[4]["mean"]) == pytest.approx(0.3)
+    assert (report_dir / "tables" / "energy_components_and_virial" / "hermite_o3_envelope_N0_energy.csv").is_file()
     assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
     assert (report_dir / "figures" / "1A_log_scale_energy_error_heatmap.png").is_file()
     assert (report_dir / "figures" / "1C_energy_winner_local_energy_distribution_grid.png").is_file()
@@ -946,6 +965,10 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "8B_energy_winner_abs_energy_error_semilogy.png").is_file()
     assert (report_dir / "figures" / "8C_stability_winner_training_energy.png").is_file()
     assert (report_dir / "figures" / "8D_stability_winner_abs_energy_error_semilogy.png").is_file()
+    assert (report_dir / "figures" / "9A_virial_residual_mean_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "9B_virial_residual_median_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "9C_virial_residual_min_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "9D_virial_residual_max_log_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
@@ -1337,6 +1360,66 @@ def test_final_report_energy_variance_scatter_splits_winner_panels(tmp_path: Pat
     final_report._save_energy_variance_scatter(path, rows, title="energy variance")
 
     assert path.is_file()
+
+
+def test_final_report_energy_component_tables_split_winner_families() -> None:
+    tables = final_report._energy_component_tables_by_winner(
+        [
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "energy_mean": "2.0",
+                "kinetic_mean": "0.7",
+                "harmonic_trap_mean": "0.8",
+                "electron_electron_mean": "0.5",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "feature_trace",
+                "energy_mean": "2.2",
+                "kinetic_mean": "1.0",
+                "harmonic_trap_mean": "0.9",
+                "electron_electron_mean": "0.1",
+            },
+        ]
+    )
+
+    assert sorted(tables) == ["raw_envelope_N0_energy", "raw_envelope_N0_stability"]
+    energy_by_quantity = {row["quantity"]: row for row in tables["raw_envelope_N0_energy"]}
+    stability_by_quantity = {row["quantity"]: row for row in tables["raw_envelope_N0_stability"]}
+    assert energy_by_quantity["virial_residual"]["mean"] == "0.3"
+    assert float(energy_by_quantity["virial_relative_residual"]["mean"]) == pytest.approx(0.3 / 3.5)
+    assert stability_by_quantity["virial_residual"]["mean"] == "0.3"
+
+
+def test_final_report_virial_residual_heatmap_uses_signed_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_save(path: Path, rows: list[dict[str, str]], **kwargs: object) -> None:
+        calls.append((path, rows, kwargs))
+        path.write_text("figure", encoding="utf-8")
+
+    monkeypatch.setattr(final_report, "_save_winner_pair_heatmap", fake_save)
+    rows = [
+        {
+            "basis_class": "raw_envelope",
+            "normalization": "N2",
+            "winner_kind": "energy",
+            "quantity": "virial_residual",
+            "mean": "-0.01",
+        }
+    ]
+
+    path = tmp_path / "virial.png"
+    final_report._save_virial_residual_heatmap(path, rows, stat="mean")
+
+    assert path.read_text(encoding="utf-8") == "figure"
+    assert calls[0][2]["value_key"] == "mean"
+    assert calls[0][2]["transform"] == "signed_log"
+    assert calls[0][2]["row_key"] == "basis_class"
+    assert calls[0][2]["col_key"] == "normalization"
 
 
 def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> None:
