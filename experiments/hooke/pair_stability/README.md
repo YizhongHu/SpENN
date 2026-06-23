@@ -374,8 +374,22 @@ uv run python experiments/hooke/pair_stability/final_report.py
 ```
 
 `final_report.py` reads only `07_final_eval` artifacts. It writes
-`08_final_report/{attempt_id}/report.md`, `summary_tables/*.csv`, and
-`plot_tables/*.csv`; it does not rerun models.
+`08_final_report/{attempt_id}/report.md`, `summary_tables/*.csv`,
+`plot_tables/*.csv`, and `figures/*.png`; it does not rerun models or inspect
+checkpoints. The canonical summary outputs are `final_champions.csv`,
+`final_metrics_by_run.csv`, `final_metrics_by_family.csv`,
+`failure_modes.csv`, and `resource_summary.csv`. Runtime/resource summaries are
+reported separately from model-quality ranking.
+
+The canonical plot tables are `energy_samples.csv`, `cusp_profiles.csv`,
+`tail_profiles.csv`, `stratified_geometry.csv`, `hooke_orbital.csv`,
+`symmetry_diagnostics.csv`, `trace_diagnostics.csv`, and
+`training_curves.csv`. Figures include signed real-scale and signed log-scale
+energy-error heatmaps, energy-vs-variance scatter, CoM/path-preserving
+cusp/tail views, per-stratum stratified-geometry heatmaps, Hooke-orbital
+local-energy plots grouped by CoM-radius and `r12` bins, symmetry/trace
+summaries, and a training-curves placeholder when `07_final_eval` does not
+contain train curves.
 
 ## Staged results layout
 

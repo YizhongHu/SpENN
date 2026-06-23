@@ -762,15 +762,65 @@ def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None
     results_root, job = _write_final_grid(tmp_path)
     attempt = results_root / "07_final_eval" / job["final_run_id"] / "FE1"
     (attempt / "cusp").mkdir(parents=True)
-    (attempt / "status.json").write_text(json.dumps({"status": "completed"}))
+    (attempt / "tail").mkdir()
+    (attempt / "stratified_geometry").mkdir()
+    (attempt / "energy").mkdir()
+    (attempt / "full_model_antisymmetry").mkdir()
+    (attempt / "trace_equivariance").mkdir()
+    (attempt / "status.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "start_time": "2026-06-22T12:00:00-04:00",
+                "end_time": "2026-06-22T12:00:03-04:00",
+            }
+        )
+    )
     (attempt / "source_final_job.json").write_text(json.dumps(job))
+    (attempt / "source_final_train_attempt.json").write_text(json.dumps({"final_train_attempt_id": "FT1"}))
     (attempt / "evaluated_checkpoint.json").write_text(
         json.dumps({"resolved_checkpoint_dir": "checkpoints/step_000002"})
     )
     (attempt / "metrics.jsonl").write_text(
-        json.dumps({"namespace": "eval/energy", "metrics": {"energy": 2.0}}) + "\n"
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "namespace": "eval/energy",
+                        "metrics": {
+                            "local_energy_mean": 2.5,
+                            "local_energy_stderr": 0.1,
+                            "local_energy_variance": 0.2,
+                        },
+                    }
+                ),
+                json.dumps({"namespace": "eval/cusp", "metrics": {"cusp_even_slope_abs_error": 0.01}}),
+                json.dumps({"namespace": "eval/tail", "metrics": {"local_energy_pathology_count": 1}}),
+                json.dumps(
+                    {
+                        "namespace": "eval/full_model_antisymmetry",
+                        "metrics": {"logabs_max_abs_error": 0.02, "failure_count": 0},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "namespace": "eval/trace_equivariance",
+                        "metrics": {"failure_count": 0, "comparison_error_count": 0},
+                    }
+                ),
+            ]
+        )
+        + "\n"
     )
     _write_csv(attempt / "cusp" / "cusp_profiles.csv", [{"r12": "0.1", "local_energy": "2.0"}])
+    _write_csv(attempt / "tail" / "tail_profiles.csv", [{"radius": "1.0", "local_energy": "3.0"}])
+    _write_csv(attempt / "stratified_geometry" / "stratified_metrics.csv", [{"stratum": "bulk", "local_energy": "2.1"}])
+    _write_csv(attempt / "energy" / "mcmc_energy_samples.csv", [{"sample_index": "0", "local_energy": "2.4"}])
+    _write_csv(
+        attempt / "full_model_antisymmetry" / "transform_records.csv",
+        [{"record_index": "0", "logabs_abs_error": "0.0"}],
+    )
+    _write_csv(attempt / "trace_equivariance" / "trace_records.csv", [{"key": "basis/output", "max_abs_error": "0"}])
 
     result = final_report.build_report(
         results_root=results_root,
@@ -780,12 +830,25 @@ def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None
 
     report_dir = Path(result["attempt_dir"])
     assert report_dir == results_root / "08_final_report" / "R1"
-    champion_summary = _read_csv(report_dir / "summary_tables" / "champion_summary.csv")
-    assert champion_summary[0]["final_run_id"] == job["final_run_id"]
-    metrics = _read_csv(report_dir / "summary_tables" / "metric_summary.csv")
+    final_champions = _read_csv(report_dir / "summary_tables" / "final_champions.csv")
+    assert final_champions[0]["final_run_id"] == job["final_run_id"]
+    assert final_champions[0]["energy_error"] == "0.5"
+    assert final_champions[0]["eval_wall_time_sec"] == "3"
+    family = _read_csv(report_dir / "summary_tables" / "final_metrics_by_family.csv")
+    assert family[0]["tail_outlier_count_total"] == "1"
+    resources = _read_csv(report_dir / "summary_tables" / "resource_summary.csv")
+    assert resources[0]["n_plot_record_rows"] == "6"
+    metrics = _read_csv(report_dir / "summary_tables" / "final_metrics_by_run.csv")
     assert metrics[0]["namespace"] == "eval/energy"
     cusp = _read_csv(report_dir / "plot_tables" / "cusp_profiles.csv")
     assert cusp[0]["final_run_id"] == job["final_run_id"]
+    energy_samples = _read_csv(report_dir / "plot_tables" / "energy_samples.csv")
+    assert energy_samples[0]["energy_error"] == "0.3999999999999999"
+    stratified = _read_csv(report_dir / "plot_tables" / "stratified_geometry.csv")
+    assert stratified[0]["r12_bin"] == ""
+    assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
