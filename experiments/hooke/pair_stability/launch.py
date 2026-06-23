@@ -12,6 +12,7 @@ import argparse
 import json
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
@@ -70,6 +71,31 @@ def resolve_grid_attempt_id(results_root: str | Path, grid_attempt_id: str | Non
     if not ids:
         raise FileNotFoundError(f"no grid attempts under {grid_stage}")
     return ids[-1]
+
+
+def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60) -> None:
+    """Block until ``job_id`` no longer appears in ``squeue``."""
+
+    if poll_seconds < 1:
+        raise ValueError("poll_seconds must be >= 1")
+    job_id = str(job_id).strip()
+    if not job_id:
+        return
+    print(f"[pair_stability] waiting for Slurm job {job_id}")
+    while True:
+        result = subprocess.run(
+            ["squeue", "-h", "-j", job_id],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"squeue failed while waiting for {job_id}: {message}")
+        if not result.stdout.strip():
+            print(f"[pair_stability] Slurm job {job_id} is no longer queued")
+            return
+        time.sleep(poll_seconds)
 
 
 def load_grid_manifest(results_root: str | Path, grid_attempt_id: str) -> dict[str, Any]:
@@ -433,15 +459,20 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = Fa
         if smoke
         else (DEFAULT_CUDA_PARTITION if profile == "cuda" else DEFAULT_CPU_PARTITION)
     )
+    array_parallelism = args.slurm_array_parallelism
+    if array_parallelism is None:
+        array_parallelism = SMOKE_ARRAY_PARALLELISM if smoke else DEFAULT_ARRAY_PARALLELISM
+    if array_parallelism < 0:
+        raise ValueError("slurm_array_parallelism must be >= 0")
     slurm = {
         "slurm_partition": partition,
         "timeout_min": args.slurm_timeout_min or (SMOKE_TIMEOUT_MIN if smoke else DEFAULT_TIMEOUT_MIN),
         "mem_gb": args.slurm_mem_gb or (SMOKE_MEM_GB if smoke else DEFAULT_MEM_GB),
         "cpus_per_task": args.slurm_cpus or (SMOKE_CPUS if smoke else DEFAULT_CPUS),
         "tasks_per_node": 1,
-        "slurm_array_parallelism": args.slurm_array_parallelism
-        or (SMOKE_ARRAY_PARALLELISM if smoke else DEFAULT_ARRAY_PARALLELISM),
     }
+    if array_parallelism > 0:
+        slurm["slurm_array_parallelism"] = array_parallelism
     if profile == "cuda":
         slurm["gpus_per_node"] = args.slurm_gpus or 1
     return slurm
@@ -469,6 +500,7 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         help="Run with the CUDA uv environment and runtime.device=cuda.",
     )
     parser.add_argument("--repo-root", default=None, help="Repo root for command working directory.")
+    parser.add_argument("--wait-job", default=None, help="Wait for this Slurm job id to leave the queue before planning/submitting.")
     parser.add_argument(
         "--slurm-partition",
         default=None,
@@ -496,7 +528,8 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         default=None,
         help=(
             "Maximum number of Submitit array tasks allowed to run at once "
-            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}, or {SMOKE_ARRAY_PARALLELISM} with --smoke)."
+            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}, or {SMOKE_ARRAY_PARALLELISM} with --smoke; "
+            "set 0 to omit the cap)."
         ),
     )
     parser.add_argument(

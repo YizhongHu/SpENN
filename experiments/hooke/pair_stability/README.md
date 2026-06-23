@@ -154,6 +154,9 @@ with `--chunk-size 128` call for 5 chunks; instead of `128 + 128 + 128 + 128 +
 by default: each eval row keeps its own durable run artifact and
 `launcher_status.json`, while chunk status is recorded under
 `results/<stage>/chunk_status/<attempt_id>/`.
+Use `--slurm-array-parallelism 0` to omit the Slurm array concurrency cap.
+Use `--wait-job <job_id>` on `validate.py` or `final_eval.py` to wait until an
+upstream Slurm job leaves the queue before readiness checks and submission.
 
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and

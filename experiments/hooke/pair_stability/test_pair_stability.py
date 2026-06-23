@@ -412,6 +412,12 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     assert smoke_cuda["timeout_min"] == 15
     assert smoke_cuda["gpus_per_node"] == 1
     assert smoke_cuda["slurm_array_parallelism"] == 2
+    uncapped_args = train.parse_args(["--backend", "submitit", "--slurm-array-parallelism", "0"])
+    uncapped_slurm = launch.slurm_parameters(uncapped_args, profile="cpu")
+    assert "slurm_array_parallelism" not in uncapped_slurm
+    invalid_args = train.parse_args(["--backend", "submitit", "--slurm-array-parallelism", "-1"])
+    with pytest.raises(ValueError, match="slurm_array_parallelism"):
+        launch.slurm_parameters(invalid_args, profile="cpu")
 
     submitted = launch.environment_shell_command(
         ["python", "-u", "run.py", "--config", "cfg.yaml", "x=y"],
@@ -436,6 +442,24 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     assert captured_parameters[0]["slurm_setup"][0].startswith("export PYTHONPATH=")
     assert str(STUDY_DIR) in captured_parameters[0]["slurm_setup"][0]
     assert str(ROOT) in captured_parameters[0]["slurm_setup"][0]
+
+
+def test_wait_for_slurm_job_polls_until_squeue_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    sleeps = []
+    outputs = ["24211558 RUNNING\n", ""]
+
+    def fake_run(command: list[str], **_kwargs: object) -> types.SimpleNamespace:
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout=outputs.pop(0), stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    launch.wait_for_slurm_job("24211558", poll_seconds=7)
+
+    assert calls == [["squeue", "-h", "-j", "24211558"], ["squeue", "-h", "-j", "24211558"]]
+    assert sleeps == [7]
 
 
 def test_submitit_chunks_commands_evenly_and_expands_job_ids(

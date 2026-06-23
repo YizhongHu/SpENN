@@ -345,6 +345,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
     results_root = launch.repo_path(args.results_root, repo_root)
+    if args.wait_job:
+        launch.wait_for_slurm_job(args.wait_job)
     final_grid_attempt_id = _resolve_final_grid_attempt_id(
         results_root,
         args.final_grid_attempt_id,

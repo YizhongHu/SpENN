@@ -305,6 +305,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
     results_root = launch.repo_path(args.results_root, repo_root)
+    if args.wait_job:
+        launch.wait_for_slurm_job(args.wait_job)
     grid_attempt_id = launch.resolve_grid_attempt_id(results_root, args.grid_attempt_id)
     manifest = launch.load_grid_manifest(results_root, grid_attempt_id)
     validation_config = _validation_config_from_grid(
