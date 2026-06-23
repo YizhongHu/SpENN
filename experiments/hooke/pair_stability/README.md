@@ -116,8 +116,11 @@ entrypoints:
   independent final train replicates into `06_final_train`.
 - `final_eval.py` consumes `05_final_grid` plus completed `06_final_train`
   checkpoints and launches report-grade final evaluation into `07_final_eval`.
-- `final_report.py` consumes only `07_final_eval` artifacts and writes
-  `08_final_report` tables/report text.
+- `final_collect.py` consumes `05_final_grid`, `06_final_train`, and
+  `07_final_eval` artifacts and writes compact summaries into
+  `08_final_collect`.
+- `final_report.py` consumes only `08_final_collect` compact tables and writes
+  `09_final_report` report text, copied tables, and figures.
 - `launch.py` is shared by stage launchers; it owns local/Submitit execution,
   uv sync/activation, CPU/CUDA profile defaults, Slurm resources, arrays, and
   finite chunk workers.
@@ -367,29 +370,32 @@ lighter validation sweep, each final-eval row is already a substantial
 report-grade evaluation bundle, so large chunks can turn a few array tasks into
 long serial workers and make timeout/debugging behavior worse.
 
-Build report tables after final evaluation:
+Collect compact final summaries after final evaluation:
+
+```bash
+uv run python experiments/hooke/pair_stability/final_collect.py
+```
+
+`final_collect.py` is data-oriented: it reads the large raw final train/eval
+artifacts and writes compact reusable tables in `08_final_collect/{attempt_id}/`
+(`run_index.csv`, `architecture_summary.csv`, `energy_by_run.csv`,
+`local_energy_histograms.csv`, `cusp_profile_summary.csv`,
+`tail_profile_summary.csv`, `stratified_summary.csv`,
+`hooke_orbital_summary.csv`, `symmetry_summary.csv`, `trace_summary.csv`,
+`training_curve_summary.csv`, and `resource_summary.csv`). It keeps
+`basis_class`, `normalization`, `winner_kind`, `seed_index`, and
+`final_run_id` explicit; energy and stability winners are not merged.
+
+Render the final report from compact summaries:
 
 ```bash
 uv run python experiments/hooke/pair_stability/final_report.py
 ```
 
-`final_report.py` reads only `07_final_eval` artifacts. It writes
-`08_final_report/{attempt_id}/report.md`, `summary_tables/*.csv`,
-`plot_tables/*.csv`, and `figures/*.png`; it does not rerun models or inspect
-checkpoints. The canonical summary outputs are `final_champions.csv`,
-`final_metrics_by_run.csv`, `final_metrics_by_family.csv`,
-`failure_modes.csv`, and `resource_summary.csv`. Runtime/resource summaries are
-reported separately from model-quality ranking.
-
-The canonical plot tables are `energy_samples.csv`, `cusp_profiles.csv`,
-`tail_profiles.csv`, `stratified_geometry.csv`, `hooke_orbital.csv`,
-`symmetry_diagnostics.csv`, `trace_diagnostics.csv`, and
-`training_curves.csv`. Figures include signed real-scale and signed log-scale
-energy-error heatmaps, energy-vs-variance scatter, CoM/path-preserving
-cusp/tail views, per-stratum stratified-geometry heatmaps, Hooke-orbital
-local-energy plots grouped by CoM-radius and `r12` bins, symmetry/trace
-summaries, and a training-curves placeholder when `07_final_eval` does not
-contain train curves.
+`final_report.py` reads only `08_final_collect` compact tables. It writes
+`09_final_report/{attempt_id}/report.md`, `tables/*.csv`, and `figures/*.png`;
+it does not parse raw final-eval CSVs, inspect checkpoints, or rerun models.
+Runtime/resource summaries are reported separately from model-quality ranking.
 
 ## Staged results layout
 
@@ -403,7 +409,8 @@ results/
   05_final_grid/  consumes 04_select champions         (final replicate rows)
   06_final_train/ consumes 05_final_grid rows          (final train attempts)
   07_final_eval/  consumes 05_final_grid + 06_final_train (final evaluation)
-  08_final_report/consumes 07_final_eval artifacts      (report tables/text)
+  08_final_collect/ consumes 05_final_grid + 06_final_train + 07_final_eval (compact summaries)
+  09_final_report/  consumes 08_final_collect           (report tables/figures/text)
 ```
 
 Artifact inheritance chain (each stage records exactly which earlier artifact it
@@ -418,7 +425,8 @@ consumed; provenance uses explicit attempt ids, never `latest`):
                        -> 05_final_grid/{attempt_id}/source_selection_attempt.json
                             -> 06_final_train/{final_run_id}/{attempt_id}/source_final_job.json
                                  -> 07_final_eval/{final_run_id}/{attempt_id}/evaluated_checkpoint.json
-                                      -> 08_final_report/{attempt_id}/
+                                      -> 08_final_collect/{attempt_id}/
+                                           -> 09_final_report/{attempt_id}/
 ```
 
 Every directory under a stage (or under a stage's run id) is an attempt, so
@@ -457,7 +465,8 @@ results/
       source_final_grid_attempt.json, source_final_train_attempt.json
       source_final_job.json, source_champion.json, evaluated_checkpoint.json
       command.txt, submission.json, diagnostics/, metrics.*, record CSVs
-  08_final_report/{attempt_id}/      # report.md, summary_tables/, plot_tables/, figures/
+  08_final_collect/{attempt_id}/     # compact CSV summaries, manifest.yaml
+  09_final_report/{attempt_id}/      # report.md, tables/, figures/
 ```
 
 ### Manifest
@@ -501,7 +510,7 @@ is selected.
 
 The study scripts (`plan.py`, `train.py`, `validate.py`, `collect.py`,
 `select_champions.py`, `final_plan.py`, `final_train.py`, `final_eval.py`,
-`final_report.py`) share their stage-layout vocabulary, attempt-id/timezone
+`final_collect.py`, `final_report.py`) share their stage-layout vocabulary, attempt-id/timezone
 helpers, run-id grammar, JSON IO, and staged-directory path helpers through
 `run_utils.py`; launch entrypoints additionally share execution mechanics
 through `launch.py`.

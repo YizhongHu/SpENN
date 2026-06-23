@@ -15,7 +15,8 @@ Result layout (under ``results_root``)::
     05_final_grid/{attempt_id}/...
     06_final_train/{final_run_id}/{attempt_id}/...
     07_final_eval/{final_run_id}/{attempt_id}/...
-    08_final_report/{attempt_id}/...
+    08_final_collect/{attempt_id}/...
+    09_final_report/{attempt_id}/...
 
 Every directory under a stage (or under a stage's run id) is an attempt, so
 there is no intermediate ``attempts/`` segment; attempt ids name the leaves
@@ -42,7 +43,8 @@ STAGE_SELECT = "04_select"
 STAGE_FINAL_GRID = "05_final_grid"
 STAGE_FINAL_TRAIN = "06_final_train"
 STAGE_FINAL_EVAL = "07_final_eval"
-STAGE_FINAL_REPORT = "08_final_report"
+STAGE_FINAL_COLLECT = "08_final_collect"
+STAGE_FINAL_REPORT = "09_final_report"
 
 # Grid axis order (also the deterministic Cartesian-product nesting order).
 GRID_AXES = ("architecture", "normalization", "lr", "channels", "seed")

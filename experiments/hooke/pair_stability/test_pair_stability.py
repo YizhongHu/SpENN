@@ -27,6 +27,7 @@ if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
 import collect  # noqa: E402
+import final_collect  # noqa: E402
 import final_eval  # noqa: E402
 import final_plan  # noqa: E402
 import final_report  # noqa: E402
@@ -758,15 +759,17 @@ def test_final_eval_auto_selects_latest_ready_smoke_final_train_attempt(
     assert source["final_train_attempt_id"] == good_attempt_id
 
 
-def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None:
+def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only(tmp_path: Path) -> None:
     results_root, job = _write_final_grid(tmp_path)
     attempt = results_root / "07_final_eval" / job["final_run_id"] / "FE1"
+    train_attempt = results_root / "06_final_train" / job["final_run_id"] / "FT1"
     (attempt / "cusp").mkdir(parents=True)
     (attempt / "tail").mkdir()
     (attempt / "stratified_geometry").mkdir()
     (attempt / "energy").mkdir()
     (attempt / "full_model_antisymmetry").mkdir()
     (attempt / "trace_equivariance").mkdir()
+    train_attempt.mkdir(parents=True)
     (attempt / "status.json").write_text(
         json.dumps(
             {
@@ -776,8 +779,29 @@ def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None
             }
         )
     )
+    (train_attempt / "status.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "start_time": "2026-06-22T11:00:00-04:00",
+                "end_time": "2026-06-22T11:00:05-04:00",
+            }
+        )
+    )
+    (train_attempt / "metadata.json").write_text(json.dumps({"runtime": {"device": "cpu"}}))
+    (train_attempt / "metrics.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"namespace": "train", "step": 0, "metrics": {"energy": 2.6, "energy_stderr": 0.2, "energy_variance": 0.3, "grad_norm": 4.0}}),
+                json.dumps({"namespace": "train/sampler", "step": 0, "metrics": {"acceptance_rate": 0.7}}),
+            ]
+        )
+        + "\n"
+    )
     (attempt / "source_final_job.json").write_text(json.dumps(job))
-    (attempt / "source_final_train_attempt.json").write_text(json.dumps({"final_train_attempt_id": "FT1"}))
+    (attempt / "source_final_train_attempt.json").write_text(
+        json.dumps({"final_train_attempt_id": "FT1", "final_train_attempt_dir": str(train_attempt)})
+    )
     (attempt / "evaluated_checkpoint.json").write_text(
         json.dumps({"resolved_checkpoint_dir": "checkpoints/step_000002"})
     )
@@ -822,30 +846,34 @@ def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None
     )
     _write_csv(attempt / "trace_equivariance" / "trace_records.csv", [{"key": "basis/output", "max_abs_error": "0"}])
 
+    collect_result = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="C1",
+        final_eval_attempt_id="FE1",
+    )
     result = final_report.build_report(
         results_root=results_root,
         report_attempt_id="R1",
-        final_eval_attempt_id="FE1",
+        final_collect_attempt_id="C1",
     )
 
+    collect_dir = Path(collect_result["attempt_dir"])
+    assert collect_dir == results_root / "08_final_collect" / "C1"
+    run_index = _read_csv(collect_dir / "run_index.csv")
+    assert run_index[0]["final_run_id"] == job["final_run_id"]
+    assert run_index[0]["winner_kind"] == "energy"
+    assert run_index[0]["train_wall_time_sec"] == "5"
+    energy_by_run = _read_csv(collect_dir / "energy_by_run.csv")
+    assert energy_by_run[0]["energy_error"] == "0.5"
+    histograms = _read_csv(collect_dir / "local_energy_histograms.csv")
+    assert histograms[0]["basis_class"] == job["basis_envelope"]
+    training = _read_csv(collect_dir / "training_curve_summary.csv")
+    assert training[0]["acceptance_rate"] == "0.7"
+
     report_dir = Path(result["attempt_dir"])
-    assert report_dir == results_root / "08_final_report" / "R1"
-    final_champions = _read_csv(report_dir / "summary_tables" / "final_champions.csv")
-    assert final_champions[0]["final_run_id"] == job["final_run_id"]
-    assert final_champions[0]["energy_error"] == "0.5"
-    assert final_champions[0]["eval_wall_time_sec"] == "3"
-    family = _read_csv(report_dir / "summary_tables" / "final_metrics_by_family.csv")
-    assert family[0]["tail_outlier_count_total"] == "1"
-    resources = _read_csv(report_dir / "summary_tables" / "resource_summary.csv")
-    assert resources[0]["n_plot_record_rows"] == "6"
-    metrics = _read_csv(report_dir / "summary_tables" / "final_metrics_by_run.csv")
-    assert metrics[0]["namespace"] == "eval/energy"
-    cusp = _read_csv(report_dir / "plot_tables" / "cusp_profiles.csv")
-    assert cusp[0]["final_run_id"] == job["final_run_id"]
-    energy_samples = _read_csv(report_dir / "plot_tables" / "energy_samples.csv")
-    assert energy_samples[0]["energy_error"] == "0.3999999999999999"
-    stratified = _read_csv(report_dir / "plot_tables" / "stratified_geometry.csv")
-    assert stratified[0]["r12_bin"] == ""
+    assert report_dir == results_root / "09_final_report" / "R1"
+    copied_energy = _read_csv(report_dir / "tables" / "energy_by_run.csv")
+    assert copied_energy[0]["energy_error"] == "0.5"
     assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
     assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
@@ -899,6 +927,7 @@ def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> 
             "local_energy_var": 10.0,
             "architecture": "raw_envelope",
             "normalization": "N0",
+            "winner_kind": "",
         }
     ]
 
@@ -906,17 +935,16 @@ def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> 
 def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> None:
     normalizations, architectures, groups = final_report._local_energy_distribution_groups(
         [
-            {"architecture": "raw_envelope", "normalization": "N1", "local_energy": "1.0"},
-            {"architecture": "raw_envelope", "normalization": "N1", "local_energy": "2.0"},
-            {"architecture": "hermite_o2_envelope", "normalization": "N0", "local_energy": "3.0"},
-            {"architecture": "hermite_o2_envelope", "normalization": "N0", "local_energy": "nan"},
+            {"basis_class": "raw_envelope", "normalization": "N1", "winner_kind": "energy", "bin_center": "1.0", "count": "2"},
+            {"basis_class": "raw_envelope", "normalization": "N1", "winner_kind": "energy", "bin_center": "2.0", "count": "1"},
+            {"basis_class": "hermite_o2_envelope", "normalization": "N0", "winner_kind": "stability", "bin_center": "3.0", "count": "4"},
         ]
     )
 
     assert normalizations == ["N0", "N1"]
-    assert architectures == ["hermite_o2_envelope", "raw_envelope"]
-    assert groups[("N1", "raw_envelope")] == [1.0, 2.0]
-    assert groups[("N0", "hermite_o2_envelope")] == [3.0]
+    assert architectures == ["hermite_o2_envelope / stability", "raw_envelope / energy"]
+    assert len(groups[("N1", "raw_envelope / energy")]) == 2
+    assert groups[("N0", "hermite_o2_envelope / stability")][0]["count"] == "4"
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
