@@ -867,6 +867,8 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert energy_by_run[0]["energy_error"] == "0.5"
     histograms = _read_csv(collect_dir / "local_energy_histograms.csv")
     assert histograms[0]["basis_class"] == job["basis_envelope"]
+    cusp = _read_csv(collect_dir / "cusp_profile_summary.csv")
+    assert cusp[0]["local_energy_median"] == "2"
     training = _read_csv(collect_dir / "training_curve_summary.csv")
     assert training[0]["acceptance_rate"] == "0.7"
 
@@ -878,6 +880,9 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "1A_stability_winner_real_scale_energy_error_heatmap.png").is_file()
     assert (report_dir / "figures" / "1C_energy_winner_local_energy_distribution_grid.png").is_file()
     assert (report_dir / "figures" / "1C_stability_winner_local_energy_distribution_grid.png").is_file()
+    assert (report_dir / "figures" / "2A_cusp_local_energy_by_com.png").is_file()
+    assert (report_dir / "figures" / "2B_cusp_logabs_by_com.png").is_file()
+    assert (report_dir / "figures" / "2C_cusp_finite_fraction_by_com.png").is_file()
     assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
     assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
     assert (report_dir / "figures" / "4_energy_winner_stratified_geometry_aggregate_log_heatmap.png").is_file()

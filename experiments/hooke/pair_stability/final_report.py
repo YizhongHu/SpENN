@@ -766,9 +766,9 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         )
 
     add("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance"))
-    add("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path"))
-    add("2B_cusp_c_minus_1_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path"))
-    add("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path"))
+    add("2A_cusp_local_energy_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp local energy by CoM path"))
+    add("2B_cusp_logabs_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="logabs_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp logabs by CoM path"))
+    add("2C_cusp_finite_fraction_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="finite_fraction", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp finite fraction by CoM path"))
     add("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners"))
     add("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners"))
 
@@ -917,7 +917,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Cusp Diagnostics",
             "",
-            "Cusp tables preserve center-of-mass and direction columns when present.",
+            "Cusp tables preserve center-of-mass and direction columns when present. Figure 2 plots sampled local energy, log-amplitude, and finite fraction profiles against `r12`; aggregate cusp-slope diagnostics remain in the metrics tables.",
             "",
             "## Tail Diagnostics",
             "",

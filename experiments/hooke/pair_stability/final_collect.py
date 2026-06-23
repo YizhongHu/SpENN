@@ -122,15 +122,12 @@ CUSP_PROFILE_COLUMNS = [
     "com_id",
     "direction_id",
     "r12",
-    "even_slope_median",
-    "even_slope_q25",
-    "even_slope_q75",
-    "c_minus_1_median",
-    "c_minus_1_q25",
-    "c_minus_1_q75",
-    "odd_slant_median",
-    "odd_slant_q25",
-    "odd_slant_q75",
+    "local_energy_median",
+    "local_energy_q25",
+    "local_energy_q75",
+    "logabs_median",
+    "logabs_q25",
+    "logabs_q75",
     "finite_fraction",
 ]
 
@@ -696,20 +693,19 @@ def _cusp_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     base = _base_row(context)
     for (com_id, direction_id, r12), group in sorted(groups.items()):
+        energies = [_as_float(row.get("local_energy")) for row in group]
+        logabs = [_as_float(row.get("logabs")) for row in group]
         out.append({
             **base,
             "com_id": com_id,
             "direction_id": direction_id,
             "r12": r12,
-            "even_slope_median": _format_number(_median(_as_float(row.get("even_slope")) for row in group)),
-            "even_slope_q25": _format_number(_quantile((_as_float(row.get("even_slope")) for row in group), 0.25)),
-            "even_slope_q75": _format_number(_quantile((_as_float(row.get("even_slope")) for row in group), 0.75)),
-            "c_minus_1_median": _format_number(_median(_as_float(row.get("c_minus_1")) for row in group)),
-            "c_minus_1_q25": _format_number(_quantile((_as_float(row.get("c_minus_1")) for row in group), 0.25)),
-            "c_minus_1_q75": _format_number(_quantile((_as_float(row.get("c_minus_1")) for row in group), 0.75)),
-            "odd_slant_median": _format_number(_median(_as_float(row.get("odd_slant")) for row in group)),
-            "odd_slant_q25": _format_number(_quantile((_as_float(row.get("odd_slant")) for row in group), 0.25)),
-            "odd_slant_q75": _format_number(_quantile((_as_float(row.get("odd_slant")) for row in group), 0.75)),
+            "local_energy_median": _format_number(_median(energies)),
+            "local_energy_q25": _format_number(_quantile(energies, 0.25)),
+            "local_energy_q75": _format_number(_quantile(energies, 0.75)),
+            "logabs_median": _format_number(_median(logabs)),
+            "logabs_q25": _format_number(_quantile(logabs, 0.25)),
+            "logabs_q75": _format_number(_quantile(logabs, 0.75)),
             "finite_fraction": _format_number(_finite_fraction([row.get("finite", "True") for row in group])),
         })
     return out
