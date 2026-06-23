@@ -643,12 +643,12 @@ def _save_tail_winner_grid(
     plt = _pyplot()
     cmap = plt.get_cmap("tab10")
     colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
-    n_rows = len(metrics) * len(normalizations)
-    n_cols = len(architectures)
+    n_rows = len(normalizations)
+    n_cols = len(metrics) * len(architectures)
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=(max(5.0, 3.1 * n_cols), max(3.6, 2.2 * n_rows)),
+        figsize=(max(8.0, 2.7 * n_cols), max(3.6, 2.2 * n_rows)),
         squeeze=False,
         sharex=True,
         sharey=False,
@@ -657,9 +657,10 @@ def _save_tail_winner_grid(
     for metric_index, (metric_label, _value_key) in enumerate(metrics):
         profiles = profile_by_metric[metric_label]
         for norm_index, normalization in enumerate(normalizations):
-            row_index = metric_index * len(normalizations) + norm_index
+            row_index = norm_index
             for col_index, architecture in enumerate(architectures):
-                ax = axes[row_index][col_index]
+                axis_col = metric_index * len(architectures) + col_index
+                ax = axes[row_index][axis_col]
                 plotted = False
                 for com in com_labels:
                     points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
@@ -681,7 +682,7 @@ def _save_tail_winner_grid(
                 if not plotted:
                     ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
                 if row_index == 0:
-                    ax.set_title(architecture, fontsize=9)
+                    ax.set_title(f"{metric_label}\n{architecture}", fontsize=9)
                 if col_index == 0:
                     ax.set_ylabel(f"{normalization}\n{metric_label}\nseed mean")
                 if row_index == n_rows - 1:
@@ -694,15 +695,15 @@ def _save_tail_winner_grid(
             list(legend_handles.values()),
             list(legend_handles.keys()),
             title="CoM",
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.965),
-            ncol=min(6, len(legend_handles)),
+            loc="center left",
+            bbox_to_anchor=(0.99, 0.5),
+            ncol=max(1, math.ceil(len(legend_handles) / 28)),
             fontsize=7,
             title_fontsize=8,
+            borderaxespad=0.0,
         )
-    top = 0.91 if legend_handles else 0.94
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, top))
-    fig.savefig(path, dpi=160)
+    fig.tight_layout(rect=(0.0, 0.0, 0.88 if legend_handles else 1.0, 0.94))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
