@@ -205,6 +205,16 @@ def _heatmap_matrix(
     return y_labels, x_labels, matrix
 
 
+def _matrix_values(matrix: Sequence[Sequence[float | None]]) -> list[float]:
+    return [value for row in matrix for value in row if value is not None]
+
+
+def _heatmap_colorbar_label(value_key: str, transform: str | None) -> str:
+    if transform == "signed_log":
+        return f"{value_key} (symmetric log color; labels are real scale)"
+    return value_key
+
+
 def _draw_heatmap_axis(
     fig: Any,
     ax: Any,
@@ -215,27 +225,30 @@ def _draw_heatmap_axis(
     value_key: str,
     title: str,
     transform: str | None,
-) -> None:
+    scale_values: Sequence[float] | None = None,
+    add_colorbar: bool = True,
+) -> Any | None:
     """Draw one heatmap axis with real-scale annotations."""
 
     from matplotlib.colors import SymLogNorm
 
-    finite_values = [value for row in matrix for value in row if value is not None]
+    finite_values = _matrix_values(matrix)
     if not finite_values:
         ax.axis("off")
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10)
         ax.set_title(title)
-        return
+        return None
 
-    vmax = max(abs(value) for value in finite_values)
+    scale = [value for value in (scale_values or finite_values) if math.isfinite(value)]
+    if not scale:
+        scale = finite_values
+    vmax = max(abs(value) for value in scale)
     vmax = vmax if vmax > 0.0 else 1.0
     data = [[math.nan if value is None else value for value in row] for row in matrix]
-    colorbar_label = value_key
     if transform == "signed_log":
-        nonzero = [abs(value) for value in finite_values if value != 0.0]
+        nonzero = [abs(value) for value in scale if value != 0.0]
         norm = SymLogNorm(linthresh=min(nonzero), vmin=-vmax, vmax=vmax, base=10) if nonzero else None
         image = ax.imshow(data, cmap="coolwarm", norm=norm, aspect="auto")
-        colorbar_label = f"{value_key} (symmetric log color; labels are real scale)"
     else:
         image = ax.imshow(data, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
     ax.set_xticks(range(len(x_labels)), labels=x_labels, rotation=35, ha="right")
@@ -245,7 +258,9 @@ def _draw_heatmap_axis(
         for x_index, value in enumerate(row):
             if value is not None:
                 ax.text(x_index, y_index, f"{value:.2g}", ha="center", va="center", fontsize=8)
-    fig.colorbar(image, ax=ax, label=colorbar_label, fraction=0.046, pad=0.04)
+    if add_colorbar:
+        fig.colorbar(image, ax=ax, label=_heatmap_colorbar_label(value_key, transform), fraction=0.046, pad=0.04)
+    return image
 
 
 def _save_heatmap(
@@ -279,6 +294,67 @@ def _save_heatmap(
     )
     fig.tight_layout()
     fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _save_winner_pair_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_key: str,
+    col_key: str,
+    value_key: str,
+    title: str,
+    transform: str | None = None,
+) -> None:
+    """Save energy/stability winner heatmaps side by side with one scale."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    matrices = {}
+    scale_values = []
+    max_x = 0
+    max_y = 0
+    for winner in WINNER_KINDS:
+        y_labels, x_labels, matrix = _heatmap_matrix(
+            _winner_rows(rows, winner),
+            row_key=row_key,
+            col_key=col_key,
+            value_key=value_key,
+        )
+        matrices[winner] = (y_labels, x_labels, matrix)
+        scale_values.extend(_matrix_values(matrix))
+        max_x = max(max_x, len(x_labels))
+        max_y = max(max_y, len(y_labels))
+    if not scale_values:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    fig, axes = plt.subplots(1, len(WINNER_KINDS), figsize=(max(8.0, 2.6 * max_x * len(WINNER_KINDS)), max(3.5, 0.8 * max_y)), squeeze=False)
+    images = []
+    for col_index, winner in enumerate(WINNER_KINDS):
+        y_labels, x_labels, matrix = matrices[winner]
+        image = _draw_heatmap_axis(
+            fig,
+            axes[0][col_index],
+            y_labels=y_labels,
+            x_labels=x_labels,
+            matrix=matrix,
+            value_key=value_key,
+            title=_winner_title(winner),
+            transform=transform,
+            scale_values=scale_values,
+            add_colorbar=False,
+        )
+        if image is not None:
+            images.append(image)
+        if col_index > 0:
+            axes[0][col_index].set_yticklabels([])
+    if images:
+        fig.colorbar(images[0], ax=list(axes.ravel()), label=_heatmap_colorbar_label(value_key, transform), fraction=0.046, pad=0.04)
+    fig.suptitle(title, y=0.98)
+    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.16, top=0.84, wspace=0.45)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -907,6 +983,64 @@ def _save_scalar_metric_heatmap(
     plt.close(fig)
 
 
+def _save_winner_pair_scalar_metric_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_keys: Sequence[str],
+    metric_keys: Sequence[str],
+    title: str,
+) -> None:
+    """Save energy/stability scalar-metric heatmaps with one scale."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    matrices = {}
+    scale_values = []
+    max_x = 0
+    max_y = 0
+    for winner in WINNER_KINDS:
+        y_labels, x_labels, matrix = _scalar_metric_matrix(
+            _winner_rows(rows, winner),
+            row_keys=row_keys,
+            metric_keys=metric_keys,
+        )
+        matrices[winner] = (y_labels, x_labels, matrix)
+        scale_values.extend(_matrix_values(matrix))
+        max_x = max(max_x, len(x_labels))
+        max_y = max(max_y, len(y_labels))
+    if not scale_values:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    fig, axes = plt.subplots(1, len(WINNER_KINDS), figsize=(max(10.0, 1.2 * max_x * len(WINNER_KINDS)), max(3.8, 0.38 * max_y)), squeeze=False)
+    images = []
+    for col_index, winner in enumerate(WINNER_KINDS):
+        y_labels, x_labels, matrix = matrices[winner]
+        image = _draw_heatmap_axis(
+            fig,
+            axes[0][col_index],
+            y_labels=y_labels,
+            x_labels=x_labels,
+            matrix=matrix,
+            value_key="mean scalar value",
+            title=_winner_title(winner),
+            transform=None,
+            scale_values=scale_values,
+            add_colorbar=False,
+        )
+        if image is not None:
+            images.append(image)
+        if col_index > 0:
+            axes[0][col_index].set_yticklabels([])
+    if images:
+        fig.colorbar(images[0], ax=list(axes.ravel()), label="mean scalar value", fraction=0.046, pad=0.04)
+    fig.suptitle(title, y=0.98)
+    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.18, top=0.84, wspace=0.45)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _save_symmetry_metric_grid(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -921,39 +1055,57 @@ def _save_symmetry_metric_grid(
     if not symmetries:
         _save_no_data(path, title)
         return
+    matrices = {}
+    scale_values = []
+    for symmetry in symmetries:
+        symmetry_rows = [row for row in rows if str(row.get("symmetry_task", "")) == symmetry]
+        for winner in WINNER_KINDS:
+            y_labels, x_labels, matrix = _heatmap_matrix(
+                _winner_rows(symmetry_rows, winner),
+                row_key="basis_class",
+                col_key="normalization",
+                value_key=metric_key,
+            )
+            matrices[(symmetry, winner)] = (y_labels, x_labels, matrix)
+            scale_values.extend(_matrix_values(matrix))
+    if not scale_values:
+        _save_no_data(path, title)
+        return
 
     plt = _pyplot()
     fig, axes = plt.subplots(
         len(symmetries),
         len(WINNER_KINDS),
-        figsize=(max(7.5, 4.0 * len(WINNER_KINDS)), max(3.2, 3.0 * len(symmetries))),
+        figsize=(max(11.0, 5.5 * len(WINNER_KINDS)), max(3.2, 3.0 * len(symmetries))),
         squeeze=False,
         sharex=False,
         sharey=False,
     )
+    images = []
     for row_index, symmetry in enumerate(symmetries):
-        symmetry_rows = [row for row in rows if str(row.get("symmetry_task", "")) == symmetry]
         for col_index, winner in enumerate(WINNER_KINDS):
             ax = axes[row_index][col_index]
-            panel_rows = _winner_rows(symmetry_rows, winner)
-            y_labels, x_labels, matrix = _heatmap_matrix(
-                panel_rows,
-                row_key="basis_class",
-                col_key="normalization",
-                value_key=metric_key,
-            )
-            _draw_heatmap_axis(
+            y_labels, x_labels, matrix = matrices[(symmetry, winner)]
+            image = _draw_heatmap_axis(
                 fig,
                 ax,
                 y_labels=y_labels,
                 x_labels=x_labels,
                 matrix=matrix,
                 value_key=metric_key,
-                title=f"{symmetry}: {_winner_title(winner)}",
+                title=f"{symmetry}\n{_winner_title(winner)}",
                 transform=None,
+                scale_values=scale_values,
+                add_colorbar=False,
             )
+            if image is not None:
+                images.append(image)
+            if col_index > 0:
+                ax.set_yticklabels([])
+    if images:
+        fig.colorbar(images[0], ax=list(axes.ravel()), label=metric_key, fraction=0.046, pad=0.04)
     fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.08, top=0.90, wspace=0.65, hspace=0.65)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -970,16 +1122,15 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         writer(figures_dir / filename)
         written.append(filename)
 
+    add(
+        "1A_real_scale_energy_error_heatmap.png",
+        lambda path: _save_winner_pair_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error"),
+    )
+    add(
+        "1A_log_scale_energy_error_heatmap.png",
+        lambda path: _save_winner_pair_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log"),
+    )
     for winner in WINNER_KINDS:
-        rows = _winner_rows(architecture, winner)
-        add(
-            _winner_filename("1A", winner, "real_scale_energy_error_heatmap.png"),
-            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title=f"Median signed final energy error: {_winner_title(winner)}"),
-        )
-        add(
-            _winner_filename("1A", winner, "log_scale_energy_error_heatmap.png"),
-            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title=f"Median signed final energy error: {_winner_title(winner)}", transform="signed_log"),
-        )
         add(
             _winner_filename("1C", winner, "local_energy_distribution_grid.png"),
             lambda path, winner=winner: _save_local_energy_distribution_grid(path, _winner_rows(histograms, winner), title=f"MCMC local-energy histograms: {_winner_title(winner)}"),
@@ -1003,23 +1154,20 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     add("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners"))
     add("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners"))
 
-    for winner in WINNER_KINDS:
-        add(
-            _winner_filename("3C", winner, "tail_outlier_heatmap.png"),
-            lambda path, winner=winner: _save_heatmap(path, _winner_rows(architecture, winner), row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title=f"Tail outlier fraction: {_winner_title(winner)}"),
-        )
+    add(
+        "3C_tail_outlier_heatmap.png",
+        lambda path: _save_winner_pair_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction"),
+    )
 
     aggregate = [row for row in stratified if row.get("stratum") == "all"]
-    for winner in WINNER_KINDS:
-        rows = _winner_rows(aggregate, winner)
-        add(
-            _winner_filename("4", winner, "stratified_geometry_aggregate_heatmap.png"),
-            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {_winner_title(winner)}"),
-        )
-        add(
-            _winner_filename("4", winner, "stratified_geometry_aggregate_log_heatmap.png"),
-            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {_winner_title(winner)}", transform="signed_log"),
-        )
+    add(
+        "4_stratified_geometry_aggregate_heatmap.png",
+        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error"),
+    )
+    add(
+        "4_stratified_geometry_aggregate_log_heatmap.png",
+        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="signed_log"),
+    )
 
     hooke_rows = tables["hooke_orbital_summary.csv"]
     for winner in WINNER_KINDS:
@@ -1043,11 +1191,10 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
             lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}"),
         )
 
-    for winner in WINNER_KINDS:
-        add(
-            _winner_filename("7", winner, "trace_scalar_heatmap.png"),
-            lambda path, winner=winner: _save_scalar_metric_heatmap(path, _winner_rows(tables["trace_summary.csv"], winner), row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title=f"Trace scalar diagnostics: {_winner_title(winner)}"),
-        )
+    add(
+        "7_trace_scalar_heatmap.png",
+        lambda path: _save_winner_pair_scalar_metric_heatmap(path, tables["trace_summary.csv"], row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title="Trace scalar diagnostics"),
+    )
 
     add("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner"))
 
@@ -1055,16 +1202,14 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     for stratum in strata:
         safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in stratum)
         rows = [row for row in stratified if str(row.get("stratum", "")) == stratum]
-        for winner in WINNER_KINDS:
-            winner_rows = _winner_rows(rows, winner)
-            add(
-                _winner_filename("4", winner, f"stratified_geometry_{safe}_heatmap.png"),
-                lambda path, rows=winner_rows, winner=winner, stratum=stratum: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}: {_winner_title(winner)}"),
-            )
-            add(
-                _winner_filename("4", winner, f"stratified_geometry_{safe}_log_heatmap.png"),
-                lambda path, rows=winner_rows, winner=winner, stratum=stratum: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}: {_winner_title(winner)}", transform="signed_log"),
-            )
+        add(
+            f"4_stratified_geometry_{safe}_heatmap.png",
+            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}"),
+        )
+        add(
+            f"4_stratified_geometry_{safe}_log_heatmap.png",
+            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="signed_log"),
+        )
     return written
 
 
@@ -1146,7 +1291,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Energy And Local-Energy Results",
             "",
-            "Energy figures use signed error relative to exact Hooke energy `E = 2`; grid figures are emitted separately for energy and stability winners. Signed-log heatmap variants use real-scale cell labels.",
+            "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps place energy and stability winners side by side with a shared color scale. Signed-log heatmap variants use real-scale cell labels.",
             "",
             "## Cusp Diagnostics",
             "",
@@ -1158,7 +1303,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Stratified Geometry Diagnostics",
             "",
-            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Each Figure 4 heatmap has a real-scale and signed-log-color version, emitted separately for energy and stability winners.",
+            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Each Figure 4 heatmap has a real-scale and signed-log-color version with energy and stability winners side by side on a shared color scale.",
             "",
             "## Hooke-Orbital Diagnostics",
             "",
@@ -1166,11 +1311,11 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Symmetry Diagnostics",
             "",
-            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 emits one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, energy/stability winners as columns, and architecture by normalization inside each subplot.",
+            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 emits one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, energy/stability winners as columns, architecture by normalization inside each subplot, and one shared color scale per metric.",
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures. Figure 7 emits separate energy/stability heatmaps for scalar trace diagnostics.",
+            "See `tables/trace_summary.csv` and the trace figures. Figure 7 places energy and stability winner scalar trace diagnostics side by side with a shared color scale.",
             "",
             "## Training And Resource Summary",
             "",

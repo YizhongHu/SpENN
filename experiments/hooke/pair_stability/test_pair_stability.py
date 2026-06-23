@@ -876,8 +876,8 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert report_dir == results_root / "09_final_report" / "R1"
     copied_energy = _read_csv(report_dir / "tables" / "energy_by_run.csv")
     assert copied_energy[0]["energy_error"] == "0.5"
-    assert (report_dir / "figures" / "1A_energy_winner_real_scale_energy_error_heatmap.png").is_file()
-    assert (report_dir / "figures" / "1A_stability_winner_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "1A_log_scale_energy_error_heatmap.png").is_file()
     assert (report_dir / "figures" / "1C_energy_winner_local_energy_distribution_grid.png").is_file()
     assert (report_dir / "figures" / "1C_stability_winner_local_energy_distribution_grid.png").is_file()
     assert (report_dir / "figures" / "2A_energy_winner_cusp_local_energy_grid.png").is_file()
@@ -888,10 +888,11 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "2C_stability_winner_cusp_finite_fraction_grid.png").is_file()
     assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
     assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
-    assert (report_dir / "figures" / "4_energy_winner_stratified_geometry_aggregate_log_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stability_winner_stratified_geometry_aggregate_log_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_energy_winner_stratified_geometry_bulk_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stability_winner_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "figures" / "3C_tail_outlier_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_aggregate_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_aggregate_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stratified_geometry_bulk_log_heatmap.png").is_file()
     assert (report_dir / "figures" / "5A_energy_winner_hooke_orbital_local_energy_distribution.png").is_file()
     assert (report_dir / "figures" / "5A_stability_winner_hooke_orbital_local_energy_distribution.png").is_file()
     assert (report_dir / "figures" / "6_symmetry_logabs_error_max_heatmap_grid.png").is_file()
@@ -899,8 +900,7 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "6_symmetry_sign_mismatch_count_heatmap_grid.png").is_file()
     assert (report_dir / "figures" / "6_symmetry_parity_mismatch_count_heatmap_grid.png").is_file()
     assert (report_dir / "figures" / "6_symmetry_finite_fraction_heatmap_grid.png").is_file()
-    assert (report_dir / "figures" / "7_energy_winner_trace_scalar_heatmap.png").is_file()
-    assert (report_dir / "figures" / "7_stability_winner_trace_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "7_trace_scalar_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
