@@ -10,12 +10,12 @@ from __future__ import annotations
 import argparse
 import csv
 import math
-import os
 import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
 
+import plot
 from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_REPORT,
@@ -32,8 +32,6 @@ DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
 WINNER_KINDS = ("energy", "stability")
 NARROW_WINNER_HEATMAP_WIDTH_SCALE = 0.75
-POSITIVE_HEATMAP_CMAP = "Reds"
-BAR_QUANTILE_RANGE = (0.05, 0.85)
 SYMMETRY_METRICS = (
     "logabs_error_max",
     "logabs_error_median",
@@ -303,27 +301,6 @@ def _load_collect_tables(results_root: Path, collect_attempt_id: str) -> tuple[P
     return collect_dir, {name: _read_csv(collect_dir / name) for name in COMPACT_TABLES}
 
 
-def _pyplot():
-    os.environ.setdefault("MPLCONFIGDIR", "/tmp/rhu/matplotlib")
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    return plt
-
-
-def _save_no_data(path: Path, title: str) -> None:
-    plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(6, 3))
-    ax.axis("off")
-    ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=14)
-    ax.set_title(title)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-
-
 def _architecture_label(row: dict[str, Any]) -> str:
     return str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
 
@@ -340,6 +317,32 @@ def _winner_title(winner_kind: str) -> str:
 
 def _winner_filename(prefix: str, winner_kind: str, suffix: str) -> str:
     return f"{prefix}_{winner_kind}_winner_{suffix}"
+
+
+def _save_winner_pair_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_key: str,
+    col_key: str,
+    value_key: str,
+    title: str,
+    transform: str | None = None,
+    width_scale: float = 1.0,
+) -> None:
+    """Save energy/stability winner heatmaps side by side with one scale."""
+
+    plot.save_winner_pair_heatmap(
+        path,
+        {winner: _winner_rows(rows, winner) for winner in WINNER_KINDS},
+        row_key=row_key,
+        col_key=col_key,
+        value_key=value_key,
+        title=title,
+        panel_titles={winner: _winner_title(winner) for winner in WINNER_KINDS},
+        transform=transform,
+        width_scale=width_scale,
+    )
 
 
 def _figure_label(section: str, index: int) -> str:
@@ -361,221 +364,6 @@ def _unique_in_order(values: Sequence[Any]) -> list[str]:
         seen.add(label)
         out.append(label)
     return out
-
-
-def _heatmap_matrix(
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_key: str,
-    col_key: str,
-    value_key: str,
-) -> tuple[list[str], list[str], list[list[float | None]]]:
-    """Return real-scale heatmap cell means for plotting and annotations."""
-
-    cells: dict[tuple[str, str], list[float]] = defaultdict(list)
-    for row in rows:
-        value = _as_float(row.get(value_key))
-        if value is None:
-            continue
-        cells[(str(row.get(row_key, "")), str(row.get(col_key, "")))].append(value)
-    if not cells:
-        return [], [], []
-    y_labels = sorted({key[0] for key in cells})
-    x_labels = sorted({key[1] for key in cells})
-    matrix = []
-    for y in y_labels:
-        row_values = []
-        for x in x_labels:
-            row_values.append(_mean(cells.get((y, x), [])))
-        matrix.append(row_values)
-    return y_labels, x_labels, matrix
-
-
-def _matrix_values(matrix: Sequence[Sequence[float | None]]) -> list[float]:
-    return [value for row in matrix for value in row if value is not None]
-
-
-def _heatmap_colorbar_label(value_key: str, transform: str | None) -> str:
-    if transform == "signed_log":
-        return f"{value_key} (symmetric log color; labels are real scale)"
-    if transform == "positive_log":
-        return f"{value_key} (monochrome log color; labels are real scale)"
-    if transform == "positive_linear":
-        return f"{value_key} (monochrome color; labels are real scale)"
-    return value_key
-
-
-def _resolve_heatmap_transform(values: Sequence[float], requested: str | None) -> str:
-    """Choose a heatmap color scale from the finite shared values."""
-
-    if requested is not None:
-        return requested
-    finite = [value for value in values if math.isfinite(value)]
-    if finite and min(finite) >= 0.0:
-        positive = [value for value in finite if value > 0.0]
-        if positive and max(positive) / min(positive) >= 10.0:
-            return "positive_log"
-        return "positive_linear"
-    return "signed_linear"
-
-
-def _draw_heatmap_axis(
-    fig: Any,
-    ax: Any,
-    *,
-    y_labels: Sequence[str],
-    x_labels: Sequence[str],
-    matrix: Sequence[Sequence[float | None]],
-    value_key: str,
-    title: str,
-    transform: str | None,
-    scale_values: Sequence[float] | None = None,
-    add_colorbar: bool = True,
-) -> Any | None:
-    """Draw one heatmap axis with real-scale annotations."""
-
-    from matplotlib.colors import LogNorm, SymLogNorm
-
-    finite_values = _matrix_values(matrix)
-    if not finite_values:
-        ax.axis("off")
-        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10)
-        ax.set_title(title)
-        return None
-
-    scale = [value for value in (scale_values or finite_values) if math.isfinite(value)]
-    if not scale:
-        scale = finite_values
-    vmax = max(abs(value) for value in scale)
-    vmax = vmax if vmax > 0.0 else 1.0
-    resolved_transform = _resolve_heatmap_transform(scale, transform)
-    data = [[math.nan if value is None else value for value in row] for row in matrix]
-    if resolved_transform == "signed_log":
-        nonzero = [abs(value) for value in scale if value != 0.0]
-        norm = SymLogNorm(linthresh=min(nonzero), vmin=-vmax, vmax=vmax, base=10) if nonzero else None
-        image = ax.imshow(data, cmap="coolwarm", norm=norm, aspect="auto")
-    elif resolved_transform == "positive_log":
-        positive = [value for value in scale if value > 0.0]
-        if positive:
-            vmin = min(positive)
-            positive_data = [[math.nan if value is None else max(value, vmin) for value in row] for row in matrix]
-            positive_vmax = max(positive)
-            if positive_vmax <= vmin:
-                positive_vmax = vmin * 1.000001
-            image = ax.imshow(positive_data, cmap=POSITIVE_HEATMAP_CMAP, norm=LogNorm(vmin=vmin, vmax=positive_vmax, clip=True), aspect="auto")
-        else:
-            image = ax.imshow(data, cmap=POSITIVE_HEATMAP_CMAP, vmin=0.0, vmax=vmax, aspect="auto")
-    elif resolved_transform == "positive_linear":
-        image = ax.imshow(data, cmap=POSITIVE_HEATMAP_CMAP, vmin=0.0, vmax=vmax, aspect="auto")
-    else:
-        image = ax.imshow(data, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_xticks(range(len(x_labels)), labels=x_labels, rotation=35, ha="right")
-    ax.set_yticks(range(len(y_labels)), labels=y_labels)
-    ax.set_title(title)
-    for y_index, row in enumerate(matrix):
-        for x_index, value in enumerate(row):
-            if value is not None:
-                ax.text(x_index, y_index, f"{value:.2g}", ha="center", va="center", fontsize=8)
-    if add_colorbar:
-        fig.colorbar(image, ax=ax, label=_heatmap_colorbar_label(value_key, resolved_transform), fraction=0.046, pad=0.04)
-    return image
-
-
-def _save_heatmap(
-    path: Path,
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_key: str,
-    col_key: str,
-    value_key: str,
-    title: str,
-    transform: str | None = None,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    y_labels, x_labels, matrix = _heatmap_matrix(rows, row_key=row_key, col_key=col_key, value_key=value_key)
-    if not matrix:
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-
-    fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(x_labels)), max(3.5, 0.8 * len(y_labels))))
-    _draw_heatmap_axis(
-        fig,
-        ax,
-        y_labels=y_labels,
-        x_labels=x_labels,
-        matrix=matrix,
-        value_key=value_key,
-        title=title,
-        transform=transform,
-    )
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-
-
-def _save_winner_pair_heatmap(
-    path: Path,
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_key: str,
-    col_key: str,
-    value_key: str,
-    title: str,
-    transform: str | None = None,
-    width_scale: float = 1.0,
-) -> None:
-    """Save energy/stability winner heatmaps side by side with one scale."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    matrices = {}
-    scale_values = []
-    max_x = 0
-    max_y = 0
-    for winner in WINNER_KINDS:
-        y_labels, x_labels, matrix = _heatmap_matrix(
-            _winner_rows(rows, winner),
-            row_key=row_key,
-            col_key=col_key,
-            value_key=value_key,
-        )
-        matrices[winner] = (y_labels, x_labels, matrix)
-        scale_values.extend(_matrix_values(matrix))
-        max_x = max(max_x, len(x_labels))
-        max_y = max(max_y, len(y_labels))
-    if not scale_values:
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-    width = max(7.0, 2.6 * max_x * len(WINNER_KINDS) * width_scale)
-    fig, axes = plt.subplots(1, len(WINNER_KINDS), figsize=(width, max(3.5, 0.8 * max_y)), squeeze=False)
-    images = []
-    for col_index, winner in enumerate(WINNER_KINDS):
-        y_labels, x_labels, matrix = matrices[winner]
-        image = _draw_heatmap_axis(
-            fig,
-            axes[0][col_index],
-            y_labels=y_labels,
-            x_labels=x_labels,
-            matrix=matrix,
-            value_key=value_key,
-            title=_winner_title(winner),
-            transform=transform,
-            scale_values=scale_values,
-            add_colorbar=False,
-        )
-        if image is not None:
-            images.append(image)
-        if col_index > 0:
-            axes[0][col_index].set_yticklabels([])
-    if images:
-        fig.colorbar(images[0], ax=list(axes.ravel()), label=_heatmap_colorbar_label(value_key, transform), fraction=0.046, pad=0.04)
-    fig.suptitle(title, y=0.98)
-    fig.subplots_adjust(left=0.08, right=0.86, bottom=0.16, top=0.84, wspace=0.45)
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -603,60 +391,26 @@ def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, An
 
 
 def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     points = _energy_variance_points(rows)
     if not points:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
-
-    plt = _pyplot()
-    from matplotlib.lines import Line2D
-
-    architectures = sorted({str(point["architecture"]) for point in points})
-    normalizations = sorted({str(point["normalization"]) for point in points})
-    cmap = plt.get_cmap("tab20" if len(architectures) > 10 else "tab10")
-    colors = {architecture: cmap(index % cmap.N) for index, architecture in enumerate(architectures)}
-    markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "h", "p"]
-    marker_by_norm = {normalization: markers[index % len(markers)] for index, normalization in enumerate(normalizations)}
-
-    fig, axes = plt.subplots(1, len(WINNER_KINDS), figsize=(11.0, 4.8), sharex=True, sharey=True)
-    for ax, winner_kind in zip(axes, WINNER_KINDS, strict=True):
-        winner_points = [point for point in points if str(point["winner_kind"]) == winner_kind]
-        for point in winner_points:
-            ax.scatter(
-                point["abs_energy_error"],
-                point["local_energy_var"],
-                color=colors[str(point["architecture"])],
-                marker=marker_by_norm[str(point["normalization"])],
-                s=58,
-                edgecolors="black",
-                linewidths=0.45,
-                alpha=0.9,
-            )
-        if not winner_points:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=9)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel("abs energy error |E - 2|")
-        ax.set_title(_winner_title(winner_kind))
-        ax.grid(True, which="both", linewidth=0.4, alpha=0.35)
-    axes[0].set_ylabel("local-energy variance")
-
-    color_handles = [
-        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors[architecture], markeredgecolor="black", markersize=7, label=architecture)
-        for architecture in architectures
-    ]
-    shape_handles = [
-        Line2D([0], [0], marker=marker_by_norm[normalization], color="black", markerfacecolor="lightgray", markeredgecolor="black", linestyle="none", markersize=7, label=normalization)
-        for normalization in normalizations
-    ]
-    architecture_legend = axes[-1].legend(handles=color_handles, title="Architecture", fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
-    axes[-1].add_artist(architecture_legend)
-    axes[-1].legend(handles=shape_handles, title="Normalization", fontsize=7, title_fontsize=8, loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
-    fig.suptitle(f"{title}\nWinner type is separated by panel; color is architecture and marker shape is normalization.", y=0.99)
-    fig.tight_layout(rect=(0.0, 0.0, 0.86, 0.90))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
+    plot.save_loglog_scatter_grid(
+        path,
+        points,
+        panel_key="winner_kind",
+        panel_keys=WINNER_KINDS,
+        panel_titles={winner: _winner_title(winner) for winner in WINNER_KINDS},
+        x_key="abs_energy_error",
+        y_key="local_energy_var",
+        color_key="architecture",
+        marker_key="normalization",
+        x_label="abs energy error |E - 2|",
+        y_label="local-energy variance",
+        title=f"{title}\nWinner type is separated by panel; color is architecture and marker shape is normalization.",
+        color_title="Architecture",
+        marker_title="Normalization",
+    )
 
 
 def _local_energy_distribution_groups(
@@ -691,85 +445,44 @@ def _local_energy_bar_series(rows: Sequence[dict[str, Any]]) -> tuple[list[float
     centers = sorted(counts_by_center)
     counts = [counts_by_center[center] for center in centers]
     widths = [widths_by_center[center] for center in centers]
-    return _crop_bar_series_to_weighted_quantiles(centers, counts, widths)
-
-
-def _weighted_quantile(values: Sequence[float], weights: Sequence[float], q: float) -> float | None:
-    """Return a weighted empirical quantile for histogram-like bar centers."""
-
-    pairs = sorted((value, weight) for value, weight in zip(values, weights, strict=True) if math.isfinite(value) and weight > 0.0)
-    if not pairs:
-        return None
-    total = math.fsum(weight for _value, weight in pairs)
-    threshold = total * q
-    cumulative = 0.0
-    for value, weight in pairs:
-        cumulative += weight
-        if cumulative >= threshold:
-            return value
-    return pairs[-1][0]
-
-
-def _crop_bar_series_to_weighted_quantiles(
-    centers: Sequence[float],
-    counts: Sequence[float],
-    widths: Sequence[float],
-    *,
-    low_q: float = BAR_QUANTILE_RANGE[0],
-    high_q: float = BAR_QUANTILE_RANGE[1],
-) -> tuple[list[float], list[float], list[float]]:
-    """Keep only bar bins whose centers are in the weighted q5-q85 range."""
-
-    if not centers:
-        return [], [], []
-    low = _weighted_quantile(centers, counts, low_q)
-    high = _weighted_quantile(centers, counts, high_q)
-    if low is None or high is None or low > high:
-        return list(centers), list(counts), list(widths)
-    cropped = [
-        (center, count, width)
-        for center, count, width in zip(centers, counts, widths, strict=True)
-        if low <= center <= high
-    ]
-    if not cropped:
-        return list(centers), list(counts), list(widths)
-    return ([item[0] for item in cropped], [item[1] for item in cropped], [item[2] for item in cropped])
+    return plot.crop_bar_series_to_weighted_quantiles(centers, counts, widths)
 
 
 def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     normalizations, architectures, groups = _local_energy_distribution_groups(rows)
     if not groups:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
-    plt = _pyplot()
-    n_rows = len(normalizations)
-    n_cols = len(architectures)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(max(4.0, 3.2 * n_cols), max(3.0, 2.4 * n_rows)), squeeze=False, sharex=False, sharey=False)
-    for row_index, normalization in enumerate(normalizations):
-        for col_index, architecture in enumerate(architectures):
-            ax = axes[row_index][col_index]
-            values = groups.get((normalization, architecture), [])
-            if values:
-                centers, counts, widths = _local_energy_bar_series(values)
-                if centers:
-                    ax.bar(centers, counts, width=widths, align="center", color="#4C78A8", edgecolor="black", alpha=0.85)
-                else:
-                    ax.text(0.5, 0.5, "No finite samples", ha="center", va="center", transform=ax.transAxes, fontsize=9)
-            else:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=9)
-            if row_index == 0:
-                ax.set_title(architecture, fontsize=9)
-            if col_index == 0:
-                ax.set_ylabel(f"{normalization}\ncount")
-            if row_index == n_rows - 1:
-                ax.set_xlabel("local_energy")
-            ax.grid(True, axis="y", linewidth=0.4, alpha=0.35)
-    fig.suptitle(title, y=0.98)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
+    bars = []
+    for (normalization, architecture), values in groups.items():
+        centers, counts, widths = _local_energy_bar_series(values)
+        for center, count, width in zip(centers, counts, widths, strict=True):
+            bars.append(
+                {
+                    "panel_key": (normalization, architecture),
+                    "x": center,
+                    "height": count,
+                    "width": width,
+                    "color": "#4C78A8",
+                }
+            )
+    if not bars:
+        plot.save_no_data(path, title)
+        return
+    plot.save_grouped_bar_grid(
+        path,
+        bars,
+        row_keys=normalizations,
+        col_keys=architectures,
+        x_label="local_energy",
+        y_label="count",
+        title=title,
+        figsize=(max(4.0, 3.2 * len(architectures)), max(3.0, 2.4 * len(normalizations))),
+        rect=(0.0, 0.0, 1.0, 0.94),
+        suptitle_y=0.98,
+        bbox_inches=None,
+    )
 
 
 def _com_label(raw: Any) -> str:
@@ -833,75 +546,40 @@ def _save_cusp_winner_grid(
 ) -> None:
     """Save one cusp profile metric as a winner-specific architecture grid."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     profiles = _cusp_profile_points(rows, winner_kind=winner_kind, value_key=value_key)
     if not profiles:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
     architectures = sorted({cell[0] for cell in profiles})
     normalizations = sorted({cell[1] for cell in profiles})
     line_labels = sorted({cell[2] for cell in profiles})
-
-    plt = _pyplot()
-    cmap = plt.get_cmap("tab20")
-    colors = {label: cmap(index % cmap.N) for index, label in enumerate(line_labels)}
-    fig, axes = plt.subplots(
-        len(normalizations),
-        len(architectures),
+    series = [
+        {
+            "panel_key": (normalization, architecture),
+            "line_key": com,
+            "x": point["r12"],
+            "y": point["mean"],
+            "yerr": point["variance"],
+            "linewidth": 1.0,
+            "marker": "o",
+        }
+        for (architecture, normalization, com), points in profiles.items()
+        for point in points
+    ]
+    plot.save_grouped_line_grid(
+        path,
+        series,
+        row_keys=normalizations,
+        col_keys=architectures,
+        line_keys=line_labels,
+        x_label="r12",
+        y_label=y_label,
+        title=f"{title}\nLines are CoM groups; means and variances pool all direction/seed records.",
+        legend_title="CoM",
+        rect=(0.0, 0.0, 0.86, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.1 * len(normalizations))),
-        squeeze=False,
-        sharex=True,
-        sharey=False,
     )
-    legend_handles: dict[str, Any] = {}
-    for row_index, normalization in enumerate(normalizations):
-        for col_index, architecture in enumerate(architectures):
-            ax = axes[row_index][col_index]
-            plotted = False
-            for label in line_labels:
-                points = sorted(profiles.get((architecture, normalization, label), []), key=lambda item: float(item["r12"]))
-                if not points:
-                    continue
-                container = ax.errorbar(
-                    [float(point["r12"]) for point in points],
-                    [float(point["mean"]) for point in points],
-                    yerr=[float(point["variance"]) for point in points],
-                    marker="o",
-                    linewidth=1.0,
-                    markersize=2.8,
-                    capsize=2.0,
-                    color=colors[label],
-                    label=label,
-                )
-                legend_handles.setdefault(label, container)
-                plotted = True
-            if not plotted:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-            if row_index == 0:
-                ax.set_title(architecture, fontsize=9)
-            if col_index == 0:
-                ax.set_ylabel(f"{normalization}\n{y_label}")
-            if row_index == len(normalizations) - 1:
-                ax.set_xlabel("r12")
-            ax.grid(True, linewidth=0.35, alpha=0.35)
-
-    fig.suptitle(f"{title}\nLines are CoM groups; means and variances pool all direction/seed records.", y=0.995)
-    if legend_handles:
-        fig.legend(
-            legend_handles.values(),
-            legend_handles.keys(),
-            loc="center left",
-            bbox_to_anchor=(0.99, 0.5),
-            fontsize=7,
-            title="CoM",
-            title_fontsize=8,
-            borderaxespad=0.0,
-            ncol=max(1, math.ceil(len(legend_handles) / 28)),
-        )
-    fig.tight_layout(rect=(0.0, 0.0, 0.86 if legend_handles else 1.0, 0.94))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _cusp_derivative_profiles(
@@ -956,13 +634,13 @@ def _save_cusp_derivative_winner_grid(
     path.parent.mkdir(parents=True, exist_ok=True)
     model_profiles, target_profiles = _cusp_derivative_profiles(rows, winner_kind=winner_kind)
     if not model_profiles:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
     architectures = sorted({key[0] for key in model_profiles})
     normalizations = sorted({key[1] for key in model_profiles})
     com_labels = sorted({key[2] for key in model_profiles})
-    plt = _pyplot()
+    plt = plot.pyplot()
     cmap = plt.get_cmap("tab20")
     colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
     fig, axes = plt.subplots(
@@ -1152,86 +830,43 @@ def _save_tail_local_energy_bar_grid(
 ) -> None:
     """Save tail local-energy medians as bars with q5-q85 ranges."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     profiles = _tail_local_energy_bar_points(rows, winner_kind=winner_kind)
     if not profiles:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
     architectures = sorted({cell[0] for cell in profiles})
     normalizations = sorted({cell[1] for cell in profiles})
     com_labels = sorted({cell[2] for cell in profiles})
 
-    plt = _pyplot()
-    cmap = plt.get_cmap("tab10")
-    colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
-    fig, axes = plt.subplots(
-        len(normalizations),
-        len(architectures),
-        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
-        squeeze=False,
-        sharex=True,
-        sharey=False,
-    )
-    legend_handles: dict[str, Any] = {}
     all_radii = [float(point["radius"]) for points in profiles.values() for point in points]
     width = _tail_bar_width(all_radii, len(com_labels))
-    offsets = {
-        com: (index - (len(com_labels) - 1) / 2.0) * width
-        for index, com in enumerate(com_labels)
-    }
-    for row_index, normalization in enumerate(normalizations):
-        for col_index, architecture in enumerate(architectures):
-            ax = axes[row_index][col_index]
-            plotted = False
-            for com in com_labels:
-                points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
-                if not points:
-                    continue
-                xs = [float(point["radius"]) + offsets[com] for point in points]
-                ys = [float(point["median"]) for point in points]
-                lower = [max(0.0, float(point["median"]) - float(point["low"])) for point in points]
-                upper = [max(0.0, float(point["high"]) - float(point["median"])) for point in points]
-                container = ax.bar(
-                    xs,
-                    ys,
-                    width=width,
-                    yerr=[lower, upper],
-                    capsize=2.0,
-                    color=colors[com],
-                    edgecolor="black",
-                    linewidth=0.35,
-                    alpha=0.85,
-                    label=com,
-                )
-                legend_handles.setdefault(com, container)
-                plotted = True
-            if not plotted:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-            if row_index == 0:
-                ax.set_title(architecture, fontsize=9)
-            if col_index == 0:
-                ax.set_ylabel(f"{normalization}\nlocal energy")
-            if row_index == len(normalizations) - 1:
-                ax.set_xlabel("radius")
-            ax.grid(True, axis="y", linewidth=0.35, alpha=0.35)
-
-    fig.suptitle(f"{title}\nBars show median local energy; error bars show q5-q85.", y=0.995)
-    if legend_handles:
-        fig.legend(
-            list(legend_handles.values()),
-            list(legend_handles.keys()),
-            title="CoM",
-            loc="center left",
-            bbox_to_anchor=(0.99, 0.5),
-            ncol=max(1, math.ceil(len(legend_handles) / 28)),
-            fontsize=7,
-            title_fontsize=8,
-            borderaxespad=0.0,
-        )
-    fig.tight_layout(rect=(0.0, 0.0, 0.88 if legend_handles else 1.0, 0.94))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
+    bars = [
+        {
+            "panel_key": (normalization, architecture),
+            "bar_key": com,
+            "x": point["radius"],
+            "height": point["median"],
+            "yerr_low": max(0.0, float(point["median"]) - float(point["low"])),
+            "yerr_high": max(0.0, float(point["high"]) - float(point["median"])),
+            "width": width,
+        }
+        for (architecture, normalization, com), points in profiles.items()
+        for point in points
+    ]
+    plot.save_grouped_bar_grid(
+        path,
+        bars,
+        row_keys=normalizations,
+        col_keys=architectures,
+        bar_keys=com_labels,
+        x_label="radius",
+        y_label="local energy",
+        title=f"{title}\nBars show median local energy; error bars show q5-q85.",
+        legend_title="CoM",
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        rect=(0.0, 0.0, 0.88, 0.94),
+    )
 
 
 def _save_tail_logabs_line_grid(
@@ -1243,75 +878,39 @@ def _save_tail_logabs_line_grid(
 ) -> None:
     """Save tail logabs profiles as lines."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     profiles = _tail_seed_profile_points(rows, winner_kind=winner_kind, value_key="logabs_median")
     if not profiles:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
     architectures = sorted({cell[0] for cell in profiles})
     normalizations = sorted({cell[1] for cell in profiles})
     com_labels = sorted({cell[2] for cell in profiles})
-
-    plt = _pyplot()
-    cmap = plt.get_cmap("tab10")
-    colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
-    fig, axes = plt.subplots(
-        len(normalizations),
-        len(architectures),
+    series = [
+        {
+            "panel_key": (normalization, architecture),
+            "line_key": com,
+            "x": point["radius"],
+            "y": point["mean"],
+            "yerr": point["variance"],
+            "marker": "o",
+        }
+        for (architecture, normalization, com), points in profiles.items()
+        for point in points
+    ]
+    plot.save_grouped_line_grid(
+        path,
+        series,
+        row_keys=normalizations,
+        col_keys=architectures,
+        line_keys=com_labels,
+        x_label="radius",
+        y_label="logabs",
+        title=f"{title}\nLines are CoM groups; error bars are seed variance over final replicates.",
+        legend_title="CoM",
+        rect=(0.0, 0.0, 0.88, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
-        squeeze=False,
-        sharex=True,
-        sharey=False,
     )
-    legend_handles: dict[str, Any] = {}
-    for row_index, normalization in enumerate(normalizations):
-        for col_index, architecture in enumerate(architectures):
-            ax = axes[row_index][col_index]
-            plotted = False
-            for com in com_labels:
-                points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
-                if not points:
-                    continue
-                container = ax.errorbar(
-                    [float(point["radius"]) for point in points],
-                    [float(point["mean"]) for point in points],
-                    yerr=[float(point["variance"]) for point in points],
-                    marker="o",
-                    linewidth=1.1,
-                    markersize=3.0,
-                    capsize=2.0,
-                    color=colors[com],
-                    label=com,
-                )
-                legend_handles.setdefault(com, container)
-                plotted = True
-            if not plotted:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-            if row_index == 0:
-                ax.set_title(architecture, fontsize=9)
-            if col_index == 0:
-                ax.set_ylabel(f"{normalization}\nlogabs")
-            if row_index == len(normalizations) - 1:
-                ax.set_xlabel("radius")
-            ax.grid(True, linewidth=0.35, alpha=0.35)
-
-    fig.suptitle(f"{title}\nLines are CoM groups; error bars are seed variance over final replicates.", y=0.995)
-    if legend_handles:
-        fig.legend(
-            list(legend_handles.values()),
-            list(legend_handles.keys()),
-            title="CoM",
-            loc="center left",
-            bbox_to_anchor=(0.99, 0.5),
-            ncol=max(1, math.ceil(len(legend_handles) / 28)),
-            fontsize=7,
-            title_fontsize=8,
-            borderaxespad=0.0,
-        )
-    fig.tight_layout(rect=(0.0, 0.0, 0.88 if legend_handles else 1.0, 0.94))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _group_label(row: dict[str, Any], group_keys: Sequence[str]) -> str:
@@ -1330,41 +929,25 @@ def _save_line_plot(
     legend: str = "auto",
     legend_title: str | None = None,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    series = []
     for row in rows:
         x = _as_float(row.get(x_key))
         y = _as_float(row.get(y_key))
         if x is None or y is None:
             continue
-        groups[_group_label(row, group_keys)].append((x, y))
-    if not groups:
-        _save_no_data(path, title)
+        series.append({"line_key": _group_label(row, group_keys), "x": x, "y": y})
+    if not series:
+        plot.save_no_data(path, title)
         return
-
-    plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(7, 4))
-    for label, values in sorted(groups.items()):
-        values = sorted(values)
-        ax.plot([point[0] for point in values], [point[1] for point in values], marker="o", label=label)
-    ax.set_xlabel(x_key)
-    ax.set_ylabel(y_key)
-    ax.set_title(title)
-    if legend == "outside":
-        ax.legend(
-            fontsize=6,
-            title=legend_title,
-            title_fontsize=7,
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            borderaxespad=0.0,
-            ncol=max(1, math.ceil(len(groups) / 24)),
-        )
-    elif legend == "auto" and len(groups) <= 12:
-        ax.legend(fontsize=7, loc="best")
-    fig.tight_layout()
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
+    plot.save_grouped_line_plot(
+        path,
+        series,
+        x_label=x_key,
+        y_label=y_key,
+        title=title,
+        legend=legend,
+        legend_title=legend_title,
+    )
 
 
 def _save_architecture_line_grid(
@@ -1377,83 +960,39 @@ def _save_architecture_line_grid(
     title: str,
     legend_title: str,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    groups: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
+    series = []
     for row in rows:
         x = _as_float(row.get(x_key))
         y = _as_float(row.get(y_key))
         if x is None or y is None:
             continue
         architecture = _architecture_label(row)
-        groups[(architecture, _group_label(row, group_keys))].append((x, y))
-    if not groups:
-        _save_no_data(path, title)
+        series.append(
+            {
+                "panel_key": architecture,
+                "line_key": _group_label(row, group_keys),
+                "x": x,
+                "y": y,
+            }
+        )
+    if not series:
+        plot.save_no_data(path, title)
         return
 
-    architectures = sorted({key[0] for key in groups})
-    labels = sorted({key[1] for key in groups})
-    plt = _pyplot()
-    from matplotlib.lines import Line2D
-
-    n_cols = min(3, max(1, math.ceil(math.sqrt(len(architectures)))))
-    n_rows = math.ceil(len(architectures) / n_cols)
-    cmap = plt.get_cmap("tab20" if len(labels) > 10 else "tab10")
-    colors = {label: cmap(index % cmap.N) for index, label in enumerate(labels)}
-    fig, axes = plt.subplots(
-        n_rows,
-        n_cols,
-        figsize=(max(5.0, 3.4 * n_cols), max(3.0, 2.6 * n_rows)),
-        squeeze=False,
-        sharex=True,
-        sharey=False,
+    architectures = sorted({str(row["panel_key"]) for row in series})
+    labels = sorted({str(row["line_key"]) for row in series})
+    plot.save_grouped_line_grid(
+        path,
+        series,
+        panel_keys=architectures,
+        panel_title=lambda key: str(key),
+        line_keys=labels,
+        x_label=x_key,
+        y_label=y_key,
+        title=title,
+        legend_title=legend_title,
+        rect=(0.0, 0.0, 0.83, 0.94),
     )
-    flat_axes = [axis for axis_row in axes for axis in axis_row]
-    for index, architecture in enumerate(architectures):
-        ax = flat_axes[index]
-        plotted = False
-        for label in labels:
-            values = sorted(groups.get((architecture, label), []))
-            if not values:
-                continue
-            ax.plot(
-                [point[0] for point in values],
-                [point[1] for point in values],
-                marker="o",
-                linewidth=1.1,
-                markersize=3.0,
-                color=colors[label],
-                label=label,
-            )
-            plotted = True
-        if not plotted:
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-        ax.set_title(architecture, fontsize=9)
-        ax.set_xlabel(x_key)
-        ax.set_ylabel(y_key)
-        ax.grid(True, linewidth=0.35, alpha=0.35)
-    for ax in flat_axes[len(architectures):]:
-        ax.axis("off")
-
-    handles = [
-        Line2D([0], [0], marker="o", color=colors[label], linewidth=1.1, markersize=3.0, label=label)
-        for label in labels
-    ]
-    if handles:
-        fig.legend(
-            handles,
-            labels,
-            title=legend_title,
-            fontsize=6,
-            title_fontsize=7,
-            loc="center left",
-            bbox_to_anchor=(1.0, 0.5),
-            borderaxespad=0.0,
-            ncol=max(1, math.ceil(len(labels) / 28)),
-        )
-    fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=(0.0, 0.0, 0.83 if handles else 1.0, 0.94))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _save_architecture_normalization_line_grid(
@@ -1468,8 +1007,7 @@ def _save_architecture_normalization_line_grid(
 ) -> None:
     """Save a line grid with normalization rows and architecture columns."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    groups: dict[tuple[str, str, str], list[tuple[float, float]]] = defaultdict(list)
+    series = []
     for row in rows:
         x = _as_float(row.get(x_key))
         y = _as_float(row.get(y_key))
@@ -1477,77 +1015,36 @@ def _save_architecture_normalization_line_grid(
             continue
         architecture = _architecture_label(row)
         normalization = str(row.get("normalization", "")) or "all"
-        groups[(architecture, normalization, _group_label(row, group_keys))].append((x, y))
-    if not groups:
-        _save_no_data(path, title)
+        series.append(
+            {
+                "panel_key": (normalization, architecture),
+                "line_key": _group_label(row, group_keys),
+                "x": x,
+                "y": y,
+            }
+        )
+    if not series:
+        plot.save_no_data(path, title)
         return
 
     x_label = x_key.replace("_", " ")
     y_label = y_key.replace("_", " ")
-    architectures = sorted({key[0] for key in groups})
-    normalizations = sorted({key[1] for key in groups})
-    labels = sorted({key[2] for key in groups})
-    plt = _pyplot()
-    from matplotlib.lines import Line2D
-
-    cmap = plt.get_cmap("tab20" if len(labels) > 10 else "tab10")
-    colors = {label: cmap(index % cmap.N) for index, label in enumerate(labels)}
-    fig, axes = plt.subplots(
-        len(normalizations),
-        len(architectures),
+    architectures = sorted({str(row["panel_key"][1]) for row in series})
+    normalizations = sorted({str(row["panel_key"][0]) for row in series})
+    labels = sorted({str(row["line_key"]) for row in series})
+    plot.save_grouped_line_grid(
+        path,
+        series,
+        row_keys=normalizations,
+        col_keys=architectures,
+        line_keys=labels,
+        x_label=x_label,
+        y_label=y_label,
+        title=title,
+        legend_title=legend_title,
+        rect=(0.0, 0.0, 0.84, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
-        squeeze=False,
-        sharex=True,
-        sharey=False,
     )
-    for row_index, normalization in enumerate(normalizations):
-        for col_index, architecture in enumerate(architectures):
-            ax = axes[row_index][col_index]
-            plotted = False
-            for label in labels:
-                values = sorted(groups.get((architecture, normalization, label), []))
-                if not values:
-                    continue
-                ax.plot(
-                    [point[0] for point in values],
-                    [point[1] for point in values],
-                    marker="o",
-                    linewidth=1.1,
-                    markersize=3.0,
-                    color=colors[label],
-                    label=label,
-                )
-                plotted = True
-            if not plotted:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-            if row_index == 0:
-                ax.set_title(architecture, fontsize=9)
-            if col_index == 0:
-                ax.set_ylabel(f"{normalization}\n{y_label}")
-            if row_index == len(normalizations) - 1:
-                ax.set_xlabel(x_label)
-            ax.grid(True, linewidth=0.35, alpha=0.35)
-
-    handles = [
-        Line2D([0], [0], marker="o", color=colors[label], linewidth=1.1, markersize=3.0, label=label)
-        for label in labels
-    ]
-    if handles:
-        fig.legend(
-            handles,
-            labels,
-            title=legend_title,
-            fontsize=6,
-            title_fontsize=7,
-            loc="center left",
-            bbox_to_anchor=(1.0, 0.5),
-            borderaxespad=0.0,
-            ncol=max(1, math.ceil(len(labels) / 28)),
-        )
-    fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=(0.0, 0.0, 0.84 if handles else 1.0, 0.94))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _training_curve_value(row: dict[str, Any], value_mode: str) -> float | None:
@@ -1622,66 +1119,50 @@ def _save_training_curve_grid(
 ) -> None:
     """Save one winner family's final-training curves."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     curves = _training_run_curves(_winner_rows(rows, winner_kind), value_mode=value_mode, smooth_window=smooth_window)
     curves = {key: points for key, points in curves.items() if key[2] == winner_kind}
     if not curves:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
     architectures = sorted({key[0] for key in curves})
     normalizations = sorted({key[1] for key in curves})
-    runs_by_cell: dict[tuple[str, str], list[tuple[str, list[dict[str, float | str]]]]] = defaultdict(list)
+    runs_by_cell: dict[tuple[str, str], list[str]] = defaultdict(list)
+    series = []
     for (architecture, normalization, _winner, run_id), points in curves.items():
-        runs_by_cell[(architecture, normalization)].append((run_id, points))
-
-    plt = _pyplot()
-    cmap = plt.get_cmap("tab20")
-    fig, axes = plt.subplots(
-        len(normalizations),
-        len(architectures),
-        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
-        squeeze=False,
-        sharex=True,
+        runs_by_cell[(normalization, architecture)].append(run_id)
+        for point in points:
+            series.append(
+                {
+                    "panel_key": (normalization, architecture),
+                    "line_key": run_id,
+                    "x": point["step"],
+                    "y": point["value"],
+                    "linewidth": 0.9,
+                    "alpha": 0.45,
+                    "marker": "",
+                }
+            )
+    panel_notes = {
+        key: f"n={len(run_ids)}"
+        for key, run_ids in runs_by_cell.items()
+    }
+    plot.save_grouped_line_grid(
+        path,
+        series,
+        row_keys=normalizations,
+        col_keys=architectures,
+        x_label="step",
+        y_label=y_label,
+        title=f"{title}\nEach line is one final-training run; curves use a {smooth_window}-point centered rolling mean.",
+        legend_title=None,
+        show_legend=False,
         sharey=semilogy,
+        yscale="log" if semilogy else None,
+        panel_notes=panel_notes,
+        rect=(0.0, 0.0, 1.0, 0.94),
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
     )
-    for row_index, normalization in enumerate(normalizations):
-        for col_index, architecture in enumerate(architectures):
-            ax = axes[row_index][col_index]
-            if semilogy:
-                ax.set_yscale("log")
-            plotted = False
-            run_curves = sorted(runs_by_cell.get((architecture, normalization), []), key=lambda item: item[0])
-            for run_index, (_run_id, points) in enumerate(run_curves):
-                points = sorted(points, key=lambda point: float(point["step"]))
-                if semilogy:
-                    points = [point for point in points if float(point["value"]) > 0.0]
-                if not points:
-                    continue
-                ax.plot(
-                    [float(point["step"]) for point in points],
-                    [float(point["value"]) for point in points],
-                    linewidth=0.9,
-                    alpha=0.45,
-                    color=cmap(run_index % cmap.N),
-                )
-                plotted = True
-            if not plotted:
-                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
-            else:
-                ax.text(0.97, 0.94, f"n={len(run_curves)}", ha="right", va="top", transform=ax.transAxes, fontsize=7)
-            if row_index == 0:
-                ax.set_title(architecture, fontsize=9)
-            if col_index == 0:
-                ax.set_ylabel(f"{normalization}\n{y_label}")
-            if row_index == len(normalizations) - 1:
-                ax.set_xlabel("step")
-            ax.grid(True, linewidth=0.35, alpha=0.35)
-
-    fig.suptitle(f"{title}\nEach line is one final-training run; curves use a {smooth_window}-point centered rolling mean.", y=0.995)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _save_symmetry_metric_grid(
@@ -1693,71 +1174,29 @@ def _save_symmetry_metric_grid(
 ) -> None:
     """Save one symmetry metric as architecture-by-normalization heatmaps."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     symmetries = _unique_in_order(row.get("symmetry_task", "") for row in rows)
     if not symmetries:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
-    matrices = {}
-    scale_values_by_symmetry: dict[str, list[float]] = defaultdict(list)
+    panel_rows = {}
     for symmetry in symmetries:
         symmetry_rows = [row for row in rows if str(row.get("symmetry_task", "")) == symmetry]
         for winner in WINNER_KINDS:
-            y_labels, x_labels, matrix = _heatmap_matrix(
-                _winner_rows(symmetry_rows, winner),
-                row_key="basis_class",
-                col_key="normalization",
-                value_key=metric_key,
-            )
-            matrices[(symmetry, winner)] = (y_labels, x_labels, matrix)
-            scale_values_by_symmetry[symmetry].extend(_matrix_values(matrix))
-    if not any(scale_values_by_symmetry.values()):
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-    fig, axes = plt.subplots(
-        len(symmetries),
-        len(WINNER_KINDS),
+            panel_rows[(symmetry, winner)] = _winner_rows(symmetry_rows, winner)
+    plot.save_row_scoped_heatmap_grid(
+        path,
+        panel_rows,
+        row_labels=symmetries,
+        col_labels=WINNER_KINDS,
+        row_key="basis_class",
+        col_key="normalization",
+        value_key=metric_key,
+        title=title,
+        panel_title=lambda symmetry, winner: f"{symmetry}\n{_winner_title(winner)}",
+        colorbar_ticks="none",
         figsize=(max(14.0, 7.0 * len(WINNER_KINDS)), max(3.2, 3.0 * len(symmetries))),
-        squeeze=False,
-        sharex=False,
-        sharey=False,
+        subplot_adjust={"left": 0.07, "right": 0.89, "bottom": 0.08, "top": 0.90, "wspace": 0.55, "hspace": 0.65},
     )
-    for row_index, symmetry in enumerate(symmetries):
-        row_scale_values = scale_values_by_symmetry[symmetry]
-        row_images = []
-        for col_index, winner in enumerate(WINNER_KINDS):
-            ax = axes[row_index][col_index]
-            y_labels, x_labels, matrix = matrices[(symmetry, winner)]
-            image = _draw_heatmap_axis(
-                fig,
-                ax,
-                y_labels=y_labels,
-                x_labels=x_labels,
-                matrix=matrix,
-                value_key=metric_key,
-                title=f"{symmetry}\n{_winner_title(winner)}",
-                transform=None,
-                scale_values=row_scale_values,
-                add_colorbar=False,
-            )
-            if image is not None:
-                row_images.append(image)
-            if col_index > 0:
-                ax.set_yticklabels([])
-        if row_images:
-            colorbar = fig.colorbar(
-                row_images[0],
-                ax=list(axes[row_index]),
-                fraction=0.035,
-                pad=0.035,
-            )
-            colorbar.set_ticks([])
-    fig.suptitle(title, y=0.995)
-    fig.subplots_adjust(left=0.07, right=0.89, bottom=0.08, top=0.90, wspace=0.55, hspace=0.65)
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _save_feature_trace_metric_grid(
@@ -1769,7 +1208,6 @@ def _save_feature_trace_metric_grid(
 ) -> None:
     """Save one feature-trace metric as layer-by-winner heatmaps."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     trace_rows = [
         row
         for row in rows
@@ -1778,68 +1216,27 @@ def _save_feature_trace_metric_grid(
     ]
     layers = _unique_in_order(row.get("layer", "") for row in trace_rows)
     if not layers:
-        _save_no_data(path, title)
+        plot.save_no_data(path, title)
         return
 
-    matrices = {}
-    scale_values_by_layer: dict[str, list[float]] = defaultdict(list)
+    panel_rows = {}
     for layer in layers:
         layer_rows = [row for row in trace_rows if str(row.get("layer", "")) == layer]
         for winner in WINNER_KINDS:
-            y_labels, x_labels, matrix = _heatmap_matrix(
-                _winner_rows(layer_rows, winner),
-                row_key="basis_class",
-                col_key="normalization",
-                value_key=metric_key,
-            )
-            matrices[(layer, winner)] = (y_labels, x_labels, matrix)
-            scale_values_by_layer[layer].extend(_matrix_values(matrix))
-    if not any(scale_values_by_layer.values()):
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-    fig, axes = plt.subplots(
-        len(layers),
-        len(WINNER_KINDS),
+            panel_rows[(layer, winner)] = _winner_rows(layer_rows, winner)
+    plot.save_row_scoped_heatmap_grid(
+        path,
+        panel_rows,
+        row_labels=layers,
+        col_labels=WINNER_KINDS,
+        row_key="basis_class",
+        col_key="normalization",
+        value_key=metric_key,
+        title=title,
+        panel_title=lambda layer, winner: f"{layer}\n{_winner_title(winner)}",
         figsize=(max(11.0, 5.5 * len(WINNER_KINDS)), max(3.2, 2.55 * len(layers))),
-        squeeze=False,
-        sharex=False,
-        sharey=False,
+        subplot_adjust={"left": 0.08, "right": 0.89, "bottom": 0.04, "top": 0.94, "wspace": 0.65, "hspace": 0.75},
     )
-    for row_index, layer in enumerate(layers):
-        row_scale_values = scale_values_by_layer[layer]
-        row_images = []
-        for col_index, winner in enumerate(WINNER_KINDS):
-            ax = axes[row_index][col_index]
-            y_labels, x_labels, matrix = matrices[(layer, winner)]
-            image = _draw_heatmap_axis(
-                fig,
-                ax,
-                y_labels=y_labels,
-                x_labels=x_labels,
-                matrix=matrix,
-                value_key=metric_key,
-                title=f"{layer}\n{_winner_title(winner)}",
-                transform=None,
-                scale_values=row_scale_values,
-                add_colorbar=False,
-            )
-            if image is not None:
-                row_images.append(image)
-            if col_index > 0:
-                ax.set_yticklabels([])
-        if row_images:
-            fig.colorbar(
-                row_images[0],
-                ax=list(axes[row_index]),
-                fraction=0.035,
-                pad=0.035,
-            )
-    fig.suptitle(title, y=0.995)
-    fig.subplots_adjust(left=0.08, right=0.89, bottom=0.04, top=0.94, wspace=0.65, hspace=0.75)
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
 
 def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *, stat: str) -> None:
