@@ -81,6 +81,16 @@ def _mean(values: Sequence[float]) -> float | None:
     return math.fsum(clean) / len(clean) if clean else None
 
 
+def _variance(values: Sequence[float]) -> float | None:
+    clean = [value for value in values if math.isfinite(value)]
+    if not clean:
+        return None
+    if len(clean) == 1:
+        return 0.0
+    mean = math.fsum(clean) / len(clean)
+    return math.fsum((value - mean) ** 2 for value in clean) / (len(clean) - 1)
+
+
 def _format_number(value: float | None) -> str:
     if value is None:
         return ""
@@ -336,6 +346,152 @@ def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, An
     plt.close(fig)
 
 
+def _com_label(raw: Any) -> str:
+    value = str(raw).strip()
+    return f"CoM {value}" if value else "CoM all"
+
+
+def _tail_seed_profile_points(
+    rows: Sequence[dict[str, Any]],
+    *,
+    winner_kind: str,
+    value_key: str,
+) -> dict[tuple[str, str, str], list[dict[str, float | int]]]:
+    """Return tail profile points with seed variance for each CoM line.
+
+    Tail records may contain multiple radial paths for the same CoM, radius, and
+    seed. Those paths are averaged inside a seed first; the plotted uncertainty
+    is then the variance of those seed-level values.
+    """
+
+    per_seed: dict[tuple[str, str, str, float, str], list[float]] = defaultdict(list)
+    for row in rows:
+        if str(row.get("winner_kind", "")) != winner_kind:
+            continue
+        radius = _as_float(row.get("radius"))
+        value = _as_float(row.get(value_key))
+        if radius is None or value is None:
+            continue
+        basis = str(row.get("basis_class", row.get("basis", "")))
+        normalization = str(row.get("normalization", ""))
+        com = _com_label(row.get("com_id", row.get("center_of_mass_id", "")))
+        seed = str(row.get("seed_index", row.get("final_run_id", "")))
+        per_seed[(basis, normalization, com, radius, seed)].append(value)
+
+    by_radius: dict[tuple[str, str, str, float], list[float]] = defaultdict(list)
+    for (basis, normalization, com, radius, _seed), values in per_seed.items():
+        mean = _mean(values)
+        if mean is not None:
+            by_radius[(basis, normalization, com, radius)].append(mean)
+
+    out: dict[tuple[str, str, str], list[dict[str, float | int]]] = defaultdict(list)
+    for (basis, normalization, com, radius), seed_values in sorted(by_radius.items()):
+        mean = _mean(seed_values)
+        variance = _variance(seed_values)
+        if mean is None or variance is None:
+            continue
+        out[(basis, normalization, com)].append(
+            {
+                "radius": radius,
+                "mean": mean,
+                "variance": variance,
+                "n_seeds": len(seed_values),
+            }
+        )
+    return out
+
+
+def _save_tail_winner_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    winner_kind: str,
+    title: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metrics = (
+        ("local energy", "local_energy_median"),
+        ("logabs", "logabs_median"),
+    )
+    profile_by_metric = {
+        label: _tail_seed_profile_points(rows, winner_kind=winner_kind, value_key=value_key)
+        for label, value_key in metrics
+    }
+    cells = {cell for profiles in profile_by_metric.values() for cell in profiles}
+    if not cells:
+        _save_no_data(path, title)
+        return
+
+    architectures = sorted({cell[0] for cell in cells})
+    normalizations = sorted({cell[1] for cell in cells})
+    com_labels = sorted({cell[2] for cell in cells})
+
+    plt = _pyplot()
+    cmap = plt.get_cmap("tab10")
+    colors = {label: cmap(index % cmap.N) for index, label in enumerate(com_labels)}
+    n_rows = len(metrics) * len(normalizations)
+    n_cols = len(architectures)
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(5.0, 3.1 * n_cols), max(3.6, 2.2 * n_rows)),
+        squeeze=False,
+        sharex=True,
+        sharey=False,
+    )
+    legend_handles: dict[str, Any] = {}
+    for metric_index, (metric_label, _value_key) in enumerate(metrics):
+        profiles = profile_by_metric[metric_label]
+        for norm_index, normalization in enumerate(normalizations):
+            row_index = metric_index * len(normalizations) + norm_index
+            for col_index, architecture in enumerate(architectures):
+                ax = axes[row_index][col_index]
+                plotted = False
+                for com in com_labels:
+                    points = sorted(profiles.get((architecture, normalization, com), []), key=lambda item: float(item["radius"]))
+                    if not points:
+                        continue
+                    container = ax.errorbar(
+                        [float(point["radius"]) for point in points],
+                        [float(point["mean"]) for point in points],
+                        yerr=[float(point["variance"]) for point in points],
+                        marker="o",
+                        linewidth=1.1,
+                        markersize=3.0,
+                        capsize=2.0,
+                        color=colors[com],
+                        label=com,
+                    )
+                    legend_handles.setdefault(com, container)
+                    plotted = True
+                if not plotted:
+                    ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+                if row_index == 0:
+                    ax.set_title(architecture, fontsize=9)
+                if col_index == 0:
+                    ax.set_ylabel(f"{normalization}\n{metric_label}\nseed mean")
+                if row_index == n_rows - 1:
+                    ax.set_xlabel("radius")
+                ax.grid(True, linewidth=0.35, alpha=0.35)
+
+    fig.suptitle(f"{title}\nLines are CoM groups; error bars are seed variance over final replicates.", y=0.995)
+    if legend_handles:
+        fig.legend(
+            list(legend_handles.values()),
+            list(legend_handles.keys()),
+            title="CoM",
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.965),
+            ncol=min(6, len(legend_handles)),
+            fontsize=7,
+            title_fontsize=8,
+        )
+    top = 0.91 if legend_handles else 0.94
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, top))
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def _save_line_plot(path: Path, rows: Sequence[dict[str, Any]], *, x_key: str, y_key: str, group_keys: Sequence[str], title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     groups: dict[str, list[tuple[float, float]]] = defaultdict(list)
@@ -402,8 +558,8 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         ("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path")),
         ("2B_cusp_c_minus_1_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path")),
         ("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path")),
-        ("3A_tail_local_energy_by_path.png", lambda path: _save_line_plot(path, tables["tail_profile_summary.csv"], x_key="radius", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "tail_path"), title="Tail local energy by path")),
-        ("3B_tail_logabs_with_reference.png", lambda path: _save_line_plot(path, tables["tail_profile_summary.csv"], x_key="radius", y_key="logabs_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "tail_path"), title="Tail logabs by path")),
+        ("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners")),
+        ("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners")),
         ("3C_tail_outlier_heatmap.png", lambda path: _save_heatmap(path, architecture, row_key="basis_label", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
         ("4_stratified_geometry_aggregate_heatmap.png", lambda path: _save_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_label", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error")),
         ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_line_plot(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians")),
@@ -513,7 +669,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Tail Diagnostics",
             "",
-            "Tail tables preserve path columns. Exact log-amplitude references are included when collect inputs provide them.",
+            "Tail tables preserve path columns. Figures 3A/3B split energy and stability winners into subplot grids; each subplot draws CoM lines with seed-variance error bars for local energy and logabs. Exact log-amplitude references are included when collect inputs provide them.",
             "",
             "## Stratified Geometry Diagnostics",
             "",

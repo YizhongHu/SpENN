@@ -875,6 +875,8 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     copied_energy = _read_csv(report_dir / "tables" / "energy_by_run.csv")
     assert copied_energy[0]["energy_error"] == "0.5"
     assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
+    assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
     assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
@@ -945,6 +947,61 @@ def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> Non
     assert architectures == ["hermite_o2_envelope / stability", "raw_envelope / energy"]
     assert len(groups[("N1", "raw_envelope / energy")]) == 2
     assert groups[("N0", "hermite_o2_envelope / stability")][0]["count"] == "4"
+
+
+def test_final_report_tail_grid_aggregates_paths_before_seed_variance() -> None:
+    points = final_report._tail_seed_profile_points(
+        [
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "seed_index": "0",
+                "com_id": "near",
+                "tail_path": "a",
+                "radius": "1.0",
+                "local_energy_median": "2.0",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "seed_index": "0",
+                "com_id": "near",
+                "tail_path": "b",
+                "radius": "1.0",
+                "local_energy_median": "4.0",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "energy",
+                "seed_index": "1",
+                "com_id": "near",
+                "tail_path": "a",
+                "radius": "1.0",
+                "local_energy_median": "5.0",
+            },
+            {
+                "basis_class": "raw_envelope",
+                "normalization": "N0",
+                "winner_kind": "stability",
+                "seed_index": "0",
+                "com_id": "near",
+                "tail_path": "a",
+                "radius": "1.0",
+                "local_energy_median": "100.0",
+            },
+        ],
+        winner_kind="energy",
+        value_key="local_energy_median",
+    )
+
+    row = points[("raw_envelope", "N0", "CoM near")][0]
+    assert row["radius"] == 1.0
+    assert row["mean"] == pytest.approx(4.0)
+    assert row["variance"] == pytest.approx(2.0)
+    assert row["n_seeds"] == 2
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
