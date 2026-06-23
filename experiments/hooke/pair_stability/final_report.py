@@ -432,6 +432,139 @@ def _com_label(raw: Any) -> str:
     return f"CoM {value}" if value else "CoM all"
 
 
+def _cusp_line_label(row: dict[str, Any]) -> str:
+    com = _com_label(row.get("com_id", row.get("center_of_mass_id", "")))
+    direction = str(row.get("direction_id", "")).strip()
+    return f"{com} / dir {direction}" if direction else com
+
+
+def _cusp_seed_profile_points(
+    rows: Sequence[dict[str, Any]],
+    *,
+    winner_kind: str,
+    value_key: str,
+) -> dict[tuple[str, str, str], list[dict[str, float | int]]]:
+    """Return cusp profile points with seed variance for each CoM/direction line."""
+
+    per_seed: dict[tuple[str, str, str, float, str], list[float]] = defaultdict(list)
+    for row in rows:
+        if str(row.get("winner_kind", "")) != winner_kind:
+            continue
+        r12 = _as_float(row.get("r12"))
+        value = _as_float(row.get(value_key))
+        if r12 is None or value is None:
+            continue
+        basis = str(row.get("basis_class", row.get("basis", "")))
+        normalization = str(row.get("normalization", ""))
+        line = _cusp_line_label(row)
+        seed = str(row.get("seed_index", row.get("final_run_id", "")))
+        per_seed[(basis, normalization, line, r12, seed)].append(value)
+
+    by_r12: dict[tuple[str, str, str, float], list[float]] = defaultdict(list)
+    for (basis, normalization, line, r12, _seed), values in per_seed.items():
+        mean = _mean(values)
+        if mean is not None:
+            by_r12[(basis, normalization, line, r12)].append(mean)
+
+    out: dict[tuple[str, str, str], list[dict[str, float | int]]] = defaultdict(list)
+    for (basis, normalization, line, r12), seed_values in sorted(by_r12.items()):
+        mean = _mean(seed_values)
+        variance = _variance(seed_values)
+        if mean is None or variance is None:
+            continue
+        out[(basis, normalization, line)].append(
+            {
+                "r12": r12,
+                "mean": mean,
+                "variance": variance,
+                "n_seeds": len(seed_values),
+            }
+        )
+    return out
+
+
+def _save_cusp_winner_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    winner_kind: str,
+    value_key: str,
+    y_label: str,
+    title: str,
+) -> None:
+    """Save one cusp profile metric as a winner-specific architecture grid."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    profiles = _cusp_seed_profile_points(rows, winner_kind=winner_kind, value_key=value_key)
+    if not profiles:
+        _save_no_data(path, title)
+        return
+
+    architectures = sorted({cell[0] for cell in profiles})
+    normalizations = sorted({cell[1] for cell in profiles})
+    line_labels = sorted({cell[2] for cell in profiles})
+
+    plt = _pyplot()
+    cmap = plt.get_cmap("tab20")
+    colors = {label: cmap(index % cmap.N) for index, label in enumerate(line_labels)}
+    fig, axes = plt.subplots(
+        len(normalizations),
+        len(architectures),
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.1 * len(normalizations))),
+        squeeze=False,
+        sharex=True,
+        sharey=False,
+    )
+    legend_handles: dict[str, Any] = {}
+    for row_index, normalization in enumerate(normalizations):
+        for col_index, architecture in enumerate(architectures):
+            ax = axes[row_index][col_index]
+            plotted = False
+            for label in line_labels:
+                points = sorted(profiles.get((architecture, normalization, label), []), key=lambda item: float(item["r12"]))
+                if not points:
+                    continue
+                container = ax.errorbar(
+                    [float(point["r12"]) for point in points],
+                    [float(point["mean"]) for point in points],
+                    yerr=[float(point["variance"]) for point in points],
+                    marker="o",
+                    linewidth=1.0,
+                    markersize=2.8,
+                    capsize=2.0,
+                    color=colors[label],
+                    label=label,
+                )
+                legend_handles.setdefault(label, container)
+                plotted = True
+            if not plotted:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+            if row_index == 0:
+                ax.set_title(architecture, fontsize=9)
+            if col_index == 0:
+                ax.set_ylabel(f"{normalization}\n{y_label}")
+            if row_index == len(normalizations) - 1:
+                ax.set_xlabel("r12")
+            ax.grid(True, linewidth=0.35, alpha=0.35)
+
+    fig.suptitle(f"{title}\nLines are CoM/direction groups; error bars are seed variance over final replicates.", y=0.995)
+    if legend_handles:
+        fig.legend(
+            legend_handles.values(),
+            legend_handles.keys(),
+            loc="center left",
+            bbox_to_anchor=(0.99, 0.5),
+            fontsize=7,
+            title="CoM / direction",
+            title_fontsize=8,
+            borderaxespad=0.0,
+            ncol=max(1, math.ceil(len(legend_handles) / 28)),
+        )
+    fig.tight_layout(rect=(0.0, 0.0, 0.86 if legend_handles else 1.0, 0.94))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _tail_seed_profile_points(
     rows: Sequence[dict[str, Any]],
     *,
@@ -852,9 +985,20 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         )
 
     add("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance"))
-    add("2A_cusp_local_energy_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="local_energy_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp local energy by CoM path"))
-    add("2B_cusp_logabs_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="logabs_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp logabs by CoM path"))
-    add("2C_cusp_finite_fraction_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="finite_fraction", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp finite fraction by CoM path"))
+    cusp_rows = tables["cusp_profile_summary.csv"]
+    for winner in WINNER_KINDS:
+        add(
+            _winner_filename("2A", winner, "cusp_local_energy_grid.png"),
+            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="local_energy_median", y_label="local energy", title=f"Cusp local energy profiles: {_winner_title(winner)}"),
+        )
+        add(
+            _winner_filename("2B", winner, "cusp_logabs_grid.png"),
+            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="logabs_median", y_label="logabs", title=f"Cusp logabs profiles: {_winner_title(winner)}"),
+        )
+        add(
+            _winner_filename("2C", winner, "cusp_finite_fraction_grid.png"),
+            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="finite_fraction", y_label="finite fraction", title=f"Cusp finite fraction profiles: {_winner_title(winner)}"),
+        )
     add("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners"))
     add("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners"))
 
@@ -1005,7 +1149,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Cusp Diagnostics",
             "",
-            "Cusp tables preserve center-of-mass and direction columns when present. Figure 2 plots sampled local energy, log-amplitude, and finite fraction profiles against `r12`; aggregate cusp-slope diagnostics remain in the metrics tables.",
+            "Cusp tables preserve center-of-mass and direction columns when present. Figures 2A/2B/2C emit separate energy/stability grids for sampled local-energy, log-amplitude, and finite-fraction profiles against `r12`, with shared CoM/direction legends. Aggregate cusp-slope diagnostics remain in the metrics tables.",
             "",
             "## Tail Diagnostics",
             "",
