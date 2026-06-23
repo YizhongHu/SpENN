@@ -162,6 +162,39 @@ other stage launchers default to the same zone and inject `run.timezone` when
 they build validation, final-train, and final-eval commands. The configs keep
 `run.timezone: null`; the launcher is the source of truth.
 
+### Attempt ids
+
+An attempt id names one rerunnable stage output. Passing `--attempt-id` to a
+stage that supports it is always the most explicit way to separate a rerun from
+earlier artifacts.
+
+Planning and reduction stages create a new timestamped attempt id when one is
+not provided: `plan.py`, `collect.py`, `select_champions.py`, `final_plan.py`,
+and `final_collect.py`. `final_report.py` is slightly different: by default it
+uses the selected `08_final_collect` attempt id because it is a deterministic
+rendering of those compact tables; pass `--attempt-id` to keep multiple report
+renderings side by side.
+
+Launch stages that fan out over planned rows inherit the source planning
+attempt by default, so their outputs can be joined directly back to the durable
+manifest:
+
+- `train.py` writes `01_train/{run_id}/{grid_attempt_id}`. It does not expose
+  `--attempt-id`; smoke training writes `{grid_attempt_id}-smoke`.
+- `validate.py` writes `02_validation/{run_id}/{grid_attempt_id}` by default,
+  or `{grid_attempt_id}-smoke` with `--smoke`. If `--attempt-id` is provided,
+  validation uses that exact id.
+- `final_train.py` writes `06_final_train/{final_run_id}/{final_grid_attempt_id}`
+  by default, or `{final_grid_attempt_id}-smoke` with `--smoke`.
+- `final_eval.py` writes `07_final_eval/{final_run_id}/{final_grid_attempt_id}`
+  by default, or `{final_grid_attempt_id}-smoke` with `--smoke`.
+
+Because these launch stages reuse inherited ids, rerunning the same source
+attempt without an explicit override targets the same per-run attempt
+directories. Use a new `--attempt-id` on validation, final-train, or final-eval
+when the intent is to keep an alternate launch attempt rather than update the
+existing one.
+
 ```bash
 # Plan the grid (dry run): writes results/00_grid/<attempt_id>/
 uv run python experiments/hooke/pair_stability/plan.py
