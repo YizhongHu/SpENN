@@ -712,17 +712,61 @@ def _save_heatmap(
     transform: str | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    y_labels, x_labels, matrix = _heatmap_matrix(
+        rows,
+        row_key=row_key,
+        col_key=col_key,
+        value_key=value_key,
+    )
+    if not matrix:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    from matplotlib.colors import SymLogNorm
+
+    fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(x_labels)), max(3.5, 0.8 * len(y_labels))))
+    finite_values = [value for row in matrix for value in row if value is not None]
+    vmax = max(abs(value) for value in finite_values) if finite_values else 1.0
+    data = [[math.nan if value is None else value for value in row] for row in matrix]
+    colorbar_label = value_key
+    if transform == "signed_log":
+        nonzero = [abs(value) for value in finite_values if value != 0.0]
+        norm = SymLogNorm(linthresh=min(nonzero), vmin=-vmax, vmax=vmax, base=10) if nonzero else None
+        image = ax.imshow(data, cmap="coolwarm", norm=norm, aspect="auto")
+        colorbar_label = f"{value_key} (symmetric log color; labels are real scale)"
+    else:
+        image = ax.imshow(data, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(x_labels)), labels=x_labels, rotation=35, ha="right")
+    ax.set_yticks(range(len(y_labels)), labels=y_labels)
+    ax.set_title(title)
+    for y_index, row in enumerate(matrix):
+        for x_index, value in enumerate(row):
+            if value is not None:
+                ax.text(x_index, y_index, f"{value:.2g}", ha="center", va="center", fontsize=8)
+    fig.colorbar(image, ax=ax, label=colorbar_label)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _heatmap_matrix(
+    rows: Sequence[dict[str, Any]],
+    *,
+    row_key: str,
+    col_key: str,
+    value_key: str,
+) -> tuple[list[str], list[str], list[list[float | None]]]:
+    """Return real-scale heatmap cell means for plotting and annotations."""
+
     cells: dict[tuple[str, str], list[float]] = defaultdict(list)
     for row in rows:
         value = _as_float(row.get(value_key))
         if value is None:
             continue
-        if transform == "signed_log":
-            value = 0.0 if value == 0.0 else math.copysign(math.log10(abs(value)), value)
         cells[(str(row.get(row_key, "")), str(row.get(col_key, "")))].append(value)
     if not cells:
-        _save_no_data(path, title)
-        return
+        return [], [], []
     y_labels = sorted({key[0] for key in cells})
     x_labels = sorted({key[1] for key in cells})
     matrix = []
@@ -731,24 +775,7 @@ def _save_heatmap(
         for x in x_labels:
             row_values.append(_mean(cells.get((y, x), [])))
         matrix.append(row_values)
-
-    plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(x_labels)), max(3.5, 0.8 * len(y_labels))))
-    finite_values = [value for row in matrix for value in row if value is not None]
-    vmax = max(abs(value) for value in finite_values) if finite_values else 1.0
-    data = [[math.nan if value is None else value for value in row] for row in matrix]
-    image = ax.imshow(data, cmap="coolwarm", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_xticks(range(len(x_labels)), labels=x_labels, rotation=35, ha="right")
-    ax.set_yticks(range(len(y_labels)), labels=y_labels)
-    ax.set_title(title)
-    for y_index, row in enumerate(matrix):
-        for x_index, value in enumerate(row):
-            if value is not None:
-                ax.text(x_index, y_index, f"{value:.2g}", ha="center", va="center", fontsize=8)
-    fig.colorbar(image, ax=ax)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
+    return y_labels, x_labels, matrix
 
 
 def _save_scatter(path: Path, rows: Sequence[dict[str, Any]], *, x_key: str, y_key: str, title: str) -> None:

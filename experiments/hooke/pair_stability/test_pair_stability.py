@@ -851,6 +851,23 @@ def test_final_report_consumes_final_eval_artifacts_only(tmp_path: Path) -> None
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
+def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
+    y_labels, x_labels, matrix = final_report._heatmap_matrix(
+        [
+            {"basis": "raw", "normalization": "N0", "energy_error": "-0.25"},
+            {"basis": "raw", "normalization": "N0", "energy_error": "-0.75"},
+            {"basis": "raw", "normalization": "N1", "energy_error": "0.5"},
+        ],
+        row_key="basis",
+        col_key="normalization",
+        value_key="energy_error",
+    )
+
+    assert y_labels == ["raw"]
+    assert x_labels == ["N0", "N1"]
+    assert matrix == [[-0.5, 0.5]]
+
+
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
     checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
