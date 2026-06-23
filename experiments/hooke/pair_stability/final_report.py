@@ -29,6 +29,7 @@ from run_utils import (
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
+WINNER_KINDS = ("energy", "stability")
 
 COMPACT_TABLES = (
     "run_index.csv",
@@ -139,10 +140,22 @@ def _save_no_data(path: Path, title: str) -> None:
     plt.close(fig)
 
 
-def _basis_label(row: dict[str, Any]) -> str:
-    winner = row.get("winner_kind", "")
-    basis = row.get("basis_class", row.get("basis", ""))
-    return f"{basis} / {winner}" if winner else str(basis)
+def _architecture_label(row: dict[str, Any]) -> str:
+    return str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
+
+
+def _winner_rows(rows: Sequence[dict[str, Any]], winner_kind: str) -> list[dict[str, Any]]:
+    if winner_kind == "energy":
+        return [row for row in rows if str(row.get("winner_kind", "")).strip() == "energy"]
+    return [row for row in rows if str(row.get("winner_kind", "")).strip() not in {"", "energy"}]
+
+
+def _winner_title(winner_kind: str) -> str:
+    return f"{winner_kind} winners"
+
+
+def _winner_filename(prefix: str, winner_kind: str, suffix: str) -> str:
+    return f"{prefix}_{winner_kind}_winner_{suffix}"
 
 
 def _heatmap_matrix(
@@ -250,74 +263,6 @@ def _save_heatmap(
     plt.close(fig)
 
 
-def _winner_order(kinds: Sequence[str]) -> list[str]:
-    preferred = ["energy", "stability"]
-    return [kind for kind in preferred if kind in kinds] + sorted(kind for kind in kinds if kind not in preferred)
-
-
-def _save_winner_split_heatmap(
-    path: Path,
-    rows: Sequence[dict[str, Any]],
-    *,
-    row_key: str,
-    col_key: str,
-    value_key: str,
-    title: str,
-    transform: str | None = None,
-) -> None:
-    """Save heatmaps with winner kinds split into independent subplots."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rows_by_winner: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        if _as_float(row.get(value_key)) is None:
-            continue
-        winner = str(row.get("winner_kind", "")).strip() or "all"
-        rows_by_winner[winner].append(row)
-    if not rows_by_winner:
-        _save_no_data(path, title)
-        return
-
-    panels = []
-    for winner in _winner_order(list(rows_by_winner)):
-        y_labels, x_labels, matrix = _heatmap_matrix(
-            rows_by_winner[winner],
-            row_key=row_key,
-            col_key=col_key,
-            value_key=value_key,
-        )
-        if matrix:
-            panels.append((winner, y_labels, x_labels, matrix))
-    if not panels:
-        _save_no_data(path, title)
-        return
-
-    plt = _pyplot()
-    max_y = max(len(y_labels) for _, y_labels, _, _ in panels)
-    max_x = max(len(x_labels) for _, _, x_labels, _ in panels)
-    fig, axes = plt.subplots(
-        1,
-        len(panels),
-        figsize=(max(5.0, 4.8 * len(panels), 1.2 * max_x * len(panels)), max(3.5, 0.8 * max_y)),
-        squeeze=False,
-    )
-    for ax, (winner, y_labels, x_labels, matrix) in zip(axes[0], panels, strict=True):
-        _draw_heatmap_axis(
-            fig,
-            ax,
-            y_labels=y_labels,
-            x_labels=x_labels,
-            matrix=matrix,
-            value_key=value_key,
-            title=winner,
-            transform=transform,
-        )
-    fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-
-
 def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return positive log-log points for the 1B energy/stability scatter."""
 
@@ -402,7 +347,7 @@ def _local_energy_distribution_groups(
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         normalization = str(row.get("normalization", ""))
-        architecture = _basis_label(row)
+        architecture = _architecture_label(row)
         groups[(normalization, architecture)].append(row)
     normalizations = sorted({key[0] for key in groups})
     architectures = sorted({key[1] for key in groups})
@@ -663,7 +608,7 @@ def _save_architecture_line_grid(
         y = _as_float(row.get(y_key))
         if x is None or y is None:
             continue
-        architecture = str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
+        architecture = _architecture_label(row)
         groups[(architecture, _group_label(row, group_keys))].append((x, y))
     if not groups:
         _save_no_data(path, title)
@@ -768,53 +713,27 @@ def _save_scalar_metric_heatmap(
     metric_keys: Sequence[str],
     title: str,
 ) -> None:
-    """Save winner-split heatmaps for tables with multiple scalar metrics."""
+    """Save a heatmap for tables with multiple scalar metrics."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows_by_winner: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        if any(_as_float(row.get(metric)) is not None for metric in metric_keys):
-            winner = str(row.get("winner_kind", "")).strip() or "all"
-            rows_by_winner[winner].append(row)
-    if not rows_by_winner:
-        _save_no_data(path, title)
-        return
-
-    panels = []
-    for winner in _winner_order(list(rows_by_winner)):
-        y_labels, x_labels, matrix = _scalar_metric_matrix(
-            rows_by_winner[winner],
-            row_keys=row_keys,
-            metric_keys=metric_keys,
-        )
-        if matrix:
-            panels.append((winner, y_labels, x_labels, matrix))
-    if not panels:
+    y_labels, x_labels, matrix = _scalar_metric_matrix(rows, row_keys=row_keys, metric_keys=metric_keys)
+    if not matrix:
         _save_no_data(path, title)
         return
 
     plt = _pyplot()
-    max_y = max(len(y_labels) for _, y_labels, _, _ in panels)
-    max_x = max(len(x_labels) for _, _, x_labels, _ in panels)
-    fig, axes = plt.subplots(
-        1,
-        len(panels),
-        figsize=(max(6.0, 1.4 * max_x * len(panels), 5.2 * len(panels)), max(3.8, 0.38 * max_y)),
-        squeeze=False,
+    fig, ax = plt.subplots(figsize=(max(6.0, 1.4 * len(x_labels)), max(3.8, 0.38 * len(y_labels))))
+    _draw_heatmap_axis(
+        fig,
+        ax,
+        y_labels=y_labels,
+        x_labels=x_labels,
+        matrix=matrix,
+        value_key="mean scalar value",
+        title=title,
+        transform=None,
     )
-    for ax, (winner, y_labels, x_labels, matrix) in zip(axes[0], panels, strict=True):
-        _draw_heatmap_axis(
-            fig,
-            ax,
-            y_labels=y_labels,
-            x_labels=x_labels,
-            matrix=matrix,
-            value_key="mean scalar value",
-            title=winner,
-            transform=None,
-        )
-    fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
@@ -827,40 +746,92 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     histograms = tables["local_energy_histograms.csv"]
     stratified = tables["stratified_summary.csv"]
 
-    specs = [
-        ("1A_real_scale_energy_error_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error")),
-        ("1A_log_scale_energy_error_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log")),
-        ("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance")),
-        ("1C_local_energy_distribution_grid.png", lambda path: _save_local_energy_distribution_grid(path, histograms, title="MCMC local-energy histograms")),
-        ("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path")),
-        ("2B_cusp_c_minus_1_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path")),
-        ("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path")),
-        ("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners")),
-        ("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners")),
-        ("3C_tail_outlier_heatmap.png", lambda path: _save_winner_split_heatmap(path, architecture, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction")),
-        ("4_stratified_geometry_aggregate_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error")),
-        ("4_stratified_geometry_aggregate_log_heatmap.png", lambda path: _save_winner_split_heatmap(path, [row for row in stratified if row.get("stratum") == "all"], row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="signed_log")),
-        ("5A_hooke_orbital_local_energy_distribution.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "com_bin"), title="Hooke-orbital local-energy medians", legend_title="normalization / winner / CoM bin")),
-        ("5B_hooke_orbital_local_energy_vs_r12.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "com_bin"), title="Hooke-orbital local energy vs r12 by CoM bin", legend_title="normalization / winner / CoM bin")),
-        ("5C_hooke_orbital_local_energy_vs_radius.png", lambda path: _save_architecture_line_grid(path, tables["hooke_orbital_summary.csv"], x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "winner_kind", "r12_bin"), title="Hooke-orbital local energy vs CoM radius by r12 bin", legend_title="normalization / winner / r12 bin")),
-        ("6_symmetry_scalar_heatmap.png", lambda path: _save_scalar_metric_heatmap(path, tables["symmetry_summary.csv"], row_keys=("basis_class", "normalization", "symmetry_task"), metric_keys=("logabs_error_max", "logabs_error_median", "sign_mismatch_count", "parity_mismatch_count", "finite_fraction"), title="Symmetry scalar diagnostics")),
-        ("7_trace_scalar_heatmap.png", lambda path: _save_scalar_metric_heatmap(path, tables["trace_summary.csv"], row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title="Trace scalar diagnostics")),
-        ("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner")),
-    ]
-    for filename, writer in specs:
+    def add(filename: str, writer: Any) -> None:
         writer(figures_dir / filename)
         written.append(filename)
+
+    for winner in WINNER_KINDS:
+        rows = _winner_rows(architecture, winner)
+        add(
+            _winner_filename("1A", winner, "real_scale_energy_error_heatmap.png"),
+            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title=f"Median signed final energy error: {_winner_title(winner)}"),
+        )
+        add(
+            _winner_filename("1A", winner, "log_scale_energy_error_heatmap.png"),
+            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title=f"Median signed final energy error: {_winner_title(winner)}", transform="signed_log"),
+        )
+        add(
+            _winner_filename("1C", winner, "local_energy_distribution_grid.png"),
+            lambda path, winner=winner: _save_local_energy_distribution_grid(path, _winner_rows(histograms, winner), title=f"MCMC local-energy histograms: {_winner_title(winner)}"),
+        )
+
+    add("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance"))
+    add("2A_cusp_even_slope_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="even_slope_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp even slope by CoM path"))
+    add("2B_cusp_c_minus_1_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="c_minus_1_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp C_-1 by CoM path"))
+    add("2C_cusp_odd_slant_by_com.png", lambda path: _save_line_plot(path, tables["cusp_profile_summary.csv"], x_key="r12", y_key="odd_slant_median", group_keys=("basis_class", "normalization", "winner_kind", "com_id", "direction_id"), title="Cusp odd slant by CoM path"))
+    add("3A_tail_energy_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail profiles: energy winners"))
+    add("3B_tail_stability_winner_grid.png", lambda path: _save_tail_winner_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail profiles: stability winners"))
+
+    for winner in WINNER_KINDS:
+        add(
+            _winner_filename("3C", winner, "tail_outlier_heatmap.png"),
+            lambda path, winner=winner: _save_heatmap(path, _winner_rows(architecture, winner), row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title=f"Tail outlier fraction: {_winner_title(winner)}"),
+        )
+
+    aggregate = [row for row in stratified if row.get("stratum") == "all"]
+    for winner in WINNER_KINDS:
+        rows = _winner_rows(aggregate, winner)
+        add(
+            _winner_filename("4", winner, "stratified_geometry_aggregate_heatmap.png"),
+            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {_winner_title(winner)}"),
+        )
+        add(
+            _winner_filename("4", winner, "stratified_geometry_aggregate_log_heatmap.png"),
+            lambda path, rows=rows, winner=winner: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {_winner_title(winner)}", transform="signed_log"),
+        )
+
+    hooke_rows = tables["hooke_orbital_summary.csv"]
+    for winner in WINNER_KINDS:
+        rows = _winner_rows(hooke_rows, winner)
+        add(
+            _winner_filename("5A", winner, "hooke_orbital_local_energy_distribution.png"),
+            lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "com_bin"), title=f"Hooke-orbital local-energy medians: {_winner_title(winner)}", legend_title="normalization / CoM bin"),
+        )
+        add(
+            _winner_filename("5B", winner, "hooke_orbital_local_energy_vs_r12.png"),
+            lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "com_bin"), title=f"Hooke-orbital local energy vs r12: {_winner_title(winner)}", legend_title="normalization / CoM bin"),
+        )
+        add(
+            _winner_filename("5C", winner, "hooke_orbital_local_energy_vs_radius.png"),
+            lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "r12_bin"), title=f"Hooke-orbital local energy vs CoM radius: {_winner_title(winner)}", legend_title="normalization / r12 bin"),
+        )
+
+    for winner in WINNER_KINDS:
+        add(
+            _winner_filename("6", winner, "symmetry_scalar_heatmap.png"),
+            lambda path, winner=winner: _save_scalar_metric_heatmap(path, _winner_rows(tables["symmetry_summary.csv"], winner), row_keys=("basis_class", "normalization", "symmetry_task"), metric_keys=("logabs_error_max", "logabs_error_median", "sign_mismatch_count", "parity_mismatch_count", "finite_fraction"), title=f"Symmetry scalar diagnostics: {_winner_title(winner)}"),
+        )
+        add(
+            _winner_filename("7", winner, "trace_scalar_heatmap.png"),
+            lambda path, winner=winner: _save_scalar_metric_heatmap(path, _winner_rows(tables["trace_summary.csv"], winner), row_keys=("basis_class", "normalization", "trace_kind", "layer"), metric_keys=("rms_q95", "rms_q99", "max_abs", "nonfinite_count", "compared_entry_count", "comparison_error_count", "max_equivariance_error"), title=f"Trace scalar diagnostics: {_winner_title(winner)}"),
+        )
+
+    add("8_training_curves.png", lambda path: _save_line_plot(path, tables["training_curve_summary.csv"], x_key="step", y_key="energy_mean", group_keys=("basis_class", "normalization", "winner_kind"), title="Final train energy curves", legend="outside", legend_title="architecture / normalization / winner"))
 
     strata = sorted({str(row.get("stratum", "")) for row in stratified if row.get("stratum", "") not in {"", "all"}})
     for stratum in strata:
         safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in stratum)
-        filename = f"4_stratified_geometry_{safe}_heatmap.png"
-        log_filename = f"4_stratified_geometry_{safe}_log_heatmap.png"
         rows = [row for row in stratified if str(row.get("stratum", "")) == stratum]
-        _save_winner_split_heatmap(figures_dir / filename, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}")
-        written.append(filename)
-        _save_winner_split_heatmap(figures_dir / log_filename, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="signed_log")
-        written.append(log_filename)
+        for winner in WINNER_KINDS:
+            winner_rows = _winner_rows(rows, winner)
+            add(
+                _winner_filename("4", winner, f"stratified_geometry_{safe}_heatmap.png"),
+                lambda path, rows=winner_rows, winner=winner, stratum=stratum: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}: {_winner_title(winner)}"),
+            )
+            add(
+                _winner_filename("4", winner, f"stratified_geometry_{safe}_log_heatmap.png"),
+                lambda path, rows=winner_rows, winner=winner, stratum=stratum: _save_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}: {_winner_title(winner)}", transform="signed_log"),
+            )
     return written
 
 
@@ -942,7 +913,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Energy And Local-Energy Results",
             "",
-            "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps split energy and stability winners into separate subplots with independent color scales. Signed-log heatmap variants use real-scale cell labels.",
+            "Energy figures use signed error relative to exact Hooke energy `E = 2`; grid figures are emitted separately for energy and stability winners. Signed-log heatmap variants use real-scale cell labels.",
             "",
             "## Cusp Diagnostics",
             "",
@@ -954,19 +925,19 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Stratified Geometry Diagnostics",
             "",
-            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Each Figure 4 heatmap has a real-scale and signed-log-color version, with energy and stability winners shown as separate subplots.",
+            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Each Figure 4 heatmap has a real-scale and signed-log-color version, emitted separately for energy and stability winners.",
             "",
             "## Hooke-Orbital Diagnostics",
             "",
-            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots split architectures into separate subplots and place the remaining group legend outside the plotting area.",
+            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted separately for energy and stability winners, split architectures into separate subplots, and place the remaining group legend outside the plotting area.",
             "",
             "## Symmetry Diagnostics",
             "",
-            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 uses winner-split heatmaps for scalar symmetry diagnostics.",
+            "See `tables/symmetry_summary.csv` and the symmetry figures. Figure 6 emits separate energy/stability heatmaps for scalar symmetry diagnostics.",
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures. Figure 7 uses winner-split heatmaps for scalar trace diagnostics.",
+            "See `tables/trace_summary.csv` and the trace figures. Figure 7 emits separate energy/stability heatmaps for scalar trace diagnostics.",
             "",
             "## Training And Resource Summary",
             "",

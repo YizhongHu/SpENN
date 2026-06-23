@@ -874,14 +874,22 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert report_dir == results_root / "09_final_report" / "R1"
     copied_energy = _read_csv(report_dir / "tables" / "energy_by_run.csv")
     assert copied_energy[0]["energy_error"] == "0.5"
-    assert (report_dir / "figures" / "1A_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "1A_energy_winner_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "1A_stability_winner_real_scale_energy_error_heatmap.png").is_file()
+    assert (report_dir / "figures" / "1C_energy_winner_local_energy_distribution_grid.png").is_file()
+    assert (report_dir / "figures" / "1C_stability_winner_local_energy_distribution_grid.png").is_file()
     assert (report_dir / "figures" / "3A_tail_energy_winner_grid.png").is_file()
     assert (report_dir / "figures" / "3B_tail_stability_winner_grid.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_aggregate_log_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_bulk_heatmap.png").is_file()
-    assert (report_dir / "figures" / "4_stratified_geometry_bulk_log_heatmap.png").is_file()
-    assert (report_dir / "figures" / "6_symmetry_scalar_heatmap.png").is_file()
-    assert (report_dir / "figures" / "7_trace_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_energy_winner_stratified_geometry_aggregate_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stability_winner_stratified_geometry_aggregate_log_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_energy_winner_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "figures" / "4_stability_winner_stratified_geometry_bulk_heatmap.png").is_file()
+    assert (report_dir / "figures" / "5A_energy_winner_hooke_orbital_local_energy_distribution.png").is_file()
+    assert (report_dir / "figures" / "5A_stability_winner_hooke_orbital_local_energy_distribution.png").is_file()
+    assert (report_dir / "figures" / "6_energy_winner_symmetry_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "6_stability_winner_symmetry_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "7_energy_winner_trace_scalar_heatmap.png").is_file()
+    assert (report_dir / "figures" / "7_stability_winner_trace_scalar_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
@@ -902,33 +910,12 @@ def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
     assert matrix == [[-0.5, 0.5]]
 
 
-def test_final_report_winner_split_heatmap_renders_independent_panels(tmp_path: Path) -> None:
-    path = tmp_path / "winner_split.png"
+def test_final_report_winner_helpers_split_energy_and_stability_rows() -> None:
+    rows = [{"winner_kind": "energy", "id": 1}, {"winner_kind": "stability", "id": 2}, {"winner_kind": "feature_trace", "id": 3}]
 
-    final_report._save_winner_split_heatmap(
-        path,
-        [
-            {
-                "basis_class": "raw_envelope",
-                "normalization": "N0",
-                "winner_kind": "energy",
-                "energy_error_median": "-0.25",
-            },
-            {
-                "basis_class": "raw_envelope",
-                "normalization": "N0",
-                "winner_kind": "stability",
-                "energy_error_median": "3.0",
-            },
-        ],
-        row_key="basis_class",
-        col_key="normalization",
-        value_key="energy_error_median",
-        title="split heatmap",
-        transform="signed_log",
-    )
-
-    assert path.is_file()
+    assert [row["id"] for row in final_report._winner_rows(rows, "energy")] == [1]
+    assert [row["id"] for row in final_report._winner_rows(rows, "stability")] == [2, 3]
+    assert final_report._winner_filename("4", "energy", "plot.png") == "4_energy_winner_plot.png"
 
 
 def test_final_report_scalar_metric_matrix_aggregates_multiple_metrics() -> None:
@@ -1053,9 +1040,9 @@ def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> Non
     )
 
     assert normalizations == ["N0", "N1"]
-    assert architectures == ["hermite_o2_envelope / stability", "raw_envelope / energy"]
-    assert len(groups[("N1", "raw_envelope / energy")]) == 2
-    assert groups[("N0", "hermite_o2_envelope / stability")][0]["count"] == "4"
+    assert architectures == ["hermite_o2_envelope", "raw_envelope"]
+    assert len(groups[("N1", "raw_envelope")]) == 2
+    assert groups[("N0", "hermite_o2_envelope")][0]["count"] == "4"
 
 
 def test_final_report_tail_grid_aggregates_paths_before_seed_variance() -> None:
