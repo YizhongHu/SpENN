@@ -27,6 +27,7 @@ GRID = CONFIGS / "grid.yaml"
 if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
+import artifacts  # noqa: E402
 import collect  # noqa: E402
 import final_collect  # noqa: E402
 import final_eval  # noqa: E402
@@ -34,10 +35,12 @@ import final_plan  # noqa: E402
 import final_report  # noqa: E402
 import final_train  # noqa: E402
 import launch  # noqa: E402
+import overrides  # noqa: E402
 import plan  # noqa: E402
 import plot as pair_plot  # noqa: E402
 import run_utils  # noqa: E402
 import select_champions  # noqa: E402
+import stats  # noqa: E402
 import sync  # noqa: E402
 import train  # noqa: E402
 import validate  # noqa: E402
@@ -363,6 +366,29 @@ def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
     assert "source .venv-gpu/bin/activate" in script
     assert "exec python -u run.py --config cfg.yaml x=y runtime.device=cuda" in script
     assert planned_python not in script
+
+
+def test_rewrite_cli_overrides_replaces_exact_keys_and_appends_in_order() -> None:
+    command = [
+        "python",
+        "run.py",
+        "runtime.device=cpu",
+        "runtime.device.extra=keep",
+        "run.timezone=UTC",
+        "+runtime.device=hydra-plus-kept",
+        "runtime.device=older",
+    ]
+
+    rewritten = overrides.rewrite_cli_overrides(
+        command,
+        {"runtime.device": "cuda", "run.timezone": "America/New_York"},
+    )
+
+    assert rewritten[:4] == ["python", "run.py", "runtime.device.extra=keep", "+runtime.device=hydra-plus-kept"]
+    assert rewritten[-2:] == ["runtime.device=cuda", "run.timezone=America/New_York"]
+    assert "runtime.device=cpu" not in rewritten
+    assert "runtime.device=older" not in rewritten
+    assert launch.with_overrides(["x=1", "xy=2"], {"x": 3}) == ["xy=2", "x=3"]
 
 
 def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
@@ -990,6 +1016,122 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "figures" / "9C_virial_residual_min_log_heatmap.png").is_file()
     assert (report_dir / "figures" / "9D_virial_residual_max_log_heatmap.png").is_file()
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
+
+
+def test_artifact_csv_writer_preserves_columns_and_serializes_nested_values(tmp_path: Path) -> None:
+    path = tmp_path / "table.csv"
+
+    artifacts.write_csv(
+        path,
+        [
+            {"first": 1, "second": {"z": 2, "a": 1}, "extra": "ignored"},
+            {"first": True, "second": [2, 1], "extra": "ignored"},
+        ],
+        ["second", "first"],
+    )
+
+    assert path.read_text().splitlines()[0] == "second,first"
+    rows = _read_csv(path)
+    assert list(rows[0]) == ["second", "first"]
+    assert rows[0]["second"] == '{"a": 1, "z": 2}'
+    assert rows[0]["first"] == "1"
+    assert rows[1]["second"] == "[2, 1]"
+    assert rows[1]["first"] == "True"
+    assert "extra" not in rows[0]
+
+
+def test_artifact_metrics_reader_preserves_long_rows_and_metric_map(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "namespace": "eval/energy",
+                        "step": 7,
+                        "metrics": {"local_energy_mean": 2.5, "nested": {"z": 2, "a": 1}},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "namespace": "runtime",
+                        "step": 8,
+                        "metric": "wall_time_sec",
+                        "value": 3.0,
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    rows = artifacts.read_metrics_jsonl(path)
+
+    assert rows[0] == {
+        "step": 7,
+        "namespace": "eval/energy",
+        "metric": "local_energy_mean",
+        "value": 2.5,
+    }
+    assert rows[1]["metric"] == "nested"
+    assert rows[1]["value"] == '{"a": 1, "z": 2}'
+    metric_map = artifacts.metric_map(rows)
+    assert metric_map["eval/energy/local_energy_mean"] == 2.5
+    assert metric_map["eval/energy/nested"] == '{"a": 1, "z": 2}'
+    assert metric_map["runtime/wall_time_sec"] == 3.0
+
+
+def test_artifact_status_duration_handles_missing_malformed_and_valid_timestamps() -> None:
+    assert artifacts.duration_from_status({}) is None
+    assert artifacts.duration_from_status({"start_time": "bad", "end_time": "2026-01-01T00:00:00"}) is None
+    assert (
+        artifacts.duration_from_status(
+            {"start_time": "2026-01-01T00:00:00", "end_time": "2026-01-01T00:00:02.500000"}
+        )
+        == 2.5
+    )
+    assert (
+        artifacts.duration_from_status(
+            {"start_time": "2026-01-01T00:00:02", "end_time": "2026-01-01T00:00:00"},
+        )
+        is None
+    )
+    assert (
+        artifacts.duration_from_status(
+            {"start_time": "2026-01-01T00:00:02", "end_time": "2026-01-01T00:00:00"},
+            clamp_negative=True,
+        )
+        == 0.0
+    )
+
+
+def test_stats_reducers_handle_empty_nonfinite_booleans_strings_and_quantiles() -> None:
+    values = [None, "", "1.5", 2, True, "nan", float("inf"), "bad"]
+
+    assert stats.as_float(True) == 1.0
+    assert stats.as_float("  ") is None
+    assert stats.as_bool("True") is True
+    assert stats.as_bool("false") is False
+    assert stats.finite_values(values) == [1.5, 2.0, 1.0]
+    assert stats.mean([]) is None
+    assert stats.mean(values) == pytest.approx(1.5)
+    assert stats.median([1, "3", 2]) == 2.0
+    assert stats.variance([1, 2, 3]) == pytest.approx(1.0)
+    assert stats.variance([1]) == 0.0
+    assert stats.quantile([0, 10], 0.25) == 2.5
+    assert stats.quantile([], 0.5) is None
+    assert stats.finite_sum([1, "2", "nan"]) == 3.0
+    assert stats.finite_max([1, "2", "nan"]) == 2.0
+    assert stats.format_number(None) == ""
+    assert stats.format_number(2.0) == "2"
+    assert stats.weighted_quantile([0.0, 10.0], [1.0, 3.0], 0.5) == 10.0
+    assert stats.crop_bar_series_to_weighted_quantiles(
+        [0.0, 1.0, 2.0, 3.0],
+        [1.0, 1.0, 8.0, 1.0],
+        [0.5, 0.5, 0.5, 0.5],
+        low_q=0.1,
+        high_q=0.9,
+    ) == ([1.0, 2.0], [1.0, 8.0], [0.5, 0.5])
 
 
 def test_plot_heatmap_matrix_keeps_real_scale_signed_errors() -> None:

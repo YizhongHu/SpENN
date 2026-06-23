@@ -13,8 +13,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from stats import as_float as _as_float, mean as _mean
+
 POSITIVE_HEATMAP_CMAP = "Reds"
-BAR_QUANTILE_RANGE = (0.05, 0.85)
 
 
 def pyplot():
@@ -41,23 +42,6 @@ def save_no_data(path: Path, title: str) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
-
-
-def _as_float(value: Any) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result):
-        return None
-    return result
-
-
-def _mean(values: Sequence[float]) -> float | None:
-    clean = [value for value in values if math.isfinite(value)]
-    return math.fsum(clean) / len(clean) if clean else None
 
 
 def heatmap_matrix(
@@ -610,48 +594,6 @@ def save_grouped_line_grid(
     fig.tight_layout(rect=rect)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
-
-
-def weighted_quantile(values: Sequence[float], weights: Sequence[float], q: float) -> float | None:
-    """Return a weighted empirical quantile for histogram-like bar centers."""
-
-    pairs = sorted((value, weight) for value, weight in zip(values, weights, strict=True) if math.isfinite(value) and weight > 0.0)
-    if not pairs:
-        return None
-    total = math.fsum(weight for _value, weight in pairs)
-    threshold = total * q
-    cumulative = 0.0
-    for value, weight in pairs:
-        cumulative += weight
-        if cumulative >= threshold:
-            return value
-    return pairs[-1][0]
-
-
-def crop_bar_series_to_weighted_quantiles(
-    centers: Sequence[float],
-    counts: Sequence[float],
-    widths: Sequence[float],
-    *,
-    low_q: float = BAR_QUANTILE_RANGE[0],
-    high_q: float = BAR_QUANTILE_RANGE[1],
-) -> tuple[list[float], list[float], list[float]]:
-    """Keep only bar bins whose centers are in the weighted quantile range."""
-
-    if not centers:
-        return [], [], []
-    low = weighted_quantile(centers, counts, low_q)
-    high = weighted_quantile(centers, counts, high_q)
-    if low is None or high is None or low > high:
-        return list(centers), list(counts), list(widths)
-    cropped = [
-        (center, count, width)
-        for center, count, width in zip(centers, counts, widths, strict=True)
-        if low <= center <= high
-    ]
-    if not cropped:
-        return list(centers), list(counts), list(widths)
-    return ([item[0] for item in cropped], [item[1] for item in cropped], [item[2] for item in cropped])
 
 
 def save_grouped_bar_grid(

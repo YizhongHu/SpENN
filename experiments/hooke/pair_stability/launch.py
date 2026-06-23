@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
+from overrides import rewrite_cli_overrides
 from run_utils import (
     DEFAULT_STUDY_TIMEZONE,
     STAGE_GRID,
@@ -124,10 +125,7 @@ def command_for_job(job: dict[str, Any]) -> list[str]:
 def with_overrides(command: Sequence[str], overrides: dict[str, object]) -> list[str]:
     """Return ``command`` with final scalar OmegaConf overrides appended."""
 
-    prefixes = tuple(f"{key}=" for key in overrides)
-    command = [str(part) for part in command if not str(part).startswith(prefixes)]
-    command.extend(f"{key}={value}" for key, value in overrides.items())
-    return command
+    return rewrite_cli_overrides(command, overrides)
 
 
 def with_runtime_device(command: Sequence[str], *, device: str) -> list[str]:

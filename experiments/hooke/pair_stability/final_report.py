@@ -8,13 +8,13 @@ records, final-train metrics, or checkpoints.
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from artifacts import read_csv as _read_csv, write_csv as _write_csv_columns
 import plot
 from run_utils import (
     STAGE_FINAL_COLLECT,
@@ -25,6 +25,16 @@ from run_utils import (
     stage_dir,
     write_json,
     write_latest,
+)
+from stats import (
+    as_float as _as_float,
+    crop_bar_series_to_weighted_quantiles as _crop_bar_series_to_weighted_quantiles,
+    finite_values as _finite_values,
+    format_number as _format_number,
+    mean as _mean,
+    median as _median,
+    quantile as _quantile,
+    variance as _variance,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -87,94 +97,6 @@ COMPACT_TABLES = (
     "resource_summary.csv",
     "failure_modes.csv",
 )
-
-
-def _read_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def _write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    columns = sorted({key for row in rows for key in row})
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def _write_csv_columns(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(columns), extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def _as_float(value: Any) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result):
-        return None
-    return result
-
-
-def _mean(values: Sequence[float]) -> float | None:
-    clean = [value for value in values if math.isfinite(value)]
-    return math.fsum(clean) / len(clean) if clean else None
-
-
-def _median(values: Sequence[float]) -> float | None:
-    clean = sorted(value for value in values if math.isfinite(value))
-    if not clean:
-        return None
-    mid = len(clean) // 2
-    if len(clean) % 2:
-        return clean[mid]
-    return 0.5 * (clean[mid - 1] + clean[mid])
-
-
-def _variance(values: Sequence[float]) -> float | None:
-    clean = [value for value in values if math.isfinite(value)]
-    if not clean:
-        return None
-    if len(clean) == 1:
-        return 0.0
-    mean = math.fsum(clean) / len(clean)
-    return math.fsum((value - mean) ** 2 for value in clean) / (len(clean) - 1)
-
-
-def _quantile(values: Sequence[float], q: float) -> float | None:
-    clean = sorted(value for value in values if math.isfinite(value))
-    if not clean:
-        return None
-    if len(clean) == 1:
-        return clean[0]
-    position = (len(clean) - 1) * q
-    low = math.floor(position)
-    high = math.ceil(position)
-    if low == high:
-        return clean[int(position)]
-    weight = position - low
-    return clean[low] * (1.0 - weight) + clean[high] * weight
-
-
-def _format_number(value: float | None) -> str:
-    if value is None:
-        return ""
-    return f"{value:.12g}"
-
-
-def _finite_values(values: Sequence[Any]) -> list[float]:
-    return [value for value in (_as_float(item) for item in values) if value is not None]
 
 
 def _derive_virial_metrics(row: dict[str, Any]) -> dict[str, float | None]:
@@ -445,7 +367,7 @@ def _local_energy_bar_series(rows: Sequence[dict[str, Any]]) -> tuple[list[float
     centers = sorted(counts_by_center)
     counts = [counts_by_center[center] for center in centers]
     widths = [widths_by_center[center] for center in centers]
-    return plot.crop_bar_series_to_weighted_quantiles(centers, counts, widths)
+    return _crop_bar_series_to_weighted_quantiles(centers, counts, widths)
 
 
 def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:

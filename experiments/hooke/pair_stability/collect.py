@@ -10,15 +10,12 @@ source pointers to the exact validation (and grid) attempts consumed.
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import math
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
+from artifacts import duration_from_status_file, read_metrics_map, status_of, write_csv
 from run_utils import (
     STAGE_COLLECT,
     STAGE_GRID,
@@ -32,6 +29,7 @@ from run_utils import (
     validation_run_dir,
     write_json,
 )
+from stats import as_float
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
@@ -77,28 +75,7 @@ def latest_attempt_id(run_dir: Path) -> str | None:
 def read_metrics_jsonl(path: Path) -> dict[str, Any]:
     """Flatten ``metrics.jsonl`` records into ``namespace/key -> value``."""
 
-    metrics: dict[str, Any] = {}
-    if not path.is_file():
-        return metrics
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        record = json.loads(line)
-        namespace = str(record.get("namespace", "")).strip("/")
-        values = record.get("metrics", {})
-        if not isinstance(values, dict):
-            continue
-        for key, value in values.items():
-            metrics[f"{namespace}/{key}" if namespace else str(key)] = value
-    return metrics
-
-
-def _status_of(attempt_dir: Path) -> str:
-    status = attempt_dir / "status.json"
-    if not status.is_file():
-        return "missing_status"
-    return str(read_json(status).get("status", "unknown"))
+    return read_metrics_map(path)
 
 
 def _run_parameters(attempt_dir: Path, run_id: str) -> dict[str, Any]:
@@ -140,51 +117,18 @@ def _train_attempt_dir(source: dict[str, Any]) -> Path | None:
     return None
 
 
-def _status_wall_time(path: Path) -> float | None:
-    """Return wall time from a status file's start/end timestamps."""
-
-    status = path / "status.json"
-    if not status.is_file():
-        return None
-    data = read_json(status)
-    start = data.get("start_time")
-    end = data.get("end_time")
-    if not start or not end:
-        return None
-    try:
-        start_dt = datetime.fromisoformat(str(start))
-        end_dt = datetime.fromisoformat(str(end))
-    except ValueError:
-        return None
-    return max(0.0, (end_dt - start_dt).total_seconds())
-
-
 def _train_metrics(source: dict[str, Any]) -> dict[str, Any]:
     """Return metrics from the validation source train attempt."""
 
     train_attempt = _train_attempt_dir(source)
     if train_attempt is None:
         return {}
-    train_metrics = {
-        f"train/{key}": value for key, value in read_metrics_jsonl(train_attempt / "metrics.jsonl").items()
-    }
-    if _as_float(train_metrics.get(TRAIN_WALL_TIME_METRIC)) is None:
-        wall_time = _status_wall_time(train_attempt)
+    train_metrics = read_metrics_map(train_attempt / "metrics.jsonl", prefix="train")
+    if as_float(train_metrics.get(TRAIN_WALL_TIME_METRIC)) is None:
+        wall_time = duration_from_status_file(train_attempt, clamp_negative=True)
         if wall_time is not None:
             train_metrics[TRAIN_WALL_TIME_METRIC] = wall_time
     return train_metrics
-
-
-def _as_float(value: Any) -> float | None:
-    """Return ``value`` as a finite float, or ``None``."""
-
-    if value is None or str(value).strip() == "":
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
 
 
 def collect_validation_attempt(run_id: str, attempt_id: str, attempt_dir: Path) -> dict[str, Any]:
@@ -193,14 +137,13 @@ def collect_validation_attempt(run_id: str, attempt_id: str, attempt_dir: Path) 
     params = _run_parameters(attempt_dir, run_id)
     source_path = attempt_dir / "source_train_attempt.json"
     source = read_json(source_path) if source_path.is_file() else {}
-    metrics = read_metrics_jsonl(attempt_dir / "metrics.jsonl")
 
     row: dict[str, Any] = {column: "" for column in CORE_COLUMNS}
     row.update(
         run_id=run_id,
         validation_attempt_id=attempt_id,
         validation_attempt_dir=str(attempt_dir),
-        status=_status_of(attempt_dir),
+        status=status_of(attempt_dir),
         architecture=params.get("architecture", ""),
         normalization=params.get("normalization", ""),
         lr=params.get("lr", ""),
@@ -211,7 +154,7 @@ def collect_validation_attempt(run_id: str, attempt_id: str, attempt_dir: Path) 
         n_diagnostics=_count_diagnostics(attempt_dir),
     )
     row.update(_train_metrics(source))
-    row.update(metrics)
+    row.update(read_metrics_jsonl(attempt_dir / "metrics.jsonl"))
     return row
 
 
@@ -269,8 +212,8 @@ def collect(
     columns = list(CORE_COLUMNS) + metric_columns
     failures = [row for row in rows if str(row["status"]) not in SUCCESS_STATUSES]
 
-    _write_csv(attempt / "summary.csv", columns, rows)
-    _write_csv(attempt / "failures.csv", columns, failures)
+    write_csv(attempt / "summary.csv", rows, columns)
+    write_csv(attempt / "failures.csv", failures, columns)
     write_json(attempt / "source_grid_attempt.json", {"grid_attempt_id": grid_attempt_id})
     write_json(attempt / "source_validation_attempts.json", consumed)
     report = {
@@ -284,14 +227,6 @@ def collect(
     }
     write_json(attempt / "collection_report.json", report)
     return {"attempt_dir": str(attempt), "report": report, "rows": rows}
-
-
-def _write_csv(path: Path, columns: Sequence[str], rows: Sequence[dict[str, Any]]) -> None:
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(columns), extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

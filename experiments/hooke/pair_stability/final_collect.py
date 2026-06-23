@@ -10,23 +10,38 @@ tables rather than reparsing raw task records.
 from __future__ import annotations
 
 import argparse
-import csv
-import json
 import math
-import statistics
 from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
+from artifacts import (
+    duration_from_status as _duration_from_status,
+    load_json_dict_if_present as _load_json_if_present,
+    metric_map as _metric_map,
+    read_csv as _read_csv,
+    read_metrics_jsonl as _read_metrics_jsonl,
+    status_of as _status_of,
+    write_csv as _write_csv,
+)
 from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
     attempt_ids,
     new_attempt_id,
-    read_json,
     stage_dir,
     write_latest,
+)
+from stats import (
+    as_bool as _as_bool,
+    as_float as _as_float,
+    finite_max as _max,
+    finite_sum as _sum,
+    format_number as _format_number,
+    mean as _mean,
+    median as _median,
+    quantile as _quantile,
+    variance as _variance,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -270,158 +285,6 @@ FAILURE_COLUMNS = [
     "threshold",
     "geometry_context",
 ]
-
-
-def _csv_value(value: Any) -> Any:
-    if isinstance(value, bool | int | float | str) or value is None:
-        return value
-    return json.dumps(value, sort_keys=True)
-
-
-def _read_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def _write_csv(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(columns), extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def _read_metrics_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows = []
-    if not path.is_file():
-        return rows
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        namespace = str(record.get("namespace", "")).strip("/")
-        metrics = record.get("metrics", {})
-        step = record.get("step", "")
-        if not isinstance(metrics, dict):
-            continue
-        for key, value in metrics.items():
-            rows.append({"step": step, "namespace": namespace, "metric": str(key), "value": _csv_value(value)})
-    return rows
-
-
-def _metric_map(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    return {f"{row['namespace']}/{row['metric']}": row["value"] for row in rows}
-
-
-def _as_float(value: Any) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result):
-        return None
-    return result
-
-
-def _as_bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.lower()
-        if lowered == "true":
-            return True
-        if lowered == "false":
-            return False
-    return None
-
-
-def _clean(values: Iterable[float | None]) -> list[float]:
-    return [value for value in values if value is not None and math.isfinite(value)]
-
-
-def _mean(values: Iterable[float | None]) -> float | None:
-    clean = _clean(values)
-    return statistics.fmean(clean) if clean else None
-
-
-def _median(values: Iterable[float | None]) -> float | None:
-    clean = _clean(values)
-    return statistics.median(clean) if clean else None
-
-
-def _variance(values: Iterable[float | None]) -> float | None:
-    clean = _clean(values)
-    if len(clean) < 2:
-        return 0.0 if clean else None
-    return statistics.variance(clean)
-
-
-def _quantile(values: Iterable[float | None], q: float) -> float | None:
-    clean = sorted(_clean(values))
-    if not clean:
-        return None
-    if len(clean) == 1:
-        return clean[0]
-    position = (len(clean) - 1) * q
-    low = math.floor(position)
-    high = math.ceil(position)
-    if low == high:
-        return clean[int(position)]
-    weight = position - low
-    return clean[low] * (1.0 - weight) + clean[high] * weight
-
-
-def _sum(values: Iterable[float | None]) -> float | None:
-    clean = _clean(values)
-    return math.fsum(clean) if clean else None
-
-
-def _max(values: Iterable[float | None]) -> float | None:
-    clean = _clean(values)
-    return max(clean) if clean else None
-
-
-def _format_number(value: float | None) -> str:
-    if value is None:
-        return ""
-    return f"{value:.12g}"
-
-
-def _parse_time(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
-
-
-def _duration_from_status(status: dict[str, Any]) -> float | None:
-    start = _parse_time(status.get("start_time"))
-    end = _parse_time(status.get("end_time"))
-    if start is None or end is None:
-        return None
-    seconds = (end - start).total_seconds()
-    return seconds if seconds >= 0 else None
-
-
-def _load_json_if_present(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    payload = read_json(path)
-    return payload if isinstance(payload, dict) else {}
-
-
-def _status_of(attempt_dir: Path) -> str:
-    status = attempt_dir / "status.json"
-    if not status.is_file():
-        return "missing_status"
-    return str(read_json(status).get("status", "unknown"))
 
 
 def _iter_final_eval_attempts(results_root: Path, final_eval_attempt_id: str | None) -> list[tuple[str, str, Path]]:
