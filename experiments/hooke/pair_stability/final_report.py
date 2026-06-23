@@ -535,6 +535,7 @@ def _champion_row(record: dict[str, Any], failures: Sequence[dict[str, Any]]) ->
     return {
         "final_run_id": record["final_run_id"],
         "source_champion_id": job.get("source_champion_id", ""),
+        "architecture": job.get("architecture", ""),
         "basis": job.get("basis_envelope", job.get("architecture", "")),
         "normalization": job.get("normalization", ""),
         "minor_hparams": _minor_hparams(job),
@@ -804,6 +805,123 @@ def _save_scatter(path: Path, rows: Sequence[dict[str, Any]], *, x_key: str, y_k
     plt.close(fig)
 
 
+def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return positive log-log points for the 1B energy/stability scatter."""
+
+    points = []
+    for row in rows:
+        energy_error = _as_float(row.get("energy_error"))
+        variance = _as_float(row.get("local_energy_var"))
+        if energy_error is None or variance is None:
+            continue
+        abs_error = abs(energy_error)
+        if abs_error <= 0.0 or variance <= 0.0:
+            continue
+        architecture = str(row.get("architecture", row.get("basis", "")))
+        points.append(
+            {
+                "abs_energy_error": abs_error,
+                "local_energy_var": variance,
+                "architecture": architecture,
+                "normalization": str(row.get("normalization", "")),
+            }
+        )
+    return points
+
+
+def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
+    """Write the 1B scatter with independent architecture/color and norm/shape legends."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    points = _energy_variance_points(rows)
+    if not points:
+        _save_no_data(path, title)
+        return
+
+    plt = _pyplot()
+    from matplotlib.lines import Line2D
+
+    architectures = sorted({str(point["architecture"]) for point in points})
+    normalizations = sorted({str(point["normalization"]) for point in points})
+    cmap = plt.get_cmap("tab20" if len(architectures) > 10 else "tab10")
+    colors = {architecture: cmap(index % cmap.N) for index, architecture in enumerate(architectures)}
+    markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "h", "p"]
+    marker_by_norm = {
+        normalization: markers[index % len(markers)] for index, normalization in enumerate(normalizations)
+    }
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    for point in points:
+        architecture = str(point["architecture"])
+        normalization = str(point["normalization"])
+        ax.scatter(
+            point["abs_energy_error"],
+            point["local_energy_var"],
+            color=colors[architecture],
+            marker=marker_by_norm[normalization],
+            s=58,
+            edgecolors="black",
+            linewidths=0.45,
+            alpha=0.9,
+        )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("abs energy error |E - 2|")
+    ax.set_ylabel("local-energy variance")
+    ax.set_title(title)
+    ax.grid(True, which="both", linewidth=0.4, alpha=0.35)
+
+    color_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor=colors[architecture],
+            markeredgecolor="black",
+            markersize=7,
+            label=architecture,
+        )
+        for architecture in architectures
+    ]
+    shape_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=marker_by_norm[normalization],
+            color="black",
+            markerfacecolor="lightgray",
+            markeredgecolor="black",
+            linestyle="none",
+            markersize=7,
+            label=normalization,
+        )
+        for normalization in normalizations
+    ]
+    architecture_legend = ax.legend(
+        handles=color_handles,
+        title="Architecture",
+        fontsize=7,
+        title_fontsize=8,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0.0,
+    )
+    ax.add_artist(architecture_legend)
+    ax.legend(
+        handles=shape_handles,
+        title="Normalization",
+        fontsize=7,
+        title_fontsize=8,
+        loc="lower left",
+        bbox_to_anchor=(1.02, 0.0),
+        borderaxespad=0.0,
+    )
+    fig.tight_layout()
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _save_line_plot(
     path: Path,
     rows: Sequence[dict[str, Any]],
@@ -894,12 +1012,10 @@ def _write_figures(
         ),
         (
             "1B_energy_error_vs_local_energy_variance.png",
-            lambda path: _save_scatter(
+            lambda path: _save_energy_variance_scatter(
                 path,
                 champion_rows,
-                x_key="energy_error",
-                y_key="local_energy_var",
-                title="Energy error vs local-energy variance",
+                title="Absolute energy error vs local-energy variance",
             ),
         ),
         (

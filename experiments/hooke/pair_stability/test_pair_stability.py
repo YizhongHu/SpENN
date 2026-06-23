@@ -868,6 +868,41 @@ def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
     assert matrix == [[-0.5, 0.5]]
 
 
+def test_final_report_energy_variance_scatter_uses_abs_positive_log_points() -> None:
+    points = final_report._energy_variance_points(
+        [
+            {
+                "architecture": "raw_envelope",
+                "basis": "ignored",
+                "normalization": "N0",
+                "energy_error": "-0.25",
+                "local_energy_var": "10",
+            },
+            {
+                "architecture": "hermite_o2_envelope",
+                "normalization": "N1",
+                "energy_error": "0",
+                "local_energy_var": "1",
+            },
+            {
+                "architecture": "hermite_o2_envelope",
+                "normalization": "N2",
+                "energy_error": "0.5",
+                "local_energy_var": "0",
+            },
+        ]
+    )
+
+    assert points == [
+        {
+            "abs_energy_error": 0.25,
+            "local_energy_var": 10.0,
+            "architecture": "raw_envelope",
+            "normalization": "N0",
+        }
+    ]
+
+
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
     checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
