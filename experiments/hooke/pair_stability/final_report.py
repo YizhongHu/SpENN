@@ -925,6 +925,100 @@ def _save_architecture_line_grid(
     plt.close(fig)
 
 
+def _save_architecture_normalization_line_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+    group_keys: Sequence[str],
+    title: str,
+    legend_title: str,
+) -> None:
+    """Save a line grid with normalization rows and architecture columns."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    groups: dict[tuple[str, str, str], list[tuple[float, float]]] = defaultdict(list)
+    for row in rows:
+        x = _as_float(row.get(x_key))
+        y = _as_float(row.get(y_key))
+        if x is None or y is None:
+            continue
+        architecture = _architecture_label(row)
+        normalization = str(row.get("normalization", "")) or "all"
+        groups[(architecture, normalization, _group_label(row, group_keys))].append((x, y))
+    if not groups:
+        _save_no_data(path, title)
+        return
+
+    x_label = x_key.replace("_", " ")
+    y_label = y_key.replace("_", " ")
+    architectures = sorted({key[0] for key in groups})
+    normalizations = sorted({key[1] for key in groups})
+    labels = sorted({key[2] for key in groups})
+    plt = _pyplot()
+    from matplotlib.lines import Line2D
+
+    cmap = plt.get_cmap("tab20" if len(labels) > 10 else "tab10")
+    colors = {label: cmap(index % cmap.N) for index, label in enumerate(labels)}
+    fig, axes = plt.subplots(
+        len(normalizations),
+        len(architectures),
+        figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        squeeze=False,
+        sharex=True,
+        sharey=False,
+    )
+    for row_index, normalization in enumerate(normalizations):
+        for col_index, architecture in enumerate(architectures):
+            ax = axes[row_index][col_index]
+            plotted = False
+            for label in labels:
+                values = sorted(groups.get((architecture, normalization, label), []))
+                if not values:
+                    continue
+                ax.plot(
+                    [point[0] for point in values],
+                    [point[1] for point in values],
+                    marker="o",
+                    linewidth=1.1,
+                    markersize=3.0,
+                    color=colors[label],
+                    label=label,
+                )
+                plotted = True
+            if not plotted:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+            if row_index == 0:
+                ax.set_title(architecture, fontsize=9)
+            if col_index == 0:
+                ax.set_ylabel(f"{normalization}\n{y_label}")
+            if row_index == len(normalizations) - 1:
+                ax.set_xlabel(x_label)
+            ax.grid(True, linewidth=0.35, alpha=0.35)
+
+    handles = [
+        Line2D([0], [0], marker="o", color=colors[label], linewidth=1.1, markersize=3.0, label=label)
+        for label in labels
+    ]
+    if handles:
+        fig.legend(
+            handles,
+            labels,
+            title=legend_title,
+            fontsize=6,
+            title_fontsize=7,
+            loc="center left",
+            bbox_to_anchor=(1.0, 0.5),
+            borderaxespad=0.0,
+            ncol=max(1, math.ceil(len(labels) / 28)),
+        )
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 0.84 if handles else 1.0, 0.94))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _scalar_metric_matrix(
     rows: Sequence[dict[str, Any]],
     *,
@@ -1174,15 +1268,15 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         rows = _winner_rows(hooke_rows, winner)
         add(
             _winner_filename("5A", winner, "hooke_orbital_local_energy_distribution.png"),
-            lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "com_bin"), title=f"Hooke-orbital local-energy medians: {_winner_title(winner)}", legend_title="normalization / CoM bin"),
+            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("com_bin",), title=f"Hooke-orbital local-energy medians: {_winner_title(winner)}", legend_title="CoM bin"),
         )
         add(
             _winner_filename("5B", winner, "hooke_orbital_local_energy_vs_r12.png"),
-            lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("normalization", "com_bin"), title=f"Hooke-orbital local energy vs r12: {_winner_title(winner)}", legend_title="normalization / CoM bin"),
+            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("com_bin",), title=f"Hooke-orbital local energy vs r12: {_winner_title(winner)}", legend_title="CoM bin"),
         )
         add(
             _winner_filename("5C", winner, "hooke_orbital_local_energy_vs_radius.png"),
-            lambda path, rows=rows, winner=winner: _save_architecture_line_grid(path, rows, x_key="R_norm_center", y_key="local_energy_median", group_keys=("normalization", "r12_bin"), title=f"Hooke-orbital local energy vs CoM radius: {_winner_title(winner)}", legend_title="normalization / r12 bin"),
+            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="R_norm_center", y_key="local_energy_median", group_keys=("r12_bin",), title=f"Hooke-orbital local energy vs CoM radius: {_winner_title(winner)}", legend_title="r12 bin"),
         )
 
     for metric in SYMMETRY_METRICS:
@@ -1307,7 +1401,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Hooke-Orbital Diagnostics",
             "",
-            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted separately for energy and stability winners, split architectures into separate subplots, and place the remaining group legend outside the plotting area.",
+            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted separately for energy and stability winners, with normalization rows, architecture columns, and the remaining bin dimension in the external legend.",
             "",
             "## Symmetry Diagnostics",
             "",

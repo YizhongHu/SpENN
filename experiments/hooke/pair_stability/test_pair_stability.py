@@ -1015,6 +1015,28 @@ def test_final_report_architecture_line_grid_splits_architectures(tmp_path: Path
     assert path.is_file()
 
 
+def test_final_report_architecture_normalization_line_grid_splits_both_axes(tmp_path: Path) -> None:
+    path = tmp_path / "architecture_normalization_grid.png"
+    rows = [
+        {"basis_class": "raw_envelope", "normalization": "N0", "r12_center": "1.0", "local_energy_median": "1.0", "com_bin": "near"},
+        {"basis_class": "raw_envelope", "normalization": "N1", "r12_center": "1.0", "local_energy_median": "1.2", "com_bin": "near"},
+        {"basis_class": "hermite_o2_envelope", "normalization": "N0", "r12_center": "1.0", "local_energy_median": "2.0", "com_bin": "far"},
+        {"basis_class": "hermite_o2_envelope", "normalization": "N1", "r12_center": "1.0", "local_energy_median": "2.2", "com_bin": "far"},
+    ]
+
+    final_report._save_architecture_normalization_line_grid(
+        path,
+        rows,
+        x_key="r12_center",
+        y_key="local_energy_median",
+        group_keys=("com_bin",),
+        title="architecture normalization grid",
+        legend_title="CoM bin",
+    )
+
+    assert path.is_file()
+
+
 def test_final_report_line_plot_can_force_large_external_legend(tmp_path: Path) -> None:
     path = tmp_path / "line_with_legend.png"
     rows = [
