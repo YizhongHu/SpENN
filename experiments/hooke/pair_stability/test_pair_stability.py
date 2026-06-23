@@ -901,8 +901,20 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert collect_dir == results_root / "08_final_collect" / "C1"
     run_index = _read_csv(collect_dir / "run_index.csv")
     assert run_index[0]["final_run_id"] == job["final_run_id"]
+    assert run_index[0]["final_eval_attempt_id"] == "FE1"
     assert run_index[0]["winner_kind"] == "energy"
     assert run_index[0]["train_wall_time_sec"] == "5"
+    manifest_text = (collect_dir / "manifest.yaml").read_text(encoding="utf-8")
+    assert "final_eval_attempt_id: FE1" in manifest_text
+    assert f"  {job['final_run_id']}: FE1" in manifest_text
+    implicit_collect = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="C_implicit",
+    )
+    implicit_manifest = Path(implicit_collect["attempt_dir"]) / "manifest.yaml"
+    implicit_manifest_text = implicit_manifest.read_text(encoding="utf-8")
+    assert "final_eval_attempt_id: FE1" in implicit_manifest_text
+    assert f"  {job['final_run_id']}: FE1" in implicit_manifest_text
     energy_by_run = _read_csv(collect_dir / "energy_by_run.csv")
     assert energy_by_run[0]["energy_error"] == "0.5"
     assert energy_by_run[0]["kinetic_mean"] == "0.7"
@@ -1686,6 +1698,29 @@ def test_sync_snapshot_traces_latest_final_report_ancestry_and_skips_checkpoints
     assert summary.planned_files == summary.copied_files
     assert summary.planned_bytes == summary.copied_bytes
     assert summary.skipped_checkpoint_dirs == 1
+
+
+def test_sync_rejects_final_collect_without_exact_final_eval_lineage(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    report_dir = results_root / "09_final_report" / "R1"
+    collect_dir = results_root / "08_final_collect" / "C1"
+    latest_eval_dir = results_root / "07_final_eval" / "final-a" / "LATEST"
+    report_dir.mkdir(parents=True)
+    collect_dir.mkdir(parents=True)
+    latest_eval_dir.mkdir(parents=True)
+    (report_dir / "final_report.json").write_text(json.dumps({"final_collect_attempt_id": "C1"}), encoding="utf-8")
+    (collect_dir / "run_index.csv").write_text("final_run_id\nfinal-a\n", encoding="utf-8")
+    (collect_dir / "manifest.yaml").write_text(
+        "study: pair_stability\nstage: 08_final_collect\nfinal_eval_attempt_id: None\n",
+        encoding="utf-8",
+    )
+    (results_root / "07_final_eval" / "final-a" / "latest.json").write_text(
+        json.dumps({"attempt_id": "LATEST"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing final_eval_attempt_id/final_eval_attempts"):
+        sync.trace_final_report_ancestry(results_root, "R1")
 
 
 def test_final_report_local_energy_grid_groups_by_norm_and_architecture() -> None:

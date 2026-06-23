@@ -54,6 +54,7 @@ COMPACT_TABLES = (
 
 RUN_INDEX_COLUMNS = [
     "final_run_id",
+    "final_eval_attempt_id",
     "source_champion_id",
     "basis_class",
     "normalization",
@@ -573,6 +574,7 @@ def _run_index_row(context: dict[str, Any]) -> dict[str, Any]:
     n_success, n_failed = _task_status_counts(context["eval_metric_map"])
     return {
         **base,
+        "final_eval_attempt_id": context["attempt_id"],
         "train_status": train_status,
         "eval_status": context["eval_status"],
         "n_eval_tasks_success": n_success,
@@ -1025,14 +1027,31 @@ def _architecture_summary(energy_rows: Sequence[dict[str, Any]], tail_rows: Sequ
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
+    _append_manifest_items(lines, payload, indent=0)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _append_manifest_items(lines: list[str], payload: dict[str, Any], *, indent: int) -> None:
+    prefix = " " * indent
     for key, value in payload.items():
         if isinstance(value, dict):
-            lines.append(f"{key}:")
+            lines.append(f"{prefix}{key}:")
             for sub_key, sub_value in value.items():
-                lines.append(f"  {sub_key}: {sub_value}")
+                if isinstance(sub_value, dict):
+                    lines.append(f"{prefix}  {sub_key}:")
+                    _append_manifest_items(lines, sub_value, indent=indent + 4)
+                elif isinstance(sub_value, list):
+                    lines.append(f"{prefix}  {sub_key}:")
+                    for item in sub_value:
+                        lines.append(f"{prefix}    - {item}")
+                else:
+                    lines.append(f"{prefix}  {sub_key}: {sub_value}")
+        elif isinstance(value, list):
+            lines.append(f"{prefix}{key}:")
+            for item in value:
+                lines.append(f"{prefix}  - {item}")
         else:
-            lines.append(f"{key}: {value}")
-    path.write_text("\n".join(lines) + "\n")
+            lines.append(f"{prefix}{key}: {value}")
 
 
 def collect_final_outputs(
@@ -1049,6 +1068,10 @@ def collect_final_outputs(
     attempt.mkdir(parents=True, exist_ok=True)
 
     contexts = [_run_context(final_run_id, attempt_id, attempt_dir) for final_run_id, attempt_id, attempt_dir in _iter_final_eval_attempts(results_root, final_eval_attempt_id)]
+    resolved_eval_attempt_ids = sorted({str(context["attempt_id"]) for context in contexts})
+    manifest_final_eval_attempt_id = final_eval_attempt_id
+    if manifest_final_eval_attempt_id is None and len(resolved_eval_attempt_ids) == 1:
+        manifest_final_eval_attempt_id = resolved_eval_attempt_ids[0]
     run_index_rows = [_run_index_row(context) for context in contexts]
     energy_rows = [_energy_row(context) for context in contexts]
     histogram_rows = _local_energy_histograms(contexts)
@@ -1085,7 +1108,9 @@ def collect_final_outputs(
         "study": "pair_stability",
         "stage": STAGE_FINAL_COLLECT,
         "attempt_id": collect_attempt_id,
-        "final_eval_attempt_id": final_eval_attempt_id,
+        "final_eval_attempt_id": manifest_final_eval_attempt_id,
+        "final_eval_attempt_ids": resolved_eval_attempt_ids,
+        "final_eval_attempts": {str(context["final_run_id"]): str(context["attempt_id"]) for context in contexts},
         "n_final_eval_attempts": len(contexts),
         "tables": {filename: len(rows) for filename, (rows, _) in table_specs.items()},
         "source_stages": {

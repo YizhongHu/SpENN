@@ -419,8 +419,11 @@ artifacts and writes compact reusable tables in `08_final_collect/{attempt_id}/`
 `tail_profile_summary.csv`, `stratified_summary.csv`,
 `hooke_orbital_summary.csv`, `symmetry_summary.csv`, `trace_summary.csv`,
 `training_curve_summary.csv`, and `resource_summary.csv`). It keeps
-`basis_class`, `normalization`, `winner_kind`, `seed_index`, and
-`final_run_id` explicit; energy and stability winners are not merged.
+`basis_class`, `normalization`, `winner_kind`, `seed_index`, `final_run_id`,
+and `final_eval_attempt_id` explicit; energy and stability winners are not
+merged. Its `manifest.yaml` records the fixed `final_eval_attempt_id` when all
+final-eval rows share one attempt id, and always records an exact
+`final_eval_attempts` map from `final_run_id` to attempt id.
 
 Render the final report from compact summaries:
 
@@ -463,6 +466,9 @@ alias.
 its explicit provenance back through final collect/eval/train/grid and the
 selection/collection/grid stages, and writes a directory named
 `<study_name>_snapshot_<YYYYMMDD>T<HHMMSS>-0400` in America/New_York time.
+It never uses `latest.json` for final-eval lineage: `08_final_collect` must
+record either a fixed `final_eval_attempt_id` or an exact `final_eval_attempts`
+map, otherwise sync fails and the final collect/report should be regenerated.
 All files under traced ancestry directories are copied except checkpoint
 directories. Regular `01_train` and `02_validation` run directories are copied
 metadata-only: `config.yaml`, `resolved_config.yaml`, `metadata.json`,

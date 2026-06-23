@@ -276,12 +276,10 @@ def trace_final_report_ancestry(results_root: str | Path, report_attempt_id: str
 
     run_index = _read_csv(collect_dir / "run_index.csv")
     final_run_ids = [str(row.get("final_run_id", "")) for row in run_index if row.get("final_run_id")]
-    fixed_eval_attempt_id = _final_eval_attempt_id_from_collect_manifest(collect_dir / "manifest.yaml")
+    final_eval_attempts = _final_eval_attempts_from_collect_manifest(collect_dir / "manifest.yaml", final_run_ids)
     final_eval_dirs = _resolve_final_eval_dirs(
         results_root,
-        final_run_ids,
-        fixed_attempt_id=fixed_eval_attempt_id,
-        warnings=warnings,
+        final_eval_attempts,
     )
     for eval_dir in final_eval_dirs:
         _trace_final_eval(eval_dir, roots, warnings)
@@ -607,53 +605,43 @@ def _read_json_list(path: Path, warnings: list[str]) -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
-def _final_eval_attempt_id_from_collect_manifest(path: Path) -> str | None:
+def _final_eval_attempts_from_collect_manifest(path: Path, final_run_ids: Sequence[str]) -> dict[str, str]:
     if not path.is_file():
-        return None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.startswith("final_eval_attempt_id:"):
-            continue
-        value = line.split(":", 1)[1].strip()
-        return None if value in {"", "None", "null"} else value
-    return None
+        raise ValueError(f"final collect manifest is required for lineage: {path}")
+    manifest = OmegaConf.load(path)
+    fixed_attempt_id = _config_text(manifest, "final_eval_attempt_id")
+    if fixed_attempt_id:
+        return {final_run_id: fixed_attempt_id for final_run_id in final_run_ids}
+    raw_mapping = OmegaConf.select(manifest, "final_eval_attempts", default=None)
+    if raw_mapping is None:
+        raise ValueError(
+            f"{path}: missing final_eval_attempt_id/final_eval_attempts; "
+            "rerun final_collect.py with current code or pass --final-eval-attempt-id"
+        )
+    mapping = OmegaConf.to_container(raw_mapping, resolve=True)
+    if not isinstance(mapping, dict):
+        raise ValueError(f"{path}: final_eval_attempts must be a mapping of final_run_id to attempt id")
+    attempts = {str(run_id): str(attempt_id) for run_id, attempt_id in mapping.items() if attempt_id not in (None, "")}
+    missing = [final_run_id for final_run_id in final_run_ids if final_run_id not in attempts]
+    if missing:
+        preview = ", ".join(missing[:5])
+        suffix = "" if len(missing) <= 5 else f", ... ({len(missing)} total)"
+        raise ValueError(f"{path}: final_eval_attempts missing final_run_id entries: {preview}{suffix}")
+    return {final_run_id: attempts[final_run_id] for final_run_id in final_run_ids}
 
 
 def _resolve_final_eval_dirs(
     results_root: Path,
-    final_run_ids: Sequence[str],
-    *,
-    fixed_attempt_id: str | None,
-    warnings: list[str],
+    final_eval_attempts: dict[str, str],
 ) -> list[Path]:
     dirs = []
-    if fixed_attempt_id is None and final_run_ids:
-        warnings.append(
-            "final collect manifest does not record a fixed final_eval_attempt_id; "
-            "using latest final-eval attempt per final_run_id"
-        )
-    for final_run_id in final_run_ids:
+    for final_run_id, attempt_id in final_eval_attempts.items():
         run_dir = stage_dir(results_root, STAGE_FINAL_EVAL) / final_run_id
-        if fixed_attempt_id is not None:
-            attempt_dir = run_dir / fixed_attempt_id
-        else:
-            attempt_dir = _best_effort_latest_attempt(run_dir)
-            if attempt_dir is None:
-                warnings.append(f"no final-eval attempts found for {final_run_id}")
-                continue
+        attempt_dir = run_dir / attempt_id
+        if not attempt_dir.is_dir():
+            raise FileNotFoundError(f"manifested final-eval attempt does not exist: {attempt_dir}")
         dirs.append(attempt_dir)
     return dirs
-
-
-def _best_effort_latest_attempt(run_dir: Path) -> Path | None:
-    latest = run_dir / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return run_dir / str(attempt_id)
-    attempts = attempt_ids(run_dir)
-    if not attempts:
-        return None
-    return run_dir / attempts[-1]
 
 
 def _path_from_record(record: dict[str, Any], key: str) -> Path | None:
@@ -677,9 +665,12 @@ def _add_dir(roots: set[Path], warnings: list[str], path: Path, label: str) -> b
 
 def _config_text(config: Any, dotted_key: str) -> str | None:
     value = OmegaConf.select(config, dotted_key, default=None)
-    if value in (None, "null"):
+    if value is None:
         return None
-    return str(value)
+    text = str(value).strip()
+    if text in {"", "None", "none", "null"}:
+        return None
+    return text
 
 
 def _study_name(config: Any) -> str:
