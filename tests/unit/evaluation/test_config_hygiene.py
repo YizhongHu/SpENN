@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,16 @@ from omegaconf import OmegaConf
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+PRUNED_CONFIG_DIRS = {
+    ".git",
+    ".pytest_cache",
+    "__pycache__",
+    "outputs",
+    "reports",
+    "results",
+    "slurm",
+    "slurm_logs",
+}
 
 
 def test_yaml_configs_do_not_reintroduce_evaluation_phase_or_required_keys() -> None:
@@ -40,8 +51,16 @@ def _yaml_config_paths() -> Iterator[Path]:
     )
     for root in roots:
         if root.exists():
-            yield from sorted(root.rglob("*.yaml"))
-            yield from sorted(root.rglob("*.yml"))
+            for current, dirnames, filenames in os.walk(root):
+                dirnames[:] = [
+                    dirname
+                    for dirname in dirnames
+                    if dirname not in PRUNED_CONFIG_DIRS and not dirname.startswith(".")
+                ]
+                base = Path(current)
+                for filename in sorted(filenames):
+                    if filename.endswith((".yaml", ".yml")):
+                        yield base / filename
 
 
 def _walk_mappings(data: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Mapping[str, Any]]]:

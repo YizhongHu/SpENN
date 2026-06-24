@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import sys
 from collections import Counter
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Sequence
 
 from omegaconf import OmegaConf
@@ -18,10 +20,24 @@ GRID = CONFIGS / "grid.yaml"
 if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
-import final_plan  # noqa: E402
-import plan  # noqa: E402
-import run_utils  # noqa: E402
-import select_champions  # noqa: E402
+
+def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
+    path = STUDY_DIR / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"pair_stability_v2_{name}", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    if bind_direct:
+        sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+run_utils = _load_script("run_utils", bind_direct=True)
+plan = _load_script("plan")
+select_champions = _load_script("select_champions")
+final_plan = _load_script("final_plan")
 
 
 ATTEMPT = "20260623T120000-0400"
@@ -49,6 +65,32 @@ def _planned_results(tmp_path: Path) -> Path:
     return results_root
 
 
+def test_v2_blinding_is_reproducible_by_seed(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    for attempt, seed in (("SAME1", 811), ("SAME2", 811), ("DIFF", 812)):
+        code = plan.main(
+            [
+                "--grid",
+                str(GRID),
+                "--results-root",
+                str(results_root),
+                "--attempt-id",
+                attempt,
+                "--blind",
+                "--blind-seed",
+                str(seed),
+            ]
+        )
+        assert code == 0
+
+    same1 = json.loads((results_root / "00_grid" / "SAME1" / "unblind.json").read_text())
+    same2 = json.loads((results_root / "00_grid" / "SAME2" / "unblind.json").read_text())
+    diff = json.loads((results_root / "00_grid" / "DIFF" / "unblind.json").read_text())
+
+    assert same1["axes"] == same2["axes"]
+    assert same1["axes"] != diff["axes"]
+
+
 def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     grid_attempt = run_utils.grid_attempt_dir(results_root, ATTEMPT)
@@ -66,29 +108,27 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert not (grid_attempt / "pair_stability.yaml").exists()
     assert not (grid_attempt / "pair_validation.yaml").exists()
     assert manifest["grid_schema"] == "major_minor_scan"
-    assert manifest["major_axes"] == ["architecture", "normalization"]
+    assert manifest["major_axes"] == ["basis", "mechanism"]
     assert manifest["minor_axes"] == ["lr", "channels"]
     assert manifest["scan_seed_axis"] == "seed"
     assert manifest["axis_id_labels"] == {
-        "architecture": "arch",
-        "normalization": "norm",
+        "basis": "b",
+        "mechanism": "m",
         "lr": "lr",
         "channels": "ch",
         "seed": "seed",
     }
     assert manifest["axis_overrides"] == {
-        "architecture": "run_parameters.architecture",
-        "normalization": "run_parameters.normalization",
+        "basis": "run_parameters.basis_slot",
+        "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
     }
-    assert manifest["choice_validation"]["architecture"]["choices_path"] == "choices.architecture"
-    assert manifest["choice_validation"]["normalization"]["choices_path"] == "choices.normalization"
-    assert [champion["name"] for champion in manifest["champions"]] == ["energy", "stability"]
-    assert manifest["champion_kinds"] == ["energy", "stability"]
+    assert manifest["choice_validation"]["basis"]["choices_path"] == "choices.basis"
+    assert manifest["choice_validation"]["mechanism"]["choices_path"] == "choices.mechanism"
+    assert [champion["name"] for champion in manifest["champions"]] == ["energy"]
+    assert manifest["champion_kinds"] == ["energy"]
     assert manifest["champions"][0]["selector"] == "metric_ladder"
-    assert manifest["champions"][1]["selector"] == "metric"
-    assert manifest["champions"][1]["metric"] == "eval/feature_trace_stability/feature_rms_q95"
     assert manifest["seed_overrides"]["scan_train"] == {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
@@ -104,77 +144,71 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
         "final_train_model_seed": {"start": 1001, "step": 1},
         "final_eval_seed": {"start": 10001, "step": 1},
     }
-    assert manifest["final_replicates"] == 2
-    assert manifest["n_jobs"] == 32
+    assert manifest["final_replicates"] == 0
+    assert manifest["n_jobs"] == 270
+    assert manifest["blinding"]["enabled"] is True
+    assert manifest["blinding"]["blind_seed"] == 0
+
+    unblind = json.loads((grid_attempt / "unblind.json").read_text())
+    assert set(unblind["axes"]) == {"basis", "mechanism"}
+    assert set(unblind["axes"]["basis"]["slot_to_value"].values()) == set(OmegaConf.load(GRID).major_grid.basis)
+    assert set(unblind["axes"]["mechanism"]["slot_to_value"].values()) == set(OmegaConf.load(GRID).major_grid.mechanism)
 
     grid = OmegaConf.load(GRID)
     jobs = manifest["jobs"]
-    assert {job["choices"]["architecture"] for job in jobs} == set(grid.major_grid.architecture)
-    assert {job["choices"]["normalization"] for job in jobs} == set(grid.major_grid.normalization)
+    assert {job["choices"]["basis"] for job in jobs} == set(unblind["axes"]["basis"]["slot_to_value"])
+    assert {job["choices"]["mechanism"] for job in jobs} == set(unblind["axes"]["mechanism"]["slot_to_value"])
     assert {float(job["choices"]["lr"]) for job in jobs} == {float(value) for value in grid.minor_grid.lr}
     assert {job["choices"]["channels"] for job in jobs} == {int(value) for value in grid.minor_grid.channels}
     assert {job["choices"]["seed"] for job in jobs} == {int(value) for value in grid.scan_seeds}
 
-    job = next(job for job in jobs if job["run_id"] == "arch-raw_envelope_norm-N0_lr-1e-3_ch-4_seed-0")
-    assert job["major_id"] == "arch-raw_envelope_norm-N0"
-    assert job["minor_id"] == "lr-1e-3_ch-4"
-    assert job["config_id"] == "arch-raw_envelope_norm-N0_lr-1e-3_ch-4"
-    assert job["major_choices"] == {"architecture": "raw_envelope", "normalization": "N0"}
-    assert job["minor_choices"] == {"lr": 0.001, "channels": 4}
-    assert job["scan_seed"] == 0
+    job = jobs[0]
+    assert job["run_id"].startswith("b-")
+    assert "_m-" in job["run_id"]
+    assert job["minor_id"].startswith("lr-")
+    assert job["minor_choices"]["channels"] == 8
+    assert job["scan_seed"] in {0, 1, 2}
     assert job["seed_overrides"]["scan_train"] == {
-        "run_parameters.seed": 0,
-        "runtime.seed": 0,
-        "sampler.seed": 0,
+        "run_parameters.seed": job["scan_seed"],
+        "runtime.seed": job["scan_seed"],
+        "sampler.seed": job["scan_seed"],
     }
     assert "study.name=pair_stability_v2" in job["overrides"]
     assert "experiment.name=pair_stability_v2" in job["overrides"]
     assert "experiment.run_name=pair_stability_v2_train" in job["overrides"]
-    assert "runtime.seed=0" in job["overrides"]
-    assert "sampler.seed=0" in job["overrides"]
+    assert f"runtime.seed={job['scan_seed']}" in job["overrides"]
+    assert f"sampler.seed={job['scan_seed']}" in job["overrides"]
+    assert any(str(override).startswith("run_parameters.basis_slot=B") for override in job["overrides"])
+    assert any(str(override).startswith("run_parameters.mechanism_slot=A") for override in job["overrides"])
 
 
 def _write_collection_summary(results_root: Path) -> None:
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
     rows = []
-    for architecture in ("raw_envelope", "hermite_o2_envelope"):
-        for normalization in ("N0", "N1"):
-            for lr in (1.0e-3, 3.0e-4):
-                for channels in (4, 8):
-                    for seed in (0, 1):
-                        point = {
-                            "architecture": architecture,
-                            "normalization": normalization,
-                            "lr": lr,
-                            "channels": channels,
-                            "seed": seed,
-                        }
-                        energy = 2.0 + (0.0 if lr == 3.0e-4 and channels == 8 else 0.2)
-                        feature = 0.01 if lr == 1.0e-3 and channels == 4 else 0.03
-                        rows.append(
-                            {
-                                "run_id": run_utils.id_for_axes(
-                                    point,
-                                    ("architecture", "normalization", "lr", "channels", "seed"),
-                                    {
-                                        "architecture": "arch",
-                                        "normalization": "norm",
-                                        "lr": "lr",
-                                        "channels": "ch",
-                                        "seed": "seed",
-                                    },
-                                ),
-                                "status": "completed",
-                                **{key: str(value) for key, value in point.items()},
-                                "eval/stratified_geometry/local_energy_mean": str(energy + 0.001 * seed),
-                                "eval/feature_trace_stability/feature_rms_q95": str(feature + 0.001 * seed),
-                            }
-                        )
+    for job in manifest["jobs"]:
+        point = dict(job["choices"])
+        lr = float(point["lr"])
+        seed = int(point["seed"])
+        energy = 2.0 + (0.0 if lr == 3.0e-4 else 0.2)
+        feature = 0.01 if lr == 1.0e-3 else 0.03
+        rows.append(
+            {
+                "run_id": job["run_id"],
+                "status": "completed",
+                **{key: str(value) for key, value in point.items()},
+                "major_id": job["major_id"],
+                "minor_id": job["minor_id"],
+                "config_id": job["config_id"],
+                "eval/stratified_geometry/local_energy_mean": str(energy + 0.001 * seed),
+                "eval/feature_trace_stability/feature_rms_q95": str(feature + 0.001 * seed),
+            }
+        )
     collect_dir = results_root / "03_collect" / "C1"
     _write_csv(collect_dir / "summary.csv", rows)
     (collect_dir / "source_grid_attempt.json").write_text(json.dumps({"grid_attempt_id": ATTEMPT}) + "\n")
 
 
-def test_v2_selects_champions_per_major_and_final_jobs_freeze_minor_values(tmp_path: Path) -> None:
+def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     _write_collection_summary(results_root)
 
@@ -184,20 +218,16 @@ def test_v2_selects_champions_per_major_and_final_jobs_freeze_minor_values(tmp_p
         select_attempt_id="S1",
     )
     report = result["report"]
-    assert report["champion_kinds"] == ["energy", "stability"]
-    assert [spec["selector"] for spec in report["champion_specs"]] == ["metric_ladder", "metric"]
-    assert report["group_by"] == ["architecture", "normalization"]
-    assert report["n_champions"] == 8
+    assert report["champion_kinds"] == ["energy"]
+    assert [spec["selector"] for spec in report["champion_specs"]] == ["metric_ladder"]
+    assert report["group_by"] == ["basis", "mechanism"]
+    assert report["n_champions"] == 30
 
     champions = _read_csv(results_root / "04_select" / "S1" / "champions.csv")
-    assert Counter((row["architecture"], row["normalization"]) for row in champions) == {
-        ("hermite_o2_envelope", "N0"): 2,
-        ("hermite_o2_envelope", "N1"): 2,
-        ("raw_envelope", "N0"): 2,
-        ("raw_envelope", "N1"): 2,
-    }
-    assert {row["winner_kind"] for row in champions} == {"energy", "stability"}
-    assert {row["minor_id"] for row in champions} == {"lr-1e-3_ch-4", "lr-3e-4_ch-8"}
+    assert len(Counter((row["basis"], row["mechanism"]) for row in champions)) == 30
+    assert set(Counter((row["basis"], row["mechanism"]) for row in champions).values()) == {1}
+    assert {row["winner_kind"] for row in champions} == {"energy"}
+    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-8"}
 
     code = final_plan.main(
         [
@@ -215,35 +245,12 @@ def test_v2_selects_champions_per_major_and_final_jobs_freeze_minor_values(tmp_p
     manifest = json.loads((final_dir / "manifest.json").read_text())
     jobs = [json.loads(path.read_text()) for path in sorted((final_dir / "jobs").glob("*.json"))]
     assert manifest["study"] == "pair_stability_v2"
-    assert manifest["final_replicates"] == 2
-    assert manifest["n_jobs"] == 16
+    assert manifest["final_replicates"] == 0
+    assert manifest["n_jobs"] == 0
     assert manifest["axis_overrides"] == {
-        "architecture": "run_parameters.architecture",
-        "normalization": "run_parameters.normalization",
+        "basis": "run_parameters.basis_slot",
+        "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
     }
-    assert len(jobs) == 16
-    assert "seed" not in jobs[0]
-    assert jobs[0]["choices"]
-    assert {job["replicate_index"] for job in jobs} == {0, 1}
-    assert {job["winner_kind"] for job in jobs} == {"energy", "stability"}
-    assert Counter(job["major_id"] for job in jobs) == {
-        "arch-hermite_o2_envelope_norm-N0": 4,
-        "arch-hermite_o2_envelope_norm-N1": 4,
-        "arch-raw_envelope_norm-N0": 4,
-        "arch-raw_envelope_norm-N1": 4,
-    }
-    assert {job["source_scan_seeds"] for job in jobs} == {"0,1"}
-    assert {job["final_train_model_seed"] for job in jobs} == {1001, 1002}
-    assert {job["final_eval_seed"] for job in jobs} == {10001, 10002}
-    assert jobs[0]["stage_seed_overrides"]["final_train"] == {
-        "run_parameters.seed": 1001,
-        "runtime.seed": 1001,
-        "sampler.seed": 101,
-    }
-    assert jobs[0]["stage_seed_overrides"]["final_eval"] == {
-        "run_parameters.seed": 10001,
-        "runtime.seed": 10001,
-        "evaluation.seed": 10001,
-    }
+    assert jobs == []

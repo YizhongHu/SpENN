@@ -1,20 +1,23 @@
 # =============================================================================
-# Hooke pair-stability V2 experiment grid (PR8.10)
+# Hooke pair-stability V2 screening grid (PR8.11)
 # =============================================================================
 #
 # This file is the contract between the study-specific configs and the
 # mechanical stage scripts:
 #
 # - study/config paths name the concrete study and base Hydra configs.
-# - major_grid defines champion buckets; minor_grid defines scan choices inside
-#   each bucket; scan_seeds are training/validation replicate seeds only.
+# - major_grid defines blinded scientific comparison axes; minor_grid defines
+#   scan choices inside each bucket; scan_seeds are training/validation
+#   replicate seeds only.
 # - axis_id_labels control durable run id strings.
 # - axis_overrides maps each axis to the Hydra override path in the base
 #   configs. Stage code does not infer run_parameters.* paths.
 # - seed_overrides maps stage seed names to Hydra override paths. Final seeds
 #   come from final_seed_sequences, not from scan_seeds.
-# - champions declares selector semantics explicitly. Stage code does not know
-#   what names like "energy" or "stability" mean.
+# - blinding controls axis-wise slot assignment for major axes. Routine
+#   manifests carry slots; unblind.json carries semantic labels.
+# - champions declares selector semantics explicitly. PR8.11 selects energy
+#   representatives only; it does not choose a stability winner.
 # - smoke_config points to a separate workload-reduction profile used only when
 #   launchers receive --smoke.
 # =============================================================================
@@ -30,57 +33,72 @@ config_snapshots:
   validation: validation_config.yaml
   smoke: smoke_config.yaml
 
-# Major axes define independent comparison buckets. Champion selection happens
-# separately for every Cartesian product of these values.
+# Major axes define independent comparison buckets. The planner can blind these
+# true values into stable slots before writing routine manifests.
 major_grid:
-  architecture:
+  basis:
     - raw_envelope
-    - hermite_o2_envelope
+    - orbital_s1_envelope
+    - orbital_s2_envelope
 
-  normalization:
-    - N0
-    - N1
+  mechanism:
+    - baseline_silu
+    - update_rms
+    - update_gaussian_envelope
+    - update_gaussian_norm
+    - feature_rms
+    - feature_gaussian_envelope
+    - feature_gaussian_norm
+    - activation_sigmoid
+    - activation_tanh
+    - activation_gaussian
 
 # Minor axes are scanned within each major point. Final planning freezes the
 # selected minor values and drops scan_seed_axis.
 minor_grid:
   lr:
+    - 3.0e-3
     - 1.0e-3
     - 3.0e-4
 
   channels:
-    - 4
     - 8
 
 scan_seed_axis: seed
 scan_seeds:
   - 0
   - 1
+  - 2
+
+blinding:
+  enabled_by_default: true
+  slot_prefixes:
+    basis: B
+    mechanism: A
 
 # Short labels used only for durable ids such as run_id, major_id, and minor_id.
 axis_id_labels:
-  architecture: arch
-  normalization: norm
+  basis: b
+  mechanism: m
   lr: lr
   channels: ch
   seed: seed
 
 # Explicit Hydra override path for every non-seed grid axis.
 axis_overrides:
-  architecture: run_parameters.architecture
-  normalization: run_parameters.normalization
+  basis: run_parameters.basis_slot
+  mechanism: run_parameters.mechanism_slot
   lr: run_parameters.lr
   channels: run_parameters.channels
 
 # Optional validation against choice libraries in the base configs.
 choice_validation:
-  architecture:
-    choices_path: choices.architecture
-    tags_path: choices.architecture.{value}.tags
-    exclude_suffixes:
-      - _no_envelope
-  normalization:
-    choices_path: choices.normalization
+  basis:
+    choices_path: choices.basis
+    tags_path: choices.basis.{value}.tags
+  mechanism:
+    choices_path: choices.mechanism
+    tags_path: choices.mechanism.{value}.tags
 
 # Stage-specific seed policy. Values on the right are named seed values supplied
 # by the planner/final planner; keys on the left are Hydra override paths.
@@ -132,12 +150,6 @@ champions:
     fallback_metric: train/runtime/wall_time_sec
     fallback_mode: min
 
-  - name: stability
-    selector: metric
-    metric: eval/feature_trace_stability/feature_rms_q95
-    mode: min
-    exclude: energy
-
 # Extra seed-aggregated metrics copied into champions.csv for auditability.
 champion_reference_metrics:
   - label: stratified_geometry_energy
@@ -153,4 +165,5 @@ champion_reference_metrics:
   - label: readout_stability
     metric: eval/readout_trace_stability/condition_number_q95
 
-final_replicates: 2
+# PR8.11 is a screening scan, not a final-reporting experiment.
+final_replicates: 0

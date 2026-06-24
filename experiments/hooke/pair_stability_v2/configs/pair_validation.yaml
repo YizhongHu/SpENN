@@ -1,5 +1,5 @@
 # =============================================================================
-# Hooke pair-stability study validation/evaluation base config (PR8.8)
+# Hooke pair-stability V2 validation/evaluation base config (PR8.11)
 # =============================================================================
 #
 # Restores a trained pair-stability checkpoint and runs the EvaluationTask-based
@@ -7,11 +7,11 @@
 # plus transform/trace stability tasks already implemented in the evaluation
 # stack. Reference-energy comparisons are intentionally not part of this
 # validation config.
-# The architecture/normalization choice MUST match the trained run, so
-# validation planning passes the same run_parameters used at training time.
+# The basis/mechanism slots MUST match the trained run, so validation planning
+# passes the same run_parameters used at training time.
 #
 #   uv run python run.py --config experiments/hooke/pair_stability_v2/configs/pair_validation.yaml \
-#     run_parameters.architecture=hermite_o3_envelope run_parameters.normalization=N2 \
+#     run_parameters.basis_slot=B00 run_parameters.mechanism_slot=A03 \
 #     run_parameters.lr=1.0e-3 run_parameters.channels=16 run_parameters.seed=0 \
 #     load.path=<train_checkpoint> \
 #     run.root=experiments/hooke/pair_stability_v2/results/02_validation \
@@ -59,46 +59,21 @@ system:
 
 # Scalar run parameters; must match the trained run being evaluated.
 run_parameters:
-  architecture: hermite_o3_envelope
-  normalization: N0
+  basis_slot: raw_envelope
+  mechanism_slot: baseline_silu
   lr: 1.0e-3
-  channels: 4
+  channels: 8
   seed: 0
 
 # Structured choice libraries (identical to pair_stability.yaml so the restored
-# checkpoint maps onto the same architecture and normalization).
+# checkpoint maps onto the same basis and mechanism).
 choices:
-  architecture:
+  basis:
     raw_envelope:
       basis:
         _target_: spenn.nn.RawCoordinateBasis
         spatial_dim: ${system.spatial_dim}
         include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
-      tags: [main]
-    hermite_o2_envelope:
-      basis:
-        _target_: spenn.nn.HookeHermiteBasis
-        omega: ${system.omega}
-        max_order: 2
-        spatial_dim: ${system.spatial_dim}
-        include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
-      tags: [main]
-    hermite_o3_envelope:
-      basis:
-        _target_: spenn.nn.HookeHermiteBasis
-        omega: ${system.omega}
-        max_order: 3
-        spatial_dim: ${system.spatial_dim}
-        include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
       tags: [main]
     orbital_s1_envelope:
       basis:
@@ -108,9 +83,6 @@ choices:
         include_gaussian_factor: true
         spatial_dim: ${system.spatial_dim}
         include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
       tags: [main, orbital_with_envelope]
     orbital_s2_envelope:
       basis:
@@ -120,63 +92,135 @@ choices:
         include_gaussian_factor: true
         spatial_dim: ${system.spatial_dim}
         include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
       tags: [main, orbital_with_envelope]
-    hermite_o4_envelope:
-      basis:
-        _target_: spenn.nn.HookeHermiteBasis
-        omega: ${system.omega}
-        max_order: 4
-        spatial_dim: ${system.spatial_dim}
-        include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
-      tags: [diagnostic]
-    orbital_s3_envelope:
-      basis:
-        _target_: spenn.nn.HookeOrbitalBasis
-        omega: ${system.omega}
-        max_shell: 3
-        include_gaussian_factor: true
-        spatial_dim: ${system.spatial_dim}
-        include_spin: true
-      envelope:
-        _target_: spenn.nn.HookeGaussianEnvelope
-        omega: ${system.omega}
-      tags: [diagnostic, orbital_with_envelope]
-  normalization:
-    N0:
-      mode: none
-      norm: null
-    N1:
-      mode: post_embedding
-      norm:
-        _target_: spenn.nn.IrrepRMSNorm
+  mechanism:
+    baseline_silu:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation: null
+      update_envelope: null
+      tags: [baseline]
+    update_rms:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation:
+        _target_: spenn.nn.RealRMSGate
         eps: 1.0e-8
-    N2:
-      mode: post_feature_layer
-      norm:
-        _target_: spenn.nn.IrrepRMSNorm
+      update_envelope: null
+      tags: [update_scale, rms]
+    update_gaussian_envelope:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation: null
+      update_envelope:
+        _target_: spenn.nn.RealCoordinateEnvelope
+        envelope:
+          _target_: spenn.nn.GaussianCoordinateEnvelope
+          sigma: 1.0
+      tags: [update_scale, coordinate_envelope]
+    update_gaussian_norm:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation:
+        _target_: spenn.nn.RealGaussianNormGate
+        sigma: 1.0
+      update_envelope: null
+      tags: [update_scale, norm_gate]
+    feature_rms:
+      embedding_activation: null
+      feature_activation:
+        _target_: spenn.nn.RealRMSGate
         eps: 1.0e-8
-    N3:
-      mode: update
-      norm:
-        _target_: spenn.nn.IrrepRMSNorm
-        eps: 1.0e-8
-    N4:
-      mode: pre_readout
-      norm:
-        _target_: spenn.nn.IrrepRMSNorm
-        eps: 1.0e-8
-
-gate_targets:
-  silu: torch.nn.SiLU
-  sigmoid: torch.nn.Sigmoid
-  tanh: torch.nn.Tanh
-  gaussian: spenn.nn.GaussianActivation
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation: null
+      update_envelope: null
+      tags: [feature_scale, rms]
+    feature_gaussian_envelope:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope:
+        _target_: spenn.nn.RealCoordinateEnvelope
+        envelope:
+          _target_: spenn.nn.GaussianCoordinateEnvelope
+          sigma: 1.0
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation: null
+      update_envelope: null
+      tags: [feature_scale, coordinate_envelope]
+    feature_gaussian_norm:
+      embedding_activation: null
+      feature_activation:
+        _target_: spenn.nn.RealGaussianNormGate
+        sigma: 1.0
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: torch.nn.SiLU
+      update_activation: null
+      update_envelope: null
+      tags: [feature_scale, norm_gate]
+    activation_sigmoid:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: spenn.nn.SigmoidGate
+      update_activation: null
+      update_envelope: null
+      tags: [irrep_activation]
+    activation_tanh:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: spenn.nn.TanhGate
+      update_activation: null
+      update_envelope: null
+      tags: [irrep_activation]
+    activation_gaussian:
+      embedding_activation: null
+      feature_activation: null
+      feature_envelope: null
+      irrep_activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: spenn.nn.GaussianDecayGate
+          sigma: 1.0
+      update_activation: null
+      update_envelope: null
+      tags: [irrep_activation, gaussian]
 
 model_params:
   max_order: 2
@@ -185,7 +229,6 @@ model_params:
   hidden_channels: 16
   num_hidden_layers: 1
   layers: 1
-  gate_activation: silu
   mixing_implementation: vectorized
   mixing_initial_weight: 0.5
 
@@ -708,7 +751,7 @@ evaluation_tasks:
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn
-  basis: ${choices.architecture.${run_parameters.architecture}.basis}
+  basis: ${choices.basis.${run_parameters.basis_slot}.basis}
   embedding:
     _target_: spenn.nn.Embedding
     max_order: ${model_params.max_order}
@@ -718,6 +761,7 @@ model:
     num_hidden_layers: ${model_params.num_hidden_layers}
     include_spins: false
     in_features: ${spenn.basis_feature_dim:${model.basis}}
+  embedding_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.embedding_activation}
   layers:
     - _target_: spenn.nn.SpENNLayer
       mixing:
@@ -729,10 +773,9 @@ model:
         initial_weight: ${model_params.mixing_initial_weight}
       fourier:
         _target_: spenn.reps.FourierTransform
-      activation:
-        _target_: spenn.nn.GatedNormActivation
-        gate:
-          _target_: ${gate_targets.${model_params.gate_activation}}
+      feature_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.feature_activation}
+      feature_envelope: ${choices.mechanism.${run_parameters.mechanism_slot}.feature_envelope}
+      irrep_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.irrep_activation}
       path_aggregation:
         _target_: spenn.nn.PathAggregation
         max_order: ${model_params.max_order}
@@ -742,15 +785,14 @@ model:
         _target_: spenn.reps.InverseFourierTransform
       update:
         _target_: spenn.nn.ResidualUpdate
+      update_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.update_activation}
+      update_envelope: ${choices.mechanism.${run_parameters.mechanism_slot}.update_envelope}
   envelope:
     _target_: spenn.nn.AdditiveEnvelope
     envelopes:
-      - ${choices.architecture.${run_parameters.architecture}.envelope}
+      - _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
       - _target_: spenn.nn.ElectronElectronCusp
-  feature_normalization:
-    _target_: spenn.nn.FeatureNormalization
-    mode: ${choices.normalization.${run_parameters.normalization}.mode}
-    norm: ${choices.normalization.${run_parameters.normalization}.norm}
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     channels: ${model_params.channels}

@@ -13,6 +13,7 @@ from spenn.nn import (
     GatedNormActivation,
     PathAggregation,
     ResidualUpdate,
+    SpENNForwardContext,
     SpENNLayer,
 )
 from spenn.reps import FourierTransform, InverseFourierTransform
@@ -66,6 +67,29 @@ class IdentityInverseFourier(EquivariantMap):
         )
 
 
+class RecordingRealMap(EquivariantMap):
+    def __init__(self, label: str, calls: list[str]) -> None:
+        super().__init__()
+        self.label = label
+        self.calls = calls
+
+    def forward_impl(self, x: RealFeature) -> RealFeature:
+        self.calls.append(self.label)
+        return x
+
+
+class RecordingRealEnvelope(EquivariantMap):
+    def __init__(self, label: str, calls: list[str]) -> None:
+        super().__init__()
+        self.label = label
+        self.calls = calls
+
+    def forward_impl(self, x: RealFeature, context: SpENNForwardContext) -> RealFeature:
+        assert context.batch is not None
+        self.calls.append(self.label)
+        return x
+
+
 def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
     feature = RealFeature(
         [
@@ -86,6 +110,38 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
 
     torch.testing.assert_close(output.blocks[1], 2.0 * feature.blocks[1])
     assert_equivariant_all(layer, feature)
+
+
+def test_spenn_layer_applies_optional_real_controls_in_declared_order() -> None:
+    calls: list[str] = []
+    feature = RealFeature(
+        [
+            zero_block(dtype=torch.float64),
+            torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
+        ]
+    )
+    context = SpENNForwardContext(batch=object())  # type: ignore[arg-type]
+    layer = SpENNLayer(
+        mixing=TwoPathMixing(),
+        fourier=IdentityFourier(),
+        feature_activation=RecordingRealMap("feature_activation", calls),
+        feature_envelope=RecordingRealEnvelope("feature_envelope", calls),
+        irrep_activation=IdentityActivation(),
+        path_aggregation=SumPathAggregation(),
+        inverse_fourier=IdentityInverseFourier(),
+        update_activation=RecordingRealMap("update_activation", calls),
+        update_envelope=RecordingRealEnvelope("update_envelope", calls),
+        update=ResidualUpdate(),
+    )
+
+    layer(feature, context)
+
+    assert calls == [
+        "feature_activation",
+        "feature_envelope",
+        "update_activation",
+        "update_envelope",
+    ]
 
 
 def test_spenn_layer_applies_activation_before_path_aggregation() -> None:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import random
 import shlex
 from datetime import datetime
 from pathlib import Path
@@ -280,6 +281,151 @@ def validate_grid(
 
 
 # ---------------------------------------------------------------------------
+# Axis-wise blinding
+# ---------------------------------------------------------------------------
+def blinding_config(grid_data: dict[str, Any]) -> dict[str, Any]:
+    """Return normalized blinding configuration."""
+
+    configured = grid_data.get("blinding") or {}
+    if not isinstance(configured, dict):
+        raise ValueError("blinding must be a mapping")
+    slot_prefixes = configured.get("slot_prefixes") or {}
+    if not isinstance(slot_prefixes, dict):
+        raise ValueError("blinding.slot_prefixes must be a mapping")
+    return {
+        "enabled_by_default": bool(configured.get("enabled_by_default", False)),
+        "slot_prefixes": {str(axis): str(prefix) for axis, prefix in slot_prefixes.items()},
+    }
+
+
+def blinding_enabled(grid_data: dict[str, Any], requested: bool | None) -> bool:
+    """Return whether this planning attempt should blind major axes."""
+
+    if requested is not None:
+        return bool(requested)
+    return bool(blinding_config(grid_data)["enabled_by_default"])
+
+
+def build_blinding_maps(
+    grid_data: dict[str, Any],
+    *,
+    blind_seed: int,
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Return axis-wise slot maps for configured major axes."""
+
+    config = blinding_config(grid_data)
+    prefixes = config["slot_prefixes"]
+    maps: dict[str, dict[str, dict[str, str]]] = {}
+    for axis in major_axes(grid_data):
+        values = [str(value) for value in grid_data["major_grid"][axis]]
+        slots = [f"{prefixes.get(axis, axis[:1].upper())}{index:02d}" for index in range(len(values))]
+        shuffled_values = list(values)
+        random.Random(f"{int(blind_seed)}:{axis}").shuffle(shuffled_values)
+        slot_to_value = dict(zip(slots, shuffled_values, strict=True))
+        value_to_slot = {value: slot for slot, value in slot_to_value.items()}
+        maps[axis] = {
+            "slot_to_value": slot_to_value,
+            "value_to_slot": value_to_slot,
+        }
+    return maps
+
+
+def apply_blinding_to_points(
+    points: Sequence[dict[str, Any]],
+    maps: dict[str, dict[str, dict[str, str]]],
+) -> list[dict[str, Any]]:
+    """Replace major-axis semantic values with blinded slot values."""
+
+    blinded = []
+    for point in points:
+        row = dict(point)
+        for axis, axis_maps in maps.items():
+            value = str(row[axis])
+            row[axis] = axis_maps["value_to_slot"][value]
+        blinded.append(row)
+    return blinded
+
+
+def _slot_grid_data(
+    grid_data: dict[str, Any],
+    maps: dict[str, dict[str, dict[str, str]]],
+    *,
+    blind_seed: int,
+    config: str | Path,
+    validation_config: str | Path | None,
+) -> dict[str, Any]:
+    """Return manifest/grid metadata with major-axis values replaced by slots."""
+
+    data = dict(grid_data)
+    data["config"] = str(config)
+    if validation_config is not None:
+        data["validation_config"] = str(validation_config)
+    major_grid = {axis: list(values) for axis, values in dict(grid_data["major_grid"]).items()}
+    for axis, axis_maps in maps.items():
+        major_grid[axis] = list(axis_maps["slot_to_value"].keys())
+    data["major_grid"] = major_grid
+    data["blinding"] = {
+        "enabled": True,
+        "blind_seed": int(blind_seed),
+        "major_axes": list(maps.keys()),
+        "slot_prefixes": blinding_config(grid_data)["slot_prefixes"],
+    }
+    return data
+
+
+def _materialize_slot_config(
+    config: Any,
+    *,
+    validation_specs: dict[str, dict[str, Any]],
+    maps: dict[str, dict[str, dict[str, str]]],
+    axis_override_paths: dict[str, str],
+) -> Any:
+    """Return a config copy whose choice libraries are keyed by blind slots."""
+
+    materialized = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+    for axis, axis_maps in maps.items():
+        spec = validation_specs.get(axis)
+        if not spec:
+            continue
+        choices_path = str(spec.get("choices_path", "")).strip()
+        if not choices_path:
+            continue
+        choices = {}
+        for slot, value in axis_maps["slot_to_value"].items():
+            selected = OmegaConf.select(config, f"{choices_path}.{value}")
+            if selected is None:
+                raise ValueError(f"cannot blind {axis} value {value!r}; missing {choices_path}.{value}")
+            choices[slot] = selected
+        OmegaConf.update(materialized, choices_path, choices, merge=False)
+        first_slot = next(iter(axis_maps["slot_to_value"]))
+        override_path = axis_override_paths.get(axis)
+        if override_path:
+            OmegaConf.update(materialized, override_path, first_slot, merge=False)
+    return materialized
+
+
+def unblind_artifact(
+    *,
+    blind_seed: int,
+    maps: dict[str, dict[str, dict[str, str]]],
+    original_grid: str | Path,
+) -> dict[str, Any]:
+    """Return the dedicated semantic mapping artifact for a blinded attempt."""
+
+    return {
+        "blind_seed": int(blind_seed),
+        "original_grid": str(original_grid),
+        "axes": {
+            axis: {
+                "slot_to_value": dict(axis_maps["slot_to_value"]),
+                "value_to_slot": dict(axis_maps["value_to_slot"]),
+            }
+            for axis, axis_maps in maps.items()
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Overrides and commands
 # ---------------------------------------------------------------------------
 def axis_id_labels(grid_data: dict[str, Any], axes: Sequence[str]) -> dict[str, str]:
@@ -506,6 +652,8 @@ def build_manifest(
     smoke_config = grid_data.get("smoke_config")
     if smoke_config is not None:
         manifest["smoke_config"] = str(smoke_config)
+    if "blinding" in grid_data:
+        manifest["blinding"] = grid_data["blinding"]
     return manifest
 
 
@@ -518,6 +666,8 @@ def write_grid_attempt(
     grid: str | Path,
     grid_data: Any,
     jobs: list[dict[str, Any]],
+    config_snapshot_data: dict[str, Any] | None = None,
+    unblind_data: dict[str, Any] | None = None,
 ) -> Path:
     """Write the durable ``00_grid`` attempt and return its directory."""
 
@@ -540,8 +690,11 @@ def write_grid_attempt(
     snapshots = config_snapshot_names(
         grid_data.get("config_snapshots") if isinstance(grid_data, dict) else None
     )
-    config_text = Path(config).read_text() if Path(config).exists() else ""
-    (attempt / snapshots["train"]).write_text(config_text)
+    if config_snapshot_data is not None and "train" in config_snapshot_data:
+        OmegaConf.save(config_snapshot_data["train"], attempt / snapshots["train"])
+    else:
+        config_text = Path(config).read_text() if Path(config).exists() else ""
+        (attempt / snapshots["train"]).write_text(config_text)
 
     # Exact commands that train.py will read from this attempt.
     study = study_name(grid_data.get("study")) if isinstance(grid_data, dict) else study_name()
@@ -550,12 +703,16 @@ def write_grid_attempt(
     (attempt / "commands.sh").write_text("\n".join(lines) + "\n")
 
     validation_config = grid_data.get("validation_config") if isinstance(grid_data, dict) else None
-    if validation_config is not None and Path(validation_config).exists():
+    if config_snapshot_data is not None and "validation" in config_snapshot_data:
+        OmegaConf.save(config_snapshot_data["validation"], attempt / snapshots["validation"])
+    elif validation_config is not None and Path(validation_config).exists():
         (attempt / snapshots["validation"]).write_text(Path(validation_config).read_text())
     smoke_config = grid_data.get("smoke_config") if isinstance(grid_data, dict) else None
     smoke_snapshot = snapshots.get("smoke")
     if smoke_config is not None and smoke_snapshot and Path(smoke_config).exists():
         (attempt / smoke_snapshot).write_text(Path(smoke_config).read_text())
+    if unblind_data is not None:
+        write_json(attempt / "unblind.json", unblind_data)
 
     # Per-job specs for downstream stages.
     for job in jobs:
@@ -588,6 +745,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--tags", nargs="*", default=None, help="Only include grid points with all configured tags.")
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of planned jobs.")
+    blind_group = parser.add_mutually_exclusive_group()
+    blind_group.add_argument(
+        "--blind",
+        dest="blind",
+        action="store_true",
+        help="Blind configured major axes into slot identifiers.",
+    )
+    blind_group.add_argument(
+        "--no-blind",
+        dest="blind",
+        action="store_false",
+        help="Plan with semantic major-axis labels instead of slots.",
+    )
+    parser.set_defaults(blind=None)
+    parser.add_argument(
+        "--blind-seed",
+        type=int,
+        default=0,
+        help="Seed for reproducible axis-wise blinding when enabled.",
+    )
     parser.add_argument(
         "--python",
         default="python",
@@ -621,14 +798,63 @@ def main(argv: Sequence[str] | None = None) -> int:
     seed_axis = scan_seed_axis(grid_data)
     config_axes = (*major_axis_names, *minor_axis_names)
     all_axes = (*config_axes, seed_axis)
-    points = expand_grid_spec(grid_data)
+    true_points = expand_grid_spec(grid_data)
     config_obj = OmegaConf.load(config)
     validation_specs = choice_validation_specs(grid_data)
-    validate_grid(points, config_obj, validation_specs)
-    tags_by_axis = axis_tags(config_obj, validation_specs)
     seed_policy = seed_override_policy(grid_data.get("seed_overrides"))
     id_labels = axis_id_labels(grid_data, all_axes)
     override_paths = axis_override_paths(grid_data, config_axes)
+    validate_grid(true_points, config_obj, validation_specs)
+
+    points = true_points
+    config_for_jobs: str | Path = config
+    manifest_grid_data = dict(grid_data)
+    config_snapshot_data: dict[str, Any] | None = None
+    unblind_data: dict[str, Any] | None = None
+    tag_config = config_obj
+    if blinding_enabled(grid_data, args.blind):
+        maps = build_blinding_maps(grid_data, blind_seed=args.blind_seed)
+        points = apply_blinding_to_points(true_points, maps)
+        snapshots = config_snapshot_names(grid_data.get("config_snapshots"))
+        attempt_dir = grid_attempt_dir(results_root, attempt_id)
+        config_for_jobs = attempt_dir / snapshots["train"]
+        validation_config_for_jobs: str | Path | None = None
+        if grid_data.get("validation_config") is not None:
+            validation_config_for_jobs = attempt_dir / snapshots["validation"]
+        materialized_train = _materialize_slot_config(
+            config_obj,
+            validation_specs=validation_specs,
+            maps=maps,
+            axis_override_paths=override_paths,
+        )
+        config_snapshot_data = {"train": materialized_train}
+        if grid_data.get("validation_config") is not None:
+            validation_obj = OmegaConf.load(grid_data["validation_config"])
+            config_snapshot_data["validation"] = _materialize_slot_config(
+                validation_obj,
+                validation_specs=validation_specs,
+                maps=maps,
+                axis_override_paths=override_paths,
+            )
+        manifest_grid_data = _slot_grid_data(
+            grid_data,
+            maps,
+            blind_seed=args.blind_seed,
+            config=config_for_jobs,
+            validation_config=validation_config_for_jobs,
+        )
+        unblind_data = unblind_artifact(
+            blind_seed=args.blind_seed,
+            maps=maps,
+            original_grid=grid_path,
+        )
+        tag_config = materialized_train
+        validate_grid(points, tag_config, validation_specs)
+        print(
+            f"{prefix} blinded major axes {list(maps)} with seed {args.blind_seed}; "
+            f"semantic map will be written to unblind.json"
+        )
+    tags_by_axis = axis_tags(tag_config, validation_specs)
 
     if args.tags:
         wanted = set(args.tags)
@@ -645,7 +871,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         study=study,
         attempt_id=attempt_id,
         results_root=results_root,
-        config=config,
+        config=config_for_jobs,
         major_axis_names=major_axis_names,
         minor_axis_names=minor_axis_names,
         seed_axis=seed_axis,
@@ -660,10 +886,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         results_root=results_root,
         attempt_id=attempt_id,
         created_at=created_at,
-        config=config,
+        config=config_for_jobs,
         grid=grid_path,
-        grid_data=grid_data,
+        grid_data=manifest_grid_data,
         jobs=jobs,
+        config_snapshot_data=config_snapshot_data,
+        unblind_data=unblind_data,
     )
     print(f"{prefix} wrote 00_grid attempt {attempt_id} with {len(jobs)} jobs -> {attempt}")
     return 0
