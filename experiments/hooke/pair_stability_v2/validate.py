@@ -16,25 +16,21 @@ from typing import Any, Sequence
 from omegaconf import OmegaConf
 
 import launch
-from run_utils import (
+from utils.config import config_snapshot_names
+from utils.io import read_json, write_json
+from utils.layout import (
     STAGE_VALIDATION,
     attempt_smoke,
-    config_snapshot_names,
-    experiment_run_name,
     grid_attempt_dir,
     latest_attempt_id,
-    log_prefix,
-    read_json,
     stage_dir,
-    seed_override_values,
-    stage_job_name,
-    study_name_from_manifest,
     train_attempt_dir,
     train_run_dir,
     validation_attempt_dir,
-    write_json,
     write_latest,
 )
+from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
+from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"

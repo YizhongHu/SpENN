@@ -13,15 +13,17 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import launch
-from run_utils import (
+from utils.io import write_json
+from utils.layout import (
     STAGE_TRAIN,
     grid_attempt_dir,
-    log_prefix,
     stage_dir,
+    write_latest,
+)
+from utils.naming import (
+    log_prefix,
     stage_job_name,
     study_name_from_manifest,
-    write_json,
-    write_latest,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent

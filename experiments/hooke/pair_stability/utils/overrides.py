@@ -1,4 +1,4 @@
-"""Command override rewriting helpers for study launchers."""
+"""Command override rewriting helpers."""
 
 from __future__ import annotations
 

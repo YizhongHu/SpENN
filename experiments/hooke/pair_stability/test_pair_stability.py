@@ -24,8 +24,12 @@ PAIR_STABILITY = CONFIGS / "pair_stability.yaml"
 PAIR_VALIDATION = CONFIGS / "pair_validation.yaml"
 GRID = CONFIGS / "grid.yaml"
 
-if str(STUDY_DIR) not in sys.path:
-    sys.path.insert(0, str(STUDY_DIR))
+while str(STUDY_DIR) in sys.path:
+    sys.path.remove(str(STUDY_DIR))
+sys.path.insert(0, str(STUDY_DIR))
+for module_name in list(sys.modules):
+    if module_name == "utils" or module_name.startswith("utils."):
+        del sys.modules[module_name]
 
 import artifacts  # noqa: E402
 import collect  # noqa: E402
@@ -35,10 +39,12 @@ import final_plan  # noqa: E402
 import final_report  # noqa: E402
 import final_train  # noqa: E402
 import launch  # noqa: E402
-import overrides  # noqa: E402
 import plan  # noqa: E402
 import plot as pair_plot  # noqa: E402
-import run_utils  # noqa: E402
+from utils import io as json_io  # noqa: E402
+from utils import layout  # noqa: E402
+from utils import overrides  # noqa: E402
+from utils import time as study_time  # noqa: E402
 import select_champions  # noqa: E402
 import stats  # noqa: E402
 import sync  # noqa: E402
@@ -54,14 +60,14 @@ def test_new_attempt_id_uses_study_timezone() -> None:
     from datetime import datetime
 
     # Study timestamps share the run-log wall clock (America/New_York).
-    assert str(run_utils.STUDY_TIMEZONE) == "America/New_York"
+    assert str(study_time.STUDY_TIMEZONE) == "America/New_York"
     # Summer is EDT (-0400), winter is EST (-0500); ids stay dir-safe.
-    summer = datetime(2026, 6, 19, 0, 0, 0, tzinfo=run_utils.STUDY_TIMEZONE)
-    winter = datetime(2026, 1, 15, 0, 0, 0, tzinfo=run_utils.STUDY_TIMEZONE)
-    assert run_utils.new_attempt_id(summer) == "20260619T000000-0400"
-    assert run_utils.new_attempt_id(winter) == "20260115T000000-0500"
+    summer = datetime(2026, 6, 19, 0, 0, 0, tzinfo=study_time.STUDY_TIMEZONE)
+    winter = datetime(2026, 1, 15, 0, 0, 0, tzinfo=study_time.STUDY_TIMEZONE)
+    assert study_time.new_attempt_id(summer) == "20260619T000000-0400"
+    assert study_time.new_attempt_id(winter) == "20260115T000000-0500"
     # The no-arg form is study-local and matches the id grammar.
-    assert re.fullmatch(r"\d{8}T\d{6}[+-]\d{4}", run_utils.new_attempt_id())
+    assert re.fullmatch(r"\d{8}T\d{6}[+-]\d{4}", study_time.new_attempt_id())
 
 
 def test_attempt_ids_sorted_and_skips_latest(tmp_path: Path) -> None:
@@ -76,23 +82,23 @@ def test_attempt_ids_sorted_and_skips_latest(tmp_path: Path) -> None:
     except OSError:
         pass
     # Chronological by name; latest convenience links/pointers are excluded.
-    assert run_utils.attempt_ids(base) == ["20260101T000000-0500", "20260619T000000-0400"]
-    assert run_utils.attempt_ids(base / "missing") == []
+    assert layout.attempt_ids(base) == ["20260101T000000-0500", "20260619T000000-0400"]
+    assert layout.attempt_ids(base / "missing") == []
 
 
 def test_latest_attempt_id_prefers_pointer_and_tracks_smoke_metadata(tmp_path: Path) -> None:
     parent = tmp_path / "stage"
     (parent / "zzz").mkdir(parents=True)
     (parent / "aaa").mkdir()
-    run_utils.write_latest(parent, "aaa")
+    layout.write_latest(parent, "aaa")
 
-    assert run_utils.latest_attempt_id(parent) == "aaa"
+    assert layout.latest_attempt_id(parent) == "aaa"
 
-    run_utils.write_latest(parent, "diagnostic", smoke=True)
-    assert run_utils.latest_attempt_id(parent) == "aaa"
-    assert run_utils.latest_attempt_id(parent, smoke=False) == "aaa"
-    assert run_utils.latest_attempt_id(parent, smoke=True) == "diagnostic"
-    assert run_utils.latest_attempt_id(parent / "missing") is None
+    layout.write_latest(parent, "diagnostic", smoke=True)
+    assert layout.latest_attempt_id(parent) == "aaa"
+    assert layout.latest_attempt_id(parent, smoke=False) == "aaa"
+    assert layout.latest_attempt_id(parent, smoke=True) == "diagnostic"
+    assert layout.latest_attempt_id(parent / "missing") is None
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +172,7 @@ def _plan(tmp_path: Path) -> Path:
 
 def test_plan_writes_grid_attempt(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    attempt = run_utils.grid_attempt_dir(results_root, ATTEMPT)
+    attempt = layout.grid_attempt_dir(results_root, ATTEMPT)
     assert (attempt / "manifest.json").is_file()
     assert (attempt / "commands.sh").is_file()
     assert (attempt / "grid.yaml").is_file()
@@ -178,7 +184,7 @@ def test_plan_writes_grid_attempt(tmp_path: Path) -> None:
 
 def test_manifest_contains_expected_run_ids_and_overrides(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((layout.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     run_ids = {job["run_id"] for job in manifest["jobs"]}
     assert TARGET_RUN_ID in run_ids
     assert manifest["n_jobs"] == 4  # 2 architectures x 2 normalizations
@@ -194,7 +200,7 @@ def test_manifest_contains_expected_run_ids_and_overrides(tmp_path: Path) -> Non
 
 def test_manifest_train_and_validation_dirs_follow_expected_layout(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((layout.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     assert job["train_dir"] == str(results_root / "01_train" / TARGET_RUN_ID)
     assert job["validation_dir"] == str(results_root / "02_validation" / TARGET_RUN_ID)
@@ -205,7 +211,7 @@ def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
     # The repo has no @hydra.main app, so submission uses the canonical run.py
     # command path (handed to the Submitit launcher by the submitit backend).
     results_root = _plan(tmp_path)
-    commands = (run_utils.grid_attempt_dir(results_root, ATTEMPT) / "commands.sh").read_text()
+    commands = (layout.grid_attempt_dir(results_root, ATTEMPT) / "commands.sh").read_text()
     assert "run.py" in commands
     assert "--config" in commands
     assert "python -u run.py" in commands
@@ -215,7 +221,7 @@ def test_commands_sh_contains_run_commands(tmp_path: Path) -> None:
 
 def test_train_run_dir_uses_stage_attempt_layout(tmp_path: Path) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((layout.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     overrides = job["overrides"]
     assert f"run.root={results_root / '01_train'}" in overrides
@@ -229,13 +235,13 @@ def test_plan_always_injects_run_timezone_override(tmp_path: Path) -> None:
     assert OmegaConf.load(PAIR_STABILITY).run.timezone is None
     assert OmegaConf.load(PAIR_VALIDATION).run.timezone is None
     plan.main(["--grid", str(grid), "--results-root", str(tmp_path / "a"), "--attempt-id", ATTEMPT])
-    commands = (run_utils.grid_attempt_dir(tmp_path / "a", ATTEMPT) / "commands.sh").read_text()
+    commands = (layout.grid_attempt_dir(tmp_path / "a", ATTEMPT) / "commands.sh").read_text()
     assert "run.timezone=America/New_York" in commands
     # --timezone selects the injected zone.
     plan.main(
         ["--grid", str(grid), "--results-root", str(tmp_path / "b"), "--attempt-id", ATTEMPT, "--timezone", "UTC"]
     )
-    commands_utc = (run_utils.grid_attempt_dir(tmp_path / "b", ATTEMPT) / "commands.sh").read_text()
+    commands_utc = (layout.grid_attempt_dir(tmp_path / "b", ATTEMPT) / "commands.sh").read_text()
     assert "run.timezone=UTC" in commands_utc
 
 
@@ -282,7 +288,7 @@ def test_train_consumes_grid_attempt_and_writes_submission_records(
     assert submission["launcher_job_id"] == "local-3"
 
     # The train launcher reads 00_grid but does not mutate the planned manifest.
-    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((layout.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     job = next(job for job in manifest["jobs"] if job["run_id"] == TARGET_RUN_ID)
     assert job["submitted"] is False
     assert job["launcher"] is None
@@ -292,7 +298,7 @@ def test_train_smoke_submits_two_short_runs_with_smoke_attempt_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results_root = _plan(tmp_path)
-    manifest = json.loads((run_utils.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
+    manifest = json.loads((layout.grid_attempt_dir(results_root, ATTEMPT) / "manifest.json").read_text())
     first_run_id = manifest["jobs"][0]["run_id"]
     submitted_commands = []
     status_paths = []
@@ -741,11 +747,11 @@ def test_final_train_rejects_empty_final_grid(tmp_path: Path) -> None:
     attempt = results_root / "05_final_grid" / "F0"
     attempt.mkdir(parents=True)
     (attempt / "final_jobs.csv").write_text("final_run_id\n", encoding="utf-8")
-    run_utils.write_json(
+    json_io.write_json(
         attempt / "manifest.json",
         {
             "study": "pair_stability",
-            "stage": run_utils.STAGE_FINAL_GRID,
+            "stage": layout.STAGE_FINAL_GRID,
             "attempt_id": "F0",
             "train_config": str(PAIR_STABILITY),
         },
@@ -843,8 +849,8 @@ def test_final_eval_auto_selects_latest_ready_smoke_final_train_attempt(
     good_attempt_id = "20260621T171930-0400-smoke"
     bad_attempt_id = "20260621T171930-0400-smoke-smoke"
     _write_final_train_checkpoint(results_root, job["final_run_id"], good_attempt_id)
-    run_utils.write_latest(
-        run_utils.final_train_run_dir(results_root, job["final_run_id"]),
+    layout.write_latest(
+        layout.final_train_run_dir(results_root, job["final_run_id"]),
         good_attempt_id,
         smoke=True,
     )
@@ -893,8 +899,8 @@ def test_final_stage_defaults_use_latest_metadata_pointers(tmp_path: Path) -> No
     final_grid_stage = results_root / "05_final_grid"
     (final_grid_stage / "zzz").mkdir(parents=True)
     (final_grid_stage / "aaa").mkdir()
-    run_utils.write_latest(final_grid_stage, "aaa")
-    run_utils.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
+    layout.write_latest(final_grid_stage, "aaa")
+    layout.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
 
     assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
     assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
@@ -903,15 +909,15 @@ def test_final_stage_defaults_use_latest_metadata_pointers(tmp_path: Path) -> No
     final_run_id = "final-run-0"
     _write_final_train_checkpoint(results_root, final_run_id, "zzz")
     _write_final_train_checkpoint(results_root, final_run_id, "aaa")
-    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), "aaa")
+    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), "aaa")
 
     assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
     assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
 
-    eval_run_dir = run_utils.final_eval_run_dir(results_root, final_run_id)
+    eval_run_dir = layout.final_eval_run_dir(results_root, final_run_id)
     (eval_run_dir / "zzz").mkdir(parents=True)
     (eval_run_dir / "aaa").mkdir()
-    run_utils.write_latest(eval_run_dir, "aaa")
+    layout.write_latest(eval_run_dir, "aaa")
 
     assert final_collect._iter_final_eval_attempts(results_root, None) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
@@ -925,8 +931,8 @@ def test_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> 
     smoke_attempt = "diagnostic-final-train"
     _write_final_train_checkpoint(results_root, final_run_id, final_grid_attempt_id)
     _write_final_train_checkpoint(results_root, final_run_id, smoke_attempt)
-    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), final_grid_attempt_id)
-    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
+    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), final_grid_attempt_id)
+    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
 
     assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == final_grid_attempt_id
     assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=True) == smoke_attempt
@@ -2088,7 +2094,7 @@ def test_sync_snapshot_traces_latest_final_report_ancestry_and_skips_checkpoints
         study_dir=study_dir,
         results_root=results_root,
         dry_run=True,
-        moment=datetime(2026, 6, 23, 14, 5, 6, tzinfo=run_utils.resolve_timezone("America/New_York")),
+        moment=datetime(2026, 6, 23, 14, 5, 6, tzinfo=study_time.resolve_timezone("America/New_York")),
     )
     assert dry_summary.snapshot_dir == snapshot
     assert dry_summary.dry_run is True
@@ -2129,7 +2135,7 @@ def test_sync_snapshot_traces_latest_final_report_ancestry_and_skips_checkpoints
         config_path=config,
         study_dir=study_dir,
         results_root=results_root,
-        moment=datetime(2026, 6, 23, 14, 5, 6, tzinfo=run_utils.resolve_timezone("America/New_York")),
+        moment=datetime(2026, 6, 23, 14, 5, 6, tzinfo=study_time.resolve_timezone("America/New_York")),
     )
 
     assert summary.snapshot_dir == snapshot
@@ -2460,7 +2466,7 @@ def test_final_report_tail_local_energy_bar_points_use_q5_q85_ranges() -> None:
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
-    checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
+    checkpoint_dir = layout.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "latest.json").write_text(json.dumps({"path": "step_000000"}))
     return checkpoint_dir
@@ -2510,8 +2516,8 @@ def test_validate_auto_selection_ignores_smoke_train_attempts(tmp_path: Path) ->
     )
     _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T1")
     _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T2-smoke")
-    run_utils.write_latest(run_utils.train_run_dir(results_root, TARGET_RUN_ID), "T1")
-    run_utils.write_latest(run_utils.train_run_dir(results_root, TARGET_RUN_ID), "T2-smoke", smoke=True)
+    layout.write_latest(layout.train_run_dir(results_root, TARGET_RUN_ID), "T1")
+    layout.write_latest(layout.train_run_dir(results_root, TARGET_RUN_ID), "T2-smoke", smoke=True)
 
     assert validate.latest_train_attempt_id(results_root, TARGET_RUN_ID, smoke=False) == "T1"
     assert validate.latest_train_attempt_id(results_root, TARGET_RUN_ID, smoke=True) == "T2-smoke"
@@ -2601,11 +2607,11 @@ def tmp_run_dir() -> Path:
 def _fake_validation_attempt(
     results_root: Path, run_id: str, attempt_id: str, *, status: str, stratified_energy: float
 ) -> None:
-    attempt = run_utils.validation_attempt_dir(results_root, run_id, attempt_id)
+    attempt = layout.validation_attempt_dir(results_root, run_id, attempt_id)
     for task_name in collect.TASK_NAMES:
         (attempt / task_name).mkdir(parents=True, exist_ok=True)
     (attempt / "status.json").write_text(json.dumps({"status": status}))
-    train_attempt = run_utils.train_attempt_dir(results_root, run_id, "T1")
+    train_attempt = layout.train_attempt_dir(results_root, run_id, "T1")
     train_attempt.mkdir(parents=True, exist_ok=True)
     train_records = [
         {"namespace": "train", "metrics": {"energy": 2.5}},

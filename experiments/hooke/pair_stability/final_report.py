@@ -16,16 +16,16 @@ from typing import Any, Sequence
 
 from artifacts import read_csv as _read_csv, write_csv as _write_csv_columns
 import plot
-from run_utils import (
+from utils.io import write_json
+from utils.layout import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_REPORT,
     latest_attempt_id,
-    new_attempt_id,
     smoke_attempt_id,
     stage_dir,
-    write_json,
     write_latest,
 )
+from utils.time import new_attempt_id
 from stats import (
     as_float as _as_float,
     crop_bar_series_to_weighted_quantiles as _crop_bar_series_to_weighted_quantiles,

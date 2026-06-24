@@ -15,26 +15,24 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
-from run_utils import (
+from utils.ancestry import source_grid_from_attempt
+from utils.io import read_json, write_json
+from utils.layout import (
     STAGE_COLLECT,
     STAGE_SELECT,
+    latest_attempt_id,
+    smoke_attempt_id,
+    stage_dir,
+    write_latest,
+)
+from utils.naming import (
     axis_id_labels_from_manifest,
     grid_axes_from_manifest,
     id_for_axes,
-    latest_attempt_id,
-    load_study_module,
     log_prefix,
-    new_attempt_id,
-    read_json,
-    smoke_attempt_id,
-    stage_dir,
     study_name_from_manifest,
-    write_json,
-    write_latest,
 )
-
-_ancestry = load_study_module("ancestry", __file__)
-source_grid_from_attempt = _ancestry.source_grid_from_attempt
+from utils.time import new_attempt_id
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"

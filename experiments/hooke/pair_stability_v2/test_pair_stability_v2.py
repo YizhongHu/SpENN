@@ -19,8 +19,12 @@ STUDY_DIR = Path(__file__).resolve().parent
 CONFIGS = STUDY_DIR / "configs"
 GRID = CONFIGS / "grid.yaml"
 
-if str(STUDY_DIR) not in sys.path:
-    sys.path.insert(0, str(STUDY_DIR))
+while str(STUDY_DIR) in sys.path:
+    sys.path.remove(str(STUDY_DIR))
+sys.path.insert(0, str(STUDY_DIR))
+for module_name in list(sys.modules):
+    if module_name == "utils" or module_name.startswith("utils."):
+        del sys.modules[module_name]
 
 
 def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
@@ -36,7 +40,8 @@ def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
     return module
 
 
-run_utils = _load_script("run_utils", bind_direct=True)
+from utils import io as json_io  # noqa: E402
+from utils import layout  # noqa: E402
 launch = _load_script("launch")
 plan = _load_script("plan")
 train = _load_script("train")
@@ -76,14 +81,14 @@ def _planned_results(tmp_path: Path) -> Path:
 
 
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
-    checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
+    checkpoint_dir = layout.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "latest.json").write_text(json.dumps({"path": "step_000000"}))
     return checkpoint_dir
 
 
 def _write_final_checkpoint(results_root: Path, final_run_id: str, attempt_id: str) -> Path:
-    attempt_dir = run_utils.final_train_attempt_dir(results_root, final_run_id, attempt_id)
+    attempt_dir = layout.final_train_attempt_dir(results_root, final_run_id, attempt_id)
     checkpoint_dir = attempt_dir / "checkpoints" / "step_000000"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     (checkpoint_dir / "COMPLETE").write_text("")
@@ -128,15 +133,15 @@ def test_v2_latest_attempt_id_prefers_pointer_with_sorted_fallback(tmp_path: Pat
     parent = tmp_path / "stage"
     (parent / "zzz").mkdir(parents=True)
     (parent / "aaa").mkdir()
-    run_utils.write_latest(parent, "aaa")
+    layout.write_latest(parent, "aaa")
 
-    assert run_utils.latest_attempt_id(parent) == "aaa"
+    assert layout.latest_attempt_id(parent) == "aaa"
 
-    run_utils.write_latest(parent, "diagnostic", smoke=True)
-    assert run_utils.latest_attempt_id(parent) == "aaa"
-    assert run_utils.latest_attempt_id(parent, smoke=False) == "aaa"
-    assert run_utils.latest_attempt_id(parent, smoke=True) == "diagnostic"
-    assert run_utils.latest_attempt_id(parent / "missing") is None
+    layout.write_latest(parent, "diagnostic", smoke=True)
+    assert layout.latest_attempt_id(parent) == "aaa"
+    assert layout.latest_attempt_id(parent, smoke=False) == "aaa"
+    assert layout.latest_attempt_id(parent, smoke=True) == "diagnostic"
+    assert layout.latest_attempt_id(parent / "missing") is None
 
 
 def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path) -> None:
@@ -156,7 +161,7 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
     _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
     _write_checkpoint_pointer(results_root, run_id, "zzz")
 
-    assert row_status_paths == [run_utils.train_attempt_dir(results_root, run_id, ATTEMPT) / "launcher_status.json"]
+    assert row_status_paths == [layout.train_attempt_dir(results_root, run_id, ATTEMPT) / "launcher_status.json"]
     assert validate.latest_train_attempt_id(results_root, run_id, smoke=False) == ATTEMPT
 
     scalar_axes = validate._scalar_axes(manifest)
@@ -177,7 +182,7 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
 
     assert skipped == []
     assert planned[0]["train_attempt_id"] == ATTEMPT
-    latest_validation = json.loads((run_utils.validation_run_dir(results_root, run_id) / "latest.json").read_text())
+    latest_validation = json.loads((layout.validation_run_dir(results_root, run_id) / "latest.json").read_text())
     assert latest_validation["attempt_id"] == "manual-validation"
 
 
@@ -189,7 +194,7 @@ def test_v2_real_validation_uses_non_smoke_train_attempts(tmp_path: Path) -> Non
     smoke_attempt = "diagnostic-train"
     _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
     _write_checkpoint_pointer(results_root, run_id, smoke_attempt)
-    run_utils.write_latest(run_utils.train_run_dir(results_root, run_id), smoke_attempt, smoke=True)
+    layout.write_latest(layout.train_run_dir(results_root, run_id), smoke_attempt, smoke=True)
 
     assert validate.latest_train_attempt_id(results_root, run_id, smoke=False) == ATTEMPT
     assert validate.latest_train_attempt_id(results_root, run_id, smoke=True) == smoke_attempt
@@ -297,7 +302,7 @@ def test_v2_blinding_is_reproducible_by_seed(tmp_path: Path) -> None:
 
 def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
-    grid_attempt = run_utils.grid_attempt_dir(results_root, ATTEMPT)
+    grid_attempt = layout.grid_attempt_dir(results_root, ATTEMPT)
     manifest = json.loads((grid_attempt / "manifest.json").read_text())
 
     assert manifest["study"] == "pair_stability_v2"
@@ -534,7 +539,7 @@ def _write_collection_summary(results_root: Path) -> None:
     collect_dir = results_root / "03_collect" / "C1"
     _write_csv(collect_dir / "summary.csv", rows)
     (collect_dir / "source_grid_attempt.json").write_text(json.dumps({"grid_attempt_id": ATTEMPT}) + "\n")
-    run_utils.write_latest(results_root / "03_collect", "C1")
+    layout.write_latest(results_root / "03_collect", "C1")
 
 
 def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) -> None:
@@ -710,11 +715,11 @@ def test_v2_final_train_rejects_empty_final_grid(tmp_path: Path) -> None:
     attempt = results_root / "05_final_grid" / "F0"
     attempt.mkdir(parents=True)
     (attempt / "final_jobs.csv").write_text("final_run_id\n", encoding="utf-8")
-    run_utils.write_json(
+    json_io.write_json(
         attempt / "manifest.json",
         {
             "study": "pair_stability_v2",
-            "stage": run_utils.STAGE_FINAL_GRID,
+            "stage": layout.STAGE_FINAL_GRID,
             "attempt_id": "F0",
             "train_config": str(CONFIGS / "pair_stability.yaml"),
             "major_axes": [],
@@ -741,8 +746,8 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     final_grid_stage = results_root / "05_final_grid"
     (final_grid_stage / "zzz").mkdir(parents=True)
     (final_grid_stage / "aaa").mkdir()
-    run_utils.write_latest(final_grid_stage, "aaa")
-    run_utils.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
+    layout.write_latest(final_grid_stage, "aaa")
+    layout.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
 
     assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
     assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
@@ -751,15 +756,15 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     final_run_id = "final-run-0"
     _write_final_checkpoint(results_root, final_run_id, "zzz")
     _write_final_checkpoint(results_root, final_run_id, "aaa")
-    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), "aaa")
+    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), "aaa")
 
     assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
     assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
 
-    eval_run_dir = run_utils.final_eval_run_dir(results_root, final_run_id)
+    eval_run_dir = layout.final_eval_run_dir(results_root, final_run_id)
     (eval_run_dir / "zzz").mkdir(parents=True)
     (eval_run_dir / "aaa").mkdir()
-    run_utils.write_latest(eval_run_dir, "aaa")
+    layout.write_latest(eval_run_dir, "aaa")
 
     assert final_collect._iter_final_eval_attempts(results_root, None) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
@@ -773,7 +778,7 @@ def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) 
     smoke_attempt = "diagnostic-final-train"
     _write_final_checkpoint(results_root, final_run_id, final_grid_attempt_id)
     _write_final_checkpoint(results_root, final_run_id, smoke_attempt)
-    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
+    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
 
     assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == final_grid_attempt_id
     assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=True) == smoke_attempt

@@ -24,15 +24,15 @@ from artifacts import (
     status_of as _status_of,
     write_csv as _write_csv,
 )
-from run_utils import (
+from utils.layout import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
     latest_attempt_id,
-    new_attempt_id,
     smoke_attempt_id,
     stage_dir,
     write_latest,
 )
+from utils.time import new_attempt_id
 from stats import (
     as_bool as _as_bool,
     as_float as _as_float,

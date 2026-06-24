@@ -1,4 +1,4 @@
-"""Provenance ancestry tracing for pair-stability V2 staged artifacts."""
+"""Provenance ancestry tracing for staged study artifacts."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
-from run_utils import (
+from .io import path_from_record, read_json, read_json_object, read_json_object_list
+from .layout import (
     STAGE_COLLECT,
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
@@ -21,10 +22,6 @@ from run_utils import (
     STAGE_TRAIN,
     STAGE_VALIDATION,
     grid_attempt_dir,
-    path_from_record,
-    read_json,
-    read_json_object,
-    read_json_object_list,
     stage_dir,
 )
 

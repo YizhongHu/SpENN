@@ -15,7 +15,8 @@ from typing import Any, Sequence
 
 import launch
 from final_train import load_final_grid_manifest, load_final_jobs
-from run_utils import (
+from utils.io import read_json, write_json
+from utils.layout import (
     STAGE_FINAL_EVAL,
     STAGE_FINAL_GRID,
     attempt_ids,
@@ -25,9 +26,7 @@ from run_utils import (
     final_train_attempt_dir,
     final_train_run_dir,
     latest_attempt_id,
-    read_json,
     stage_dir,
-    write_json,
     write_latest,
 )
 

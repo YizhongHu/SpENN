@@ -1,4 +1,4 @@
-"""Provenance ancestry tracing for pair-stability staged artifacts."""
+"""Provenance ancestry tracing for staged study artifacts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
-from run_utils import (
+from .layout import (
     STAGE_COLLECT,
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
