@@ -41,6 +41,7 @@ plan = _load_script("plan")
 collect = _load_script("collect")
 select_champions = _load_script("select_champions")
 final_plan = _load_script("final_plan")
+validate = _load_script("validate")
 
 
 ATTEMPT = "20260623T120000-0400"
@@ -246,6 +247,18 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert f"sampler.seed={job['scan_seed']}" in job["overrides"]
     assert any(str(override).startswith("run_parameters.basis_slot=B") for override in job["overrides"])
     assert any(str(override).startswith("run_parameters.mechanism_slot=A") for override in job["overrides"])
+
+
+def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+
+    resolved = validate._validation_config_from_grid(
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        requested_config=None,
+    )
+
+    assert resolved == str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml")
 
 
 def _write_collection_summary(results_root: Path) -> None:
