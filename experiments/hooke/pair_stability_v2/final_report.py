@@ -1,4 +1,4 @@
-"""Render final pair-stability reports from compact ``08_final_collect`` tables.
+"""Render final reports from compact ``08_final_collect`` tables.
 
 This stage is intentionally report-oriented and fast. It consumes only compact
 tables written by ``final_collect.py``; it does not read raw final-eval task
@@ -20,9 +20,11 @@ from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_REPORT,
     attempt_ids,
+    log_prefix,
     new_attempt_id,
     read_json,
     stage_dir,
+    study_name_from_manifest,
     write_json,
     write_latest,
 )
@@ -169,7 +171,7 @@ def _energy_component_rows_for_group(
 
 
 def _energy_component_tables_by_winner(rows: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Return pair_validation-style energy-component tables for each winner family."""
+    """Return validation-style energy-component tables for each winner family."""
 
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -216,11 +218,31 @@ def _resolve_collect_attempt_id(results_root: Path, requested: str | None) -> st
     return attempts[-1]
 
 
-def _load_collect_tables(results_root: Path, collect_attempt_id: str) -> tuple[Path, dict[str, list[dict[str, Any]]]]:
+def _load_collect_manifest(collect_dir: Path) -> dict[str, Any]:
+    """Read top-level scalar fields from final_collect's manifest.yaml."""
+
+    manifest_path = collect_dir / "manifest.yaml"
+    if not manifest_path.is_file():
+        return {}
+    manifest: dict[str, Any] = {}
+    for line in manifest_path.read_text().splitlines():
+        if line.startswith(" ") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip()
+        if value:
+            manifest[key.strip()] = value
+    return manifest
+
+
+def _load_collect_tables(
+    results_root: Path,
+    collect_attempt_id: str,
+) -> tuple[Path, dict[str, Any], dict[str, list[dict[str, Any]]]]:
     collect_dir = stage_dir(results_root, STAGE_FINAL_COLLECT) / collect_attempt_id
     if not collect_dir.is_dir():
         raise FileNotFoundError(f"missing final-collect attempt: {collect_dir}")
-    return collect_dir, {name: _read_csv(collect_dir / name) for name in COMPACT_TABLES}
+    return collect_dir, _load_collect_manifest(collect_dir), {name: _read_csv(collect_dir / name) for name in COMPACT_TABLES}
 
 
 def _architecture_label(row: dict[str, Any]) -> str:
@@ -1352,13 +1374,14 @@ def build_report(
     report_dir = stage_dir(results_root, STAGE_FINAL_REPORT) / report_attempt_id
     tables_dir = report_dir / "tables"
     figures_dir = report_dir / "figures"
-    collect_dir, tables = _load_collect_tables(results_root, final_collect_attempt_id)
+    collect_dir, collect_manifest, tables = _load_collect_tables(results_root, final_collect_attempt_id)
+    study = study_name_from_manifest(collect_manifest)
     table_counts = _copy_tables(collect_dir, tables_dir, tables)
     table_counts.update(_write_energy_component_tables(tables_dir, tables["energy_by_run.csv"]))
     figures = _write_figures(figures_dir, tables)
 
     report = {
-        "study": "pair_stability",
+        "study": study,
         "stage": STAGE_FINAL_REPORT,
         "attempt_id": report_attempt_id,
         "final_collect_attempt_id": final_collect_attempt_id,
@@ -1379,8 +1402,9 @@ def build_report(
 
 def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -> str:
     architecture = sorted(tables["architecture_summary.csv"], key=lambda row: (row.get("basis_class", ""), row.get("normalization", ""), row.get("winner_kind", "")))
+    report_title = str(report.get("study") or "Study").replace("_", " ").title()
     lines = [
-        "# Hooke Pair-Stability Final Report",
+        f"# {report_title} Final Report",
         "",
         "## Scope And Provenance",
         "",
@@ -1410,7 +1434,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps place energy and stability winners side by side with a shared color scale. Figure 1B separates energy and stability winners into adjacent panels while keeping architecture color and normalization marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
             "",
-            "Energy component and virial tables are written to `tables/energy_components_and_virial_by_winner.csv` and to one pair_validation-style table per winner family under `tables/energy_components_and_virial/`. The virial residual is `2 * kinetic - 2 * harmonic_trap + electron_electron`; the relative residual divides its absolute value by the absolute component scale.",
+            "Energy component and virial tables are written to `tables/energy_components_and_virial_by_winner.csv` and to one validation-style table per winner family under `tables/energy_components_and_virial/`. The virial residual is `2 * kinetic - 2 * harmonic_trap + electron_electron`; the relative residual divides its absolute value by the absolute component scale.",
             "",
             "## Cusp Diagnostics",
             "",
@@ -1474,31 +1498,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Write final report artifacts."""
 
     args = parse_args(argv)
-    print(f"[pair_stability] final report results_root={args.results_root}")
+    prefix = log_prefix()
+    print(f"{prefix} final report results_root={args.results_root}")
     if args.final_collect_attempt_id:
-        print(f"[pair_stability] final report using final_collect_attempt_id={args.final_collect_attempt_id}")
+        print(f"{prefix} final report using final_collect_attempt_id={args.final_collect_attempt_id}")
     else:
-        print("[pair_stability] final report using latest final-collect attempt")
+        print(f"{prefix} final report using latest final-collect attempt")
     result = build_report(
         results_root=args.results_root,
         report_attempt_id=args.attempt_id,
         final_collect_attempt_id=args.final_collect_attempt_id,
     )
     report = result["report"]
+    prefix = log_prefix(report.get("study"))
     print(
-        f"[pair_stability] final report consumed 08_final_collect/{report['final_collect_attempt_id']} "
+        f"{prefix} final report consumed 08_final_collect/{report['final_collect_attempt_id']} "
         f"-> {result['attempt_dir']}"
     )
-    print("[pair_stability] final report copied table rows:")
+    print(f"{prefix} final report copied table rows:")
     for filename, count in report["tables"].items():
-        print(f"[pair_stability]   {filename}: {count}")
-    print(f"[pair_stability] final report wrote {len(report['figures'])} figures")
+        print(f"{prefix}   {filename}: {count}")
+    print(f"{prefix} final report wrote {len(report['figures'])} figures")
     figure_counts: dict[str, int] = {}
     for figure in report["figures"]:
         section = figure.split("_", 1)[0]
         figure_counts[section] = figure_counts.get(section, 0) + 1
     for section, count in sorted(figure_counts.items()):
-        print(f"[pair_stability]   figures {section}: {count}")
+        print(f"{prefix}   figures {section}: {count}")
     return 0
 
 

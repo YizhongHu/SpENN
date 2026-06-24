@@ -1,4 +1,4 @@
-"""Shared launch plumbing for Hooke pair-stability stage scripts.
+"""Shared launch plumbing for staged study scripts.
 
 This module owns the execution mechanics shared by ``train.py`` and
 ``validate.py``: CPU/CUDA profile defaults, uv environment activation, local
@@ -16,12 +16,16 @@ import time
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
+from omegaconf import OmegaConf
+
 from overrides import rewrite_cli_overrides
 from run_utils import (
     DEFAULT_STUDY_TIMEZONE,
     STAGE_GRID,
     attempt_ids,
+    config_snapshot_names,
     grid_attempt_dir,
+    log_prefix,
     read_json,
     stage_dir,
 )
@@ -34,7 +38,7 @@ DEFAULT_CPU_PARTITION = "seas_compute,kozinsky_lab,sapphire"
 DEFAULT_CUDA_PARTITION = "seas_gpu,kozinsky_gpu"
 DEFAULT_SMOKE_CPU_PARTITION = "test"
 DEFAULT_SMOKE_CUDA_PARTITION = "gpu_test"
-DEFAULT_TIMEOUT_MIN = 480
+DEFAULT_TIMEOUT_MIN = 30
 DEFAULT_MEM_GB = 32
 DEFAULT_CPUS = 8
 DEFAULT_ARRAY_PARALLELISM = 16
@@ -74,7 +78,7 @@ def resolve_grid_attempt_id(results_root: str | Path, grid_attempt_id: str | Non
     return ids[-1]
 
 
-def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60) -> None:
+def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60, study: str | None = None) -> None:
     """Block until ``job_id`` no longer appears in ``squeue``."""
 
     if poll_seconds < 1:
@@ -82,7 +86,8 @@ def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60) -> None:
     job_id = str(job_id).strip()
     if not job_id:
         return
-    print(f"[pair_stability] waiting for Slurm job {job_id}")
+    prefix = log_prefix(study)
+    print(f"{prefix} waiting for Slurm job {job_id}")
     while True:
         result = subprocess.run(
             ["squeue", "-h", "-j", job_id],
@@ -94,7 +99,7 @@ def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60) -> None:
             message = (result.stderr or result.stdout).strip()
             raise RuntimeError(f"squeue failed while waiting for {job_id}: {message}")
         if not result.stdout.strip():
-            print(f"[pair_stability] Slurm job {job_id} is no longer queued")
+            print(f"{prefix} Slurm job {job_id} is no longer queued")
             return
         time.sleep(poll_seconds)
 
@@ -109,6 +114,38 @@ def load_grid_manifest(results_root: str | Path, grid_attempt_id: str) -> dict[s
     if manifest.get("stage") != STAGE_GRID:
         raise ValueError(f"manifest {manifest_path} is not a {STAGE_GRID} manifest")
     return manifest
+
+
+def load_smoke_overrides(
+    stage: str,
+    *,
+    manifest: dict[str, Any],
+    attempt_dir: str | Path,
+) -> dict[str, object]:
+    """Return configured smoke overrides for one stage."""
+
+    attempt_dir = Path(attempt_dir)
+    snapshots = config_snapshot_names(manifest.get("config_snapshots"))
+    candidates = []
+    smoke_snapshot = snapshots.get("smoke")
+    if smoke_snapshot:
+        candidates.append(attempt_dir / smoke_snapshot)
+    smoke_config = manifest.get("smoke_config")
+    if smoke_config:
+        candidates.append(Path(str(smoke_config)))
+    for path in candidates:
+        if not path.is_file():
+            continue
+        data = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+        if not isinstance(data, dict):
+            raise ValueError(f"smoke config must be a mapping: {path}")
+        overrides = data.get(stage, {})
+        if overrides is None:
+            return {}
+        if not isinstance(overrides, dict):
+            raise ValueError(f"smoke config section {stage!r} must be a mapping: {path}")
+        return {str(key): value for key, value in overrides.items()}
+    return {}
 
 
 def command_for_job(job: dict[str, Any]) -> list[str]:
@@ -365,6 +402,9 @@ def _with_submitit_import_path(slurm: dict[str, Any]) -> dict[str, Any]:
     import_path_setup = _submitit_import_path_setup()
     if import_path_setup not in setup:
         setup = [import_path_setup, *setup]
+    cpu_bind_setup = "export SLURM_CPU_BIND=none"
+    if cpu_bind_setup not in setup:
+        setup.append(cpu_bind_setup)
     return {**slurm, "slurm_setup": setup}
 
 

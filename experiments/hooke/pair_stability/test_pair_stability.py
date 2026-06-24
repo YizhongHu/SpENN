@@ -27,6 +27,7 @@ GRID = CONFIGS / "grid.yaml"
 if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
+import artifacts  # noqa: E402
 import collect  # noqa: E402
 import final_collect  # noqa: E402
 import final_eval  # noqa: E402
@@ -34,9 +35,12 @@ import final_plan  # noqa: E402
 import final_report  # noqa: E402
 import final_train  # noqa: E402
 import launch  # noqa: E402
+import overrides  # noqa: E402
 import plan  # noqa: E402
+import plot as pair_plot  # noqa: E402
 import run_utils  # noqa: E402
 import select_champions  # noqa: E402
+import stats  # noqa: E402
 import sync  # noqa: E402
 import train  # noqa: E402
 import validate  # noqa: E402
@@ -362,6 +366,29 @@ def test_environment_wrapper_aligns_uv_environment_and_runtime_device() -> None:
     assert "source .venv-gpu/bin/activate" in script
     assert "exec python -u run.py --config cfg.yaml x=y runtime.device=cuda" in script
     assert planned_python not in script
+
+
+def test_rewrite_cli_overrides_replaces_exact_keys_and_appends_in_order() -> None:
+    command = [
+        "python",
+        "run.py",
+        "runtime.device=cpu",
+        "runtime.device.extra=keep",
+        "run.timezone=UTC",
+        "+runtime.device=hydra-plus-kept",
+        "runtime.device=older",
+    ]
+
+    rewritten = overrides.rewrite_cli_overrides(
+        command,
+        {"runtime.device": "cuda", "run.timezone": "America/New_York"},
+    )
+
+    assert rewritten[:4] == ["python", "run.py", "runtime.device.extra=keep", "+runtime.device=hydra-plus-kept"]
+    assert rewritten[-2:] == ["runtime.device=cuda", "run.timezone=America/New_York"]
+    assert "runtime.device=cpu" not in rewritten
+    assert "runtime.device=older" not in rewritten
+    assert launch.with_overrides(["x=1", "xy=2"], {"x": 3}) == ["xy=2", "x=3"]
 
 
 def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
@@ -991,8 +1018,124 @@ def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only
     assert (report_dir / "report.md").read_text().startswith("# Hooke Pair-Stability Final Report")
 
 
-def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
-    y_labels, x_labels, matrix = final_report._heatmap_matrix(
+def test_artifact_csv_writer_preserves_columns_and_serializes_nested_values(tmp_path: Path) -> None:
+    path = tmp_path / "table.csv"
+
+    artifacts.write_csv(
+        path,
+        [
+            {"first": 1, "second": {"z": 2, "a": 1}, "extra": "ignored"},
+            {"first": True, "second": [2, 1], "extra": "ignored"},
+        ],
+        ["second", "first"],
+    )
+
+    assert path.read_text().splitlines()[0] == "second,first"
+    rows = _read_csv(path)
+    assert list(rows[0]) == ["second", "first"]
+    assert rows[0]["second"] == '{"a": 1, "z": 2}'
+    assert rows[0]["first"] == "1"
+    assert rows[1]["second"] == "[2, 1]"
+    assert rows[1]["first"] == "True"
+    assert "extra" not in rows[0]
+
+
+def test_artifact_metrics_reader_preserves_long_rows_and_metric_map(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "namespace": "eval/energy",
+                        "step": 7,
+                        "metrics": {"local_energy_mean": 2.5, "nested": {"z": 2, "a": 1}},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "namespace": "runtime",
+                        "step": 8,
+                        "metric": "wall_time_sec",
+                        "value": 3.0,
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    rows = artifacts.read_metrics_jsonl(path)
+
+    assert rows[0] == {
+        "step": 7,
+        "namespace": "eval/energy",
+        "metric": "local_energy_mean",
+        "value": 2.5,
+    }
+    assert rows[1]["metric"] == "nested"
+    assert rows[1]["value"] == '{"a": 1, "z": 2}'
+    metric_map = artifacts.metric_map(rows)
+    assert metric_map["eval/energy/local_energy_mean"] == 2.5
+    assert metric_map["eval/energy/nested"] == '{"a": 1, "z": 2}'
+    assert metric_map["runtime/wall_time_sec"] == 3.0
+
+
+def test_artifact_status_duration_handles_missing_malformed_and_valid_timestamps() -> None:
+    assert artifacts.duration_from_status({}) is None
+    assert artifacts.duration_from_status({"start_time": "bad", "end_time": "2026-01-01T00:00:00"}) is None
+    assert (
+        artifacts.duration_from_status(
+            {"start_time": "2026-01-01T00:00:00", "end_time": "2026-01-01T00:00:02.500000"}
+        )
+        == 2.5
+    )
+    assert (
+        artifacts.duration_from_status(
+            {"start_time": "2026-01-01T00:00:02", "end_time": "2026-01-01T00:00:00"},
+        )
+        is None
+    )
+    assert (
+        artifacts.duration_from_status(
+            {"start_time": "2026-01-01T00:00:02", "end_time": "2026-01-01T00:00:00"},
+            clamp_negative=True,
+        )
+        == 0.0
+    )
+
+
+def test_stats_reducers_handle_empty_nonfinite_booleans_strings_and_quantiles() -> None:
+    values = [None, "", "1.5", 2, True, "nan", float("inf"), "bad"]
+
+    assert stats.as_float(True) == 1.0
+    assert stats.as_float("  ") is None
+    assert stats.as_bool("True") is True
+    assert stats.as_bool("false") is False
+    assert stats.finite_values(values) == [1.5, 2.0, 1.0]
+    assert stats.mean([]) is None
+    assert stats.mean(values) == pytest.approx(1.5)
+    assert stats.median([1, "3", 2]) == 2.0
+    assert stats.variance([1, 2, 3]) == pytest.approx(1.0)
+    assert stats.variance([1]) == 0.0
+    assert stats.quantile([0, 10], 0.25) == 2.5
+    assert stats.quantile([], 0.5) is None
+    assert stats.finite_sum([1, "2", "nan"]) == 3.0
+    assert stats.finite_max([1, "2", "nan"]) == 2.0
+    assert stats.format_number(None) == ""
+    assert stats.format_number(2.0) == "2"
+    assert stats.weighted_quantile([0.0, 10.0], [1.0, 3.0], 0.5) == 10.0
+    assert stats.crop_bar_series_to_weighted_quantiles(
+        [0.0, 1.0, 2.0, 3.0],
+        [1.0, 1.0, 8.0, 1.0],
+        [0.5, 0.5, 0.5, 0.5],
+        low_q=0.1,
+        high_q=0.9,
+    ) == ([1.0, 2.0], [1.0, 8.0], [0.5, 0.5])
+
+
+def test_plot_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
+    y_labels, x_labels, matrix = pair_plot.heatmap_matrix(
         [
             {"basis": "raw", "normalization": "N0", "energy_error": "-0.25"},
             {"basis": "raw", "normalization": "N0", "energy_error": "-0.75"},
@@ -1008,14 +1151,15 @@ def test_final_report_heatmap_matrix_keeps_real_scale_signed_errors() -> None:
     assert matrix == [[-0.5, 0.5]]
 
 
-def test_final_report_heatmap_transform_uses_positive_log_for_multiscale_values() -> None:
-    assert final_report._resolve_heatmap_transform([1.0, 100.0], None) == "positive_log"
-    assert final_report._resolve_heatmap_transform([0.0, 1.0, 2.0], None) == "positive_linear"
-    assert final_report._resolve_heatmap_transform([-1.0, 100.0], None) == "signed_linear"
-    assert final_report._resolve_heatmap_transform([1.0, 100.0], "signed_log") == "signed_log"
+def test_plot_heatmap_transform_uses_positive_log_for_multiscale_values() -> None:
+    assert pair_plot.resolve_heatmap_transform([1.0, 9.0], None) == "positive_linear"
+    assert pair_plot.resolve_heatmap_transform([1.0, 10.0], None) == "positive_log"
+    assert pair_plot.resolve_heatmap_transform([0.0, 1.0, 2.0], None) == "positive_linear"
+    assert pair_plot.resolve_heatmap_transform([-1.0, 100.0], None) == "signed_linear"
+    assert pair_plot.resolve_heatmap_transform([1.0, 100.0], "signed_log") == "signed_log"
 
 
-def test_final_report_positive_heatmaps_use_monochrome_colormap() -> None:
+def test_plot_positive_heatmaps_use_monochrome_colormap() -> None:
     class FakeAxis:
         def __init__(self) -> None:
             self.imshow_kwargs: list[dict[str, object]] = []
@@ -1037,7 +1181,7 @@ def test_final_report_positive_heatmaps_use_monochrome_colormap() -> None:
             return None
 
     linear_axis = FakeAxis()
-    final_report._draw_heatmap_axis(
+    pair_plot.draw_heatmap_axis(
         object(),
         linear_axis,
         y_labels=["row"],
@@ -1049,7 +1193,7 @@ def test_final_report_positive_heatmaps_use_monochrome_colormap() -> None:
         add_colorbar=False,
     )
     log_axis = FakeAxis()
-    final_report._draw_heatmap_axis(
+    pair_plot.draw_heatmap_axis(
         object(),
         log_axis,
         y_labels=["row"],
@@ -1061,8 +1205,183 @@ def test_final_report_positive_heatmaps_use_monochrome_colormap() -> None:
         add_colorbar=False,
     )
 
-    assert linear_axis.imshow_kwargs[0]["cmap"] == final_report.POSITIVE_HEATMAP_CMAP
-    assert log_axis.imshow_kwargs[0]["cmap"] == final_report.POSITIVE_HEATMAP_CMAP
+    assert linear_axis.imshow_kwargs[0]["cmap"] == pair_plot.POSITIVE_HEATMAP_CMAP
+    assert log_axis.imshow_kwargs[0]["cmap"] == pair_plot.POSITIVE_HEATMAP_CMAP
+
+
+def test_plot_signed_log_heatmap_uses_symmetric_scale_and_real_annotations() -> None:
+    class FakeAxis:
+        def __init__(self) -> None:
+            self.imshow_kwargs: list[dict[str, object]] = []
+            self.text_args: list[tuple[object, ...]] = []
+
+        def imshow(self, _data: object, **kwargs: object) -> object:
+            self.imshow_kwargs.append(kwargs)
+            return object()
+
+        def set_xticks(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def set_yticks(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def set_title(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def text(self, *args: object, **_kwargs: object) -> None:
+            self.text_args.append(args)
+
+    axis = FakeAxis()
+    pair_plot.draw_heatmap_axis(
+        object(),
+        axis,
+        y_labels=["row"],
+        x_labels=["neg", "pos"],
+        matrix=[[-0.01, 100.0]],
+        value_key="metric",
+        title="signed",
+        transform="signed_log",
+        add_colorbar=False,
+    )
+
+    norm = axis.imshow_kwargs[0]["norm"]
+    assert norm.vmin == pytest.approx(-100.0)
+    assert norm.vmax == pytest.approx(100.0)
+    assert [args[2] for args in axis.text_args] == ["-0.01", "1e+02"]
+
+
+def test_plot_winner_pair_heatmaps_share_one_scale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "winner_pair.png"
+    captured: list[tuple[str, tuple[float, ...]]] = []
+
+    def fake_draw_heatmap_axis(_fig: object, _ax: object, **kwargs: object) -> None:
+        captured.append((str(kwargs["title"]), tuple(float(value) for value in kwargs["scale_values"])))  # type: ignore[index]
+        return None
+
+    monkeypatch.setattr(pair_plot, "draw_heatmap_axis", fake_draw_heatmap_axis)
+
+    pair_plot.save_winner_pair_heatmap(
+        path,
+        {
+            "energy": [{"basis": "raw", "normalization": "N0", "metric": "1.0"}],
+            "stability": [{"basis": "raw", "normalization": "N0", "metric": "100.0"}],
+        },
+        row_key="basis",
+        col_key="normalization",
+        value_key="metric",
+        title="winner pair",
+        panel_titles={"energy": "energy winners", "stability": "stability winners"},
+    )
+
+    assert path.is_file()
+    assert captured == [
+        ("energy winners", (1.0, 100.0)),
+        ("stability winners", (1.0, 100.0)),
+    ]
+
+
+def test_plot_row_scoped_heatmap_grid_uses_one_scale_per_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "row_scoped.png"
+    captured: list[tuple[str, tuple[float, ...]]] = []
+
+    def fake_draw_heatmap_axis(_fig: object, _ax: object, **kwargs: object) -> None:
+        captured.append((str(kwargs["title"]), tuple(float(value) for value in kwargs["scale_values"])))  # type: ignore[index]
+        return None
+
+    monkeypatch.setattr(pair_plot, "draw_heatmap_axis", fake_draw_heatmap_axis)
+
+    pair_plot.save_row_scoped_heatmap_grid(
+        path,
+        {
+            ("row-a", "left"): [{"basis": "raw", "normalization": "N0", "metric": "1.0"}],
+            ("row-a", "right"): [{"basis": "raw", "normalization": "N0", "metric": "10.0"}],
+            ("row-b", "left"): [{"basis": "raw", "normalization": "N0", "metric": "1000.0"}],
+            ("row-b", "right"): [{"basis": "raw", "normalization": "N0", "metric": "2000.0"}],
+        },
+        row_labels=["row-a", "row-b"],
+        col_labels=["left", "right"],
+        row_key="basis",
+        col_key="normalization",
+        value_key="metric",
+        title="row scoped",
+        panel_title=lambda row, col: f"{row}:{col}",
+    )
+
+    assert path.is_file()
+    assert captured == [
+        ("row-a:left", (1.0, 10.0)),
+        ("row-a:right", (1.0, 10.0)),
+        ("row-b:left", (1000.0, 2000.0)),
+        ("row-b:right", (1000.0, 2000.0)),
+    ]
+
+
+def test_plot_grouped_line_grid_has_one_legend_entry_per_line_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import matplotlib.figure
+
+    path = tmp_path / "line_grid.png"
+    legend_labels: list[list[str]] = []
+
+    def fake_legend(self: object, handles: object, labels: list[str], *args: object, **kwargs: object) -> object:
+        del self, handles, args, kwargs
+        legend_labels.append(list(labels))
+        return object()
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "legend", fake_legend)
+    pair_plot.save_grouped_line_grid(
+        path,
+        [
+            {"panel_key": "panel", "line_key": "a", "x": 0.0, "y": 1.0},
+            {"panel_key": "panel", "line_key": "b", "x": 0.0, "y": 2.0},
+            {"panel_key": "panel", "line_key": "b", "x": 1.0, "y": 3.0},
+        ],
+        panel_keys=["panel"],
+        x_label="x",
+        y_label="y",
+        title="line grid",
+        legend_title="line",
+    )
+
+    assert path.is_file()
+    assert legend_labels == [["a", "b"]]
+
+
+def test_plot_grouped_bar_grid_preserves_q5_q85_errorbars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import matplotlib.axes
+
+    path = tmp_path / "bar_grid.png"
+    bar_kwargs: list[dict[str, object]] = []
+
+    def fake_bar(self: object, *args: object, **kwargs: object) -> object:
+        del self, args
+        bar_kwargs.append(dict(kwargs))
+        return object()
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "bar", fake_bar)
+    pair_plot.save_grouped_bar_grid(
+        path,
+        [
+            {
+                "panel_key": ("N0", "raw"),
+                "bar_key": "CoM 0",
+                "x": 1.0,
+                "height": 2.0,
+                "yerr_low": 0.5,
+                "yerr_high": 1.5,
+                "width": 0.2,
+            }
+        ],
+        row_keys=["N0"],
+        col_keys=["raw"],
+        bar_keys=["CoM 0"],
+        x_label="radius",
+        y_label="local energy",
+        title="bars",
+        legend_title="CoM",
+    )
+
+    assert path.is_file()
+    assert bar_kwargs[0]["yerr"] == [[0.5], [1.5]]
 
 
 def test_final_report_winner_helpers_split_energy_and_stability_rows() -> None:
@@ -1112,7 +1431,7 @@ def test_final_report_symmetry_metric_grid_uses_row_scoped_scales(tmp_path: Path
         captured.append((str(kwargs["title"]), tuple(float(value) for value in kwargs["scale_values"])))  # type: ignore[index]
         return None
 
-    monkeypatch.setattr(final_report, "_draw_heatmap_axis", fake_draw_heatmap_axis)
+    monkeypatch.setattr(pair_plot, "draw_heatmap_axis", fake_draw_heatmap_axis)
     rows = [
         {
             "basis_class": "raw_envelope",
@@ -1221,7 +1540,7 @@ def test_final_report_feature_trace_metric_grid_uses_row_scoped_scales(tmp_path:
         captured.append((str(kwargs["title"]), tuple(float(value) for value in kwargs["scale_values"])))  # type: ignore[index]
         return None
 
-    monkeypatch.setattr(final_report, "_draw_heatmap_axis", fake_draw_heatmap_axis)
+    monkeypatch.setattr(pair_plot, "draw_heatmap_axis", fake_draw_heatmap_axis)
     rows = [
         {
             "basis_class": "raw_envelope",

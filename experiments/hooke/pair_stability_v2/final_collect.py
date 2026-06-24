@@ -1,4 +1,4 @@
-"""Collect compact final pair-stability summaries from raw final artifacts.
+"""Collect compact final summaries from raw final artifacts.
 
 ``final_collect.py`` is the only final-reporting stage that reads raw training
 and evaluation artifacts. It consumes ``05_final_grid``, ``06_final_train``,
@@ -28,8 +28,10 @@ from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
     attempt_ids,
+    log_prefix,
     new_attempt_id,
     stage_dir,
+    study_name_from_manifest,
     write_latest,
 )
 from stats import (
@@ -327,6 +329,9 @@ def _minor_hparams(job: dict[str, Any]) -> str:
 
 def _run_context(final_run_id: str, attempt_id: str, attempt_dir: Path) -> dict[str, Any]:
     job = _load_json_if_present(attempt_dir / "source_final_job.json")
+    source_final_grid = _load_json_if_present(attempt_dir / "source_final_grid_attempt.json")
+    final_grid_dir = Path(str(source_final_grid.get("final_grid_attempt_dir", "")))
+    final_grid_manifest = _load_json_if_present(final_grid_dir / "manifest.json")
     checkpoint = _load_json_if_present(attempt_dir / "evaluated_checkpoint.json")
     source_train = _load_json_if_present(attempt_dir / "source_final_train_attempt.json")
     eval_status_json = _load_json_if_present(attempt_dir / "status.json")
@@ -340,6 +345,8 @@ def _run_context(final_run_id: str, attempt_id: str, attempt_dir: Path) -> dict[
         "attempt_id": attempt_id,
         "attempt_dir": attempt_dir,
         "job": job,
+        "source_final_grid": source_final_grid,
+        "final_grid_manifest": final_grid_manifest,
         "checkpoint": checkpoint,
         "source_train": source_train,
         "train_attempt_dir": train_attempt_dir,
@@ -931,6 +938,7 @@ def collect_final_outputs(
     attempt.mkdir(parents=True, exist_ok=True)
 
     contexts = [_run_context(final_run_id, attempt_id, attempt_dir) for final_run_id, attempt_id, attempt_dir in _iter_final_eval_attempts(results_root, final_eval_attempt_id)]
+    study = study_name_from_manifest(contexts[0]["final_grid_manifest"] if contexts else None)
     resolved_eval_attempt_ids = sorted({str(context["attempt_id"]) for context in contexts})
     manifest_final_eval_attempt_id = final_eval_attempt_id
     if manifest_final_eval_attempt_id is None and len(resolved_eval_attempt_ids) == 1:
@@ -968,7 +976,7 @@ def collect_final_outputs(
         _write_csv(attempt / filename, rows, columns)
 
     manifest = {
-        "study": "pair_stability",
+        "study": study,
         "stage": STAGE_FINAL_COLLECT,
         "attempt_id": collect_attempt_id,
         "final_eval_attempt_id": manifest_final_eval_attempt_id,
@@ -1001,24 +1009,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Collect compact final tables."""
 
     args = parse_args(argv)
-    print(f"[pair_stability] final collect results_root={args.results_root}")
+    prefix = log_prefix()
+    print(f"{prefix} final collect results_root={args.results_root}")
     if args.final_eval_attempt_id:
-        print(f"[pair_stability] final collect using final_eval_attempt_id={args.final_eval_attempt_id}")
+        print(f"{prefix} final collect using final_eval_attempt_id={args.final_eval_attempt_id}")
     else:
-        print("[pair_stability] final collect using latest/all ready final-eval attempts")
+        print(f"{prefix} final collect using latest/all ready final-eval attempts")
     result = collect_final_outputs(
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
         final_eval_attempt_id=args.final_eval_attempt_id,
     )
     manifest = result["manifest"]
+    prefix = log_prefix(manifest.get("study"))
     print(
-        f"[pair_stability] final collect consumed {manifest['n_final_eval_attempts']} "
+        f"{prefix} final collect consumed {manifest['n_final_eval_attempts']} "
         f"final-eval attempts -> {result['attempt_dir']}"
     )
-    print("[pair_stability] final collect table rows:")
+    print(f"{prefix} final collect table rows:")
     for filename, count in manifest["tables"].items():
-        print(f"[pair_stability]   {filename}: {count}")
+        print(f"{prefix}   {filename}: {count}")
     return 0
 
 

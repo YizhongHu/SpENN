@@ -1,0 +1,469 @@
+# =============================================================================
+# Hooke pair-stability study training base config (PR8.8)
+# =============================================================================
+#
+# Pair-stability scan over model-side inductive bias (input basis +
+# Gaussian envelope) and feature normalization. The public override surface is
+# scalar: the planner selects an architecture/normalization choice by key
+# and sets lr/channels/seed, e.g.
+#
+#   uv run python run.py --config experiments/hooke/pair_stability_v2/configs/pair_stability.yaml \
+#     run_parameters.architecture=hermite_o3_envelope run_parameters.normalization=N2 \
+#     run_parameters.lr=1.0e-3 run_parameters.channels=16 run_parameters.seed=0 \
+#     run.root=experiments/hooke/pair_stability_v2/results/01_train \
+#     run.layout=flat run.run_id=<run_id>/<attempt_id>
+#
+# `model.basis`, `model.envelope`, and `model.feature_normalization` are
+# resolved from the structured choice libraries below using the selected keys.
+# The embedding input width is derived from the selected basis via the
+# `spenn.basis_feature_dim` resolver, so no per-variant YAML is needed.
+# =============================================================================
+
+experiment:
+  name: ${study.name}
+  sector: pair
+  run_name: ${study.name}_train
+
+study:
+  name: pair_stability_v2
+  stage: "01_train"
+  attempt_id: null
+  config_id: null
+
+run:
+  root: experiments/hooke/pair_stability_v2/results/01_train
+  # Flat layout means run.dir = run.root / run.run_id. The planner sets
+  # run.run_id to "<run_id>/<attempt_id>" to realize the staged layout.
+  layout: flat
+  run_id: null
+  dir: null
+  timezone: null  # launchers inject run.timezone
+
+runtime:
+  seed: ${run_parameters.seed}
+  device: cuda
+  dtype: float64
+
+terminal:
+  enabled: true
+  level: info
+  color: auto
+  rich: auto
+  progress: false
+
+# -----------------------------------------------------------------------------
+# Physical system
+# -----------------------------------------------------------------------------
+system:
+  name: hooke_pair
+  n_particles: 2
+  spatial_dim: 3
+  omega: 0.5
+  spin:
+    n_up: 1
+    n_down: 1
+
+# -----------------------------------------------------------------------------
+# Scalar run parameters (the entire public override surface)
+# -----------------------------------------------------------------------------
+run_parameters:
+  architecture: hermite_o3_envelope
+  normalization: N0
+  lr: 1.0e-3
+  channels: 4
+  seed: 0
+
+# -----------------------------------------------------------------------------
+# Structured choice libraries
+# -----------------------------------------------------------------------------
+# Each architecture choice bundles an input basis, its physics hyperparameters,
+# a Gaussian output envelope, and tags. Every main variant includes the Gaussian
+# envelope so the output-side asymptotic prior is shared across architectures.
+# No-envelope variants are intentionally absent (raw_no_envelope does not
+# converge; the other no-envelope variants are out of scope for this scan).
+choices:
+  architecture:
+    raw_envelope:
+      basis:
+        _target_: spenn.nn.RawCoordinateBasis
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main]
+
+    hermite_o2_envelope:
+      basis:
+        _target_: spenn.nn.HookeHermiteBasis
+        omega: ${system.omega}
+        max_order: 2
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main]
+
+    hermite_o3_envelope:
+      basis:
+        _target_: spenn.nn.HookeHermiteBasis
+        omega: ${system.omega}
+        max_order: 3
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main]
+
+    orbital_s1_envelope:
+      basis:
+        _target_: spenn.nn.HookeOrbitalBasis
+        omega: ${system.omega}
+        max_shell: 1
+        include_gaussian_factor: true
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main, orbital_with_envelope]
+
+    orbital_s2_envelope:
+      basis:
+        _target_: spenn.nn.HookeOrbitalBasis
+        omega: ${system.omega}
+        max_shell: 2
+        include_gaussian_factor: true
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [main, orbital_with_envelope]
+
+    # Optional diagnostic choices (not part of the main grid by default).
+    hermite_o4_envelope:
+      basis:
+        _target_: spenn.nn.HookeHermiteBasis
+        omega: ${system.omega}
+        max_order: 4
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [diagnostic]
+
+    orbital_s3_envelope:
+      basis:
+        _target_: spenn.nn.HookeOrbitalBasis
+        omega: ${system.omega}
+        max_shell: 3
+        include_gaussian_factor: true
+        spatial_dim: ${system.spatial_dim}
+        include_spin: true
+      envelope:
+        _target_: spenn.nn.HookeGaussianEnvelope
+        omega: ${system.omega}
+      tags: [diagnostic, orbital_with_envelope]
+
+  # Where feature normalization is inserted in the model pipeline. One mode is
+  # scanned at a time. N0 inserts no module.
+  normalization:
+    N0:
+      mode: none
+      norm: null
+    N1:
+      mode: post_embedding
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+    N2:
+      mode: post_feature_layer
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+    N3:
+      mode: update
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+    N4:
+      mode: pre_readout
+      norm:
+        _target_: spenn.nn.IrrepRMSNorm
+        eps: 1.0e-8
+
+# -----------------------------------------------------------------------------
+# Model scale
+# -----------------------------------------------------------------------------
+gate_targets:
+  silu: torch.nn.SiLU
+  sigmoid: torch.nn.Sigmoid
+  tanh: torch.nn.Tanh
+  gaussian: spenn.nn.GaussianActivation
+
+model_params:
+  max_order: 2
+  max_virtual_order: 2
+  channels: ${run_parameters.channels}
+  hidden_channels: 16
+  num_hidden_layers: 1
+  layers: 1
+  gate_activation: silu
+  mixing_implementation: vectorized
+  mixing_initial_weight: 0.5
+
+sampler_params:
+  n_walkers: 128
+  burn_in: 10
+  n_steps: 5
+  proposal_scale: 0.35
+
+training:
+  max_steps: 2
+  log_every_n_steps: 1
+  return_terms: true
+
+optimizer_params:
+  lr: ${run_parameters.lr}
+
+checks:
+  every_n_steps: 1
+  fail_fast: true
+  data_integrity:
+    max_nonfinite_energy_fraction: 0.0
+    max_nonfinite_logabs_fraction: 0.0
+    check_loss: true
+    check_wavefunction_output: true
+    check_batch: true
+    strict_sign_values: true
+  gradients:
+    check_finite: true
+  sampler:
+    fail_fast: false
+  equivariance:
+    probability: 1.0
+    permutation_fraction: 1.0
+    max_permutations: 10
+    atol: 1.0e-06
+    rtol: 1.0e-06
+
+timing:
+  rolling_window: 20
+  cuda_synchronize: false
+
+load:
+  path: null
+  mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+checkpoint:
+  every_n_steps: 1
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
+
+status:
+  every_n_steps: 1
+  include:
+    - train/loss
+    - train/energy
+    - train/energy_stderr
+    - train/sampler/acceptance_rate
+    - train/grad_norm
+    - train/local_energy_finite_fraction
+
+# =============================================================================
+# Component specs
+# =============================================================================
+runner:
+  _target_: spenn.runner.Train
+  model: ${model}
+  sampler: ${sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  optimizer: ${optimizer}
+  trainer: ${trainer}
+  load: ${load}
+
+# -----------------------------------------------------------------------------
+# Model: basis -> embedding -> SpENN layers -> readout -> Gaussian envelope
+# -----------------------------------------------------------------------------
+model:
+  _target_: spenn.nn.SpENNWaveFunction
+  trace_name: spenn
+
+  # Selected from the architecture choice library.
+  basis: ${choices.architecture.${run_parameters.architecture}.basis}
+
+  embedding:
+    _target_: spenn.nn.Embedding
+    max_order: ${model_params.max_order}
+    spatial_dim: ${system.spatial_dim}
+    out_channels: ${model_params.channels}
+    hidden_channels: ${model_params.hidden_channels}
+    num_hidden_layers: ${model_params.num_hidden_layers}
+    # The basis already supplies the per-particle spin channel.
+    include_spins: false
+    # Input width is whatever the selected basis emits.
+    in_features: ${spenn.basis_feature_dim:${model.basis}}
+
+  layers:
+    - _target_: spenn.nn.SpENNLayer
+      mixing:
+        _target_: spenn.nn.EquivariantMixing
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+        implementation: ${model_params.mixing_implementation}
+        initial_weight: ${model_params.mixing_initial_weight}
+      fourier:
+        _target_: spenn.reps.FourierTransform
+      activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: ${gate_targets.${model_params.gate_activation}}
+      path_aggregation:
+        _target_: spenn.nn.PathAggregation
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+      inverse_fourier:
+        _target_: spenn.reps.InverseFourierTransform
+      update:
+        _target_: spenn.nn.ResidualUpdate
+
+  # Architecture-selected Gaussian output prior plus the constant analytic
+  # electron-electron cusp (held fixed across the scan).
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - ${choices.architecture.${run_parameters.architecture}.envelope}
+      - _target_: spenn.nn.ElectronElectronCusp
+
+  # Selected from the normalization choice library.
+  feature_normalization:
+    _target_: spenn.nn.FeatureNormalization
+    mode: ${choices.normalization.${run_parameters.normalization}.mode}
+    norm: ${choices.normalization.${run_parameters.normalization}.norm}
+
+  readout:
+    _target_: spenn.nn.readout.PfaffianReadout
+    channels: ${model_params.channels}
+
+hamiltonian_terms:
+  kinetic:
+    _target_: spenn.physics.kinetic.KineticEnergy
+  harmonic_trap:
+    _target_: spenn.physics.potential.HarmonicTrap
+    omega: ${system.omega}
+  electron_electron:
+    _target_: spenn.physics.potential.ElectronElectronInteraction
+
+sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
+  n_walkers: ${sampler_params.n_walkers}
+  burn_in: ${sampler_params.burn_in}
+  n_steps: ${sampler_params.n_steps}
+  proposal_scale: ${sampler_params.proposal_scale}
+  seed: ${runtime.seed}
+  n_electrons: ${system.n_particles}
+  spatial_dim: ${system.spatial_dim}
+  n_up: ${system.spin.n_up}
+  n_down: ${system.spin.n_down}
+  dtype: ${runtime.dtype}
+
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: ${optimizer_params.lr}
+
+trainer:
+  _target_: spenn.training.trainer.VMCTrainer
+  max_steps: ${training.max_steps}
+  log_every_n_steps: ${training.log_every_n_steps}
+  return_terms: ${training.return_terms}
+
+callbacks:
+  - _target_: spenn.callback.ConfigSnapshot
+    triggers: [run_start]
+    output_path: ${run.dir}/config.yaml
+  - _target_: spenn.callback.ResolvedConfigSnapshot
+    triggers: [run_start]
+    output_path: ${run.dir}/resolved_config.yaml
+  - _target_: spenn.callback.Metadata
+    triggers: [run_start, run_end, exception]
+    output_path: ${run.dir}/metadata.json
+  - _target_: spenn.callback.Status
+    triggers: [run_start, run_end, exception]
+    output_path: ${run.dir}/status.json
+  - _target_: spenn.callback.DataIntegrity
+    triggers: [step_end]
+    every_n_steps: ${checks.every_n_steps}
+    fail_fast: ${checks.fail_fast}
+    max_nonfinite_energy_fraction: ${checks.data_integrity.max_nonfinite_energy_fraction}
+    max_nonfinite_logabs_fraction: ${checks.data_integrity.max_nonfinite_logabs_fraction}
+    check_loss: ${checks.data_integrity.check_loss}
+    check_wavefunction_output: ${checks.data_integrity.check_wavefunction_output}
+    check_batch: ${checks.data_integrity.check_batch}
+    strict_sign_values: ${checks.data_integrity.strict_sign_values}
+  - _target_: spenn.callback.GradientStats
+    triggers: [step_end]
+    every_n_steps: ${checks.every_n_steps}
+    fail_fast: ${checks.fail_fast}
+    check_finite: ${checks.gradients.check_finite}
+  - _target_: spenn.callback.SamplerHealth
+    triggers: [step_end]
+    every_n_steps: ${checks.every_n_steps}
+    fail_fast: ${checks.sampler.fail_fast}
+  - _target_: spenn.callback.RuntimeEquivariance
+    triggers: [step_end]
+    every_n_steps: ${checks.every_n_steps}
+    probability: ${checks.equivariance.probability}
+    fail_fast: ${checks.fail_fast}
+    artifact_dir: ${run.dir}/checks/equivariance
+    checkers:
+      - _target_: spenn.equivariance.checks.FullModelEquivarianceChecker
+        permutation_fraction: ${checks.equivariance.permutation_fraction}
+        max_permutations: ${checks.equivariance.max_permutations}
+        seed: ${runtime.seed}
+        atol: ${checks.equivariance.atol}
+        rtol: ${checks.equivariance.rtol}
+      - _target_: spenn.equivariance.checks.TraceEquivarianceChecker
+        permutation_fraction: ${checks.equivariance.permutation_fraction}
+        max_permutations: ${checks.equivariance.max_permutations}
+        seed: ${runtime.seed}
+        compare_output: false
+        atol: ${checks.equivariance.atol}
+        rtol: ${checks.equivariance.rtol}
+  - _target_: spenn.callback.Checkpoint
+    triggers: [step_end]
+    every_n_steps: ${checkpoint.every_n_steps}
+    output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpoint.keep_last}
+    save_optimizer: ${checkpoint.save_optimizer}
+    save_trainer: ${checkpoint.save_trainer}
+    save_sampler: ${checkpoint.save_sampler}
+    save_rng: ${checkpoint.save_rng}
+  - _target_: spenn.callback.RunTiming
+    triggers: [run_start, run_end, exception]
+    cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.TrainStepTiming
+    triggers: [step_start, step_end]
+    rolling_window: ${timing.rolling_window}
+    cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.Status
+    triggers: [step_end]
+    every_n_steps: ${status.every_n_steps}
+    include: ${status.include}
+
+loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
