@@ -21,6 +21,7 @@ from run_utils import (
     stage_job_name,
     study_name_from_manifest,
     write_json,
+    write_latest,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -154,6 +155,7 @@ def write_train_launch_provenance(
         (train_attempt / "command.txt").write_text(
             shlex.join([str(part) for part in submitted_commands[index]]) + "\n"
         )
+        write_latest(train_attempt.parent, train_attempt.name)
         row_status_paths.append(train_attempt / "launcher_status.json")
     return row_status_paths
 

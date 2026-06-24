@@ -17,11 +17,11 @@ import launch
 from run_utils import (
     STAGE_FINAL_GRID,
     STAGE_FINAL_TRAIN,
-    attempt_ids,
     experiment_run_name,
     final_grid_attempt_dir,
     final_train_attempt_dir,
     final_train_run_dir,
+    latest_attempt_id,
     log_prefix,
     read_json,
     seed_override_values,
@@ -45,12 +45,11 @@ def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *,
             raise ValueError("full final training refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
-    attempts = attempt_ids(final_grid_stage)
-    candidates = [attempt_id for attempt_id in attempts if _is_smoke_attempt(attempt_id) == smoke]
-    if not candidates:
+    attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
+    if attempt_id is None:
         mode = "smoke" if smoke else "production"
         raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
-    return candidates[-1]
+    return attempt_id
 
 
 def load_final_grid_manifest(results_root: Path, final_grid_attempt_id: str) -> dict[str, Any]:

@@ -27,7 +27,7 @@ from artifacts import (
 from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
-    attempt_ids,
+    latest_attempt_id,
     log_prefix,
     new_attempt_id,
     stage_dir,
@@ -299,10 +299,9 @@ def _iter_final_eval_attempts(results_root: Path, final_eval_attempt_id: str | N
             continue
         attempt_id = final_eval_attempt_id
         if attempt_id is None:
-            ids = attempt_ids(run_dir)
-            if not ids:
+            attempt_id = latest_attempt_id(run_dir)
+            if attempt_id is None:
                 continue
-            attempt_id = ids[-1]
         attempt_dir = run_dir / attempt_id
         if attempt_dir.is_dir():
             attempts.append((run_dir.name, attempt_id, attempt_dir))

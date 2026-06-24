@@ -30,6 +30,7 @@ from run_utils import (
     final_grid_attempt_dir,
     final_train_attempt_dir,
     final_train_run_dir,
+    latest_attempt_id,
     log_prefix,
     read_json,
     seed_override_values,
@@ -76,12 +77,11 @@ def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *,
             raise ValueError("full final eval refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
-    attempts = attempt_ids(final_grid_stage)
-    candidates = [attempt_id for attempt_id in attempts if _is_smoke_attempt(attempt_id) == smoke]
-    if not candidates:
+    attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
+    if attempt_id is None:
         mode = "smoke" if smoke else "production"
         raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
-    return candidates[-1]
+    return attempt_id
 
 
 def _selected_jobs(jobs: Sequence[dict[str, Any]], *, smoke: bool) -> list[dict[str, Any]]:
@@ -104,9 +104,7 @@ def latest_final_train_attempt_id(
 ) -> str | None:
     """Return the latest eligible final-train attempt id for ``final_run_id``."""
 
-    ids = attempt_ids(final_train_run_dir(results_root, final_run_id))
-    candidates = [attempt_id for attempt_id in ids if _is_smoke_attempt(attempt_id) == smoke]
-    return candidates[-1] if candidates else None
+    return latest_attempt_id(final_train_run_dir(results_root, final_run_id), smoke=smoke)
 
 
 def _final_train_attempt_id_for_job(
@@ -162,9 +160,15 @@ def _latest_ready_final_train_attempt_id(
 ) -> str | None:
     """Return the newest final-train attempt with a completed selected checkpoint."""
 
-    ids = attempt_ids(final_train_run_dir(results_root, final_run_id))
+    run_dir = final_train_run_dir(results_root, final_run_id)
+    preferred = latest_attempt_id(run_dir, smoke=smoke)
+    ids = attempt_ids(run_dir)
     candidates = [attempt_id for attempt_id in ids if _is_smoke_attempt(attempt_id) == smoke]
-    for attempt_id in reversed(candidates):
+    ordered = []
+    if preferred is not None:
+        ordered.append(preferred)
+    ordered.extend(attempt_id for attempt_id in reversed(candidates) if attempt_id != preferred)
+    for attempt_id in ordered:
         train_attempt = final_train_attempt_dir(results_root, final_run_id, attempt_id)
         if _resolved_checkpoint(train_attempt) is not None:
             return attempt_id

@@ -18,10 +18,10 @@ from omegaconf import OmegaConf
 import launch
 from run_utils import (
     STAGE_VALIDATION,
-    attempt_ids,
     config_snapshot_names,
     experiment_run_name,
     grid_attempt_dir,
+    latest_attempt_id,
     log_prefix,
     read_json,
     stage_dir,
@@ -32,6 +32,7 @@ from run_utils import (
     train_run_dir,
     validation_attempt_dir,
     write_json,
+    write_latest,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -136,9 +137,7 @@ def _is_smoke_attempt(attempt_id: str) -> bool:
 def latest_train_attempt_id(results_root: str | Path, run_id: str, *, smoke: bool) -> str | None:
     """Return the latest eligible train attempt for ``run_id``."""
 
-    ids = attempt_ids(train_run_dir(results_root, run_id))
-    candidates = [attempt_id for attempt_id in ids if _is_smoke_attempt(attempt_id) == smoke]
-    return candidates[-1] if candidates else None
+    return latest_attempt_id(train_run_dir(results_root, run_id), smoke=smoke)
 
 
 def _checkpoint_ready(train_attempt: Path) -> bool:
@@ -290,6 +289,7 @@ def plan_validation_jobs(
         command = launch.with_study_timezone(command, timezone=_job_timezone(job))
         if args.smoke:
             command = launch.with_overrides(command, smoke_overrides)
+        write_latest(validation_attempt.parent, validation_attempt_id)
         planned.append(
             {
                 "run_id": run_id,

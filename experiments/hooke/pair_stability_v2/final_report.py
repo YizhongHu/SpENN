@@ -19,10 +19,9 @@ import plot
 from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_REPORT,
-    attempt_ids,
+    latest_attempt_id,
     log_prefix,
     new_attempt_id,
-    read_json,
     stage_dir,
     study_name_from_manifest,
     write_json,
@@ -207,15 +206,11 @@ def _virial_residual_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]
 def _resolve_collect_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
         return requested
-    latest = stage_dir(results_root, STAGE_FINAL_COLLECT) / "latest.json"
-    if latest.is_file():
-        payload = read_json(latest)
-        if payload.get("attempt_id"):
-            return str(payload["attempt_id"])
-    attempts = attempt_ids(stage_dir(results_root, STAGE_FINAL_COLLECT))
-    if not attempts:
+    collect_stage = stage_dir(results_root, STAGE_FINAL_COLLECT)
+    attempt_id = latest_attempt_id(collect_stage)
+    if attempt_id is None:
         raise FileNotFoundError(f"no final-collect attempts under {stage_dir(results_root, STAGE_FINAL_COLLECT)}")
-    return attempts[-1]
+    return attempt_id
 
 
 def _load_collect_manifest(collect_dir: Path) -> dict[str, Any]:

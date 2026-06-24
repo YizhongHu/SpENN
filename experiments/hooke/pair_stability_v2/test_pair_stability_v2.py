@@ -38,9 +38,13 @@ def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
 run_utils = _load_script("run_utils", bind_direct=True)
 launch = _load_script("launch")
 plan = _load_script("plan")
+train = _load_script("train")
 collect = _load_script("collect")
 select_champions = _load_script("select_champions")
 final_plan = _load_script("final_plan")
+final_train = _load_script("final_train", bind_direct=True)
+final_eval = _load_script("final_eval")
+final_collect = _load_script("final_collect")
 validate = _load_script("validate")
 
 
@@ -77,6 +81,26 @@ def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) 
     return checkpoint_dir
 
 
+def _write_final_checkpoint(results_root: Path, final_run_id: str, attempt_id: str) -> Path:
+    attempt_dir = run_utils.final_train_attempt_dir(results_root, final_run_id, attempt_id)
+    checkpoint_dir = attempt_dir / "checkpoints" / "step_000000"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "COMPLETE").write_text("")
+    (checkpoint_dir / "manifest.json").write_text(json.dumps({"step": 0}) + "\n")
+    latest = attempt_dir / "checkpoints" / "latest.json"
+    latest.write_text(json.dumps({"checkpoint_dir": "step_000000"}) + "\n")
+    (attempt_dir / "selected_checkpoint.json").write_text(
+        json.dumps(
+            {
+                "selection_policy": "latest_checkpoint_pointer",
+                "checkpoint_pointer": str(latest),
+            }
+        )
+        + "\n"
+    )
+    return checkpoint_dir
+
+
 def test_v2_smoke_slurm_defaults_match_pair_stability() -> None:
     args = types.SimpleNamespace(
         slurm_partition=None,
@@ -97,6 +121,61 @@ def test_v2_smoke_slurm_defaults_match_pair_stability() -> None:
     assert smoke_cpu["slurm_array_parallelism"] == 2
     assert smoke_cuda["slurm_array_parallelism"] == 2
     assert smoke_cuda["gpus_per_node"] == 1
+
+
+def test_v2_latest_attempt_id_prefers_pointer_with_sorted_fallback(tmp_path: Path) -> None:
+    parent = tmp_path / "stage"
+    (parent / "zzz").mkdir(parents=True)
+    (parent / "aaa").mkdir()
+    run_utils.write_latest(parent, "aaa")
+
+    assert run_utils.latest_attempt_id(parent) == "aaa"
+
+    (parent / "zzz-smoke").mkdir()
+    assert run_utils.latest_attempt_id(parent, smoke=True) == "zzz-smoke"
+    assert run_utils.latest_attempt_id(parent / "missing") is None
+
+
+def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    job = manifest["jobs"][0]
+    run_id = str(job["run_id"])
+
+    row_status_paths = train.write_train_launch_provenance(
+        [job],
+        manifest=manifest,
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        repo_root=ROOT,
+        submitted_commands=[["python", "run.py"]],
+    )
+    _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
+    _write_checkpoint_pointer(results_root, run_id, "zzz")
+
+    assert row_status_paths == [run_utils.train_attempt_dir(results_root, run_id, ATTEMPT) / "launcher_status.json"]
+    assert validate.latest_train_attempt_id(results_root, run_id, smoke=False) == ATTEMPT
+
+    scalar_axes = validate._scalar_axes(manifest)
+    args = types.SimpleNamespace(smoke=False, train_attempt_id=None, attempt_id="manual-validation")
+    planned, skipped = validate.plan_validation_jobs(
+        [job],
+        args=args,
+        study="pair_stability_v2",
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        validation_config="validation.yaml",
+        scalar_axes=scalar_axes,
+        override_paths=validate._axis_override_paths(manifest, scalar_axes),
+        seed_axis=str(manifest["scan_seed_axis"]),
+        smoke_overrides={},
+        seed_policy=manifest.get("seed_overrides"),
+    )
+
+    assert skipped == []
+    assert planned[0]["train_attempt_id"] == ATTEMPT
+    latest_validation = json.loads((run_utils.validation_run_dir(results_root, run_id) / "latest.json").read_text())
+    assert latest_validation["attempt_id"] == "manual-validation"
 
 
 def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> None:
@@ -404,6 +483,7 @@ def _write_collection_summary(results_root: Path) -> None:
     collect_dir = results_root / "03_collect" / "C1"
     _write_csv(collect_dir / "summary.csv", rows)
     (collect_dir / "source_grid_attempt.json").write_text(json.dumps({"grid_attempt_id": ATTEMPT}) + "\n")
+    run_utils.write_latest(results_root / "03_collect", "C1")
 
 
 def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) -> None:
@@ -447,8 +527,10 @@ def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) 
     result = collect.collect(results_root=results_root, collect_attempt_id="C0")
     report = result["report"]
     source = json.loads((results_root / "03_collect" / "C0" / "source_grid_attempt.json").read_text())
+    latest = json.loads((results_root / "03_collect" / "latest.json").read_text())
 
     assert report["grid_attempt_id"] == ATTEMPT
+    assert latest["attempt_id"] == "C0"
     assert source["grid_attempt_id"] == ATTEMPT
     assert source["manifest_path"].endswith("/00_grid/20260623T120000-0400/manifest.json")
     assert len(result["rows"]) == 1
@@ -462,11 +544,12 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
 
     result = select_champions.select(
         results_root=results_root,
-        collection_attempt_id="C1",
         select_attempt_id="S1",
     )
     report = result["report"]
+    latest = json.loads((results_root / "04_select" / "latest.json").read_text())
     assert report["champion_kinds"] == ["energy"]
+    assert latest["attempt_id"] == "S1"
     assert [spec["selector"] for spec in report["champion_specs"]] == ["metric_ladder"]
     assert report["group_by"] == ["basis", "mechanism"]
     assert report["n_champions"] == 30
@@ -486,8 +569,6 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
         [
             "--results-root",
             str(results_root),
-            "--selection-attempt-id",
-            "S1",
             "--attempt-id",
             "F1",
         ]
@@ -512,8 +593,6 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
         [
             "--results-root",
             str(results_root),
-            "--selection-attempt-id",
-            "S1",
             "--attempt-id",
             "F2",
             "--replicates",
@@ -530,3 +609,33 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
     assert final_job["choices"]["mechanism"] == final_job["mechanism"]
     assert final_job["basis"] not in set(true_grid.major_grid.basis)
     assert final_job["mechanism"] not in set(true_grid.major_grid.mechanism)
+
+
+def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    final_grid_stage = results_root / "05_final_grid"
+    (final_grid_stage / "zzz").mkdir(parents=True)
+    (final_grid_stage / "aaa").mkdir()
+    (final_grid_stage / "zzz-smoke").mkdir()
+    run_utils.write_latest(final_grid_stage, "aaa")
+
+    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
+    assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
+    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "zzz-smoke"
+
+    final_run_id = "final-run-0"
+    _write_final_checkpoint(results_root, final_run_id, "zzz")
+    _write_final_checkpoint(results_root, final_run_id, "aaa")
+    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), "aaa")
+
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
+    assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
+
+    eval_run_dir = run_utils.final_eval_run_dir(results_root, final_run_id)
+    (eval_run_dir / "zzz").mkdir(parents=True)
+    (eval_run_dir / "aaa").mkdir()
+    run_utils.write_latest(eval_run_dir, "aaa")
+
+    assert final_collect._iter_final_eval_attempts(results_root, None) == [
+        (final_run_id, "aaa", eval_run_dir / "aaa")
+    ]

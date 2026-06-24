@@ -572,6 +572,37 @@ def attempt_ids(parent: str | Path) -> list[str]:
     )
 
 
+def read_latest_attempt_id(parent: str | Path) -> str | None:
+    """Return the ``latest.json`` attempt id under ``parent`` when present."""
+
+    latest = Path(parent) / "latest.json"
+    if not latest.is_file():
+        return None
+    attempt_id = read_json(latest).get("attempt_id")
+    return str(attempt_id) if attempt_id else None
+
+
+def latest_attempt_id(parent: str | Path, *, smoke: bool | None = None) -> str | None:
+    """Return the preferred latest attempt id under ``parent``.
+
+    ``latest.json`` is authoritative when it points at an existing attempt and
+    matches the requested smoke mode. Sorted attempt directories are only the
+    compatibility fallback for older stage outputs that predate latest pointers.
+    """
+
+    parent = Path(parent)
+    attempt_id = read_latest_attempt_id(parent)
+    if attempt_id is not None and (smoke is None or attempt_id.endswith("-smoke") == smoke):
+        if (parent / attempt_id).is_dir():
+            return attempt_id
+    candidates = [
+        attempt_id
+        for attempt_id in attempt_ids(parent)
+        if smoke is None or attempt_id.endswith("-smoke") == smoke
+    ]
+    return candidates[-1] if candidates else None
+
+
 def write_latest(stage_path: Path, attempt_id: str) -> None:
     """Record the most recent attempt id under ``stage_path``.
 

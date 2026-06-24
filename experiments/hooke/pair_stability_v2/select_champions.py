@@ -19,9 +19,9 @@ from run_utils import (
     STAGE_COLLECT,
     STAGE_SELECT,
     axis_id_labels_from_manifest,
-    attempt_ids,
     grid_axes_from_manifest,
     id_for_axes,
+    latest_attempt_id,
     log_prefix,
     new_attempt_id,
     read_json,
@@ -29,6 +29,7 @@ from run_utils import (
     stage_dir,
     study_name_from_manifest,
     write_json,
+    write_latest,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -709,13 +710,10 @@ def _resolve_collection_attempt(results_root: Path, collection_attempt_id: str |
     if collection_attempt_id is not None:
         return collection_attempt_id
     collect_dir = stage_dir(results_root, STAGE_COLLECT)
-    latest = collect_dir / "latest.json"
-    if latest.is_file():
-        return str(read_json(latest).get("attempt_id"))
-    ids = attempt_ids(collect_dir)
-    if not ids:
+    attempt_id = latest_attempt_id(collect_dir)
+    if attempt_id is None:
         raise FileNotFoundError(f"no collection attempts under {collect_dir}")
-    return ids[-1]
+    return attempt_id
 
 
 def _champion_specs_from_grid(
@@ -938,6 +936,7 @@ def select(
         "configs": selection["configs"],
     }
     write_json(attempt / "selection_report.json", report)
+    write_latest(stage_dir(results_root, STAGE_SELECT), select_attempt_id)
     return {"attempt_dir": str(attempt), "report": report}
 
 

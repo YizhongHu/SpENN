@@ -20,15 +20,14 @@ from run_utils import (
     STAGE_SELECT,
     STUDY_TIMEZONE,
     axis_id_labels_from_manifest,
-    attempt_ids,
     final_seed_sequences,
     final_seed_values,
     final_grid_attempt_dir,
     grid_axes_from_manifest,
     id_for_axes,
+    latest_attempt_id,
     log_prefix,
     new_attempt_id,
-    read_json,
     seed_override_policy,
     seed_override_values,
     source_grid_from_attempt,
@@ -66,15 +65,10 @@ def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | N
     if selection_attempt_id is not None:
         return selection_attempt_id
     select_stage = stage_dir(results_root, STAGE_SELECT)
-    latest = select_stage / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return str(attempt_id)
-    attempts = attempt_ids(select_stage)
-    if not attempts:
+    attempt_id = latest_attempt_id(select_stage)
+    if attempt_id is None:
         raise FileNotFoundError(f"no selection attempts under {select_stage}")
-    return attempts[-1]
+    return attempt_id
 
 
 def read_champions(selection_dir: Path) -> list[dict[str, str]]:

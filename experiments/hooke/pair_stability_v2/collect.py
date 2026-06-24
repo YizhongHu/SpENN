@@ -22,9 +22,9 @@ from run_utils import (
     STAGE_VALIDATION,
     SourceGrid,
     axis_id_labels_from_manifest,
-    attempt_ids,
     grid_axes_from_manifest,
     id_for_axes,
+    latest_attempt_id,
     log_prefix,
     new_attempt_id,
     read_json,
@@ -34,6 +34,7 @@ from run_utils import (
     study_name_from_manifest,
     validation_run_dir,
     write_json,
+    write_latest,
 )
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
@@ -55,13 +56,6 @@ BASE_COLUMNS = (
 )
 
 TRAIN_WALL_TIME_METRIC = "train/runtime/wall_time_sec"
-
-
-def latest_attempt_id(run_dir: Path) -> str | None:
-    """Return the most recent attempt id directly under ``run_dir``."""
-
-    ids = attempt_ids(run_dir)
-    return ids[-1] if ids else None
 
 
 def read_metrics_jsonl(path: Path) -> dict[str, Any]:
@@ -273,11 +267,9 @@ def _resolve_grid_source(results_root: Path, grid_attempt_id: str | None) -> Sou
     traced = _source_grid_from_latest_validations(results_root)
     if traced is not None:
         return traced
-    latest = stage_dir(results_root, STAGE_GRID) / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return source_grid_from_id(results_root, str(attempt_id))
+    attempt_id = latest_attempt_id(stage_dir(results_root, STAGE_GRID))
+    if attempt_id is not None:
+        return source_grid_from_id(results_root, attempt_id)
     return None
 
 
@@ -380,6 +372,7 @@ def collect(
         "required_train_metrics": sorted(required_train_metrics),
     }
     write_json(attempt / "collection_report.json", report)
+    write_latest(stage_dir(results_root, STAGE_COLLECT), collect_attempt_id)
     return {"attempt_dir": str(attempt), "report": report, "rows": rows}
 
 

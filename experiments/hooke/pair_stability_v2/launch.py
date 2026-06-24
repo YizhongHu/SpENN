@@ -24,6 +24,7 @@ from run_utils import (
     attempt_ids,
     config_snapshot_names,
     grid_attempt_dir,
+    latest_attempt_id,
     log_prefix,
     read_json,
     stage_dir,
@@ -70,11 +71,9 @@ def resolve_grid_attempt_id(results_root: str | Path, grid_attempt_id: str | Non
     if grid_attempt_id is not None:
         return grid_attempt_id
     grid_stage = stage_dir(results_root, STAGE_GRID)
-    latest = grid_stage / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return str(attempt_id)
+    latest = latest_attempt_id(grid_stage)
+    if latest is not None:
+        return latest
     ids = attempt_ids(grid_stage)
     if not ids:
         raise FileNotFoundError(f"no grid attempts under {grid_stage}")
