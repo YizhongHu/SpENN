@@ -36,6 +36,7 @@ def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
 
 run_utils = _load_script("run_utils", bind_direct=True)
 plan = _load_script("plan")
+collect = _load_script("collect")
 select_champions = _load_script("select_champions")
 final_plan = _load_script("final_plan")
 
@@ -208,6 +209,56 @@ def _write_collection_summary(results_root: Path) -> None:
     (collect_dir / "source_grid_attempt.json").write_text(json.dumps({"grid_attempt_id": ATTEMPT}) + "\n")
 
 
+def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    job = manifest["jobs"][0]
+    validation_dir = results_root / "02_validation" / job["run_id"] / "V1"
+    validation_dir.mkdir(parents=True)
+    (validation_dir / "status.json").write_text(json.dumps({"status": "completed"}) + "\n")
+    (validation_dir / "source_grid_attempt.json").write_text(
+        json.dumps(
+            {
+                "grid_attempt_id": ATTEMPT,
+                "grid_attempt_dir": str(results_root / "00_grid" / ATTEMPT),
+                "manifest_path": str(results_root / "00_grid" / ATTEMPT / "manifest.json"),
+            }
+        )
+        + "\n"
+    )
+    (validation_dir / "source_train_attempt.json").write_text(
+        json.dumps(
+            {
+                "run_id": job["run_id"],
+                "grid_attempt_id": ATTEMPT,
+                "train_attempt_id": ATTEMPT,
+            }
+        )
+        + "\n"
+    )
+    (validation_dir / "metrics.jsonl").write_text(
+        json.dumps(
+            {
+                "namespace": "eval/stratified_geometry",
+                "step": 0,
+                "metrics": {"local_energy_mean": 2.0},
+            }
+        )
+        + "\n"
+    )
+
+    result = collect.collect(results_root=results_root, collect_attempt_id="C0")
+    report = result["report"]
+    source = json.loads((results_root / "03_collect" / "C0" / "source_grid_attempt.json").read_text())
+
+    assert report["grid_attempt_id"] == ATTEMPT
+    assert source["grid_attempt_id"] == ATTEMPT
+    assert source["manifest_path"].endswith("/00_grid/20260623T120000-0400/manifest.json")
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["basis"].startswith("B")
+    assert result["rows"][0]["mechanism"].startswith("A")
+
+
 def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     _write_collection_summary(results_root)
@@ -228,6 +279,11 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
     assert set(Counter((row["basis"], row["mechanism"]) for row in champions).values()) == {1}
     assert {row["winner_kind"] for row in champions} == {"energy"}
     assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-8"}
+    true_grid = OmegaConf.load(GRID)
+    assert not ({row["basis"] for row in champions} & set(true_grid.major_grid.basis))
+    assert not ({row["mechanism"] for row in champions} & set(true_grid.major_grid.mechanism))
+    assert {row["basis"][0] for row in champions} == {"B"}
+    assert {row["mechanism"][0] for row in champions} == {"A"}
 
     code = final_plan.main(
         [
@@ -254,3 +310,26 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
         "channels": "run_parameters.channels",
     }
     assert jobs == []
+
+    code = final_plan.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--selection-attempt-id",
+            "S1",
+            "--attempt-id",
+            "F2",
+            "--replicates",
+            "1",
+            "--limit-champions",
+            "1",
+        ]
+    )
+    assert code == 0
+    final_job = json.loads(next((results_root / "05_final_grid" / "F2" / "jobs").glob("*.json")).read_text())
+    assert final_job["basis"].startswith("B")
+    assert final_job["mechanism"].startswith("A")
+    assert final_job["choices"]["basis"] == final_job["basis"]
+    assert final_job["choices"]["mechanism"] == final_job["mechanism"]
+    assert final_job["basis"] not in set(true_grid.major_grid.basis)
+    assert final_job["mechanism"] not in set(true_grid.major_grid.mechanism)

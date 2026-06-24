@@ -17,15 +17,12 @@ from omegaconf import OmegaConf
 
 from run_utils import (
     STAGE_FINAL_GRID,
-    STAGE_COLLECT,
-    STAGE_GRID,
     STAGE_SELECT,
     STUDY_TIMEZONE,
     axis_id_labels_from_manifest,
     attempt_ids,
     final_seed_sequences,
     final_seed_values,
-    grid_attempt_dir,
     final_grid_attempt_dir,
     grid_axes_from_manifest,
     id_for_axes,
@@ -34,6 +31,7 @@ from run_utils import (
     read_json,
     seed_override_policy,
     seed_override_values,
+    source_grid_from_attempt,
     stage_dir,
     study_name_from_manifest,
     write_json,
@@ -92,23 +90,10 @@ def read_champions(selection_dir: Path) -> list[dict[str, str]]:
 def _source_grid_manifest(results_root: Path, selection_dir: Path) -> dict[str, Any] | None:
     """Return the source ``00_grid`` manifest for this selection, if available."""
 
-    selection_source = selection_dir / "source_collection_attempt.json"
-    if not selection_source.is_file():
+    source_grid = source_grid_from_attempt(results_root, selection_dir)
+    if source_grid is None or not source_grid.manifest_path.is_file():
         return None
-    collection_attempt_id = read_json(selection_source).get("collection_attempt_id")
-    if not collection_attempt_id:
-        return None
-    collection_dir = stage_dir(results_root, STAGE_COLLECT) / str(collection_attempt_id)
-    grid_source = collection_dir / "source_grid_attempt.json"
-    if not grid_source.is_file():
-        return None
-    grid_attempt_id = read_json(grid_source).get("grid_attempt_id")
-    if not grid_attempt_id:
-        return None
-    manifest_path = grid_attempt_dir(results_root, str(grid_attempt_id)) / "manifest.json"
-    if not manifest_path.is_file():
-        return None
-    return read_json(manifest_path)
+    return source_grid.read_manifest()
 
 
 def _configured_final_replicates(source_grid_manifest: dict[str, Any] | None) -> int | None:

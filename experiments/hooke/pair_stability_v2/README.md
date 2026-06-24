@@ -82,61 +82,95 @@ results/00_grid/<attempt_id>/unblind.json
 Use `--blind-seed <int>` for reproducibility. Use `--no-blind` only for
 debugging when semantic labels are intentionally desired in routine artifacts.
 
+## Attempt Defaults
+
+Stage scripts generate attempt ids by default. The id is a timestamp in
+`America/New_York`:
+
+```text
+YYYYMMDDTHHMMSS-0400
+```
+
+`plan.py` writes `00_grid/latest.json`. `train.py` and `validate.py` default to
+that latest grid attempt. Later stages default to the latest previous-stage
+artifacts and trace provenance back to the source grid:
+
+```text
+collect.py            newest validation attempt -> source 00_grid
+select_champions.py   latest 03_collect
+final_plan.py         latest 04_select
+```
+
+Pass explicit `--attempt-id`, `--grid-attempt-id`, or previous-stage attempt
+flags only when reproducing an older lineage or debugging.
+
 ## Screening Run
 
-Use explicit attempt ids for traceability:
+Set the study path once:
 
 ```bash
 STUDY=experiments/hooke/pair_stability_v2
-GRID_ATTEMPT=pr8_11_scan
-COLLECT_ATTEMPT=pr8_11_collect
-SELECT_ATTEMPT=pr8_11_select
 ```
 
-Plan:
+Plan the grid. The attempt id is generated automatically and recorded in
+`results/00_grid/latest.json`.
 
 ```bash
 uv run python $STUDY/plan.py \
-  --attempt-id $GRID_ATTEMPT \
   --blind \
   --blind-seed 811
 ```
 
-Train:
+Train the latest grid:
 
 ```bash
 uv run --extra submitit python $STUDY/train.py \
   --backend submitit --cuda \
-  --grid-attempt-id $GRID_ATTEMPT \
   --chunk-size 32 --slurm-array-parallelism 2 \
   --slurm-partition gpu_test \
   --slurm-timeout-min 120
 ```
 
-Validate completed train attempts:
+Validate completed train attempts from the latest grid:
 
 ```bash
 uv run --extra submitit python $STUDY/validate.py \
   --backend submitit --cuda \
-  --grid-attempt-id $GRID_ATTEMPT \
   --only-ready \
   --chunk-size 32 --slurm-array-parallelism 2 \
   --slurm-partition gpu_test \
   --slurm-timeout-min 60
 ```
 
-Collect and select energy representatives:
+Collect the newest validation lineage and select energy representatives. These
+commands do not need a grid attempt id; collection traces validation ancestry to
+the source grid manifest.
 
 ```bash
-uv run python $STUDY/collect.py \
-  --grid-attempt-id $GRID_ATTEMPT \
-  --attempt-id $COLLECT_ATTEMPT
+uv run python $STUDY/collect.py
 
-uv run python $STUDY/select_champions.py \
-  --collection-attempt-id $COLLECT_ATTEMPT \
-  --attempt-id $SELECT_ATTEMPT
+uv run python $STUDY/select_champions.py
 ```
 
 `validate.py` supports `--wait-job <job_id>` when the upstream Submitit
 launcher job id is known. Otherwise, rerun validation with `--only-ready` after
 train jobs have written completed checkpoints.
+
+## Smoke Runs
+
+Smoke runs are separate from full runs. Passing `--smoke` keeps the same source
+grid but writes smoke-marked attempts, limits launchers to two jobs, uses the
+`gpu_test`/`test` partitions by default, and applies only the stage-specific
+workload reductions in `configs/smoke.yaml`. The smoke profile mirrors the
+small scaling used by `experiments/hooke/pair_stability`: two train steps,
+small sampler settings, checkpoint/status every step, and compact validation
+sample counts.
+
+Example GPU smoke train from the latest grid:
+
+```bash
+uv run --extra submitit python $STUDY/train.py \
+  --smoke \
+  --backend submitit --cuda \
+  --chunk-size 1
+```

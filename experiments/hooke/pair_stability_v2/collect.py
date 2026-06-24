@@ -20,14 +20,16 @@ from run_utils import (
     STAGE_COLLECT,
     STAGE_GRID,
     STAGE_VALIDATION,
+    SourceGrid,
     axis_id_labels_from_manifest,
     attempt_ids,
     grid_axes_from_manifest,
-    grid_attempt_dir,
     id_for_axes,
     log_prefix,
     new_attempt_id,
     read_json,
+    source_grid_from_attempt,
+    source_grid_from_id,
     stage_dir,
     study_name_from_manifest,
     validation_run_dir,
@@ -198,37 +200,69 @@ def collect_validation_attempt(
     return row
 
 
-def _resolve_grid_attempt(results_root: Path, grid_attempt_id: str | None) -> str | None:
-    if grid_attempt_id is not None:
-        return grid_attempt_id
-    latest = stage_dir(results_root, STAGE_GRID) / "latest.json"
-    if latest.is_file():
-        return str(read_json(latest).get("attempt_id"))
-    return None
+def _latest_validation_attempts(results_root: Path) -> list[tuple[str, str, Path]]:
+    """Return the latest validation attempt for each validation run id."""
 
-
-def _grid_manifest(results_root: Path, grid_attempt_id: str | None) -> dict[str, Any] | None:
-    """Return a source grid manifest if it is available."""
-
-    if grid_attempt_id is None:
-        return None
-    manifest_path = grid_attempt_dir(results_root, grid_attempt_id) / "manifest.json"
-    if not manifest_path.is_file():
-        return None
-    return read_json(manifest_path)
-
-
-def _run_ids(results_root: Path, grid_attempt_id: str | None) -> list[str]:
-    """Return run ids to collect, from the grid manifest if available."""
-
-    if grid_attempt_id is not None:
-        manifest = read_json(grid_attempt_dir(results_root, grid_attempt_id) / "manifest.json")
-        return [str(job["run_id"]) for job in manifest.get("jobs", [])]
     validation_root = stage_dir(results_root, STAGE_VALIDATION)
     if not validation_root.is_dir():
         return []
-    # A validation run dir is any child that holds at least one attempt directory.
-    return sorted(child.name for child in validation_root.iterdir() if attempt_ids(child))
+    attempts = []
+    for run_dir in sorted(child for child in validation_root.iterdir() if child.is_dir()):
+        attempt_id = latest_attempt_id(run_dir)
+        if attempt_id is not None:
+            attempts.append((run_dir.name, attempt_id, run_dir / attempt_id))
+    return attempts
+
+
+def _latest_validation_attempt(results_root: Path) -> tuple[str, str, Path] | None:
+    """Return the newest validation attempt across run ids."""
+
+    attempts = _latest_validation_attempts(results_root)
+    if not attempts:
+        return None
+    return max(attempts, key=lambda item: item[1])
+
+
+def _source_grid_from_latest_validations(results_root: Path) -> SourceGrid | None:
+    """Trace the newest validation attempt back to its source grid."""
+
+    latest = _latest_validation_attempt(results_root)
+    if latest is None:
+        return None
+    _run_id, _attempt_id, attempt_dir = latest
+    return source_grid_from_attempt(results_root, attempt_dir)
+
+
+def _resolve_grid_source(results_root: Path, grid_attempt_id: str | None) -> SourceGrid | None:
+    """Return explicit, traced, or latest source grid for collection."""
+
+    if grid_attempt_id is not None:
+        return source_grid_from_id(results_root, grid_attempt_id)
+    traced = _source_grid_from_latest_validations(results_root)
+    if traced is not None:
+        return traced
+    latest = stage_dir(results_root, STAGE_GRID) / "latest.json"
+    if latest.is_file():
+        attempt_id = read_json(latest).get("attempt_id")
+        if attempt_id:
+            return source_grid_from_id(results_root, str(attempt_id))
+    return None
+
+
+def _grid_manifest(source_grid: SourceGrid | None) -> dict[str, Any] | None:
+    """Return a source grid manifest if it is available."""
+
+    if source_grid is None or not source_grid.manifest_path.is_file():
+        return None
+    return source_grid.read_manifest()
+
+
+def _run_ids(results_root: Path, grid_manifest: dict[str, Any] | None) -> list[str]:
+    """Return run ids to collect, from the grid manifest if available."""
+
+    if grid_manifest is not None:
+        return [str(job["run_id"]) for job in grid_manifest.get("jobs", [])]
+    return [run_id for run_id, _attempt_id, _attempt_dir in _latest_validation_attempts(results_root)]
 
 
 def collect(
@@ -241,8 +275,9 @@ def collect(
 
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
-    grid_attempt_id = _resolve_grid_attempt(results_root, grid_attempt_id)
-    grid_manifest = _grid_manifest(results_root, grid_attempt_id)
+    source_grid = _resolve_grid_source(results_root, grid_attempt_id)
+    grid_attempt_id = None if source_grid is None else source_grid.attempt_id
+    grid_manifest = _grid_manifest(source_grid)
     study = study_name_from_manifest(grid_manifest)
     axis_metadata = _axis_metadata(grid_manifest)
     job_by_run = {
@@ -253,12 +288,19 @@ def collect(
 
     rows: list[dict[str, Any]] = []
     consumed: list[dict[str, Any]] = []
-    for run_id in _run_ids(results_root, grid_attempt_id):
+    for run_id in _run_ids(results_root, grid_manifest):
         run_dir = validation_run_dir(results_root, run_id)
         attempt_id = latest_attempt_id(run_dir)
         if attempt_id is None:
             continue
         attempt_dir = run_dir / attempt_id
+        attempt_source = source_grid_from_attempt(results_root, attempt_dir)
+        if (
+            source_grid is not None
+            and attempt_source is not None
+            and attempt_source.attempt_id != source_grid.attempt_id
+        ):
+            continue
         rows.append(
             collect_validation_attempt(
                 run_id,
@@ -283,7 +325,10 @@ def collect(
 
     write_csv(attempt / "summary.csv", rows, columns)
     write_csv(attempt / "failures.csv", failures, columns)
-    write_json(attempt / "source_grid_attempt.json", {"grid_attempt_id": grid_attempt_id})
+    write_json(
+        attempt / "source_grid_attempt.json",
+        {} if source_grid is None else source_grid.to_record(),
+    )
     write_json(attempt / "source_validation_attempts.json", consumed)
     report = {
         "study": study,
@@ -308,7 +353,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
-    parser.add_argument("--grid-attempt-id", default=None, help="Grid attempt whose run ids to collect.")
+    parser.add_argument(
+        "--grid-attempt-id",
+        default=None,
+        help="Override source grid attempt; defaults to the grid traced from the newest validation attempt.",
+    )
     parser.add_argument("--attempt-id", default=None, help="Collect attempt id (defaults to now).")
     return parser.parse_args(argv)
 

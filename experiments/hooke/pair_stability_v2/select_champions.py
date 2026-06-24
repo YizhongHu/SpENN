@@ -17,16 +17,15 @@ from typing import Any, Sequence
 
 from run_utils import (
     STAGE_COLLECT,
-    STAGE_GRID,
     STAGE_SELECT,
     axis_id_labels_from_manifest,
     attempt_ids,
     grid_axes_from_manifest,
-    grid_attempt_dir,
     id_for_axes,
     log_prefix,
     new_attempt_id,
     read_json,
+    source_grid_from_attempt,
     stage_dir,
     study_name_from_manifest,
     write_json,
@@ -747,31 +746,20 @@ def _reference_metrics_from_grid(
 ) -> list[tuple[str, str]]:
     """Return reference metrics from the source grid manifest, or defaults."""
 
-    source_path = collection_dir / "source_grid_attempt.json"
-    if source_path.is_file():
-        grid_attempt_id = read_json(source_path).get("grid_attempt_id")
-        if grid_attempt_id:
-            manifest_path = grid_attempt_dir(results_root, str(grid_attempt_id)) / "manifest.json"
-            if manifest_path.is_file():
-                configured = read_json(manifest_path).get("champion_reference_metrics")
-                if configured:
-                    return list(_reference_metrics(configured))
+    manifest = _source_grid_manifest(results_root, collection_dir)
+    configured = manifest.get("champion_reference_metrics") if isinstance(manifest, dict) else None
+    if configured:
+        return list(_reference_metrics(configured))
     return list(_reference_metrics(None))
 
 
 def _source_grid_manifest(results_root: Path, collection_dir: Path) -> dict[str, Any] | None:
     """Return the source grid manifest for a collection attempt, if available."""
 
-    source_path = collection_dir / "source_grid_attempt.json"
-    if not source_path.is_file():
+    source_grid = source_grid_from_attempt(results_root, collection_dir)
+    if source_grid is None or not source_grid.manifest_path.is_file():
         return None
-    grid_attempt_id = read_json(source_path).get("grid_attempt_id")
-    if not grid_attempt_id:
-        return None
-    manifest_path = grid_attempt_dir(results_root, str(grid_attempt_id)) / "manifest.json"
-    if not manifest_path.is_file():
-        return None
-    return read_json(manifest_path)
+    return source_grid.read_manifest()
 
 
 def _axis_metadata_from_collection(results_root: Path, collection_dir: Path) -> dict[str, Any]:
@@ -815,11 +803,9 @@ def _study_from_collection(results_root: Path, collection_dir: Path) -> str:
         report = read_json(report_path)
         if isinstance(report, dict) and report.get("study"):
             return study_name_from_manifest(report)
-    source_path = collection_dir / "source_grid_attempt.json"
-    if source_path.is_file():
-        manifest = _source_grid_manifest(results_root, collection_dir)
-        if manifest is not None:
-            return study_name_from_manifest(manifest)
+    manifest = _source_grid_manifest(results_root, collection_dir)
+    if manifest is not None:
+        return study_name_from_manifest(manifest)
     return study_name_from_manifest(None)
 
 
@@ -904,7 +890,13 @@ def select(
         for champion in champions:
             writer.writerow(champion)
 
-    write_json(attempt / "source_collection_attempt.json", {"collection_attempt_id": collection_attempt_id})
+    write_json(
+        attempt / "source_collection_attempt.json",
+        {
+            "collection_attempt_id": collection_attempt_id,
+            "collection_attempt_dir": str(collection_dir),
+        },
+    )
     report = {
         "study": study,
         "stage": STAGE_SELECT,

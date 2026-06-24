@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -344,6 +345,147 @@ def read_json(path: Path) -> Any:
     return json.loads(Path(path).read_text())
 
 
+@dataclass(frozen=True)
+class SourceGrid:
+    """Resolved source ``00_grid`` attempt for a downstream artifact."""
+
+    attempt_id: str
+    attempt_dir: Path
+    manifest_path: Path
+
+    def to_record(self) -> dict[str, str]:
+        """Return a JSON-safe provenance record."""
+
+        return {
+            "grid_attempt_id": self.attempt_id,
+            "grid_attempt_dir": str(self.attempt_dir),
+            "manifest_path": str(self.manifest_path),
+        }
+
+    def read_manifest(self) -> dict[str, Any]:
+        """Read this grid attempt's routine manifest.
+
+        The manifest contains blinded alias values when the source attempt was
+        planned blinded. The semantic mapping remains isolated in
+        ``unblind.json`` and is not read here.
+        """
+
+        manifest = read_json(self.manifest_path)
+        if not isinstance(manifest, dict):
+            raise ValueError(f"grid manifest must be a JSON object: {self.manifest_path}")
+        return manifest
+
+
+@dataclass(frozen=True)
+class SourceAncestry:
+    """Result roots traced through stage provenance records."""
+
+    roots: frozenset[Path]
+    warnings: tuple[str, ...] = ()
+
+
+def read_json_object(path: str | Path, warnings: list[str] | None = None) -> dict[str, Any]:
+    """Read a JSON object, optionally recording missing/invalid input as warnings."""
+
+    path = Path(path)
+    if not path.is_file():
+        if warnings is not None:
+            warnings.append(f"missing JSON file: {path}")
+            return {}
+        raise FileNotFoundError(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        if warnings is not None:
+            warnings.append(f"{path}: invalid JSON: {exc}")
+            return {}
+        raise
+    if not isinstance(payload, dict):
+        message = f"{path}: expected JSON object"
+        if warnings is not None:
+            warnings.append(message)
+            return {}
+        raise ValueError(message)
+    return payload
+
+
+def read_json_object_list(
+    path: str | Path,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read a JSON list of objects, optionally recording problems as warnings."""
+
+    path = Path(path)
+    if not path.is_file():
+        if warnings is not None:
+            warnings.append(f"missing JSON file: {path}")
+            return []
+        raise FileNotFoundError(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        if warnings is not None:
+            warnings.append(f"{path}: invalid JSON: {exc}")
+            return []
+        raise
+    if not isinstance(payload, list):
+        message = f"{path}: expected JSON list"
+        if warnings is not None:
+            warnings.append(message)
+            return []
+        raise ValueError(message)
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def path_from_record(record: dict[str, Any], key: str) -> Path | None:
+    """Return an absolute path from a provenance record field."""
+
+    raw = record.get(key)
+    if raw in (None, ""):
+        return None
+    return Path(str(raw)).resolve()
+
+
+def source_grid_from_id(results_root: str | Path, grid_attempt_id: str) -> SourceGrid:
+    """Return the ``00_grid`` source descriptor for ``grid_attempt_id``."""
+
+    attempt_id = str(grid_attempt_id)
+    attempt_dir = grid_attempt_dir(results_root, attempt_id).resolve()
+    return SourceGrid(
+        attempt_id=attempt_id,
+        attempt_dir=attempt_dir,
+        manifest_path=(attempt_dir / "manifest.json").resolve(),
+    )
+
+
+def source_grid_from_record(
+    results_root: str | Path,
+    record: dict[str, Any],
+    *,
+    warnings: list[str] | None = None,
+) -> SourceGrid | None:
+    """Resolve a source-grid record into a ``SourceGrid`` descriptor."""
+
+    attempt_id = str(record.get("grid_attempt_id") or "").strip()
+    attempt_dir = path_from_record(record, "grid_attempt_dir")
+    if not attempt_id and attempt_dir is not None:
+        attempt_id = attempt_dir.name
+    if not attempt_id:
+        return None
+    source = source_grid_from_id(results_root, attempt_id)
+    if attempt_dir is not None:
+        source = SourceGrid(
+            attempt_id=attempt_id,
+            attempt_dir=attempt_dir,
+            manifest_path=path_from_record(record, "manifest_path") or (attempt_dir / "manifest.json").resolve(),
+        )
+    if warnings is not None and not source.attempt_dir.is_dir():
+        warnings.append(f"missing grid directory: {source.attempt_dir}")
+    if warnings is not None and not source.manifest_path.is_file():
+        warnings.append(f"missing grid manifest: {source.manifest_path}")
+    return source
+
+
 # ---------------------------------------------------------------------------
 # Stage path layout
 # ---------------------------------------------------------------------------
@@ -447,3 +589,234 @@ def write_latest(stage_path: Path, attempt_id: str) -> None:
     except OSError:
         # Symlinks may be unsupported on the target filesystem; latest.json suffices.
         pass
+
+
+# ---------------------------------------------------------------------------
+# Source ancestry
+# ---------------------------------------------------------------------------
+def source_grid_from_attempt(
+    results_root: str | Path,
+    attempt_dir: str | Path,
+    *,
+    warnings: list[str] | None = None,
+) -> SourceGrid | None:
+    """Trace an attempt's provenance back to its source ``00_grid`` attempt.
+
+    The traversal follows explicit stage provenance records and stops at the
+    routine grid manifest. It does not read ``unblind.json``.
+    """
+
+    results_root = Path(results_root).resolve()
+    return _source_grid_from_attempt(results_root, Path(attempt_dir).resolve(), warnings=warnings, seen=set())
+
+
+def trace_source_ancestry(
+    results_root: str | Path,
+    attempt_dir: str | Path,
+    *,
+    include_scan_run_roots: bool = True,
+) -> SourceAncestry:
+    """Trace result roots reachable from a stage attempt's provenance records."""
+
+    roots: set[Path] = set()
+    warnings: list[str] = []
+    _trace_attempt_roots(
+        Path(results_root).resolve(),
+        Path(attempt_dir).resolve(),
+        roots,
+        warnings,
+        include_scan_run_roots=include_scan_run_roots,
+        seen=set(),
+    )
+    return SourceAncestry(frozenset(roots), tuple(warnings))
+
+
+def _source_grid_from_attempt(
+    results_root: Path,
+    attempt_dir: Path,
+    *,
+    warnings: list[str] | None,
+    seen: set[Path],
+) -> SourceGrid | None:
+    attempt_dir = attempt_dir.resolve()
+    if attempt_dir in seen:
+        return None
+    seen.add(attempt_dir)
+
+    if _stage_name(attempt_dir, results_root) == STAGE_GRID:
+        return source_grid_from_id(results_root, attempt_dir.name)
+
+    direct = _source_grid_from_direct_file(results_root, attempt_dir / "source_grid_attempt.json", warnings=warnings)
+    if direct is not None:
+        return direct
+
+    train_source = _source_grid_from_direct_file(
+        results_root,
+        attempt_dir / "source_train_attempt.json",
+        warnings=None,
+    )
+    if train_source is not None:
+        return train_source
+
+    source_train = _read_optional_object(attempt_dir / "source_train_attempt.json", warnings=warnings)
+    train_dir = path_from_record(source_train, "train_attempt_dir")
+    if train_dir is not None:
+        source = _source_grid_from_attempt(results_root, train_dir, warnings=warnings, seen=seen)
+        if source is not None:
+            return source
+
+    for filename, path_key, id_key, stage in (
+        ("source_collection_attempt.json", "collection_attempt_dir", "collection_attempt_id", STAGE_COLLECT),
+        ("source_selection_attempt.json", "selection_attempt_dir", "selection_attempt_id", STAGE_SELECT),
+        ("source_final_grid_attempt.json", "final_grid_attempt_dir", "final_grid_attempt_id", STAGE_FINAL_GRID),
+        ("source_final_train_attempt.json", "final_train_attempt_dir", "final_train_attempt_id", STAGE_FINAL_TRAIN),
+    ):
+        record = _read_optional_object(attempt_dir / filename, warnings=warnings)
+        upstream = _upstream_attempt_dir(results_root, record, path_key=path_key, id_key=id_key, stage=stage)
+        if upstream is None:
+            continue
+        source = _source_grid_from_attempt(results_root, upstream, warnings=warnings, seen=seen)
+        if source is not None:
+            return source
+
+    for source in _read_optional_object_list(attempt_dir / "source_validation_attempts.json", warnings=warnings):
+        validation_dir = path_from_record(source, "validation_attempt_dir")
+        if validation_dir is None:
+            continue
+        source_grid = _source_grid_from_attempt(results_root, validation_dir, warnings=warnings, seen=seen)
+        if source_grid is not None:
+            return source_grid
+    return None
+
+
+def _source_grid_from_direct_file(
+    results_root: Path,
+    path: Path,
+    *,
+    warnings: list[str] | None,
+) -> SourceGrid | None:
+    if not path.is_file():
+        return None
+    return source_grid_from_record(results_root, read_json_object(path, warnings=warnings), warnings=warnings)
+
+
+def _trace_attempt_roots(
+    results_root: Path,
+    attempt_dir: Path,
+    roots: set[Path],
+    warnings: list[str],
+    *,
+    include_scan_run_roots: bool,
+    seen: set[Path],
+) -> None:
+    attempt_dir = attempt_dir.resolve()
+    if attempt_dir in seen:
+        return
+    seen.add(attempt_dir)
+
+    stage = _stage_name(attempt_dir, results_root)
+    if stage == STAGE_GRID:
+        _add_existing_root(roots, warnings, attempt_dir, "grid")
+        return
+    if stage not in {STAGE_TRAIN, STAGE_VALIDATION} or include_scan_run_roots:
+        _add_existing_root(roots, warnings, attempt_dir, stage or "attempt")
+    elif not attempt_dir.is_dir():
+        warnings.append(f"missing {stage or 'attempt'} directory: {attempt_dir}")
+        return
+
+    direct_grid = _source_grid_from_direct_file(results_root, attempt_dir / "source_grid_attempt.json", warnings=warnings)
+    if direct_grid is not None:
+        _add_existing_root(roots, warnings, direct_grid.attempt_dir, "grid")
+
+    source_train = _read_optional_object(attempt_dir / "source_train_attempt.json", warnings=warnings)
+    direct_from_train = source_grid_from_record(results_root, source_train, warnings=warnings)
+    if direct_from_train is not None:
+        _add_existing_root(roots, warnings, direct_from_train.attempt_dir, "grid")
+    train_dir = path_from_record(source_train, "train_attempt_dir")
+    if train_dir is not None:
+        _trace_attempt_roots(
+            results_root,
+            train_dir,
+            roots,
+            warnings,
+            include_scan_run_roots=include_scan_run_roots,
+            seen=seen,
+        )
+
+    for filename, path_key, id_key, upstream_stage in (
+        ("source_collection_attempt.json", "collection_attempt_dir", "collection_attempt_id", STAGE_COLLECT),
+        ("source_selection_attempt.json", "selection_attempt_dir", "selection_attempt_id", STAGE_SELECT),
+        ("source_final_grid_attempt.json", "final_grid_attempt_dir", "final_grid_attempt_id", STAGE_FINAL_GRID),
+        ("source_final_train_attempt.json", "final_train_attempt_dir", "final_train_attempt_id", STAGE_FINAL_TRAIN),
+    ):
+        record = _read_optional_object(attempt_dir / filename, warnings=warnings)
+        upstream = _upstream_attempt_dir(results_root, record, path_key=path_key, id_key=id_key, stage=upstream_stage)
+        if upstream is None:
+            continue
+        _trace_attempt_roots(
+            results_root,
+            upstream,
+            roots,
+            warnings,
+            include_scan_run_roots=include_scan_run_roots,
+            seen=seen,
+        )
+
+    for source in _read_optional_object_list(attempt_dir / "source_validation_attempts.json", warnings=warnings):
+        validation_dir = path_from_record(source, "validation_attempt_dir")
+        if validation_dir is None:
+            continue
+        _trace_attempt_roots(
+            results_root,
+            validation_dir,
+            roots,
+            warnings,
+            include_scan_run_roots=include_scan_run_roots,
+            seen=seen,
+        )
+
+
+def _read_optional_object(path: Path, *, warnings: list[str] | None) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    return read_json_object(path, warnings=warnings)
+
+
+def _read_optional_object_list(path: Path, *, warnings: list[str] | None) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    return read_json_object_list(path, warnings=warnings)
+
+
+def _upstream_attempt_dir(
+    results_root: Path,
+    record: dict[str, Any],
+    *,
+    path_key: str,
+    id_key: str,
+    stage: str,
+) -> Path | None:
+    path = path_from_record(record, path_key)
+    if path is not None:
+        return path
+    attempt_id = str(record.get(id_key) or "").strip()
+    if not attempt_id:
+        return None
+    return stage_dir(results_root, stage) / attempt_id
+
+
+def _stage_name(path: Path, results_root: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to(results_root.resolve())
+    except ValueError:
+        return None
+    return relative.parts[0] if relative.parts else None
+
+
+def _add_existing_root(roots: set[Path], warnings: list[str], path: Path, label: str) -> bool:
+    path = path.resolve()
+    if path.is_dir():
+        roots.add(path)
+        return True
+    warnings.append(f"missing {label} directory: {path}")
+    return False
