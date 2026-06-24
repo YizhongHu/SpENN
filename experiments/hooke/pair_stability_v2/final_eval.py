@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -359,7 +360,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Launch final evaluation jobs."""
 
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
     results_root = launch.repo_path(args.results_root, repo_root)
     final_grid_attempt_id = _resolve_final_grid_attempt_id(
@@ -371,7 +373,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     study = study_name_from_manifest(manifest)
     prefix = log_prefix(study)
     if args.wait_job:
-        launch.wait_for_slurm_job(args.wait_job, study=study)
+        launch.submit_dependent_launcher(
+            args.wait_job,
+            script_path=Path(__file__).resolve(),
+            argv=raw_argv,
+            repo_root=repo_root,
+            log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / "dependent_launchers",
+            job_name=stage_job_name(study, "final-eval-launcher", smoke=args.smoke),
+            partition=args.wait_launcher_partition,
+            timeout_min=args.wait_launcher_timeout_min,
+            study=study,
+        )
+        return 0
     eval_config = args.config or manifest.get("eval_config")
     if not eval_config:
         raise ValueError("final-grid manifest does not record eval_config; pass --config")

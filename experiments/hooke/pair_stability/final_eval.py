@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -342,11 +343,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Launch final evaluation jobs."""
 
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
     results_root = launch.repo_path(args.results_root, repo_root)
     if args.wait_job:
-        launch.wait_for_slurm_job(args.wait_job)
+        launch.submit_dependent_launcher(
+            args.wait_job,
+            script_path=Path(__file__).resolve(),
+            argv=raw_argv,
+            repo_root=repo_root,
+            log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / "dependent_launchers",
+            job_name="hooke-pair-stability-final-eval-launcher-smoke"
+            if args.smoke
+            else "hooke-pair-stability-final-eval-launcher",
+            partition=args.wait_launcher_partition,
+            timeout_min=args.wait_launcher_timeout_min,
+        )
+        return 0
     final_grid_attempt_id = _resolve_final_grid_attempt_id(
         results_root,
         args.final_grid_attempt_id,

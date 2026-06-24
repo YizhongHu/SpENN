@@ -155,8 +155,12 @@ by default: each eval row keeps its own durable run artifact and
 `launcher_status.json`, while chunk status is recorded under
 `results/<stage>/chunk_status/<attempt_id>/`.
 Use `--slurm-array-parallelism 0` to omit the Slurm array concurrency cap.
-Use `--wait-job <job_id>` on `validate.py` or `final_eval.py` to wait until an
-upstream Slurm job leaves the queue before readiness checks and submission.
+Use `--wait-job <job_id>` on `validate.py` or `final_eval.py` to submit a
+lightweight Slurm launcher with `--dependency=afterany:<job_id>` and exit
+immediately. The dependent launcher reruns the same stage command without
+`--wait-job`, then performs readiness checks and normal submission. The
+lightweight launcher defaults to the `test` partition; override it with
+`--wait-launcher-partition` if needed.
 
 The planner is the source of truth for the study timezone (`--timezone`, default
 `America/New_York`): it stamps attempt ids and the manifest `created_at`, and

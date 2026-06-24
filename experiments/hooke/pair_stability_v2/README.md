@@ -126,9 +126,8 @@ Train the latest grid:
 ```bash
 uv run --extra submitit python $STUDY/train.py \
   --backend submitit --cuda \
-  --chunk-size 32 --slurm-array-parallelism 2 \
-  --slurm-partition gpu_test \
-  --slurm-timeout-min 120
+  --chunk-size 6 \
+  --slurm-timeout-min 480
 ```
 
 Validate completed train attempts from the latest grid:
@@ -137,9 +136,8 @@ Validate completed train attempts from the latest grid:
 uv run --extra submitit python $STUDY/validate.py \
   --backend submitit --cuda \
   --only-ready \
-  --chunk-size 32 --slurm-array-parallelism 2 \
-  --slurm-partition gpu_test \
-  --slurm-timeout-min 60
+  --chunk-size 32 \
+  --slurm-timeout-min 480
 ```
 
 Collect the newest validation lineage and select energy representatives. These
@@ -152,9 +150,14 @@ uv run python $STUDY/collect.py
 uv run python $STUDY/select_champions.py
 ```
 
-`validate.py` supports `--wait-job <job_id>` when the upstream Submitit
-launcher job id is known. Otherwise, rerun validation with `--only-ready` after
-train jobs have written completed checkpoints.
+`validate.py` and `final_eval.py` support `--wait-job <job_id>` when the
+upstream Submitit launcher job id is known. They submit a lightweight Slurm
+launcher with `--dependency=afterany:<job_id>` and exit immediately; the
+dependent launcher reruns the same stage command without `--wait-job` and then
+performs the normal readiness checks. Otherwise, rerun validation/final eval
+with `--only-ready` after upstream checkpoints are ready. The lightweight
+launcher defaults to the `test` partition; override it with
+`--wait-launcher-partition` if needed.
 
 ## Smoke Runs
 

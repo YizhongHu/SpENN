@@ -12,7 +12,6 @@ import argparse
 import json
 import shlex
 import subprocess
-import time
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
@@ -44,6 +43,10 @@ SMOKE_TIMEOUT_MIN = 15
 SMOKE_MEM_GB = 16
 SMOKE_CPUS = 4
 SMOKE_ARRAY_PARALLELISM = 2
+DEFAULT_DEPENDENT_LAUNCHER_PARTITION = "test"
+DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN = 30
+DEFAULT_DEPENDENT_LAUNCHER_MEM_GB = 4
+DEFAULT_DEPENDENT_LAUNCHER_CPUS = 1
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]
 
@@ -74,29 +77,106 @@ def resolve_grid_attempt_id(results_root: str | Path, grid_attempt_id: str | Non
     return ids[-1]
 
 
-def wait_for_slurm_job(job_id: str, *, poll_seconds: int = 60) -> None:
-    """Block until ``job_id`` no longer appears in ``squeue``."""
+def strip_wait_job_args(argv: Sequence[str]) -> list[str]:
+    """Return command-line args with ``--wait-job`` removed."""
 
-    if poll_seconds < 1:
-        raise ValueError("poll_seconds must be >= 1")
+    stripped: list[str] = []
+    skip_next = False
+    for item in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        text = str(item)
+        if text == "--wait-job":
+            skip_next = True
+            continue
+        if text.startswith("--wait-job="):
+            continue
+        stripped.append(text)
+    return stripped
+
+
+def dependent_launcher_command(
+    *,
+    script_path: str | Path,
+    argv: Sequence[str],
+) -> list[str]:
+    """Return the stage-launcher command rerun by a dependent Slurm job."""
+
+    return [
+        "uv",
+        "run",
+        "--extra",
+        "submitit",
+        "python",
+        "-u",
+        str(Path(script_path).resolve()),
+        *strip_wait_job_args(argv),
+    ]
+
+
+def _slurm_time(minutes: int) -> str:
+    if minutes < 1:
+        raise ValueError("timeout minutes must be >= 1")
+    hours, mins = divmod(int(minutes), 60)
+    return f"{hours:02d}:{mins:02d}:00"
+
+
+def submit_dependent_launcher(
+    job_id: str,
+    *,
+    script_path: str | Path,
+    argv: Sequence[str],
+    repo_root: str | Path,
+    log_dir: str | Path,
+    job_name: str,
+    partition: str = DEFAULT_DEPENDENT_LAUNCHER_PARTITION,
+    timeout_min: int = DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN,
+) -> str:
+    """Submit a lightweight Slurm job that reruns this stage after ``job_id``."""
+
     job_id = str(job_id).strip()
     if not job_id:
-        return
-    print(f"[pair_stability] waiting for Slurm job {job_id}")
-    while True:
-        result = subprocess.run(
-            ["squeue", "-h", "-j", job_id],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            message = (result.stderr or result.stdout).strip()
-            raise RuntimeError(f"squeue failed while waiting for {job_id}: {message}")
-        if not result.stdout.strip():
-            print(f"[pair_stability] Slurm job {job_id} is no longer queued")
-            return
-        time.sleep(poll_seconds)
+        return ""
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    command = dependent_launcher_command(script_path=script_path, argv=argv)
+    script = "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(Path(repo_root).resolve()))}",
+            _submitit_import_path_setup(),
+            f"export UV_PROJECT_ENVIRONMENT={shlex.quote(DEFAULT_CPU_UV_ENVIRONMENT)}",
+            f"exec {shlex.join(command)}",
+            "",
+        ]
+    )
+    result = subprocess.run(
+        [
+            "sbatch",
+            "--parsable",
+            f"--dependency=afterany:{job_id}",
+            f"--job-name={job_name}",
+            f"--partition={partition}",
+            f"--time={_slurm_time(timeout_min)}",
+            f"--mem={DEFAULT_DEPENDENT_LAUNCHER_MEM_GB}G",
+            f"--cpus-per-task={DEFAULT_DEPENDENT_LAUNCHER_CPUS}",
+            f"--output={log_dir / '%x-%j.out'}",
+        ],
+        input=script,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"sbatch dependent launcher failed for {job_id}: {message}")
+    submitted = (result.stdout.strip().splitlines() or [""])[-1].split(";", maxsplit=1)[0]
+    if not submitted:
+        raise RuntimeError("sbatch dependent launcher did not return a job id")
+    print(f"[pair_stability] submitted dependent launcher {submitted} after Slurm job {job_id}")
+    return submitted
 
 
 def load_grid_manifest(results_root: str | Path, grid_attempt_id: str) -> dict[str, Any]:
@@ -498,7 +578,31 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         help="Run with the CUDA uv environment and runtime.device=cuda.",
     )
     parser.add_argument("--repo-root", default=None, help="Repo root for command working directory.")
-    parser.add_argument("--wait-job", default=None, help="Wait for this Slurm job id to leave the queue before planning/submitting.")
+    parser.add_argument(
+        "--wait-job",
+        default=None,
+        help=(
+            "Submit a lightweight Slurm launcher with dependency afterany:<job> "
+            "and exit; the dependent launcher reruns this command without --wait-job."
+        ),
+    )
+    parser.add_argument(
+        "--wait-launcher-partition",
+        default=DEFAULT_DEPENDENT_LAUNCHER_PARTITION,
+        help=(
+            "Slurm partition for the lightweight --wait-job launcher "
+            f"(default {DEFAULT_DEPENDENT_LAUNCHER_PARTITION})."
+        ),
+    )
+    parser.add_argument(
+        "--wait-launcher-timeout-min",
+        type=int,
+        default=DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN,
+        help=(
+            "Wall time in minutes for the lightweight --wait-job launcher "
+            f"(default {DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN})."
+        ),
+    )
     parser.add_argument(
         "--slurm-partition",
         default=None,

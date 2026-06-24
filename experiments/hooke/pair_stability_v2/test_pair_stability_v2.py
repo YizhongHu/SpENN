@@ -6,6 +6,7 @@ import csv
 import importlib.util
 import json
 import sys
+import types
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
@@ -35,6 +36,7 @@ def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
 
 
 run_utils = _load_script("run_utils", bind_direct=True)
+launch = _load_script("launch")
 plan = _load_script("plan")
 collect = _load_script("collect")
 select_champions = _load_script("select_champions")
@@ -42,6 +44,7 @@ final_plan = _load_script("final_plan")
 
 
 ATTEMPT = "20260623T120000-0400"
+ROOT = STUDY_DIR.parents[2]
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -64,6 +67,45 @@ def _planned_results(tmp_path: Path) -> Path:
     code = plan.main(["--grid", str(GRID), "--results-root", str(results_root), "--attempt-id", ATTEMPT])
     assert code == 0
     return results_root
+
+
+def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command: list[str], **kwargs: object) -> types.SimpleNamespace:
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="88888;cluster\n", stderr="")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+
+    submitted = launch.submit_dependent_launcher(
+        "24211558",
+        script_path=STUDY_DIR / "validate.py",
+        argv=[
+            "--backend=submitit",
+            "--cuda",
+            "--wait-job=24211558",
+            "--chunk-size",
+            "32",
+        ],
+        repo_root=ROOT,
+        log_dir=tmp_path / "logs",
+        job_name="pair-stability-v2-validate-launcher",
+        partition="test",
+        timeout_min=19,
+        study="pair_stability_v2",
+    )
+
+    command, kwargs = calls[0]
+    assert submitted == "88888"
+    assert "--dependency=afterany:24211558" in command
+    assert "--time=00:19:00" in command
+    assert "--output=" + str(tmp_path / "logs" / "%x-%j.out") in command
+    script = str(kwargs["input"])
+    assert "UV_PROJECT_ENVIRONMENT=.venv" in script
+    assert "uv run --extra submitit python -u" in script
+    assert "--wait-job" not in script
+    assert "--backend=submitit" in script
 
 
 def test_v2_blinding_is_reproducible_by_seed(tmp_path: Path) -> None:

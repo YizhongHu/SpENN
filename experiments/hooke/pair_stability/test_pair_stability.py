@@ -473,22 +473,48 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
     assert str(ROOT) in captured_parameters[0]["slurm_setup"][0]
 
 
-def test_wait_for_slurm_job_polls_until_squeue_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wait_job_submits_dependent_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls = []
-    sleeps = []
-    outputs = ["24211558 RUNNING\n", ""]
 
-    def fake_run(command: list[str], **_kwargs: object) -> types.SimpleNamespace:
-        calls.append(command)
-        return types.SimpleNamespace(returncode=0, stdout=outputs.pop(0), stderr="")
+    def fake_run(command: list[str], **kwargs: object) -> types.SimpleNamespace:
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="77777\n", stderr="")
 
     monkeypatch.setattr(launch.subprocess, "run", fake_run)
-    monkeypatch.setattr(launch.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    launch.wait_for_slurm_job("24211558", poll_seconds=7)
+    submitted = launch.submit_dependent_launcher(
+        "24211558",
+        script_path=STUDY_DIR / "validate.py",
+        argv=[
+            "--backend",
+            "submitit",
+            "--cuda",
+            "--wait-job",
+            "24211558",
+            "--chunk-size",
+            "32",
+        ],
+        repo_root=ROOT,
+        log_dir=tmp_path / "logs",
+        job_name="pair-validate-launcher",
+        partition="test",
+        timeout_min=17,
+    )
 
-    assert calls == [["squeue", "-h", "-j", "24211558"], ["squeue", "-h", "-j", "24211558"]]
-    assert sleeps == [7]
+    command, kwargs = calls[0]
+    assert submitted == "77777"
+    assert command[:2] == ["sbatch", "--parsable"]
+    assert "--dependency=afterany:24211558" in command
+    assert "--partition=test" in command
+    assert "--time=00:17:00" in command
+    assert "--mem=4G" in command
+    script = str(kwargs["input"])
+    assert "uv run --extra submitit python -u" in script
+    assert "--wait-job" not in script
+    assert "--chunk-size 32" in script
+    assert f"cd {ROOT}" in script
 
 
 def test_submitit_chunks_commands_evenly_and_expands_job_ids(
