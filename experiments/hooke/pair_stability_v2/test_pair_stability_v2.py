@@ -268,6 +268,64 @@ def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) ->
     assert resolved == str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml")
 
 
+def test_v2_collect_uses_status_for_required_train_wall_time(tmp_path: Path) -> None:
+    train_attempt = tmp_path / "01_train" / "run-a" / "T1"
+    train_attempt.mkdir(parents=True)
+    (train_attempt / "status.json").write_text(
+        json.dumps(
+            {
+                "start_time": "2026-06-24T10:00:00+00:00",
+                "end_time": "2026-06-24T10:02:03+00:00",
+            }
+        )
+        + "\n"
+    )
+    # This file is intentionally invalid. Wall time should come from
+    # status.json without forcing collection to parse large train metrics.
+    (train_attempt / "metrics.jsonl").write_text("{not-json}\n")
+
+    metrics = collect._train_metrics(
+        {"train_attempt_dir": str(train_attempt)},
+        required_metrics={collect.TRAIN_WALL_TIME_METRIC},
+    )
+
+    assert metrics == {collect.TRAIN_WALL_TIME_METRIC: 123.0}
+
+
+def test_v2_collect_prefers_grid_job_choices_over_resolved_config(tmp_path: Path) -> None:
+    attempt_dir = tmp_path / "02_validation" / "run-a" / "V1"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "resolved_config.yaml").write_text("run_parameters: [not-a-mapping\n")
+    (attempt_dir / "status.json").write_text(json.dumps({"status": "completed"}) + "\n")
+    (attempt_dir / "metrics.jsonl").write_text("")
+    axis_metadata = {
+        "major_axes": ("basis", "mechanism"),
+        "minor_axes": ("lr", "channels"),
+        "config_axes": ("basis", "mechanism", "lr", "channels"),
+        "run_axes": ("basis", "mechanism", "lr", "channels", "seed"),
+        "axis_id_labels": {"basis": "b", "mechanism": "m", "lr": "lr", "channels": "ch", "seed": "seed"},
+    }
+    grid_job = {
+        "choices": {"basis": "B00", "mechanism": "A00", "lr": 1.0e-3, "channels": 8, "seed": 0},
+        "major_id": "b-B00_m-A00",
+        "minor_id": "lr-1e-3_ch-8",
+        "config_id": "b-B00_m-A00_lr-1e-3_ch-8",
+    }
+
+    row = collect.collect_validation_attempt(
+        "run-a",
+        "V1",
+        attempt_dir,
+        grid_job=grid_job,
+        axis_metadata=axis_metadata,
+        required_train_metrics=set(),
+    )
+
+    assert row["basis"] == "B00"
+    assert row["mechanism"] == "A00"
+    assert row["major_id"] == "b-B00_m-A00"
+
+
 def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, monkeypatch) -> None:
     results_root = _planned_results(tmp_path)
     manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())

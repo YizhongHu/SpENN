@@ -1,8 +1,8 @@
 """Collect validation attempts into a summary table.
 
 Walks ``02_validation/{run_id}/*`` (the latest attempt per run id),
-reads each attempt's status, evaluation metrics, source train-attempt metrics,
-and recorded train-attempt provenance, and writes a ``03_collect`` attempt with
+reads each attempt's status, evaluation metrics, required source train-attempt
+metrics, and recorded train-attempt provenance, and writes a ``03_collect`` attempt with
 ``summary.csv``, ``failures.csv``, ``collection_report.json``, and explicit
 source pointers to the exact validation (and grid) attempts consumed.
 """
@@ -35,8 +35,6 @@ from run_utils import (
     validation_run_dir,
     write_json,
 )
-from stats import as_float
-
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
@@ -115,17 +113,50 @@ def _train_attempt_dir(source: dict[str, Any]) -> Path | None:
     return None
 
 
-def _train_metrics(source: dict[str, Any]) -> dict[str, Any]:
-    """Return metrics from the validation source train attempt."""
+def _metric_is_train_metric(metric: str) -> bool:
+    """Return whether ``metric`` refers to the train-attempt metric namespace."""
+
+    return metric.startswith("train/")
+
+
+def _required_train_metrics(grid_manifest: dict[str, Any] | None) -> set[str]:
+    """Return train metrics referenced by configured champion selection."""
+
+    metrics: set[str] = set()
+    if not isinstance(grid_manifest, dict):
+        return metrics
+    for spec in grid_manifest.get("champions", []) or []:
+        if not isinstance(spec, dict):
+            continue
+        for key in ("metric", "fallback_metric"):
+            metric = str(spec.get(key, "")).strip()
+            if _metric_is_train_metric(metric):
+                metrics.add(metric)
+    for spec in grid_manifest.get("champion_reference_metrics", []) or []:
+        if not isinstance(spec, dict):
+            continue
+        metric = str(spec.get("metric", "")).strip()
+        if _metric_is_train_metric(metric):
+            metrics.add(metric)
+    return metrics
+
+
+def _train_metrics(source: dict[str, Any], *, required_metrics: set[str]) -> dict[str, Any]:
+    """Return only required metrics from the validation source train attempt."""
 
     train_attempt = _train_attempt_dir(source)
-    if train_attempt is None:
+    if train_attempt is None or not required_metrics:
         return {}
-    train_metrics = read_metrics_map(train_attempt / "metrics.jsonl", prefix="train")
-    if as_float(train_metrics.get(TRAIN_WALL_TIME_METRIC)) is None:
+    train_metrics: dict[str, Any] = {}
+    pending = set(required_metrics)
+    if TRAIN_WALL_TIME_METRIC in pending:
         wall_time = duration_from_status_file(train_attempt, clamp_negative=True)
         if wall_time is not None:
             train_metrics[TRAIN_WALL_TIME_METRIC] = wall_time
+            pending.remove(TRAIN_WALL_TIME_METRIC)
+    if pending:
+        parsed = read_metrics_map(train_attempt / "metrics.jsonl", prefix="train")
+        train_metrics.update({key: value for key, value in parsed.items() if key in pending})
     return train_metrics
 
 
@@ -168,10 +199,11 @@ def collect_validation_attempt(
     *,
     grid_job: dict[str, Any] | None,
     axis_metadata: dict[str, Any],
+    required_train_metrics: set[str],
 ) -> dict[str, Any]:
     """Build one summary row from a validation attempt directory."""
 
-    params = _run_parameters(attempt_dir)
+    params = {} if grid_job is not None else _run_parameters(attempt_dir)
     major_axes = tuple(axis_metadata["major_axes"])
     minor_axes = tuple(axis_metadata["minor_axes"])
     config_axes = tuple(axis_metadata["config_axes"])
@@ -195,7 +227,7 @@ def collect_validation_attempt(
         n_diagnostics=_count_diagnostics(attempt_dir),
     )
     row.update(point)
-    row.update(_train_metrics(source))
+    row.update(_train_metrics(source, required_metrics=required_train_metrics))
     row.update(read_metrics_jsonl(attempt_dir / "metrics.jsonl"))
     return row
 
@@ -280,6 +312,7 @@ def collect(
     grid_manifest = _grid_manifest(source_grid)
     study = study_name_from_manifest(grid_manifest)
     axis_metadata = _axis_metadata(grid_manifest)
+    required_train_metrics = _required_train_metrics(grid_manifest)
     job_by_run = {
         str(job.get("run_id")): job
         for job in (grid_manifest or {}).get("jobs", [])
@@ -308,6 +341,7 @@ def collect(
                 attempt_dir,
                 grid_job=job_by_run.get(run_id),
                 axis_metadata=axis_metadata,
+                required_train_metrics=required_train_metrics,
             )
         )
         consumed.append(
@@ -343,6 +377,7 @@ def collect(
         "n_collected": len(rows),
         "n_failures": len(failures),
         "metric_columns": metric_columns,
+        "required_train_metrics": sorted(required_train_metrics),
     }
     write_json(attempt / "collection_report.json", report)
     return {"attempt_dir": str(attempt), "report": report, "rows": rows}
