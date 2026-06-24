@@ -119,7 +119,11 @@ default to the latest smoke upstream run.
 Pass explicit `--attempt-id`, `--grid-attempt-id`, or previous-stage attempt
 flags only when reproducing an older lineage or debugging.
 
-## Screening Run
+## Non-Smoke Runbook
+
+Use the commands in this section for the real study run. They intentionally
+omit `--smoke`; each stage consumes the latest non-smoke upstream attempt by
+default and will not pick up a newer smoke diagnostic run.
 
 Set the study path once:
 
@@ -127,8 +131,10 @@ Set the study path once:
 STUDY=experiments/hooke/pair_stability_v2
 ```
 
-Plan the grid. The attempt id is generated automatically and recorded in
-`results/00_grid/latest.json`.
+### Scan Stages
+
+Plan the grid. The attempt id is generated automatically in
+`America/New_York` and recorded in `results/00_grid/latest.json`.
 
 ```bash
 uv run python $STUDY/plan.py \
@@ -145,7 +151,9 @@ uv run --extra submitit python $STUDY/train.py \
   --slurm-timeout-min 480
 ```
 
-Validate completed train attempts from the latest grid:
+Validate completed train attempts from the latest grid. If the train launcher
+job id is known, `--wait-job` submits a dependent launcher and exits; otherwise,
+run the same command after train checkpoints are ready.
 
 ```bash
 uv run --extra submitit python $STUDY/validate.py \
@@ -155,9 +163,9 @@ uv run --extra submitit python $STUDY/validate.py \
   --wait-job <train_launcher_job_id>
 ```
 
-Collect the newest validation lineage and select energy representatives. These
-commands do not need a grid attempt id; collection traces validation ancestry to
-the source grid manifest.
+Collect the newest non-smoke validation lineage and select energy
+representatives. These commands do not need a grid attempt id; collection
+traces validation ancestry to the source grid manifest.
 
 ```bash
 uv run python $STUDY/collect.py
@@ -165,11 +173,12 @@ uv run python $STUDY/collect.py
 uv run python $STUDY/select_champions.py
 ```
 
-## Final Stages
+### Final Stages
 
 The checked-in grid sets `final_replicates: 9`, so the default final plan
 continues selected champions through nine independent final seeds. The commands
-below consume the latest previous stage and write their own latest pointers.
+below consume the latest non-smoke previous stage and write their own latest
+pointers.
 
 Plan final replicates from the latest champion selection:
 
@@ -196,6 +205,10 @@ uv run --extra submitit python $STUDY/final_train.py \
   --chunk-size 6 \
   --slurm-timeout-min 480
 ```
+
+If final training has already been submitted, do not rerun it just to continue
+the lineage. Use the final-train launcher job id with `final_eval.py --wait-job`
+so evaluation starts after Slurm marks the launcher complete.
 
 Launch final evaluation from the latest final grid and the latest ready
 final-train checkpoint for each final run:
@@ -224,6 +237,25 @@ uv run python $STUDY/final_report.py
 CSV summaries under `08_final_collect/{attempt_id}/`. `final_report.py` reads
 only those compact tables and writes `09_final_report/{attempt_id}/report.md`,
 `tables/*.csv`, and `figures/*.png`.
+
+## Smoke Runs
+
+Smoke runs are separate from full runs. Passing `--smoke` keeps the same source
+grid but writes smoke-marked attempts, limits launchers to two jobs, sends CPU
+smoke jobs to `test` and CUDA smoke jobs to `gpu_test` by default, and applies
+only the stage-specific workload reductions in `configs/smoke.yaml`. The smoke
+profile mirrors the small scaling used by `experiments/hooke/pair_stability`:
+two train steps, small sampler settings, checkpoint/status every step, and
+compact validation sample counts.
+
+Example GPU smoke train from the latest grid:
+
+```bash
+uv run --extra submitit python $STUDY/train.py \
+  --smoke \
+  --backend submitit --cuda \
+  --chunk-size 1
+```
 
 Smoke final stages use the same lineage defaults but cap the final grid to the
 first one or two champions, use one final seed, record smoke metadata, and use
@@ -257,23 +289,3 @@ ready. The lightweight launcher defaults to the `test` partition; override it
 with `--wait-launcher-partition` if needed. The real validation/final-eval array
 still follows `--cpu`/`--cuda` and `--smoke` partition defaults when the
 dependent launcher runs.
-
-## Smoke Runs
-
-Smoke runs are separate from full runs. Passing `--smoke` keeps the same source
-grid but writes smoke-marked attempts, limits launchers to two jobs, sends CPU
-smoke jobs to `test` and CUDA smoke jobs to `gpu_test` by default, and applies
-only the stage-specific
-workload reductions in `configs/smoke.yaml`. The smoke profile mirrors the
-small scaling used by `experiments/hooke/pair_stability`: two train steps,
-small sampler settings, checkpoint/status every step, and compact validation
-sample counts.
-
-Example GPU smoke train from the latest grid:
-
-```bash
-uv run --extra submitit python $STUDY/train.py \
-  --smoke \
-  --backend submitit --cuda \
-  --chunk-size 1
-```
