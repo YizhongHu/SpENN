@@ -165,5 +165,6 @@ champion_reference_metrics:
   - label: readout_stability
     metric: eval/readout_trace_stability/condition_number_q95
 
-# PR8.11 is a screening scan, not a final-reporting experiment.
-final_replicates: 0
+# Final planning evaluates each selected champion with nine independent final
+# seeds. The scan and champion-selection grid above remain unchanged.
+final_replicates: 9

@@ -297,7 +297,7 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
         "final_train_model_seed": {"start": 1001, "step": 1},
         "final_eval_seed": {"start": 10001, "step": 1},
     }
-    assert manifest["final_replicates"] == 0
+    assert manifest["final_replicates"] == 9
     assert manifest["n_jobs"] == 270
     assert manifest["blinding"]["enabled"] is True
     assert manifest["blinding"]["blind_seed"] == 0
@@ -538,7 +538,7 @@ def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) 
     assert result["rows"][0]["mechanism"].startswith("A")
 
 
-def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(tmp_path: Path) -> None:
+def test_v2_selects_energy_champions_per_major_and_plans_nine_final_seeds_by_default(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     _write_collection_summary(results_root)
 
@@ -579,15 +579,17 @@ def test_v2_selects_energy_champions_per_major_and_skips_final_jobs_by_default(t
     manifest = json.loads((final_dir / "manifest.json").read_text())
     jobs = [json.loads(path.read_text()) for path in sorted((final_dir / "jobs").glob("*.json"))]
     assert manifest["study"] == "pair_stability_v2"
-    assert manifest["final_replicates"] == 0
-    assert manifest["n_jobs"] == 0
+    assert manifest["final_replicates"] == 9
+    assert manifest["n_jobs"] == 270
     assert manifest["axis_overrides"] == {
         "basis": "run_parameters.basis_slot",
         "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
     }
-    assert jobs == []
+    assert len(jobs) == 270
+    assert set(Counter(job["source_champion_id"] for job in jobs).values()) == {9}
+    assert {int(job["replicate_index"]) for job in jobs} == set(range(9))
 
     code = final_plan.main(
         [

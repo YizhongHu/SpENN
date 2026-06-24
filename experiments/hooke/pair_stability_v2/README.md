@@ -1,8 +1,8 @@
-# Hooke pair-stability V2 screening study (PR8.11)
+# Hooke pair-stability V2 study (PR8.11)
 
 This package is the breaking-refactor version of
-`experiments/hooke/pair_stability`. PR8.11 uses it for a screening scan over
-modular model-side scale controls, not a final-reporting experiment.
+`experiments/hooke/pair_stability`. PR8.11 uses it for a scan over modular
+model-side scale controls followed by nine final seeds per selected champion.
 
 The default grid is:
 
@@ -11,15 +11,15 @@ major_grid: basis x mechanism
 minor_grid: lr x channels
 scan_seeds: training/validation replicate seeds
 champions: energy selector only
-final_replicates: 0
+final_replicates: 9
 ```
 
 The checked-in scan has:
 
 ```text
 3 bases x 10 mechanisms x 3 learning rates x 1 channel count x 3 seeds = 270 scan jobs
-30 major points x 1 energy representative = 30 selected screening champions
-0 final jobs by default
+30 major points x 1 energy representative = 30 selected champions
+30 selected champions x 9 final seeds = 270 final jobs by default
 ```
 
 ## Stages
@@ -32,9 +32,8 @@ The stage layout remains:
         -> 08_final_collect -> 09_final_report
 ```
 
-For PR8.11 the normal stopping point is `04_select`. `final_plan.py` will write
-a `05_final_grid` attempt with zero final jobs unless `--replicates` is passed
-explicitly.
+For PR8.11, `final_plan.py` writes nine final seeds per selected champion by
+default. Pass `--replicates` only to override that configured count.
 
 ## Config Semantics
 
@@ -159,20 +158,16 @@ uv run python $STUDY/collect.py
 uv run python $STUDY/select_champions.py
 ```
 
-## Optional Final Stages
+## Final Stages
 
-V2 is a screening study, so the checked-in grid sets `final_replicates: 0`.
-Run `final_plan.py` with an explicit non-zero `--replicates` when you want to
-continue selected champions through report-grade final training/evaluation.
-The default commands below consume the latest previous stage and write their own
-latest pointers.
+The checked-in grid sets `final_replicates: 9`, so the default final plan
+continues selected champions through nine independent final seeds. The commands
+below consume the latest previous stage and write their own latest pointers.
 
 Plan final replicates from the latest champion selection:
 
 ```bash
-# Example report-grade diagnostic plan: two final replicates per champion.
-uv run python $STUDY/final_plan.py \
-  --replicates 2
+uv run python $STUDY/final_plan.py
 ```
 
 This writes `results/05_final_grid/<attempt_id>/final_jobs.csv` and
@@ -224,7 +219,7 @@ only those compact tables and writes `09_final_report/{attempt_id}/report.md`,
 `tables/*.csv`, and `figures/*.png`.
 
 Smoke final stages use the same lineage defaults but cap the final grid to the
-first one or two champions, use one final replicate, mark attempts with
+first one or two champions, use one final seed, mark attempts with
 `-smoke`, and use the test partitions:
 
 ```bash
