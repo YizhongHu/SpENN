@@ -135,7 +135,6 @@ Validate completed train attempts from the latest grid:
 ```bash
 uv run --extra submitit python $STUDY/validate.py \
   --backend submitit --cuda \
-  --only-ready \
   --chunk-size 32 \
   --slurm-timeout-min 480 \
   --wait-job <train_launcher_job_id>
@@ -156,9 +155,9 @@ upstream Submitit launcher job id is known. They submit a lightweight Slurm
 launcher with `--dependency=afterany:<job_id>` and exit immediately; the
 dependent launcher reruns the same stage command without `--wait-job` and then
 performs the normal readiness checks. Otherwise, rerun validation/final eval
-with `--only-ready` after upstream checkpoints are ready. The lightweight
-launcher defaults to the `test` partition; override it with
-`--wait-launcher-partition` if needed. The real validation/final-eval array
+after upstream checkpoints are ready; these stages always skip rows that are not
+ready. The lightweight launcher defaults to the `test` partition; override it
+with `--wait-launcher-partition` if needed. The real validation/final-eval array
 still follows `--cpu`/`--cuda` and `--smoke` partition defaults when the
 dependent launcher runs.
 

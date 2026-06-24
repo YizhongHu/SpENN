@@ -321,11 +321,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--attempt-id", default=None)
     parser.add_argument("--config", default=None, help="Eval config path (defaults to final-grid manifest).")
     parser.add_argument(
-        "--only-ready",
-        action="store_true",
-        help="Only launch rows with eligible completed final-train checkpoints; this is the default readiness policy.",
-    )
-    parser.add_argument(
         "--allow-production-final-train",
         action="store_true",
         help="With --smoke, allow explicitly requested production final-train attempts.",

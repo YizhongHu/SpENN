@@ -285,11 +285,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Validation attempt id (defaults to the grid attempt id, or grid-smoke with --smoke).",
     )
-    parser.add_argument(
-        "--only-ready",
-        action="store_true",
-        help="Only launch rows with eligible completed train checkpoints; this is the default readiness policy.",
-    )
     launch.add_launch_arguments(
         parser,
         smoke_help=(

@@ -309,7 +309,6 @@ Standard CUDA Submitit validation after training finishes:
 # Validate the latest non-smoke train attempts for the latest 00_grid attempt
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
   --backend submitit --cuda \
-  --only-ready \
   --chunk-size 128
 
 # Validate an exact train attempt and write an exact validation attempt id
@@ -318,7 +317,6 @@ uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
   --grid-attempt-id 20260619T195112-0400 \
   --train-attempt-id 20260619T195112-0400 \
   --attempt-id 20260620T090000-0400 \
-  --only-ready \
   --chunk-size 128
 ```
 
@@ -387,13 +385,11 @@ Launch final evaluation:
 ```bash
 # Smoke final evaluation from smoke final-train attempts
 uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
-  --backend submitit --cuda --smoke \
-  --only-ready
+  --backend submitit --cuda --smoke
 
 # Production final evaluation
 uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
-  --backend submitit --cuda \
-  --only-ready
+  --backend submitit --cuda
 ```
 
 `final_eval.py` selects `evaluation.suite=final_eval` from
