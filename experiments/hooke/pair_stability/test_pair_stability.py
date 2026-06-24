@@ -69,13 +69,30 @@ def test_attempt_ids_sorted_and_skips_latest(tmp_path: Path) -> None:
     (base / "20260101T000000-0500").mkdir(parents=True)
     (base / "20260619T000000-0400").mkdir()
     (base / "latest.json").write_text("{}")
+    (base / "latest-smoke.json").write_text("{}")
     try:
         (base / "latest").symlink_to("20260619T000000-0400")
+        (base / "latest-smoke").symlink_to("20260619T000000-0400")
     except OSError:
         pass
-    # Chronological by name; the latest symlink and latest.json are excluded.
+    # Chronological by name; latest convenience links/pointers are excluded.
     assert run_utils.attempt_ids(base) == ["20260101T000000-0500", "20260619T000000-0400"]
     assert run_utils.attempt_ids(base / "missing") == []
+
+
+def test_latest_attempt_id_prefers_pointer_and_tracks_smoke_metadata(tmp_path: Path) -> None:
+    parent = tmp_path / "stage"
+    (parent / "zzz").mkdir(parents=True)
+    (parent / "aaa").mkdir()
+    run_utils.write_latest(parent, "aaa")
+
+    assert run_utils.latest_attempt_id(parent) == "aaa"
+
+    run_utils.write_latest(parent, "diagnostic", smoke=True)
+    assert run_utils.latest_attempt_id(parent) == "aaa"
+    assert run_utils.latest_attempt_id(parent, smoke=False) == "aaa"
+    assert run_utils.latest_attempt_id(parent, smoke=True) == "diagnostic"
+    assert run_utils.latest_attempt_id(parent / "missing") is None
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +736,34 @@ def test_final_train_consumes_final_grid_and_records_checkpoint_selection(
     assert submission["launcher_job_id"] == "local-final-0"
 
 
+def test_final_train_rejects_empty_final_grid(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    attempt = results_root / "05_final_grid" / "F0"
+    attempt.mkdir(parents=True)
+    (attempt / "final_jobs.csv").write_text("final_run_id\n", encoding="utf-8")
+    run_utils.write_json(
+        attempt / "manifest.json",
+        {
+            "study": "pair_stability",
+            "stage": run_utils.STAGE_FINAL_GRID,
+            "attempt_id": "F0",
+            "train_config": str(PAIR_STABILITY),
+        },
+    )
+
+    with pytest.raises(ValueError, match="final grid attempt F0 has no jobs"):
+        final_train.main(
+            [
+                "--results-root",
+                str(results_root),
+                "--final-grid-attempt-id",
+                "F0",
+                "--backend",
+                "local",
+            ]
+        )
+
+
 def _write_final_train_checkpoint(results_root: Path, final_run_id: str, attempt_id: str = "TF1") -> Path:
     train_attempt = results_root / "06_final_train" / final_run_id / attempt_id
     checkpoint_root = train_attempt / "checkpoints"
@@ -798,6 +843,11 @@ def test_final_eval_auto_selects_latest_ready_smoke_final_train_attempt(
     good_attempt_id = "20260621T171930-0400-smoke"
     bad_attempt_id = "20260621T171930-0400-smoke-smoke"
     _write_final_train_checkpoint(results_root, job["final_run_id"], good_attempt_id)
+    run_utils.write_latest(
+        run_utils.final_train_run_dir(results_root, job["final_run_id"]),
+        good_attempt_id,
+        smoke=True,
+    )
     bad_attempt = results_root / "06_final_train" / job["final_run_id"] / bad_attempt_id
     bad_attempt.mkdir(parents=True)
     submitted_commands = []
@@ -836,6 +886,66 @@ def test_final_eval_auto_selects_latest_ready_smoke_final_train_attempt(
     attempt = results_root / "07_final_eval" / job["final_run_id"] / "F1-smoke"
     source = json.loads((attempt / "source_final_train_attempt.json").read_text())
     assert source["final_train_attempt_id"] == good_attempt_id
+
+
+def test_final_stage_defaults_use_latest_metadata_pointers(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    final_grid_stage = results_root / "05_final_grid"
+    (final_grid_stage / "zzz").mkdir(parents=True)
+    (final_grid_stage / "aaa").mkdir()
+    run_utils.write_latest(final_grid_stage, "aaa")
+    run_utils.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
+
+    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
+    assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
+    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "diagnostic-final-grid"
+
+    final_run_id = "final-run-0"
+    _write_final_train_checkpoint(results_root, final_run_id, "zzz")
+    _write_final_train_checkpoint(results_root, final_run_id, "aaa")
+    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), "aaa")
+
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
+    assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
+
+    eval_run_dir = run_utils.final_eval_run_dir(results_root, final_run_id)
+    (eval_run_dir / "zzz").mkdir(parents=True)
+    (eval_run_dir / "aaa").mkdir()
+    run_utils.write_latest(eval_run_dir, "aaa")
+
+    assert final_collect._iter_final_eval_attempts(results_root, None) == [
+        (final_run_id, "aaa", eval_run_dir / "aaa")
+    ]
+
+
+def test_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    final_run_id = "final-run-0"
+    final_grid_attempt_id = "FG0"
+    smoke_attempt = "diagnostic-final-train"
+    _write_final_train_checkpoint(results_root, final_run_id, final_grid_attempt_id)
+    _write_final_train_checkpoint(results_root, final_run_id, smoke_attempt)
+    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), final_grid_attempt_id)
+    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
+
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == final_grid_attempt_id
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=True) == smoke_attempt
+    assert (
+        final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False)
+        == final_grid_attempt_id
+    )
+
+    args = types.SimpleNamespace(
+        smoke=False,
+        final_train_attempt_id=smoke_attempt,
+        allow_production_final_train=False,
+    )
+    with pytest.raises(ValueError, match="refuses a smoke final-train attempt"):
+        final_eval._final_train_attempt_id_for_job(
+            args=args,
+            results_root=results_root,
+            final_run_id=final_run_id,
+        )
 
 
 def test_final_collect_reduces_raw_artifacts_and_final_report_reads_collect_only(tmp_path: Path) -> None:
@@ -2400,6 +2510,8 @@ def test_validate_auto_selection_ignores_smoke_train_attempts(tmp_path: Path) ->
     )
     _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T1")
     _write_checkpoint_pointer(results_root, TARGET_RUN_ID, "T2-smoke")
+    run_utils.write_latest(run_utils.train_run_dir(results_root, TARGET_RUN_ID), "T1")
+    run_utils.write_latest(run_utils.train_run_dir(results_root, TARGET_RUN_ID), "T2-smoke", smoke=True)
 
     assert validate.latest_train_attempt_id(results_root, TARGET_RUN_ID, smoke=False) == "T1"
     assert validate.latest_train_attempt_id(results_root, TARGET_RUN_ID, smoke=True) == "T2-smoke"
@@ -2414,6 +2526,16 @@ def test_validate_auto_selection_ignores_smoke_train_attempts(tmp_path: Path) ->
     )
     assert skipped == []
     assert validation_jobs[0]["train_attempt_id"] == "T1"
+
+    explicit_smoke = validate.parse_args(["--backend", "local", "--train-attempt-id", "T2-smoke"])
+    with pytest.raises(ValueError, match="refuses a smoke train attempt"):
+        validate.plan_validation_jobs(
+            jobs,
+            args=explicit_smoke,
+            results_root=results_root,
+            grid_attempt_id="G1",
+            validation_config=PAIR_VALIDATION,
+        )
 
 
 def test_pair_validation_config_model_and_tasks_instantiate() -> None:

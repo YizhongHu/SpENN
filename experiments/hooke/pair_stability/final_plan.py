@@ -19,10 +19,10 @@ from run_utils import (
     STAGE_FINAL_GRID,
     STAGE_SELECT,
     STUDY_TIMEZONE,
-    attempt_ids,
     final_grid_attempt_dir,
+    latest_attempt_id,
     new_attempt_id,
-    read_json,
+    smoke_attempt_id,
     stage_dir,
     write_json,
     write_latest,
@@ -49,23 +49,14 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def _smoke_attempt_id(attempt_id: str) -> str:
-    return attempt_id if attempt_id.endswith("-smoke") else f"{attempt_id}-smoke"
-
-
-def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | None) -> str:
+def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | None, *, smoke: bool) -> str:
     if selection_attempt_id is not None:
         return selection_attempt_id
     select_stage = stage_dir(results_root, STAGE_SELECT)
-    latest = select_stage / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return str(attempt_id)
-    attempts = attempt_ids(select_stage)
-    if not attempts:
+    attempt_id = latest_attempt_id(select_stage, smoke=smoke)
+    if attempt_id is None:
         raise FileNotFoundError(f"no selection attempts under {select_stage}")
-    return attempts[-1]
+    return attempt_id
 
 
 def read_champions(selection_dir: Path) -> list[dict[str, str]]:
@@ -232,7 +223,7 @@ def write_final_grid_attempt(
     }
     write_json(attempt / "manifest.json", manifest)
     OmegaConf.save(OmegaConf.create(manifest), attempt / "manifest.yaml")
-    write_latest(stage_dir(results_root, STAGE_FINAL_GRID), attempt_id)
+    write_latest(stage_dir(results_root, STAGE_FINAL_GRID), attempt_id, smoke=smoke)
     return attempt
 
 
@@ -256,7 +247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parse_args(argv)
     results_root = Path(args.results_root)
-    selection_attempt_id = _resolve_selection_attempt(results_root, args.selection_attempt_id)
+    selection_attempt_id = _resolve_selection_attempt(results_root, args.selection_attempt_id, smoke=args.smoke)
     selection_dir = stage_dir(results_root, STAGE_SELECT) / selection_attempt_id
     champions = read_champions(selection_dir)
 
@@ -264,7 +255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     champion_limit = SMOKE_CHAMPION_LIMIT if args.smoke else args.limit_champions
     attempt_id = args.attempt_id or new_attempt_id()
     if args.smoke:
-        attempt_id = _smoke_attempt_id(attempt_id)
+        attempt_id = smoke_attempt_id(attempt_id)
     created_at = datetime.now(STUDY_TIMEZONE).isoformat(timespec="seconds")
 
     jobs = build_final_jobs(

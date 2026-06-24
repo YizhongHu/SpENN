@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import launch
-from run_utils import STAGE_TRAIN, grid_attempt_dir, stage_dir, write_json
+from run_utils import STAGE_TRAIN, grid_attempt_dir, stage_dir, write_json, write_latest
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
@@ -125,6 +125,7 @@ def write_train_launch_provenance(
     grid_attempt_id: str,
     repo_root: Path,
     submitted_commands: Sequence[Sequence[str]],
+    smoke: bool = False,
 ) -> list[Path]:
     """Create train attempt directories before scheduler execution starts."""
 
@@ -143,6 +144,7 @@ def write_train_launch_provenance(
         (train_attempt / "command.txt").write_text(
             shlex.join([str(part) for part in submitted_commands[index]]) + "\n"
         )
+        write_latest(train_attempt.parent, train_attempt.name, smoke=smoke)
         row_status_paths.append(train_attempt / "launcher_status.json")
     return row_status_paths
 
@@ -199,6 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         grid_attempt_id=grid_attempt_id,
         repo_root=repo_root,
         submitted_commands=submitted_commands,
+        smoke=args.smoke,
     )
     log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
     chunk_status_dir = stage_dir(results_root, STAGE_TRAIN) / "chunk_status" / log_attempt

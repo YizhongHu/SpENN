@@ -21,7 +21,9 @@ from run_utils import (
     STAGE_GRID,
     attempt_ids,
     grid_attempt_dir,
+    latest_attempt_id,
     read_json,
+    smoke_attempt_id,
     stage_dir,
 )
 
@@ -66,11 +68,9 @@ def resolve_grid_attempt_id(results_root: str | Path, grid_attempt_id: str | Non
     if grid_attempt_id is not None:
         return grid_attempt_id
     grid_stage = stage_dir(results_root, STAGE_GRID)
-    latest = grid_stage / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return str(attempt_id)
+    latest = latest_attempt_id(grid_stage)
+    if latest is not None:
+        return latest
     ids = attempt_ids(grid_stage)
     if not ids:
         raise FileNotFoundError(f"no grid attempts under {grid_stage}")
@@ -218,12 +218,6 @@ def with_study_timezone(command: Sequence[str], *, timezone: str | None = None) 
     """Return ``command`` with the study's launcher-owned timezone override."""
 
     return with_overrides(command, {"run.timezone": timezone or DEFAULT_STUDY_TIMEZONE})
-
-
-def smoke_attempt_id(base_attempt_id: str) -> str:
-    """Return an attempt id that clearly marks smoke execution."""
-
-    return base_attempt_id if base_attempt_id.endswith("-smoke") else f"{base_attempt_id}-smoke"
 
 
 def environment_defaults(profile: str) -> tuple[str, list[str], str]:

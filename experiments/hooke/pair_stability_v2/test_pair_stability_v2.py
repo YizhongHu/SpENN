@@ -705,6 +705,37 @@ def test_v2_final_plan_rejects_zero_configured_replicates_without_override(tmp_p
     assert len(planned) == 1
 
 
+def test_v2_final_train_rejects_empty_final_grid(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    attempt = results_root / "05_final_grid" / "F0"
+    attempt.mkdir(parents=True)
+    (attempt / "final_jobs.csv").write_text("final_run_id\n", encoding="utf-8")
+    run_utils.write_json(
+        attempt / "manifest.json",
+        {
+            "study": "pair_stability_v2",
+            "stage": run_utils.STAGE_FINAL_GRID,
+            "attempt_id": "F0",
+            "train_config": str(CONFIGS / "pair_stability.yaml"),
+            "major_axes": [],
+            "minor_axes": [],
+            "axis_overrides": {},
+        },
+    )
+
+    with pytest.raises(ValueError, match="final grid attempt F0 has no jobs"):
+        final_train.main(
+            [
+                "--results-root",
+                str(results_root),
+                "--final-grid-attempt-id",
+                "F0",
+                "--backend",
+                "local",
+            ]
+        )
+
+
 def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     final_grid_stage = results_root / "05_final_grid"

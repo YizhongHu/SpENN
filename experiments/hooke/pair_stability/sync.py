@@ -32,8 +32,7 @@ from run_utils import (
     STAGE_SELECT,
     STAGE_TRAIN,
     STAGE_VALIDATION,
-    attempt_ids,
-    read_json,
+    latest_attempt_id,
     resolve_timezone,
     stage_dir,
     write_json,
@@ -378,15 +377,10 @@ def resolve_final_report_attempt_id(results_root: str | Path, requested: str | N
     if requested is not None:
         return requested
     report_stage = stage_dir(results_root, STAGE_FINAL_REPORT)
-    latest = report_stage / "latest.json"
-    if latest.is_file():
-        attempt_id = read_json(latest).get("attempt_id")
-        if attempt_id:
-            return str(attempt_id)
-    attempts = attempt_ids(report_stage)
-    if not attempts:
+    attempt_id = latest_attempt_id(report_stage)
+    if attempt_id is None:
         raise FileNotFoundError(f"no final-report attempts under {report_stage}")
-    return attempts[-1]
+    return attempt_id
 
 
 def snapshot_name(

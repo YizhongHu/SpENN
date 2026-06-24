@@ -27,8 +27,9 @@ from artifacts import (
 from run_utils import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
-    attempt_ids,
+    latest_attempt_id,
     new_attempt_id,
+    smoke_attempt_id,
     stage_dir,
     write_latest,
 )
@@ -287,7 +288,12 @@ FAILURE_COLUMNS = [
 ]
 
 
-def _iter_final_eval_attempts(results_root: Path, final_eval_attempt_id: str | None) -> list[tuple[str, str, Path]]:
+def _iter_final_eval_attempts(
+    results_root: Path,
+    final_eval_attempt_id: str | None,
+    *,
+    smoke: bool = False,
+) -> list[tuple[str, str, Path]]:
     eval_stage = stage_dir(results_root, STAGE_FINAL_EVAL)
     if not eval_stage.is_dir():
         return []
@@ -297,10 +303,9 @@ def _iter_final_eval_attempts(results_root: Path, final_eval_attempt_id: str | N
             continue
         attempt_id = final_eval_attempt_id
         if attempt_id is None:
-            ids = attempt_ids(run_dir)
-            if not ids:
+            attempt_id = latest_attempt_id(run_dir, smoke=smoke)
+            if attempt_id is None:
                 continue
-            attempt_id = ids[-1]
         attempt_dir = run_dir / attempt_id
         if attempt_dir.is_dir():
             attempts.append((run_dir.name, attempt_id, attempt_dir))
@@ -922,15 +927,25 @@ def collect_final_outputs(
     results_root: str | Path,
     collect_attempt_id: str | None = None,
     final_eval_attempt_id: str | None = None,
+    smoke: bool = False,
 ) -> dict[str, Any]:
     """Collect compact final-summary tables from final train/eval artifacts."""
 
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
+    if smoke:
+        collect_attempt_id = smoke_attempt_id(collect_attempt_id)
     attempt = stage_dir(results_root, STAGE_FINAL_COLLECT) / collect_attempt_id
     attempt.mkdir(parents=True, exist_ok=True)
 
-    contexts = [_run_context(final_run_id, attempt_id, attempt_dir) for final_run_id, attempt_id, attempt_dir in _iter_final_eval_attempts(results_root, final_eval_attempt_id)]
+    contexts = [
+        _run_context(final_run_id, attempt_id, attempt_dir)
+        for final_run_id, attempt_id, attempt_dir in _iter_final_eval_attempts(
+            results_root,
+            final_eval_attempt_id,
+            smoke=smoke,
+        )
+    ]
     resolved_eval_attempt_ids = sorted({str(context["attempt_id"]) for context in contexts})
     manifest_final_eval_attempt_id = final_eval_attempt_id
     if manifest_final_eval_attempt_id is None and len(resolved_eval_attempt_ids) == 1:
@@ -971,6 +986,7 @@ def collect_final_outputs(
         "study": "pair_stability",
         "stage": STAGE_FINAL_COLLECT,
         "attempt_id": collect_attempt_id,
+        "smoke": bool(smoke),
         "final_eval_attempt_id": manifest_final_eval_attempt_id,
         "final_eval_attempt_ids": resolved_eval_attempt_ids,
         "final_eval_attempts": {str(context["final_run_id"]): str(context["attempt_id"]) for context in contexts},
@@ -983,7 +999,7 @@ def collect_final_outputs(
         },
     }
     _write_manifest(attempt / "manifest.yaml", manifest)
-    write_latest(stage_dir(results_root, STAGE_FINAL_COLLECT), collect_attempt_id)
+    write_latest(stage_dir(results_root, STAGE_FINAL_COLLECT), collect_attempt_id, smoke=smoke)
     return {"attempt_dir": str(attempt), "manifest": manifest}
 
 
@@ -994,6 +1010,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--final-eval-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None)
+    parser.add_argument("--smoke", action="store_true", help="Collect smoke final-eval attempts.")
     return parser.parse_args(argv)
 
 
@@ -1010,6 +1027,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
         final_eval_attempt_id=args.final_eval_attempt_id,
+        smoke=args.smoke,
     )
     manifest = result["manifest"]
     print(

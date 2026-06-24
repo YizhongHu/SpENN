@@ -17,10 +17,11 @@ import launch
 from run_utils import (
     STAGE_FINAL_GRID,
     STAGE_FINAL_TRAIN,
-    attempt_ids,
+    attempt_smoke,
     final_grid_attempt_dir,
     final_train_attempt_dir,
     final_train_run_dir,
+    latest_attempt_id,
     read_json,
     stage_dir,
     write_json,
@@ -43,22 +44,18 @@ SMOKE_FINAL_TRAIN_OVERRIDES = {
 }
 
 
-def _is_smoke_attempt(attempt_id: str) -> bool:
-    return attempt_id.endswith("-smoke")
-
-
 def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
     if requested is not None:
-        if not smoke and _is_smoke_attempt(requested):
+        is_smoke = attempt_smoke(stage_dir(results_root, STAGE_FINAL_GRID), requested)
+        if not smoke and is_smoke is True:
             raise ValueError("full final training refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
-    attempts = attempt_ids(final_grid_stage)
-    candidates = [attempt_id for attempt_id in attempts if _is_smoke_attempt(attempt_id) == smoke]
-    if not candidates:
+    attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
+    if attempt_id is None:
         mode = "smoke" if smoke else "production"
         raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
-    return candidates[-1]
+    return attempt_id
 
 
 def load_final_grid_manifest(results_root: Path, final_grid_attempt_id: str) -> dict[str, Any]:
@@ -174,6 +171,7 @@ def write_final_train_provenance(
     final_grid_attempt_id: str,
     attempt_id: str,
     commands: Sequence[Sequence[str]],
+    smoke: bool = False,
 ) -> None:
     """Write per-final-run source pointers before launch."""
 
@@ -193,7 +191,7 @@ def write_final_train_provenance(
         write_json(attempt_dir / "source_champion.json", job.get("source_champion", {}))
         write_json(attempt_dir / "selected_checkpoint.json", _checkpoint_selection_record(attempt_dir))
         (attempt_dir / "command.txt").write_text(shlex.join([str(part) for part in command]) + "\n")
-        write_latest(final_train_run_dir(results_root, final_run_id), attempt_id)
+        write_latest(final_train_run_dir(results_root, final_run_id), attempt_id, smoke=smoke)
 
 
 def write_final_train_submission_records(
@@ -258,6 +256,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = args.config or manifest.get("train_config") or str(DEFAULT_TRAIN_CONFIG)
     attempt_id = _attempt_id(args, final_grid_attempt_id=final_grid_attempt_id)
     jobs = _selected_jobs(load_final_jobs(results_root, final_grid_attempt_id), smoke=args.smoke)
+    if not jobs:
+        raise ValueError(f"final grid attempt {final_grid_attempt_id} has no jobs")
     commands = [
         launch.with_study_timezone(
             _command_for_job(job, config=config, attempt_id=attempt_id, results_root=results_root)
@@ -272,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         final_grid_attempt_id=final_grid_attempt_id,
         attempt_id=attempt_id,
         commands=commands,
+        smoke=args.smoke,
     )
 
     uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
@@ -285,10 +286,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for command in commands
     ]
-
-    if not jobs:
-        print(f"[pair_stability] final grid attempt {final_grid_attempt_id} has no jobs")
-        return 0
 
     row_status_paths = [
         final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id) / "launcher_status.json"

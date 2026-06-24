@@ -314,6 +314,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("final-grid manifest does not record train_config; pass --config")
     attempt_id = _attempt_id(args, final_grid_attempt_id=final_grid_attempt_id)
     jobs = _selected_jobs(load_final_jobs(results_root, final_grid_attempt_id), smoke=args.smoke)
+    if not jobs:
+        raise ValueError(f"final grid attempt {final_grid_attempt_id} has no jobs")
     scalar_axes = final_scalar_axes(manifest)
     override_paths = final_axis_override_paths(manifest, scalar_axes)
     configured_smoke_overrides = launch.load_smoke_overrides(
@@ -357,10 +359,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for command in commands
     ]
-
-    if not jobs:
-        print(f"{prefix} final grid attempt {final_grid_attempt_id} has no jobs")
-        return 0
 
     row_status_paths = [
         final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id) / "launcher_status.json"

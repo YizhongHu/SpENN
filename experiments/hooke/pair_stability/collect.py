@@ -20,14 +20,16 @@ from run_utils import (
     STAGE_COLLECT,
     STAGE_GRID,
     STAGE_VALIDATION,
-    attempt_ids,
     grid_attempt_dir,
+    latest_attempt_id,
     new_attempt_id,
     parse_run_id,
     read_json,
+    smoke_attempt_id,
     stage_dir,
     validation_run_dir,
     write_json,
+    write_latest,
 )
 from stats import as_float
 
@@ -63,13 +65,6 @@ CORE_COLUMNS = (
 )
 
 TRAIN_WALL_TIME_METRIC = "train/runtime/wall_time_sec"
-
-
-def latest_attempt_id(run_dir: Path) -> str | None:
-    """Return the most recent attempt id directly under ``run_dir``."""
-
-    ids = attempt_ids(run_dir)
-    return ids[-1] if ids else None
 
 
 def read_metrics_jsonl(path: Path) -> dict[str, Any]:
@@ -161,13 +156,10 @@ def collect_validation_attempt(run_id: str, attempt_id: str, attempt_dir: Path) 
 def _resolve_grid_attempt(results_root: Path, grid_attempt_id: str | None) -> str | None:
     if grid_attempt_id is not None:
         return grid_attempt_id
-    latest = stage_dir(results_root, STAGE_GRID) / "latest.json"
-    if latest.is_file():
-        return str(read_json(latest).get("attempt_id"))
-    return None
+    return latest_attempt_id(stage_dir(results_root, STAGE_GRID))
 
 
-def _run_ids(results_root: Path, grid_attempt_id: str | None) -> list[str]:
+def _run_ids(results_root: Path, grid_attempt_id: str | None, *, smoke: bool) -> list[str]:
     """Return run ids to collect, from the grid manifest if available."""
 
     if grid_attempt_id is not None:
@@ -177,7 +169,11 @@ def _run_ids(results_root: Path, grid_attempt_id: str | None) -> list[str]:
     if not validation_root.is_dir():
         return []
     # A validation run dir is any child that holds at least one attempt directory.
-    return sorted(child.name for child in validation_root.iterdir() if attempt_ids(child))
+    return sorted(
+        child.name
+        for child in validation_root.iterdir()
+        if latest_attempt_id(child, smoke=smoke) is not None
+    )
 
 
 def collect(
@@ -185,18 +181,21 @@ def collect(
     results_root: str | Path,
     collect_attempt_id: str | None = None,
     grid_attempt_id: str | None = None,
+    smoke: bool = False,
 ) -> dict[str, Any]:
     """Collect validation attempts and write a ``03_collect`` attempt."""
 
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
+    if smoke:
+        collect_attempt_id = smoke_attempt_id(collect_attempt_id)
     grid_attempt_id = _resolve_grid_attempt(results_root, grid_attempt_id)
 
     rows: list[dict[str, Any]] = []
     consumed: list[dict[str, Any]] = []
-    for run_id in _run_ids(results_root, grid_attempt_id):
+    for run_id in _run_ids(results_root, grid_attempt_id, smoke=smoke):
         run_dir = validation_run_dir(results_root, run_id)
-        attempt_id = latest_attempt_id(run_dir)
+        attempt_id = latest_attempt_id(run_dir, smoke=smoke)
         if attempt_id is None:
             continue
         attempt_dir = run_dir / attempt_id
@@ -220,12 +219,14 @@ def collect(
         "study": "pair_stability",
         "stage": STAGE_COLLECT,
         "attempt_id": collect_attempt_id,
+        "smoke": bool(smoke),
         "grid_attempt_id": grid_attempt_id,
         "n_collected": len(rows),
         "n_failures": len(failures),
         "metric_columns": metric_columns,
     }
     write_json(attempt / "collection_report.json", report)
+    write_latest(stage_dir(results_root, STAGE_COLLECT), collect_attempt_id, smoke=smoke)
     return {"attempt_dir": str(attempt), "report": report, "rows": rows}
 
 
@@ -236,6 +237,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--grid-attempt-id", default=None, help="Grid attempt whose run ids to collect.")
     parser.add_argument("--attempt-id", default=None, help="Collect attempt id (defaults to now).")
+    parser.add_argument("--smoke", action="store_true", help="Collect smoke validation attempts.")
     return parser.parse_args(argv)
 
 
@@ -247,6 +249,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
         grid_attempt_id=args.grid_attempt_id,
+        smoke=args.smoke,
     )
     report = result["report"]
     print(
