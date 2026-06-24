@@ -70,6 +70,13 @@ def _planned_results(tmp_path: Path) -> Path:
     return results_root
 
 
+def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
+    checkpoint_dir = run_utils.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "latest.json").write_text(json.dumps({"path": "step_000000"}))
+    return checkpoint_dir
+
+
 def test_v2_smoke_slurm_defaults_match_pair_stability() -> None:
     args = types.SimpleNamespace(
         slurm_partition=None,
@@ -259,6 +266,60 @@ def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) ->
     )
 
     assert resolved == str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml")
+
+
+def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, monkeypatch) -> None:
+    results_root = _planned_results(tmp_path)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    job = manifest["jobs"][0]
+    _write_checkpoint_pointer(results_root, str(job["run_id"]), ATTEMPT)
+    submitted_commands: list[list[str]] = []
+
+    def fake_submit_local(commands: Sequence[Sequence[str]], **kwargs: Any) -> list[str]:
+        submitted_commands.extend([list(command) for command in commands])
+        assert len(kwargs["row_status_paths"]) == len(commands)
+        assert kwargs["chunk_status_dir"] == results_root / "02_validation" / "chunk_status" / "V1"
+        return [f"local-validation-{index}" for index, _ in enumerate(commands)]
+
+    # The script under test imports a direct ``launch`` module when executed as
+    # a file; bind the v2 module explicitly so this test remains isolated from
+    # the legacy pair_stability test module imports.
+    monkeypatch.setattr(validate, "launch", launch)
+    monkeypatch.setattr(validate.launch, "submit_local", fake_submit_local)
+
+    code = validate.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--grid-attempt-id",
+            ATTEMPT,
+            "--train-attempt-id",
+            ATTEMPT,
+            "--attempt-id",
+            "V1",
+            "--backend",
+            "local",
+        ]
+    )
+
+    assert code == 0
+    assert len(submitted_commands) == 1
+    script = submitted_commands[0][-1]
+    assert str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml") in script
+    assert "run_parameters.basis_slot=" in script
+    assert "run_parameters.mechanism_slot=" in script
+    assert "load.path=" in script
+    assert "study.name=pair_stability_v2" in script
+
+    validation_attempt = results_root / "02_validation" / str(job["run_id"]) / "V1"
+    source_train = json.loads((validation_attempt / "source_train_attempt.json").read_text())
+    source_grid = json.loads((validation_attempt / "source_grid_attempt.json").read_text())
+    submission = json.loads((validation_attempt / "submission.json").read_text())
+    assert source_train["grid_attempt_id"] == ATTEMPT
+    assert source_train["train_attempt_id"] == ATTEMPT
+    assert source_grid["grid_attempt_id"] == ATTEMPT
+    assert submission["launcher_job_id"] == "local-validation-0"
+    assert "validation_config.yaml" in submission["submitted_command"]
 
 
 def _write_collection_summary(results_root: Path) -> None:
