@@ -96,10 +96,19 @@ that latest grid attempt. Later stages default to the latest previous-stage
 artifacts and trace provenance back to the source grid:
 
 ```text
-collect.py            newest validation attempt -> source 00_grid
+collect.py            latest validation attempt per scan run -> source 00_grid
 select_champions.py   latest 03_collect
 final_plan.py         latest 04_select
+final_train.py        latest 05_final_grid
+final_eval.py         latest 05_final_grid + latest ready 06_final_train per final run
+final_collect.py      latest 07_final_eval per final run
+final_report.py       latest 08_final_collect
 ```
+
+Fan-out stages also write per-run latest pointers:
+`01_train/{run_id}/latest.json`, `02_validation/{run_id}/latest.json`,
+`06_final_train/{final_run_id}/latest.json`, and
+`07_final_eval/{final_run_id}/latest.json`.
 
 Pass explicit `--attempt-id`, `--grid-attempt-id`, or previous-stage attempt
 flags only when reproducing an older lineage or debugging.
@@ -148,6 +157,92 @@ the source grid manifest.
 uv run python $STUDY/collect.py
 
 uv run python $STUDY/select_champions.py
+```
+
+## Optional Final Stages
+
+V2 is a screening study, so the checked-in grid sets `final_replicates: 0`.
+Run `final_plan.py` with an explicit non-zero `--replicates` when you want to
+continue selected champions through report-grade final training/evaluation.
+The default commands below consume the latest previous stage and write their own
+latest pointers.
+
+Plan final replicates from the latest champion selection:
+
+```bash
+# Example report-grade diagnostic plan: two final replicates per champion.
+uv run python $STUDY/final_plan.py \
+  --replicates 2
+```
+
+This writes `results/05_final_grid/<attempt_id>/final_jobs.csv` and
+`05_final_grid/latest.json`. Each final job records the selected major-axis
+aliases, frozen minor choices, source champion row, replicate index, and
+independent final seeds:
+
+```text
+final_train_sampler_seed = 101 + replicate_index
+final_train_model_seed   = 1001 + replicate_index
+final_eval_seed          = 10001 + replicate_index
+```
+
+Launch final training from the latest final grid:
+
+```bash
+uv run --extra submitit python $STUDY/final_train.py \
+  --backend submitit --cuda \
+  --chunk-size 6 \
+  --slurm-timeout-min 480
+```
+
+Launch final evaluation from the latest final grid and the latest ready
+final-train checkpoint for each final run:
+
+```bash
+uv run --extra submitit python $STUDY/final_eval.py \
+  --backend submitit --cuda \
+  --slurm-timeout-min 480 \
+  --wait-job <final_train_launcher_job_id>
+```
+
+Keep final-eval `--chunk-size` at the default `1` unless you intentionally want
+multiple report-grade final-eval rows serialized inside one Slurm allocation.
+`final_eval.py` records the exact final-train attempt and checkpoint directory
+that it evaluates.
+
+Collect compact final tables and render the report:
+
+```bash
+uv run python $STUDY/final_collect.py
+
+uv run python $STUDY/final_report.py
+```
+
+`final_collect.py` reads raw final train/eval artifacts once and writes compact
+CSV summaries under `08_final_collect/{attempt_id}/`. `final_report.py` reads
+only those compact tables and writes `09_final_report/{attempt_id}/report.md`,
+`tables/*.csv`, and `figures/*.png`.
+
+Smoke final stages use the same lineage defaults but cap the final grid to the
+first one or two champions, use one final replicate, mark attempts with
+`-smoke`, and use the test partitions:
+
+```bash
+uv run python $STUDY/final_plan.py --smoke
+
+uv run --extra submitit python $STUDY/final_train.py \
+  --smoke \
+  --backend submitit --cuda \
+  --chunk-size 1
+
+uv run --extra submitit python $STUDY/final_eval.py \
+  --smoke \
+  --backend submitit --cuda \
+  --wait-job <final_train_launcher_job_id>
+
+uv run python $STUDY/final_collect.py
+
+uv run python $STUDY/final_report.py
 ```
 
 `validate.py` and `final_eval.py` support `--wait-job <job_id>` when the
