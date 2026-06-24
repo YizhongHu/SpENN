@@ -121,6 +121,7 @@ def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> 
     command, kwargs = calls[0]
     assert submitted == "88888"
     assert "--dependency=afterany:24211558" in command
+    assert "--partition=test" in command
     assert "--time=00:19:00" in command
     assert "--output=" + str(tmp_path / "logs" / "%x-%j.out") in command
     script = str(kwargs["input"])

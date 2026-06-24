@@ -137,7 +137,8 @@ uv run --extra submitit python $STUDY/validate.py \
   --backend submitit --cuda \
   --only-ready \
   --chunk-size 32 \
-  --slurm-timeout-min 480
+  --slurm-timeout-min 480 \
+  --wait-job <train_launcher_job_id>
 ```
 
 Collect the newest validation lineage and select energy representatives. These
@@ -157,13 +158,16 @@ dependent launcher reruns the same stage command without `--wait-job` and then
 performs the normal readiness checks. Otherwise, rerun validation/final eval
 with `--only-ready` after upstream checkpoints are ready. The lightweight
 launcher defaults to the `test` partition; override it with
-`--wait-launcher-partition` if needed.
+`--wait-launcher-partition` if needed. The real validation/final-eval array
+still follows `--cpu`/`--cuda` and `--smoke` partition defaults when the
+dependent launcher runs.
 
 ## Smoke Runs
 
 Smoke runs are separate from full runs. Passing `--smoke` keeps the same source
-grid but writes smoke-marked attempts, limits launchers to two jobs, uses the
-`gpu_test`/`test` partitions by default, and applies only the stage-specific
+grid but writes smoke-marked attempts, limits launchers to two jobs, sends CPU
+smoke jobs to `test` and CUDA smoke jobs to `gpu_test` by default, and applies
+only the stage-specific
 workload reductions in `configs/smoke.yaml`. The smoke profile mirrors the
 small scaling used by `experiments/hooke/pair_stability`: two train steps,
 small sampler settings, checkpoint/status every step, and compact validation
