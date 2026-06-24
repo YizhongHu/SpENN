@@ -664,6 +664,47 @@ def test_v2_selects_energy_champions_per_major_and_plans_nine_final_seeds_by_def
     assert final_job["mechanism"] not in set(true_grid.major_grid.mechanism)
 
 
+def test_v2_final_plan_rejects_zero_configured_replicates_without_override(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    _write_collection_summary(results_root)
+    select_champions.select(results_root=results_root, select_attempt_id="S1")
+
+    manifest_path = results_root / "00_grid" / ATTEMPT / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["final_replicates"] = 0
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+
+    with pytest.raises(ValueError, match="final_replicates must be >= 1"):
+        final_plan.main(
+            [
+                "--results-root",
+                str(results_root),
+                "--selection-attempt-id",
+                "S1",
+                "--attempt-id",
+                "F0",
+            ]
+        )
+
+    code = final_plan.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--selection-attempt-id",
+            "S1",
+            "--attempt-id",
+            "F1",
+            "--replicates",
+            "1",
+            "--limit-champions",
+            "1",
+        ]
+    )
+    assert code == 0
+    planned = _read_csv(results_root / "05_final_grid" / "F1" / "final_jobs.csv")
+    assert len(planned) == 1
+
+
 def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     final_grid_stage = results_root / "05_final_grid"

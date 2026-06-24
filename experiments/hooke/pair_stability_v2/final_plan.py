@@ -96,7 +96,12 @@ def _configured_final_replicates(source_grid_manifest: dict[str, Any] | None) ->
     if replicates is None:
         return None
     replicates = int(replicates)
-    return replicates if replicates >= 0 else None
+    if replicates < 1:
+        raise ValueError(
+            "grid metadata final_replicates must be >= 1; "
+            "pass --replicates to override an older grid manifest"
+        )
+    return replicates
 
 
 def _default_grid_data() -> dict[str, Any]:
@@ -361,13 +366,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not isinstance(config_snapshots, dict):
         raise ValueError("grid metadata config_snapshots must be a mapping")
 
-    configured_replicates = _configured_final_replicates(source_or_default_grid)
     if args.replicates is not None:
         requested_replicates = args.replicates
-    elif configured_replicates is not None:
-        requested_replicates = configured_replicates
     else:
-        requested_replicates = DEFAULT_REPLICATES
+        configured_replicates = _configured_final_replicates(source_or_default_grid)
+        requested_replicates = (
+            configured_replicates
+            if configured_replicates is not None
+            else DEFAULT_REPLICATES
+        )
     replicates = SMOKE_REPLICATES if args.smoke else requested_replicates
     champion_limit = SMOKE_CHAMPION_LIMIT if args.smoke else args.limit_champions
     attempt_id = args.attempt_id or new_attempt_id()
