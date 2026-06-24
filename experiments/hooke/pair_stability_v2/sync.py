@@ -8,7 +8,6 @@ through explicit stage provenance files. Checkpoint directories are omitted.
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import shutil
 import sys
@@ -33,15 +32,19 @@ from run_utils import (
     STAGE_TRAIN,
     STAGE_VALIDATION,
     latest_attempt_id,
+    load_study_module,
     log_prefix,
     path_from_record,
     read_json_object,
     read_json_object_list,
     resolve_timezone,
     stage_dir,
-    trace_source_ancestry,
     write_json,
 )
+
+_ancestry = load_study_module("ancestry", __file__)
+Ancestry = _ancestry.Ancestry
+trace_final_report_ancestry = _ancestry.trace_final_report_ancestry
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = STUDY_DIR / "configs" / "grid.yaml"
@@ -250,51 +253,6 @@ def build_sync_plan(
         skipped_checkpoint_dirs=skipped_checkpoint_dirs,
         warnings=tuple(warnings),
     )
-
-
-@dataclass(frozen=True)
-class Ancestry:
-    """Traced result roots for a final report attempt."""
-
-    roots: frozenset[Path]
-    warnings: tuple[str, ...]
-
-
-def trace_final_report_ancestry(results_root: str | Path, report_attempt_id: str) -> Ancestry:
-    """Trace the result directories consumed by ``09_final_report/{attempt}``."""
-
-    results_root = Path(results_root).resolve()
-    roots: set[Path] = set()
-    warnings: list[str] = []
-    report_dir = stage_dir(results_root, STAGE_FINAL_REPORT) / report_attempt_id
-    _add_dir(roots, warnings, report_dir, "final report")
-
-    report_json = read_json_object(report_dir / "final_report.json", warnings)
-    collect_attempt_id = str(report_json.get("final_collect_attempt_id") or "")
-    if not collect_attempt_id:
-        warnings.append(f"{report_dir / 'final_report.json'}: missing final_collect_attempt_id")
-        return Ancestry(frozenset(roots), tuple(warnings))
-
-    collect_dir = stage_dir(results_root, STAGE_FINAL_COLLECT) / collect_attempt_id
-    _add_dir(roots, warnings, collect_dir, "final collect")
-
-    run_index = _read_csv(collect_dir / "run_index.csv")
-    final_run_ids = [str(row.get("final_run_id", "")) for row in run_index if row.get("final_run_id")]
-    final_eval_attempts = _final_eval_attempts_from_collect_manifest(collect_dir / "manifest.yaml", final_run_ids)
-    final_eval_dirs = _resolve_final_eval_dirs(
-        results_root,
-        final_eval_attempts,
-    )
-    for eval_dir in final_eval_dirs:
-        ancestry = trace_source_ancestry(
-            results_root,
-            eval_dir,
-            include_scan_run_roots=False,
-        )
-        roots.update(ancestry.roots)
-        warnings.extend(ancestry.warnings)
-
-    return Ancestry(frozenset(roots), tuple(warnings))
 
 
 def load_study_config(config_path: str | Path) -> Any:
@@ -506,64 +464,6 @@ def _stage_counts(roots: Sequence[Path], results_root: Path) -> dict[str, int]:
         stage = relative.parts[0]
         counts[stage] = counts.get(stage, 0) + 1
     return dict(sorted(counts.items()))
-
-
-def _read_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def _final_eval_attempts_from_collect_manifest(path: Path, final_run_ids: Sequence[str]) -> dict[str, str]:
-    if not path.is_file():
-        raise ValueError(f"final collect manifest is required for lineage: {path}")
-    manifest = OmegaConf.load(path)
-    fixed_attempt_id = _config_text(manifest, "final_eval_attempt_id")
-    if fixed_attempt_id:
-        return {final_run_id: fixed_attempt_id for final_run_id in final_run_ids}
-    raw_mapping = OmegaConf.select(manifest, "final_eval_attempts", default=None)
-    if raw_mapping is None:
-        raise ValueError(
-            f"{path}: missing final_eval_attempt_id/final_eval_attempts; "
-            "rerun final_collect.py with current code or pass --final-eval-attempt-id"
-        )
-    mapping = OmegaConf.to_container(raw_mapping, resolve=True)
-    if not isinstance(mapping, dict):
-        raise ValueError(f"{path}: final_eval_attempts must be a mapping of final_run_id to attempt id")
-    attempts = {str(run_id): str(attempt_id) for run_id, attempt_id in mapping.items() if attempt_id not in (None, "")}
-    missing = [final_run_id for final_run_id in final_run_ids if final_run_id not in attempts]
-    if missing:
-        preview = ", ".join(missing[:5])
-        suffix = "" if len(missing) <= 5 else f", ... ({len(missing)} total)"
-        raise ValueError(f"{path}: final_eval_attempts missing final_run_id entries: {preview}{suffix}")
-    return {final_run_id: attempts[final_run_id] for final_run_id in final_run_ids}
-
-
-def _resolve_final_eval_dirs(
-    results_root: Path,
-    final_eval_attempts: dict[str, str],
-) -> list[Path]:
-    dirs = []
-    for final_run_id, attempt_id in final_eval_attempts.items():
-        run_dir = stage_dir(results_root, STAGE_FINAL_EVAL) / final_run_id
-        attempt_dir = run_dir / attempt_id
-        if not attempt_dir.is_dir():
-            raise FileNotFoundError(f"manifested final-eval attempt does not exist: {attempt_dir}")
-        dirs.append(attempt_dir)
-    return dirs
-
-
-def _add_dir(roots: set[Path], warnings: list[str], path: Path, label: str) -> bool:
-    path = path.resolve()
-    if path.is_dir():
-        if path in roots:
-            return False
-        roots.add(path)
-        return True
-    else:
-        warnings.append(f"missing {label} directory: {path}")
-        return False
 
 
 def _config_text(config: Any, dotted_key: str) -> str | None:

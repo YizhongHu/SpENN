@@ -25,10 +25,13 @@ directly.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -165,6 +168,30 @@ def read_json(path: Path) -> Any:
     """Read JSON from ``path``."""
 
     return json.loads(Path(path).read_text())
+
+
+# ---------------------------------------------------------------------------
+# Study-local imports
+# ---------------------------------------------------------------------------
+def load_study_module(module_name: str, anchor_file: str | Path) -> ModuleType:
+    """Load a sibling study module without relying on a top-level cache name."""
+
+    anchor = Path(anchor_file).resolve()
+    study_dir = Path(__file__).resolve().parent
+    if anchor.parent != study_dir:
+        raise ImportError(f"run_utils from {study_dir} cannot load module for {anchor.parent}")
+    module_path = anchor.with_name(f"{module_name}.py")
+    private_name = f"_spenn_study_{anchor.parent.name}_{module_name}"
+    cached = sys.modules.get(private_name)
+    if cached is not None and Path(str(getattr(cached, "__file__", ""))).resolve() == module_path:
+        return cached
+    spec = importlib.util.spec_from_file_location(private_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load study module {module_name!r} from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[private_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 # ---------------------------------------------------------------------------

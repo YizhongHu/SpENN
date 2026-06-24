@@ -26,17 +26,20 @@ from run_utils import (
     grid_axes_from_manifest,
     id_for_axes,
     latest_attempt_id,
+    load_study_module,
     log_prefix,
     new_attempt_id,
     seed_override_policy,
     seed_override_values,
     smoke_attempt_id,
-    source_grid_from_attempt,
     stage_dir,
     study_name_from_manifest,
     write_json,
     write_latest,
 )
+
+_ancestry = load_study_module("ancestry", __file__)
+source_grid_from_attempt = _ancestry.source_grid_from_attempt
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"

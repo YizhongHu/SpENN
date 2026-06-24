@@ -20,23 +20,27 @@ from run_utils import (
     STAGE_COLLECT,
     STAGE_GRID,
     STAGE_VALIDATION,
-    SourceGrid,
     axis_id_labels_from_manifest,
     grid_axes_from_manifest,
     id_for_axes,
     latest_attempt_id,
+    load_study_module,
     log_prefix,
     new_attempt_id,
     read_json,
     smoke_attempt_id,
-    source_grid_from_attempt,
-    source_grid_from_id,
     stage_dir,
     study_name_from_manifest,
     validation_run_dir,
     write_json,
     write_latest,
 )
+
+_ancestry = load_study_module("ancestry", __file__)
+SourceGrid = _ancestry.SourceGrid
+source_grid_from_attempt = _ancestry.source_grid_from_attempt
+source_grid_from_id = _ancestry.source_grid_from_id
+
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
