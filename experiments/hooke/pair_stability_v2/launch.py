@@ -654,7 +654,8 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         default=None,
         help=(
             "Defaults to seas_compute,kozinsky_lab,sapphire for CPU and "
-            "seas_gpu,kozinsky_gpu for CUDA."
+            "seas_gpu,kozinsky_gpu for CUDA; with --smoke, CPU defaults to "
+            "test and CUDA defaults to gpu_test."
         ),
     )
     parser.add_argument("--slurm-gpus", type=int, default=None, help="CUDA only; defaults to 1 with --cuda.")

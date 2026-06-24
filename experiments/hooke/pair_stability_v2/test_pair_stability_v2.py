@@ -69,6 +69,28 @@ def _planned_results(tmp_path: Path) -> Path:
     return results_root
 
 
+def test_v2_smoke_slurm_defaults_match_pair_stability() -> None:
+    args = types.SimpleNamespace(
+        slurm_partition=None,
+        slurm_array_parallelism=None,
+        slurm_timeout_min=None,
+        slurm_mem_gb=None,
+        slurm_cpus=None,
+        slurm_gpus=None,
+    )
+
+    smoke_cpu = launch.slurm_parameters(args, profile="cpu", smoke=True)
+    smoke_cuda = launch.slurm_parameters(args, profile="cuda", smoke=True)
+
+    assert smoke_cpu["slurm_partition"] == "test"
+    assert smoke_cuda["slurm_partition"] == "gpu_test"
+    assert smoke_cpu["timeout_min"] == 15
+    assert smoke_cuda["timeout_min"] == 15
+    assert smoke_cpu["slurm_array_parallelism"] == 2
+    assert smoke_cuda["slurm_array_parallelism"] == 2
+    assert smoke_cuda["gpus_per_node"] == 1
+
+
 def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> None:
     calls = []
 
