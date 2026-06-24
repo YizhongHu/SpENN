@@ -12,6 +12,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Sequence
 
+import pytest
 from omegaconf import OmegaConf
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -131,8 +132,10 @@ def test_v2_latest_attempt_id_prefers_pointer_with_sorted_fallback(tmp_path: Pat
 
     assert run_utils.latest_attempt_id(parent) == "aaa"
 
-    (parent / "zzz-smoke").mkdir()
-    assert run_utils.latest_attempt_id(parent, smoke=True) == "zzz-smoke"
+    run_utils.write_latest(parent, "diagnostic", smoke=True)
+    assert run_utils.latest_attempt_id(parent) == "aaa"
+    assert run_utils.latest_attempt_id(parent, smoke=False) == "aaa"
+    assert run_utils.latest_attempt_id(parent, smoke=True) == "diagnostic"
     assert run_utils.latest_attempt_id(parent / "missing") is None
 
 
@@ -176,6 +179,54 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
     assert planned[0]["train_attempt_id"] == ATTEMPT
     latest_validation = json.loads((run_utils.validation_run_dir(results_root, run_id) / "latest.json").read_text())
     assert latest_validation["attempt_id"] == "manual-validation"
+
+
+def test_v2_real_validation_uses_non_smoke_train_attempts(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    job = manifest["jobs"][0]
+    run_id = str(job["run_id"])
+    smoke_attempt = "diagnostic-train"
+    _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
+    _write_checkpoint_pointer(results_root, run_id, smoke_attempt)
+    run_utils.write_latest(run_utils.train_run_dir(results_root, run_id), smoke_attempt, smoke=True)
+
+    assert validate.latest_train_attempt_id(results_root, run_id, smoke=False) == ATTEMPT
+    assert validate.latest_train_attempt_id(results_root, run_id, smoke=True) == smoke_attempt
+
+    args = types.SimpleNamespace(smoke=False, train_attempt_id=None, attempt_id="real-validation")
+    scalar_axes = validate._scalar_axes(manifest)
+    planned, skipped = validate.plan_validation_jobs(
+        [job],
+        args=args,
+        study="pair_stability_v2",
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        validation_config="validation.yaml",
+        scalar_axes=scalar_axes,
+        override_paths=validate._axis_override_paths(manifest, scalar_axes),
+        seed_axis=str(manifest["scan_seed_axis"]),
+        smoke_overrides={},
+        seed_policy=manifest.get("seed_overrides"),
+    )
+    assert skipped == []
+    assert planned[0]["train_attempt_id"] == ATTEMPT
+
+    args.train_attempt_id = smoke_attempt
+    with pytest.raises(ValueError, match="refuses a smoke train attempt"):
+        validate.plan_validation_jobs(
+            [job],
+            args=args,
+            study="pair_stability_v2",
+            results_root=results_root,
+            grid_attempt_id=ATTEMPT,
+            validation_config="validation.yaml",
+            scalar_axes=scalar_axes,
+            override_paths=validate._axis_override_paths(manifest, scalar_axes),
+            seed_axis=str(manifest["scan_seed_axis"]),
+            smoke_overrides={},
+            seed_policy=manifest.get("seed_overrides"),
+        )
 
 
 def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> None:
@@ -618,12 +669,12 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     final_grid_stage = results_root / "05_final_grid"
     (final_grid_stage / "zzz").mkdir(parents=True)
     (final_grid_stage / "aaa").mkdir()
-    (final_grid_stage / "zzz-smoke").mkdir()
     run_utils.write_latest(final_grid_stage, "aaa")
+    run_utils.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
 
     assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
     assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
-    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "zzz-smoke"
+    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "diagnostic-final-grid"
 
     final_run_id = "final-run-0"
     _write_final_checkpoint(results_root, final_run_id, "zzz")
@@ -641,3 +692,32 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     assert final_collect._iter_final_eval_attempts(results_root, None) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
     ]
+
+
+def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    final_run_id = "final-run-0"
+    final_grid_attempt_id = "FG0"
+    smoke_attempt = "diagnostic-final-train"
+    _write_final_checkpoint(results_root, final_run_id, final_grid_attempt_id)
+    _write_final_checkpoint(results_root, final_run_id, smoke_attempt)
+    run_utils.write_latest(run_utils.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
+
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == final_grid_attempt_id
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=True) == smoke_attempt
+    assert (
+        final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False)
+        == final_grid_attempt_id
+    )
+
+    args = types.SimpleNamespace(
+        smoke=False,
+        final_train_attempt_id=smoke_attempt,
+        allow_production_final_train=False,
+    )
+    with pytest.raises(ValueError, match="refuses a smoke final-train attempt"):
+        final_eval._final_train_attempt_id_for_job(
+            args=args,
+            results_root=results_root,
+            final_run_id=final_run_id,
+        )

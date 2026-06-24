@@ -25,6 +25,7 @@ from run_utils import (
     STAGE_FINAL_EVAL,
     STAGE_FINAL_GRID,
     attempt_ids,
+    attempt_smoke,
     experiment_run_name,
     final_eval_attempt_dir,
     final_grid_attempt_dir,
@@ -67,13 +68,10 @@ SMOKE_FINAL_EVAL_OVERRIDES = {
 }
 
 
-def _is_smoke_attempt(attempt_id: str) -> bool:
-    return attempt_id.endswith("-smoke")
-
-
 def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
     if requested is not None:
-        if not smoke and _is_smoke_attempt(requested):
+        is_smoke = attempt_smoke(stage_dir(results_root, STAGE_FINAL_GRID), requested)
+        if not smoke and is_smoke is True:
             raise ValueError("full final eval refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
@@ -114,8 +112,8 @@ def _final_train_attempt_id_for_job(
     final_run_id: str,
 ) -> str | None:
     if args.final_train_attempt_id is not None:
-        is_smoke = _is_smoke_attempt(args.final_train_attempt_id)
-        if not args.smoke and is_smoke:
+        is_smoke = attempt_smoke(final_train_run_dir(results_root, final_run_id), args.final_train_attempt_id)
+        if not args.smoke and is_smoke is True:
             raise ValueError("full final eval refuses a smoke final-train attempt; pass --smoke")
         if args.smoke and is_smoke is False and not args.allow_production_final_train:
             raise ValueError(
@@ -152,6 +150,13 @@ def _resolved_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
     }
 
 
+def _attempt_matches_smoke(run_dir: Path, attempt_id: str, *, smoke: bool) -> bool:
+    """Return whether a final-train attempt belongs to the requested lineage."""
+
+    known_smoke = attempt_smoke(run_dir, attempt_id)
+    return (False if known_smoke is None else known_smoke) is smoke
+
+
 def _latest_ready_final_train_attempt_id(
     results_root: str | Path,
     final_run_id: str,
@@ -163,7 +168,11 @@ def _latest_ready_final_train_attempt_id(
     run_dir = final_train_run_dir(results_root, final_run_id)
     preferred = latest_attempt_id(run_dir, smoke=smoke)
     ids = attempt_ids(run_dir)
-    candidates = [attempt_id for attempt_id in ids if _is_smoke_attempt(attempt_id) == smoke]
+    candidates = [
+        attempt_id
+        for attempt_id in ids
+        if _attempt_matches_smoke(run_dir, attempt_id, smoke=smoke)
+    ]
     ordered = []
     if preferred is not None:
         ordered.append(preferred)
@@ -290,7 +299,7 @@ def plan_final_eval_jobs(
         if args.smoke:
             command = launch.with_overrides(command, SMOKE_FINAL_EVAL_OVERRIDES)
         (final_eval_attempt / "command.txt").write_text(shlex.join(command) + "\n")
-        write_latest(final_eval_attempt.parent, final_eval_attempt_id)
+        write_latest(final_eval_attempt.parent, final_eval_attempt_id, smoke=args.smoke)
         planned.append(
             {
                 "final_run_id": final_run_id,

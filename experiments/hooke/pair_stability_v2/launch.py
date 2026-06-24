@@ -27,6 +27,7 @@ from run_utils import (
     latest_attempt_id,
     log_prefix,
     read_json,
+    smoke_attempt_id,
     stage_dir,
 )
 
@@ -260,12 +261,6 @@ def with_study_timezone(command: Sequence[str], *, timezone: str | None = None) 
     """Return ``command`` with the study's launcher-owned timezone override."""
 
     return with_overrides(command, {"run.timezone": timezone or DEFAULT_STUDY_TIMEZONE})
-
-
-def smoke_attempt_id(base_attempt_id: str) -> str:
-    """Return an attempt id that clearly marks smoke execution."""
-
-    return base_attempt_id if base_attempt_id.endswith("-smoke") else f"{base_attempt_id}-smoke"
 
 
 def environment_defaults(profile: str) -> tuple[str, list[str], str]:

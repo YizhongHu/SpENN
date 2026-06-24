@@ -18,6 +18,7 @@ from omegaconf import OmegaConf
 import launch
 from run_utils import (
     STAGE_VALIDATION,
+    attempt_smoke,
     config_snapshot_names,
     experiment_run_name,
     grid_attempt_dir,
@@ -128,12 +129,6 @@ def validation_overrides(
     return overrides
 
 
-def _is_smoke_attempt(attempt_id: str) -> bool:
-    """Return whether an attempt id is marked as smoke."""
-
-    return attempt_id.endswith("-smoke")
-
-
 def latest_train_attempt_id(results_root: str | Path, run_id: str, *, smoke: bool) -> str | None:
     """Return the latest eligible train attempt for ``run_id``."""
 
@@ -196,17 +191,14 @@ def _train_attempt_id_for_job(
     *,
     args: argparse.Namespace,
     results_root: Path,
-    grid_attempt_id: str,
     run_id: str,
 ) -> str | None:
     if args.train_attempt_id is not None:
-        if not args.smoke and _is_smoke_attempt(args.train_attempt_id):
+        is_smoke = attempt_smoke(train_run_dir(results_root, run_id), args.train_attempt_id)
+        if not args.smoke and is_smoke is True:
             raise ValueError("full validation refuses a smoke train attempt; pass --smoke for smoke validation")
         return args.train_attempt_id
     if args.smoke:
-        smoke_id = launch.smoke_attempt_id(grid_attempt_id)
-        if train_attempt_dir(results_root, run_id, smoke_id).is_dir():
-            return smoke_id
         return latest_train_attempt_id(results_root, run_id, smoke=True)
     return latest_train_attempt_id(results_root, run_id, smoke=False)
 
@@ -238,7 +230,6 @@ def plan_validation_jobs(
         train_attempt_id = _train_attempt_id_for_job(
             args=args,
             results_root=results_root,
-            grid_attempt_id=grid_attempt_id,
             run_id=run_id,
         )
         if train_attempt_id is None:
@@ -289,7 +280,7 @@ def plan_validation_jobs(
         command = launch.with_study_timezone(command, timezone=_job_timezone(job))
         if args.smoke:
             command = launch.with_overrides(command, smoke_overrides)
-        write_latest(validation_attempt.parent, validation_attempt_id)
+        write_latest(validation_attempt.parent, validation_attempt_id, smoke=args.smoke)
         planned.append(
             {
                 "run_id": run_id,

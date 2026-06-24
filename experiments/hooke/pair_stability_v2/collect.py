@@ -28,6 +28,7 @@ from run_utils import (
     log_prefix,
     new_attempt_id,
     read_json,
+    smoke_attempt_id,
     source_grid_from_attempt,
     source_grid_from_id,
     stage_dir,
@@ -226,7 +227,7 @@ def collect_validation_attempt(
     return row
 
 
-def _latest_validation_attempts(results_root: Path) -> list[tuple[str, str, Path]]:
+def _latest_validation_attempts(results_root: Path, *, smoke: bool | None = None) -> list[tuple[str, str, Path]]:
     """Return the latest validation attempt for each validation run id."""
 
     validation_root = stage_dir(results_root, STAGE_VALIDATION)
@@ -234,37 +235,37 @@ def _latest_validation_attempts(results_root: Path) -> list[tuple[str, str, Path
         return []
     attempts = []
     for run_dir in sorted(child for child in validation_root.iterdir() if child.is_dir()):
-        attempt_id = latest_attempt_id(run_dir)
+        attempt_id = latest_attempt_id(run_dir, smoke=smoke)
         if attempt_id is not None:
             attempts.append((run_dir.name, attempt_id, run_dir / attempt_id))
     return attempts
 
 
-def _latest_validation_attempt(results_root: Path) -> tuple[str, str, Path] | None:
+def _latest_validation_attempt(results_root: Path, *, smoke: bool | None = None) -> tuple[str, str, Path] | None:
     """Return the newest validation attempt across run ids."""
 
-    attempts = _latest_validation_attempts(results_root)
+    attempts = _latest_validation_attempts(results_root, smoke=smoke)
     if not attempts:
         return None
     return max(attempts, key=lambda item: item[1])
 
 
-def _source_grid_from_latest_validations(results_root: Path) -> SourceGrid | None:
+def _source_grid_from_latest_validations(results_root: Path, *, smoke: bool | None = None) -> SourceGrid | None:
     """Trace the newest validation attempt back to its source grid."""
 
-    latest = _latest_validation_attempt(results_root)
+    latest = _latest_validation_attempt(results_root, smoke=smoke)
     if latest is None:
         return None
     _run_id, _attempt_id, attempt_dir = latest
     return source_grid_from_attempt(results_root, attempt_dir)
 
 
-def _resolve_grid_source(results_root: Path, grid_attempt_id: str | None) -> SourceGrid | None:
+def _resolve_grid_source(results_root: Path, grid_attempt_id: str | None, *, smoke: bool) -> SourceGrid | None:
     """Return explicit, traced, or latest source grid for collection."""
 
     if grid_attempt_id is not None:
         return source_grid_from_id(results_root, grid_attempt_id)
-    traced = _source_grid_from_latest_validations(results_root)
+    traced = _source_grid_from_latest_validations(results_root, smoke=smoke)
     if traced is not None:
         return traced
     attempt_id = latest_attempt_id(stage_dir(results_root, STAGE_GRID))
@@ -281,12 +282,12 @@ def _grid_manifest(source_grid: SourceGrid | None) -> dict[str, Any] | None:
     return source_grid.read_manifest()
 
 
-def _run_ids(results_root: Path, grid_manifest: dict[str, Any] | None) -> list[str]:
+def _run_ids(results_root: Path, grid_manifest: dict[str, Any] | None, *, smoke: bool) -> list[str]:
     """Return run ids to collect, from the grid manifest if available."""
 
     if grid_manifest is not None:
         return [str(job["run_id"]) for job in grid_manifest.get("jobs", [])]
-    return [run_id for run_id, _attempt_id, _attempt_dir in _latest_validation_attempts(results_root)]
+    return [run_id for run_id, _attempt_id, _attempt_dir in _latest_validation_attempts(results_root, smoke=smoke)]
 
 
 def collect(
@@ -294,12 +295,15 @@ def collect(
     results_root: str | Path,
     collect_attempt_id: str | None = None,
     grid_attempt_id: str | None = None,
+    smoke: bool = False,
 ) -> dict[str, Any]:
     """Collect validation attempts and write a ``03_collect`` attempt."""
 
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
-    source_grid = _resolve_grid_source(results_root, grid_attempt_id)
+    if smoke:
+        collect_attempt_id = smoke_attempt_id(collect_attempt_id)
+    source_grid = _resolve_grid_source(results_root, grid_attempt_id, smoke=smoke)
     grid_attempt_id = None if source_grid is None else source_grid.attempt_id
     grid_manifest = _grid_manifest(source_grid)
     study = study_name_from_manifest(grid_manifest)
@@ -313,9 +317,9 @@ def collect(
 
     rows: list[dict[str, Any]] = []
     consumed: list[dict[str, Any]] = []
-    for run_id in _run_ids(results_root, grid_manifest):
+    for run_id in _run_ids(results_root, grid_manifest, smoke=smoke):
         run_dir = validation_run_dir(results_root, run_id)
-        attempt_id = latest_attempt_id(run_dir)
+        attempt_id = latest_attempt_id(run_dir, smoke=smoke)
         if attempt_id is None:
             continue
         attempt_dir = run_dir / attempt_id
@@ -360,6 +364,7 @@ def collect(
         "study": study,
         "stage": STAGE_COLLECT,
         "attempt_id": collect_attempt_id,
+        "smoke": bool(smoke),
         "grid_attempt_id": grid_attempt_id,
         "major_axes": list(axis_metadata["major_axes"]),
         "minor_axes": list(axis_metadata["minor_axes"]),
@@ -372,7 +377,7 @@ def collect(
         "required_train_metrics": sorted(required_train_metrics),
     }
     write_json(attempt / "collection_report.json", report)
-    write_latest(stage_dir(results_root, STAGE_COLLECT), collect_attempt_id)
+    write_latest(stage_dir(results_root, STAGE_COLLECT), collect_attempt_id, smoke=smoke)
     return {"attempt_dir": str(attempt), "report": report, "rows": rows}
 
 
@@ -387,6 +392,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override source grid attempt; defaults to the grid traced from the newest validation attempt.",
     )
     parser.add_argument("--attempt-id", default=None, help="Collect attempt id (defaults to now).")
+    parser.add_argument("--smoke", action="store_true", help="Collect smoke validation attempts.")
     return parser.parse_args(argv)
 
 
@@ -398,6 +404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
         grid_attempt_id=args.grid_attempt_id,
+        smoke=args.smoke,
     )
     report = result["report"]
     prefix = log_prefix(report.get("study"))

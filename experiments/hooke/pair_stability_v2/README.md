@@ -109,6 +109,13 @@ Fan-out stages also write per-run latest pointers:
 `06_final_train/{final_run_id}/latest.json`, and
 `07_final_eval/{final_run_id}/latest.json`.
 
+Attempt ids are names only. Smoke/full identity is recorded in each attempt's
+`attempt_metadata.json` and in latest-pointer payloads. When a full attempt is
+known, `latest.json` points to the latest full attempt; smoke diagnostics update
+`latest-smoke.json` and never displace an existing full default. Full stages
+therefore default to the latest non-smoke upstream run, while smoke stages
+default to the latest smoke upstream run.
+
 Pass explicit `--attempt-id`, `--grid-attempt-id`, or previous-stage attempt
 flags only when reproducing an older lineage or debugging.
 
@@ -219,8 +226,8 @@ only those compact tables and writes `09_final_report/{attempt_id}/report.md`,
 `tables/*.csv`, and `figures/*.png`.
 
 Smoke final stages use the same lineage defaults but cap the final grid to the
-first one or two champions, use one final seed, mark attempts with
-`-smoke`, and use the test partitions:
+first one or two champions, use one final seed, record smoke metadata, and use
+the test partitions:
 
 ```bash
 uv run python $STUDY/final_plan.py --smoke
@@ -235,9 +242,9 @@ uv run --extra submitit python $STUDY/final_eval.py \
   --backend submitit --cuda \
   --wait-job <final_train_launcher_job_id>
 
-uv run python $STUDY/final_collect.py
+uv run python $STUDY/final_collect.py --smoke
 
-uv run python $STUDY/final_report.py
+uv run python $STUDY/final_report.py --smoke
 ```
 
 `validate.py` and `final_eval.py` support `--wait-job <job_id>` when the

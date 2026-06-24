@@ -30,6 +30,7 @@ from run_utils import (
     new_attempt_id,
     seed_override_policy,
     seed_override_values,
+    smoke_attempt_id,
     source_grid_from_attempt,
     stage_dir,
     study_name_from_manifest,
@@ -57,15 +58,11 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def _smoke_attempt_id(attempt_id: str) -> str:
-    return attempt_id if attempt_id.endswith("-smoke") else f"{attempt_id}-smoke"
-
-
-def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | None) -> str:
+def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | None, *, smoke: bool) -> str:
     if selection_attempt_id is not None:
         return selection_attempt_id
     select_stage = stage_dir(results_root, STAGE_SELECT)
-    attempt_id = latest_attempt_id(select_stage)
+    attempt_id = latest_attempt_id(select_stage, smoke=smoke)
     if attempt_id is None:
         raise FileNotFoundError(f"no selection attempts under {select_stage}")
     return attempt_id
@@ -326,7 +323,7 @@ def write_final_grid_attempt(
     }
     write_json(attempt / "manifest.json", manifest)
     OmegaConf.save(OmegaConf.create(manifest), attempt / "manifest.yaml")
-    write_latest(stage_dir(results_root, STAGE_FINAL_GRID), attempt_id)
+    write_latest(stage_dir(results_root, STAGE_FINAL_GRID), attempt_id, smoke=smoke)
     return attempt
 
 
@@ -350,7 +347,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parse_args(argv)
     results_root = Path(args.results_root)
-    selection_attempt_id = _resolve_selection_attempt(results_root, args.selection_attempt_id)
+    selection_attempt_id = _resolve_selection_attempt(results_root, args.selection_attempt_id, smoke=args.smoke)
     selection_dir = stage_dir(results_root, STAGE_SELECT) / selection_attempt_id
     champions = read_champions(selection_dir)
     source_grid_manifest = _source_grid_manifest(results_root, selection_dir)
@@ -375,7 +372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     champion_limit = SMOKE_CHAMPION_LIMIT if args.smoke else args.limit_champions
     attempt_id = args.attempt_id or new_attempt_id()
     if args.smoke:
-        attempt_id = _smoke_attempt_id(attempt_id)
+        attempt_id = smoke_attempt_id(attempt_id)
     created_at = datetime.now(STUDY_TIMEZONE).isoformat(timespec="seconds")
     seed_policy = seed_override_policy(source_or_default_grid.get("seed_overrides"))
     seed_sequences = final_seed_sequences(source_or_default_grid.get("final_seed_sequences"))

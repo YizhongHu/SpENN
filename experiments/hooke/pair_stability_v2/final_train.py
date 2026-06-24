@@ -17,6 +17,7 @@ import launch
 from run_utils import (
     STAGE_FINAL_GRID,
     STAGE_FINAL_TRAIN,
+    attempt_smoke,
     experiment_run_name,
     final_grid_attempt_dir,
     final_train_attempt_dir,
@@ -35,13 +36,10 @@ from run_utils import (
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
-def _is_smoke_attempt(attempt_id: str) -> bool:
-    return attempt_id.endswith("-smoke")
-
-
 def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
     if requested is not None:
-        if not smoke and _is_smoke_attempt(requested):
+        is_smoke = attempt_smoke(stage_dir(results_root, STAGE_FINAL_GRID), requested)
+        if not smoke and is_smoke is True:
             raise ValueError("full final training refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
@@ -227,6 +225,7 @@ def write_final_train_provenance(
     final_grid_attempt_id: str,
     attempt_id: str,
     commands: Sequence[Sequence[str]],
+    smoke: bool = False,
 ) -> None:
     """Write per-final-run source pointers before launch."""
 
@@ -246,7 +245,7 @@ def write_final_train_provenance(
         write_json(attempt_dir / "source_champion.json", job.get("source_champion", {}))
         write_json(attempt_dir / "selected_checkpoint.json", _checkpoint_selection_record(attempt_dir))
         (attempt_dir / "command.txt").write_text(shlex.join([str(part) for part in command]) + "\n")
-        write_latest(final_train_run_dir(results_root, final_run_id), attempt_id)
+        write_latest(final_train_run_dir(results_root, final_run_id), attempt_id, smoke=smoke)
 
 
 def write_final_train_submission_records(
@@ -344,6 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         final_grid_attempt_id=final_grid_attempt_id,
         attempt_id=attempt_id,
         commands=commands,
+        smoke=args.smoke,
     )
 
     uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
