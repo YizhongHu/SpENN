@@ -245,6 +245,13 @@ training has already been submitted, do not rerun it just to continue the
 lineage. Use the final-train launcher job id with `final_eval.py --wait-job` so
 evaluation starts after Slurm marks the launcher complete.
 
+Local final-train claimers stop taking new rows near the end of their enclosing
+allocation. When `SLURM_JOB_END_TIME` is present, local claim mode uses it as the
+deadline and stops claiming rows 60 minutes before that deadline by default. Use
+`--local-deadline <unix-or-iso-time>` when running outside a Slurm allocation, or
+adjust the buffer with `--local-deadline-guard-min`; set it to `0` only when a
+local worker is allowed to be killed mid-row.
+
 Launch final evaluation from the latest final grid and the latest ready
 final-train checkpoint for each final run:
 

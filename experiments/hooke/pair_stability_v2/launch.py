@@ -15,8 +15,10 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
+from zoneinfo import ZoneInfo
 
 from omegaconf import OmegaConf
 
@@ -62,6 +64,7 @@ DEFAULT_DEPENDENT_LAUNCHER_PARTITION = "test"
 DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN = 30
 DEFAULT_DEPENDENT_LAUNCHER_MEM_GB = 4
 DEFAULT_DEPENDENT_LAUNCHER_CPUS = 1
+DEFAULT_LOCAL_DEADLINE_GUARD_MIN = 60
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]
 
@@ -492,6 +495,86 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def nonnegative_int(value: str) -> int:
+    """Parse a non-negative integer CLI value."""
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
+def parse_deadline_unix(value: str | None) -> float | None:
+    """Return a UNIX deadline from seconds or an ISO timestamp."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    timestamp = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError as exc:
+        raise ValueError(
+            "local deadline must be UNIX seconds or an ISO timestamp"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(DEFAULT_STUDY_TIMEZONE))
+    return parsed.timestamp()
+
+
+def local_claim_deadline_unix(args: argparse.Namespace) -> float | None:
+    """Return the local claim deadline from CLI or Slurm environment."""
+
+    explicit = getattr(args, "local_deadline", None)
+    if explicit:
+        return parse_deadline_unix(explicit)
+    return parse_deadline_unix(os.environ.get("SLURM_JOB_END_TIME"))
+
+
+def _deadline_guard_reached(deadline_unix: float | None, guard_min: int | None) -> bool:
+    """Return whether a local worker should stop claiming new rows."""
+
+    if deadline_unix is None:
+        return False
+    guard_seconds = max(0, int(guard_min or 0)) * 60
+    if guard_seconds <= 0:
+        return False
+    return time.time() >= float(deadline_unix) - guard_seconds
+
+
+def _deadline_guard_payload(
+    *,
+    index: int,
+    command: str,
+    claim_label: str | None,
+    deadline_unix: float | None,
+    guard_min: int | None,
+) -> dict[str, Any]:
+    """Return a row status payload for a deadline-guarded skipped claim."""
+
+    remaining_min = None
+    if deadline_unix is not None:
+        remaining_min = (float(deadline_unix) - time.time()) / 60
+    return {
+        "status": "skipped_deadline_guard",
+        "chunk_index": index,
+        "command": command,
+        "claim_label": claim_label,
+        "deadline_unix": deadline_unix,
+        "guard_min": guard_min,
+        "remaining_min": remaining_min,
+    }
+
+
 def balanced_chunks(items: Sequence[T], *, chunk_size: int) -> list[list[T]]:
     """Split ``items`` into evenly sized chunks no larger than ``chunk_size``."""
 
@@ -633,6 +716,8 @@ def run_command_chunk(
     chunk_status_path: str | Path | None = None,
     claim_paths: Sequence[str | Path | None] | None = None,
     claim_label: str | None = None,
+    claim_deadline_unix: float | None = None,
+    claim_deadline_guard_min: int = 0,
 ) -> dict[str, Any]:
     """Run prepared commands sequentially inside one local/Submitit chunk.
 
@@ -668,6 +753,7 @@ def run_command_chunk(
             },
         )
         raise ValueError("claim_paths must match commands length")
+    deadline_guarded = False
     for index, command in enumerate(commands):
         command = [str(part) for part in command]
         command_text = shlex.join(command)
@@ -681,6 +767,18 @@ def run_command_chunk(
                 }
             )
             continue
+        if _deadline_guard_reached(claim_deadline_unix, claim_deadline_guard_min):
+            row_results.append(
+                _deadline_guard_payload(
+                    index=index,
+                    command=command_text,
+                    claim_label=claim_label,
+                    deadline_unix=claim_deadline_unix,
+                    guard_min=claim_deadline_guard_min,
+                )
+            )
+            deadline_guarded = True
+            break
         claim_payload = {
             "status": "claimed",
             "chunk_index": index,
@@ -732,13 +830,19 @@ def run_command_chunk(
             failures.append((index, returncode, command_text))
             if returncode is None and not allow_partial_failures:
                 break
-    chunk_status = "success" if not failures else "partial_failed"
+    if deadline_guarded and not failures:
+        chunk_status = "deadline_guard"
+    else:
+        chunk_status = "success" if not failures else "partial_failed"
     chunk_payload = {
         "status": chunk_status,
         "n_commands": len(commands),
         "n_failed": len(failures),
         "rows": row_results,
     }
+    if deadline_guarded:
+        chunk_payload["deadline_unix"] = claim_deadline_unix
+        chunk_payload["guard_min"] = claim_deadline_guard_min
     _write_status(chunk_status_path, chunk_payload)
     if failures:
         lines = [
@@ -802,6 +906,8 @@ def submit_local(
     chunk_status_dir: str | Path | None = None,
     claim_paths: Sequence[str | Path | None] | None = None,
     claim_label: str | None = None,
+    claim_deadline_unix: float | None = None,
+    claim_deadline_guard_min: int = 0,
 ) -> list[str]:
     """Run commands sequentially in-process, grouped into balanced chunks."""
 
@@ -813,8 +919,21 @@ def submit_local(
         chunk_status_path = None
         if chunk_status_dir is not None:
             chunk_status_path = Path(chunk_status_dir) / f"chunk-{index:04d}.json"
+        if _deadline_guard_reached(claim_deadline_unix, claim_deadline_guard_min):
+            _write_status(
+                chunk_status_path,
+                {
+                    "status": "deadline_guard",
+                    "n_commands": len(chunk),
+                    "n_failed": 0,
+                    "rows": [],
+                    "deadline_unix": claim_deadline_unix,
+                    "guard_min": claim_deadline_guard_min,
+                },
+            )
+            break
         try:
-            run_command_chunk(
+            chunk_result = run_command_chunk(
                 chunk,
                 cwd=repo_root,
                 allow_partial_failures=allow_partial_failures,
@@ -822,10 +941,14 @@ def submit_local(
                 chunk_status_path=chunk_status_path,
                 claim_paths=claim_chunks[index],
                 claim_label=claim_label,
+                claim_deadline_unix=claim_deadline_unix,
+                claim_deadline_guard_min=claim_deadline_guard_min,
             )
         except RuntimeError as exc:
             raise RuntimeError(f"local chunk {index} failed") from exc
         job_ids.extend([f"local-chunk-{index}-rc0"] * len(chunk))
+        if chunk_result.get("status") == "deadline_guard":
+            break
     return job_ids
 
 
@@ -944,6 +1067,12 @@ def submit_command_sets(
         profile = _local_profile(profiles)
         use_claims = len(profiles) > 1 or claim_rows
         claim_paths = claim_paths_for_statuses(row_status_paths) if use_claims else None
+        claim_deadline_unix = local_claim_deadline_unix(args) if use_claims else None
+        claim_deadline_guard_min = (
+            getattr(args, "local_deadline_guard_min", DEFAULT_LOCAL_DEADLINE_GUARD_MIN)
+            if use_claims
+            else 0
+        )
         local_kwargs = {
             "repo_root": repo_root,
             "chunk_size": chunk_size,
@@ -951,6 +1080,8 @@ def submit_command_sets(
             "chunk_status_dir": chunk_status_dir,
             "claim_paths": claim_paths,
             "claim_label": f"local-{profile}" if use_claims else None,
+            "claim_deadline_unix": claim_deadline_unix,
+            "claim_deadline_guard_min": claim_deadline_guard_min,
         }
         if allow_partial_failures:
             local_kwargs["allow_partial_failures"] = True
@@ -1111,6 +1242,24 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         help=(
             "Maximum desired run commands per local/Submitit chunk. Chunks are "
             f"balanced evenly; default {DEFAULT_CHUNK_SIZE} keeps one command per array task."
+        ),
+    )
+    parser.add_argument(
+        "--local-deadline",
+        default=None,
+        help=(
+            "Local claiming deadline as UNIX seconds or an ISO timestamp. "
+            "Defaults to SLURM_JOB_END_TIME when that environment variable is set."
+        ),
+    )
+    parser.add_argument(
+        "--local-deadline-guard-min",
+        type=nonnegative_int,
+        default=DEFAULT_LOCAL_DEADLINE_GUARD_MIN,
+        help=(
+            "For local claimers, stop claiming new rows this many minutes before "
+            "the local deadline; set 0 to disable. "
+            f"Default: {DEFAULT_LOCAL_DEADLINE_GUARD_MIN}."
         ),
     )
     parser.add_argument(

@@ -262,6 +262,7 @@ def test_v2_local_claim_mode_uses_claim_paths(tmp_path: Path, monkeypatch: pytes
         return ["local-0"]
 
     monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    monkeypatch.setenv("SLURM_JOB_END_TIME", "1782579321")
     args = train.parse_args(["--backend", "local", "--device", "cpu"])
     row_status = tmp_path / "run" / "launcher_status.json"
 
@@ -281,6 +282,27 @@ def test_v2_local_claim_mode_uses_claim_paths(tmp_path: Path, monkeypatch: pytes
     assert job_ids == ["local-0"]
     assert captured["kwargs"]["claim_paths"] == [row_status.with_name("launcher_claim.json")]
     assert captured["kwargs"]["claim_label"] == "local-cpu"
+    assert captured["kwargs"]["claim_deadline_unix"] == 1782579321.0
+    assert captured["kwargs"]["claim_deadline_guard_min"] == 60
+
+
+def test_v2_run_command_chunk_deadline_guard_skips_unclaimed_row(tmp_path: Path) -> None:
+    row_status = tmp_path / "run" / "launcher_status.json"
+    claim_path = row_status.with_name("launcher_claim.json")
+
+    result = launch.run_command_chunk(
+        [["bash", "-lc", "false"]],
+        row_status_paths=[row_status],
+        claim_paths=[claim_path],
+        claim_label="local-cpu",
+        claim_deadline_unix=0.0,
+        claim_deadline_guard_min=60,
+    )
+
+    assert result["status"] == "deadline_guard"
+    assert result["rows"][0]["status"] == "skipped_deadline_guard"
+    assert not claim_path.exists()
+    assert not row_status.exists()
 
 
 def test_v2_run_command_chunk_reclaims_failed_row_claim(tmp_path: Path) -> None:
