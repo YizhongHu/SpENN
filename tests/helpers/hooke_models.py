@@ -40,6 +40,12 @@ def build_tiny_sampler() -> MetropolisSampler:
     return instantiate(_config().sampler)
 
 
+def build_tiny_hamiltonian_terms() -> dict:
+    """Instantiate the named Hooke Hamiltonian terms from the smoke fixture config."""
+
+    return dict(instantiate(_config().hamiltonian_terms))
+
+
 def tiny_pair_batch(n_walkers: int = 4) -> ElectronBatch:
     """Return a tiny 2-electron batch with fixed (up, down) spins."""
 

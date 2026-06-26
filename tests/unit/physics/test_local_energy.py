@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.nn.cusp import ElectronElectronCusp
+from spenn.nn import ElectronElectronCusp
 from spenn.physics.hamiltonian import (
     LocalEnergyResult,
     local_energy,

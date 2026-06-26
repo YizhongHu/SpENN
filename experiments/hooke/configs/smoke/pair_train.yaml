@@ -1,9 +1,17 @@
 # =============================================================================
-# Hooke pair smoke training
+#  SpENN | Hooke pair smoke training
+# -----------------------------------------------------------------------------
+#  experiment : hooke_pair_smoke        runner : spenn.runner.Train
+#  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
 # =============================================================================
 #
 # Purpose:
 #   Cheap end-to-end training sanity check for the two-electron Hooke system.
+#
+# Workflow position:
+#
+#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  benchmark configs
+#   (this file)                         (sampled eval)       (future PRs)
 #
 # ---- BEGIN AI-FACED CONFIG GUIDANCE ----
 #
@@ -107,18 +115,22 @@ terminal:
 #   3. Uncomment the WandB logger in the `loggers:` section at the bottom.
 #
 wandb:
-  project: spenn-qmc
+  project: spenn-qmc-test
   entity: null
+  # Use the SpENN run id as the W&B run name so dashboard runs map 1:1 to
+  # local run directories. Populated by run setup before loggers instantiate.
+  name: ${run.run_id}
   # online   - stream metrics to W&B
   # offline  - write locally and sync later with `wandb sync`
   # disabled - no-op, if supported by the logger
-  mode: offline
+  mode: online
   group: ${experiment.name}
   job_type: train
   tags:
     - hooke
     - smoke
-    - vmc
+    - train
+    - ${runtime.device}
 
   # W&B should mirror scalar metrics using the canonical namespace/key path:
   #   namespace = train/sampler
@@ -173,6 +185,8 @@ model_params:
   #   reference implementation to maximize test coverage.
   mixing_implementation: slow
   mixing_initial_weight: 0.5
+  # Fixed Hooke Gaussian tail: exp(-(omega / 2) * sum_i |r_i|^2).
+  harmonic_confinement_coefficient: 0.25
 
 
 # -----------------------------------------------------------------------------
@@ -197,7 +211,7 @@ sampler_params:
 # Training
 # -----------------------------------------------------------------------------
 training:
-  max_steps: 2
+  max_steps: 5
   log_every_n_steps: 1
   return_terms: true # If true, compute/log named Hamiltonian term contributions.
 
@@ -206,13 +220,35 @@ optimizer_params:
 
 
 # -----------------------------------------------------------------------------
-# Runtime validation cadence
+# Validation (model/protocol selection estimator)
+# -----------------------------------------------------------------------------
+# Validation runs an independent sampler on the trained model at train_end and
+# logs validation/* metrics. It never compares against the exact reference
+# energy; exact-reference reporting belongs to final evaluation (eval/*).
+# To disable validation, remove this block, the validation_sampler spec, and
+# the Validation callback entry.
+validation:
+  namespace: validation
+  return_terms: true
+
+validation_sampler_params:
+  # Smoke-sized validation chain; benchmark configs use a much larger one.
+  n_walkers: 32
+  burn_in: 10
+  n_steps: 5
+  proposal_scale: 0.5
+  # Distinct from every training seed so validation samples are independent.
+  seed: 114514
+
+
+# -----------------------------------------------------------------------------
+# Runtime data-integrity check cadence
 # -----------------------------------------------------------------------------
 checks:
   every_n_steps: 1
   fail_fast: true
 
-  data_validity:
+  data_integrity:
     max_nonfinite_energy_fraction: 0.0
     max_nonfinite_logabs_fraction: 0.0
     check_loss: true
@@ -235,17 +271,46 @@ checks:
 
 
 # -----------------------------------------------------------------------------
-# Checkpointing
+# Checkpoint restore
+# -----------------------------------------------------------------------------
+load:
+  path: null
+  mode: none
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint writing
 # -----------------------------------------------------------------------------
 checkpoint:
   every_n_steps: 1
+  keep_last: 3
+  save_optimizer: true
+  save_trainer: true
+  save_sampler: true
+  save_rng: true
+
+
+# -----------------------------------------------------------------------------
+# Timing
+# -----------------------------------------------------------------------------
+timing:
+  # Rolling window (in steps) for the step-time rolling mean.
+  rolling_window: 20
+  # Set true on GPU runs for accurate timings; adds a small synchronization cost.
+  cuda_synchronize: false
 
 
 # -----------------------------------------------------------------------------
 # Human-facing status cadence
 # -----------------------------------------------------------------------------
+# Smoke runs are short, so report every step. Steps are 0-indexed and the
+# cadence gate fires when step % every_n_steps == 0, so the first step always
+# reports regardless of cadence. Benchmark configs should use a lower cadence
+# such as every_n_steps: 10.
 status:
-  every_n_steps: 10
+  every_n_steps: 1
   include:
     - train/loss
     - train/energy
@@ -253,6 +318,8 @@ status:
     - train/sampler/acceptance_rate
     - train/grad_norm
     - train/local_energy_finite_fraction
+    - train/perf/step_time_sec
+    - train/perf/step_time_sec_rolling_mean
 
 
 # =============================================================================
@@ -274,6 +341,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  load: ${load}
 
 
 # -----------------------------------------------------------------------------
@@ -325,6 +393,13 @@ model:
       update:
         _target_: spenn.nn.ResidualUpdate
 
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - _target_: spenn.nn.HarmonicConfinement
+        coefficient: ${model_params.harmonic_confinement_coefficient}
+      - _target_: spenn.nn.ElectronElectronCusp
+
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     channels: ${model_params.channels}
@@ -355,6 +430,26 @@ sampler:
   n_steps: ${sampler_params.n_steps}
   proposal_scale: ${sampler_params.proposal_scale}
   seed: ${runtime.seed}
+
+  n_electrons: ${system.n_particles}
+  spatial_dim: ${system.spatial_dim}
+  n_up: ${system.spin.n_up}
+  n_down: ${system.spin.n_down}
+  dtype: ${runtime.dtype}
+
+
+# -----------------------------------------------------------------------------
+# Validation sampler
+# -----------------------------------------------------------------------------
+# Fresh sampler instance for the Validation callback. It must never share
+# chain state with the training sampler above.
+validation_sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
+  n_walkers: ${validation_sampler_params.n_walkers}
+  burn_in: ${validation_sampler_params.burn_in}
+  n_steps: ${validation_sampler_params.n_steps}
+  proposal_scale: ${validation_sampler_params.proposal_scale}
+  seed: ${validation_sampler_params.seed}
 
   n_electrons: ${system.n_particles}
   spatial_dim: ${system.spatial_dim}
@@ -420,18 +515,34 @@ callbacks:
       - exception
     output_path: ${run.dir}/status.json
 
+  # Whole-run wall-clock timing: runtime/wall_time_sec and unix timestamps.
+  - _target_: spenn.callback.RunTiming
+    triggers:
+      - run_start
+      - run_end
+      - exception
+    cuda_synchronize: ${timing.cuda_synchronize}
+
+  # Per-step timing: train/perf/step_time_sec and its rolling mean.
+  - _target_: spenn.callback.TrainStepTiming
+    triggers:
+      - step_start
+      - step_end
+    rolling_window: ${timing.rolling_window}
+    cuda_synchronize: ${timing.cuda_synchronize}
+
   # Fail fast on nonfinite energies/logabs or malformed wavefunction/batch data.
-  - _target_: spenn.callback.DataValidity
+  - _target_: spenn.callback.DataIntegrity
     triggers:
       - step_end
     every_n_steps: ${checks.every_n_steps}
     fail_fast: ${checks.fail_fast}
-    max_nonfinite_energy_fraction: ${checks.data_validity.max_nonfinite_energy_fraction}
-    max_nonfinite_logabs_fraction: ${checks.data_validity.max_nonfinite_logabs_fraction}
-    check_loss: ${checks.data_validity.check_loss}
-    check_wavefunction_output: ${checks.data_validity.check_wavefunction_output}
-    check_batch: ${checks.data_validity.check_batch}
-    strict_sign_values: ${checks.data_validity.strict_sign_values}
+    max_nonfinite_energy_fraction: ${checks.data_integrity.max_nonfinite_energy_fraction}
+    max_nonfinite_logabs_fraction: ${checks.data_integrity.max_nonfinite_logabs_fraction}
+    check_loss: ${checks.data_integrity.check_loss}
+    check_wavefunction_output: ${checks.data_integrity.check_wavefunction_output}
+    check_batch: ${checks.data_integrity.check_batch}
+    strict_sign_values: ${checks.data_integrity.strict_sign_values}
 
   # Track gradient norms and optionally fail on nonfinite gradients.
   - _target_: spenn.callback.GradientStats
@@ -472,6 +583,21 @@ callbacks:
         atol: ${checks.equivariance.atol}
         rtol: ${checks.equivariance.rtol}
 
+  # Train-end validation with an independent sampler. Logs validation/* and
+  # validation/sampler/* metrics for model/protocol selection; never uses the
+  # exact reference energy.
+  - _target_: spenn.callback.Validation
+    triggers:
+      - train_end
+    namespace: ${validation.namespace}
+    sampler: ${validation_sampler}
+    hamiltonian_terms: ${hamiltonian_terms}
+    return_terms: ${validation.return_terms}
+    diagnostics:
+      - _target_: spenn.diagnostics.EnergyEvaluation
+        name: energy
+        include_terms: true
+
   # Save checkpoints. Smoke runs checkpoint every step; benchmark configs should
   # usually use a lower cadence.
   - _target_: spenn.callback.Checkpoint
@@ -479,6 +605,11 @@ callbacks:
       - step_end
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
+    keep_last: ${checkpoint.keep_last}
+    save_optimizer: ${checkpoint.save_optimizer}
+    save_trainer: ${checkpoint.save_trainer}
+    save_sampler: ${checkpoint.save_sampler}
+    save_rng: ${checkpoint.save_rng}
 
   # Human-facing terminal progress. This should render compact lines for local
   # terminals and SLURM logs. It is not the authoritative metrics record.
@@ -515,6 +646,7 @@ loggers:
   # - _target_: spenn.logging.WandB
   #   project: ${wandb.project}
   #   entity: ${wandb.entity}
+  #   name: ${wandb.name}
   #   mode: ${wandb.mode}
   #   group: ${wandb.group}
   #   job_type: ${wandb.job_type}
@@ -523,3 +655,10 @@ loggers:
   #   dashboard_aliases: ${wandb.dashboard_aliases}
   #   health_flags: ${wandb.health_flags}
   #   log_artifacts: ${wandb.log_artifacts}
+  #   # Compact provenance mirrored into the W&B run config: links the
+  #   # dashboard run back to the authoritative local run directory.
+  #   config:
+  #     run_id: ${run.run_id}
+  #     run_dir: ${run.dir}
+  #     experiment: ${experiment.name}
+  #     sector: ${experiment.sector}

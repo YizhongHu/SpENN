@@ -137,7 +137,7 @@ def test_project_record_to_wandb_supports_scalar_record_shape() -> None:
 
 def test_project_record_to_wandb_derives_health_flags_from_checks() -> None:
     data_payload = project_record_to_wandb(
-        LogRecord(step=5, namespace="checks/data_validity", metrics={"passed": False})
+        LogRecord(step=5, namespace="checks/data_integrity", metrics={"passed": False})
     )
     sampler_payload = project_record_to_wandb(
         LogRecord(step=5, namespace="checks/sampler", metrics={"passed": True})
@@ -148,7 +148,7 @@ def test_project_record_to_wandb_derives_health_flags_from_checks() -> None:
 
     assert data_payload == {
         "checks/train_step": 5,
-        "checks/data_validity/passed": False,
+        "checks/data_integrity/passed": False,
         "train/step": 5,
         "health/numerics_ok": 0.0,
         "health/run_ok": 0.0,

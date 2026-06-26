@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +30,9 @@ class WandB(Logger):
         W&B run group.
     job_type : str or None, optional
         W&B job type.
-    tags : list of str or None, optional
-        W&B tags.
+    tags : sequence of str or None, optional
+        W&B tags. Any sequence is accepted (e.g. an OmegaConf list from a
+        Hydra config) and is copied into a plain list.
     mode : {"online", "offline", "disabled"}, optional
         W&B logging mode.
     config : mapping or None, optional
@@ -60,8 +61,9 @@ class WandB(Logger):
         name: str | None = None,
         group: str | None = None,
         job_type: str | None = None,
-        tags: list[str] | None = None,
+        tags: Sequence[str] | None = None,
         mode: str = "online",
+        dir: str | None = None,
         config: Mapping[str, object] | None = None,
         log_config: bool = True,
         log_code: bool = False,
@@ -77,8 +79,11 @@ class WandB(Logger):
         self.name = name
         self.group = group
         self.job_type = job_type
-        self.tags = None if tags is None else list(tags)
+        if isinstance(tags, str):
+            raise TypeError(f"tags must be a sequence of strings, not a single string: {tags!r}")
+        self.tags = None if tags is None else [str(tag) for tag in tags]
         self.mode = mode
+        self.dir = dir
         self.config = None if config is None else _json_safe(dict(config))
         self.log_config = bool(log_config)
         self.log_code = bool(log_code)
@@ -151,6 +156,7 @@ class WandB(Logger):
             job_type=self.job_type,
             tags=self.tags,
             mode=self.mode,
+            dir=self.dir,
             config=self.config if self.log_config else None,
             save_code=self.log_code,
         )
@@ -166,6 +172,11 @@ class WandB(Logger):
             ("train/*", "train/step"),
             ("train/sampler/*", "train/step"),
             ("train/perf/*", "train/step"),
+            # Validation runs inside the training lifecycle, so it shares the
+            # train step axis.
+            ("validation/*", "train/step"),
+            ("validation/sampler/*", "train/step"),
+            ("validation/perf/*", "train/step"),
             ("eval/*", "eval/step"),
             ("eval/sampler/*", "eval/step"),
             ("eval/perf/*", "eval/step"),
@@ -263,6 +274,8 @@ def _record_fields(record: LogRecord | Mapping[str, object]) -> tuple[int | None
 def _add_step_fields(payload: dict[str, object], namespace: str, step: int) -> None:
     if namespace == "train" or namespace.startswith("train/"):
         payload["train/step"] = step
+    elif namespace == "validation" or namespace.startswith("validation/"):
+        payload["train/step"] = step
     elif namespace == "eval" or namespace.startswith("eval/"):
         payload["eval/step"] = step
     elif namespace.startswith("checks/"):
@@ -281,10 +294,10 @@ def _join_metric(namespace: str, key: str) -> str:
 
 def _derive_health_flags(raw_metrics: Mapping[str, object]) -> dict[str, float]:
     flags: dict[str, float] = {}
-    data_passed = raw_metrics.get("checks/data_validity/passed")
+    data_passed = raw_metrics.get("checks/data_integrity/passed")
     if isinstance(data_passed, bool):
         flags["health/numerics_ok"] = 1.0 if data_passed else 0.0
-    elif raw_metrics.get("checks/data_validity/local_energy_nonfinite_fraction") == 0:
+    elif raw_metrics.get("checks/data_integrity/local_energy_nonfinite_fraction") == 0:
         flags["health/numerics_ok"] = 1.0
 
     sampler_passed = raw_metrics.get("checks/sampler/passed")

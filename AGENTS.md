@@ -19,6 +19,7 @@ should closely follow the design document for correctness.
 ## Conventions
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
+- Use `America/New York` timezone for experiment logging. Use `UTC` for test logging.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,

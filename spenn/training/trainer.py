@@ -68,6 +68,21 @@ class VMCTrainer:
         self.log_every_n_steps = int(log_every_n_steps)
         self.return_terms = bool(return_terms)
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
+        self.global_step = 0
+
+    def state_dict(self) -> dict[str, int]:
+        """Return checkpointable trainer progress state."""
+
+        return {
+            "global_step": int(self.global_step),
+            "completed_steps": int(self.global_step),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore trainer progress state for ``train_resume``."""
+
+        global_step = state.get("global_step", state.get("completed_steps", 0))
+        self.global_step = int(global_step)
 
     def fit(
         self,
@@ -81,8 +96,10 @@ class VMCTrainer:
     ) -> TrainerState:
         """Run the training loop and return the final `TrainerState`."""
 
-        state = TrainerState(model=model, optimizer=optimizer, sampler=sampler)
-        for step in range(1, self.max_steps + 1):
+        state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
+        # Steps are 0-indexed: the first step always satisfies the
+        # step % every_n_steps == 0 cadence gates in callbacks and logging.
+        for step in range(self.global_step, self.max_steps):
             emit("step_start", payload={"step": step})
 
             walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)
@@ -145,7 +162,18 @@ class VMCTrainer:
                 if sampler_stats:
                     context.log(dict(sampler_stats), step=step, namespace="train/sampler")
 
-            emit("step_end", state=state, payload={"step": step})
+            self.global_step = step + 1
+            emit(
+                "step_end",
+                state=state,
+                payload={
+                    "step": step,
+                    "model": model,
+                    "optimizer": optimizer,
+                    "trainer": self,
+                    "sampler": sampler,
+                },
+            )
 
         return state
 

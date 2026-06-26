@@ -765,31 +765,50 @@ $ Psi = det [hat(bx)^(c, T, (1))_i] $
 We form a matrix with axis 0 being the channels and axis 1 being the particle index. 
 This type of readout has been used extensively in mainstream NN-QMC methods.
 
-== Cusps
+== Envelopes
 
-We implement cusp handling as a separate multiplicative Jastrow-style factor outside the antisymmetric SpechtMP/readout stack:
+We apply scalar envelope factors outside the antisymmetric SpechtMP/readout stack:
 
 $
-psi(br) = exp(J_"cusp" (br)) psi_theta (br),
+psi(br) = exp(J_"env" (br)) psi_theta (br),
 $
 
 or equivalently,
 
 $
-log abs(psi(br))) = J_"cusp" (br) + log abs(psi_theta (br)).
+log abs(psi(br))) = J_"env" (br) + log abs(psi_theta (br)).
 $
 
-This keeps cusp enforcement independent from the determinant/Pfaffian/Specht readout and preserves the antisymmetry of $psi_theta$.
+This keeps smooth long-range factors and short-range cusp enforcement independent from the determinant/Pfaffian/Specht readout and preserves the antisymmetry of $psi_theta$.
 
-We decompose
+`nn.SpENNWaveFunction` takes one required `nn.Envelope`. Composite envelopes use `nn.AdditiveEnvelope`, which adds the scalar outputs of its component envelopes. For the Hooke pair config, the composite envelope is the sum of `nn.HarmonicConfinement` and `nn.ElectronElectronCusp`.
+
+For a harmonically confined system,
+
+$
+J_"conf"(br)
+=
+- alpha sum_i |r_i|^2,
+quad alpha >= 0.
+$
+
+For Hooke or oscillator frequency $omega$, the fixed Gaussian ground-state tail uses
+
+$
+alpha = omega / 2.
+$
+
+This factor is smooth rather than cusp-like, but it is still additive in $log abs(psi)$ and should be applied through the envelope interface, not inside the antisymmetric readout.
+
+The current cusp envelope implementation contains only the electron-electron term:
 
 $
 J_"cusp" (br)
 =
-J_"ee" (br) + J_"en" (br).
+J_"ee" (br).
 $
 
-Here $J_"ee"$ handles electron-electron coalescence and $J_"en"$ handles electron-nucleus coalescence.
+Future nuclear and periodic long-range factors should be added as separate envelope modules.
 
 === Electron-electron cusp
 
@@ -855,129 +874,9 @@ so the residual does not alter the cusp slope.
 
 This option gives more flexibility for electron-electron correlation while preserving exact short-range behavior.
 
-=== Electron-nucleus cusp
-
-For all-electron Hamiltonians, electron-nucleus cusps should also be handled explicitly. Use
-
-$
-J_"en"(R)
-=
-sum_i sum_A v_A (r_(i A)),
-$
-
-where
-
-$
-r_(i A) = norm(r_i - R_A).
-$
-
-The required short-range slope is
-
-$
-v_A'(0) = -Z_A.
-$
-
-The simplest analytic form is
-
-$
-v_A(r)
-=
-frac(-Z_A r, 1 + b_A r).
-$
-
-Then
-
-$
-v_A'(0) = -Z_A.
-$
-
-The parameter $b_A$ controls the range of the cusp correction. It may be fixed, shared across nuclei, or learned per nuclear charge/species:
-
-$
-b_A = "softplus"(tilde(b)_A) + epsilon.
-$
-
-The electron-nucleus term is spin-independent:
-
-$
-v_A (r_(i A))
-$
-
-does not depend on $sigma_i$.
-
-==== Option A: fixed analytic electron-nucleus cusp
-
-Use
-
-$
-J_"en"(R)
-=
-sum_i sum_A
-frac(-Z_A r_(i A), 1 + b_A r_(i A)).
-$
-
-This is the recommended electron-nucleus MVP for all-electron systems.
-
-It is simple and exactly enforces
-
-$
-v_A'(0) = -Z_A.
-$
-
-Possible parameter-sharing choices:
-
-$
-b_A = b
-quad "global",
-$
-
-$
-b_A = b_(Z_A)
-quad "shared by nuclear charge",
-$
-
-or
-
-$
-b_A
-quad "one parameter per nucleus".
-$
-
-For initial implementation, use either a global $b$ or one $b_(Z)$ per nuclear charge. Per-nucleus parameters are more flexible but less necessary unless the system contains chemically distinct environments that benefit from extra freedom.
-
-==== Option B: analytic electron-nucleus cusp plus smooth residual
-
-Use
-
-$
-v_A (r)
-=
-frac(-Z_A r, 1 + b_A r)
-+
-r^2 h_theta (A, r).
-$
-
-Again,
-
-$
-frac(d, d r) [r^2 h_theta (A,r)]_(r=0) = 0,
-$
-
-so the residual does not change the cusp slope.
-
-This option lets the model learn additional smooth electron-nucleus correlation while preserving the exact singular behavior.
-
-The residual may depend on the nuclear charge or species:
-
-$
-h_theta (A,r) = h_theta (Z_A,r),
-$
-
-or on learned nuclear embeddings if the architecture already supports them.
-
 === Design decision
 
-Implement Option A first for both electron-electron and electron-nucleus cusps:
+Implement Option A first for electron-electron cusps:
 
 $
 J_"ee"(R)
@@ -986,30 +885,19 @@ sum_(i < j)
 frac(a_(sigma_i sigma_j) r_ij, 1 + b_(sigma_i sigma_j) r_ij),
 $
 
-$
-J_"en"(R)
-=
-sum_i sum_A
-frac(-Z_A r_(i A), 1 + b_A r_(i A)).
-$
-
 Expose Option B as an optional extension:
 
 $
-"ee_residual": "none" | "smooth-r2",
-quad
-"en_residual": "none" | "smooth-r2".
+"ee_residual": "none" | "smooth-r2".
 $
 
-The cusp module should return a scalar
+Each envelope module should return a scalar
 
 $
-J_"cusp" (R)
+J(R)
 $
 
 per configuration and should be added directly to the model log-amplitude. It should not modify SpechtMP features or antisymmetric readout internals.
-
-For pseudopotential systems, $J_"en"$ can be disabled. For all-electron systems, $J_"en"$ should be enabled by default.
 
 = Model Workflow
 /*
@@ -1039,8 +927,8 @@ Implemented in `nn.SpENNWaveFunction`.
   + SpechtMP layer T (`nn.SpechtMPLayer`)
 + Readout with `nn.PfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c (1,1))_(i j)] $
-+ Applied cusps with `nn.Cusp`
-  $ psi(br) = exp(J_"cusp" (br))Psi(br) $
++ Applied envelope with `nn.Envelope`
+  $ psi(br) = exp(J_"env" (br))Psi(br) $
 + Output: $psi(br)$*/
 
 Implemented in `nn.SpENNWaveFunction`.
@@ -1081,8 +969,8 @@ Implemented in `nn.SpENNWaveFunction`.
     $
 + Readout with `nn.RealPfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c)_(i j) - bx^(T c)_(j i)] $
-+ Applied cusps with `nn.Cusp`
-  $ psi(bv) = exp(J_"cusp" (br))Psi(bv) $
++ Applied envelope with `nn.Envelope`
+  $ psi(bv) = exp(J_"env" (br))Psi(bv) $
 + Output: $psi(bv)$
 
 

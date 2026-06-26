@@ -84,13 +84,21 @@ new scaffold documented in package docstrings.
       Hooke smoke configs. This is not a physics experiment harness.
 - [x] Added a minimal VMC training loop (`VMCTrainer`, `TrainerState`) and a
       Hooke pair smoke training run driven by `SpENNWaveFunction`.
-- [x] Added runtime-validation and training-health callbacks (`DataValidity`,
+- [x] Added runtime-validation and training-health callbacks (`DataIntegrity`,
       `GradientStats`, `SamplerHealth`, `RuntimeEquivariance`) with
       callback-local probabilistic scheduling.
 - [x] Post-smoke cleanup: removed `Scaffold`/`Load` runners,
       `ReferenceEnergy`/`ReportSkeleton` callbacks, and `ConcatenatedState`;
       trimmed `Evaluate` to a minimal sampled local-energy evaluator; standard
       run dirs are `checkpoints/`, `checks/`, and `diagnostics/`.
+
+- [x] PR8.0: validation-scan infrastructure for Hooke benchmark selection.
+      Renamed `DataValidity` -> `DataIntegrity` (`checks/data_integrity/*`),
+      added `spenn.callback.Validation` (train-end independent-sampler
+      validation under `validation/*`, no exact-reference energy), walker
+      geometry diagnostics in `MetropolisSampler.collect_samples` stats, and
+      the `experiments/hooke/studies/pair_validation/` study (manifest,
+      collect.py, select.py, SLURM array launcher, end-to-end test_run.sh).
 
 ## Next Core Work
 

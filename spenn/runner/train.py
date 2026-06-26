@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from spenn.artifacts import RunContext, RunResult
+from spenn.checkpoint import restore_checkpoint_with_events
 from spenn.training.optim import make_optimizer
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
@@ -35,7 +36,15 @@ class Train(Runner):
         context, emit) -> TrainerState``.
     """
 
-    def __init__(self, model, sampler, hamiltonian_terms, optimizer, trainer) -> None:
+    def __init__(
+        self,
+        model,
+        sampler,
+        hamiltonian_terms,
+        optimizer,
+        trainer,
+        load=None,
+    ) -> None:
         self.model = model
         self.sampler = sampler
         # Keep the configured form (sequence or ``dict[str, term]``);
@@ -43,6 +52,7 @@ class Train(Runner):
         self.hamiltonian_terms = hamiltonian_terms
         self.optimizer = optimizer
         self.trainer = trainer
+        self.load = load
 
     def run(self, context: RunContext) -> RunResult:
         """Build the optimizer and run the configured VMC training loop."""
@@ -55,6 +65,20 @@ class Train(Runner):
 
         optimizer = make_optimizer(self.optimizer, self.model.parameters())
         self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
+        mode = _load_mode(self.load)
+        if mode == "model_only":
+            raise ValueError("Train rejects load.mode='model_only'; use train_resume")
+        if mode == "train_resume":
+            report = restore_checkpoint_with_events(
+                load=self.load,
+                model=self.model,
+                optimizer=optimizer,
+                trainer=self.trainer,
+                sampler=self.sampler,
+                context=context,
+                emit=self.emit,
+            )
+            self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
 
         self.emit("train_start", context)
         final_state = self.trainer.fit(
@@ -65,10 +89,24 @@ class Train(Runner):
             context=context,
             emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
         )
-        self.emit("train_end", context, state=final_state)
+        # train_end carries the trained model and final step so consumers
+        # (e.g. the Validation callback) do not depend on trainer internals.
+        self.emit(
+            "train_end",
+            context,
+            state=final_state,
+            payload={"model": self.model, "step": int(final_state.step)},
+        )
         self.emit("run_end", context)
         return RunResult(status="completed")
 
+
+def _load_mode(load) -> str:
+    if load is None:
+        return "none"
+    if hasattr(load, "get"):
+        return str(load.get("mode", "none"))
+    return "none"
 
 
 __all__ = ["Train"]

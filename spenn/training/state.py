@@ -21,7 +21,7 @@ class TrainerState:
     Parameters
     ----------
     step : int, optional
-        Index of the most recently completed step (1-based; ``0`` before the
+        Index of the most recently completed step (0-based; ``-1`` before the
         first step).
     metrics : dict, optional
         Scalar metrics logged for the most recent step.
@@ -29,6 +29,8 @@ class TrainerState:
         Wavefunction model being optimized.
     optimizer : Any, optional
         Optimizer driving the model parameters.
+    trainer : Any, optional
+        Trainer object owning train-loop progress state.
     sampler : Any, optional
         Sampler producing walker configurations.
     samples : Any, optional
@@ -45,10 +47,11 @@ class TrainerState:
         Most recent sampler diagnostics (e.g. acceptance rate, walker count).
     """
 
-    step: int = 0
+    step: int = -1
     metrics: dict[str, Any] = field(default_factory=dict)
     model: Any = None
     optimizer: Any = None
+    trainer: Any = None
     sampler: Any = None
     samples: Any = None
     batch: Any = None

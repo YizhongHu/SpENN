@@ -7,16 +7,13 @@ before it contributes to the final wavefunction.
 
 from __future__ import annotations
 
-import math
-
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.partition import Partition
 from spenn.data.real import RealFeature
-from spenn.dependencies import require_torch, require_torch_functional, require_torch_nn
+from spenn.dependencies import require_torch, require_torch_nn
 
 torch = require_torch(feature="Pfaffian readout")
 nn = require_torch_nn(feature="Pfaffian readout")
-F = require_torch_functional(feature="Pfaffian readout")
 
 _ODD_PADDING_IRREP = Partition((1,))
 
@@ -92,8 +89,6 @@ class PfaffianReadout(nn.Module):
     ----------
     eps : float, optional
         Positive floor for signed-log conversion.
-    envelope_coefficient : float, optional
-        Harmonic envelope coefficient added to ``logabs``.
     channels, pair_channels : int
         Number of order-2 real feature channels used by the Pfaffian. `channels`
         is a shorthand for `pair_channels`.
@@ -103,21 +98,16 @@ class PfaffianReadout(nn.Module):
     trainable : bool, optional
         Whether pair and odd-electron padding readout weights are trainable.
         The default keeps them as fixed buffers for scaffold determinism.
-    trainable_envelope : bool, optional
-        Whether to optimize the envelope coefficient through a softplus
-        parameterization.
     """
 
     def __init__(
         self,
         *,
         eps: float = 1.0e-12,
-        envelope_coefficient: float = 0.0,
         channels: int | None = None,
         pair_channels: int | None = None,
         border_channels: int | None = None,
         trainable: bool = False,
-        trainable_envelope: bool = False,
     ) -> None:
         super().__init__()
         self.eps = float(eps)
@@ -131,7 +121,6 @@ class PfaffianReadout(nn.Module):
         self.border_channels = _positive_int(border_channels, "border_channels")
         self._register_readout_weight("channel_weights", "channel_weight_buffer", self.pair_channels)
         self._register_readout_weight("border_weights", "border_weight_buffer", self.border_channels)
-        _configure_envelope(self, envelope_coefficient, trainable=trainable_envelope)
 
     def _register_readout_weight(self, parameter_name: str, buffer_name: str, channels: int) -> None:
         initial = torch.full((channels,), 1.0 / channels)
@@ -151,8 +140,7 @@ class PfaffianReadout(nn.Module):
             Real feature state containing an order-2 block with shape
             ``[batch, channels, n, n]``.
         batch : ElectronBatch or None, optional
-            Optional batch used only for shape checks and harmonic envelope
-            metadata.
+            Optional batch used only for shape checks.
 
         Returns
         -------
@@ -187,11 +175,10 @@ class PfaffianReadout(nn.Module):
 
         kernel = self.build_skew_kernel(features, batch)
         logabs, sign = pfaffian_logabs_sign(kernel, eps=self.eps)
-        envelope = _harmonic_envelope(self, batch)
         return WavefunctionOutput(
-            logabs=logabs + envelope,
+            logabs=logabs,
             sign=sign,
-            aux={"K": kernel, "pfaffian": pfaffian(kernel), "envelope": envelope},
+            aux={"K": kernel, "pfaffian": pfaffian(kernel)},
         )
 
     def _ensure_pair_weights(self, channels: int) -> torch.Tensor:
@@ -250,37 +237,6 @@ def _positive_int(value: int, name: str) -> int:
     if result <= 0:
         raise ValueError(f"{name} must be positive, got {result}")
     return result
-
-
-def _configure_envelope(module: nn.Module, coefficient: float, *, trainable: bool) -> None:
-    if coefficient < 0.0:
-        raise ValueError(f"envelope_coefficient must be nonnegative, got {coefficient}")
-    if trainable:
-        raw = _inverse_softplus(float(coefficient))
-        module.register_parameter("envelope_raw", nn.Parameter(torch.tensor(raw, dtype=torch.float64)))
-        module.register_buffer("envelope_coefficient", torch.empty(0, dtype=torch.float64), persistent=False)
-    else:
-        module.register_parameter("envelope_raw", None)
-        module.register_buffer("envelope_coefficient", torch.tensor(float(coefficient), dtype=torch.float64))
-
-
-def _inverse_softplus(value: float) -> float:
-    if value == 0.0:
-        return -50.0
-    return math.log(math.expm1(value))
-
-
-def _current_envelope_coefficient(module: nn.Module) -> torch.Tensor:
-    raw = getattr(module, "envelope_raw", None)
-    if raw is not None:
-        return F.softplus(raw)
-    return module.envelope_coefficient
-
-
-def _harmonic_envelope(module: nn.Module, batch: ElectronBatch) -> torch.Tensor:
-    coefficient = _current_envelope_coefficient(module)
-    radius_squared = batch.positions.square().sum(dim=(1, 2))
-    return -coefficient * radius_squared
 
 
 __all__ = ["PfaffianReadout", "pfaffian", "pfaffian_logabs_sign"]

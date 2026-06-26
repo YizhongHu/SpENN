@@ -13,3 +13,7 @@ docs/_build/
 docs/api/generated/
 design_document/
 experiments/*/slurm/logs/
+experiments/hooke/slurm/logs/*.out
+experiments/hooke/slurm/logs/*.err
+experiments/*/*/plots/
+slurm_logs/

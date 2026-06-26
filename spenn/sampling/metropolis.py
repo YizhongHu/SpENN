@@ -7,10 +7,26 @@ from typing import Any
 
 from spenn.data.batch import Walkers, WavefunctionOutput
 from spenn.dependencies import require_torch, require_torch_nn
+from spenn.sampling.diagnostics import summarize_walker_geometry
 from spenn.sampling.moves import GaussianMove
 
 torch = require_torch(feature="Metropolis sampling")
 nn = require_torch_nn(feature="Metropolis sampling")
+
+
+def _canonical_device(device) -> "torch.device":
+    """Return a fully indexed CUDA device so ``cuda`` and ``cuda:0`` compare equal.
+
+    Tensors always report an indexed CUDA device (``cuda:0``), while configs and
+    callers usually pass the index-less ``cuda``; ``torch.device`` treats those
+    as unequal. CPU devices are reported index-less by tensors, so they pass
+    through unchanged.
+    """
+
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and resolved.index is None:
+        return torch.device("cuda", torch.cuda.current_device())
+    return resolved
 
 
 class MetropolisSampler(nn.Module):
@@ -166,7 +182,7 @@ class MetropolisSampler(nn.Module):
             The freshly initialized walker state.
         """
 
-        target_device = torch.device(device) if device is not None else self._generator_device
+        target_device = _canonical_device(device) if device is not None else self._generator_device
         self._generator_device = target_device
         self._generator = torch.Generator(device=target_device)
         if self.seed is not None:
@@ -176,10 +192,10 @@ class MetropolisSampler(nn.Module):
         return self._walkers
 
     def _require_device(self, device) -> None:
-        if device is not None and torch.device(device) != self._generator_device:
+        if device is not None and _canonical_device(device) != self._generator_device:
             raise ValueError(
                 f"sampler generator is on {self._generator_device}; cannot operate on "
-                f"{torch.device(device)}. Call reset(device=...) to move the chain."
+                f"{_canonical_device(device)}. Call reset(device=...) to move the chain."
             )
 
     def _evaluate(self, model, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
@@ -335,12 +351,19 @@ class MetropolisSampler(nn.Module):
             self._walkers = self.sample(model, self._walkers, self.burn_in)
             self._has_burned_in = True
         self._walkers = self.sample(model, self._walkers, self.n_steps)
-        stats = {
+        stats: dict[str, float] = {
             "acceptance_rate": float(self.acceptance_rate),
             "n_walkers": int(self._walkers.batch_size),
             "burn_in": int(self.burn_in),
             "n_steps": int(self.n_steps),
+            "proposal_scale": float(getattr(self.move, "step_size", self.proposal_scale)),
         }
+        if self.seed is not None:
+            stats["seed"] = int(self.seed)
+        # Geometry diagnostics describe the production samples actually
+        # returned to the caller; phase namespacing (train/validation/eval)
+        # is owned by whoever logs these stats.
+        stats.update(summarize_walker_geometry(self._walkers))
         return self._walkers, stats
 
     def mcmc_state_dict(self) -> dict[str, Any]:
@@ -367,7 +390,7 @@ class MetropolisSampler(nn.Module):
         state, so a resumed run continues the same Markov chain.
         """
 
-        self._generator_device = torch.device(state["generator_device"])
+        self._generator_device = _canonical_device(state["generator_device"])
         self._generator = torch.Generator(device=self._generator_device)
         self._generator.set_state(state["generator_state"])
         self._walkers = state["walkers"]

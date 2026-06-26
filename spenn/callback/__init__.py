@@ -13,10 +13,10 @@ from .status import Status, configure_terminal_logging
 def __getattr__(name: str) -> object:
     """Load torch-dependent callback classes only when they are requested."""
 
-    if name == "DataValidity":
-        from .health import DataValidity
+    if name == "DataIntegrity":
+        from .health import DataIntegrity
 
-        return DataValidity
+        return DataIntegrity
     if name == "GradientStats":
         from .health import GradientStats
 
@@ -41,13 +41,17 @@ def __getattr__(name: str) -> object:
         from .timing import TrainStepTiming
 
         return TrainStepTiming
+    if name == "Validation":
+        from .validation import Validation
+
+        return Validation
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "Callback",
     "Checkpoint",
     "ConfigSnapshot",
-    "DataValidity",
+    "DataIntegrity",
     "DiagnosticTiming",
     "Event",
     "EvaluationTiming",
@@ -59,5 +63,6 @@ __all__ = [
     "SamplerHealth",
     "Status",
     "TrainStepTiming",
+    "Validation",
     "configure_terminal_logging",
 ]

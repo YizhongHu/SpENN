@@ -64,7 +64,7 @@ Examples:
 | `train`                          | `energy_stderr`   | `train/energy_stderr`                          |
 | `train/sampler`                  | `acceptance_rate` | `train/sampler/acceptance_rate`                |
 | `train/perf`                     | `step_time_sec`   | `train/perf/step_time_sec`                     |
-| `checks/data_validity`           | `passed`          | `checks/data_validity/passed`                  |
+| `checks/data_integrity`           | `passed`          | `checks/data_integrity/passed`                  |
 | `checks/equivariance/full_model` | `max_abs_error`   | `checks/equivariance/full_model/max_abs_error` |
 | `runtime`                        | `wall_time_sec`   | `runtime/wall_time_sec`                        |
 | `diagnostics/energy`             | `time_sec`        | `diagnostics/energy/time_sec`                  |
@@ -84,6 +84,10 @@ train
 train/sampler
 train/perf
 
+validation
+validation/sampler
+validation/perf
+
 eval
 eval/sampler
 eval/perf
@@ -92,11 +96,25 @@ runtime
 
 diagnostics/energy
 
-checks/data_validity
+checks/data_integrity
 checks/gradient
 checks/sampler
 checks/equivariance/full_model
 checks/equivariance/trace
+```
+
+Phase meaning:
+
+```text
+train       optimization-time metrics from the training sampler
+validation  model/protocol selection metrics computed during the training
+            lifecycle by the Validation callback, using an independent
+            validation sampler; never includes exact-reference comparisons
+eval        final held-out evaluation metrics after protocol selection;
+            the only place for eval/energy_error, eval/energy_abs_error,
+            and eval/reference_energy
+checks/*    runtime data/numerics soundness (DataIntegrity and friends),
+            not model selection
 ```
 
 Avoid putting hierarchy inside the key:
@@ -151,6 +169,28 @@ acceptance_rate
 n_walkers
 burn_in
 n_steps
+proposal_scale
+seed
+
+position_mean_abs
+position_rms
+position_max_abs
+radius_mean
+radius_std
+radius_q50
+radius_q90
+radius_q99
+radius_max
+center_of_mass_rms
+electron_distance_min
+electron_distance_q01
+electron_distance_q05
+electron_distance_mean
+electron_distance_q50
+electron_distance_q95
+electron_distance_q99
+electron_distance_max
+electron_distance_n_pairs
 
 passed
 max_abs_error
@@ -159,6 +199,12 @@ n_failed_entries
 wall_time_sec
 step_time_sec
 ```
+
+Sampler geometry keys (the `position_*`/`radius_*`/`electron_distance_*`/
+`center_of_mass_rms` block above) come from
+`spenn.sampling.summarize_walker_geometry` and appear under whichever phase
+logged the sampler stats: `train/sampler/*`, `validation/sampler/*`, or
+`eval/sampler/*`.
 
 Use underscores inside keys.
 
@@ -175,7 +221,7 @@ step,namespace,key,value
 1,train,loss,0.6580171494985763
 1,train,energy,3.658536762108973
 1,train/sampler,acceptance_rate,0.8625
-1,checks/data_validity,passed,true
+1,checks/data_integrity,passed,true
 1,checks/equivariance/full_model,max_abs_error,0.0
 ```
 
@@ -338,7 +384,7 @@ Examples:
 | `train`                          | `energy_stderr`   | `train/energy_stderr`                          |
 | `train/sampler`                  | `acceptance_rate` | `train/sampler/acceptance_rate`                |
 | `train/perf`                     | `step_time_sec`   | `train/perf/step_time_sec`                     |
-| `checks/data_validity`           | `passed`          | `checks/data_validity/passed`                  |
+| `checks/data_integrity`           | `passed`          | `checks/data_integrity/passed`                  |
 | `checks/equivariance/full_model` | `max_abs_error`   | `checks/equivariance/full_model/max_abs_error` |
 | `runtime`                        | `wall_time_sec`   | `runtime/wall_time_sec`                        |
 | `diagnostics/energy`             | `time_sec`        | `diagnostics/energy/time_sec`                  |
@@ -435,6 +481,10 @@ Health flags do not replace detailed metrics under `checks/...`.
 
 ## Step conventions
 
+Steps are 0-indexed: the first training step is `step = 0`. This means the
+first step always satisfies `step % every_n_steps == 0` cadence gates, so
+periodic callbacks and loggers report at the start of every run.
+
 Training metrics use the training step:
 
 ```text
@@ -479,6 +529,11 @@ Suggested definitions:
 run.define_metric("train/*", step_metric="train/step")
 run.define_metric("train/sampler/*", step_metric="train/step")
 run.define_metric("train/perf/*", step_metric="train/step")
+
+# Validation happens inside the training lifecycle, so it shares train/step.
+run.define_metric("validation/*", step_metric="train/step")
+run.define_metric("validation/sampler/*", step_metric="train/step")
+run.define_metric("validation/perf/*", step_metric="train/step")
 
 run.define_metric("eval/*", step_metric="eval/step")
 run.define_metric("eval/sampler/*", step_metric="eval/step")
@@ -615,7 +670,7 @@ Runtime checks should live under `checks/...`.
 Examples:
 
 ```text
-checks/data_validity/passed
+checks/data_integrity/passed
 checks/gradient/passed
 checks/sampler/passed
 checks/equivariance/full_model/passed
@@ -625,7 +680,7 @@ checks/equivariance/trace/passed
 Detailed check metrics stay in the same namespace:
 
 ```text
-checks/data_validity/local_energy_nonfinite_fraction
+checks/data_integrity/local_energy_nonfinite_fraction
 checks/gradient/global_grad_norm
 checks/sampler/acceptance_rate
 checks/equivariance/full_model/max_abs_error
@@ -652,7 +707,17 @@ train/sampler/n_walkers
 train/perf/step_time_sec
 train/perf/sampling_time_sec
 
-checks/data_validity/passed
+validation/energy
+validation/energy_variance
+validation/energy_stderr
+validation/local_energy_finite_fraction
+validation/sampler/acceptance_rate
+validation/sampler/seed
+validation/sampler/radius_q99
+validation/sampler/electron_distance_q01
+validation/perf/wall_time_sec
+
+checks/data_integrity/passed
 checks/gradient/global_grad_norm
 checks/sampler/acceptance_rate
 checks/equivariance/full_model/max_abs_error
@@ -675,6 +740,9 @@ sampler.acceptance_rate
 energy
 energy_mean
 full_model_equivariance_max_abs_error
+validation/energy_error
+validation/energy_abs_error
+validation/reference_energy
 checks.equivariance.full_model.max_abs_error
 runtime_wall_time_sec
 ```
