@@ -1,0 +1,159 @@
+# =============================================================================
+# Hooke pair-stability V2 screening grid (PR8.11)
+# =============================================================================
+#
+# This file is the contract between the study-specific configs and the
+# mechanical stage scripts:
+#
+# - study/config paths name the concrete study and base Hydra configs.
+# - major_grid defines blinded scientific comparison axes; minor_grid defines
+#   scan choices inside each bucket; scan_seeds are training/validation
+#   replicate seeds only.
+# - axis_id_labels control durable run id strings.
+# - axis_overrides maps each axis to the Hydra override path in the base
+#   configs. Stage code does not infer run_parameters.* paths.
+# - seed_overrides maps stage seed names to Hydra override paths. Final seeds
+#   come from final_seed_sequences, not from scan_seeds.
+# - blinding controls axis-wise slot assignment for major axes. Routine
+#   manifests carry slots; unblind.json carries semantic labels.
+# - champions declares selector semantics explicitly. PR8.11 selects energy
+#   representatives only; it does not choose a stability winner.
+# - smoke_config points to a separate workload-reduction profile used only when
+#   launchers receive --smoke.
+# =============================================================================
+
+study: pair_stability_v3
+config: experiments/hooke/pair_stability_v3/configs/pair_stability.yaml
+validation_config: experiments/hooke/pair_stability_v3/configs/pair_validation.yaml
+smoke_config: experiments/hooke/pair_stability_v3/configs/smoke.yaml
+results_root: experiments/hooke/pair_stability_v3/results
+
+config_snapshots:
+  train: train_config.yaml
+  validation: validation_config.yaml
+  smoke: smoke_config.yaml
+
+# Major axes define independent comparison buckets. The planner can blind these
+# true values into stable slots before writing routine manifests.
+major_grid:
+  basis:
+    - raw_envelope
+    - orbital_s1_envelope
+
+  mechanism:
+    - baseline_silu
+    - update_rms
+
+# Minor axes are scanned within each major point. Final planning freezes the
+# selected minor values and drops scan_seed_axis.
+minor_grid:
+  lr:
+    - 1.0e-3
+    - 3.0e-4
+
+  channels:
+    - 4
+
+scan_seed_axis: seed
+scan_seeds:
+  - 0
+  - 1
+
+blinding:
+  enabled_by_default: true
+  slot_prefixes:
+    basis: B
+    mechanism: A
+
+# Short labels used only for durable ids such as run_id, major_id, and minor_id.
+axis_id_labels:
+  basis: b
+  mechanism: m
+  lr: lr
+  channels: ch
+  seed: seed
+
+# Explicit Hydra override path for every non-seed grid axis.
+axis_overrides:
+  basis: run_parameters.basis_slot
+  mechanism: run_parameters.mechanism_slot
+  lr: run_parameters.lr
+  channels: run_parameters.channels
+
+# Optional validation against choice libraries in the base configs.
+choice_validation:
+  basis:
+    choices_path: choices.basis
+    tags_path: choices.basis.{value}.tags
+  mechanism:
+    choices_path: choices.mechanism
+    tags_path: choices.mechanism.{value}.tags
+
+# Stage-specific seed policy. Values on the right are named seed values supplied
+# by the planner/final planner; keys on the left are Hydra override paths.
+seed_overrides:
+  scan_train:
+    run_parameters.seed: scan_seed
+    runtime.seed: scan_seed
+    sampler.seed: scan_seed
+
+  validation:
+    run_parameters.seed: scan_seed
+    runtime.seed: scan_seed
+    evaluation.seed: scan_seed
+
+  final_train:
+    run_parameters.seed: final_train_model_seed
+    runtime.seed: final_train_model_seed
+    sampler.seed: final_train_sampler_seed
+
+  final_eval:
+    run_parameters.seed: final_eval_seed
+    runtime.seed: final_eval_seed
+    evaluation.seed: final_eval_seed
+
+# Independent final replicate seeds. replicate_index i uses start + i * step.
+final_seed_sequences:
+  final_train_sampler_seed:
+    start: 101
+    step: 1
+  final_train_model_seed:
+    start: 1001
+    step: 1
+  final_eval_seed:
+    start: 10001
+    step: 1
+
+# Champion selectors are data, not code. "name" is only a label used in
+# manifests/reports; selector, metrics, modes, and exclusions define behavior.
+champions:
+  - name: energy
+    selector: metric_ladder
+    tasks:
+      - stratified_geometry
+      - tail
+      - cusp
+      - hooke_orbital
+    metric_template: eval/{task}/local_energy_mean
+    mode: min
+    fallback_metric: train/runtime/wall_time_sec
+    fallback_mode: min
+
+# Extra seed-aggregated metrics copied into champions.csv for auditability.
+champion_reference_metrics:
+  - label: stratified_geometry_energy
+    metric: eval/stratified_geometry/local_energy_mean
+  - label: tail_energy
+    metric: eval/tail/local_energy_mean
+  - label: cusp_energy
+    metric: eval/cusp/local_energy_mean
+  - label: hooke_orbital_energy
+    metric: eval/hooke_orbital/local_energy_mean
+  - label: feature_stability
+    metric: eval/feature_trace_stability/feature_rms_q95
+  - label: readout_stability
+    metric: eval/readout_trace_stability/condition_number_q95
+
+# Final planning keeps independent final seeds while staying small enough for
+# end-to-end restructuring checks.
+final_replicates: 2
