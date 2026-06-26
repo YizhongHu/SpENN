@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 
 from spenn.run import run_from_config
 
-FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "training" / "vmc_runtime_checks.yaml"
+FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_runtime_checks.yaml"
 
 
 def _run(tmp_path: Path) -> Path:
@@ -36,7 +36,6 @@ def test_runtime_checks_run_writes_standard_artifacts(tmp_path) -> None:
         "metadata.json",
         "status.json",
         "metrics.jsonl",
-        "report.md",
         "checkpoints/latest.pt",
     ):
         assert (run_dir / artifact).exists(), f"missing artifact: {artifact}"

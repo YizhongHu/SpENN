@@ -16,7 +16,7 @@ from omegaconf import OmegaConf
 
 from spenn.run import run_from_config
 
-FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "training" / "vmc_smoke.yaml"
+FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_smoke.yaml"
 
 ALLOWED_NONFINITE_KEYS = {"energy_stderr"}
 
@@ -41,7 +41,6 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
         "status.json",
         "metrics.csv",
         "metrics.jsonl",
-        "report.md",
         "checkpoints/latest.pt",
         "checkpoints/step_3.pt",
     ):
@@ -61,13 +60,15 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     last = train_records[-1]
     for key in (
         "loss",
-        "energy_mean",
+        "energy",
         "energy_variance",
-        "n_finite_samples",
-        "nonfinite_energy_fraction",
+        "local_energy_n_finite",
+        "local_energy_finite_fraction",
         "logabs_mean",
     ):
         assert key in last, f"missing metric: {key}"
+    # The physical training estimator is logged as `energy`, never `energy_mean`.
+    assert "energy_mean" not in last
 
     # JSONL serialization with allow_nan=False would already have failed the run
     # on any non-finite value; assert finiteness directly for good measure.

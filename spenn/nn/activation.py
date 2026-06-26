@@ -21,8 +21,44 @@ class Activation(EquivariantMap):
     """
 
 
+class GatedNormActivation(Activation):
+    """Gate every irrep block by a module applied to invariant norms.
+
+    Parameters
+    ----------
+    gate : torch.nn.Module
+        Scalar module applied to alpha-coordinate squared norms.
+    """
+
+    def __init__(
+        self,
+        gate: nn.Module,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.gate = gate
+
+    def forward_impl(self, x: IrrepFeature | IrrepInteraction) -> IrrepFeature | IrrepInteraction:
+        """Scale each irrep vector by a scalar function of squared alpha norm."""
+
+        return type(x)({partition: self._apply_gate(tensor) for partition, tensor in x.items()})
+
+    def _apply_gate(self, tensor: torch.Tensor) -> torch.Tensor:
+        norm_sq = tensor.square().sum(dim=-2, keepdim=True)
+        gate = self.gate(norm_sq)
+        if tuple(gate.shape) != tuple(norm_sq.shape):
+            raise ValueError(
+                "GatedNormActivation gate must preserve squared-norm shape "
+                f"{tuple(norm_sq.shape)}, got {tuple(gate.shape)}"
+            )
+        return tensor * gate
+
+
 class ActivationByType(Activation):
-    """Apply equivariant activation rules by partition type.
+    """Experimental activation rules selected by partition type.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
 
     Symmetric and antisymmetric scalar irreps receive their own scalar modules.
     Higher-dimensional irreps are gated by a scalar function of the transforming
@@ -74,9 +110,9 @@ class ActivationByType(Activation):
     def forward_impl(self, x: IrrepFeature | IrrepInteraction) -> IrrepFeature | IrrepInteraction:
         """Apply the selected activation to each irrep block."""
 
-        return type(x)({partition: self._apply(partition, tensor) for partition, tensor in x.items()})
+        return type(x)({partition: self._apply_partition(partition, tensor) for partition, tensor in x.items()})
 
-    def _apply(self, partition: Partition, tensor: torch.Tensor) -> torch.Tensor:
+    def _apply_partition(self, partition: Partition, tensor: torch.Tensor) -> torch.Tensor:
         if partition.is_symmetric():
             return tensor if self.symmetric_activation is None else self.symmetric_activation(tensor)
         if partition.is_antisymmetric():
@@ -107,7 +143,10 @@ class ActivationByType(Activation):
 
 
 class ActivationByIrrep(Activation):
-    """Apply activation modules selected independently for each irrep.
+    """Experimental activation modules selected independently for each irrep.
+
+    This class is not part of the baseline SpENN API and is intentionally not
+    exported from ``spenn.nn`` or this module's ``__all__``.
 
     Parameters
     ----------
@@ -152,4 +191,4 @@ class ActivationByIrrep(Activation):
         return type(x)(blocks)
 
 
-__all__ = ["Activation", "ActivationByIrrep", "ActivationByType"]
+__all__ = ["Activation", "GatedNormActivation"]

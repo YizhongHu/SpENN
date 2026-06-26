@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
@@ -23,9 +24,8 @@ class SpENNWaveFunction(EquivariantMap):
     readout : torch.nn.Module
         Module mapping final real features to :class:`WavefunctionOutput`.
     cusp : torch.nn.Module or None, optional
-        Optional additive log-amplitude cusp. A cusp may either accept
-        ``(batch, output)`` and return a full output, or accept ``batch`` and
-        return an additive tensor matching ``output.logabs``.
+        Optional additive log-amplitude cusp. Cusps accept ``batch`` and return
+        an additive tensor matching ``output.logabs``.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -54,12 +54,9 @@ class SpENNWaveFunction(EquivariantMap):
         output = self.readout(features, batch)
         if self.cusp is None:
             return output
-        try:
-            cusp_output = self.cusp(batch, output)
-        except TypeError:
-            cusp_output = self.cusp(batch)
-        if isinstance(cusp_output, WavefunctionOutput):
-            return cusp_output
+        cusp_output = self.cusp(batch)
+        if not isinstance(cusp_output, torch.Tensor):
+            raise TypeError(f"Cusp output must be a torch.Tensor, got {type(cusp_output)!r}")
         if cusp_output.shape != output.logabs.shape:
             raise ValueError(
                 f"Cusp output must have shape {tuple(output.logabs.shape)}, got {tuple(cusp_output.shape)}"

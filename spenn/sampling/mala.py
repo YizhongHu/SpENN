@@ -36,6 +36,8 @@ class MALASampler(MetropolisSampler):
         Number of electrons per walker.
     spatial_dim : int, optional
         Spatial dimension of each electron coordinate.
+    n_up, n_down : int or None, optional
+        Spin partition passed through to the base Metropolis sampler.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
@@ -52,6 +54,8 @@ class MALASampler(MetropolisSampler):
         seed: int | None = None,
         n_electrons: int = 2,
         spatial_dim: int = 3,
+        n_up: int | None = None,
+        n_down: int | None = None,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
@@ -66,6 +70,8 @@ class MALASampler(MetropolisSampler):
             seed=seed,
             n_electrons=n_electrons,
             spatial_dim=spatial_dim,
+            n_up=n_up,
+            n_down=n_down,
             initial_scale=initial_scale,
             dtype=dtype,
         )
@@ -74,7 +80,14 @@ class MALASampler(MetropolisSampler):
         current_positions = walkers.positions.detach()
         current_grad = self._logabs_gradient(model, walkers.with_positions(current_positions, invalidate_cache=True))
         drift_scale = self.proposal_scale * self.proposal_scale
-        proposals = current_positions + drift_scale * current_grad + self.proposal_scale * torch.randn_like(current_positions)
+        # Consume the sampler-owned Markov-chain RNG, never global Torch RNG.
+        noise = torch.randn(
+            current_positions.shape,
+            device=current_positions.device,
+            dtype=current_positions.dtype,
+            generator=self._generator,
+        )
+        proposals = current_positions + drift_scale * current_grad + self.proposal_scale * noise
         proposal_walkers = walkers.with_positions(proposals.detach(), invalidate_cache=True)
         proposal_grad = self._logabs_gradient(model, proposal_walkers)
         log_q_ratio = self._proposal_log_ratio(

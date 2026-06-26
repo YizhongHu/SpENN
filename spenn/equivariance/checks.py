@@ -15,11 +15,33 @@ from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-from spenn.data.equivariant_state import apply_particle_permutation, infer_particle_count
+from spenn.data.equivariant_state import apply_particle_permutation
 from spenn.data.permutation import (
     count_nonidentity_permutations,
     select_nonidentity_permutations,
 )
+
+
+def _particle_count_from_batch(batch: object) -> int:
+    """Return the particle count from a typed batch used in runtime checks.
+
+    Runtime equivariance checks operate on the current training/evaluation batch.
+    Particle count should come from explicit typed batch metadata, not from
+    recursively inspecting arbitrary object structure.
+    """
+
+    for attr in ("n_particles", "n_electrons"):
+        value = getattr(batch, attr, None)
+        if value is not None:
+            count = int(value)
+            if count < 1:
+                raise ValueError(f"batch.{attr} must be positive, got {count}")
+            return count
+
+    raise TypeError(
+        f"cannot determine particle count from batch type {type(batch).__name__}; "
+        "expected explicit `n_particles` or `n_electrons` metadata"
+    )
 
 
 @dataclass
@@ -94,7 +116,7 @@ class FullModelEquivarianceChecker:
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
         step = getattr(state, "step", None)
-        n_particles = infer_particle_count(batch)
+        n_particles = _particle_count_from_batch(batch) if batch is not None else None
         metrics = self._base_metrics(n_particles)
 
         if model is None or batch is None or n_particles is None or n_particles < 2:
@@ -121,7 +143,8 @@ class FullModelEquivarianceChecker:
                 permuted_batch = apply_particle_permutation(batch, permutation)
                 lhs = model(permuted_batch)
                 rhs = apply_particle_permutation(output, permutation)
-                close, error = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                close, comparison = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                error = float(comparison.get("max_abs_error", 0.0))
                 if error > max_abs_error:
                     max_abs_error = error
                     worst = list(permutation.image)
@@ -185,10 +208,6 @@ class TraceEquivarianceChecker:
         Hard cap on permutations tested.
     seed : int or None, optional
         Seed controlling permutation selection.
-    comparison : {"stepwise", "full_trace", "both"}, optional
-        ``stepwise`` compares entries key-by-key and reports the worst/failing
-        key; ``full_trace`` adds whole-trace schema aggregation; ``both`` does
-        both. All modes treat missing/extra keys as failures.
     compare_output : bool, optional
         Also compare the final model outputs like the full-model checker.
     dump_on_failure : bool, optional
@@ -203,18 +222,14 @@ class TraceEquivarianceChecker:
         permutation_fraction: float = 1.0,
         max_permutations: int = 4,
         seed: int | None = None,
-        comparison: str = "stepwise",
         compare_output: bool = False,
         dump_on_failure: bool = True,
         atol: float = 1.0e-6,
         rtol: float = 1.0e-6,
     ) -> None:
-        if comparison not in ("stepwise", "full_trace", "both"):
-            raise ValueError(f"comparison must be stepwise/full_trace/both, got {comparison!r}")
         self.permutation_fraction = float(permutation_fraction)
         self.max_permutations = int(max_permutations)
         self.seed = seed
-        self.comparison = comparison
         self.compare_output = bool(compare_output)
         self.dump_on_failure = bool(dump_on_failure)
         self.atol = float(atol)
@@ -228,7 +243,7 @@ class TraceEquivarianceChecker:
         model = getattr(state, "model", None)
         batch = getattr(state, "batch", None)
         step = getattr(state, "step", None)
-        n_particles = infer_particle_count(batch)
+        n_particles = _particle_count_from_batch(batch) if batch is not None else None
         metrics = self._base_metrics(n_particles)
 
         if model is None or batch is None or n_particles is None or n_particles < 2:
@@ -283,7 +298,8 @@ class TraceEquivarianceChecker:
                 for key in keys_a & keys_b:
                     expected = apply_particle_permutation(trace_a[key].value, permutation)
                     actual = trace_b[key].value
-                    close, error = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    close, comparison = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    error = float(comparison.get("max_abs_error", 0.0))
                     per_key_error[key] = max(per_key_error.get(key, 0.0), error)
                     if error > max_abs_error:
                         max_abs_error = error
@@ -295,7 +311,8 @@ class TraceEquivarianceChecker:
 
                 if self.compare_output:
                     expected_output = apply_particle_permutation(output_a, permutation)
-                    close, error = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    close, comparison = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    error = float(comparison.get("max_abs_error", 0.0))
                     if error > max_abs_error:
                         max_abs_error = error
                         worst_key = "output"
@@ -338,7 +355,6 @@ class TraceEquivarianceChecker:
                 artifact = {
                     "checker_class": type(self).__name__,
                     "step": step,
-                    "comparison": self.comparison,
                     "n_particles": int(n_particles),
                     "permutations_tested": [list(p.image) for p in permutations],
                     "failed_permutations": failed_permutations,
@@ -373,7 +389,6 @@ class TraceEquivarianceChecker:
             "n_available_permutations": n_available,
             "permutation_fraction": self.permutation_fraction,
             "max_permutations": self.max_permutations,
-            "comparison": self.comparison,
             "atol": self.atol,
             "rtol": self.rtol,
         }

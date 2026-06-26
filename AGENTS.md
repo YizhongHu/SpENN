@@ -1,5 +1,12 @@
 # SpENN project specific guidelines
 
+## Design Document
+
+A design document that contains the mathematical background of
+SpENN can be found in `main.typ`. Key components of the model:
+`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
+should closely follow the design document for correctness.
+
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.
@@ -12,12 +19,6 @@
 ## Conventions
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
-
-## Plans and Todos
-
-- Each folder under root contains `TODO.md`. This is a plan for the current directory. Maintain this TODO list to keep information between agents.
-- Each folder under root contains `instructions.md`. This states the detailed design of everything in the current directory. Reference this for
-  implementation details.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
@@ -34,8 +35,8 @@ for reproducibility.
 
 ## Best Practices
 
-Any reintroduction of `permute_tree`, `validate_tree`, or equivalent recursive container-probing helpers is a blocker.
-These helpers erase representation semantics and are not allowed in SpENN.
+Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
+These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
 
 ### Prefer explicit ownership over local convenience
 
@@ -71,7 +72,11 @@ from spenn.data.indices import ordered_tuples
 
 ### Keep equivariance contracts executable
 
-Every state-like object should implement `.permute(permutation)`. Every equivariant module should subclass `EquivariantMap` and implement `forward_impl`, not `forward`.
+Values participating in equivariance checks must expose typed semantic
+`.permute(...)` and `.compare(...)` contracts. Do not require arbitrary runtime
+state or validation-only objects to be EquivariantState. Every equivariant
+module should subclass `EquivariantMap` and implement `forward_impl`, not
+`forward`.
 
 Bad:
 
@@ -89,7 +94,7 @@ class MyMap(EquivariantMap):
         ...
 ```
 
-`EquivariantMap.forward` owns runtime equivariance checking. Do not wrap `forward` with decorators for equivariance checks, because that can obscure control flow and cause recursion.
+`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `spenn.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
 
 ### Separate metadata generation from model execution
 
@@ -183,7 +188,7 @@ Good PR sequence:
 
 ```text
 1. Add state dataclasses and permute tests.
-2. Add EquivariantMap and runtime-check tests.
+2. Add EquivariantMap and runtime-check tests.()
 3. Add path metadata and path-count tests.
 4. Add slow EquivariantMixing and equivariance tests.
 5. Add Fourier/Specht activation.
@@ -194,8 +199,9 @@ Avoid large PRs that change state layout, path enumeration, Fourier logic, activ
 
 ## Branches
 
-Codex may push only to branches named `codex/**`.
+Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
-Codex must not push to `main`, merge PRs, or force-push unless the user explicitly asks.
+Agents must not push to branches other than these mentioned above, such as `main` or the `hooke` integration branch,
+ merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `hooke`.
 
-Codex should respond to PR review comments by adding commits to the existing PR branch.
+Agents should respond to PR review comments by adding commits to the existing PR branch.

@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import random
-import re
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 from omegaconf import OmegaConf
 
 from spenn.artifacts import RunContext, write_json
+from spenn.naming import camel_to_snake
 
 
 @dataclass
@@ -241,36 +241,6 @@ class Status(Callback):
         )
 
 
-class ReportSkeleton(Callback):
-    """Write a human-readable scaffold report."""
-
-    def __init__(self, triggers: Iterable[str], output_path: str | Path, **kwargs: Any) -> None:
-        super().__init__(triggers, **kwargs)
-        self.output_path = Path(output_path)
-
-    def on_run_end(self, event: Event) -> None:
-        """Write ``report.md`` for a scaffold run."""
-
-        run_id = event.context.metadata.run_id
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.output_path.write_text(
-            "\n".join(
-                [
-                    "# SpENN Scaffold Run",
-                    "",
-                    f"- Run ID: `{run_id}`",
-                    f"- Run directory: `{event.context.run_dir}`",
-                    "- Status: completed",
-                    "",
-                    "This scaffold run only exercised generic run management.",
-                    "No Hooke physics, VMC training, diagnostics, sampling, or plotting were run.",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-
-
 class Checkpoint(Callback):
     """Write training checkpoints from the loop `TrainerState`.
 
@@ -299,11 +269,12 @@ class Checkpoint(Callback):
 
         state = event.state
         sampler = getattr(state, "sampler", None)
+        sampler_mcmc_state = getattr(sampler, "mcmc_state_dict", None)
         payload = {
             "step": state.step,
             "model_state_dict": state.model.state_dict(),
             "optimizer_state_dict": state.optimizer.state_dict(),
-            "sampler_state_dict": sampler.state_dict() if hasattr(sampler, "state_dict") else None,
+            "sampler_mcmc_state": sampler_mcmc_state() if callable(sampler_mcmc_state) else None,
             "metrics": state.metrics,
         }
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -329,7 +300,7 @@ class DataValidity(Callback):
         max_nonfinite_logabs_fraction: float = 0.0,
         check_loss: bool = True,
         check_wavefunction_output: bool = True,
-        check_batch_tensors: bool = True,
+        check_batch: bool = True,
         strict_sign_values: bool = True,
         **kwargs: Any,
     ) -> None:
@@ -339,7 +310,7 @@ class DataValidity(Callback):
         self.max_nonfinite_logabs_fraction = float(max_nonfinite_logabs_fraction)
         self.check_loss = bool(check_loss)
         self.check_wavefunction_output = bool(check_wavefunction_output)
-        self.check_batch_tensors = bool(check_batch_tensors)
+        self.check_batch = bool(check_batch)
         self.strict_sign_values = bool(strict_sign_values)
 
     def on_step_end(self, event: Event) -> None:
@@ -380,6 +351,33 @@ class DataValidity(Callback):
                     metrics["sign_invalid_fraction"] = sign_fraction
                     if sign_fraction > 0.0:
                         failures.append(f"sign_invalid_fraction={sign_fraction} exceeds 0.0")
+                # Schema invariants belong to the typed output object;
+                # DataValidity only decides when to check and whether to fail.
+                validate = getattr(output, "validate", None)
+                if not callable(validate):
+                    metrics["output_validated"] = False
+                    failures.append(
+                        f"wavefunction output type {type(output).__name__} does not expose validate()"
+                    )
+                else:
+                    kwargs: dict[str, Any] = {}
+                    batch = getattr(state, "batch", None)
+                    if batch is not None:
+                        sample_shape = getattr(batch, "sample_shape", None)
+                        batch_size = getattr(batch, "batch_size", None)
+                        if sample_shape is not None:
+                            kwargs["sample_shape"] = tuple(sample_shape)
+                        if batch_size is not None:
+                            kwargs["batch_size"] = int(batch_size)
+                    try:
+                        validate(**kwargs)
+                    except Exception as exc:
+                        metrics["output_validated"] = False
+                        failures.append(
+                            f"WavefunctionOutput.validate() failed with {type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        metrics["output_validated"] = True
 
         if self.check_loss:
             loss = getattr(state, "loss", None)
@@ -389,13 +387,26 @@ class DataValidity(Callback):
                 if not loss_is_finite:
                     failures.append("loss is not finite")
 
-        if self.check_batch_tensors:
+        if self.check_batch:
             batch = getattr(state, "batch", None)
             if batch is not None:
-                count = _nonfinite_tensor_count(batch)
-                metrics["batch_nonfinite_tensor_count"] = count
-                if count > 0:
-                    failures.append(f"batch_nonfinite_tensor_count={count} exceeds 0")
+                validate = getattr(batch, "validate", None)
+                if not callable(validate):
+                    metrics["batch_validated"] = False
+                    failures.append(f"batch type {type(batch).__name__} does not expose validate()")
+                else:
+                    try:
+                        validate()
+                    except Exception as exc:
+                        metrics["batch_validated"] = False
+                        failures.append(f"batch.validate() failed with {type(exc).__name__}: {exc}")
+                    else:
+                        metrics["batch_validated"] = True
+
+                validity_metrics = getattr(batch, "validity_metrics", None)
+                if callable(validity_metrics):
+                    for key, value in validity_metrics().items():
+                        metrics[f"batch_{key}"] = value
 
         passed = not failures
         metrics["passed"] = passed
@@ -598,48 +609,6 @@ class RuntimeEquivariance(Callback):
                 )
 
 
-class ReferenceEnergy(Callback):
-    """Log reference-energy comparison metrics from training metrics.
-
-    Reads ``state.metrics[source_metric]`` and logs ``reference_energy``,
-    ``energy_error``, and ``abs_energy_error`` under ``namespace``. Keeps
-    reference comparison an explicit run choice rather than trainer policy.
-    """
-
-    def __init__(
-        self,
-        triggers: Iterable[str],
-        *,
-        reference_energy: float,
-        source_metric: str = "energy_mean",
-        namespace: str = "reference",
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(triggers, **kwargs)
-        self.reference_energy = float(reference_energy)
-        self.source_metric = source_metric
-        self.namespace = namespace
-
-    def on_step_end(self, event: Event) -> None:
-        """Compute and log reference-energy metrics for the current step."""
-
-        from spenn.physics.hamiltonian import reference_energy_metrics
-
-        state = event.state
-        if state is None or state.metrics is None:
-            return
-        if self.source_metric not in state.metrics:
-            raise KeyError(
-                f"ReferenceEnergy expected metric {self.source_metric!r} "
-                f"in TrainerState.metrics at step {state.step}."
-            )
-        metrics = reference_energy_metrics(
-            energy_mean=state.metrics[self.source_metric],
-            reference_energy=self.reference_energy,
-        )
-        event.context.log(metrics, step=state.step, namespace=self.namespace)
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -648,13 +617,6 @@ _DEFAULT_CHECKER_NAMES = {
     "FullModelEquivarianceChecker": "full_model",
     "TraceEquivarianceChecker": "trace",
 }
-
-
-def _camel_to_snake(name: str) -> str:
-    """Convert a CamelCase class name to snake_case."""
-
-    first = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", first).lower()
 
 
 def _checker_base_name(checker: object) -> str:
@@ -666,7 +628,7 @@ def _checker_base_name(checker: object) -> str:
     explicit = getattr(checker, "name", None)
     if explicit:
         return str(explicit)
-    snake = _camel_to_snake(class_name)
+    snake = camel_to_snake(class_name)
     for suffix in ("_equivariance_checker", "_checker"):
         if snake.endswith(suffix):
             return snake[: -len(suffix)]
@@ -745,39 +707,6 @@ def _sign_invalid_fraction(sign: torch.Tensor) -> float:
     return float(int((~valid).sum().item()) / n)
 
 
-def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:
-    """Yield every tensor leaf in a dataclass/mapping/sequence/tensor tree."""
-
-    if isinstance(obj, torch.Tensor):
-        yield obj
-        return
-    if is_dataclass(obj) and not isinstance(obj, type):
-        for f in fields(obj):
-            yield from _iter_tensors(getattr(obj, f.name))
-        return
-    if isinstance(obj, Mapping):
-        for value in obj.values():
-            yield from _iter_tensors(value)
-        return
-    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
-        for value in obj:
-            yield from _iter_tensors(value)
-
-
-def _nonfinite_tensor_count(obj: Any) -> int:
-    """Return the number of tensor leaves that are empty or contain a non-finite value.
-
-    Empty leaves count as invalid, matching `_nonfinite_fraction`'s treatment of
-    empty tensors.
-    """
-
-    count = 0
-    for tensor in _iter_tensors(obj):
-        if tensor.numel() == 0 or not bool(torch.isfinite(tensor).all().item()):
-            count += 1
-    return count
-
-
 __all__ = [
     "Callback",
     "Checkpoint",
@@ -786,8 +715,6 @@ __all__ = [
     "Event",
     "GradientStats",
     "Metadata",
-    "ReferenceEnergy",
-    "ReportSkeleton",
     "ResolvedConfigSnapshot",
     "RuntimeEquivariance",
     "SamplerHealth",

@@ -88,6 +88,12 @@ class PfaffianReadout(nn.Module):
         Positive floor for signed-log conversion.
     envelope_coefficient : float, optional
         Harmonic envelope coefficient added to ``logabs``.
+    channels, pair_channels : int
+        Number of order-2 real feature channels used by the Pfaffian. `channels`
+        is a shorthand for `pair_channels`.
+    border_channels : int or None, optional
+        Number of order-1 border channels for odd-electron systems. Defaults
+        to `pair_channels` when bordered odd-electron Pfaffians are enabled.
     trainable : bool, optional
         Whether pair and odd-electron border readout weights are trainable.
         The default keeps them as fixed buffers for scaffold determinism.
@@ -102,6 +108,9 @@ class PfaffianReadout(nn.Module):
         allow_odd_electron_bordered: bool = True,
         eps: float = 1.0e-12,
         envelope_coefficient: float = 0.0,
+        channels: int | None = None,
+        pair_channels: int | None = None,
+        border_channels: int | None = None,
         trainable: bool = False,
         trainable_envelope: bool = False,
     ) -> None:
@@ -109,11 +118,29 @@ class PfaffianReadout(nn.Module):
         self.allow_odd_electron_bordered = bool(allow_odd_electron_bordered)
         self.eps = float(eps)
         self.trainable = bool(trainable)
-        self.register_parameter("channel_weights", None)
-        self.register_parameter("border_weights", None)
-        self.register_buffer("channel_weight_buffer", None, persistent=False)
-        self.register_buffer("border_weight_buffer", None, persistent=False)
+        pair_channels = channels if pair_channels is None else pair_channels
+        if pair_channels is None:
+            raise ValueError("PfaffianReadout requires pair_channels or channels for eager initialization")
+        self.pair_channels = _positive_int(pair_channels, "pair_channels")
+        if border_channels is None and self.allow_odd_electron_bordered:
+            border_channels = self.pair_channels
+        self.border_channels = None if border_channels is None else _positive_int(border_channels, "border_channels")
+        self._register_readout_weight("channel_weights", "channel_weight_buffer", self.pair_channels)
+        if self.border_channels is None:
+            self.register_parameter("border_weights", None)
+            self.register_buffer("border_weight_buffer", None, persistent=False)
+        else:
+            self._register_readout_weight("border_weights", "border_weight_buffer", self.border_channels)
         _configure_envelope(self, envelope_coefficient, trainable=trainable_envelope)
+
+    def _register_readout_weight(self, parameter_name: str, buffer_name: str, channels: int) -> None:
+        initial = torch.full((channels,), 1.0 / channels)
+        if self.trainable:
+            self.register_parameter(parameter_name, nn.Parameter(initial))
+            self.register_buffer(buffer_name, None, persistent=False)
+        else:
+            self.register_parameter(parameter_name, None)
+            self.register_buffer(buffer_name, initial, persistent=False)
 
     def build_skew_kernel(self, features: RealFeature, batch: ElectronBatch | None = None) -> torch.Tensor:
         """Construct the skew matrix consumed by the Pfaffian.
@@ -141,7 +168,7 @@ class PfaffianReadout(nn.Module):
             raise ValueError(f"Order-2 block must have shape [batch, channels, n, n], got {tuple(pair.shape)}")
         if batch is not None and pair.shape[0] != batch.batch_size:
             raise ValueError("Feature batch size disagrees with ElectronBatch")
-        weights = self._ensure_pair_weights(pair.shape[1], device=pair.device, dtype=pair.dtype)
+        weights = self._ensure_pair_weights(pair.shape[1])
         antisymmetric = 0.5 * (pair - pair.transpose(-1, -2))
         kernel = (antisymmetric * weights.view(1, -1, 1, 1)).sum(dim=1)
         if kernel.shape[-1] % 2 == 1:
@@ -154,7 +181,7 @@ class PfaffianReadout(nn.Module):
                 raise ValueError("Order-1 border block must match order-2 batch and particle axes")
             if one_body.shape[1] == 0:
                 raise KeyError("Odd-electron Pfaffian requires a nonempty order-1 RealFeature border block")
-            border_weights = self._ensure_border_weights(one_body.shape[1], device=one_body.device, dtype=one_body.dtype)
+            border_weights = self._ensure_border_weights(one_body.shape[1])
             border = (one_body * border_weights.view(1, -1, 1)).sum(dim=1)
             bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1] + 1, kernel.shape[2] + 1)
             bordered[:, :-1, :-1] = kernel
@@ -175,24 +202,20 @@ class PfaffianReadout(nn.Module):
             aux={"K": kernel, "pfaffian": pfaffian(kernel), "envelope": envelope},
         )
 
-    def _ensure_pair_weights(self, channels: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    def _ensure_pair_weights(self, channels: int) -> torch.Tensor:
         return _ensure_readout_weights(
             self,
             channels,
             parameter_name="channel_weights",
             buffer_name="channel_weight_buffer",
-            device=device,
-            dtype=dtype,
         )
 
-    def _ensure_border_weights(self, channels: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    def _ensure_border_weights(self, channels: int) -> torch.Tensor:
         return _ensure_readout_weights(
             self,
             channels,
             parameter_name="border_weights",
             buffer_name="border_weight_buffer",
-            device=device,
-            dtype=dtype,
         )
 
 
@@ -202,26 +225,28 @@ def _ensure_readout_weights(
     *,
     parameter_name: str,
     buffer_name: str,
-    device: torch.device,
-    dtype: torch.dtype,
 ) -> torch.Tensor:
-    initial = torch.full((channels,), 1.0 / max(channels, 1), device=device, dtype=dtype)
     if module.trainable:
         weight = getattr(module, parameter_name)
         if weight is None:
-            setattr(module, parameter_name, nn.Parameter(initial))
-            weight = getattr(module, parameter_name)
-        elif tuple(weight.shape) != (channels,):
+            raise RuntimeError(f"{parameter_name} was not eagerly initialized")
+        if tuple(weight.shape) != (channels,):
             raise ValueError(f"{parameter_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
-        return weight.to(device=device, dtype=dtype)
+        return weight
 
     weight = getattr(module, buffer_name)
     if weight is None:
-        setattr(module, buffer_name, initial)
-        weight = getattr(module, buffer_name)
-    elif tuple(weight.shape) != (channels,):
+        raise RuntimeError(f"{buffer_name} was not eagerly initialized")
+    if tuple(weight.shape) != (channels,):
         raise ValueError(f"{buffer_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
-    return weight.to(device=device, dtype=dtype)
+    return weight
+
+
+def _positive_int(value: int, name: str) -> int:
+    result = int(value)
+    if result <= 0:
+        raise ValueError(f"{name} must be positive, got {result}")
+    return result
 
 
 def _configure_envelope(module: nn.Module, coefficient: float, *, trainable: bool) -> None:
@@ -242,15 +267,15 @@ def _inverse_softplus(value: float) -> float:
     return math.log(math.expm1(value))
 
 
-def _current_envelope_coefficient(module: nn.Module, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+def _current_envelope_coefficient(module: nn.Module) -> torch.Tensor:
     raw = getattr(module, "envelope_raw", None)
     if raw is not None:
-        return F.softplus(raw).to(device=device, dtype=dtype)
-    return module.envelope_coefficient.to(device=device, dtype=dtype)
+        return F.softplus(raw)
+    return module.envelope_coefficient
 
 
 def _harmonic_envelope(module: nn.Module, batch: ElectronBatch) -> torch.Tensor:
-    coefficient = _current_envelope_coefficient(module, dtype=batch.dtype, device=batch.device)
+    coefficient = _current_envelope_coefficient(module)
     radius_squared = batch.positions.square().sum(dim=(1, 2))
     return -coefficient * radius_squared
 

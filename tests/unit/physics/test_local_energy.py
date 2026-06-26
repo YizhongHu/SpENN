@@ -1,4 +1,4 @@
-"""Physics, local-energy, and VMC-loss sanity tests."""
+"""Physics and local-energy sanity tests."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
 from spenn.physics.hamiltonian import (
     LocalEnergyResult,
     local_energy,
+    normalize_hamiltonian_terms,
     reference_energy_metrics,
     summarize_local_energy,
 )
@@ -59,16 +59,6 @@ class CuspGaussianOutputModel(nn.Module):
 
     def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = self.cusp(batch) - self.alpha * batch.positions.square().sum(dim=(1, 2))
-        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
-
-
-class FixedLogAbsModel(nn.Module):
-    def __init__(self, values: torch.Tensor) -> None:
-        super().__init__()
-        self.logabs = nn.Parameter(values.clone())
-
-    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
-        logabs = self.logabs[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
@@ -182,20 +172,46 @@ def test_cusp_local_energy_has_finite_second_derivatives_with_pair_diagonal() ->
     assert torch.isfinite(model.alpha.grad)
 
 
-def test_vmc_loss_returns_score_function_objective_and_detached_metrics() -> None:
-    local_energy_vals = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64, requires_grad=True)
-    logabs = torch.tensor([0.0, 1.0, 2.0], dtype=torch.float64)
-    batch = ElectronBatch(positions=torch.zeros(3, 2, 1, dtype=torch.float64))
-    model = FixedLogAbsModel(logabs)
+# --- normalize_hamiltonian_terms ---
 
-    loss, metrics = VMCLoss()(model=model, terms=[_ConstantTerm("fixed", local_energy_vals)], batch=batch)
-    expected_loss = 2.0 * ((local_energy_vals.detach() - local_energy_vals.detach().mean()) * logabs).mean()
 
-    assert torch.equal(loss, expected_loss)
-    assert torch.equal(metrics["energy"], torch.tensor(3.0, dtype=torch.float64))
-    assert torch.equal(metrics["variance"], torch.tensor(8.0 / 3.0, dtype=torch.float64))
-    assert not metrics["energy"].requires_grad
-    assert not metrics["variance"].requires_grad
+def test_normalize_hamiltonian_terms_dict_is_used_directly() -> None:
+    kinetic = KineticEnergy()
+    trap = HarmonicTrap(omega=1.0)
+    normalized = normalize_hamiltonian_terms({"ke": kinetic, "trap": trap})
+
+    assert list(normalized) == ["ke", "trap"]
+    assert normalized["ke"] is kinetic
+    assert normalized["trap"] is trap
+
+
+def test_normalize_hamiltonian_terms_list_uses_snake_case_class_names() -> None:
+    normalized = normalize_hamiltonian_terms(
+        [KineticEnergy(), HarmonicTrap(omega=1.0), ElectronElectronInteraction()]
+    )
+
+    assert list(normalized) == ["kinetic_energy", "harmonic_trap", "electron_electron_interaction"]
+
+
+def test_normalize_hamiltonian_terms_disambiguates_repeated_classes_by_index() -> None:
+    normalized = normalize_hamiltonian_terms([HarmonicTrap(omega=1.0), HarmonicTrap(omega=2.0)])
+
+    assert list(normalized) == ["harmonic_trap_0", "harmonic_trap_1"]
+
+
+def test_normalize_hamiltonian_terms_rejects_non_string_keys() -> None:
+    with pytest.raises(TypeError, match="must be strings"):
+        normalize_hamiltonian_terms({0: KineticEnergy()})
+
+
+def test_normalize_hamiltonian_terms_rejects_empty_name() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        normalize_hamiltonian_terms({"  ": KineticEnergy()})
+
+
+def test_normalize_hamiltonian_terms_rejects_invalid_term_spec() -> None:
+    with pytest.raises(TypeError, match="local_energy"):
+        normalize_hamiltonian_terms({"bad": object()})
 
 
 # --- Local-energy helper over a list of terms ---
@@ -213,18 +229,98 @@ def test_local_energy_helper_sums_terms() -> None:
     assert torch.equal(total, a + b)
 
 
-def test_local_energy_helper_return_terms_true() -> None:
+def test_local_energy_helper_return_terms_true_with_named_dict() -> None:
     a = torch.tensor([1.0, 2.0], dtype=torch.float64)
     b = torch.tensor([3.0, 4.0], dtype=torch.float64)
-    terms = [_ConstantTerm("alpha", a), _ConstantTerm("beta", b)]
+    terms = {"alpha": _ConstantTerm("alpha", a), "beta": _ConstantTerm("beta", b)}
     batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
 
     result = local_energy(terms, None, batch, return_terms=True)
 
     assert isinstance(result, LocalEnergyResult)
     assert torch.equal(result.total, a + b)
+    # dict keys become the decomposition names
     assert torch.equal(result.terms["alpha"], a)
     assert torch.equal(result.terms["beta"], b)
+
+
+def test_local_energy_helper_return_terms_true_with_list_uses_snake_class_names() -> None:
+    a = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    b = torch.tensor([3.0, 4.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    # A list of two same-class terms falls back to snake-case class names,
+    # disambiguated by index to keep names unique.
+    result = local_energy([_ConstantTerm("a", a), _ConstantTerm("b", b)], None, batch, return_terms=True)
+
+    assert isinstance(result, LocalEnergyResult)
+    assert set(result.terms) == {"constant_term_0", "constant_term_1"}
+    assert torch.equal(result.terms["constant_term_0"], a)
+    assert torch.equal(result.terms["constant_term_1"], b)
+
+
+def test_local_energy_rejects_empty_configured_term_name() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="non-empty"):
+        local_energy({"": _ConstantTerm("ignored", torch.zeros(2, dtype=torch.float64))}, None, batch)
+
+
+def test_local_energy_rejects_term_object_without_local_energy() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(TypeError, match="local_energy"):
+        local_energy({"bad": object()}, None, batch)
+
+
+def test_local_energy_rejects_term_returning_tensor_instead_of_result() -> None:
+    class TensorTerm:
+        def local_energy(self, wavefunction, batch: ElectronBatch) -> torch.Tensor:
+            return torch.zeros(batch.batch_size, dtype=batch.dtype)
+
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(TypeError, match="LocalEnergyResult"):
+        local_energy({"bad": TensorTerm()}, None, batch)
+
+
+def test_local_energy_rejects_term_total_shape_mismatch() -> None:
+    term = _ConstantTerm("bad", torch.zeros(2, 1, dtype=torch.float64))
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="total.*shape"):
+        local_energy({"bad": term}, None, batch)
+
+
+def test_local_energy_rejects_term_decomposition_shape_mismatch() -> None:
+    class BadDecompositionTerm:
+        def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+            total = torch.zeros(batch.batch_size, dtype=batch.dtype)
+            return LocalEnergyResult(total=total, terms={"bad": torch.zeros(batch.batch_size, 1)})
+
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="decomposition.*shape"):
+        local_energy({"bad": BadDecompositionTerm()}, None, batch)
+
+
+def test_local_energy_return_terms_preserves_configured_names() -> None:
+    a = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    b = torch.tensor([3.0, 4.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    result = local_energy(
+        {
+            "kinetic_custom": _ConstantTerm("ignored_a", a),
+            "trap_custom": _ConstantTerm("ignored_b", b),
+        },
+        None,
+        batch,
+        return_terms=True,
+    )
+
+    assert isinstance(result, LocalEnergyResult)
+    assert set(result.terms) == {"kinetic_custom", "trap_custom"}
 
 
 # --- Term classes return decomposed LocalEnergyResult objects ---
