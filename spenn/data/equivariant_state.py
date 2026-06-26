@@ -1,161 +1,144 @@
-"""Equivariant state protocol for SpENN data objects.
+"""Equivariant-state contracts for SpENN data objects.
+
+This module is intentionally narrow. ``EquivariantState`` is the typed contract
+used as input/output of an equivariant map: semantic particle permutation
+(`Permutable`) plus semantic comparison (`ComparableState`). It does not include
+validation, health metrics, tensor-tree traversal, or pytest assertions --
+runtime validation is a separate contract in :mod:`spenn.data.validation`.
 
 The active particle-permutation convention is
-``(pi x)[i_1, ..., i_m] = x[pi^{-1} i_1, ..., pi^{-1} i_m]``. Concrete state
-objects implement this convention in their ``permute`` method.
+``(pi x)[i_1, ..., i_m] = x[pi^{-1} i_1, ..., pi^{-1} i_m]``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+import math
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol, Self, runtime_checkable
 
-from spenn.data.permutation import Permutation
+import torch
+
+from spenn.data.permutation import Permutable, Permutation
+
+JsonScalar = int | float | bool | str | None
 
 
 @runtime_checkable
-class EquivariantState(Protocol):
-    """Protocol for objects carrying a particle-permutation action."""
+class ComparableState(Protocol):
+    """Typed value with semantic comparison to another value of the same type."""
 
-    def permute(self, permutation: Permutation) -> "EquivariantState":
-        """Return a copy transformed by a particle permutation.
-
-        Parameters
-        ----------
-        permutation : Permutation
-            Active particle-label permutation.
-
-        Returns
-        -------
-        EquivariantState
-            Permuted state object.
-        """
+    def compare(
+        self,
+        other: Self,
+        *,
+        atol: float,
+        rtol: float,
+    ) -> tuple[bool, Mapping[str, JsonScalar]]:
+        """Return ``(is_close, metrics)`` versus another value of the same type."""
 
         ...
 
 
-@dataclass(frozen=True)
-class ConcatenatedState(EquivariantState):
-    """Bundle multiple equivariant states into one permutable state.
+@runtime_checkable
+class EquivariantState(Permutable, ComparableState, Protocol):
+    """Typed value usable as input/output of an equivariant map.
 
-    Parameters
-    ----------
-    data : tuple of EquivariantState
-        Component states. The permutation action is applied componentwise.
+    Includes only the operations equivariance checks need: semantic particle
+    permutation (`Permutable`) and semantic comparison (`ComparableState`). It
+    does not include validation, health metrics, tensor-tree traversal,
+    particle-count inference, or pytest assertions.
     """
 
-    data: tuple[EquivariantState, ...] = field(default_factory=tuple)
 
-    def __post_init__(self) -> None:
-        data = tuple(self.data)
-        for state in data:
-            if not isinstance(state, EquivariantState):
-                raise TypeError("ConcatenatedState entries must implement EquivariantState")
-        object.__setattr__(self, "data", data)
+def apply_particle_permutation(value: Any, permutation: Permutation) -> Any:
+    """Apply a particle permutation to one semantic, typed value.
 
-    def __len__(self) -> int:
-        """Return the number of component states."""
+    RED BANNER:
+    Do not add a generic tree walker or any recursive container prober as a
+    replacement for this function. Particle permutation and comparison are
+    semantic typed-data actions. Values used in equivariance checks must expose
+    explicit ``.permute(...)`` and ``.compare(...)`` contracts. Runtime
+    validation belongs to separate typed validation contracts such as
+    ``.validate()`` / ``.validity_metrics()`` (see :mod:`spenn.data.validation`),
+    not to ``EquivariantState``.
 
-        return len(self.data)
+    This dispatches on the value's own permutation contract, requiring a
+    ``permute`` method (any `Permutable`); it never infers a representation
+    action from arbitrary tensor shapes or container structure.
 
-    def __iter__(self) -> Iterator[EquivariantState]:
-        """Iterate over component states."""
-
-        return iter(self.data)
-
-    def __getitem__(self, index: int) -> EquivariantState:
-        """Return one component state."""
-
-        return self.data[index]
-
-    def permute(self, permutation: Permutation) -> "ConcatenatedState":
-        """Return a state with every component permuted."""
-
-        return ConcatenatedState(tuple(state.permute(permutation) for state in self.data))
-
-
-def permute_tree(obj: Any, permutation: Permutation) -> Any:
-    """Apply a particle permutation to every equivariant object in a tree."""
-
-    permute = getattr(obj, "permute", None)
-    if callable(permute):
-        return permute(permutation)
-    if isinstance(obj, Mapping):
-        return type(obj)((key, permute_tree(value, permutation)) for key, value in obj.items())
-    if isinstance(obj, tuple):
-        return type(obj)(permute_tree(value, permutation) for value in obj)
-    if isinstance(obj, list):
-        return [permute_tree(value, permutation) for value in obj]
-    return obj
-
-
-def validate_tree(obj: Any) -> None:
-    """Call ``validate`` on every validating object in a nested tree.
-
-    Parameters
-    ----------
-    obj : object
-        Tree containing mappings, sequences, and leaves that may expose a
-        callable ``validate`` method.
+    Raises
+    ------
+    TypeError
+        If `value` does not expose a callable ``permute``.
     """
 
-    validate = getattr(obj, "validate", None)
-    if callable(validate):
-        validate()
-        return
-    if isinstance(obj, Mapping):
-        for value in obj.values():
-            validate_tree(value)
-        return
-    if _is_sequence(obj):
-        for value in obj:
-            validate_tree(value)
+    permute = getattr(value, "permute", None)
+    if not callable(permute):
+        raise TypeError(
+            f"apply_particle_permutation: {type(value).__name__} is not particle-permutable "
+            "(no callable .permute); runtime equivariance needs semantic typed values."
+        )
+    return permute(permutation)
 
 
-def infer_particle_count(obj: Any) -> int | None:
-    """Infer a shared particle count from an input tree."""
-
-    counts = _collect_particle_counts(obj)
-    if not counts:
-        return None
-    first = counts[0]
-    for count in counts[1:]:
-        if count != first:
-            raise ValueError(f"Equivariant inputs disagree on particle count: {counts}")
-    return first
+def _compare_tensor_pair(x: torch.Tensor, y: torch.Tensor, *, atol: float, rtol: float) -> tuple[bool, float]:
+    if x.shape != y.shape:
+        return False, float("inf")
+    if x.numel() == 0:
+        return True, 0.0
+    error = float((x - y).abs().max().item())
+    return bool(torch.allclose(x, y, atol=atol, rtol=rtol)), error
 
 
-def _collect_particle_counts(obj: Any) -> list[int]:
-    if obj is None:
-        return []
-    n_particles = getattr(obj, "n_particles", None)
-    if n_particles is not None:
-        return [int(n_particles)]
-    n_electrons = getattr(obj, "n_electrons", None)
-    if n_electrons is not None:
-        return [int(n_electrons)]
-    if isinstance(obj, Mapping):
-        counts: list[int] = []
-        for value in obj.values():
-            counts.extend(_collect_particle_counts(value))
-        return counts
-    if _is_sequence(obj):
-        counts = []
-        for value in obj:
-            counts.extend(_collect_particle_counts(value))
-        return counts
-    return []
+def compare_tensor_blocks(
+    a: Sequence[torch.Tensor],
+    b: Sequence[torch.Tensor],
+    *,
+    atol: float,
+    rtol: float,
+) -> tuple[bool, dict[str, JsonScalar]]:
+    """Compare two ordered tensor-block sequences; return ``(is_close, metrics)``."""
+
+    if len(a) != len(b):
+        return False, {"max_abs_error": float("inf")}
+    close = True
+    max_abs_error = 0.0
+    for x, y in zip(a, b):
+        pair_close, error = _compare_tensor_pair(x, y, atol=atol, rtol=rtol)
+        if not math.isfinite(error):
+            return False, {"max_abs_error": float("inf")}
+        close = close and pair_close
+        max_abs_error = max(max_abs_error, error)
+    return close, {"max_abs_error": max_abs_error}
 
 
-def _is_sequence(obj: Any) -> bool:
-    return isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray))
+def compare_tensor_mapping(
+    a: Mapping[Any, torch.Tensor],
+    b: Mapping[Any, torch.Tensor],
+    *,
+    atol: float,
+    rtol: float,
+) -> tuple[bool, dict[str, JsonScalar]]:
+    """Compare two keyed tensor mappings; return ``(is_close, metrics)``."""
+
+    if set(a.keys()) != set(b.keys()):
+        return False, {"max_abs_error": float("inf")}
+    close = True
+    max_abs_error = 0.0
+    for key in a:
+        pair_close, error = _compare_tensor_pair(a[key], b[key], atol=atol, rtol=rtol)
+        if not math.isfinite(error):
+            return False, {"max_abs_error": float("inf")}
+        close = close and pair_close
+        max_abs_error = max(max_abs_error, error)
+    return close, {"max_abs_error": max_abs_error}
 
 
 __all__ = [
-    "ConcatenatedState",
+    "ComparableState",
     "EquivariantState",
-    "infer_particle_count",
-    "permute_tree",
-    "validate_tree",
+    "JsonScalar",
+    "apply_particle_permutation",
+    "compare_tensor_blocks",
+    "compare_tensor_mapping",
 ]

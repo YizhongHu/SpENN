@@ -1,0 +1,62 @@
+# Smoke workload profile for this study.
+#
+# Stage launchers apply only the section matching their stage when --smoke is
+# passed. The profile is intentionally separate from grid.yaml: grid.yaml owns
+# the scientific scan axes and seed policy, while this file owns temporary
+# workload reductions used for end-to-end scheduler checks.
+
+train:
+  training.max_steps: 2
+  training.log_every_n_steps: 1
+  sampler_params.n_walkers: 128
+  sampler_params.burn_in: 10
+  sampler_params.n_steps: 5
+  checks.every_n_steps: 1
+  checkpoint.every_n_steps: 1
+  status.every_n_steps: 1
+
+validation:
+  evaluation_tasks.cusp.generator.n_points: 4
+  evaluation_tasks.cusp.generator.n_directions: 2
+  evaluation_tasks.cusp.generator.center_of_mass_radii:
+    - 0.0
+  evaluation_tasks.tail.generator.n_points: 4
+  evaluation_tasks.tail.generator.n_directions: 2
+  evaluation_tasks.stratified_geometry.generator.n_samples: 16
+  evaluation_tasks.hooke_orbital.generator.n_samples: 16
+  evaluation_tasks.full_model_antisymmetry.generator.base_generator.n_samples: 8
+  evaluation_tasks.trace_equivariance.generator.base_generator.n_samples: 4
+  evaluation_tasks.feature_trace_stability.generator.n_samples: 8
+  evaluation_tasks.readout_trace_stability.generator.n_samples: 8
+
+final_train:
+  training.max_steps: 2
+  training.log_every_n_steps: 1
+  sampler_params.n_walkers: 128
+  sampler_params.burn_in: 10
+  sampler_params.n_steps: 5
+  checks.every_n_steps: 1
+  checkpoint.every_n_steps: 1
+  status.every_n_steps: 1
+
+final_eval:
+  evaluation_tasks.final_cusp.generator.n_points: 4
+  evaluation_tasks.final_cusp.generator.n_directions: 2
+  evaluation_tasks.final_cusp.generator.center_of_mass_radii:
+    - 0.0
+  evaluation_tasks.final_tail.generator.n_points: 4
+  evaluation_tasks.final_tail.generator.n_directions: 2
+  evaluation_tasks.final_stratified_geometry.generator.n_samples: 16
+  evaluation_tasks.final_hooke_orbital.generator.n_samples: 16
+  evaluation_tasks.final_mcmc_energy.generator.max_samples: 32
+  final_eval_sampler_params.n_walkers: 128
+  final_eval_sampler_params.burn_in: 10
+  final_eval_sampler_params.n_steps: 5
+  final_eval_sampler_params.max_samples: 32
+  evaluation_tasks.final_full_model_antisymmetry.generator.base_generator.n_samples: 8
+  evaluation_tasks.final_spatial_exchange_symmetry.generator.base_generator.n_samples: 8
+  evaluation_tasks.final_rotation_consistency.generator.base_generator.n_samples: 8
+  evaluation_tasks.final_rotation_consistency.generator.n_rotations: 1
+  evaluation_tasks.final_trace_equivariance.generator.base_generator.n_samples: 4
+  evaluation_tasks.final_feature_trace_stability.generator.n_samples: 8
+  evaluation_tasks.final_readout_trace_stability.generator.n_samples: 8

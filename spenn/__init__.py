@@ -1,9 +1,9 @@
-"""SpENN package skeleton.
+"""SpENN package metadata.
 
 Importing :mod:`spenn` must remain lightweight and free of training side
-effects. Runtime components will be added in later implementation phases.
+effects.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = ["__version__"]

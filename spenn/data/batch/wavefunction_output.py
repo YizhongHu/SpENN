@@ -9,13 +9,19 @@ from typing import Any
 import torch
 
 from spenn.data.batch.base import _coerce_optional_tensor
-from spenn.data.equivariant_state import EquivariantState
+from spenn.data.equivariant_state import EquivariantState, compare_tensor_blocks
 from spenn.data.permutation import Permutation
 
 
 @dataclass
 class WavefunctionOutput(EquivariantState):
-    """Store a wavefunction value in signed-log form.
+    """Store a fermionic scalar wavefunction value in signed-log form.
+
+    This represents a fermionic scalar wavefunction output. Under particle
+    permutation, ``logabs`` is invariant and ``sign`` transforms by the
+    permutation parity (see :meth:`permute`). This sign-representation contract
+    is specific to fermionic scalar outputs; a non-fermionic scalar output would
+    need a different ``permute`` implementation.
 
     Parameters
     ----------
@@ -124,9 +130,10 @@ class WavefunctionOutput(EquivariantState):
     def permute(self, permutation: Permutation) -> "WavefunctionOutput":
         """Return the output under a particle permutation.
 
-        Scalar wavefunction outputs carry no tuple-index axes, but the
-        wavefunction value transforms in the sign representation under
-        electron-label permutations.
+        Encodes the fermionic scalar-output contract: ``logabs`` is invariant
+        and ``sign`` transforms by the permutation parity
+        (``permutation.sign``). Scalar wavefunction outputs carry no tuple-index
+        axes, so only the parity factor on ``sign`` is applied.
         """
 
         return replace(
@@ -136,6 +143,24 @@ class WavefunctionOutput(EquivariantState):
             phase=None if self.phase is None else self.phase.clone(),
             aux=dict(self.aux),
         )
+
+    def compare(
+        self,
+        other: "WavefunctionOutput",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, dict[str, float]]:
+        """Compare ``logabs``/``sign``/``phase``; return ``(is_close, max_abs_error)``.
+
+        ``aux`` is diagnostic and not compared.
+        """
+
+        if type(self) is not type(other) or (self.phase is None) != (other.phase is None):
+            return False, {"max_abs_error": float("inf")}
+        blocks_self = [self.logabs, self.sign] + ([] if self.phase is None else [self.phase])
+        blocks_other = [other.logabs, other.sign] + ([] if other.phase is None else [other.phase])
+        return compare_tensor_blocks(blocks_self, blocks_other, atol=atol, rtol=rtol)
 
 
 __all__ = ["WavefunctionOutput"]

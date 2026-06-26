@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import torch
-from torch import nn
+from spenn.dependencies import require_torch, require_torch_nn
+
+torch = require_torch(feature="SpENN MLP modules")
+nn = require_torch_nn(feature="SpENN MLP modules")
 
 
 class MLP(nn.Module):
-    """Lazy-input multilayer perceptron.
+    """Eager-input multilayer perceptron.
 
     Parameters
     ----------
+    in_channels : int
+        Size of the input feature dimension.
     out_channels : int
         Size of the final feature dimension.
     hidden_channels : int, optional
@@ -27,6 +31,7 @@ class MLP(nn.Module):
 
     def __init__(
         self,
+        in_channels: int,
         out_channels: int,
         hidden_channels: int = 64,
         num_hidden_layers: int = 2,
@@ -34,6 +39,8 @@ class MLP(nn.Module):
         bias: bool = True,
     ) -> None:
         super().__init__()
+        if in_channels <= 0:
+            raise ValueError("MLP in_channels must be positive")
         if out_channels <= 0:
             raise ValueError("MLP out_channels must be positive")
         if hidden_channels <= 0:
@@ -42,10 +49,12 @@ class MLP(nn.Module):
             raise ValueError("MLP num_hidden_layers must be nonnegative")
 
         layers: list[nn.Module] = []
+        current_channels = int(in_channels)
         for _layer_idx in range(num_hidden_layers):
-            layers.append(nn.LazyLinear(hidden_channels, bias=bias))
+            layers.append(nn.Linear(current_channels, hidden_channels, bias=bias))
             layers.append(deepcopy(activation) if activation is not None else nn.SiLU())
-        layers.append(nn.LazyLinear(out_channels, bias=bias))
+            current_channels = int(hidden_channels)
+        layers.append(nn.Linear(current_channels, out_channels, bias=bias))
         self.layers = nn.Sequential(*layers)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:

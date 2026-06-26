@@ -1,4 +1,4 @@
-"""Tests for irrep activation modules."""
+"""Tests for baseline irrep activation modules."""
 
 from __future__ import annotations
 
@@ -8,74 +8,101 @@ from torch import nn
 
 from spenn.data.irrep import IrrepInteraction
 from spenn.data.partition import Partition
-from spenn.nn import Activation, ActivationByIrrep, ActivationByType
+from spenn.data.permutation import Permutation
+from spenn.nn.activation import Activation, GaussianActivation, GatedNormActivation
+from spenn.reps import specht_irrep
 
 
-class Cube(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x**3
+def _interaction() -> tuple[IrrepInteraction, Partition, torch.Tensor]:
+    partition = Partition((2, 1))
+    tensor = torch.arange(1, 1 + 1 * 2 * 3 * 1 * 1 * 1 * 2 * 2, dtype=torch.float64).reshape(
+        1,
+        2,
+        3,
+        1,
+        1,
+        1,
+        2,
+        2,
+    )
+    return IrrepInteraction({partition: tensor}), partition, tensor
 
 
 def test_activation_modules_inherit_activation_template() -> None:
-    assert issubclass(ActivationByType, Activation)
-    assert issubclass(ActivationByIrrep, Activation)
+    assert issubclass(GatedNormActivation, Activation)
 
 
-def test_activation_by_type_preserves_path_resolved_interaction_type() -> None:
-    symmetric = Partition((2,))
-    sign = Partition((1, 1))
-    interaction = IrrepInteraction(
-        {
-            symmetric: torch.tensor([-2.0, 1.0], dtype=torch.float64).reshape(1, 1, 2, 1, 1, 1, 1),
-            sign: torch.tensor([-3.0, 2.0], dtype=torch.float64).reshape(1, 1, 2, 1, 1, 1, 1),
-        }
-    )
-    activation = ActivationByType(symmetric_activation=nn.ReLU(), antisymmetric_activation=Cube())
+def test_gaussian_activation_matches_a_exp_ax_squared() -> None:
+    activation = GaussianActivation(amplitude=2.0, quadratic_coefficient=-0.5).to(dtype=torch.float64)
+    x = torch.tensor([-2.0, 0.0, 3.0], dtype=torch.float64)
 
-    output = activation(interaction)
-
-    assert isinstance(output, IrrepInteraction)
-    assert output[symmetric].shape == interaction[symmetric].shape
-    assert output[sign].shape == interaction[sign].shape
-    torch.testing.assert_close(
-        output[symmetric],
-        torch.tensor([0.0, 1.0], dtype=torch.float64).reshape(1, 1, 2, 1, 1, 1, 1),
-    )
-    torch.testing.assert_close(
-        output[sign],
-        torch.tensor([-27.0, 8.0], dtype=torch.float64).reshape(1, 1, 2, 1, 1, 1, 1),
-    )
+    torch.testing.assert_close(activation(x), 2.0 * torch.exp(-0.5 * x.square()))
 
 
-def test_activation_by_type_rejects_non_odd_antisymmetric_activation() -> None:
-    sign = Partition((1, 1))
-    interaction = IrrepInteraction(
-        {
-            sign: torch.tensor([-3.0, 2.0], dtype=torch.float64).reshape(1, 1, 2, 1, 1, 1, 1),
-        }
-    )
-    activation = ActivationByType(antisymmetric_activation=nn.ReLU())
+def test_gaussian_activation_can_make_coefficients_trainable() -> None:
+    activation = GaussianActivation(amplitude=2.0, quadratic_coefficient=-0.5, trainable=True)
 
-    with pytest.raises(ValueError, match="must be odd"):
-        activation(interaction)
+    assert isinstance(activation.amplitude, nn.Parameter)
+    assert isinstance(activation.quadratic_coefficient, nn.Parameter)
 
 
-def test_activation_by_type_broadcasts_tensor_gate_over_alpha_with_paths() -> None:
-    partition = Partition((2, 1))
-    tensor = torch.arange(1, 1 + 1 * 1 * 2 * 1 * 1 * 1 * 2 * 2, dtype=torch.float64).reshape(
-        1,
-        1,
-        2,
-        1,
-        1,
-        1,
-        2,
-        2,
-    )
-    interaction = IrrepInteraction({partition: tensor})
-    activation = ActivationByType(tensor_activation=nn.Sigmoid())
+def test_gated_norm_activation_uses_configured_gate_module_and_preserves_shape() -> None:
+    interaction, partition, tensor = _interaction()
+    activation = GatedNormActivation(gate=nn.Identity())
 
     output = activation(interaction)[partition]
-    gate = output / tensor
+    expected_gate = tensor.square().sum(dim=-2, keepdim=True)
 
-    torch.testing.assert_close(gate[..., 0, :], gate[..., 1, :])
+    assert output.shape == tensor.shape
+    torch.testing.assert_close(output, tensor * expected_gate)
+
+
+class BadGate(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.squeeze(-2)
+
+
+def test_gated_norm_activation_rejects_wrong_gate_shape() -> None:
+    interaction, _partition, _tensor = _interaction()
+
+    with pytest.raises(ValueError, match="gate must preserve"):
+        GatedNormActivation(gate=BadGate())(interaction)
+
+
+def test_gated_norm_activation_preserves_orthogonal_coordinate_action_with_paths() -> None:
+    interaction, partition, tensor = _interaction()
+    permutation = Permutation((1, 2, 0))
+    representation = specht_irrep(partition).representation(permutation)
+    activation = GatedNormActivation(gate=nn.Sigmoid())
+
+    transformed_input = torch.einsum("ab,...bc->...ac", representation, tensor)
+    transformed_output = activation(IrrepInteraction({partition: transformed_input}))[partition]
+    expected_output = torch.einsum(
+        "ab,...bc->...ac",
+        representation,
+        activation(interaction)[partition],
+    )
+
+    torch.testing.assert_close(transformed_output, expected_output)
+
+
+def test_gated_norm_activation_forward_does_not_mutate_state_inventory() -> None:
+    interaction, _partition, _tensor = _interaction()
+    activation = GatedNormActivation(gate=nn.Linear(2, 2, bias=False)).to(dtype=torch.float64)
+    before = {
+        name: (tuple(tensor.shape), tensor.dtype, tensor.device)
+        for name, tensor in activation.state_dict().items()
+    }
+
+    activation(interaction)
+
+    after = {
+        name: (tuple(tensor.shape), tensor.dtype, tensor.device)
+        for name, tensor in activation.state_dict().items()
+    }
+    assert after == before
+
+
+def test_gated_norm_activation_requires_gate_module() -> None:
+    with pytest.raises(TypeError, match="gate"):
+        GatedNormActivation()  # type: ignore[call-arg]

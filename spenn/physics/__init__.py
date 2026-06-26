@@ -1,25 +1,9 @@
-"""QMC physics namespace for systems, Hamiltonians, and local energy."""
+"""QMC physics namespace.
 
-from spenn.physics.hamiltonian import ElectronicHamiltonian
-from spenn.physics.kinetic import LogAbsKineticEnergy, autograd_laplacian, kinetic_energy_from_logabs
-from spenn.physics.local_energy import LocalEnergyCalculator
-from spenn.physics.potential import (
-    ElectronicPotential,
-    electron_electron_repulsion,
-    electron_nuclear_attraction,
-    harmonic_trap_potential,
-)
-from spenn.physics.systems import ElectronicSystem
+Import symbols from their defining submodules, for example::
 
-__all__ = [
-    "ElectronicHamiltonian",
-    "ElectronicPotential",
-    "ElectronicSystem",
-    "LocalEnergyCalculator",
-    "LogAbsKineticEnergy",
-    "autograd_laplacian",
-    "electron_electron_repulsion",
-    "electron_nuclear_attraction",
-    "harmonic_trap_potential",
-    "kinetic_energy_from_logabs",
-]
+    from spenn.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, local_energy
+    from spenn.physics.kinetic import KineticEnergy
+    from spenn.physics.potential import HarmonicTrap, ElectronElectronInteraction
+    from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
+"""

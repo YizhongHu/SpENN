@@ -1,20 +1,19 @@
-"""Reusable metric and plot-data diagnostics."""
+"""Evaluation diagnostics for configured SpENN runs."""
 
-from spenn.diagnostics.base import DiagnosticContext, DiagnosticResult
-from spenn.diagnostics.wavefunction import (
-    CuspSlopeDiagnostic,
-    ExchangeSymmetryDiagnostic,
-    HistogramDiagnostic,
-    RadialCutDiagnostic,
-    RadialLogAbsComparison,
+from spenn.diagnostics.base import (
+    Diagnostic,
+    EvaluationContext,
+    JsonScalar,
+    evaluate_diagnostics,
+    validate_diagnostics,
 )
+from spenn.diagnostics.energy import EnergyEvaluation
 
 __all__ = [
-    "CuspSlopeDiagnostic",
-    "DiagnosticContext",
-    "DiagnosticResult",
-    "ExchangeSymmetryDiagnostic",
-    "HistogramDiagnostic",
-    "RadialCutDiagnostic",
-    "RadialLogAbsComparison",
+    "Diagnostic",
+    "EnergyEvaluation",
+    "EvaluationContext",
+    "JsonScalar",
+    "evaluate_diagnostics",
+    "validate_diagnostics",
 ]
