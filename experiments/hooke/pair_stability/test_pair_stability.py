@@ -441,23 +441,24 @@ def test_submitit_uses_matching_cpu_or_cuda_slurm_resources(
 
     cpu_args = train.parse_args(["--backend", "submitit"])
     assert launch.slurm_parameters(cpu_args, profile="cpu") == {
-        "slurm_partition": "seas_compute,kozinsky_lab,sapphire",
+        "slurm_partition": "sapphire,kozinsky,seas_compute",
         "timeout_min": 480,
-        "mem_gb": 32,
-        "cpus_per_task": 8,
+        "mem_gb": 128,
+        "cpus_per_task": 16,
         "tasks_per_node": 1,
         "slurm_array_parallelism": launch.DEFAULT_ARRAY_PARALLELISM,
     }
     cuda_args = train.parse_args(["--backend", "submitit", "--cuda"])
     cuda_slurm = launch.slurm_parameters(cuda_args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "seas_gpu,kozinsky_gpu"
+    assert cuda_slurm["mem_gb"] == 80
     assert cuda_slurm["gpus_per_node"] == 1
     assert cuda_slurm["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
     smoke_cpu = launch.slurm_parameters(cpu_args, profile="cpu", smoke=True)
     assert smoke_cpu["slurm_partition"] == "test"
     assert smoke_cpu["timeout_min"] == 15
-    assert smoke_cpu["mem_gb"] == 16
-    assert smoke_cpu["cpus_per_task"] == 4
+    assert smoke_cpu["mem_gb"] == 128
+    assert smoke_cpu["cpus_per_task"] == 16
     assert smoke_cpu["slurm_array_parallelism"] == 2
     smoke_cuda = launch.slurm_parameters(cuda_args, profile="cuda", smoke=True)
     assert smoke_cuda["slurm_partition"] == "gpu_test"
@@ -534,6 +535,7 @@ def test_wait_job_submits_dependent_launcher(
     assert "--time=00:17:00" in command
     assert "--mem=4G" in command
     script = str(kwargs["input"])
+    assert "UV_PROJECT_ENVIRONMENT=.venv-submitit" in script
     assert "uv run --extra submitit python -u" in script
     assert "--wait-job" not in script
     assert "--chunk-size 32" in script

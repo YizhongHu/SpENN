@@ -65,6 +65,8 @@ def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *,
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
     attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
+    if attempt_id is None and smoke:
+        attempt_id = latest_attempt_id(final_grid_stage, smoke=False)
     if attempt_id is None:
         mode = "smoke" if smoke else "production"
         raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
@@ -353,6 +355,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
+    launch.ensure_submitit_launcher_environment(
+        args,
+        script_path=Path(__file__).resolve(),
+        argv=raw_argv,
+        repo_root=repo_root,
+    )
     results_root = launch.repo_path(args.results_root, repo_root)
     if args.wait_job:
         launch.submit_dependent_launcher(
@@ -382,17 +390,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         final_grid_attempt_id=final_grid_attempt_id,
         eval_config=eval_config,
     )
-    uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
-    submitted_commands = [
-        launch.environment_shell_command(
-            job["command_parts"],
-            repo_root=repo_root,
-            uv_environment=uv_environment,
-            uv_extras=uv_extras,
-            device=runtime_device,
-        )
-        for job in jobs
-    ]
+    command_sets = launch.environment_command_sets(
+        [job["command_parts"] for job in jobs],
+        args=args,
+        repo_root=repo_root,
+    )
+    submitted_commands = launch.summarize_command_sets(command_sets)
 
     if skipped:
         print(f"[pair_stability] skipped {len(skipped)} final-eval jobs without ready final-train checkpoints")
@@ -403,26 +406,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     attempt_id = str(jobs[0]["final_eval_attempt_id"])
     row_status_paths = [Path(str(job["final_eval_attempt_dir"])) / "launcher_status.json" for job in jobs]
     chunk_status_dir = stage_dir(results_root, STAGE_FINAL_EVAL) / "chunk_status" / attempt_id
-    if args.backend == "local":
-        job_ids = launch.submit_local(
-            submitted_commands,
-            repo_root=repo_root,
-            chunk_size=args.chunk_size,
-            allow_partial_failures=True,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
-    else:
-        job_ids = launch.submit_submitit(
-            submitted_commands,
-            log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / attempt_id,
-            job_name="hooke-pair-stability-final-eval-smoke" if args.smoke else "hooke-pair-stability-final-eval",
-            slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
-            chunk_size=args.chunk_size,
-            allow_partial_failures=True,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
+    job_ids = launch.submit_command_sets(
+        command_sets,
+        args=args,
+        backend=args.backend,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / attempt_id,
+        job_name="hooke-pair-stability-final-eval-smoke" if args.smoke else "hooke-pair-stability-final-eval",
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        allow_partial_failures=True,
+        row_status_paths=row_status_paths,
+        chunk_status_dir=chunk_status_dir,
+    )
 
     write_final_eval_submission_records(
         jobs,

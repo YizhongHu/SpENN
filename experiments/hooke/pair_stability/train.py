@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -169,8 +170,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Launch train jobs from an existing ``00_grid`` attempt."""
 
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
+    launch.ensure_submitit_launcher_environment(
+        args,
+        script_path=Path(__file__).resolve(),
+        argv=raw_argv,
+        repo_root=repo_root,
+    )
     results_root = launch.repo_path(args.results_root, repo_root)
     grid_attempt_id = launch.resolve_grid_attempt_id(results_root, args.grid_attempt_id)
     manifest = launch.load_grid_manifest(results_root, grid_attempt_id)
@@ -179,17 +187,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _execution_command(launch.command_for_job(job), job, grid_attempt_id=grid_attempt_id, smoke=args.smoke)
         for job in jobs
     ]
-    uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
-    submitted_commands = [
-        launch.environment_shell_command(
-            command,
-            repo_root=repo_root,
-            uv_environment=uv_environment,
-            uv_extras=uv_extras,
-            device=runtime_device,
-        )
-        for command in commands
-    ]
+    command_sets = launch.environment_command_sets(commands, args=args, repo_root=repo_root)
+    submitted_commands = launch.summarize_command_sets(command_sets)
 
     if not jobs:
         print(f"[pair_stability] grid attempt {grid_attempt_id} has no jobs")
@@ -206,24 +205,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
     chunk_status_dir = stage_dir(results_root, STAGE_TRAIN) / "chunk_status" / log_attempt
-    if args.backend == "local":
-        job_ids = launch.submit_local(
-            submitted_commands,
-            repo_root=repo_root,
-            chunk_size=args.chunk_size,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
-    else:
-        job_ids = launch.submit_submitit(
-            submitted_commands,
-            log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
-            job_name="hooke-pair-stability-train-smoke" if args.smoke else "hooke-pair-stability-train",
-            slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
-            chunk_size=args.chunk_size,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
+    job_ids = launch.submit_command_sets(
+        command_sets,
+        args=args,
+        backend=args.backend,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
+        job_name="hooke-pair-stability-train-smoke" if args.smoke else "hooke-pair-stability-train",
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        row_status_paths=row_status_paths,
+        chunk_status_dir=chunk_status_dir,
+    )
 
     write_train_submission_records(
         jobs,

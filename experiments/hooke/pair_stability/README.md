@@ -122,25 +122,42 @@ entrypoints:
 - `final_report.py` consumes only `08_final_collect` compact tables and writes
   `09_final_report` report text, copied tables, and figures.
 - `launch.py` is shared by stage launchers; it owns local/Submitit execution,
-  uv sync/activation, CPU/CUDA profile defaults, Slurm resources, arrays, and
-  finite chunk workers.
+  uv sync/activation, device defaults, Slurm resources, arrays, and finite
+  chunk workers.
 
 This runbook assumes the real scan runs on CUDA through Submitit. The CLI keeps
-CPU as the default for safety, so production launch examples pass `--cuda`
-explicitly.
+CPU as the default for safety, so production launch examples pass
+`--device cuda` explicitly.
 
-`train.py` and `validate.py` share the same execution profile. `--cpu` and
-`--cuda` switch all three execution layers together:
+`train.py` and `validate.py` share the same device selector. `--device` switches
+uv environment, runtime override, and Slurm resources together:
 
-| profile  | uv environment | uv extra | runtime override | Submitit hardware default |
+| selector | uv environment | uv extra | runtime override | Submitit hardware default |
 |----------|----------------|----------|------------------|---------------------------|
-| `--cpu`  | `.venv`        | `cpu`    | `runtime.device=cpu`  | `slurm_partition=seas_compute,kozinsky_lab,sapphire`, no GPUs |
-| `--cuda` | `.venv-gpu`    | `cu126`  | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `gpus_per_node=1` |
+| `--device cpu` | `.venv` | `cpu` | `runtime.device=cpu` | `slurm_partition=sapphire,kozinsky,seas_compute`, `cpus_per_task=16`, `mem_gb=128`, no GPUs |
+| `--device cuda` | `.venv-gpu` | `cu126` | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `cpus_per_task=8`, `mem_gb=80`, `gpus_per_node=1` |
+| `--device cpu,cuda` | both of the above | both | per claimed row | submits separate CPU and CUDA candidate arrays; the first candidate that starts claims each row |
+
+Submitit launchers re-exec through `.venv-submitit` before creating arrays, so
+the Submitit supervisor does not share the CPU worker's `.venv` while workers
+run `uv sync`.
+For manual Submitit launches, prefer prefixing the command with
+`UV_PROJECT_ENVIRONMENT=.venv-submitit` so uv starts in the launcher environment
+immediately.
+CPU workers export `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+`NUMEXPR_NUM_THREADS`, and `VECLIB_MAXIMUM_THREADS` from the Slurm CPU
+allocation so PyTorch and BLAS use the requested CPU allocation.
 
 Each launched job syncs and activates the selected environment, then runs the
 planned command through that environment's `python`. Override the environment
 path with `--uv-environment`; pass `--uv-extra` one or more times to select
 another extra such as `cu128` or `cu130`.
+
+For mixed `cpu,cuda` Submitit runs, CPU and CUDA candidates get separate Slurm
+submissions because GPU resources cannot be requested on CPU partitions. Use
+`--slurm-cpu-partition` and `--slurm-cuda-partition` when you need to pin the
+two candidates separately, for example CPU smoke jobs to `test` and CUDA smoke
+jobs to `gpu_test`.
 
 Submitit launches are always Slurm arrays via `submitit.AutoExecutor.map_array`,
 not one independent `sbatch` per planned run. The default full-run array cap is
@@ -217,15 +234,15 @@ Train smoke before the real scan:
 ```bash
 # CUDA Submitit smoke: two jobs, gpu_test partition, 15 minute limit
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda --smoke
+  --backend submitit --device cuda --smoke
 
 # CPU Submitit smoke: two jobs, test partition, 15 minute limit
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cpu --smoke
+  --backend submitit --device cpu --smoke
 
 # Local smoke, useful on an interactive node
 uv run python experiments/hooke/pair_stability/train.py \
-  --backend local --cuda --smoke
+  --backend local --device cuda --smoke
 ```
 
 `--smoke` submits only the first two planned grid jobs, appends `-smoke` to the
@@ -237,11 +254,11 @@ Standard CUDA Submitit launch after smoke passes:
 ```bash
 # Submit the latest 00_grid attempt on the GPU partition
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda
+  --backend submitit --device cuda
 
 # Submit a specific 00_grid attempt
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --grid-attempt-id 20260619T195112-0400
 ```
 
@@ -250,15 +267,15 @@ Other supported execution modes:
 ```bash
 # CUDA local run, for an interactive GPU node or tiny smoke run
 uv run python experiments/hooke/pair_stability/train.py \
-  --backend local --cuda
+  --backend local --device cuda
 
-# CPU local run, the CLI default profile
+# CPU local run, the CLI default device
 uv run python experiments/hooke/pair_stability/train.py \
-  --backend local --cpu
+  --backend local --device cpu
 
 # CPU Submitit run on a CPU partition
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cpu
+  --backend submitit --device cpu
 ```
 
 Environment and Slurm overrides:
@@ -266,22 +283,22 @@ Environment and Slurm overrides:
 ```bash
 # Use a different CUDA Torch build
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --uv-extra cu128
 
 # Use a different GPU partition
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --slurm-partition seas_gpu
 
 # Run at most four array tasks at a time
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --slurm-array-parallelism 4
 
 # Group multiple planned runs into each array task
 uv run --extra submitit python experiments/hooke/pair_stability/train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --chunk-size 8
 ```
 
@@ -292,11 +309,11 @@ Smoke validation after the train smoke:
 ```bash
 # CUDA Submitit validation smoke: first two jobs, gpu_test, 15 minute limit
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
-  --backend submitit --cuda --smoke
+  --backend submitit --device cuda --smoke
 
 # CPU Submitit validation smoke: first two jobs, test, 15 minute limit
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
-  --backend submitit --cpu --smoke
+  --backend submitit --device cpu --smoke
 ```
 
 `validate.py --smoke` looks for smoke-marked train attempts, writes smoke-marked
@@ -308,12 +325,12 @@ Standard CUDA Submitit validation after training finishes:
 ```bash
 # Validate the latest non-smoke train attempts for the latest 00_grid attempt
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --chunk-size 128
 
 # Validate an exact train attempt and write an exact validation attempt id
 uv run --extra submitit python experiments/hooke/pair_stability/validate.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --grid-attempt-id 20260619T195112-0400 \
   --train-attempt-id 20260619T195112-0400 \
   --attempt-id 20260620T090000-0400 \
@@ -334,7 +351,7 @@ run.run_id=<run_id>/<attempt_id>
 run.timezone=America/New_York   # always injected; --timezone selects the zone
 ```
 
-The execution profile adds `runtime.device=cpu` or `runtime.device=cuda` when
+The device selector adds `runtime.device=cpu` or `runtime.device=cuda` when
 launching. With the flat run layout, `run.dir = run.root / run.run_id`, which
 realizes the staged attempt directory.
 
@@ -366,11 +383,11 @@ Launch final training:
 ```bash
 # Smoke final training from the latest smoke final grid
 uv run --extra submitit python experiments/hooke/pair_stability/final_train.py \
-  --backend submitit --cuda --smoke
+  --backend submitit --device cuda --smoke
 
 # Production final training from the latest production final grid
 uv run --extra submitit python experiments/hooke/pair_stability/final_train.py \
-  --backend submitit --cuda
+  --backend submitit --device cuda
 ```
 
 Each `06_final_train/{final_run_id}/{attempt_id}/` records
@@ -385,11 +402,11 @@ Launch final evaluation:
 ```bash
 # Smoke final evaluation from smoke final-train attempts
 uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
-  --backend submitit --cuda --smoke
+  --backend submitit --device cuda --smoke
 
 # Production final evaluation
 uv run --extra submitit python experiments/hooke/pair_stability/final_eval.py \
-  --backend submitit --cuda
+  --backend submitit --device cuda
 ```
 
 `final_eval.py` selects `evaluation.suite=final_eval` from
