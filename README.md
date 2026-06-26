@@ -1,7 +1,7 @@
 # Specht-module Equivariant Neural Network (SpENN)
 
 The active SpENN core scaffold is documented in the PR brief and the package
-docstrings under `spenn/data`, `spenn/reps`, `spenn/nn`, and `spenn/testing`.
+docstrings under `spenn/data`, `spenn/reps`, `spenn/nn`, and `spenn/equivariance`.
 
 ## Quick Start
 
@@ -71,19 +71,14 @@ enabled, small systems are checked against every particle permutation; larger
 systems are checked against adjacent transpositions and reversal. Tests force
 checks with `check_probability=1.0`.
 
-Tensor state validation is also runtime-checkable. `RealFeature`,
+Tensor state validation is a typed, per-object contract. `RealFeature`,
 `RealInteraction`, `RealUpdate`, `IrrepInteraction`, `IrrepFeature`, and
-`IrrepUpdate` expose `validate()` methods. `EquivariantMap` can call these on
-input and output trees with `tensor_validation_check=True` and
-`validation_probability`.
-
-`validate_tree` intentionally lives in `spenn.data.equivariant_state` and
-traverses ordinary tuples, lists, and mappings because `EquivariantMap.forward`
-only sees arbitrary `*args`, `**kwargs`, and return values. Concrete aggregate
-state objects should still delegate validation to their own children, but the
-tree pass is the outer runtime boundary that catches unwrapped nested inputs
-and mixed return structures without forcing every module signature into a
-single aggregate container.
+`IrrepUpdate` each expose a `validate()` method that validates their own
+semantic fields. There is no generic tree-validation helper: validation,
+particle permutation (`permute`), and comparison (`compare`) are declared by
+typed data objects, never inferred by recursively probing arbitrary containers.
+A compound value that needs validation should be a typed container (e.g.
+`ConcatenatedState`) whose own `validate()` delegates to its children.
 
 Exact testing strategy:
 
@@ -99,10 +94,11 @@ Exact testing strategy:
   `tests/equivariance/test_real_feature.py`,
   `tests/equivariance/test_real_interaction.py`, and
   `tests/equivariance/test_real_update.py`.
-- Runtime module checks:
-  `spenn.data.EquivariantMap`,
-  `spenn.testing.equivariance.assert_equivariant`,
-  `assert_equivariant_all`, and `equivariance_permutations`, with coverage in
+- Runtime equivariance checks:
+  `spenn.equivariance.checks.FullModelEquivarianceChecker` and
+  `TraceEquivarianceChecker` (driven by `spenn.callback.RuntimeEquivariance`),
+  using `apply_particle_permutation` and typed `.compare(...)`. Pytest-only
+  assertion helpers live under `tests/helpers/equivariance.py`, with coverage in
   `tests/equivariance/test_equivariant_map.py`.
 - Tensor shape checks:
   `RealFeature`, `RealInteraction`, and `RealUpdate` are dense order-indexed
@@ -139,7 +135,8 @@ The new core scaffold is direct, not a compatibility layer:
 - `spenn.nn`: `EquivariantMixing`, `Activation`, `ActivationByType`,
   `PathAggregation`, `Update`, `ChannelMappedUpdate`, `SpENNLayer`,
   `SpENNWaveFunction`, and readouts under `spenn.nn.readout`.
-- `spenn.testing`: reusable runtime equivariance assertions.
+- `spenn.equivariance`: traceable `EquivariantMap`, passive trace recording, and
+  runtime equivariance checkers (`spenn.equivariance.checks`).
 
 ## Documentation
 

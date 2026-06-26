@@ -9,7 +9,7 @@ from typing import Any
 import torch
 
 from spenn.data.batch.base import _coerce_optional_tensor
-from spenn.data.equivariant_state import EquivariantState
+from spenn.data.equivariant_state import EquivariantState, compare_tensor_blocks
 from spenn.data.permutation import Permutation
 
 
@@ -136,6 +136,24 @@ class WavefunctionOutput(EquivariantState):
             phase=None if self.phase is None else self.phase.clone(),
             aux=dict(self.aux),
         )
+
+    def compare(
+        self,
+        other: "WavefunctionOutput",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, float]:
+        """Compare ``logabs``/``sign``/``phase``; return ``(is_close, max_abs_error)``.
+
+        ``aux`` is diagnostic and not compared.
+        """
+
+        if type(self) is not type(other) or (self.phase is None) != (other.phase is None):
+            return False, float("inf")
+        blocks_self = [self.logabs, self.sign] + ([] if self.phase is None else [self.phase])
+        blocks_other = [other.logabs, other.sign] + ([] if other.phase is None else [other.phase])
+        return compare_tensor_blocks(blocks_self, blocks_other, atol=atol, rtol=rtol)
 
 
 __all__ = ["WavefunctionOutput"]

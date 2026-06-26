@@ -23,7 +23,7 @@ from spenn.data.real import (
     common_real_particle_count,
     zero_block,
 )
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
 
 

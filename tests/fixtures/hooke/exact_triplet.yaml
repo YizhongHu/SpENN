@@ -52,7 +52,7 @@ sampler:
 
 evaluation:
   return_terms: true
-  expected_energy: ${system.exact_energy}
+  reference_energy: ${system.exact_energy}
 
 validation:
   energy_atol: 1.0e-4

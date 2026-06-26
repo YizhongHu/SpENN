@@ -1,183 +1,127 @@
-"""VMC trainer."""
+"""Minimal event-driven VMC trainer."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Any, Callable
 
 import torch
 from torch.nn.parameter import UninitializedParameter
 
-from spenn.data.batch import ElectronBatch
+from spenn.artifacts import RunContext
+from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, summarize_local_energy
+from spenn.training.state import TrainerState
+from spenn.training.vmc import summarize_logabs, vmc_surrogate_loss
 
 
-def _parameter_norm(model) -> torch.Tensor:
+def _parameter_norm(model) -> float:
     """Return the L2 norm of trainable initialized parameters."""
 
     total = None
     for param in model.parameters():
-        if not param.requires_grad:
-            continue
-        if isinstance(param, UninitializedParameter):
+        if not param.requires_grad or isinstance(param, UninitializedParameter):
             continue
         value = param.detach().pow(2).sum()
         total = value if total is None else total + value
-    return torch.sqrt(total) if total is not None else torch.tensor(0.0)
+    return float(torch.sqrt(total).item()) if total is not None else 0.0
 
 
-def _gradient_norm(model) -> torch.Tensor:
+def _gradient_norm(model) -> float:
     """Return the L2 norm of available gradients."""
 
     total = None
     for param in model.parameters():
-        if param.grad is None:
-            continue
-        if isinstance(param, UninitializedParameter):
+        if param.grad is None or isinstance(param, UninitializedParameter):
             continue
         value = param.grad.detach().pow(2).sum()
         total = value if total is None else total + value
-    return torch.sqrt(total) if total is not None else torch.tensor(0.0)
-
-
-@dataclass
-class TrainerConfig:
-    """Store minimal trainer loop settings.
-
-    Parameters
-    ----------
-    max_steps : int, optional
-        Default number of optimization steps for `VMCTrainer.fit`.
-    log_every : int, optional
-        Step interval intended for logging.
-    checkpoint_every : int, optional
-        Step interval intended for checkpointing.
-    """
-
-    max_steps: int = 1000
-    log_every: int = 10
-    checkpoint_every: int = 100
+    return float(torch.sqrt(total).item()) if total is not None else 0.0
 
 
 class VMCTrainer:
-    """Coordinate VMC sampling, loss evaluation, and optimization.
+    """Run a fixed number of VMC optimization steps over an event stream.
+
+    The trainer is configuration-only: ``fit`` receives the model, sampler,
+    Hamiltonian terms, optimizer, run context, and an ``emit`` callable, and
+    drives the sample -> local-energy -> surrogate-loss -> step loop while
+    logging metrics and emitting lifecycle events.
 
     Parameters
     ----------
-    model : torch.nn.Module
-        Wavefunction model to optimize.
-    sampler : object
-        Sampler with ``initialize`` and ``sample`` methods.
-    terms : sequence of HamiltonianTerm
-        Hamiltonian terms used by `loss` to compute local energies.
-    loss : callable
-        Loss callable returning ``(loss, metrics)``.
-    optimizer : torch.optim.Optimizer
-        Optimizer for model parameters.
-    scheduler : object or None, optional
-        Optional scheduler with a ``step`` method.
-    logger : object or None, optional
-        Optional logger with a ``log`` method.
-    max_steps, log_every, checkpoint_every : int or None, optional
-        Training-loop settings used to build `TrainerConfig`.
-    grad_clip : float or None, optional
+    max_steps : int
+        Number of optimization steps to run.
+    log_every_n_steps : int, optional
+        Log metrics every ``log_every_n_steps`` steps.
+    return_terms : bool, optional
+        Whether to request and summarize the per-term local-energy decomposition.
+    gradient_clip_norm : float or None, optional
         Maximum gradient norm. When ``None``, gradients are not clipped.
-    walkers : object or None, optional
-        Initial walker state. If ``None``, the sampler initializes walkers.
-    device : torch.device, str, or None, optional
-        Device used for default walker initialization.
     """
 
     def __init__(
         self,
+        max_steps: int,
+        log_every_n_steps: int = 1,
+        return_terms: bool = False,
+        gradient_clip_norm: float | None = None,
+    ) -> None:
+        self.max_steps = int(max_steps)
+        self.log_every_n_steps = int(log_every_n_steps)
+        self.return_terms = bool(return_terms)
+        self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
+
+    def fit(
+        self,
+        *,
         model,
         sampler,
-        terms,
-        loss,
-        optimizer,
-        scheduler=None,
-        logger=None,
-        max_steps: int | None = None,
-        log_every: int | None = None,
-        checkpoint_every: int | None = None,
-        grad_clip: float | None = None,
-        walkers=None,
-        device=None,
-    ) -> None:
-        self.model = model
-        self.sampler = sampler
-        self.terms = terms
-        self.loss = loss
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.logger = logger
-        self.cfg = TrainerConfig(
-            max_steps=TrainerConfig.max_steps if max_steps is None else max_steps,
-            log_every=TrainerConfig.log_every if log_every is None else log_every,
-            checkpoint_every=TrainerConfig.checkpoint_every if checkpoint_every is None else checkpoint_every,
-        )
-        self.grad_clip = None if grad_clip is None else float(grad_clip)
-        try:
-            default_device = next(model.parameters()).device
-        except StopIteration:
-            default_device = torch.device("cpu")
-        self.device = device or default_device
-        self.walkers = walkers or sampler.initialize(device=self.device)
-        self.global_step = 0
+        hamiltonian_terms,
+        optimizer: torch.optim.Optimizer,
+        context: RunContext,
+        emit: Callable[..., None],
+    ) -> TrainerState:
+        """Run the training loop and return the final `TrainerState`."""
 
-    def _log(self, metrics: dict) -> None:
-        if self.logger is not None:
-            self.logger.log(metrics)
+        state = TrainerState(model=model, optimizer=optimizer, sampler=sampler)
+        for step in range(1, self.max_steps + 1):
+            emit("step_start", payload={"step": step})
 
-    def train_step(self) -> dict:
-        """Run one sampler and optimizer step.
+            walkers, sampler_stats = sampler.collect_samples(model)
+            batch = walkers.make_batch()
+            result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
+            eloc = result.total if isinstance(result, LocalEnergyResult) else result
 
-        Returns
-        -------
-        dict
-            Metrics from the loss with additional loss, acceptance-rate,
-            gradient-norm, and parameter-norm entries.
-        """
+            output = model(batch)
+            loss = vmc_surrogate_loss(output.logabs, eloc)
 
-        self.model.train()
-        self.walkers = self.sampler.sample(self.model, self.walkers, getattr(self.sampler, "n_steps", 1))
-        batch = ElectronBatch(
-            positions=self.walkers.positions,
-            system=self.walkers.aux.get("system"),
-            spins=self.walkers.spins,
-            aux=dict(self.walkers.aux),
-        )
-        loss, metrics = self.loss(self.model, self.terms, batch)
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        if self.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-        self.optimizer.step()
-        if self.scheduler is not None:
-            self.scheduler.step()
-        metrics = dict(metrics)
-        metrics["loss"] = loss.detach()
-        metrics["acceptance_rate"] = torch.tensor(getattr(self.sampler, "acceptance_rate", 0.0))
-        metrics["grad_norm"] = _gradient_norm(self.model).detach()
-        metrics["param_norm"] = _parameter_norm(self.model).detach()
-        self._log(metrics)
-        self.global_step += 1
-        return metrics
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            if self.gradient_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip_norm)
+            grad_norm = _gradient_norm(model)
+            optimizer.step()
 
-    def fit(self, max_steps: int | None = None) -> list[dict]:
-        """Run the training loop for a fixed number of steps.
+            metrics: dict[str, Any] = summarize_local_energy(result)
+            metrics.update(summarize_logabs(output.logabs))
+            metrics["loss"] = float(loss.detach().item())
+            metrics["grad_norm"] = grad_norm
+            metrics["param_norm"] = _parameter_norm(model)
+            metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})
 
-        Parameters
-        ----------
-        max_steps : int or None, optional
-            Number of steps to run. If ``None``, `self.cfg.max_steps` is used.
+            state.step = step
+            state.metrics = metrics
+            state.samples = walkers
+            state.batch = batch
+            state.local_energy = eloc.detach()
+            state.loss = loss.detach()
+            state.wavefunction_output = output
+            state.sampler_stats = dict(sampler_stats)
 
-        Returns
-        -------
-        list of dict
-            Per-step metric dictionaries.
-        """
+            if self.log_every_n_steps and step % self.log_every_n_steps == 0:
+                context.log(metrics, step=step, namespace="train")
 
-        history = []
-        total_steps = self.cfg.max_steps if max_steps is None else max_steps
-        for _ in range(total_steps):
-            history.append(self.train_step())
-        return history
+            emit("step_end", state=state, payload={"step": step})
+
+        return state
+
+
+__all__ = ["VMCTrainer"]

@@ -10,7 +10,8 @@ import torch
 from spenn.artifacts import RunContext, RunResult
 from spenn.callback import Callback, Event
 from spenn.logging import Logger
-from spenn.physics.hamiltonian import local_energy, summarize_local_energy
+from spenn.physics.hamiltonian import local_energy, reference_energy_metrics, summarize_local_energy
+from spenn.training.optim import make_optimizer
 
 
 class Runner:
@@ -61,12 +62,59 @@ class Scaffold(Runner):
 
 
 class Train(Runner):
-    """Placeholder for future training runner configs."""
+    """Config-driven VMC training runner.
+
+    Builds the optimizer, drives the configured trainer through the VMC loop,
+    and emits lifecycle events. Like `Evaluate`, it owns no callbacks/loggers
+    (the `RunContext` does) and adds no exception handling (``run_from_config``
+    owns that); it only emits events and lets the trainer log through the
+    context.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Wavefunction model to optimize.
+    sampler : object
+        Sampler exposing ``collect_samples(model) -> (walkers, stats)``.
+    hamiltonian_terms : sequence
+        Hamiltonian terms summed by `local_energy`.
+    optimizer_factory : Any
+        Optimizer factory or config consumed by `make_optimizer`.
+    trainer : object
+        Trainer exposing ``fit(*, model, sampler, hamiltonian_terms, optimizer,
+        context, emit) -> TrainerState``.
+    """
+
+    def __init__(self, model, sampler, hamiltonian_terms, optimizer_factory, trainer) -> None:
+        super().__init__()
+        self.model = model
+        self.sampler = sampler
+        self.hamiltonian_terms = list(hamiltonian_terms)
+        self.optimizer_factory = optimizer_factory
+        self.trainer = trainer
 
     def run(self, context: RunContext) -> RunResult:
-        """Raise until training runner support is implemented."""
+        """Build the optimizer and run the configured VMC training loop."""
 
-        raise NotImplementedError("spenn.runner.Train will be implemented in a later PR.")
+        self.emit("run_start", context)
+        if isinstance(self.model, torch.nn.Module):
+            self.model.train()
+
+        optimizer = make_optimizer(self.optimizer_factory, self.model.parameters())
+        self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
+
+        self.emit("train_start", context)
+        final_state = self.trainer.fit(
+            model=self.model,
+            sampler=self.sampler,
+            hamiltonian_terms=self.hamiltonian_terms,
+            optimizer=optimizer,
+            context=context,
+            emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
+        )
+        self.emit("train_end", context, state=final_state)
+        self.emit("run_end", context)
+        return RunResult(status="completed")
 
 
 class Load(Runner):
@@ -101,7 +149,8 @@ class Evaluate(Runner):
     hamiltonian_terms : sequence
         Hamiltonian terms summed by `local_energy`.
     evaluation : Mapping or None, optional
-        Evaluation settings (``return_terms``, ``expected_energy``).
+        Evaluation settings (``return_terms``, ``reference_energy``). When
+        ``reference_energy`` is set, reference-comparison metrics are merged in.
     """
 
     def __init__(self, model, sampler, hamiltonian_terms, evaluation: Any = None) -> None:
@@ -126,12 +175,19 @@ class Evaluate(Runner):
         if isinstance(self.model, torch.nn.Module):
             self.model.eval()
         return_terms = bool(self._eval_get("return_terms", False))
-        expected_energy = self._eval_get("expected_energy", None)
+        reference_energy = self._eval_get("reference_energy", None)
 
         walkers, sampler_stats = self.sampler.collect_samples(self.model)
         result = local_energy(self.hamiltonian_terms, self.model, walkers.make_batch(), return_terms=return_terms)
 
-        metrics = summarize_local_energy(result, expected_energy=expected_energy)
+        metrics = summarize_local_energy(result)
+        if reference_energy is not None:
+            metrics.update(
+                reference_energy_metrics(
+                    energy_mean=metrics["energy_mean"],
+                    reference_energy=float(reference_energy),
+                )
+            )
         metrics.update({f"sampler.{key}": value for key, value in sampler_stats.items()})
         context.log(metrics, step=0, namespace="eval")
 

@@ -1,19 +1,23 @@
-"""Tests for runtime equivariance checking on modules."""
+"""Tests for the pytest-only equivariance helpers over EquivariantMap toys.
+
+Equivariance is asserted via ``tests.helpers.equivariance`` (typed ``.compare`` /
+``apply_particle_permutation``), not the removed ``spenn.testing`` surface or any
+generic tree walker.
+"""
 
 from __future__ import annotations
 
-import torch
 import pytest
+import torch
 
-from spenn.data import EquivariantMap
-from spenn.data.irrep import IrrepFeature, IrrepInteraction, IrrepUpdate
-from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
-from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
-from spenn.testing.equivariance import assert_equivariant, assert_equivariant_all, equivariance_permutations
+from spenn.data.real import RealFeature, zero_block
+from spenn.equivariance import EquivariantMap
+from tests.helpers.equivariance import assert_equivariant, assert_equivariant_all
 
 
 def _feature() -> RealFeature:
+    # Last axis is the particle index (3 particles); channels = 2.
     return RealFeature(
         [
             zero_block(dtype=torch.float64),
@@ -34,90 +38,19 @@ class LabelWeightedMap(EquivariantMap):
         return RealFeature([x.blocks[0].clone(), x.blocks[1] * weights, x.blocks[2].clone()])
 
 
-class ValidatedLeaf:
-    def __init__(self, calls: list[str], name: str, *, fail: bool = False) -> None:
-        self.calls = calls
-        self.name = name
-        self.fail = fail
-
-    def validate(self) -> "ValidatedLeaf":
-        self.calls.append(self.name)
-        if self.fail:
-            raise ValueError(f"{self.name} failed validation")
-        return self
+def test_helper_passes_for_equivariant_map() -> None:
+    assert_equivariant_all(IdentityMap(), _feature())
 
 
-class ValidationEchoMap(EquivariantMap):
-    def forward_impl(self, x: ValidatedLeaf, *, extra: ValidatedLeaf) -> dict[str, list[ValidatedLeaf]]:
-        return {"output": [x, extra]}
-
-
-class ConcreteValidationMap(EquivariantMap):
-    def forward_impl(self, *states):
-        return list(states)
-
-
-def test_runtime_checker_passes_equivariant_module() -> None:
-    module = IdentityMap(equivariance_check=True, check_probability=1.0)
-
-    out = module(_feature())
-
-    assert isinstance(out, RealFeature)
-
-
-def test_runtime_checker_catches_non_equivariant_module() -> None:
-    module = LabelWeightedMap(equivariance_check=True, check_probability=1.0)
-
+def test_helper_catches_non_equivariant_map() -> None:
     with pytest.raises(AssertionError):
-        module(_feature())
+        assert_equivariant_all(LabelWeightedMap(), _feature())
 
 
-def test_assert_equivariant_helper_uses_forward_impl() -> None:
-    assert_equivariant(IdentityMap(), _feature(), Permutation((1, 2, 0)), atol=0.0, rtol=0.0)
+def test_single_permutation_helper_passes() -> None:
+    assert_equivariant(IdentityMap(), _feature(), Permutation((1, 2, 0)))
 
 
-def test_assert_equivariant_all_owns_runtime_permutation_loop() -> None:
-    assert_equivariant_all(IdentityMap(), _feature(), atol=0.0, rtol=0.0, max_full_size=3)
-
-
-def test_small_runtime_checks_are_exhaustive() -> None:
-    permutations = equivariance_permutations((_feature(),), max_full_size=3)
-
-    assert len(permutations) == 6
-    assert Permutation((2, 1, 0)) in permutations
-
-
-def test_runtime_tensor_validation_traverses_inputs_kwargs_and_outputs() -> None:
-    calls: list[str] = []
-    module = ValidationEchoMap(tensor_validation_check=True)
-
-    output = module(ValidatedLeaf(calls, "arg"), extra=ValidatedLeaf(calls, "kwarg"))
-
-    assert isinstance(output, dict)
-    assert calls == ["arg", "kwarg", "arg", "kwarg"]
-
-
-def test_runtime_tensor_validation_rejects_bad_probability_and_propagates_errors() -> None:
-    with pytest.raises(ValueError, match="validation_probability"):
-        ValidationEchoMap(tensor_validation_check=True, validation_probability=2.0)
-
-    module = ValidationEchoMap(tensor_validation_check=True)
-    with pytest.raises(ValueError, match="failed validation"):
-        module(ValidatedLeaf([], "arg", fail=True), extra=ValidatedLeaf([], "kwarg"))
-
-
-def test_runtime_tensor_validation_accepts_concrete_tensor_states() -> None:
-    partition = Partition((1,))
-    states = (
-        RealFeature([zero_block(dtype=torch.float64), torch.zeros(1, 2, 3, dtype=torch.float64)]),
-        RealUpdate([zero_block(dtype=torch.float64), torch.ones(1, 2, 3, dtype=torch.float64)]),
-        RealInteraction([zero_block(paths=1, dtype=torch.float64), torch.zeros(1, 2, 1, 3, dtype=torch.float64)]),
-        IrrepInteraction({partition: torch.zeros(1, 2, 1, 3, 1, 1, dtype=torch.float64)}),
-        IrrepFeature({partition: torch.zeros(1, 2, 3, 1, 1, dtype=torch.float64)}),
-        IrrepUpdate({partition: torch.zeros(1, 2, 3, 1, 1, dtype=torch.float64)}),
-    )
-    module = ConcreteValidationMap(tensor_validation_check=True)
-
-    output = module(*states)
-
-    assert len(output) == len(states)
+def test_single_permutation_helper_catches_violation() -> None:
+    with pytest.raises(AssertionError):
+        assert_equivariant(LabelWeightedMap(), _feature(), Permutation((1, 2, 0)))

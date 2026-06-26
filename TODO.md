@@ -15,7 +15,7 @@ new scaffold documented in package docstrings.
       `WavefunctionOutput`.
 - [x] Added `spenn/data/indices.py` as the home for tuple-index bookkeeping.
 - [x] Added runtime-checking `spenn.data.EquivariantMap` with runtime
-      equivariance assertion helpers in `spenn.testing.equivariance`.
+      equivariance assertion helpers in `spenn.equivariance.checks`.
 - [x] Added virtual-support path enumeration in `spenn/reps/paths.py`.
 - [x] Added scaffold modules for `EquivariantMixing`, `PathAggregation`,
       `Update`, `SpENNLayer`, `SpENNWaveFunction`, Fourier transforms, and
@@ -53,10 +53,10 @@ new scaffold documented in package docstrings.
 - [x] Added direct orthogonal-coordinate action coverage for
       higher-dimensional activation and path aggregation.
 - [x] Moved runtime equivariance assertion helpers into
-      `spenn.testing.equivariance`.
+      `spenn.equivariance.checks`.
 - [x] Consolidated particle-axis permutation, tuple-axis permutation, and tuple
       particle-count checks under `spenn.data`; runtime test schedules live in
-      `spenn.testing.equivariance`.
+      `spenn.equivariance.checks`.
 - [x] Added real-space update strategy scaffolds:
       `ReplaceUpdate`, `ResidualUpdate`, and `NormGatedUpdate`.
 - [x] Added default-off readout trainability flags for readout weights.

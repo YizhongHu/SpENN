@@ -7,6 +7,7 @@ import torch
 from spenn.data.real import RealFeature, zero_block
 from spenn.nn import EquivariantMixing
 from spenn.reps.paths import load_default_path_metadata
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 def _one_channel_feature(values: torch.Tensor) -> RealFeature:
@@ -72,14 +73,12 @@ def test_slow_mixing_passes_forced_runtime_equivariance_check() -> None:
     mixing = EquivariantMixing(
         max_order=2,
         max_virtual_order=2,
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     output = mixing(feature)
 
     assert output.validate() is output
+    assert_equivariant_all(mixing, feature)
 
 
 def test_vectorized_mixing_matches_slow_reference_for_all_aggregations() -> None:
@@ -142,11 +141,9 @@ def test_vectorized_mixing_passes_forced_runtime_equivariance_check() -> None:
         max_virtual_order=3,
         aggregation="completion_mean",
         implementation="vectorized",
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     output = mixing(feature)
 
     assert output.validate() is output
+    assert_equivariant_all(mixing, feature)

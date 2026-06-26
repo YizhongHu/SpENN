@@ -10,7 +10,7 @@ from torch import nn
 from spenn.data.batch import ElectronBatch
 from spenn.data.indices import no_repeated_particle_mask, tuple_particle_inputs
 from spenn.data.real import RealFeature, zero_block
-from spenn.data.equivariant_map import EquivariantMap
+from spenn.equivariance import EquivariantMap
 from spenn.nn.mlp import MLP
 
 

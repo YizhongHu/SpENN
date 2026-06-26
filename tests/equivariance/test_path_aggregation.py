@@ -9,6 +9,7 @@ from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
 from spenn.nn import PathAggregation
 from spenn.reps import specht_irrep
+from tests.helpers.equivariance import assert_equivariant_all
 
 
 def test_path_aggregation_passes_forced_runtime_equivariance_check() -> None:
@@ -39,14 +40,12 @@ def test_path_aggregation_passes_forced_runtime_equivariance_check() -> None:
     )
     aggregation = PathAggregation(
         channel_out_by_order={2: 2},
-        equivariance_check=True,
-        check_probability=1.0,
-        tensor_validation_check=True,
     )
 
     output = aggregation(interaction)
 
     assert output.validate() is output
+    assert_equivariant_all(aggregation, interaction)
 
 
 def test_path_aggregation_preserves_orthogonal_coordinate_action() -> None:
