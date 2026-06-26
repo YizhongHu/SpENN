@@ -61,6 +61,8 @@ def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | N
         return selection_attempt_id
     select_stage = stage_dir(results_root, STAGE_SELECT)
     attempt_id = latest_attempt_id(select_stage, smoke=smoke)
+    if attempt_id is None and smoke:
+        attempt_id = latest_attempt_id(select_stage, smoke=False)
     if attempt_id is None:
         raise FileNotFoundError(f"no selection attempts under {select_stage}")
     return attempt_id

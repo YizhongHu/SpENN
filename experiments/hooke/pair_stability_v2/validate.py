@@ -351,6 +351,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
+    launch.ensure_submitit_launcher_environment(
+        args,
+        script_path=Path(__file__).resolve(),
+        argv=raw_argv,
+        repo_root=repo_root,
+    )
     results_root = launch.repo_path(args.results_root, repo_root)
     grid_attempt_id = launch.resolve_grid_attempt_id(results_root, args.grid_attempt_id)
     manifest = launch.load_grid_manifest(results_root, grid_attempt_id)
@@ -397,17 +403,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         smoke_overrides=configured_smoke_overrides,
         seed_policy=seed_policy,
     )
-    uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
-    submitted_commands = [
-        launch.environment_shell_command(
-            job["command_parts"],
-            repo_root=repo_root,
-            uv_environment=uv_environment,
-            uv_extras=uv_extras,
-            device=runtime_device,
-        )
-        for job in jobs
-    ]
+    command_sets = launch.environment_command_sets(
+        [job["command_parts"] for job in jobs],
+        args=args,
+        repo_root=repo_root,
+    )
+    submitted_commands = launch.summarize_command_sets(command_sets)
 
     if skipped:
         print(f"{prefix} skipped {len(skipped)} validation jobs without eligible checkpoints")
@@ -422,27 +423,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         / (launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id))
     )
 
-    if args.backend == "local":
-        job_ids = launch.submit_local(
-            submitted_commands,
-            repo_root=repo_root,
-            chunk_size=args.chunk_size,
-            allow_partial_failures=True,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
-    else:
-        log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
-        job_ids = launch.submit_submitit(
-            submitted_commands,
-            log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / log_attempt,
-            job_name=stage_job_name(study, "validate", smoke=args.smoke),
-            slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
-            chunk_size=args.chunk_size,
-            allow_partial_failures=True,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
+    log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
+    job_ids = launch.submit_command_sets(
+        command_sets,
+        args=args,
+        backend=args.backend,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / log_attempt,
+        job_name=stage_job_name(study, "validate", smoke=args.smoke),
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        allow_partial_failures=True,
+        row_status_paths=row_status_paths,
+        chunk_status_dir=chunk_status_dir,
+    )
 
     write_validation_submission_records(
         jobs,

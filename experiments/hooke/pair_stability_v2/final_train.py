@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -40,6 +41,8 @@ def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *,
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
     attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
+    if attempt_id is None and smoke:
+        attempt_id = latest_attempt_id(final_grid_stage, smoke=False)
     if attempt_id is None:
         mode = "smoke" if smoke else "production"
         raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
@@ -294,8 +297,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Launch final training jobs."""
 
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
+    launch.ensure_submitit_launcher_environment(
+        args,
+        script_path=Path(__file__).resolve(),
+        argv=raw_argv,
+        repo_root=repo_root,
+    )
     results_root = launch.repo_path(args.results_root, repo_root)
     final_grid_attempt_id = _resolve_final_grid_attempt_id(
         results_root,
@@ -344,42 +354,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         smoke=args.smoke,
     )
 
-    uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
-    submitted_commands = [
-        launch.environment_shell_command(
-            command,
-            repo_root=repo_root,
-            uv_environment=uv_environment,
-            uv_extras=uv_extras,
-            device=runtime_device,
-        )
-        for command in commands
-    ]
+    command_sets = launch.environment_command_sets(commands, args=args, repo_root=repo_root)
+    submitted_commands = launch.summarize_command_sets(command_sets)
 
     row_status_paths = [
         final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id) / "launcher_status.json"
         for job in jobs
     ]
     chunk_status_dir = stage_dir(results_root, STAGE_FINAL_TRAIN) / "chunk_status" / attempt_id
-    if args.backend == "local":
-        job_ids = launch.submit_local(
-            submitted_commands,
-            repo_root=repo_root,
-            chunk_size=args.chunk_size,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
-    else:
-        log_attempt = attempt_id
-        job_ids = launch.submit_submitit(
-            submitted_commands,
-            log_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "slurm_logs" / log_attempt,
-            job_name=stage_job_name(study, "final-train", smoke=args.smoke),
-            slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
-            chunk_size=args.chunk_size,
-            row_status_paths=row_status_paths,
-            chunk_status_dir=chunk_status_dir,
-        )
+    log_attempt = attempt_id
+    job_ids = launch.submit_command_sets(
+        command_sets,
+        args=args,
+        backend=args.backend,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "slurm_logs" / log_attempt,
+        job_name=stage_job_name(study, "final-train", smoke=args.smoke),
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        row_status_paths=row_status_paths,
+        chunk_status_dir=chunk_status_dir,
+        claim_rows=True,
+    )
 
     write_final_train_submission_records(
         jobs,

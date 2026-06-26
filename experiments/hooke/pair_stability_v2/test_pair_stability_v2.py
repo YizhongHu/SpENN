@@ -124,9 +124,163 @@ def test_v2_smoke_slurm_defaults_match_pair_stability() -> None:
     assert smoke_cuda["slurm_partition"] == "gpu_test"
     assert smoke_cpu["timeout_min"] == 15
     assert smoke_cuda["timeout_min"] == 15
+    assert smoke_cpu["mem_gb"] == 128
+    assert smoke_cpu["cpus_per_task"] == 16
+    assert smoke_cuda["cpus_per_task"] == 4
     assert smoke_cpu["slurm_array_parallelism"] == 2
     assert smoke_cuda["slurm_array_parallelism"] == 2
     assert smoke_cuda["gpus_per_node"] == 1
+
+
+def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
+    args = train.parse_args(
+        [
+            "--backend",
+            "submitit",
+            "--device",
+            "cpu,cuda",
+            "--slurm-cpu-partition",
+            "test",
+            "--slurm-cuda-partition",
+            "gpu_test",
+            "--slurm-cpu-timeout-min",
+            "60",
+            "--slurm-cuda-timeout-min",
+            "30",
+        ]
+    )
+
+    command_sets = launch.environment_command_sets(
+        [["python", "-u", "run.py", "--config", "cfg.yaml", "runtime.device=cpu"]],
+        args=args,
+        repo_root=ROOT,
+    )
+
+    assert tuple(command_sets) == ("cpu", "cuda")
+    cpu_script = command_sets["cpu"][0][-1]
+    cuda_script = command_sets["cuda"][0][-1]
+    assert "export UV_PROJECT_ENVIRONMENT=.venv" in cpu_script
+    assert "export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-1}}" in cpu_script
+    assert "uv sync --extra cpu" in cpu_script
+    assert "runtime.device=cpu" in cpu_script
+    assert "export UV_PROJECT_ENVIRONMENT=.venv-gpu" in cuda_script
+    assert "OMP_NUM_THREADS" not in cuda_script
+    assert "uv sync --extra cu126" in cuda_script
+    assert "runtime.device=cuda" in cuda_script
+
+    cpu_slurm = launch.slurm_parameters(args, profile="cpu")
+    assert cpu_slurm["slurm_partition"] == "test"
+    assert cpu_slurm["mem_gb"] == 128
+    assert cpu_slurm["cpus_per_task"] == 16
+    cuda_slurm = launch.slurm_parameters(args, profile="cuda")
+    assert cuda_slurm["slurm_partition"] == "gpu_test"
+    assert cuda_slurm["cpus_per_task"] == 8
+    assert cuda_slurm["gpus_per_node"] == 1
+
+
+def test_v2_mixed_submitit_submits_separate_claimed_arrays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_parameters: list[dict[str, Any]] = []
+    captured_calls: list[tuple[Any, tuple[Any, ...]]] = []
+
+    class FakeExecutor:
+        def __init__(self, folder: str):
+            self.folder = folder
+
+        def update_parameters(self, **kwargs: Any) -> None:
+            captured_parameters.append(kwargs)
+
+        def map_array(self, fn: Any, *args: Any) -> list[types.SimpleNamespace]:
+            captured_calls.append((fn, args))
+            commands = args[0]
+            return [
+                types.SimpleNamespace(job_id=f"{self.folder}-job-{index}")
+                for index, _command in enumerate(commands)
+            ]
+
+    monkeypatch.setitem(sys.modules, "submitit", types.SimpleNamespace(AutoExecutor=FakeExecutor))
+    args = train.parse_args(
+        [
+            "--backend",
+            "submitit",
+            "--device",
+            "cpu,cuda",
+            "--slurm-cpu-partition",
+            "test",
+            "--slurm-cuda-partition",
+            "gpu_test",
+            "--slurm-cpu-timeout-min",
+            "60",
+            "--slurm-cuda-timeout-min",
+            "30",
+        ]
+    )
+    command_sets = {
+        "cpu": [["bash", "-lc", "cpu"]],
+        "cuda": [["bash", "-lc", "cuda"]],
+    }
+    row_status = tmp_path / "run" / "launcher_status.json"
+
+    job_ids = launch.submit_command_sets(
+        command_sets,
+        args=args,
+        backend="submitit",
+        repo_root=ROOT,
+        log_dir=tmp_path / "logs",
+        job_name="mixed",
+        smoke=False,
+        row_status_paths=[row_status],
+        chunk_status_dir=tmp_path / "chunks",
+    )
+
+    assert len(captured_parameters) == 2
+    assert captured_parameters[0]["slurm_partition"] == "test"
+    assert captured_parameters[0]["timeout_min"] == 60
+    assert captured_parameters[0]["mem_gb"] == 128
+    assert captured_parameters[0]["cpus_per_task"] == 16
+    assert captured_parameters[1]["slurm_partition"] == "gpu_test"
+    assert captured_parameters[1]["timeout_min"] == 30
+    assert captured_parameters[1]["mem_gb"] == 80
+    assert captured_parameters[1]["cpus_per_task"] == 8
+    assert captured_parameters[1]["gpus_per_node"] == 1
+    assert captured_calls[0][0] is launch.run_command_chunk
+    assert captured_calls[0][1][5] == [[row_status.with_name("launcher_claim.json")]]
+    assert captured_calls[0][1][6] == ["cpu"]
+    assert captured_calls[1][1][5] == [[row_status.with_name("launcher_claim.json")]]
+    assert captured_calls[1][1][6] == ["cuda"]
+    assert job_ids[0].startswith("cpu:")
+    assert ",cuda:" in job_ids[0]
+
+
+def test_v2_submitit_launcher_reexec_uses_dedicated_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        captured["file"] = file
+        captured["args"] = args
+        captured["env"] = env
+        raise RuntimeError("execvpe")
+
+    monkeypatch.setattr(launch, "_python_in_environment", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(launch.os, "execvpe", fake_execvpe)
+
+    args = types.SimpleNamespace(backend="submitit")
+    with pytest.raises(RuntimeError, match="execvpe"):
+        launch.ensure_submitit_launcher_environment(
+            args,
+            script_path=STUDY_DIR / "validate.py",
+            argv=["--backend=submitit", "--wait-job=123"],
+            repo_root=ROOT,
+        )
+
+    assert captured["file"] == "uv"
+    assert captured["env"]["UV_PROJECT_ENVIRONMENT"] == ".venv-submitit"
+    assert captured["env"]["SPENN_SUBMITIT_LAUNCHER_REEXEC"] == "1"
+    assert captured["args"][:5] == ["uv", "run", "--extra", "submitit", "python"]
+    assert "--wait-job=123" in captured["args"]
 
 
 def test_v2_latest_attempt_id_prefers_pointer_with_sorted_fallback(tmp_path: Path) -> None:
@@ -142,6 +296,22 @@ def test_v2_latest_attempt_id_prefers_pointer_with_sorted_fallback(tmp_path: Pat
     assert layout.latest_attempt_id(parent, smoke=False) == "aaa"
     assert layout.latest_attempt_id(parent, smoke=True) == "diagnostic"
     assert layout.latest_attempt_id(parent / "missing") is None
+
+
+def test_v2_smoke_final_workflow_falls_back_to_full_upstream_attempts(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+
+    select_stage = layout.stage_dir(results_root, layout.STAGE_SELECT)
+    (select_stage / "select-full").mkdir(parents=True)
+    layout.write_latest(select_stage, "select-full", smoke=False)
+
+    final_grid_stage = layout.stage_dir(results_root, layout.STAGE_FINAL_GRID)
+    (final_grid_stage / "final-grid-full").mkdir(parents=True)
+    layout.write_latest(final_grid_stage, "final-grid-full", smoke=False)
+
+    assert final_plan._resolve_selection_attempt(results_root, None, smoke=True) == "select-full"
+    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "final-grid-full"
+    assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "final-grid-full"
 
 
 def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path) -> None:
@@ -268,7 +438,7 @@ def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> 
     assert "--time=00:19:00" in command
     assert "--output=" + str(tmp_path / "logs" / "%x-%j.out") in command
     script = str(kwargs["input"])
-    assert "UV_PROJECT_ENVIRONMENT=.venv" in script
+    assert "UV_PROJECT_ENVIRONMENT=.venv-submitit" in script
     assert "uv run --extra submitit python -u" in script
     assert "--wait-job" not in script
     assert "--backend=submitit" in script

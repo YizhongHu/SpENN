@@ -119,6 +119,36 @@ default to the latest smoke upstream run.
 Pass explicit `--attempt-id`, `--grid-attempt-id`, or previous-stage attempt
 flags only when reproducing an older lineage or debugging.
 
+## Device Selector
+
+Stage launchers default to CPU for safety. Use `--device cpu`, `--device cuda`,
+or `--device cpu,cuda` to choose the execution target. The selector switches the
+uv environment, uv extra, `runtime.device` override, and Submitit resources
+together:
+
+| selector | uv environment | uv extra | runtime override | Submitit hardware default |
+|----------|----------------|----------|------------------|---------------------------|
+| `--device cpu` | `.venv` | `cpu` | `runtime.device=cpu` | `slurm_partition=sapphire,kozinsky,seas_compute`, `cpus_per_task=16`, `mem_gb=128`, no GPUs |
+| `--device cuda` | `.venv-gpu` | `cu126` | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `cpus_per_task=8`, `mem_gb=80`, `gpus_per_node=1` |
+| `--device cpu,cuda` | both of the above | both | per claimed row | submits separate CPU and CUDA candidate arrays; the first candidate that starts claims each row |
+
+Submitit launchers re-exec through `.venv-submitit` before creating arrays, so
+the Submitit supervisor does not share the CPU worker's `.venv` while workers
+run `uv sync`.
+For manual Submitit launches, prefer prefixing the command with
+`UV_PROJECT_ENVIRONMENT=.venv-submitit` so uv starts in the launcher environment
+immediately.
+CPU workers export `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+`NUMEXPR_NUM_THREADS`, and `VECLIB_MAXIMUM_THREADS` from the Slurm CPU
+allocation so PyTorch and BLAS use the requested CPU allocation.
+
+Mixed `cpu,cuda` mode uses separate Submitit submissions because GPU resources
+cannot be requested on CPU partitions. Use `--slurm-cpu-partition` and
+`--slurm-cuda-partition` to pin the two candidates separately, such as `test`
+and `gpu_test` for smoke sanity checks. Use `--slurm-cpu-timeout-min` and
+`--slurm-cuda-timeout-min` when CPU and CUDA candidates need different walltime
+limits.
+
 ## Non-Smoke Runbook
 
 Use the commands in this section for the real study run. They intentionally
@@ -146,7 +176,7 @@ Train the latest grid:
 
 ```bash
 uv run --extra submitit python $STUDY/train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --chunk-size 6 \
   --slurm-timeout-min 480
 ```
@@ -157,7 +187,7 @@ run the same command after train checkpoints are ready.
 
 ```bash
 uv run --extra submitit python $STUDY/validate.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --chunk-size 32 \
   --slurm-timeout-min 480 \
   --wait-job <train_launcher_job_id>
@@ -201,7 +231,7 @@ Launch final training from the latest final grid:
 
 ```bash
 uv run --extra submitit python $STUDY/final_train.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --chunk-size 6 \
   --slurm-timeout-min 480
 ```
@@ -215,7 +245,7 @@ final-train checkpoint for each final run:
 
 ```bash
 uv run --extra submitit python $STUDY/final_eval.py \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --slurm-timeout-min 480 \
   --wait-job <final_train_launcher_job_id>
 ```
@@ -253,7 +283,7 @@ Example GPU smoke train from the latest grid:
 ```bash
 uv run --extra submitit python $STUDY/train.py \
   --smoke \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --chunk-size 1
 ```
 
@@ -266,12 +296,12 @@ uv run python $STUDY/final_plan.py --smoke
 
 uv run --extra submitit python $STUDY/final_train.py \
   --smoke \
-  --backend submitit --cuda \
+  --backend submitit --device cpu,cuda \
   --chunk-size 1
 
 uv run --extra submitit python $STUDY/final_eval.py \
   --smoke \
-  --backend submitit --cuda \
+  --backend submitit --device cuda \
   --wait-job <final_train_launcher_job_id>
 
 uv run python $STUDY/final_collect.py --smoke
@@ -287,5 +317,5 @@ performs the normal readiness checks. Otherwise, rerun validation/final eval
 after upstream checkpoints are ready; these stages always skip rows that are not
 ready. The lightweight launcher defaults to the `test` partition; override it
 with `--wait-launcher-partition` if needed. The real validation/final-eval array
-still follows `--cpu`/`--cuda` and `--smoke` partition defaults when the
+still follows `--device` and `--smoke` partition defaults when the
 dependent launcher runs.
