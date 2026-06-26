@@ -33,6 +33,71 @@ from utils.seeds import seed_override_values
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
+
+def _checkpoint_step(path: Path) -> tuple[int, str]:
+    try:
+        return int(path.name.removeprefix("step_")), path.name
+    except ValueError:
+        return -1, path.name
+
+
+def _complete_checkpoint_dirs(attempt_dir: Path) -> list[Path]:
+    checkpoint_dir = attempt_dir / "checkpoints"
+    if not checkpoint_dir.is_dir():
+        return []
+    checkpoints = [
+        path
+        for path in checkpoint_dir.glob("step_*")
+        if path.is_dir() and not path.name.endswith(".tmp") and (path / "COMPLETE").is_file()
+    ]
+    return sorted(checkpoints, key=_checkpoint_step)
+
+
+def _latest_complete_checkpoint(attempt_dir: Path) -> Path | None:
+    checkpoints = _complete_checkpoint_dirs(attempt_dir)
+    return checkpoints[-1] if checkpoints else None
+
+
+def _final_train_completed(attempt_dir: Path) -> bool:
+    status_path = attempt_dir / "status.json"
+    if not status_path.is_file():
+        return False
+    try:
+        status = read_json(status_path).get("status")
+    except Exception:
+        return False
+    return status == "completed" and _latest_complete_checkpoint(attempt_dir) is not None
+
+
+def _resume_overrides(attempt_dir: Path) -> list[str]:
+    checkpoint = _latest_complete_checkpoint(attempt_dir)
+    if checkpoint is None:
+        return []
+    if _final_train_completed(attempt_dir):
+        return []
+    return [
+        f"load.path={checkpoint}",
+        "load.mode=train_resume",
+    ]
+
+
+def _exclude_completed_jobs(
+    jobs: Sequence[dict[str, Any]],
+    *,
+    results_root: Path,
+    attempt_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    eligible: list[dict[str, Any]] = []
+    completed: list[dict[str, Any]] = []
+    for job in jobs:
+        attempt_dir = final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id)
+        if _final_train_completed(attempt_dir):
+            completed.append(dict(job))
+        else:
+            eligible.append(dict(job))
+    return eligible, completed
+
+
 def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
     if requested is not None:
         is_smoke = attempt_smoke(stage_dir(results_root, STAGE_FINAL_GRID), requested)
@@ -192,17 +257,21 @@ def _command_for_job(
     override_paths: dict[str, str],
 ) -> list[str]:
     final_run_id = str(job["final_run_id"])
+    attempt_dir = final_train_attempt_dir(results_root, final_run_id, attempt_id)
     command = _command_for(
         config,
-        final_train_overrides(
-            job,
-            study=study,
-            final_run_id=final_run_id,
-            attempt_id=attempt_id,
-            results_root=results_root,
-            scalar_axes=scalar_axes,
-            override_paths=override_paths,
-        ),
+        [
+            *final_train_overrides(
+                job,
+                study=study,
+                final_run_id=final_run_id,
+                attempt_id=attempt_id,
+                results_root=results_root,
+                scalar_axes=scalar_axes,
+                override_paths=override_paths,
+            ),
+            *_resume_overrides(attempt_dir),
+        ],
     )
     return command
 
@@ -332,6 +401,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs = _selected_jobs(load_final_jobs(results_root, final_grid_attempt_id), smoke=args.smoke)
     if not jobs:
         raise ValueError(f"final grid attempt {final_grid_attempt_id} has no jobs")
+    jobs, completed_jobs = _exclude_completed_jobs(jobs, results_root=results_root, attempt_id=attempt_id)
+    if not jobs:
+        mode = "smoke final-train" if args.smoke else "final-train"
+        print(
+            f"{prefix} no {mode} rows to launch from 05_final_grid/{final_grid_attempt_id}; "
+            f"excluded {len(completed_jobs)} completed rows"
+        )
+        return 0
     scalar_axes = final_scalar_axes(manifest)
     override_paths = final_axis_override_paths(manifest, scalar_axes)
     configured_smoke_overrides = launch.load_smoke_overrides(
@@ -405,7 +482,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         submitted_commands=submitted_commands,
     )
     mode = "smoke final-train" if args.smoke else "final-train"
-    print(f"{prefix} launched {len(job_ids)} {mode} jobs from 05_final_grid/{final_grid_attempt_id} via {args.backend}")
+    excluded = f"; excluded {len(completed_jobs)} completed rows" if completed_jobs else ""
+    print(
+        f"{prefix} launched {len(job_ids)} {mode} jobs from "
+        f"05_final_grid/{final_grid_attempt_id} via {args.backend}{excluded}"
+    )
     return 0
 
 

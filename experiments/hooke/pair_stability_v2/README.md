@@ -231,14 +231,19 @@ Launch final training from the latest final grid:
 
 ```bash
 uv run --extra submitit python $STUDY/final_train.py \
-  --backend submitit --device cuda \
-  --chunk-size 6 \
-  --slurm-timeout-min 480
+  --backend submitit --device cpu,cuda \
+  --chunk-size 1 \
+  --slurm-cpu-timeout-min 60 \
+  --slurm-cuda-timeout-min 30
 ```
 
-If final training has already been submitted, do not rerun it just to continue
-the lineage. Use the final-train launcher job id with `final_eval.py --wait-job`
-so evaluation starts after Slurm marks the launcher complete.
+The final-train launcher excludes rows whose selected attempt already completed
+with a checkpoint, regardless of whether CPU or CUDA ran them. Incomplete rows
+with complete checkpoint directories resume from the highest complete checkpoint
+with `load.mode=train_resume`; fresh rows start from step zero. If final
+training has already been submitted, do not rerun it just to continue the
+lineage. Use the final-train launcher job id with `final_eval.py --wait-job` so
+evaluation starts after Slurm marks the launcher complete.
 
 Launch final evaluation from the latest final grid and the latest ready
 final-train checkpoint for each final run:

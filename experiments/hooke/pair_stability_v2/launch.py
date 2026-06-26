@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
@@ -520,6 +521,15 @@ def _write_status(path: str | Path | None, payload: dict[str, Any]) -> None:
     status_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
 
 
+def _read_json_mapping(path: Path) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _claim_path_for_status(path: str | Path | None) -> Path | None:
     """Return the atomic launch claim path next to a row status file."""
 
@@ -546,14 +556,32 @@ def _attempt_already_completed(status_path: str | Path | None) -> bool:
     status_file = attempt_dir / "status.json"
     if not checkpoint.is_file() or not status_file.is_file():
         return False
-    try:
-        status = json.loads(status_file.read_text()).get("status")
-    except (OSError, json.JSONDecodeError):
+    status = _read_json_mapping(status_file)
+    if status is None:
         return False
-    return status == "completed"
+    return status.get("status") == "completed"
 
 
-def _claim_row(path: str | Path | None, payload: dict[str, Any]) -> bool:
+def _terminal_row_status(status_path: str | Path | None) -> str | None:
+    """Return the terminal status that makes an old row claim reclaimable."""
+
+    if status_path is None:
+        return None
+    status_path = Path(status_path)
+    launcher_status = _read_json_mapping(status_path)
+    if launcher_status and launcher_status.get("status") in {"failed", "stopped"}:
+        return str(launcher_status["status"])
+    run_status = _read_json_mapping(status_path.parent / "status.json")
+    if run_status and run_status.get("status") in {"failed", "stopped"}:
+        return str(run_status["status"])
+    return None
+
+
+def _write_claim(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
+
+
+def _claim_row(path: str | Path | None, payload: dict[str, Any], status_path: str | Path | None = None) -> bool:
     """Atomically claim one row for a racing CPU/CUDA submission."""
 
     if path is None:
@@ -563,7 +591,35 @@ def _claim_row(path: str | Path | None, payload: dict[str, Any]) -> bool:
     try:
         fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
     except FileExistsError:
-        return False
+        terminal_status = _terminal_row_status(status_path)
+        if terminal_status is None:
+            return False
+        lock_path = claim_path.with_name(f"{claim_path.name}.reclaim.lock")
+        try:
+            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(lock_fd, "w") as handle:
+                handle.write(json.dumps({"pid": os.getpid(), "created_at_unix": time.time()}) + "\n")
+            terminal_status = _terminal_row_status(status_path)
+            if terminal_status is None:
+                return False
+            _write_claim(
+                claim_path,
+                {
+                    **payload,
+                    "reclaimed": True,
+                    "reclaim_reason": terminal_status,
+                    "previous_claim": _read_json_mapping(claim_path),
+                },
+            )
+            return True
+        finally:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
     with os.fdopen(fd, "w") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
     return True
@@ -631,7 +687,7 @@ def run_command_chunk(
             "claim_label": claim_label,
             "command": command_text,
         }
-        if not _claim_row(claims[index], claim_payload):
+        if not _claim_row(claims[index], claim_payload, status_paths[index]):
             row_results.append(
                 {
                     "status": "skipped_claimed",

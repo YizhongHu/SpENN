@@ -283,6 +283,28 @@ def test_v2_local_claim_mode_uses_claim_paths(tmp_path: Path, monkeypatch: pytes
     assert captured["kwargs"]["claim_label"] == "local-cpu"
 
 
+def test_v2_run_command_chunk_reclaims_failed_row_claim(tmp_path: Path) -> None:
+    attempt_dir = tmp_path / "run"
+    attempt_dir.mkdir()
+    row_status = attempt_dir / "launcher_status.json"
+    claim_path = attempt_dir / "launcher_claim.json"
+    row_status.write_text(json.dumps({"status": "running"}) + "\n")
+    (attempt_dir / "status.json").write_text(json.dumps({"status": "failed"}) + "\n")
+    claim_path.write_text(json.dumps({"status": "claimed", "claim_label": "cuda"}) + "\n")
+
+    result = launch.run_command_chunk(
+        [["bash", "-lc", "true"]],
+        row_status_paths=[row_status],
+        claim_paths=[claim_path],
+    )
+
+    assert result["rows"][0]["status"] == "success"
+    claim = json.loads(claim_path.read_text())
+    assert claim["reclaimed"] is True
+    assert claim["reclaim_reason"] == "failed"
+    assert claim["previous_claim"]["claim_label"] == "cuda"
+
+
 def test_v2_submitit_launcher_reexec_uses_dedicated_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -939,6 +961,85 @@ def test_v2_final_train_rejects_empty_final_grid(tmp_path: Path) -> None:
                 "local",
             ]
         )
+
+
+def test_v2_final_train_excludes_completed_and_resumes_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root = tmp_path / "results"
+    final_grid_id = "F0"
+    final_grid_dir = results_root / "05_final_grid" / final_grid_id
+    final_grid_dir.mkdir(parents=True)
+    _write_csv(
+        final_grid_dir / "final_jobs.csv",
+        [
+            {
+                "final_run_id": "done",
+                "source_champion_id": "champion-0",
+                "final_train_model_seed": 1001,
+                "final_train_sampler_seed": 101,
+            },
+            {
+                "final_run_id": "partial",
+                "source_champion_id": "champion-1",
+                "final_train_model_seed": 1002,
+                "final_train_sampler_seed": 102,
+            },
+        ],
+    )
+    json_io.write_json(
+        final_grid_dir / "manifest.json",
+        {
+            "study": "pair_stability_v2",
+            "stage": layout.STAGE_FINAL_GRID,
+            "attempt_id": final_grid_id,
+            "train_config": str(CONFIGS / "pair_stability.yaml"),
+            "major_axes": [],
+            "minor_axes": [],
+            "axis_overrides": {},
+        },
+    )
+
+    done_attempt = layout.final_train_attempt_dir(results_root, "done", final_grid_id)
+    _write_final_checkpoint(results_root, "done", final_grid_id)
+    (done_attempt / "status.json").write_text(json.dumps({"status": "completed"}) + "\n")
+
+    partial_attempt = layout.final_train_attempt_dir(results_root, "partial", final_grid_id)
+    checkpoint = partial_attempt / "checkpoints" / "step_000003"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "COMPLETE").write_text("")
+    (checkpoint / "manifest.json").write_text(json.dumps({"step": 3}) + "\n")
+
+    captured: dict[str, Any] = {}
+
+    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
+        captured["command_sets"] = command_sets
+        captured["kwargs"] = kwargs
+        return ["job-0"]
+
+    monkeypatch.setattr(final_train.launch, "submit_command_sets", fake_submit_command_sets)
+
+    code = final_train.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--final-grid-attempt-id",
+            final_grid_id,
+            "--backend",
+            "local",
+            "--device",
+            "cpu",
+        ]
+    )
+
+    assert code == 0
+    cpu_commands = captured["command_sets"]["cpu"]
+    assert len(cpu_commands) == 1
+    script = cpu_commands[0][-1]
+    assert "run.run_id=partial/F0" in script
+    assert "run.run_id=done/F0" not in script
+    assert f"load.path={checkpoint}" in script
+    assert "load.mode=train_resume" in script
 
 
 def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
