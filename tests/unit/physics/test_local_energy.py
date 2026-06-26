@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import math
+
+import pytest
 import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.losses import VMCLoss
 from spenn.nn.cusp import ElectronElectronCusp
-from spenn.physics.hamiltonian import ElectronicHamiltonian
-from spenn.physics.kinetic import kinetic_energy_from_logabs
+from spenn.physics.hamiltonian import LocalEnergyResult, local_energy, summarize_local_energy
+from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
+from spenn.physics.kinetic import KineticEnergy, kinetic_energy_from_logabs
 from spenn.physics.potential import (
-    electron_electron_repulsion,
-    electron_nuclear_attraction,
-    harmonic_trap_potential,
+    ElectronElectronInteraction,
+    ElectronNucleusInteraction,
+    HarmonicTrap,
 )
-from spenn.physics.systems import ElectronicSystem
 
 
 class GaussianOutputModel(nn.Module):
@@ -54,14 +57,6 @@ class CuspGaussianOutputModel(nn.Module):
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
-class FixedHamiltonian:
-    def __init__(self, values: torch.Tensor) -> None:
-        self.values = values
-
-    def local_energy(self, model, batch: ElectronBatch) -> torch.Tensor:
-        return self.values
-
-
 class FixedLogAbsModel(nn.Module):
     def __init__(self, values: torch.Tensor) -> None:
         super().__init__()
@@ -70,6 +65,17 @@ class FixedLogAbsModel(nn.Module):
     def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = self.logabs[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
+class _ConstantTerm:
+    """Hamiltonian term returning fixed values, for helper tests."""
+
+    def __init__(self, name: str, value: torch.Tensor) -> None:
+        self.name = name
+        self._value = value
+
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        return LocalEnergyResult(total=self._value, terms={self.name: self._value})
 
 
 def test_potential_terms_match_direct_hand_calculations() -> None:
@@ -82,15 +88,11 @@ def test_potential_terms_match_direct_hand_calculations() -> None:
     )
     nuclei = torch.tensor([[0.0, -1.0], [2.0, 0.0]], dtype=torch.float64)
     charges = torch.tensor([2.0, 0.5], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions)
 
-    harmonic = harmonic_trap_potential(positions, omega=1.5)
-    repulsion = electron_electron_repulsion(positions)
-    attraction = electron_nuclear_attraction(positions, nuclei, charges)
-    batched_attraction = electron_nuclear_attraction(
-        positions,
-        nuclei.unsqueeze(0).expand(positions.shape[0], -1, -1),
-        charges.unsqueeze(0).expand(positions.shape[0], -1),
-    )
+    harmonic = HarmonicTrap(omega=1.5).local_energy(None, batch).total
+    repulsion = ElectronElectronInteraction().local_energy(None, batch).total
+    attraction = ElectronNucleusInteraction(nuclei, charges).local_energy(None, batch).total
 
     expected_harmonic = 0.5 * (1.5**2) * positions.square().sum(dim=(1, 2))
     expected_repulsion = torch.linalg.norm(positions[:, 0] - positions[:, 1], dim=-1).reciprocal()
@@ -102,7 +104,6 @@ def test_potential_terms_match_direct_hand_calculations() -> None:
     assert torch.allclose(harmonic, expected_harmonic)
     assert torch.allclose(repulsion, expected_repulsion)
     assert torch.allclose(attraction, expected_attraction)
-    assert torch.allclose(batched_attraction, expected_attraction)
 
 
 def test_autograd_kinetic_matches_gaussian_logabs_formula() -> None:
@@ -126,7 +127,6 @@ def test_autograd_kinetic_matches_gaussian_logabs_formula() -> None:
 
 def test_harmonic_oscillator_ground_state_has_constant_local_energy() -> None:
     omega = 1.7
-    system = ElectronicSystem(n_electrons=2, spatial_dim=3, harmonic_omega=omega)
     positions = torch.tensor(
         [
             [[1.0, 0.0, -1.0], [0.5, 2.0, 0.25]],
@@ -134,63 +134,340 @@ def test_harmonic_oscillator_ground_state_has_constant_local_energy() -> None:
         ],
         dtype=torch.float64,
     )
-    batch = ElectronBatch(positions=positions, system=system)
-    hamiltonian = ElectronicHamiltonian(system=system)
+    batch = ElectronBatch(positions=positions)
+    terms = [KineticEnergy(), HarmonicTrap(omega=omega)]
 
-    local_energy = hamiltonian.local_energy(GaussianOutputModel(alpha=omega / 2.0), batch)
+    energy = local_energy(terms, GaussianOutputModel(alpha=omega / 2.0), batch)
 
-    expected = torch.full((2,), system.n_electrons * system.spatial_dim * omega / 2.0, dtype=torch.float64)
-    assert torch.allclose(local_energy, expected)
+    n_electrons, spatial_dim = positions.shape[1], positions.shape[2]
+    expected = torch.full((2,), n_electrons * spatial_dim * omega / 2.0, dtype=torch.float64)
+    assert torch.allclose(energy, expected)
 
 
 def test_local_energy_accepts_wavefunction_output_and_preserves_parameter_gradients() -> None:
-    system = ElectronicSystem(n_electrons=2, spatial_dim=2, harmonic_omega=1.0)
     batch = ElectronBatch(
         positions=torch.tensor([[[1.0, 0.0], [0.0, 2.0]], [[-1.0, 1.0], [2.0, -0.5]]], dtype=torch.float64),
-        system=system,
     )
     model = TrainableGaussianOutputModel(alpha=0.25)
-    hamiltonian = ElectronicHamiltonian(system=system)
+    terms = [KineticEnergy(), HarmonicTrap(omega=1.0)]
 
-    local_energy = hamiltonian.local_energy(model, batch)
-    local_energy.mean().backward()
+    energy = local_energy(terms, model, batch)
+    energy.mean().backward()
 
-    assert local_energy.shape == (2,)
-    assert torch.all(torch.isfinite(local_energy))
+    assert energy.shape == (2,)
+    assert torch.all(torch.isfinite(energy))
     assert model.alpha.grad is not None
     assert torch.isfinite(model.alpha.grad)
 
 
 def test_cusp_local_energy_has_finite_second_derivatives_with_pair_diagonal() -> None:
-    system = ElectronicSystem(n_electrons=2, spatial_dim=3, harmonic_omega=0.5, include_electron_electron=True)
     batch = ElectronBatch(
         positions=torch.tensor([[[0.25, -0.1, 0.3], [-0.35, 0.4, -0.2]]], dtype=torch.float64),
-        system=system,
         spins=torch.tensor([[1.0, 1.0]], dtype=torch.float64),
     )
     model = CuspGaussianOutputModel()
-    hamiltonian = ElectronicHamiltonian(system=system)
+    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
 
-    local_energy = hamiltonian.local_energy(model, batch)
-    local_energy.mean().backward()
+    energy = local_energy(terms, model, batch)
+    energy.mean().backward()
 
-    assert local_energy.shape == (1,)
-    assert torch.all(torch.isfinite(local_energy))
+    assert energy.shape == (1,)
+    assert torch.all(torch.isfinite(energy))
     assert model.alpha.grad is not None
     assert torch.isfinite(model.alpha.grad)
 
 
 def test_vmc_loss_returns_score_function_objective_and_detached_metrics() -> None:
-    local_energy = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64, requires_grad=True)
+    local_energy_vals = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64, requires_grad=True)
     logabs = torch.tensor([0.0, 1.0, 2.0], dtype=torch.float64)
     batch = ElectronBatch(positions=torch.zeros(3, 2, 1, dtype=torch.float64))
     model = FixedLogAbsModel(logabs)
 
-    loss, metrics = VMCLoss()(model=model, hamiltonian=FixedHamiltonian(local_energy), batch=batch)
-    expected_loss = 2.0 * ((local_energy.detach() - local_energy.detach().mean()) * logabs).mean()
+    loss, metrics = VMCLoss()(model=model, terms=[_ConstantTerm("fixed", local_energy_vals)], batch=batch)
+    expected_loss = 2.0 * ((local_energy_vals.detach() - local_energy_vals.detach().mean()) * logabs).mean()
 
     assert torch.equal(loss, expected_loss)
     assert torch.equal(metrics["energy"], torch.tensor(3.0, dtype=torch.float64))
     assert torch.equal(metrics["variance"], torch.tensor(8.0 / 3.0, dtype=torch.float64))
     assert not metrics["energy"].requires_grad
     assert not metrics["variance"].requires_grad
+
+
+# --- Local-energy helper over a list of terms ---
+
+
+def test_local_energy_helper_sums_terms() -> None:
+    a = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    b = torch.tensor([10.0, 20.0, 30.0], dtype=torch.float64)
+    terms = [_ConstantTerm("a", a), _ConstantTerm("b", b)]
+    batch = ElectronBatch(positions=torch.zeros(3, 2, 1, dtype=torch.float64))
+
+    total = local_energy(terms, None, batch)
+
+    assert isinstance(total, torch.Tensor)
+    assert torch.equal(total, a + b)
+
+
+def test_local_energy_helper_return_terms_true() -> None:
+    a = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    b = torch.tensor([3.0, 4.0], dtype=torch.float64)
+    terms = [_ConstantTerm("alpha", a), _ConstantTerm("beta", b)]
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    result = local_energy(terms, None, batch, return_terms=True)
+
+    assert isinstance(result, LocalEnergyResult)
+    assert torch.equal(result.total, a + b)
+    assert torch.equal(result.terms["alpha"], a)
+    assert torch.equal(result.terms["beta"], b)
+
+
+# --- Term classes return decomposed LocalEnergyResult objects ---
+
+
+def test_harmonic_trap_term_returns_local_energy_result() -> None:
+    positions = torch.tensor(
+        [[[1.0, 0.0, -1.0], [0.5, 2.0, 0.25]], [[-0.5, 1.5, 2.5], [1.0, -2.0, 0.5]]],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(positions=positions)
+    omega = 0.75
+
+    result = HarmonicTrap(omega=omega).local_energy(None, batch)
+
+    expected = 0.5 * (omega**2) * positions.square().sum(dim=(1, 2))
+    assert isinstance(result, LocalEnergyResult)
+    assert torch.allclose(result.total, expected)
+    assert torch.allclose(result.terms["harmonic_trap"], expected)
+
+
+def test_electron_electron_interaction_term_returns_local_energy_result() -> None:
+    positions = torch.tensor(
+        [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], [[2.0, 0.0, 0.0], [0.0, 0.0, 1.0]]],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(positions=positions)
+
+    result = ElectronElectronInteraction().local_energy(None, batch)
+
+    expected = torch.linalg.norm(positions[:, 0] - positions[:, 1], dim=-1).reciprocal()
+    assert isinstance(result, LocalEnergyResult)
+    assert torch.allclose(result.total, expected)
+    assert torch.allclose(result.terms["electron_electron"], expected)
+
+
+def test_electron_nucleus_interaction_term_returns_local_energy_result() -> None:
+    positions = torch.tensor(
+        [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], [[-1.0, 0.5, 0.0], [0.0, 0.0, 2.0]]],
+        dtype=torch.float64,
+    )
+    nuclei = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    charges = torch.tensor([2.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions)
+
+    result = ElectronNucleusInteraction(nuclei, charges).local_energy(None, batch)
+
+    expected = -(
+        charges.view(1, 1, -1)
+        / torch.linalg.norm(positions.unsqueeze(2) - nuclei.view(1, 1, 1, 3), dim=-1)
+    ).sum(dim=(1, 2))
+    assert isinstance(result, LocalEnergyResult)
+    assert torch.allclose(result.total, expected)
+    assert torch.allclose(result.terms["electron_nucleus"], expected)
+
+
+def test_kinetic_energy_term_returns_local_energy_result() -> None:
+    positions = torch.tensor(
+        [[[1.0, 2.0], [0.5, -1.0]], [[-1.5, 0.25], [2.0, 0.0]]],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(positions=positions)
+    model = GaussianOutputModel(0.3)
+
+    result = KineticEnergy().local_energy(model, batch)
+
+    expected = kinetic_energy_from_logabs(model, batch)
+    assert isinstance(result, LocalEnergyResult)
+    assert torch.allclose(result.total, expected)
+    assert torch.allclose(result.terms["kinetic"], expected)
+
+
+# --- Symmetry sanity tests for exact Hooke references ---
+
+
+def _two_particle_3d_batch() -> tuple[ElectronBatch, ElectronBatch]:
+    """Return a batch and its particle-swapped version."""
+    positions = torch.tensor(
+        [
+            [[0.3, -0.2, 0.8], [-0.1, 0.5, 0.3]],
+            [[1.0, 0.0, 0.5], [0.0, -0.5, 1.5]],
+            [[-0.4, 0.7, -0.3], [0.6, -0.1, 0.9]],
+        ],
+        dtype=torch.float64,
+    )
+    swapped = positions[:, [1, 0], :]
+    return ElectronBatch(positions=positions), ElectronBatch(positions=swapped)
+
+
+def test_singlet_logabs_invariant_under_particle_swap() -> None:
+    wf = HookeSingletExact()
+    batch, swapped = _two_particle_3d_batch()
+
+    out = wf(batch)
+    out_swapped = wf(swapped)
+
+    assert torch.allclose(out.logabs, out_swapped.logabs)
+
+
+def test_singlet_sign_invariant_under_particle_swap() -> None:
+    wf = HookeSingletExact()
+    batch, swapped = _two_particle_3d_batch()
+
+    out = wf(batch)
+    out_swapped = wf(swapped)
+
+    assert torch.equal(out.sign, out_swapped.sign)
+
+
+def test_triplet_logabs_invariant_under_particle_swap() -> None:
+    wf = HookeTripletExact()
+    # Use positions where z1 != z2 for all configs
+    positions = torch.tensor(
+        [
+            [[0.3, -0.2, 0.8], [-0.1, 0.5, 0.3]],
+            [[1.0, 0.0, 0.5], [0.0, -0.5, -0.5]],
+            [[-0.4, 0.7, -0.3], [0.6, -0.1, 0.9]],
+        ],
+        dtype=torch.float64,
+    )
+    swapped = positions[:, [1, 0], :]
+    batch = ElectronBatch(positions=positions)
+    batch_swapped = ElectronBatch(positions=swapped)
+
+    out = wf(batch)
+    out_swapped = wf(batch_swapped)
+
+    assert torch.allclose(out.logabs, out_swapped.logabs)
+
+
+def test_triplet_sign_flips_under_particle_swap() -> None:
+    wf = HookeTripletExact()
+    positions = torch.tensor(
+        [
+            [[0.3, -0.2, 0.8], [-0.1, 0.5, 0.3]],
+            [[1.0, 0.0, 0.5], [0.0, -0.5, -0.5]],
+            [[-0.4, 0.7, -0.3], [0.6, -0.1, 0.9]],
+        ],
+        dtype=torch.float64,
+    )
+    swapped = positions[:, [1, 0], :]
+    batch = ElectronBatch(positions=positions)
+    batch_swapped = ElectronBatch(positions=swapped)
+
+    out = wf(batch)
+    out_swapped = wf(batch_swapped)
+
+    assert torch.equal(out.sign, -out_swapped.sign)
+
+
+# --- summarize_local_energy ---
+
+
+def test_summarize_local_energy_all_finite() -> None:
+    eloc = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc)
+
+    assert metrics["n_samples"] == 3
+    assert metrics["n_finite_samples"] == 3
+    assert metrics["nonfinite_energy_fraction"] == 0.0
+    assert metrics["energy_mean"] == pytest.approx(3.0)
+    assert metrics["energy_variance"] == pytest.approx(8.0 / 3.0)
+    assert metrics["energy_stderr"] == pytest.approx(math.sqrt(8.0 / 3.0) / math.sqrt(3))
+    assert "expected_energy" not in metrics
+
+
+def test_summarize_local_energy_some_nonfinite() -> None:
+    eloc = torch.tensor([1.0, float("inf"), 3.0, float("nan")], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc)
+
+    assert metrics["n_samples"] == 4
+    assert metrics["n_finite_samples"] == 2
+    assert metrics["nonfinite_energy_fraction"] == pytest.approx(0.5)
+    assert metrics["energy_mean"] == pytest.approx(2.0)
+    assert math.isfinite(metrics["energy_variance"])
+
+
+def test_summarize_local_energy_all_nonfinite() -> None:
+    eloc = torch.tensor([float("inf"), float("nan")], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc)
+
+    assert metrics["n_finite_samples"] == 0
+    assert metrics["nonfinite_energy_fraction"] == 1.0
+    assert math.isnan(metrics["energy_mean"])
+    assert math.isnan(metrics["energy_variance"])
+    assert metrics["energy_stderr"] == float("inf")
+
+
+def test_summarize_local_energy_empty() -> None:
+    metrics = summarize_local_energy(torch.empty(0, dtype=torch.float64))
+
+    assert metrics["n_samples"] == 0
+    assert metrics["n_finite_samples"] == 0
+    assert math.isnan(metrics["energy_mean"])
+    assert math.isnan(metrics["energy_variance"])
+    assert metrics["energy_stderr"] == float("inf")
+    assert math.isnan(metrics["nonfinite_energy_fraction"])
+
+
+def test_summarize_local_energy_with_expected_energy() -> None:
+    eloc = torch.tensor([1.5, 2.5], dtype=torch.float64)
+
+    metrics = summarize_local_energy(eloc, expected_energy=2.0)
+
+    assert metrics["expected_energy"] == 2.0
+    assert metrics["energy_error"] == pytest.approx(0.0)
+    assert metrics["abs_energy_error"] == pytest.approx(0.0)
+
+
+def test_summarize_local_energy_result_with_finite_terms() -> None:
+    result = LocalEnergyResult(
+        total=torch.tensor([2.0, 2.0], dtype=torch.float64),
+        terms={
+            "kinetic": torch.tensor([1.0, 1.0], dtype=torch.float64),
+            "trap": torch.tensor([1.0, 1.0], dtype=torch.float64),
+        },
+    )
+
+    metrics = summarize_local_energy(result)
+
+    assert metrics["terms.kinetic_mean"] == pytest.approx(1.0)
+    assert metrics["terms.kinetic_nonfinite_fraction"] == 0.0
+    assert metrics["terms.trap_mean"] == pytest.approx(1.0)
+    assert metrics["terms.trap_nonfinite_fraction"] == 0.0
+
+
+def test_summarize_local_energy_result_with_nonfinite_term_values() -> None:
+    result = LocalEnergyResult(
+        total=torch.tensor([2.0, 2.0], dtype=torch.float64),
+        terms={"kinetic": torch.tensor([1.0, float("nan")], dtype=torch.float64)},
+    )
+
+    metrics = summarize_local_energy(result)
+
+    assert metrics["terms.kinetic_mean"] == pytest.approx(1.0)
+    assert metrics["terms.kinetic_nonfinite_fraction"] == pytest.approx(0.5)
+
+
+def test_summarize_local_energy_term_with_no_finite_values() -> None:
+    result = LocalEnergyResult(
+        total=torch.tensor([2.0], dtype=torch.float64),
+        terms={"kinetic": torch.tensor([float("nan")], dtype=torch.float64)},
+    )
+
+    metrics = summarize_local_energy(result)
+
+    assert math.isnan(metrics["terms.kinetic_mean"])
+    assert metrics["terms.kinetic_nonfinite_fraction"] == 1.0

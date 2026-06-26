@@ -6,7 +6,6 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
-from spenn.physics.systems import ElectronicSystem
 from spenn.sampling.moves import GaussianMove
 
 
@@ -22,16 +21,21 @@ class MetropolisSampler(nn.Module):
         positions plus a proposal log-ratio.
     n_walkers : int, optional
         Default number of walkers to initialize.
-    warmup_steps : int, optional
-        Suggested warmup length for callers.
-    steps_per_iter : int, optional
-        Default number of MCMC steps per training iteration.
-    step_size : float, optional
-        Gaussian proposal step size used when `move` is ``None``.
+    burn_in : int, optional
+        Number of equilibration steps used by `collect_samples`.
+    n_steps : int, optional
+        Default number of MCMC steps per sampling call.
+    proposal_scale : float, optional
+        Gaussian proposal scale used when `move` is ``None``.
+    seed : int or None, optional
+        Optional RNG seed applied when initializing walkers.
     n_electrons : int, optional
-        Default electron count used when no system is supplied.
+        Number of electrons per walker.
     spatial_dim : int, optional
-        Default spatial dimension used when no system is supplied.
+        Spatial dimension of each electron coordinate.
+    n_up, n_down : int or None, optional
+        Spin partition. When both are given, walkers are initialized with the
+        corresponding ``+1``/``-1`` spin labels.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
@@ -43,58 +47,67 @@ class MetropolisSampler(nn.Module):
         name: str = "metropolis",
         move: nn.Module | None = None,
         n_walkers: int = 1024,
-        warmup_steps: int = 100,
-        steps_per_iter: int = 10,
-        step_size: float = 0.05,
+        burn_in: int = 100,
+        n_steps: int = 10,
+        proposal_scale: float = 0.05,
+        seed: int | None = None,
         n_electrons: int = 2,
         spatial_dim: int = 3,
+        n_up: int | None = None,
+        n_down: int | None = None,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
         super().__init__()
         self.name = name
-        self.move = move or GaussianMove(step_size=step_size)
+        self.move = move or GaussianMove(step_size=proposal_scale)
         self.n_walkers = n_walkers
-        self.warmup_steps = warmup_steps
-        self.steps_per_iter = steps_per_iter
+        self.burn_in = burn_in
+        self.n_steps = n_steps
+        self.proposal_scale = proposal_scale
+        self.seed = seed
         self.n_electrons = n_electrons
         self.spatial_dim = spatial_dim
+        self.n_up = n_up
+        self.n_down = n_down
         self.initial_scale = initial_scale
         self.dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
         self.acceptance_rate = 0.0
         self.last_metrics: dict[str, float] = {}
 
-    def initialize(self, system: ElectronicSystem | None = None, n_walkers: int | None = None, device=None) -> Walkers:
+    def initialize(self, n_walkers: int | None = None, device=None) -> Walkers:
         """Initialize normally distributed walkers.
 
         Parameters
         ----------
-        system : ElectronicSystem or None, optional
-            System metadata. If absent, a default `ElectronicSystem` is built
-            from sampler dimensions.
         n_walkers : int or None, optional
             Number of walkers to initialize. If ``None``, `self.n_walkers` is
             used.
         device : torch.device, str, or None, optional
-            Target device. If ``None``, the system device is used.
+            Target device.
 
         Returns
         -------
         Walkers
             Walker state with positions shaped ``[n_walkers, n_electrons,
-            spatial_dim]`` and system metadata in ``aux``.
+            spatial_dim]``.
         """
 
-        system = system or ElectronicSystem(n_electrons=self.n_electrons, spatial_dim=self.spatial_dim, dtype=self.dtype)
-        self.system = system
+        if self.seed is not None:
+            torch.manual_seed(int(self.seed))
         n_walkers = n_walkers or self.n_walkers
-        dtype = getattr(torch, system.dtype) if isinstance(system.dtype, str) else (system.dtype or self.dtype)
-        device = device or system.device
         positions = self.initial_scale * torch.randn(
-            n_walkers, system.n_electrons, system.spatial_dim, device=device, dtype=dtype
+            n_walkers, self.n_electrons, self.spatial_dim, device=device, dtype=self.dtype
         )
-        spins = _default_spins(system, n_walkers=n_walkers, device=device, dtype=dtype)
-        return Walkers(positions=positions, spins=spins, aux={"system": system})
+        spins = _default_spins(
+            n_up=self.n_up,
+            n_down=self.n_down,
+            n_electrons=self.n_electrons,
+            n_walkers=n_walkers,
+            device=device,
+            dtype=self.dtype,
+        )
+        return Walkers(positions=positions, spins=spins)
 
     def _evaluate(self, model, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
         batch = walkers.make_batch()
@@ -182,7 +195,7 @@ class MetropolisSampler(nn.Module):
         walkers : Walkers
             Current walker state.
         n_steps : int or None, optional
-            Number of MCMC steps. If ``None``, `self.steps_per_iter` is used.
+            Number of MCMC steps. If ``None``, `self.n_steps` is used.
 
         Returns
         -------
@@ -191,7 +204,7 @@ class MetropolisSampler(nn.Module):
             acceptance rate over all steps in this call.
         """
 
-        total_steps = self.steps_per_iter if n_steps is None else n_steps
+        total_steps = self.n_steps if n_steps is None else n_steps
         if total_steps < 0:
             raise ValueError("n_steps must be non-negative")
         acceptance_sum = 0.0
@@ -204,20 +217,57 @@ class MetropolisSampler(nn.Module):
         walkers.aux["sample_acceptance_rate"] = self.acceptance_rate
         return walkers
 
+    def collect_samples(self, model, *, device=None) -> tuple[Walkers, dict[str, float]]:
+        """Initialize, equilibrate, and draw walkers in one self-managed call.
+
+        Convenience for evaluation runs: builds walkers from the sampler's own
+        ``n_walkers``/``n_electrons``/``spatial_dim``/``dtype``, burns in for
+        ``burn_in`` steps, then advances ``n_steps`` production steps.
+
+        Parameters
+        ----------
+        model : callable
+            Wavefunction model returning `WavefunctionOutput`.
+        device : torch.device, str, or None, optional
+            Target device for the walkers.
+
+        Returns
+        -------
+        tuple
+            Pair ``(walkers, stats)`` where ``walkers`` holds the final samples
+            and ``stats`` reports sampler diagnostics for logging.
+        """
+
+        walkers = self.initialize(device=device)
+        if self.burn_in:
+            walkers = self.sample(model, walkers, self.burn_in)
+        walkers = self.sample(model, walkers, self.n_steps)
+        stats = {
+            "acceptance_rate": float(self.acceptance_rate),
+            "n_walkers": int(walkers.batch_size),
+            "burn_in": int(self.burn_in),
+            "n_steps": int(self.n_steps),
+        }
+        return walkers, stats
+
 
 def _default_spins(
-    system: ElectronicSystem,
     *,
+    n_up: int | None,
+    n_down: int | None,
+    n_electrons: int,
     n_walkers: int,
     device: torch.device | str | None,
     dtype: torch.dtype,
 ) -> torch.Tensor | None:
-    """Return repeated spin labels from system metadata.
+    """Return repeated spin labels from a spin partition.
 
     Parameters
     ----------
-    system : ElectronicSystem
-        System whose ``n_up`` and ``n_down`` fields define the spin partition.
+    n_up, n_down : int or None
+        Spin partition. If either is ``None``, no spin labels are produced.
+    n_electrons : int
+        Number of electrons; must equal ``n_up + n_down`` when both are given.
     n_walkers : int
         Number of walkers.
     device : torch.device, str, or None
@@ -228,13 +278,13 @@ def _default_spins(
     Returns
     -------
     torch.Tensor or None
-        Spin labels with shape ``[n_walkers, n_electrons]`` when spin metadata
-        is available, otherwise ``None``.
+        Spin labels with shape ``[n_walkers, n_electrons]`` when a partition is
+        available, otherwise ``None``.
     """
 
-    if system.n_up is None or system.n_down is None:
+    if n_up is None or n_down is None:
         return None
-    spins = torch.tensor([1.0] * system.n_up + [-1.0] * system.n_down, device=device, dtype=dtype)
-    if spins.numel() != system.n_electrons:
-        raise ValueError("System spin partition must match n_electrons")
+    spins = torch.tensor([1.0] * n_up + [-1.0] * n_down, device=device, dtype=dtype)
+    if spins.numel() != n_electrons:
+        raise ValueError("Spin partition must match n_electrons")
     return spins.unsqueeze(0).expand(n_walkers, -1).clone()

@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.physics.hamiltonian import local_energy as eval_local_energy
 
 
 def _extract_logabs(output: WavefunctionOutput) -> torch.Tensor:
@@ -34,15 +35,15 @@ class VMCLoss(nn.Module):
         self.center_energy = center_energy
         self.scale_factor = float(scale_factor)
 
-    def forward(self, model, hamiltonian, batch: ElectronBatch):
+    def forward(self, model, terms, batch: ElectronBatch):
         """Evaluate the VMC objective and diagnostics for a batch.
 
         Parameters
         ----------
         model : callable
-            Wavefunction model evaluated by `hamiltonian`.
-        hamiltonian : object
-            Hamiltonian object with a ``local_energy`` method.
+            Wavefunction model evaluated against the Hamiltonian terms.
+        terms : sequence of HamiltonianTerm
+            Hamiltonian terms summed into the local energy.
         batch : ElectronBatch
             Electron configurations used for the estimate.
 
@@ -59,10 +60,10 @@ class VMCLoss(nn.Module):
         logabs = _extract_logabs(model_output)
         if logabs.shape != (batch.batch_size,):
             raise ValueError(f"Model logabs must have shape [{batch.batch_size}], got {tuple(logabs.shape)}")
-        local_energy = hamiltonian.local_energy(model, batch)
+        local_energy = eval_local_energy(terms, model, batch)
         if local_energy.shape != (batch.batch_size,):
             raise ValueError(
-                f"Hamiltonian local energy must have shape [{batch.batch_size}], got {tuple(local_energy.shape)}"
+                f"Local energy must have shape [{batch.batch_size}], got {tuple(local_energy.shape)}"
             )
         detached_energy = local_energy.detach()
         weight = detached_energy - detached_energy.mean() if self.center_energy else detached_energy
