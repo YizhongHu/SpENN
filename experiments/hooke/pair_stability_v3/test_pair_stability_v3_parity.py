@@ -23,10 +23,15 @@ def test_pair_stability_v3_parity_runbook_uses_test_partitions(
     ]
 
     assert any("train.py" in command and "--slurm-cpu-partition test" in command for command in command_texts)
-    assert any("train.py" in command and "--slurm-cuda-partition gpu_test" in command for command in command_texts)
+    assert any("train.py" in command and "--device cpu" in command for command in command_texts)
+    assert not any("train.py" in command and "--device cpu,cuda" in command for command in command_texts)
     assert any("validate.py" in command and "--slurm-partition gpu_test" in command for command in command_texts)
+    assert any("validate.py" in command and "--device cuda" in command for command in command_texts)
     assert any("final_train.py" in command and "--slurm-cpu-partition test" in command for command in command_texts)
+    assert any("final_train.py" in command and "--device cpu" in command for command in command_texts)
     assert any("final_eval.py" in command and "--slurm-partition gpu_test" in command for command in command_texts)
+    assert any("--slurm-mem-gb 60" in command for command in command_texts)
+    assert all("--chunk-size 8" in command for command in command_texts if "--extra submitit" in command)
     assert any("collect.py" in command for command in command_texts)
     assert any("final_report.py" in command for command in command_texts)
 

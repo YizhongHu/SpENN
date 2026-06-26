@@ -8,6 +8,8 @@ study-name, and scheduler-id fields that are expected to differ.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import re
 import shlex
@@ -33,6 +35,20 @@ NORMALIZED_FIELDS = {
     "start_time",
     "submitted_at",
     "wall_time_sec",
+}
+VOLATILE_FIELD_PATTERNS = (
+    "start_time",
+    "end_time",
+    "submitted_at",
+    "wall_time_sec",
+    "perf/wall_time_sec",
+)
+GENERIC_METRIC_VALUE_FIELDS = {
+    "metric_value",
+    "metric_seed_mean",
+    "metric_seed_stderr",
+    "overall_metric_value",
+    "secondary_metric_value",
 }
 RUNBOOK_WAIT_TRAIN = "# Wait for 01_train jobs from both studies to finish before running validation."
 RUNBOOK_WAIT_VALIDATION = "# Wait for 02_validation jobs from both studies to finish before running collection."
@@ -130,17 +146,15 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                 "--backend",
                 "submitit",
                 "--device",
-                "cpu,cuda",
+                "cpu",
                 "--slurm-cpu-partition",
                 "test",
-                "--slurm-cuda-partition",
-                "gpu_test",
                 "--slurm-cpu-timeout-min",
                 "30",
-                "--slurm-cuda-timeout-min",
-                "30",
+                "--slurm-mem-gb",
+                "60",
                 "--chunk-size",
-                "1",
+                "8",
             ]
         )
     commands.append(RUNBOOK_WAIT_TRAIN)
@@ -168,8 +182,10 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                 "gpu_test",
                 "--slurm-timeout-min",
                 "30",
+                "--slurm-mem-gb",
+                "60",
                 "--chunk-size",
-                "1",
+                "8",
             ]
         )
     commands.append(RUNBOOK_WAIT_VALIDATION)
@@ -229,17 +245,15 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                     "--backend",
                     "submitit",
                     "--device",
-                    "cpu,cuda",
+                    "cpu",
                     "--slurm-cpu-partition",
                     "test",
-                    "--slurm-cuda-partition",
-                    "gpu_test",
                     "--slurm-cpu-timeout-min",
                     "30",
-                    "--slurm-cuda-timeout-min",
-                    "30",
+                    "--slurm-mem-gb",
+                    "60",
                     "--chunk-size",
-                    "1",
+                    "8",
                 ],
             ]
         )
@@ -270,8 +284,10 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                 "gpu_test",
                 "--slurm-timeout-min",
                 "30",
+                "--slurm-mem-gb",
+                "60",
                 "--chunk-size",
-                "1",
+                "8",
             ]
         )
     commands.append(RUNBOOK_WAIT_FINAL_EVAL)
@@ -394,6 +410,8 @@ def _check_v3_stage_plans(attempt_id: str) -> list[str]:
 
 
 def _normalized_file(path: Path) -> Any:
+    if path.suffix == ".csv":
+        return _normalize_csv(path.read_text())
     if path.suffix == ".jsonl":
         return [_normalize(json.loads(line)) for line in path.read_text().splitlines() if line.strip()]
     if path.suffix == ".json":
@@ -401,32 +419,87 @@ def _normalized_file(path: Path) -> Any:
     return _normalize(path.read_text())
 
 
+def _normalize_csv(text: str) -> dict[str, Any]:
+    reader = csv.DictReader(io.StringIO(text))
+    fieldnames = list(reader.fieldnames or [])
+    rows = []
+    for row in reader:
+        volatile_metric = _is_volatile_metric(row.get("metric"))
+        rows.append(
+            {
+                key: (
+                    "<VOLATILE>"
+                    if _is_volatile_field(key) or (volatile_metric and key in GENERIC_METRIC_VALUE_FIELDS)
+                    else _normalize(value)
+                )
+                for key, value in row.items()
+            }
+        )
+    return {"fieldnames": fieldnames, "rows": rows}
+
+
 def _normalize(value: Any) -> Any:
     if isinstance(value, dict):
+        volatile_metrics = {
+            key
+            for key in ("metric", "overall_metric", "secondary_metric")
+            if _is_volatile_metric(value.get(key))
+        }
         return {
-            key: _normalize(item)
+            key: (
+                "<VOLATILE>"
+                if _is_volatile_metric_value_field(key, volatile_metrics)
+                else _normalize(item)
+            )
             for key, item in sorted(value.items())
-            if key not in NORMALIZED_FIELDS
+            if key not in NORMALIZED_FIELDS and not _is_volatile_field(key)
         }
     if isinstance(value, list):
         return [_normalize(item) for item in value]
     if isinstance(value, str):
         text = value
         replacements = {
-            str(V2_DIR): "<STUDY_DIR>",
-            str(V3_DIR): "<STUDY_DIR>",
             str(V2_DIR / "results"): "<RESULTS_ROOT>",
             str(V3_DIR / "results"): "<RESULTS_ROOT>",
+            str(V2_DIR): "<STUDY_DIR>",
+            str(V3_DIR): "<STUDY_DIR>",
+            "experiments/hooke/pair_stability_v2/results": "<RESULTS_ROOT>",
+            "experiments/hooke/pair_stability_v3/results": "<RESULTS_ROOT>",
+            "experiments/hooke/pair_stability_v2": "<STUDY_DIR>",
+            "experiments/hooke/pair_stability_v3": "<STUDY_DIR>",
+            "Pair Stability V2": "Pair Stability <STUDY_VERSION>",
+            "Pair Stability V3": "Pair Stability <STUDY_VERSION>",
             "pair_stability_v2": "<STUDY>",
             "pair_stability_v3": "<STUDY>",
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
         text = re.sub(r"<STUDY_DIR>/results/parity_configs/[^/]+/", "<STUDY_DIR>/configs/", text)
+        text = re.sub(r"<RESULTS_ROOT>/parity_configs/[^/]+/", "<STUDY_DIR>/configs/", text)
+        text = re.sub(r"parity-v2v3-[0-9]{8}-[0-9]{6}", "parity-v2v3-<ATTEMPT>", text)
         text = re.sub(r"(cpu|cuda):[0-9]+", r"\1:<JOB_ID>", text)
-        text = re.sub(r"\b[0-9]{5,}\b", "<JOB_ID>", text)
         return text
     return value
+
+
+def _is_volatile_field(key: str | None) -> bool:
+    if key is None:
+        return False
+    return key in NORMALIZED_FIELDS or any(pattern in key for pattern in VOLATILE_FIELD_PATTERNS)
+
+
+def _is_volatile_metric(metric: object) -> bool:
+    return isinstance(metric, str) and _is_volatile_field(metric)
+
+
+def _is_volatile_metric_value_field(key: str, volatile_metrics: set[str]) -> bool:
+    if key in {"metric_value", "metric_seed_mean", "metric_seed_stderr"}:
+        return "metric" in volatile_metrics
+    if key == "overall_metric_value":
+        return "overall_metric" in volatile_metrics
+    if key == "secondary_metric_value":
+        return "secondary_metric" in volatile_metrics
+    return False
 
 
 def main(argv: Sequence[str] | None = None) -> int:

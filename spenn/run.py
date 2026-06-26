@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 import sys
 import traceback
 from dataclasses import dataclass
@@ -177,6 +178,7 @@ def run_from_config(
     runner: Runner | None = None
     try:
         context = prepare_run_context(cfg, config_path=config_path, command=command, bootstrap=bootstrap)
+        _seed_runtime_rngs(context.cfg)
         context.emit_event("run_start")
         runner = _instantiate_runner(context)
         result = runner.run(context)
@@ -264,6 +266,27 @@ def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
         else:
             instantiated.append(item)
     return instantiated
+
+
+def _seed_runtime_rngs(cfg: DictConfig) -> None:
+    """Seed process RNGs from ``runtime.seed`` before runner construction."""
+
+    seed = OmegaConf.select(cfg, "runtime.seed", default=None)
+    if seed is None:
+        return
+    seed_int = int(seed)
+    random.seed(seed_int)
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+    if np is not None:
+        np.random.seed(seed_int % (2**32 - 1))
+    if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
+        torch = require_torch(feature="seeded configured SpENN run")
+        torch.manual_seed(seed_int)
+        if hasattr(torch, "cuda"):
+            torch.cuda.manual_seed_all(seed_int)
 
 
 def _instantiate_runner(context: RunContext) -> Runner:
