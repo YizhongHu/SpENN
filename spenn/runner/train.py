@@ -89,8 +89,8 @@ class Train(Runner):
             context=context,
             emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
         )
-        # train_end carries the trained model and final step so consumers
-        # (e.g. the Validation callback) do not depend on trainer internals.
+        # train_end carries the trained model and final step so lifecycle
+        # callbacks do not depend on trainer internals.
         self.emit(
             "train_end",
             context,

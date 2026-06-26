@@ -41,7 +41,14 @@ class ReplaceUpdate(Update):
 
 
 class ResidualUpdate(Update):
-    """Add a scaled real update proposal to persistent features."""
+    """Add a scaled real update proposal to persistent features.
+
+    Mathematical reference: ``main.typ`` section "Updates" and the final
+    ``Feature update`` line in "Model Workflow". The usual SpENN update is the
+    residual rule ``x^{t+1}_I = x^t_I + a u^{t+1}_I``. Here ``step`` is the
+    scalar ``a`` and ``u`` is the real-space update produced by
+    path aggregation followed by inverse Fourier projection.
+    """
 
     def __init__(self, step: float = 1.0, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -51,6 +58,9 @@ class ResidualUpdate(Update):
         """Return ``x + step * u`` blockwise."""
 
         validate_matching_real_blocks(x, u)
+        # Same residual formula for every body order m and tuple I; no tuple
+        # positions are mixed here, so the equivariance established upstream is
+        # preserved by construction.
         return RealFeature([left + self.step * right for left, right in zip(x.blocks, u.blocks)])
 
 

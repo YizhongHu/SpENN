@@ -25,6 +25,8 @@ def _canonical_device(device) -> "torch.device":
 
     resolved = torch.device(device)
     if resolved.type == "cuda" and resolved.index is None:
+        if not torch.cuda.is_available():
+            return resolved
         return torch.device("cuda", torch.cuda.current_device())
     return resolved
 
@@ -383,17 +385,24 @@ class MetropolisSampler(nn.Module):
             "generator_device": str(self._generator_device),
         }
 
-    def load_mcmc_state_dict(self, state: Mapping[str, Any]) -> None:
+    def load_mcmc_state_dict(self, state: Mapping[str, Any], *, device=None) -> None:
         """Restore Markov-chain and RNG state from `mcmc_state_dict`.
 
-        Recreates the generator on the checkpointed device and restores its
-        state, so a resumed run continues the same Markov chain.
+        Recreates the generator on the requested runtime device when provided,
+        otherwise on the checkpointed device. Exact generator state is restored
+        only when the checkpoint and target generator devices match; CPU/CUDA
+        generators do not share a portable state representation.
         """
 
-        self._generator_device = _canonical_device(state["generator_device"])
+        checkpoint_device = _canonical_device(state["generator_device"])
+        self._generator_device = _canonical_device(device) if device is not None else checkpoint_device
         self._generator = torch.Generator(device=self._generator_device)
-        self._generator.set_state(state["generator_state"])
-        self._walkers = state["walkers"]
+        if self._generator_device == checkpoint_device:
+            self._generator.set_state(state["generator_state"])
+        elif self.seed is not None:
+            self._generator.manual_seed(int(self.seed))
+        walkers = state["walkers"]
+        self._walkers = None if walkers is None else walkers.to(device=self._generator_device)
         self._has_burned_in = bool(state["has_burned_in"])
         self.acceptance_rate = float(state.get("acceptance_rate", 0.0))
 

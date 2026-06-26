@@ -16,15 +16,16 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
-from run_utils import (
+from utils.io import write_json
+from utils.layout import (
     STAGE_COLLECT,
     STAGE_SELECT,
-    attempt_ids,
-    new_attempt_id,
-    read_json,
+    latest_attempt_id,
+    smoke_attempt_id,
     stage_dir,
-    write_json,
+    write_latest,
 )
+from utils.time import new_attempt_id
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
@@ -550,17 +551,14 @@ def select_champions(
     }
 
 
-def _resolve_collection_attempt(results_root: Path, collection_attempt_id: str | None) -> str:
+def _resolve_collection_attempt(results_root: Path, collection_attempt_id: str | None, *, smoke: bool) -> str:
     if collection_attempt_id is not None:
         return collection_attempt_id
     collect_dir = stage_dir(results_root, STAGE_COLLECT)
-    latest = collect_dir / "latest.json"
-    if latest.is_file():
-        return str(read_json(latest).get("attempt_id"))
-    ids = attempt_ids(collect_dir)
-    if not ids:
+    attempt_id = latest_attempt_id(collect_dir, smoke=smoke)
+    if attempt_id is None:
         raise FileNotFoundError(f"no collection attempts under {collect_dir}")
-    return ids[-1]
+    return attempt_id
 
 
 def select(
@@ -571,12 +569,15 @@ def select(
     metric: str | None = None,
     mode: str = "min",
     group_by: str | Sequence[str] = DEFAULT_GROUP_KEYS,
+    smoke: bool = False,
 ) -> dict[str, Any]:
     """Select champions from a collection attempt and write a ``04_select`` attempt."""
 
     results_root = Path(results_root)
-    collection_attempt_id = _resolve_collection_attempt(results_root, collection_attempt_id)
+    collection_attempt_id = _resolve_collection_attempt(results_root, collection_attempt_id, smoke=smoke)
     select_attempt_id = select_attempt_id or new_attempt_id()
+    if smoke:
+        select_attempt_id = smoke_attempt_id(select_attempt_id)
     collection_dir = stage_dir(results_root, STAGE_COLLECT) / collection_attempt_id
 
     rows = read_summary(collection_dir)
@@ -618,6 +619,7 @@ def select(
         "study": "pair_stability",
         "stage": STAGE_SELECT,
         "attempt_id": select_attempt_id,
+        "smoke": bool(smoke),
         "collection_attempt_id": collection_attempt_id,
         "metric": metric,
         "mode": mode,
@@ -651,6 +653,7 @@ def select(
         "configs": selection["configs"],
     }
     write_json(attempt / "selection_report.json", report)
+    write_latest(stage_dir(results_root, STAGE_SELECT), select_attempt_id, smoke=smoke)
     return {"attempt_dir": str(attempt), "report": report}
 
 
@@ -661,6 +664,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--collection-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None, help="Select attempt id (defaults to now).")
+    parser.add_argument("--smoke", action="store_true", help="Select champions from a smoke collection attempt.")
     parser.add_argument(
         "--metric",
         default=None,
@@ -686,6 +690,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         metric=args.metric,
         mode=args.mode,
         group_by=args.group_by,
+        smoke=args.smoke,
     )
     report = result["report"]
     print(

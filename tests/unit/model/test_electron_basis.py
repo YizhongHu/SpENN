@@ -62,6 +62,8 @@ def test_basis_records_features_to_trace() -> None:
         entry.slot == "features" and isinstance(entry.value, ElectronBasisFeatures)
         for entry in trace
     )
+    assert "basis/output" in trace.keys()
+    assert isinstance(trace["basis/output"].value, ElectronBasisFeatures)
 
 
 @pytest.mark.parametrize("include_spin", [True, False])

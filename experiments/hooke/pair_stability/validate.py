@@ -9,22 +9,25 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
 import launch
-from run_utils import (
-    GRID_AXES,
+from run_ids import GRID_AXES
+from utils.io import write_json
+from utils.layout import (
     STAGE_VALIDATION,
-    attempt_ids,
+    attempt_smoke,
     grid_attempt_dir,
+    latest_attempt_id,
     stage_dir,
     train_attempt_dir,
     train_run_dir,
     validation_attempt_dir,
-    write_json,
+    write_latest,
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -96,18 +99,10 @@ def validation_overrides(
     return overrides
 
 
-def _is_smoke_attempt(attempt_id: str) -> bool:
-    """Return whether an attempt id is marked as smoke."""
-
-    return attempt_id.endswith("-smoke")
-
-
 def latest_train_attempt_id(results_root: str | Path, run_id: str, *, smoke: bool) -> str | None:
     """Return the latest eligible train attempt for ``run_id``."""
 
-    ids = attempt_ids(train_run_dir(results_root, run_id))
-    candidates = [attempt_id for attempt_id in ids if _is_smoke_attempt(attempt_id) == smoke]
-    return candidates[-1] if candidates else None
+    return latest_attempt_id(train_run_dir(results_root, run_id), smoke=smoke)
 
 
 def _checkpoint_ready(train_attempt: Path) -> bool:
@@ -146,17 +141,14 @@ def _train_attempt_id_for_job(
     *,
     args: argparse.Namespace,
     results_root: Path,
-    grid_attempt_id: str,
     run_id: str,
 ) -> str | None:
     if args.train_attempt_id is not None:
-        if not args.smoke and _is_smoke_attempt(args.train_attempt_id):
+        is_smoke = attempt_smoke(train_run_dir(results_root, run_id), args.train_attempt_id)
+        if not args.smoke and is_smoke is True:
             raise ValueError("full validation refuses a smoke train attempt; pass --smoke for smoke validation")
         return args.train_attempt_id
     if args.smoke:
-        smoke_id = launch.smoke_attempt_id(grid_attempt_id)
-        if train_attempt_dir(results_root, run_id, smoke_id).is_dir():
-            return smoke_id
         return latest_train_attempt_id(results_root, run_id, smoke=True)
     return latest_train_attempt_id(results_root, run_id, smoke=False)
 
@@ -182,7 +174,6 @@ def plan_validation_jobs(
         train_attempt_id = _train_attempt_id_for_job(
             args=args,
             results_root=results_root,
-            grid_attempt_id=grid_attempt_id,
             run_id=run_id,
         )
         if train_attempt_id is None:
@@ -223,8 +214,10 @@ def plan_validation_jobs(
             timezone=_job_timezone(job),
         )
         command = _command_for(validation_config, overrides)
+        command = launch.with_study_timezone(command, timezone=_job_timezone(job))
         if args.smoke:
             command = launch.with_overrides(command, SMOKE_VALIDATION_OVERRIDES)
+        write_latest(validation_attempt.parent, validation_attempt_id, smoke=args.smoke)
         planned.append(
             {
                 "run_id": run_id,
@@ -296,9 +289,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Launch validation jobs from existing ``00_grid`` and ``01_train`` attempts."""
 
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parse_args(raw_argv)
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
+    launch.ensure_submitit_launcher_environment(
+        args,
+        script_path=Path(__file__).resolve(),
+        argv=raw_argv,
+        repo_root=repo_root,
+    )
     results_root = launch.repo_path(args.results_root, repo_root)
+    if args.wait_job:
+        launch.submit_dependent_launcher(
+            args.wait_job,
+            script_path=Path(__file__).resolve(),
+            argv=raw_argv,
+            repo_root=repo_root,
+            log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / "dependent_launchers",
+            job_name="hooke-pair-stability-validate-launcher-smoke"
+            if args.smoke
+            else "hooke-pair-stability-validate-launcher",
+            partition=args.wait_launcher_partition,
+            timeout_min=args.wait_launcher_timeout_min,
+        )
+        return 0
     grid_attempt_id = launch.resolve_grid_attempt_id(results_root, args.grid_attempt_id)
     manifest = launch.load_grid_manifest(results_root, grid_attempt_id)
     validation_config = _validation_config_from_grid(
@@ -313,17 +327,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         grid_attempt_id=grid_attempt_id,
         validation_config=validation_config,
     )
-    uv_environment, uv_extras, runtime_device = launch.resolve_uv_settings(args)
-    submitted_commands = [
-        launch.environment_shell_command(
-            job["command_parts"],
-            repo_root=repo_root,
-            uv_environment=uv_environment,
-            uv_extras=uv_extras,
-            device=runtime_device,
-        )
-        for job in jobs
-    ]
+    command_sets = launch.environment_command_sets(
+        [job["command_parts"] for job in jobs],
+        args=args,
+        repo_root=repo_root,
+    )
+    submitted_commands = launch.summarize_command_sets(command_sets)
 
     if skipped:
         print(f"[pair_stability] skipped {len(skipped)} validation jobs without eligible checkpoints")
@@ -331,17 +340,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[pair_stability] no validation jobs ready for 00_grid/{grid_attempt_id}")
         return 1 if manifest.get("jobs") else 0
 
-    if args.backend == "local":
-        job_ids = launch.submit_local(submitted_commands, repo_root=repo_root, chunk_size=args.chunk_size)
-    else:
-        log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
-        job_ids = launch.submit_submitit(
-            submitted_commands,
-            log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / log_attempt,
-            job_name="hooke-pair-stability-validate-smoke" if args.smoke else "hooke-pair-stability-validate",
-            slurm=launch.slurm_parameters(args, profile=args.profile, smoke=args.smoke),
-            chunk_size=args.chunk_size,
-        )
+    row_status_paths = [Path(str(job["validation_attempt_dir"])) / "launcher_status.json" for job in jobs]
+    chunk_status_dir = (
+        stage_dir(results_root, STAGE_VALIDATION)
+        / "chunk_status"
+        / (launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id))
+    )
+
+    log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
+    job_ids = launch.submit_command_sets(
+        command_sets,
+        args=args,
+        backend=args.backend,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / log_attempt,
+        job_name="hooke-pair-stability-validate-smoke" if args.smoke else "hooke-pair-stability-validate",
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        allow_partial_failures=True,
+        row_status_paths=row_status_paths,
+        chunk_status_dir=chunk_status_dir,
+    )
 
     write_validation_submission_records(
         jobs,

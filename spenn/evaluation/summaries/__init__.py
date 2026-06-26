@@ -10,7 +10,7 @@ from spenn.evaluation.summaries.hooke import (
 )
 from spenn.evaluation.summaries.local_energy import LocalEnergySummary
 from spenn.evaluation.summaries.metadata import SamplerStatsSummary
-from spenn.evaluation.summaries.records import SampledRecordWriter
+from spenn.evaluation.summaries.records import SampledRecordWriter, TraceRecordWriter, TransformRecordWriter
 from spenn.evaluation.summaries.reference_energy import ReferenceEnergySummary
 from spenn.evaluation.summaries.terms import HamiltonianTermSummary
 from spenn.evaluation.summaries.trace import (
@@ -32,6 +32,8 @@ __all__ = [
     "ReferenceEnergySummary",
     "SampledRecordWriter",
     "SamplerStatsSummary",
+    "TraceRecordWriter",
     "TraceEquivarianceSummary",
     "TransformConsistencySummary",
+    "TransformRecordWriter",
 ]

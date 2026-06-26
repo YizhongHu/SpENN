@@ -7,7 +7,9 @@ from collections.abc import Iterable
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
+from spenn.nn.context import SpENNForwardContext
 from spenn.nn.normalization import FeatureNormalization
+from spenn.nn.spenn_layer import SpENNLayer
 
 torch = require_torch(feature="SpENN wavefunction modules")
 nn = require_torch_nn(feature="SpENN wavefunction modules")
@@ -35,6 +37,9 @@ class SpENNWaveFunction(EquivariantMap):
     embedding : torch.nn.Module
         Module mapping the basis output (or, when ``basis`` is ``None``, an
         :class:`ElectronBatch`) to :class:`spenn.data.real.RealFeature`.
+    embedding_activation : torch.nn.Module or None, optional
+        Optional real-feature activation applied after embedding and before
+        SpENN layers.
     layers : iterable of torch.nn.Module
         Sequence of SpENN layers.
     readout : torch.nn.Module
@@ -61,6 +66,7 @@ class SpENNWaveFunction(EquivariantMap):
         readout: nn.Module,
         envelope: nn.Module | None,
         basis: nn.Module | None = None,
+        embedding_activation: nn.Module | None = None,
         feature_normalization: FeatureNormalization | None = None,
         **kwargs,
     ) -> None:
@@ -69,6 +75,7 @@ class SpENNWaveFunction(EquivariantMap):
             raise ValueError("SpENNWaveFunction requires an envelope module")
         self.basis = basis
         self.embedding = embedding
+        self.embedding_activation = embedding_activation
         self.layers = nn.ModuleList(tuple(layers))
         self.readout = readout
         self.envelope = envelope
@@ -82,18 +89,23 @@ class SpENNWaveFunction(EquivariantMap):
                         "feature normalization mode 'update' requires layers to accept "
                         f"update_norm; layers[{index}]={type(layer).__name__} does not"
                     )
+                layer.update_activation = feature_normalization.norm
                 layer.update_norm = feature_normalization.norm
 
     def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
 
-        embedded_input = self.basis(batch) if self.basis is not None else batch
+        basis_features = self.basis(batch) if self.basis is not None else None
+        context = SpENNForwardContext(batch=batch, basis_features=basis_features)
+        embedded_input = basis_features if basis_features is not None else batch
         features = self.embedding(embedded_input)
+        if self.embedding_activation is not None:
+            features = self.embedding_activation(features)
         normalization = self.feature_normalization
         if normalization is not None and normalization.applies_at("post_embedding"):
             features = normalization.apply_norm(features)
         for layer in self.layers:
-            features = layer(features)
+            features = layer(features, context) if isinstance(layer, SpENNLayer) else layer(features)
             if normalization is not None and normalization.applies_at("post_feature_layer"):
                 features = normalization.apply_norm(features)
         if normalization is not None and normalization.applies_at("pre_readout"):

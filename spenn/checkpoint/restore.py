@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import random
 from dataclasses import dataclass
@@ -117,7 +118,7 @@ def restore_checkpoint(
     _load_model(checkpoint_dir, manifest.files, model, strict=strict_load, context=context)
     _load_optimizer(checkpoint_dir, manifest.files, optimizer)
     _load_trainer(checkpoint_dir, manifest.files, trainer)
-    _load_sampler(checkpoint_dir, manifest.files, sampler)
+    _load_sampler(checkpoint_dir, manifest.files, sampler, context)
     _load_rng(checkpoint_dir, manifest.files)
     return RestoreReport(
         mode=mode,
@@ -271,7 +272,7 @@ def _load_trainer(checkpoint_dir: Path, files: dict[str, str], trainer: Any) -> 
     load_state_dict(state)
 
 
-def _load_sampler(checkpoint_dir: Path, files: dict[str, str], sampler: Any) -> None:
+def _load_sampler(checkpoint_dir: Path, files: dict[str, str], sampler: Any, context: Any) -> None:
     import torch
 
     if sampler is None:
@@ -280,7 +281,13 @@ def _load_sampler(checkpoint_dir: Path, files: dict[str, str], sampler: Any) -> 
     if not callable(load_state):
         raise TypeError("sampler must expose load_mcmc_state_dict() for train_resume restore")
     path = _required_file(checkpoint_dir, files, "sampler")
-    load_state(torch.load(path, map_location="cpu", weights_only=False))
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    target_device = getattr(getattr(context, "metadata", None), "device", None)
+    signature = inspect.signature(load_state)
+    if "device" in signature.parameters:
+        load_state(state, device=target_device)
+    else:
+        load_state(state)
 
 
 def _load_rng(checkpoint_dir: Path, files: dict[str, str]) -> None:
