@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from spenn.dependencies import require_torch_nn
-from spenn.equivariance.trace import trace_equivariant
+from spenn.trace import trace_value
 
 nn = require_torch_nn(feature="equivariant neural-network maps")
 
@@ -34,7 +34,7 @@ class EquivariantMap(nn.Module, ABC):
     ----------
     trace_name : str or None, optional
         Explicit stable name for this producer in an active
-        `EquivarianceTrace`. Overrides PyTorch module-path resolution.
+        `Trace`. Overrides PyTorch module-path resolution.
     trace_output : bool, optional
         Whether `forward` records its output to an active trace.
     """
@@ -71,7 +71,7 @@ class EquivariantMap(nn.Module, ABC):
         Trace only semantic equivariant data, not every temporary tensor.
         """
 
-        trace_equivariant(value=value, slot=slot, producer=self)
+        trace_value(value=value, slot=slot, producer=self)
 
 
 __all__ = ["EquivariantMap"]

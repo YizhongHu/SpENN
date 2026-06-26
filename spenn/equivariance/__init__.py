@@ -7,21 +7,16 @@ from spenn.equivariance.checks import (
     TraceEquivarianceChecker,
 )
 from spenn.equivariance.map import EquivariantMap
-from spenn.equivariance.trace import (
-    EquivarianceTrace,
-    EquivarianceTraceEntry,
-    EquivarianceTraceWarning,
-    trace_equivariant,
-)
+from spenn.trace import Trace, TraceEntry, TraceWarning, trace_value
 
 __all__ = [
     "EquivariantMap",
     "EquivarianceCheckResult",
-    "EquivarianceTrace",
-    "EquivarianceTraceEntry",
-    "EquivarianceTraceWarning",
     "FullModelEquivarianceChecker",
     "RuntimeEquivarianceChecker",
+    "Trace",
     "TraceEquivarianceChecker",
-    "trace_equivariant",
+    "TraceEntry",
+    "TraceWarning",
+    "trace_value",
 ]

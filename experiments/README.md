@@ -33,11 +33,16 @@ directory.
 ```text
 experiments/
   hooke/
-    configs/
-      smoke/        legacy cheap end-to-end test configs
-      benchmark/    legacy benchmark-shaped test/reference configs
-    studies/
-      channel64_diagnosis/     why 64-channel validation configs lost in 02_collect
-      exact_cusp_diagnostics/  exact Hooke singlet local-energy/cusp diagnostic
-      pair_validation/   validation scan: manifest, collector, selector
+    exact_cusp_diagnostics/  exact Hooke singlet local-energy/cusp diagnostic
 ```
+
+The old `hooke/pair_validation/` tree was removed during the PR8.5-8.7
+evaluation rewrite because it depended on the retired diagnostics/probe stack.
+Old one-off diagnostic studies that depended on retired probe helpers were
+removed for the same reason. Use the new evaluator fixtures and future preflight
+study path instead.
+
+The legacy `hooke/configs/` smoke, benchmark, and preflight configs were removed
+with the same cleanup. Keep runnable regression configs under
+`tests/integration/artifacts/` unless they are owned by a current experiment
+study.

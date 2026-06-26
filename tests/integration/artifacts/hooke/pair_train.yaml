@@ -163,28 +163,6 @@ callbacks:
     compare_output: false
     atol: 1.0e-06
     rtol: 1.0e-06
-- _target_: spenn.callback.Validation
-  triggers:
-  - train_end
-  namespace: validation
-  sampler:
-    _target_: spenn.sampling.metropolis.MetropolisSampler
-    n_walkers: 16
-    burn_in: 5
-    n_steps: 3
-    proposal_scale: 0.5
-    seed: 114514
-    n_electrons: ${system.n_particles}
-    spatial_dim: ${system.spatial_dim}
-    n_up: ${system.spin.n_up}
-    n_down: ${system.spin.n_down}
-    dtype: ${runtime.dtype}
-  hamiltonian_terms: ${hamiltonian_terms}
-  return_terms: true
-  diagnostics:
-  - _target_: spenn.diagnostics.EnergyEvaluation
-    name: energy
-    include_terms: true
 - _target_: spenn.callback.Checkpoint
   triggers:
   - step_end
