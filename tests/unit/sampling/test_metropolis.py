@@ -165,6 +165,21 @@ def test_sampler_state_dict_roundtrip_continues_same_chain() -> None:
     assert torch.equal(expected.positions, actual.positions)
 
 
+def test_sampler_state_load_maps_checkpoint_device_to_runtime_device() -> None:
+    model = NoGradLinearModel()
+    sampler = _tiny_sampler()
+    sampler.collect_samples(model)
+    state = sampler.mcmc_state_dict()
+    state["generator_device"] = "cuda"
+
+    resumed = _tiny_sampler()
+    resumed.load_mcmc_state_dict(state, device="cpu")
+    actual, _ = resumed.collect_samples(model, device="cpu")
+
+    assert resumed.has_burned_in is True
+    assert actual.device == torch.device("cpu")
+
+
 def test_initialize_rejects_mismatched_device() -> None:
     import pytest
 
