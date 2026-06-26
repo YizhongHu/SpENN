@@ -744,12 +744,15 @@ def submit_local(
     allow_partial_failures: bool = False,
     row_status_paths: Sequence[str | Path | None] | None = None,
     chunk_status_dir: str | Path | None = None,
+    claim_paths: Sequence[str | Path | None] | None = None,
+    claim_label: str | None = None,
 ) -> list[str]:
     """Run commands sequentially in-process, grouped into balanced chunks."""
 
     job_ids = []
     chunks = balanced_chunks(commands, chunk_size=chunk_size)
     status_chunks = balanced_chunks(row_status_paths or [None] * len(commands), chunk_size=chunk_size)
+    claim_chunks = balanced_chunks(claim_paths or [None] * len(commands), chunk_size=chunk_size)
     for index, chunk in enumerate(chunks):
         chunk_status_path = None
         if chunk_status_dir is not None:
@@ -761,6 +764,8 @@ def submit_local(
                 allow_partial_failures=allow_partial_failures,
                 row_status_paths=status_chunks[index],
                 chunk_status_path=chunk_status_path,
+                claim_paths=claim_chunks[index],
+                claim_label=claim_label,
             )
         except RuntimeError as exc:
             raise RuntimeError(f"local chunk {index} failed") from exc
@@ -881,11 +886,15 @@ def submit_command_sets(
         return []
     if backend == "local":
         profile = _local_profile(profiles)
+        use_claims = len(profiles) > 1 or claim_rows
+        claim_paths = claim_paths_for_statuses(row_status_paths) if use_claims else None
         local_kwargs = {
             "repo_root": repo_root,
             "chunk_size": chunk_size,
             "row_status_paths": row_status_paths,
             "chunk_status_dir": chunk_status_dir,
+            "claim_paths": claim_paths,
+            "claim_label": f"local-{profile}" if use_claims else None,
         }
         if allow_partial_failures:
             local_kwargs["allow_partial_failures"] = True

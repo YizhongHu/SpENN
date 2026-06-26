@@ -253,6 +253,36 @@ def test_v2_mixed_submitit_submits_separate_claimed_arrays(
     assert ",cuda:" in job_ids[0]
 
 
+def test_v2_local_claim_mode_uses_claim_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_submit_local(commands: Sequence[Sequence[str]], **kwargs: Any) -> list[str]:
+        captured["commands"] = commands
+        captured["kwargs"] = kwargs
+        return ["local-0"]
+
+    monkeypatch.setattr(launch, "submit_local", fake_submit_local)
+    args = train.parse_args(["--backend", "local", "--device", "cpu"])
+    row_status = tmp_path / "run" / "launcher_status.json"
+
+    job_ids = launch.submit_command_sets(
+        {"cpu": [["bash", "-lc", "cpu"]]},
+        args=args,
+        backend="local",
+        repo_root=ROOT,
+        log_dir=tmp_path / "logs",
+        job_name="local",
+        smoke=False,
+        row_status_paths=[row_status],
+        chunk_status_dir=tmp_path / "chunks",
+        claim_rows=True,
+    )
+
+    assert job_ids == ["local-0"]
+    assert captured["kwargs"]["claim_paths"] == [row_status.with_name("launcher_claim.json")]
+    assert captured["kwargs"]["claim_label"] == "local-cpu"
+
+
 def test_v2_submitit_launcher_reexec_uses_dedicated_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

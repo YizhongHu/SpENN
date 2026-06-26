@@ -284,6 +284,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--final-grid-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None)
     parser.add_argument("--config", default=None, help="Train config path (defaults to final-grid manifest).")
+    parser.add_argument(
+        "--claim-existing-only",
+        action="store_true",
+        help=(
+            "With --backend local, claim and run rows from the existing attempt "
+            "without rewriting submission.json provenance."
+        ),
+    )
     launch.add_launch_arguments(
         parser,
         smoke_help=(
@@ -299,6 +307,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(raw_argv)
+    if args.claim_existing_only and args.backend != "local":
+        raise ValueError("--claim-existing-only is only valid with --backend local")
     repo_root = Path(args.repo_root) if args.repo_root else STUDY_DIR.parents[2]
     launch.ensure_submitit_launcher_environment(
         args,
@@ -376,6 +386,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         chunk_status_dir=chunk_status_dir,
         claim_rows=True,
     )
+
+    if args.claim_existing_only:
+        mode = "smoke final-train" if args.smoke else "final-train"
+        print(
+            f"{prefix} locally claimed {len(job_ids)} {mode} rows from "
+            f"05_final_grid/{final_grid_attempt_id}; submission records unchanged"
+        )
+        return 0
 
     write_final_train_submission_records(
         jobs,
