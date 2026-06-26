@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import math
 
-import torch
-from torch import nn
-from torch.nn import functional as F
-
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from spenn.data.partition import Partition
 from spenn.data.real import RealFeature
+from spenn.dependencies import require_torch, require_torch_functional, require_torch_nn
+
+torch = require_torch(feature="Pfaffian readout")
+nn = require_torch_nn(feature="Pfaffian readout")
+F = require_torch_functional(feature="Pfaffian readout")
+
+_ODD_PADDING_IRREP = Partition((1,))
 
 
 def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:
@@ -80,10 +84,12 @@ def pfaffian_logabs_sign(matrix: torch.Tensor, eps: float = 1.0e-12) -> tuple[to
 class PfaffianReadout(nn.Module):
     """Build a skew matrix from order-2 real features and return a Pfaffian.
 
+    Odd-electron systems are always padded with the unique order-1 ``(1)``
+    irrep. At this readout boundary that irrep is represented by the order-1
+    real feature block produced by the inverse Fourier transform.
+
     Parameters
     ----------
-    allow_odd_electron_bordered : bool, optional
-        Whether odd-electron systems use an order-1 bordered Pfaffian.
     eps : float, optional
         Positive floor for signed-log conversion.
     envelope_coefficient : float, optional
@@ -92,10 +98,10 @@ class PfaffianReadout(nn.Module):
         Number of order-2 real feature channels used by the Pfaffian. `channels`
         is a shorthand for `pair_channels`.
     border_channels : int or None, optional
-        Number of order-1 border channels for odd-electron systems. Defaults
-        to `pair_channels` when bordered odd-electron Pfaffians are enabled.
+        Number of order-1 ``(1)`` irrep padding channels for odd-electron
+        systems. Defaults to `pair_channels`.
     trainable : bool, optional
-        Whether pair and odd-electron border readout weights are trainable.
+        Whether pair and odd-electron padding readout weights are trainable.
         The default keeps them as fixed buffers for scaffold determinism.
     trainable_envelope : bool, optional
         Whether to optimize the envelope coefficient through a softplus
@@ -105,7 +111,6 @@ class PfaffianReadout(nn.Module):
     def __init__(
         self,
         *,
-        allow_odd_electron_bordered: bool = True,
         eps: float = 1.0e-12,
         envelope_coefficient: float = 0.0,
         channels: int | None = None,
@@ -115,22 +120,17 @@ class PfaffianReadout(nn.Module):
         trainable_envelope: bool = False,
     ) -> None:
         super().__init__()
-        self.allow_odd_electron_bordered = bool(allow_odd_electron_bordered)
         self.eps = float(eps)
         self.trainable = bool(trainable)
         pair_channels = channels if pair_channels is None else pair_channels
         if pair_channels is None:
             raise ValueError("PfaffianReadout requires pair_channels or channels for eager initialization")
         self.pair_channels = _positive_int(pair_channels, "pair_channels")
-        if border_channels is None and self.allow_odd_electron_bordered:
+        if border_channels is None:
             border_channels = self.pair_channels
-        self.border_channels = None if border_channels is None else _positive_int(border_channels, "border_channels")
+        self.border_channels = _positive_int(border_channels, "border_channels")
         self._register_readout_weight("channel_weights", "channel_weight_buffer", self.pair_channels)
-        if self.border_channels is None:
-            self.register_parameter("border_weights", None)
-            self.register_buffer("border_weight_buffer", None, persistent=False)
-        else:
-            self._register_readout_weight("border_weights", "border_weight_buffer", self.border_channels)
+        self._register_readout_weight("border_weights", "border_weight_buffer", self.border_channels)
         _configure_envelope(self, envelope_coefficient, trainable=trainable_envelope)
 
     def _register_readout_weight(self, parameter_name: str, buffer_name: str, channels: int) -> None:
@@ -172,15 +172,7 @@ class PfaffianReadout(nn.Module):
         antisymmetric = 0.5 * (pair - pair.transpose(-1, -2))
         kernel = (antisymmetric * weights.view(1, -1, 1, 1)).sum(dim=1)
         if kernel.shape[-1] % 2 == 1:
-            if not self.allow_odd_electron_bordered:
-                raise ValueError("Odd-electron Pfaffian requires allow_odd_electron_bordered=True")
-            if 1 not in features:
-                raise KeyError("Odd-electron Pfaffian requires an order-1 RealFeature border block")
-            one_body = features.blocks[1]
-            if one_body.shape[0] != kernel.shape[0] or one_body.shape[-1] != kernel.shape[-1]:
-                raise ValueError("Order-1 border block must match order-2 batch and particle axes")
-            if one_body.shape[1] == 0:
-                raise KeyError("Odd-electron Pfaffian requires a nonempty order-1 RealFeature border block")
+            one_body = _odd_padding_block(features, kernel)
             border_weights = self._ensure_border_weights(one_body.shape[1])
             border = (one_body * border_weights.view(1, -1, 1)).sum(dim=1)
             bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1] + 1, kernel.shape[2] + 1)
@@ -217,6 +209,17 @@ class PfaffianReadout(nn.Module):
             parameter_name="border_weights",
             buffer_name="border_weight_buffer",
         )
+
+
+def _odd_padding_block(features: RealFeature, kernel: torch.Tensor) -> torch.Tensor:
+    if _ODD_PADDING_IRREP.order not in features:
+        raise KeyError("Odd-electron Pfaffian padding requires the order-1 RealFeature block for irrep (1)")
+    one_body = features.blocks[_ODD_PADDING_IRREP.order]
+    if one_body.shape[0] != kernel.shape[0] or one_body.shape[-1] != kernel.shape[-1]:
+        raise ValueError("Odd-electron (1) padding block must match order-2 batch and particle axes")
+    if one_body.shape[1] == 0:
+        raise KeyError("Odd-electron Pfaffian padding requires a nonempty order-1 RealFeature block for irrep (1)")
+    return one_body
 
 
 def _ensure_readout_weights(

@@ -5,29 +5,37 @@ docstrings under `spenn/data`, `spenn/reps`, `spenn/nn`, and `spenn/equivariance
 
 ## Quick Start
 
-Use `uv` for local environment management. The default CPU environment is
-`.venv`. GPU work uses a separate `.venv-gpu` so CUDA Torch does not replace the
-CPU Torch install. Both environments still resolve from this one `pyproject.toml`.
+Use `uv` for local environment management. Keep CPU and GPU work in separate
+virtual environments so Slurm jobs never replace each other's Torch install.
+Both environments resolve from this one `pyproject.toml`.
 
-For CPU work:
+### CPU Environment
+
+CPU work uses the default `.venv`:
 
 ```bash
 uv sync --extra cpu
+uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
-For CUDA work:
+### GPU Environment
+
+CUDA work uses a separate `.venv-gpu`:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT=.venv-gpu
 uv sync --extra cu126
+uv run --extra cu126 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
-Use `cu128` or `cu130` instead if that is the CUDA Torch build you want.
+Use `cu128` or `cu130` instead if that is the CUDA Torch build you want. Keep
+the `UV_PROJECT_ENVIRONMENT` setting in GPU Slurm scripts so GPU jobs do not
+mutate the CPU `.venv`.
 
 Core tests are the active validation target:
 
 ```bash
-uv run pytest -q
+uv run --extra cpu pytest -q
 ```
 
 Configured runs go through the single `run.py` entrypoint, which launches one
@@ -35,14 +43,156 @@ Configured runs go through the single `run.py` entrypoint, which launches one
 is a working example:
 
 ```bash
-uv run python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
+
+Human-readable run timestamps are controlled by `run.timezone`, an IANA
+timezone name. The code default is `UTC`; the Hooke smoke config uses
+`America/New_York` so run IDs, `metadata.json`, `status.json`, and terminal
+status boxes share the same cluster-log convention.
 
 For a syntax-only check:
 
 ```bash
-uv run python -m compileall spenn run.py typechecked.py
+uv run --extra cpu python -m compileall spenn run.py typechecked.py
 ```
+
+## Optional W&B Tracking
+
+SpENN can optionally mirror scalar run metrics to Weights & Biases for
+dashboarding and monitoring. W&B is an observability backend only; the local run
+directory remains the authoritative experiment record.
+
+Install optional W&B support:
+
+```bash
+uv sync --extra wandb
+```
+
+For interactive authentication:
+
+```bash
+wandb login
+```
+
+For non-interactive jobs:
+
+```bash
+export WANDB_API_KEY=<your-api-key>
+```
+
+Add W&B as another root-level logger:
+
+```yaml
+loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
+  - _target_: spenn.logging.WandB
+    project: spenn-qmc
+    entity: null
+    mode: online
+    group: hooke_pair
+    tags:
+      - hooke
+      - vmc
+```
+
+For jobs without reliable internet, use W&B offline mode:
+
+```bash
+wandb offline
+uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+wandb sync --sync-all
+```
+
+By default, SpENN does not upload checkpoints, traces, raw batches, per-sample
+arrays, or full run directories to W&B. W&B receives scalar metrics and compact
+config/provenance metadata; CSV/JSONL logs and local artifacts remain canonical.
+
+
+## Config section types
+
+SpENN configs use two main kinds of sections:
+
+```text
+component specs
+parameter blocks
+```
+
+### Component specs
+
+Component specs describe Python objects that Hydra should instantiate.
+
+They usually contain `_target_`.
+
+Examples:
+
+```yaml
+sampler:
+  _target_: spenn.sampling.MetropolisSampler
+  n_walkers: 16
+  n_electrons: 2
+  spatial_dim: 3
+
+optimizer:
+  _target_: torch.optim.Adam
+  lr: 1.0e-3
+```
+
+### Parameter blocks
+
+Parameter blocks are config-only namespaces. They are not instantiated as Python objects.
+
+They exist to collect readable, user-facing values that component specs can reference.
+
+The parameter blocks make the user-facing knobs easy to find:
+
+```yaml
+training:
+  batch_size: 16
+  n_steps: 100
+  learning_rate: 1.0e-3
+```
+
+The component specs use those knobs through interpolation:
+
+```yaml
+sampler:
+  n_walkers: ${training.batch_size}
+
+optimizer:
+  lr: ${training.learning_rate}
+
+trainer:
+  n_steps: ${training.n_steps}
+```
+
+## Timing Metrics
+
+Timing instrumentation is callback-owned and logs through the same CSV/JSONL
+logger path as other metrics:
+
+```yaml
+callbacks:
+  - _target_: spenn.callback.RunTiming
+
+  - _target_: spenn.callback.TrainStepTiming
+    every_n_steps: 1
+    rolling_window: 20
+    cuda_synchronize: false
+
+  - _target_: spenn.callback.EvaluationTiming
+    cuda_synchronize: false
+
+  - _target_: spenn.callback.DiagnosticTiming
+    cuda_synchronize: false
+```
+GPU synchronization is opt-in with `cuda_synchronize: true` for
+benchmarking; it is disabled by default for normal training.
+
+## SageMath
 
 Regenerate checked-in Specht irrep cache files from SageMath with:
 
@@ -55,11 +205,6 @@ uv run python -m spenn.reps.fixture_generators.sage_specht \
 ```
 
 ## Eager Model Invariant
-
-SpENN feature layouts are unchanged.
-All trainable parameters are registered during __init__.
-Forward may allocate activations but not trainable parameters.
-Sampler never materializes models.
 
 SpENN model construction owns trainable state. All trainable parameters must be
 registered during ``__init__`` from explicit architecture metadata such as
@@ -85,54 +230,6 @@ IrrepFeature:
   [batch, channels, indices..., alpha, beta]
 ```
 
-## Config ownership
-
-**Callbacks and loggers are config-root and owned by the `RunContext`.** They
-live at the top level, *not* inside the runner block. A runner config that
-declares `callbacks` or `loggers` is rejected by `run_from_config`:
-
-```yaml
-runner:
-  _target_: spenn.runner.Train
-  model: ${model}
-  sampler: ${sampler}
-  hamiltonian_terms: ${hamiltonian_terms}
-  optimizer: ${optimizer}
-  trainer: ${trainer}
-
-callbacks: [...]   # config-root, RunContext-owned
-loggers: [...]     # config-root, RunContext-owned
-```
-
-- `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
-  reusable top-level blocks referenced by the runner via `${...}`.
-- `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
-  the public term names used for decompositions and metrics, so they must be
-  non-empty strings; sequence entries are named from snake-case term class names
-  with index suffixes added for repeats. Every term object must expose
-  `local_energy(wavefunction, batch)` and return a `LocalEnergyResult` whose
-  `total` has shape `[batch]`. With `return_terms=True`, configured mapping
-  keys are preserved as the public decomposition names.
-- `optimizer` names a partial factory (`_partial_: true`) that builds an
-  optimizer from model parameters; `Train` applies it to `model.parameters()`.
-- `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
-  minimal sampled local-energy evaluator (`model`, `sampler`,
-  `hamiltonian_terms`, `return_terms`); it does **not** own diagnostics or
-  reference-energy comparison yet -- those arrive with the PR6 diagnostics
-  interface.
-- `Evaluate(return_terms=True)` logs evaluation term metrics as
-  `terms.<name>_mean` and `terms.<name>_nonfinite_fraction`. VMC training term
-  metrics use `energy_term_<name>` for the finite mean and suffixes such as
-  `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
-  and `_nonfinite_count` for companion statistics.
-
-`prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
-`RunContext`. `Runner.emit(...)` dispatches lifecycle events through
-`context.callbacks`, runners log through `context.log(...)`, and
-`logger.finish()` runs against the context's loggers. `VMCTrainer` owns only
-training-loop hyperparameters (`max_steps`, `log_every_n_steps`, `return_terms`,
-`gradient_clip_norm`) and the loss/backward/step mechanics; it does not own
-callbacks, loggers, reference energy, or diagnostics.
 
 ## Checks After Changes
 
@@ -152,6 +249,8 @@ Run tests with Typeguard instrumentation for `spenn`:
 ```bash
 uv run pytest -q
 ```
+
+## Equivariance Checking
 
 Equivariance checks are runtime checks on `spenn.equivariance.EquivariantMap`.
 When enabled, small systems are checked against every particle permutation;
@@ -252,3 +351,10 @@ The backwards compatibility of this repository is only with respect to the behav
 of Hydra config files. Before v1.0.0, every minor version can break backwards compatibility.
 v0.2.0 does not have to be able to reproduce a v0.1.0 config. But patches have to be
 compatible with each other.
+
+## Conventions
+
+### Metrics Naming Scheme
+
+Metric naming and logger conventions are documented in
+[`spenn/metrics_naming.md`](spenn/metrics_naming.md).

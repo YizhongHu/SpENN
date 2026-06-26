@@ -6,6 +6,7 @@ run:
   root: outputs
   run_id: null
   dir: null
+  timezone: UTC
 runtime:
   seed: 0
   device: cpu
@@ -62,7 +63,6 @@ model:
       _target_: spenn.nn.ResidualUpdate
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
-    allow_odd_electron_bordered: true
     channels: 4
 hamiltonian_terms:
   kinetic:

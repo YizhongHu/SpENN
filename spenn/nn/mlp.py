@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import torch
-from torch import nn
+from spenn.dependencies import require_torch, require_torch_nn
+
+torch = require_torch(feature="SpENN MLP modules")
+nn = require_torch_nn(feature="SpENN MLP modules")
 
 
 class MLP(nn.Module):

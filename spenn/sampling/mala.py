@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import torch
-
 from spenn.data.batch import Walkers, WavefunctionOutput
+from spenn.dependencies import require_torch
 from spenn.sampling.metropolis import MetropolisSampler
+
+torch = require_torch(feature="MALA sampling")
 
 
 class MALASampler(MetropolisSampler):

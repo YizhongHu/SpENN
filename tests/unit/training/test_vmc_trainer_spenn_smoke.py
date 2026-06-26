@@ -29,6 +29,7 @@ class _StubContext(RunContext):
 _FORBIDDEN_METRICS = {
     "reference_energy",
     "energy_error",
+    "energy_abs_error",
     "abs_energy_error",
     "exact_energy",
     "expected_energy",

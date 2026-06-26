@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import traceback
 from pathlib import Path
@@ -17,8 +18,10 @@ from spenn.artifacts import (
     RunResult,
     build_run_metadata,
     generate_run_id,
+    resolve_run_clock,
 )
-from spenn.callback import Event
+from spenn.callback import Event, configure_terminal_logging
+from spenn.dependencies import OptionalDependencyError, require_torch
 from spenn.runner import Runner
 
 
@@ -28,6 +31,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     command = " ".join(["run.py", *(sys.argv[1:] if argv is None else argv)])
     cfg = load_config(str(args.config), args.overrides)
+    try:
+        _preflight_optional_dependencies(cfg)
+    except OptionalDependencyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return run_from_config(cfg, config_path=str(args.config), command=command)
 
 
@@ -62,8 +70,11 @@ def prepare_run_context(
     ``context.log``.
     """
 
+    run_clock = resolve_run_clock(cfg)
     source_cfg = _rerunnable_config(cfg)
+    OmegaConf.update(source_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
     resolved_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
+    OmegaConf.update(resolved_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
     run_name = str(
         OmegaConf.select(
             resolved_cfg,
@@ -73,7 +84,7 @@ def prepare_run_context(
     )
     run_id = OmegaConf.select(resolved_cfg, "run.run_id", default=None)
     if run_id is None:
-        run_id = generate_run_id(run_name)
+        run_id = generate_run_id(run_name, clock=run_clock)
         OmegaConf.update(resolved_cfg, "run.run_id", run_id, merge=False, force_add=True)
     experiment_name = str(OmegaConf.select(resolved_cfg, "experiment.name", default="experiment"))
     sector = str(OmegaConf.select(resolved_cfg, "experiment.sector", default="default"))
@@ -82,6 +93,7 @@ def prepare_run_context(
     OmegaConf.update(resolved_cfg, "run.dir", str(artifact_manager.run_dir), merge=False, force_add=True)
     OmegaConf.resolve(resolved_cfg)
     artifact_manager.make_dirs()
+    _configure_terminal_logging(resolved_cfg)
 
     loggers = _instantiate_sequence(OmegaConf.select(resolved_cfg, "loggers", default=[]))
     callbacks = _instantiate_sequence(OmegaConf.select(resolved_cfg, "callbacks", default=[]))
@@ -89,12 +101,13 @@ def prepare_run_context(
     # the lifecycle methods, without invoking any behavior (no handle/log/finish).
     _validate_callbacks(callbacks)
     _validate_loggers(loggers)
-    metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path)
+    metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
     return RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
         artifact_manager=artifact_manager,
         metadata=metadata,
+        clock=run_clock,
         callbacks=callbacks,
         loggers=loggers,
     )
@@ -150,6 +163,8 @@ def run_from_config(
                 callback.handle(event)
         else:
             runner.emit("exception", context, payload=payload)
+        if _terminal_logging_enabled(context.cfg):
+            logging.getLogger("spenn.run").exception("configured run failed")
         if raise_exceptions:
             raise
         return 1
@@ -201,7 +216,7 @@ def _instantiate_sequence(items: ListConfig | list | tuple | None) -> list:
 
 
 def _instantiate_runner(context: RunContext) -> Runner:
-    runner_cfg = context.cfg.runner
+    runner_cfg = context.cfg.runner.copy()
     # Callbacks and loggers are configured at the config root and owned by the
     # RunContext; a runner must not own them.
     for forbidden in ("callbacks", "loggers"):
@@ -213,6 +228,56 @@ def _instantiate_runner(context: RunContext) -> Runner:
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to spenn.runner.Runner, got {type(runner)!r}")
     return runner
+
+
+def _configure_terminal_logging(cfg: DictConfig) -> None:
+    terminal = OmegaConf.select(cfg, "terminal", default=None)
+    if terminal is None:
+        return
+    configure_terminal_logging(
+        enabled=bool(OmegaConf.select(terminal, "enabled", default=True)),
+        level=str(OmegaConf.select(terminal, "level", default="info")),
+        color=str(OmegaConf.select(terminal, "color", default="auto")),
+    )
+
+
+def _terminal_logging_enabled(cfg: DictConfig) -> bool:
+    terminal = OmegaConf.select(cfg, "terminal", default=None)
+    return terminal is not None and bool(OmegaConf.select(terminal, "enabled", default=True))
+
+
+def _preflight_optional_dependencies(cfg: DictConfig) -> None:
+    """Fail early with actionable optional-dependency errors for configured targets."""
+
+    if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
+        require_torch(feature="configured SpENN run")
+
+
+def _config_requires_torch(value: object) -> bool:
+    if isinstance(value, dict):
+        target = value.get("_target_")
+        if isinstance(target, str) and _target_requires_torch(target):
+            return True
+        return any(_config_requires_torch(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_config_requires_torch(item) for item in value)
+    return False
+
+
+def _target_requires_torch(target: str) -> bool:
+    return target.startswith(
+        (
+            "torch.",
+            "spenn.nn.",
+            "spenn.training.",
+            "spenn.sampling.",
+            "spenn.physics.",
+            "spenn.diagnostics.",
+            "spenn.equivariance.checks.",
+            "spenn.runner.Train",
+            "spenn.runner.Evaluate",
+        )
+    )
 
 
 def _rerunnable_config(cfg: DictConfig) -> DictConfig:

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import torch
-from torch import nn
-
 from spenn.data.batch import ElectronBatch
 from spenn.data.indices import no_repeated_particle_mask, tuple_particle_inputs
 from spenn.data.real import RealFeature, zero_block
+from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.mlp import MLP
+
+torch = require_torch(feature="SpENN embedding modules")
+nn = require_torch_nn(feature="SpENN embedding modules")
 
 
 class Embedding(EquivariantMap):

@@ -15,12 +15,18 @@ system:
   n_particles: 2
   spatial_dim: 3
   omega: 0.25
+references:
   exact_energy: 1.25
 runner:
   _target_: spenn.runner.Evaluate
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
+  diagnostics:
+  - _target_: spenn.diagnostics.EnergyEvaluation
+    name: energy
+    reference_energy: ${references.exact_energy}
+    include_terms: true
   return_terms: true
 model:
   _target_: spenn.physics.hooke.HookeTripletExact
@@ -62,6 +68,9 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
+- _target_: spenn.callback.RunTiming
+- _target_: spenn.callback.EvaluationTiming
+- _target_: spenn.callback.DiagnosticTiming
 - _target_: spenn.callback.Status
   triggers:
   - run_start

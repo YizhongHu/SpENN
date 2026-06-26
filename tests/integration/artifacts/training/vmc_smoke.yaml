@@ -15,7 +15,6 @@ system:
   n_particles: 2
   spatial_dim: 3
   omega: 0.5
-  exact_energy: 2.0
 runner:
   _target_: spenn.runner.Train
   model: ${model}
@@ -67,6 +66,10 @@ callbacks:
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
+- _target_: spenn.callback.RunTiming
+- _target_: spenn.callback.TrainStepTiming
+  every_n_steps: 1
+  rolling_window: 2
 - _target_: spenn.callback.Status
   triggers:
   - run_start

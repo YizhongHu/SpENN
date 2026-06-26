@@ -13,9 +13,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from torch import nn
-
+from spenn.dependencies import require_torch_nn
 from spenn.equivariance.trace import trace_equivariant
+
+nn = require_torch_nn(feature="equivariant neural-network maps")
 
 
 class EquivariantMap(nn.Module, ABC):

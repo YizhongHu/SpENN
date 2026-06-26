@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import torch
-from torch import nn
-from torch.nn import functional as F
-
 from spenn.data.batch import ElectronBatch, electron_nuclear_distances, pairwise_distances
+from spenn.dependencies import require_torch, require_torch_functional, require_torch_nn
+
+torch = require_torch(feature="SpENN cusp modules")
+nn = require_torch_nn(feature="SpENN cusp modules")
+F = require_torch_functional(feature="SpENN cusp modules")
 
 
 def rational_pair_cusp(distance: torch.Tensor, coefficient: torch.Tensor | float, range_parameter: torch.Tensor | float) -> torch.Tensor:
