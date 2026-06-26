@@ -104,47 +104,6 @@ class ElectronBatch:
         )
         return self
 
-    def validity_metrics(self) -> dict[str, int | float | bool]:
-        """Return JSON-safe, explicit runtime validity metrics for this batch.
-
-        Metrics are semantic and field-specific (no generic object traversal):
-        configuration/electron/dimension counts and finite/valid fractions for
-        positions, spins, and nuclear positions.
-        """
-
-        positions_total = int(self.positions.numel())
-        positions_finite = int(torch.isfinite(self.positions).sum().item())
-        n_configurations = 1
-        for size in self.sample_shape:
-            n_configurations *= int(size)
-        metrics: dict[str, int | float | bool] = {
-            "n_configurations": n_configurations,
-            "n_electrons": int(self.n_electrons),
-            "spatial_dim": int(self.spatial_dim),
-            "positions_total_count": positions_total,
-            "positions_finite_count": positions_finite,
-            "positions_nonfinite_fraction": (
-                float((positions_total - positions_finite) / positions_total) if positions_total else 0.0
-            ),
-        }
-        if self.spins is not None:
-            spins_total = int(self.spins.numel())
-            spins_valid = int(((self.spins == 1) | (self.spins == -1)).sum().item())
-            metrics["spins_total_count"] = spins_total
-            metrics["spins_valid_count"] = spins_valid
-            metrics["spins_invalid_fraction"] = (
-                float((spins_total - spins_valid) / spins_total) if spins_total else 0.0
-            )
-        if self.nuclear_positions is not None:
-            nuclear_total = int(self.nuclear_positions.numel())
-            nuclear_finite = int(torch.isfinite(self.nuclear_positions).sum().item())
-            metrics["nuclear_positions_total_count"] = nuclear_total
-            metrics["nuclear_positions_finite_count"] = nuclear_finite
-            metrics["nuclear_positions_nonfinite_fraction"] = (
-                float((nuclear_total - nuclear_finite) / nuclear_total) if nuclear_total else 0.0
-            )
-        return metrics
-
     @property
     def device(self) -> torch.device:
         """Return the device of the position tensor.

@@ -1,1 +1,0 @@
-"""Evaluation component tests."""

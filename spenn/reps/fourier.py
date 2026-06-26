@@ -12,7 +12,7 @@ from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition, integer_partitions
 from spenn.data.permutation import all_permutations
 from spenn.data.real import RealInteraction, RealUpdate, zero_block
-from spenn.equivariance import EquivariantMap
+from spenn.data.equivariant_map import EquivariantMap
 from spenn.reps.irreps import IrrepMetadata, irrep_dimension, load_default_irrep_metadata
 
 
@@ -170,7 +170,7 @@ def _fourier_block(
         )
         permuted = permute_tuple_slots(tensor, permutation, axis_start=tuple_axis_start, order=order)
         output = output + permuted.unsqueeze(-1).unsqueeze(-1) * matrix
-    return output / float(_factorial(order))
+    return output
 
 
 def _inverse_fourier_block(
@@ -180,7 +180,7 @@ def _inverse_fourier_block(
     order = partition.order
     dim = irrep_dimension(partition)
     trace = tensor.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-    return dim * trace
+    return (dim / float(_factorial(order))) * trace
 
 
 def _factorial(value: int) -> int:

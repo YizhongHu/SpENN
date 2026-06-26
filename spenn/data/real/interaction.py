@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 import torch
 
-from spenn.data.equivariant_state import compare_tensor_blocks
 from spenn.data.indices import common_particle_count, permute_tuple_axes
 from spenn.data.permutation import Permutation
 from spenn.data.real.base import _normalize_real_blocks, _validate_real_blocks
@@ -92,13 +91,6 @@ class RealInteraction:
                 for order, tensor in self.items()
             ]
         )
-
-    def compare(self, other: "RealInteraction", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
-        """Compare block-by-block; return ``(is_close, max_abs_error)``."""
-
-        if type(self) is not type(other):
-            return False, {"max_abs_error": float("inf")}
-        return compare_tensor_blocks(self.blocks, other.blocks, atol=atol, rtol=rtol)
 
 
 __all__ = ["RealInteraction"]

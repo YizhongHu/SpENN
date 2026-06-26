@@ -10,6 +10,8 @@ package.
 
    spenn
    spenn.data
+   spenn.diagnostics
+   spenn.losses
    spenn.nn
    spenn.nn.activation
    spenn.nn.mlp

@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
+import torch
+from torch import nn
+
 from spenn.data.indices import (
     flatten_tuple_indices,
     ordered_tuple_tensor,
@@ -20,12 +23,8 @@ from spenn.data.real import (
     common_real_particle_count,
     zero_block,
 )
-from spenn.dependencies import require_torch, require_torch_nn
-from spenn.equivariance import EquivariantMap
+from spenn.data.equivariant_map import EquivariantMap
 from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
-
-torch = require_torch(feature="SpENN equivariant mixing")
-nn = require_torch_nn(feature="SpENN equivariant mixing")
 
 
 Aggregation = Literal["sum", "completion_mean"]
@@ -34,20 +33,6 @@ MixingImplementation = Literal["slow", "vectorized"]
 
 class EquivariantMixing(EquivariantMap):
     """Bilinear virtual-support real-space mixing module.
-
-    Mathematical reference: ``main.typ`` section "Equivariant Mixing" and the
-    "Model Workflow" SpENN layer block. The implemented contraction is
-
-    ``h^c_{I,p} = sum_{J_[s]\\im(tau)} W_p^{c<-c1 c2}
-    x^{c1}_{J o tau1} x^{c2}_{J o tau2}``.
-
-    In code, one :class:`VirtualPath` is the path index
-    ``p = (s, m, m1, m2, tau, tau1, tau2)``. A ``virtual_tuple`` is ``J``;
-    ``select_tuple(virtual_tuple, tau)`` gives the output tuple ``I``; and
-    ``tau1``/``tau2`` select the two input tuples from the same virtual
-    support. The path axis is deliberately preserved in :class:`RealInteraction`
-    so the later Fourier/activation/path-aggregation stages can choose how to
-    combine mechanisms.
 
     The slow implementation is a literal correctness reference that loops over
     paths and ordered distinct virtual tuples exactly as written in the PR
@@ -67,14 +52,9 @@ class EquivariantMixing(EquivariantMap):
     aggregation : {"sum", "completion_mean"}, optional
         Whether to sum over completions or average over compatible completions
         for each output tuple and path.
-    channels : int or mapping
-        Input feature channels per body order. This is architecture metadata
-        and is independent of particle count.
-    left_channels, right_channels : int, mapping, or None, optional
-        Input channels for asymmetric two-input mixing. If omitted, `channels`
-        is used for both sides.
     out_channels : int, mapping, or None, optional
-        Output channels per target order. ``None`` preserves `channels`.
+        Output channels per target order. ``None`` uses the channel count of
+        the corresponding input feature block.
     initial_weight : float, optional
         Initial value for each path weight.
     implementation : {"slow", "vectorized"}, optional
@@ -93,9 +73,6 @@ class EquivariantMixing(EquivariantMap):
         paths: PathMetadata | tuple[VirtualPath, ...] | None = None,
         output_embedding: Literal["canonical", "full"] = "canonical",
         aggregation: Aggregation = "sum",
-        channels: int | Mapping[int, int],
-        left_channels: int | Mapping[int, int] | None = None,
-        right_channels: int | Mapping[int, int] | None = None,
         out_channels: int | Mapping[int, int] | None = None,
         initial_weight: float = 1.0,
         implementation: MixingImplementation = "slow",
@@ -116,21 +93,10 @@ class EquivariantMixing(EquivariantMap):
         self.implementation: MixingImplementation = implementation
         self.output_embedding = output_embedding
         self.initial_weight = float(initial_weight)
-        self.left_channels = _normalize_channels(
-            channels if left_channels is None else left_channels,
-            max_order=self.max_order,
-            name="left_channels",
-        )
-        self.right_channels = _normalize_channels(
-            channels if right_channels is None else right_channels,
-            max_order=self.max_order,
-            name="right_channels",
-        )
-        self.out_channels = _normalize_channels(
-            channels if out_channels is None else out_channels,
-            max_order=self.max_order,
-            name="out_channels",
-        )
+        if isinstance(out_channels, Mapping):
+            self.out_channels = {int(order): int(channels) for order, channels in out_channels.items()}
+        else:
+            self.out_channels = out_channels
         if isinstance(paths, PathMetadata):
             self.paths = self._paths_from_metadata(paths)
         elif paths is None:
@@ -145,7 +111,6 @@ class EquivariantMixing(EquivariantMap):
         else:
             self.paths = tuple(paths)
         self.weights = nn.ParameterDict()
-        self._initialize_weights()
 
     def forward_impl(self, x1: RealFeature, x2: RealFeature | None = None) -> RealInteraction:
         """Mix one or two real feature states into path-resolved interactions."""
@@ -162,18 +127,12 @@ class EquivariantMixing(EquivariantMap):
         ]
         for order in range(1, self.max_order + 1):
             active_paths = self._paths_for_order(order, x1=x1, x2=x2)
-            out_channels = self._out_channels(order)
-            # ``order`` is the output body order m in main.typ. The block shape
-            # is [batch, c_out, p, I_1, ..., I_m], i.e. h^c_{I,p}.
+            out_channels = self._out_channels(order, x1)
             block = torch.zeros(
                 (batch_size, out_channels, len(active_paths), *((n_particles,) * order)),
                 device=device,
                 dtype=dtype,
             )
-            # ``completion_mean`` divides by the number of virtual completions
-            # J that collapse to a fixed output tuple I for a path p. This is a
-            # normalized variant of the same sum in main.typ, useful when
-            # different I have different completion counts near small n.
             counts = (
                 torch.zeros((len(active_paths), *((n_particles,) * order)), device=device, dtype=dtype)
                 if self.aggregation == "completion_mean"
@@ -219,23 +178,12 @@ class EquivariantMixing(EquivariantMap):
             weight = self._weight_for(path, x1=x1, x2=x2, out_channels=out_channels)
             left = x1.blocks[path.m1]
             right = x2.blocks[path.m2]
-            # Literal form of main.typ's sum over virtual supports J. For each
-            # ordered distinct s-tuple J, tau/tau1/tau2 turn it into the output
-            # and input tuples used by the bilinear path.
-            # virtual_tuple is J;
             for virtual_tuple in ordered_tuples(n_particles, path.s, distinct=True):
-                # output_tuple is I = J o tau;
                 output_tuple = select_tuple(virtual_tuple, path.tau)
-                # left_tuple is J o tau1;
                 left_tuple = select_tuple(virtual_tuple, path.tau1)
-                # right_tuple is J o tau2.
                 right_tuple = select_tuple(virtual_tuple, path.tau2)
-                # left_value is x1^{c}_{J o tau1}, shape [batch, c, 1].
                 left_value = left[(slice(None), slice(None), *left_tuple)]
-                # right_value is x2^{d}_{J o tau2}, shape [batch, d, 1].
                 right_value = right[(slice(None), slice(None), *right_tuple)]
-                # W_p^{o<-cd} x1^{c}_{J o tau1} x2^{d}_{J o tau2}.
-                # Channels c,d are contracted; output channel o survives.
                 contribution = torch.einsum("ocd,bc,bd->bo", weight, left_value, right_value)
                 block[(slice(None), slice(None), path_index, *output_tuple)] += contribution
                 if counts is not None:
@@ -255,9 +203,6 @@ class EquivariantMixing(EquivariantMap):
         block_flat = block.reshape(*block.shape[:3], -1)
         for path_index, path in enumerate(active_paths):
             weight = self._weight_for(path, x1=x1, x2=x2, out_channels=out_channels)
-            # Same contraction as _mix_order_slow, but with v indexing all
-            # virtual tuples J for this path. Multiple J may map to the same I,
-            # so the final write is a scatter-add over flattened output tuples.
             virtual_tuples = ordered_tuple_tensor(n_particles, path.s, distinct=True, device=block.device)
             output_indices = select_tuple_tensor(virtual_tuples, path.tau)
             left_indices = select_tuple_tensor(virtual_tuples, path.tau1)
@@ -299,20 +244,17 @@ class EquivariantMixing(EquivariantMap):
             and path.m2 <= self.max_order
         )
 
-    def _out_channels(self, order: int) -> int:
-        return self.out_channels[order]
-
-    def _initialize_weights(self) -> None:
-        for path in self.paths:
-            key = f"g{path.global_id}"
-            if key in self.weights:
-                continue
-            shape = (
-                self.out_channels[path.m],
-                self.left_channels[path.m1],
-                self.right_channels[path.m2],
-            )
-            self.weights[key] = nn.Parameter(torch.full(shape, self.initial_weight))
+    def _out_channels(self, order: int, x: RealFeature) -> int:
+        if isinstance(self.out_channels, dict):
+            try:
+                return self.out_channels[order]
+            except KeyError as exc:
+                raise KeyError(f"Missing out_channels for order {order}") from exc
+        if isinstance(self.out_channels, int):
+            return self.out_channels
+        if order >= len(x.blocks):
+            raise ValueError(f"Input feature has no order-{order} block for output-channel inference")
+        return int(x.blocks[order].shape[1])
 
     def _weight_for(
         self,
@@ -322,43 +264,23 @@ class EquivariantMixing(EquivariantMap):
         x2: RealFeature,
         out_channels: int,
     ) -> torch.Tensor:
-        left_channels = self.left_channels[path.m1]
-        right_channels = self.right_channels[path.m2]
-        _validate_feature_channels(x1, path.m1, left_channels, name="left input")
-        _validate_feature_channels(x2, path.m2, right_channels, name="right input")
+        left_channels = int(x1.blocks[path.m1].shape[1])
+        right_channels = int(x2.blocks[path.m2].shape[1])
         shape = (out_channels, left_channels, right_channels)
         key = f"g{path.global_id}"
         if key not in self.weights:
-            raise RuntimeError(f"Missing eager EquivariantMixing weight for path {path.global_id}")
+            value = torch.full(
+                shape,
+                self.initial_weight,
+                device=x1.blocks[path.m1].device,
+                dtype=x1.blocks[path.m1].dtype,
+            )
+            self.weights[key] = nn.Parameter(value)
+            return self.weights[key]
         weight = self.weights[key]
         if tuple(weight.shape) != shape:
             raise ValueError(f"Path {path.global_id} weight shape {tuple(weight.shape)} does not match {shape}")
         return weight
-
-
-def _normalize_channels(value: int | Mapping[int, int], *, max_order: int, name: str) -> dict[int, int]:
-    if isinstance(value, Mapping):
-        channels = {int(order): int(count) for order, count in value.items()}
-        missing = [order for order in range(1, max_order + 1) if order not in channels]
-        if missing:
-            raise ValueError(f"{name} is missing orders {missing}")
-    else:
-        count = int(value)
-        channels = {order: count for order in range(1, max_order + 1)}
-    for order, count in channels.items():
-        if order < 1 or order > max_order:
-            raise ValueError(f"{name} contains order {order} outside [1, {max_order}]")
-        if count <= 0:
-            raise ValueError(f"{name}[{order}] must be positive, got {count}")
-    return dict(sorted(channels.items()))
-
-
-def _validate_feature_channels(feature: RealFeature, order: int, expected: int, *, name: str) -> None:
-    if order >= len(feature.blocks):
-        raise ValueError(f"{name} has no order-{order} block")
-    actual = int(feature.blocks[order].shape[1])
-    if actual != expected:
-        raise ValueError(f"{name} order-{order} channels {actual} do not match configured {expected}")
 
 
 __all__ = ["EquivariantMixing"]

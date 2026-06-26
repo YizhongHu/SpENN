@@ -1,121 +1,152 @@
-"""Potential-energy Hamiltonian terms."""
+"""Potential-energy terms."""
 
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 from spenn.data.batch import ElectronBatch, pairwise_distances
-from spenn.physics.hamiltonian import LocalEnergyResult
+from spenn.physics.systems import ElectronicSystem
 
 
-class HarmonicTrap:
-    """Hamiltonian term for a harmonic confinement potential.
-
-    .. math:: V_\\mathrm{trap} = \\tfrac{1}{2}\\omega^2 \\sum_i r_i^2
+def harmonic_trap_potential(positions: torch.Tensor, omega: float = 1.0) -> torch.Tensor:
+    """Return harmonic confinement energy for each configuration.
 
     Parameters
     ----------
+    positions : torch.Tensor
+        Electron coordinates with shape ``[batch, n_electrons, spatial_dim]``.
     omega : float, optional
-        Trap frequency.
+        Harmonic trap frequency.
+
+    Returns
+    -------
+    torch.Tensor
+        Harmonic potential values with shape ``[batch]``.
     """
 
-    name = "harmonic_trap"
-
-    def __init__(self, omega: float = 1.0) -> None:
-        self.omega = omega
-
-    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
-        positions = batch.flatten_samples().positions
-        if positions.ndim != 3:
-            raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
-        value = 0.5 * (self.omega**2) * positions.square().sum(dim=(1, 2))
-        if value.shape != (positions.shape[0],):
-            raise ValueError(f"harmonic-trap energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
-        return LocalEnergyResult(total=value, terms={self.name: value})
+    if positions.ndim != 3:
+        raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
+    output = 0.5 * (omega**2) * positions.square().sum(dim=(1, 2))
+    assert output.shape == (positions.shape[0],)
+    return output
 
 
-class ElectronElectronInteraction:
-    """Hamiltonian term for Coulomb electron-electron repulsion.
-
-    .. math:: V_\\mathrm{ee} = \\sum_{i<j} \\frac{1}{r_{ij}}
+def electron_electron_repulsion(positions: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """Return Coulomb repulsion summed over unique electron pairs.
 
     Parameters
     ----------
+    positions : torch.Tensor
+        Electron coordinates with shape ``[batch, n_electrons, spatial_dim]``.
     eps : float, optional
         Minimum pair distance used for numerical safety.
+
+    Returns
+    -------
+    torch.Tensor
+        Electron-electron repulsion values with shape ``[batch]``.
     """
 
-    name = "electron_electron"
-
-    def __init__(self, eps: float = 1e-12) -> None:
-        self.eps = eps
-
-    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
-        positions = batch.flatten_samples().positions
-        if positions.ndim != 3:
-            raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
-        distances = pairwise_distances(positions, eps=self.eps).squeeze(-1)
-        expected_distances = (positions.shape[0], positions.shape[1], positions.shape[1])
-        if distances.shape != expected_distances:
-            raise ValueError(f"pairwise distances must have shape {expected_distances}, got {tuple(distances.shape)}")
-        tri = torch.triu(torch.ones_like(distances, dtype=torch.bool), diagonal=1)
-        value = distances.reciprocal().masked_fill(~tri, 0.0).sum(dim=(1, 2))
-        if value.shape != (positions.shape[0],):
-            raise ValueError(f"electron-electron energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
-        return LocalEnergyResult(total=value, terms={self.name: value})
+    if positions.ndim != 3:
+        raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
+    distances = pairwise_distances(positions, eps=eps).squeeze(-1)
+    assert distances.shape == (positions.shape[0], positions.shape[1], positions.shape[1])
+    tri = torch.triu(torch.ones_like(distances, dtype=torch.bool), diagonal=1)
+    output = distances.reciprocal().masked_fill(~tri, 0.0).sum(dim=(1, 2))
+    assert output.shape == (positions.shape[0],)
+    return output
 
 
-class ElectronNucleusInteraction:
-    """Hamiltonian term for Coulomb electron-nucleus attraction.
-
-    .. math:: V_\\mathrm{en} = -\\sum_{i,A} \\frac{Z_A}{|r_i - R_A|}
+def electron_nuclear_attraction(
+    positions: torch.Tensor,
+    nuclear_positions: torch.Tensor,
+    nuclear_charges: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Return electron-nuclear attraction for batched positions.
 
     Parameters
     ----------
+    positions : torch.Tensor
+        Electron coordinates with shape ``[batch, n_electrons, spatial_dim]``.
     nuclear_positions : torch.Tensor
-        Nuclear coordinates with shape ``[n_nuclei, spatial_dim]``.
+        Nuclear coordinates with shape ``[n_nuclei, spatial_dim]`` or
+        ``[batch, n_nuclei, spatial_dim]``.
     nuclear_charges : torch.Tensor
-        Nuclear charges with shape ``[n_nuclei]``.
+        Nuclear charges with shape ``[n_nuclei]`` or ``[batch, n_nuclei]``.
     eps : float, optional
-        Minimum electron-nucleus distance used for numerical safety.
+        Minimum electron-nuclear distance used for numerical safety.
+
+    Returns
+    -------
+    torch.Tensor
+        Electron-nuclear attraction values with shape ``[batch]``.
     """
 
-    name = "electron_nucleus"
+    if positions.ndim != 3:
+        raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
+    if nuclear_positions.ndim == 2:
+        nuclear_positions = nuclear_positions.unsqueeze(0).expand(positions.shape[0], -1, -1)
+    if nuclear_charges.ndim == 1:
+        nuclear_charges = nuclear_charges.unsqueeze(0).expand(positions.shape[0], -1)
+    if nuclear_positions.shape[0] != positions.shape[0] or nuclear_positions.shape[-1] != positions.shape[-1]:
+        raise ValueError("nuclear_positions must broadcast to [batch, n_nuclei, spatial_dim]")
+    if nuclear_charges.shape != nuclear_positions.shape[:2]:
+        raise ValueError("nuclear_charges must broadcast to [batch, n_nuclei]")
+    disp = positions.unsqueeze(2) - nuclear_positions.unsqueeze(1)
+    dist = torch.linalg.norm(disp, dim=-1).clamp_min(eps)
+    output = -(nuclear_charges.unsqueeze(1) / dist).sum(dim=(1, 2))
+    assert output.shape == (positions.shape[0],)
+    return output
 
-    def __init__(
-        self,
-        nuclear_positions: torch.Tensor,
-        nuclear_charges: torch.Tensor,
-        eps: float = 1e-12,
-    ) -> None:
-        self.nuclear_positions = torch.as_tensor(nuclear_positions)
-        self.nuclear_charges = torch.as_tensor(nuclear_charges)
-        if self.nuclear_positions.ndim != 2:
-            raise ValueError("nuclear_positions must have shape [n_nuclei, spatial_dim]")
-        if self.nuclear_charges.ndim != 1:
-            raise ValueError("nuclear_charges must have shape [n_nuclei]")
-        if self.nuclear_positions.shape[0] != self.nuclear_charges.shape[0]:
-            raise ValueError("nuclear_positions and nuclear_charges must agree on n_nuclei")
+
+class ElectronicPotential(nn.Module):
+    """Evaluate potential energy for an `ElectronicSystem`.
+
+    Parameters
+    ----------
+    system : ElectronicSystem or None, optional
+        Default system metadata used when a batch does not provide a system.
+    eps : float, optional
+        Distance floor for Coulomb terms.
+    """
+
+    def __init__(self, system: ElectronicSystem | None = None, eps: float = 1e-12) -> None:
+        super().__init__()
+        self.system = system
         self.eps = eps
 
-    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
-        positions = batch.flatten_samples().positions
-        if positions.ndim != 3:
-            raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
-        nuclear_positions = self.nuclear_positions.to(device=positions.device, dtype=positions.dtype)
-        nuclear_charges = self.nuclear_charges.to(device=positions.device, dtype=positions.dtype)
-        if nuclear_positions.shape[-1] != positions.shape[-1]:
-            raise ValueError("nuclear_positions spatial dimension must match electron positions")
-        disp = positions.unsqueeze(2) - nuclear_positions.unsqueeze(0).unsqueeze(0)
-        dist = torch.linalg.norm(disp, dim=-1).clamp_min(self.eps)
-        value = -(nuclear_charges.view(1, 1, -1) / dist).sum(dim=(1, 2))
-        if value.shape != (positions.shape[0],):
-            raise ValueError(f"electron-nucleus energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
-        return LocalEnergyResult(total=value, terms={self.name: value})
+    def forward(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return potential energy for a batch.
 
+        Parameters
+        ----------
+        batch : ElectronBatch
+            Electron batch with positions shaped ``[batch, n_electrons,
+            spatial_dim]`` after flattening.
 
-__all__ = [
-    "ElectronElectronInteraction",
-    "ElectronNucleusInteraction",
-    "HarmonicTrap",
-]
+        Returns
+        -------
+        torch.Tensor
+            Potential energy values with shape ``[batch]``.
+        """
+
+        batch = batch.flatten_samples()
+        system = batch.system or self.system or ElectronicSystem()
+        output = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
+        if system.harmonic_omega is not None:
+            output = output + harmonic_trap_potential(batch.positions, omega=float(system.harmonic_omega))
+        include_repulsion = bool(system.include_electron_electron) or not system.is_toy_harmonic
+        if include_repulsion:
+            output = output + electron_electron_repulsion(batch.positions, eps=self.eps)
+        if system.nuclear_positions is not None and system.nuclear_charges is not None:
+            attraction = electron_nuclear_attraction(
+                batch.positions,
+                system.nuclear_positions.to(device=batch.device, dtype=batch.dtype),
+                system.nuclear_charges.to(device=batch.device, dtype=batch.dtype),
+                eps=self.eps,
+            )
+            output = output + attraction
+        assert output.shape == (batch.batch_size,)
+        return output

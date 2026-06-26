@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import torch
+from torch import nn
 
 from spenn.data.real import (
     RealFeature,
@@ -11,11 +12,7 @@ from spenn.data.real import (
     validate_matching_real_blocks,
     validate_real_update_geometry,
 )
-from spenn.dependencies import require_torch, require_torch_nn
-from spenn.equivariance import EquivariantMap
-
-torch = require_torch(feature="SpENN update modules")
-nn = require_torch_nn(feature="SpENN update modules")
+from spenn.data.equivariant_map import EquivariantMap
 
 
 class Update(EquivariantMap):
@@ -27,11 +24,7 @@ class Update(EquivariantMap):
 
 
 class ReplaceUpdate(Update):
-    """Experimental strategy replacing persistent features with update proposals.
-
-    This class is not part of the baseline SpENN API and is intentionally not
-    exported from ``spenn.nn`` or this module's ``__all__``.
-    """
+    """Replace persistent real features with a real update proposal."""
 
     def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
         """Return the update proposal as the next real feature state."""
@@ -41,14 +34,7 @@ class ReplaceUpdate(Update):
 
 
 class ResidualUpdate(Update):
-    """Add a scaled real update proposal to persistent features.
-
-    Mathematical reference: ``main.typ`` section "Updates" and the final
-    ``Feature update`` line in "Model Workflow". The usual SpENN update is the
-    residual rule ``x^{t+1}_I = x^t_I + a u^{t+1}_I``. Here ``step`` is the
-    scalar ``a`` and ``u`` is the real-space update produced by
-    path aggregation followed by inverse Fourier projection.
-    """
+    """Add a scaled real update proposal to persistent features."""
 
     def __init__(self, step: float = 1.0, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -58,18 +44,11 @@ class ResidualUpdate(Update):
         """Return ``x + step * u`` blockwise."""
 
         validate_matching_real_blocks(x, u)
-        # Same residual formula for every body order m and tuple I; no tuple
-        # positions are mixed here, so the equivariance established upstream is
-        # preserved by construction.
         return RealFeature([left + self.step * right for left, right in zip(x.blocks, u.blocks)])
 
 
 class NormGatedUpdate(Update):
-    """Experimental residual update gated by an equivariant update norm.
-
-    This class is not part of the baseline SpENN API and is intentionally not
-    exported from ``spenn.nn`` or this module's ``__all__``.
-    """
+    """Gate a residual update by an equivariant per-tuple update norm."""
 
     def __init__(self, step: float = 1.0, eps: float = 1.0e-12, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -92,10 +71,7 @@ class NormGatedUpdate(Update):
 
 
 class ChannelMappedUpdate(Update):
-    """Experimental channel-mapped real update proposal.
-
-    This class is not part of the baseline SpENN API and is intentionally not
-    exported from ``spenn.nn`` or this module's ``__all__``.
+    """Add a channel-mapped real update proposal to persistent features.
 
     The learned map is shared across all tuple positions within each body
     order. This preserves particle equivariance because only channel axes are
@@ -105,12 +81,6 @@ class ChannelMappedUpdate(Update):
     ----------
     step : float, optional
         Scalar multiplier for the mapped update.
-    max_order : int
-        Maximum positive body order to initialize.
-    channels : int or mapping
-        Persistent feature channels per body order.
-    update_channels : int, mapping, or None, optional
-        Real update channels per body order. If ``None``, uses `channels`.
     initial_weight : float, optional
         Initial value for non-identity channel maps.
     identity_init : bool, optional
@@ -123,28 +93,15 @@ class ChannelMappedUpdate(Update):
         self,
         step: float = 1.0,
         *,
-        max_order: int,
-        channels: int | Mapping[int, int],
-        update_channels: int | Mapping[int, int] | None = None,
         initial_weight: float = 0.0,
         identity_init: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.step = float(step)
-        self.max_order = int(max_order)
-        if self.max_order <= 0:
-            raise ValueError(f"max_order must be positive, got {self.max_order}")
-        self.channels_by_order = _normalize_positive_channels(channels, max_order=self.max_order, name="channels")
-        self.update_channels_by_order = _normalize_positive_channels(
-            channels if update_channels is None else update_channels,
-            max_order=self.max_order,
-            name="update_channels",
-        )
         self.initial_weight = float(initial_weight)
         self.identity_init = bool(identity_init)
         self.channel_maps = nn.ParameterDict()
-        self._initialize_channel_maps()
 
     def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
         """Return ``x + step * W_m u_m`` for every body order ``m``."""
@@ -160,6 +117,8 @@ class ChannelMappedUpdate(Update):
                 order,
                 out_channels=int(feature.shape[1]),
                 in_channels=int(update.shape[1]),
+                device=feature.device,
+                dtype=feature.dtype,
             )
             mapped = torch.einsum("oc,bc...->bo...", weight, update)
             output.append(feature + self.step * mapped)
@@ -171,45 +130,20 @@ class ChannelMappedUpdate(Update):
         *,
         out_channels: int,
         in_channels: int,
+        device: torch.device,
+        dtype: torch.dtype,
     ) -> torch.Tensor:
         key = str(order)
         shape = (out_channels, in_channels)
         if key not in self.channel_maps:
-            raise RuntimeError(f"Missing eager ChannelMappedUpdate map for order {order}")
+            initial = torch.full(shape, self.initial_weight, device=device, dtype=dtype)
+            if self.identity_init and out_channels == in_channels:
+                initial = torch.eye(out_channels, device=device, dtype=dtype)
+            self.channel_maps[key] = nn.Parameter(initial)
+            return self.channel_maps[key]
         weight = self.channel_maps[key]
         if tuple(weight.shape) != shape:
             raise ValueError(f"Order-{order} channel map shape {tuple(weight.shape)} does not match {shape}")
-        return weight
+        return weight.to(device=device, dtype=dtype)
 
-    def _initialize_channel_maps(self) -> None:
-        for order in range(1, self.max_order + 1):
-            shape = (self.channels_by_order[order], self.update_channels_by_order[order])
-            initial = torch.full(shape, self.initial_weight)
-            if self.identity_init and shape[0] == shape[1]:
-                initial = torch.eye(shape[0])
-            self.channel_maps[str(order)] = nn.Parameter(initial)
-
-
-def _normalize_positive_channels(
-    value: int | Mapping[int, int],
-    *,
-    max_order: int,
-    name: str,
-) -> dict[int, int]:
-    if isinstance(value, Mapping):
-        channels = {int(order): int(count) for order, count in value.items()}
-        missing = [order for order in range(1, max_order + 1) if order not in channels]
-        if missing:
-            raise ValueError(f"{name} is missing orders {missing}")
-    else:
-        count = int(value)
-        channels = {order: count for order in range(1, max_order + 1)}
-    for order, count in channels.items():
-        if order < 1 or order > max_order:
-            raise ValueError(f"{name} contains order {order} outside [1, {max_order}]")
-        if count <= 0:
-            raise ValueError(f"{name}[{order}] must be positive, got {count}")
-    return dict(sorted(channels.items()))
-
-
-__all__ = ["ResidualUpdate", "Update"]
+__all__ = ["ChannelMappedUpdate", "NormGatedUpdate", "ReplaceUpdate", "ResidualUpdate", "Update"]

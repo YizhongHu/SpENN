@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import torch
+from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.physics.hamiltonian import LocalEnergyResult
 
 
 def _extract_logabs(output: WavefunctionOutput) -> torch.Tensor:
@@ -45,18 +45,15 @@ def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
     )
     output = model(probe_batch)
     logabs = _extract_logabs(output)
-    if logabs.shape != (batch.batch_size,):
-        raise ValueError(f"logabs must have shape {(batch.batch_size,)}, got {tuple(logabs.shape)}")
+    assert logabs.shape == (batch.batch_size,)
     grad = torch.autograd.grad(logabs.sum(), positions, create_graph=True)[0]
-    if grad.shape != positions.shape:
-        raise ValueError(f"logabs gradient must have shape {tuple(positions.shape)}, got {tuple(grad.shape)}")
+    assert grad.shape == positions.shape
     flat_grad = grad.reshape(grad.shape[0], -1)
     laplacian = torch.zeros(grad.shape[0], device=grad.device, dtype=grad.dtype)
     for idx in range(flat_grad.shape[1]):
         second = torch.autograd.grad(flat_grad[:, idx].sum(), positions, create_graph=True, retain_graph=True)[0]
         laplacian = laplacian + second.reshape(second.shape[0], -1)[:, idx]
-    if laplacian.shape != (batch.batch_size,):
-        raise ValueError(f"laplacian must have shape {(batch.batch_size,)}, got {tuple(laplacian.shape)}")
+    assert laplacian.shape == (batch.batch_size,)
     return laplacian
 
 
@@ -91,27 +88,36 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     )
     output = model(probe_batch)
     logabs = _extract_logabs(output)
-    if logabs.shape != (batch.batch_size,):
-        raise ValueError(f"logabs must have shape {(batch.batch_size,)}, got {tuple(logabs.shape)}")
+    assert logabs.shape == (batch.batch_size,)
     grad = torch.autograd.grad(logabs.sum(), positions, create_graph=True)[0]
-    if grad.shape != positions.shape:
-        raise ValueError(f"logabs gradient must have shape {tuple(positions.shape)}, got {tuple(grad.shape)}")
+    assert grad.shape == positions.shape
     flat_grad = grad.reshape(grad.shape[0], -1)
     laplacian = torch.zeros(grad.shape[0], device=grad.device, dtype=grad.dtype)
     for idx in range(flat_grad.shape[1]):
         second = torch.autograd.grad(flat_grad[:, idx].sum(), positions, create_graph=True, retain_graph=True)[0]
         laplacian = laplacian + second.reshape(second.shape[0], -1)[:, idx]
     output = -0.5 * (laplacian + flat_grad.pow(2).sum(dim=1))
-    if output.shape != (batch.batch_size,):
-        raise ValueError(f"kinetic local energy must have shape {(batch.batch_size,)}, got {tuple(output.shape)}")
+    assert output.shape == (batch.batch_size,)
     return output
 
 
-class KineticEnergy:
-    """Hamiltonian term for the quantum kinetic energy operator."""
+class LogAbsKineticEnergy(nn.Module):
+    """Autograd kinetic-energy module for log-amplitude models."""
 
-    name = "kinetic"
+    def forward(self, model, batch: ElectronBatch) -> torch.Tensor:
+        """Return local kinetic energy.
 
-    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
-        value = kinetic_energy_from_logabs(wavefunction, batch)
-        return LocalEnergyResult(total=value, terms={self.name: value})
+        Parameters
+        ----------
+        model : callable
+            Wavefunction model returning `WavefunctionOutput`.
+        batch : ElectronBatch
+            Electron batch to evaluate.
+
+        Returns
+        -------
+        torch.Tensor
+            Kinetic local-energy contribution with shape ``[batch]``.
+        """
+
+        return kinetic_energy_from_logabs(model, batch)

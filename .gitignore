@@ -6,14 +6,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
-# Generated run artifacts at any depth.
 outputs/
-reports/
-slurm_logs/
 wandb/
 .vscode/
 docs/_build/
 docs/api/generated/
-experiments/*/*/plots/
-experiments/hooke/pair_validation/
-experiments/*/*/results/
+design_document/
+experiments/*/slurm/logs/

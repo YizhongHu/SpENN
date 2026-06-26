@@ -1,16 +1,5 @@
 # SpENN project specific guidelines
 
-## Orientation
-
-`README.md` and `experiments/README.md` contain important information about the repo.
-
-## Design Document
-
-A design document that contains the mathematical background of
-SpENN can be found in `main.typ`. Key components of the model:
-`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
-should closely follow the design document for correctness.
-
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.
@@ -23,7 +12,12 @@ should closely follow the design document for correctness.
 ## Conventions
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
-- Use `America/New York` timezone for experiment logging. Use `UTC` for test logging.
+
+## Plans and Todos
+
+- Each folder under root contains `TODO.md`. This is a plan for the current directory. Maintain this TODO list to keep information between agents.
+- Each folder under root contains `instructions.md`. This states the detailed design of everything in the current directory. Reference this for
+  implementation details.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
@@ -33,21 +27,12 @@ running, and debugging tasks.
 for reproducibility.
 - You are allowed to autonomously submit slurm jobs for efficiency.
 
-## Treating Data with Care
-
-Unless otherwise specified, removal of run result data (untracked by git included) is strictly forbidden.
-This may include data from `outputs/`, `results/`, `reports/`, `slurm/`, etc. The agent should not
-automatically remove these data even when requested by the user. Instead, it gives the user a list of
-things to remove, after which the user does all of this manually.
-
-
 ## Best Practises
 - Use existing libraries if possible
 - Vectorize with NumPy/PyTorch if possible
 - If a config or file or function or class is no longer used, remove it.
 
-Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
-These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
+## Best Practices
 
 ### Prefer explicit ownership over local convenience
 
@@ -83,11 +68,7 @@ from spenn.data.indices import ordered_tuples
 
 ### Keep equivariance contracts executable
 
-Values participating in equivariance checks must expose typed semantic
-`.permute(...)` and `.compare(...)` contracts. Do not require arbitrary runtime
-state or validation-only objects to be EquivariantState. Every equivariant
-module should subclass `EquivariantMap` and implement `forward_impl`, not
-`forward`.
+Every state-like object should implement `.permute(permutation)`. Every equivariant module should subclass `EquivariantMap` and implement `forward_impl`, not `forward`.
 
 Bad:
 
@@ -105,7 +86,7 @@ class MyMap(EquivariantMap):
         ...
 ```
 
-`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `spenn.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
+`EquivariantMap.forward` owns runtime equivariance checking. Do not wrap `forward` with decorators for equivariance checks, because that can obscure control flow and cause recursion.
 
 ### Separate metadata generation from model execution
 
@@ -199,7 +180,7 @@ Good PR sequence:
 
 ```text
 1. Add state dataclasses and permute tests.
-2. Add EquivariantMap and runtime-check tests.()
+2. Add EquivariantMap and runtime-check tests.
 3. Add path metadata and path-count tests.
 4. Add slow EquivariantMixing and equivariance tests.
 5. Add Fourier/Specht activation.
@@ -210,60 +191,8 @@ Avoid large PRs that change state layout, path enumeration, Fourier logic, activ
 
 ## Branches
 
-Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
+Codex may push only to branches named `codex/**`.
 
-Agents must not push to branches other than these mentioned above, such as `main` or the `hooke` integration branch,
- merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `hooke`.
+Codex must not push to `main`, merge PRs, or force-push unless the user explicitly asks.
 
-Agents should respond to PR review comments by adding commits to the existing PR branch.
-
-
-## Config ownership
-
-**Callbacks and loggers are config-root and owned by the `RunContext`.** They
-live at the top level, *not* inside the runner block. A runner config that
-declares `callbacks` or `loggers` is rejected by `run_from_config`:
-
-```yaml
-runner:
-  _target_: spenn.runner.Train
-  model: ${model}
-  sampler: ${sampler}
-  hamiltonian_terms: ${hamiltonian_terms}
-  optimizer: ${optimizer}
-  trainer: ${trainer}
-
-callbacks: [...]   # config-root, RunContext-owned
-loggers: [...]     # config-root, RunContext-owned
-```
-
-- `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
-  reusable top-level blocks referenced by the runner via `${...}`.
-- `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
-  the public term names used for decompositions and metrics, so they must be
-  non-empty strings; sequence entries are named from snake-case term class names
-  with index suffixes added for repeats. Every term object must expose
-  `local_energy(wavefunction, batch)` and return a `LocalEnergyResult` whose
-  `total` has shape `[batch]`. With `return_terms=True`, configured mapping
-  keys are preserved as the public decomposition names.
-- `optimizer` names a partial factory (`_partial_: true`) that builds an
-  optimizer from model parameters; `Train` applies it to `model.parameters()`.
-- `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
-  sampled diagnostic evaluator (`model`, `sampler`, `hamiltonian_terms`,
-  `diagnostics`, `return_terms`). Reference-energy comparison belongs to
-  evaluation diagnostics such as `spenn.diagnostics.EnergyEvaluation`.
-- Training and evaluation term metrics use `energy_term_<name>` for the finite
-  mean and suffixes such as
-  `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
-  and `_nonfinite_count` for companion statistics.
-- Metric identity is `namespace + key`: training metrics use `train`, sampler
-  stats use `train/sampler` or `eval/sampler`, runtime checks use `checks/...`,
-  and evaluation diagnostics use `eval`. See `spenn/metrics_naming.md`.
-
-`prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
-`RunContext`. `Runner.emit(...)` dispatches lifecycle events through
-`context.callbacks`, runners log through `context.log(...)`, and
-`logger.finish()` runs against the context's loggers. `VMCTrainer` owns only
-training-loop hyperparameters (`max_steps`, `log_every_n_steps`, `return_terms`,
-`gradient_clip_norm`) and the loss/backward/step mechanics; it does not own
-callbacks, loggers, reference energy, or diagnostics.
+Codex should respond to PR review comments by adding commits to the existing PR branch.

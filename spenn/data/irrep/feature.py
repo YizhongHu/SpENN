@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 import torch
 
-from spenn.data.equivariant_state import compare_tensor_mapping
 from spenn.data.indices import common_particle_count, permute_tuple_axes
 from spenn.data.irrep.base import _normalize_irrep_blocks, _validate_irrep_blocks
 from spenn.data.partition import Partition, as_partition
@@ -79,13 +78,6 @@ class IrrepFeature:
                 for partition, tensor in self.blocks.items()
             }
         )
-
-    def compare(self, other: "IrrepFeature", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
-        """Compare partition blocks; return ``(is_close, max_abs_error)``."""
-
-        if type(self) is not type(other):
-            return False, {"max_abs_error": float("inf")}
-        return compare_tensor_mapping(self.blocks, other.blocks, atol=atol, rtol=rtol)
 
 
 __all__ = ["IrrepFeature"]

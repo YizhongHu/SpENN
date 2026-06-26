@@ -1,14 +1,17 @@
 """Data package namespace."""
 
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
-from spenn.data.equivariant_state import EquivariantState
+from spenn.data.equivariant_map import EquivariantMap
+from spenn.data.equivariant_state import ConcatenatedState, EquivariantState, validate_tree
 from spenn.data.irrep import IrrepFeature, IrrepInteraction, IrrepUpdate
 from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
 from spenn.data.real import RealFeature, RealInteraction, RealUpdate
 
 __all__ = [
+    "ConcatenatedState",
     "ElectronBatch",
+    "EquivariantMap",
     "EquivariantState",
     "IrrepFeature",
     "IrrepInteraction",
@@ -20,4 +23,5 @@ __all__ = [
     "RealUpdate",
     "Walkers",
     "WavefunctionOutput",
+    "validate_tree",
 ]

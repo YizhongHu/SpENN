@@ -2,73 +2,36 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+import torch
+from torch import nn
 
-from spenn.data.batch import Walkers, WavefunctionOutput
-from spenn.dependencies import require_torch, require_torch_nn
-from spenn.sampling.diagnostics import summarize_walker_geometry
+from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from spenn.physics.systems import ElectronicSystem
 from spenn.sampling.moves import GaussianMove
-
-torch = require_torch(feature="Metropolis sampling")
-nn = require_torch_nn(feature="Metropolis sampling")
-
-
-def _canonical_device(device) -> "torch.device":
-    """Return a fully indexed CUDA device so ``cuda`` and ``cuda:0`` compare equal.
-
-    Tensors always report an indexed CUDA device (``cuda:0``), while configs and
-    callers usually pass the index-less ``cuda``; ``torch.device`` treats those
-    as unequal. CPU devices are reported index-less by tensors, so they pass
-    through unchanged.
-    """
-
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and resolved.index is None:
-        if not torch.cuda.is_available():
-            return resolved
-        return torch.device("cuda", torch.cuda.current_device())
-    return resolved
 
 
 class MetropolisSampler(nn.Module):
-    """Batched, stateful Metropolis-Hastings sampler.
-
-    The sampler owns a persistent Markov chain: it holds the current walkers,
-    burns in once, and advances the existing chain on each `collect_samples`
-    call unless a reset is requested. It also owns all Markov-chain randomness
-    through a sampler-local `torch.Generator` (initial walker positions,
-    proposal noise, one-electron index selection, and accept/reject uniforms).
-    Sampler code never mutates global Torch RNG state, and the runner/trainer
-    must not seed on the sampler's behalf. Walker state and generator state are
-    checkpointed together by `mcmc_state_dict`/`load_mcmc_state_dict`.
+    """Batched Metropolis-Hastings sampler.
 
     Parameters
     ----------
     name : str, optional
         Human-readable sampler name.
     move : torch.nn.Module or None, optional
-        Proposal kernel exposing ``propose(walkers, *, generator)`` and
-        returning proposed positions plus a proposal log-ratio. The move
-        consumes the sampler's generator; it does not own an RNG.
+        Proposal kernel exposing ``propose(walkers)`` and returning proposed
+        positions plus a proposal log-ratio.
     n_walkers : int, optional
         Default number of walkers to initialize.
-    burn_in : int, optional
-        Number of equilibration steps run once per chain by `collect_samples`.
-    n_steps : int, optional
-        Default number of MCMC steps per sampling call.
-    proposal_scale : float, optional
-        Gaussian proposal scale used when `move` is ``None``.
-    seed : int or None, optional
-        Seed for the sampler-local generator. Controls only Markov-chain
-        randomness, not model parameter initialization.
+    warmup_steps : int, optional
+        Suggested warmup length for callers.
+    steps_per_iter : int, optional
+        Default number of MCMC steps per training iteration.
+    step_size : float, optional
+        Gaussian proposal step size used when `move` is ``None``.
     n_electrons : int, optional
-        Number of electrons per walker.
+        Default electron count used when no system is supplied.
     spatial_dim : int, optional
-        Spatial dimension of each electron coordinate.
-    n_up, n_down : int or None, optional
-        Spin partition. When both are given, walkers are initialized with the
-        corresponding ``+1``/``-1`` spin labels.
+        Default spatial dimension used when no system is supplied.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
@@ -80,125 +43,58 @@ class MetropolisSampler(nn.Module):
         name: str = "metropolis",
         move: nn.Module | None = None,
         n_walkers: int = 1024,
-        burn_in: int = 100,
-        n_steps: int = 10,
-        proposal_scale: float = 0.05,
-        seed: int | None = None,
+        warmup_steps: int = 100,
+        steps_per_iter: int = 10,
+        step_size: float = 0.05,
         n_electrons: int = 2,
         spatial_dim: int = 3,
-        n_up: int | None = None,
-        n_down: int | None = None,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
         super().__init__()
         self.name = name
-        self.move = move or GaussianMove(step_size=proposal_scale)
+        self.move = move or GaussianMove(step_size=step_size)
         self.n_walkers = n_walkers
-        self.burn_in = burn_in
-        self.n_steps = n_steps
-        self.proposal_scale = proposal_scale
-        self.seed = seed
+        self.warmup_steps = warmup_steps
+        self.steps_per_iter = steps_per_iter
         self.n_electrons = n_electrons
         self.spatial_dim = spatial_dim
-        self.n_up = n_up
-        self.n_down = n_down
         self.initial_scale = initial_scale
         self.dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
         self.acceptance_rate = 0.0
         self.last_metrics: dict[str, float] = {}
 
-        # Sampler-owned RNG and persistent Markov-chain state.
-        self._generator_device = torch.device("cpu")
-        self._generator = torch.Generator(device=self._generator_device)
-        if self.seed is not None:
-            self._generator.manual_seed(int(self.seed))
-        self._walkers: Walkers | None = None
-        self._has_burned_in = False
-
-    @property
-    def walkers(self) -> Walkers | None:
-        """Return the current persistent walker state (``None`` before reset)."""
-
-        return self._walkers
-
-    @property
-    def has_burned_in(self) -> bool:
-        """Return whether the current chain has completed burn-in."""
-
-        return self._has_burned_in
-
-    def initialize(self, n_walkers: int | None = None, device=None) -> Walkers:
-        """Initialize normally distributed walkers using the sampler generator.
+    def initialize(self, system: ElectronicSystem | None = None, n_walkers: int | None = None, device=None) -> Walkers:
+        """Initialize normally distributed walkers.
 
         Parameters
         ----------
+        system : ElectronicSystem or None, optional
+            System metadata. If absent, a default `ElectronicSystem` is built
+            from sampler dimensions.
         n_walkers : int or None, optional
             Number of walkers to initialize. If ``None``, `self.n_walkers` is
             used.
         device : torch.device, str, or None, optional
-            Optional device assertion. Must match the sampler generator device;
-            use `reset` to move the chain to a new device.
+            Target device. If ``None``, the system device is used.
 
         Returns
         -------
         Walkers
             Walker state with positions shaped ``[n_walkers, n_electrons,
-            spatial_dim]``.
+            spatial_dim]`` and system metadata in ``aux``.
         """
 
-        self._require_device(device)
+        system = system or ElectronicSystem(n_electrons=self.n_electrons, spatial_dim=self.spatial_dim, dtype=self.dtype)
+        self.system = system
         n_walkers = n_walkers or self.n_walkers
+        dtype = getattr(torch, system.dtype) if isinstance(system.dtype, str) else (system.dtype or self.dtype)
+        device = device or system.device
         positions = self.initial_scale * torch.randn(
-            n_walkers,
-            self.n_electrons,
-            self.spatial_dim,
-            device=self._generator_device,
-            dtype=self.dtype,
-            generator=self._generator,
+            n_walkers, system.n_electrons, system.spatial_dim, device=device, dtype=dtype
         )
-        spins = _default_spins(
-            n_up=self.n_up,
-            n_down=self.n_down,
-            n_electrons=self.n_electrons,
-            n_walkers=n_walkers,
-            device=self._generator_device,
-            dtype=self.dtype,
-        )
-        return Walkers(positions=positions, spins=spins)
-
-    def reset(self, n_walkers: int | None = None, device=None) -> Walkers:
-        """Re-seed the generator and start a fresh, un-burned-in chain.
-
-        Parameters
-        ----------
-        n_walkers : int or None, optional
-            Number of walkers to initialize.
-        device : torch.device, str, or None, optional
-            Device for the new chain and generator. Defaults to the current
-            generator device.
-
-        Returns
-        -------
-        Walkers
-            The freshly initialized walker state.
-        """
-
-        target_device = _canonical_device(device) if device is not None else self._generator_device
-        self._generator_device = target_device
-        self._generator = torch.Generator(device=target_device)
-        if self.seed is not None:
-            self._generator.manual_seed(int(self.seed))
-        self._walkers = self.initialize(n_walkers=n_walkers)
-        self._has_burned_in = False
-        return self._walkers
-
-    def _require_device(self, device) -> None:
-        if device is not None and _canonical_device(device) != self._generator_device:
-            raise ValueError(
-                f"sampler generator is on {self._generator_device}; cannot operate on "
-                f"{_canonical_device(device)}. Call reset(device=...) to move the chain."
-            )
+        spins = _default_spins(system, n_walkers=n_walkers, device=device, dtype=dtype)
+        return Walkers(positions=positions, spins=spins, aux={"system": system})
 
     def _evaluate(self, model, walkers: Walkers) -> tuple[torch.Tensor, torch.Tensor]:
         batch = walkers.make_batch()
@@ -218,7 +114,7 @@ class MetropolisSampler(nn.Module):
         del model
         if not hasattr(self.move, "propose"):
             raise TypeError("MetropolisSampler move must expose propose(walkers)")
-        proposals, log_q_ratio = self.move.propose(walkers, generator=self._generator)
+        proposals, log_q_ratio = self.move.propose(walkers)
         if proposals.shape != walkers.positions.shape:
             raise ValueError(f"Proposal positions must have shape {tuple(walkers.positions.shape)}, got {tuple(proposals.shape)}")
         if log_q_ratio.shape != (walkers.batch_size,):
@@ -242,7 +138,6 @@ class MetropolisSampler(nn.Module):
             diagnostics in ``aux``.
         """
 
-        self._require_device(walkers.device)
         current_logabs = walkers.logabs
         current_sign = walkers.sign
         if current_logabs is None or current_sign is None:
@@ -252,13 +147,7 @@ class MetropolisSampler(nn.Module):
         proposed_logabs, proposed_sign = self._evaluate(model, proposal_walkers)
         log_accept_ratio = torch.nan_to_num(2.0 * (proposed_logabs - current_logabs) + log_q_ratio, nan=-torch.inf)
         log_accept = torch.clamp(log_accept_ratio, max=0.0)
-        uniforms = torch.rand(
-            log_accept.shape,
-            device=log_accept.device,
-            dtype=log_accept.dtype,
-            generator=self._generator,
-        )
-        accepted = torch.log(uniforms.clamp_min(1e-12)) < log_accept
+        accepted = torch.log(torch.rand_like(log_accept).clamp_min(1e-12)) < log_accept
         accepted_mask = accepted.view(-1, 1, 1)
         positions = torch.where(accepted_mask, proposals, walkers.positions)
         logabs = torch.where(accepted, proposed_logabs, current_logabs)
@@ -293,7 +182,7 @@ class MetropolisSampler(nn.Module):
         walkers : Walkers
             Current walker state.
         n_steps : int or None, optional
-            Number of MCMC steps. If ``None``, `self.n_steps` is used.
+            Number of MCMC steps. If ``None``, `self.steps_per_iter` is used.
 
         Returns
         -------
@@ -302,7 +191,7 @@ class MetropolisSampler(nn.Module):
             acceptance rate over all steps in this call.
         """
 
-        total_steps = self.n_steps if n_steps is None else n_steps
+        total_steps = self.steps_per_iter if n_steps is None else n_steps
         if total_steps < 0:
             raise ValueError("n_steps must be non-negative")
         acceptance_sum = 0.0
@@ -315,115 +204,20 @@ class MetropolisSampler(nn.Module):
         walkers.aux["sample_acceptance_rate"] = self.acceptance_rate
         return walkers
 
-    def collect_samples(
-        self,
-        model,
-        *,
-        reset: bool = False,
-        device=None,
-    ) -> tuple[Walkers, dict[str, float]]:
-        """Advance the persistent chain and draw production samples.
-
-        On the first call (or when ``reset=True``) the chain is initialized and
-        burned in once; subsequent calls advance the existing walkers without
-        re-burning. The sampler owns its walkers and RNG across calls.
-
-        Parameters
-        ----------
-        model : callable
-            Wavefunction model returning `WavefunctionOutput`.
-        reset : bool, optional
-            Force a fresh, re-seeded, un-burned-in chain.
-        device : torch.device, str, or None, optional
-            Target device for the chain. On a fresh chain this selects the
-            device; on an existing chain a mismatching device raises.
-
-        Returns
-        -------
-        tuple
-            Pair ``(walkers, stats)`` where ``walkers`` holds the final samples
-            and ``stats`` reports sampler diagnostics for logging.
-        """
-
-        if reset or self._walkers is None:
-            self.reset(device=device)
-        else:
-            self._require_device(device)
-        if not self._has_burned_in and self.burn_in:
-            self._walkers = self.sample(model, self._walkers, self.burn_in)
-            self._has_burned_in = True
-        self._walkers = self.sample(model, self._walkers, self.n_steps)
-        stats: dict[str, float] = {
-            "acceptance_rate": float(self.acceptance_rate),
-            "n_walkers": int(self._walkers.batch_size),
-            "burn_in": int(self.burn_in),
-            "n_steps": int(self.n_steps),
-            "proposal_scale": float(getattr(self.move, "step_size", self.proposal_scale)),
-        }
-        if self.seed is not None:
-            stats["seed"] = int(self.seed)
-        # Geometry diagnostics describe the production samples actually
-        # returned to the caller; phase namespacing (train/validation/eval)
-        # is owned by whoever logs these stats.
-        stats.update(summarize_walker_geometry(self._walkers))
-        return self._walkers, stats
-
-    def mcmc_state_dict(self) -> dict[str, Any]:
-        """Return checkpointable Markov-chain and RNG state.
-
-        This is intentionally separate from `torch.nn.Module.state_dict`, which
-        keeps its normal module-parameter semantics. MCMC state (walkers,
-        burn-in flag, running acceptance, and generator state) is persisted here
-        instead so checkpointing does not abuse the standard module API.
-        """
-
-        return {
-            "walkers": self._walkers,
-            "has_burned_in": self._has_burned_in,
-            "acceptance_rate": float(self.acceptance_rate),
-            "generator_state": self._generator.get_state(),
-            "generator_device": str(self._generator_device),
-        }
-
-    def load_mcmc_state_dict(self, state: Mapping[str, Any], *, device=None) -> None:
-        """Restore Markov-chain and RNG state from `mcmc_state_dict`.
-
-        Recreates the generator on the requested runtime device when provided,
-        otherwise on the checkpointed device. Exact generator state is restored
-        only when the checkpoint and target generator devices match; CPU/CUDA
-        generators do not share a portable state representation.
-        """
-
-        checkpoint_device = _canonical_device(state["generator_device"])
-        self._generator_device = _canonical_device(device) if device is not None else checkpoint_device
-        self._generator = torch.Generator(device=self._generator_device)
-        if self._generator_device == checkpoint_device:
-            self._generator.set_state(state["generator_state"])
-        elif self.seed is not None:
-            self._generator.manual_seed(int(self.seed))
-        walkers = state["walkers"]
-        self._walkers = None if walkers is None else walkers.to(device=self._generator_device)
-        self._has_burned_in = bool(state["has_burned_in"])
-        self.acceptance_rate = float(state.get("acceptance_rate", 0.0))
-
 
 def _default_spins(
+    system: ElectronicSystem,
     *,
-    n_up: int | None,
-    n_down: int | None,
-    n_electrons: int,
     n_walkers: int,
     device: torch.device | str | None,
     dtype: torch.dtype,
 ) -> torch.Tensor | None:
-    """Return repeated spin labels from a spin partition.
+    """Return repeated spin labels from system metadata.
 
     Parameters
     ----------
-    n_up, n_down : int or None
-        Spin partition. If either is ``None``, no spin labels are produced.
-    n_electrons : int
-        Number of electrons; must equal ``n_up + n_down`` when both are given.
+    system : ElectronicSystem
+        System whose ``n_up`` and ``n_down`` fields define the spin partition.
     n_walkers : int
         Number of walkers.
     device : torch.device, str, or None
@@ -434,13 +228,13 @@ def _default_spins(
     Returns
     -------
     torch.Tensor or None
-        Spin labels with shape ``[n_walkers, n_electrons]`` when a partition is
-        available, otherwise ``None``.
+        Spin labels with shape ``[n_walkers, n_electrons]`` when spin metadata
+        is available, otherwise ``None``.
     """
 
-    if n_up is None or n_down is None:
+    if system.n_up is None or system.n_down is None:
         return None
-    spins = torch.tensor([1.0] * n_up + [-1.0] * n_down, device=device, dtype=dtype)
-    if spins.numel() != n_electrons:
-        raise ValueError("Spin partition must match n_electrons")
+    spins = torch.tensor([1.0] * system.n_up + [-1.0] * system.n_down, device=device, dtype=dtype)
+    if spins.numel() != system.n_electrons:
+        raise ValueError("System spin partition must match n_electrons")
     return spins.unsqueeze(0).expand(n_walkers, -1).clone()
