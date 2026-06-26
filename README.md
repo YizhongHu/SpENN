@@ -39,8 +39,8 @@ uv run --extra cpu pytest -q
 ```
 
 Configured runs go through the single `run.py` entrypoint, which launches one
-`spenn.runner.Runner` from a YAML config. The Hooke pair smoke training config
-is a working example:
+`spenn.runner.Runner` from a YAML config. The legacy Hooke pair smoke training
+test config is a working example:
 
 ```bash
 uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml

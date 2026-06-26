@@ -1,4 +1,4 @@
-"""PR7 workflow-readiness tests for the canonical Hooke pair configs.
+"""PR7 workflow-readiness tests for legacy Hooke pair test configs.
 
 Runs the real ``experiments/hooke/configs/smoke`` train and eval configs
 end-to-end through ``run_from_config`` and asserts the run-directory artifacts,
@@ -35,7 +35,7 @@ EXPECTED_ARTIFACTS = (
 
 
 def _run_config(config: Path, tmp_path: Path, overrides: dict[str, object] | None = None) -> Path:
-    """Run one canonical config into ``tmp_path`` and return the run directory."""
+    """Run one legacy test config into ``tmp_path`` and return the run directory."""
 
     cfg = OmegaConf.load(config)
     cfg.run.root = str(tmp_path)
@@ -70,8 +70,8 @@ def _metrics_by_namespace(run_dir: Path) -> dict[str, set[str]]:
     return namespaces
 
 
-def test_canonical_configs_load_and_interpolate() -> None:
-    """Both canonical configs load and fully resolve without a live run."""
+def test_legacy_test_configs_load_and_interpolate() -> None:
+    """Both legacy test configs load and fully resolve without a live run."""
 
     for config in (TRAIN_CONFIG, EVAL_CONFIG):
         cfg = OmegaConf.load(config)
@@ -81,8 +81,8 @@ def test_canonical_configs_load_and_interpolate() -> None:
         OmegaConf.resolve(cfg)
 
 
-def test_canonical_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> None:
-    """The canonical train config runs and emits artifacts plus perf metrics."""
+def test_legacy_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> None:
+    """The legacy train config runs and emits artifacts plus perf metrics."""
 
     run_dir = _run_config(TRAIN_CONFIG, tmp_path)
 
@@ -99,8 +99,8 @@ def test_canonical_train_config_runs_and_logs_perf_metrics(tmp_path: Path) -> No
     assert {"step_time_sec", "step_time_sec_rolling_mean"} <= namespaces["train/perf"]
 
 
-def test_canonical_eval_config_runs_and_emits_energy_metrics(tmp_path: Path) -> None:
-    """The canonical eval config runs EnergyEvaluation with reference errors."""
+def test_legacy_eval_config_runs_and_emits_energy_metrics(tmp_path: Path) -> None:
+    """The legacy eval config runs EnergyEvaluation with reference errors."""
 
     run_dir = _run_config(EVAL_CONFIG, tmp_path)
 
@@ -150,7 +150,7 @@ def test_metadata_records_hardware_and_runtime_provenance(tmp_path: Path) -> Non
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_canonical_train_config_runs_on_cuda(tmp_path: Path) -> None:
+def test_legacy_train_config_runs_on_cuda(tmp_path: Path) -> None:
     """GPU smoke path: the train config runs with runtime.device=cuda."""
 
     run_dir = _run_config(

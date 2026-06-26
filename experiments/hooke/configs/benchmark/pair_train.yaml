@@ -1,32 +1,19 @@
 # =============================================================================
-# Hooke pair benchmark training (PR8 validation scan base config)
+# Legacy Hooke pair benchmark-shaped training test config
 # =============================================================================
 #
 # Purpose:
 #   Training config for the two-electron Hooke system used as the base of the
 #   pair validation study (experiments/hooke/studies/pair_validation/).
-#
-# ---- BEGIN AI-FACED CONFIG GUIDANCE ----
-#
-# This config is intended for:
-#   - validation-scan training runs launched by the user
-#   - train-end validation with an independent sampler (validation/* metrics)
-#   - grid overrides on optimizer_params.lr, model_params.channels,
-#     model_params.gate_activation, and runtime.seed
-#
-# This config is not intended for:
-#   - final held-out benchmark evaluation (use an Evaluate config with
-#     reference_energy for eval/* reporting)
-#   - smoke testing (use experiments/hooke/configs/smoke/pair_train.yaml)
-#
-# ----- END AI-FACED CONFIG GUIDANCE -----
+#   Legacy test/reference copy: the study-local source of truth is
+#   experiments/hooke/studies/pair_validation/configs/pair_train.yaml.
 #
 # Grid points are launched externally (loop or SLURM array), e.g.:
 #
 #   uv run python run.py --config experiments/hooke/configs/benchmark/pair_train.yaml \
 #     optimizer_params.lr=1e-3 model_params.channels=32 \
 #     model_params.gate_activation=silu runtime.seed=3 \
-#     study.name=hooke_pair_validation_v1
+#     study.name=hooke_pair_validation study.version=v2 study.phase=validation_train
 #
 # =============================================================================
 
@@ -47,12 +34,13 @@ experiment:
 # -----------------------------------------------------------------------------
 # Study provenance
 # -----------------------------------------------------------------------------
-# Identifies which study (if any) launched this run. The launcher sets
-# study.name via an override; future PR8.2 post-processing may derive a
-# deterministic config_id from resolved grid fields when config_id is null.
-# Both fields land in resolved_config.yaml and checkpoint manifests.
+# Identifies which study (if any) launched this run. The launcher sets study
+# provenance via overrides; study post-processing may derive a deterministic
+# config_id from resolved grid fields when config_id is null.
 study:
   name: null
+  version: null
+  phase: validation_train
   config_id: null
 
 
@@ -103,12 +91,14 @@ wandb:
   # local run directories. Populated by run setup before loggers instantiate.
   name: ${run.run_id}
   mode: online
-  group: hooke_pair_validation_v1
+  group: ${study.name}_${study.version}_${study.phase}
   job_type: train
   tags:
     - hooke-pair
     - ${runtime.device}
-    - study-v1
+    - "study:${study.name}"
+    - "study_version:${study.version}"
+    - "study_phase:${study.phase}"
   mirror_scalars: true
   dashboard_aliases: true
   health_flags: true
@@ -144,7 +134,7 @@ model_params:
   hidden_channels: 16
   num_hidden_layers: 1
   # `layers` documents the SpENN layer count. The component spec below must
-  # list exactly this many SpENNLayer entries; study v1 pins layers=1.
+  # list exactly this many SpENNLayer entries; study v2 pins layers=1.
   layers: 1
   # `gate_activation` selects the GatedNormActivation gate via gate_targets.
   gate_activation: silu

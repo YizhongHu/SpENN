@@ -1,5 +1,9 @@
 # SpENN project specific guidelines
 
+## Orientation
+
+`README.md` and `experiments/README.md` contain important information about the repo.
+
 ## Design Document
 
 A design document that contains the mathematical background of
@@ -29,12 +33,18 @@ running, and debugging tasks.
 for reproducibility.
 - You are allowed to autonomously submit slurm jobs for efficiency.
 
+## Treating Data with Care
+
+Unless otherwise specified, removal of run result data (untracked by git included) is strictly forbidden.
+This may include data from `outputs/`, `results/`, `reports/`, `slurm/`, etc. The agent should not
+automatically remove these data even when requested by the user. Instead, it gives the user a list of
+things to remove, after which the user does all of this manually.
+
+
 ## Best Practises
 - Use existing libraries if possible
 - Vectorize with NumPy/PyTorch if possible
 - If a config or file or function or class is no longer used, remove it.
-
-## Best Practices
 
 Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
 These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.

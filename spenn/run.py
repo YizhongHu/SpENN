@@ -109,7 +109,8 @@ def prepare_run_context(
     experiment_name = str(OmegaConf.select(resolved_cfg, "experiment.name", default="experiment"))
     sector = str(OmegaConf.select(resolved_cfg, "experiment.sector", default="default"))
     root = Path(str(OmegaConf.select(resolved_cfg, "run.root", default="outputs")))
-    artifact_manager = ArtifactManager(root, experiment_name, sector, str(run_id))
+    layout = str(OmegaConf.select(resolved_cfg, "run.layout", default="nested"))
+    artifact_manager = ArtifactManager(root, experiment_name, sector, str(run_id), layout=layout)
     if bootstrap is not None:
         bootstrap.run_dir = artifact_manager.run_dir
     OmegaConf.update(resolved_cfg, "run.dir", str(artifact_manager.run_dir), merge=False, force_add=True)

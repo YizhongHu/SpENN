@@ -1,5 +1,5 @@
 # =============================================================================
-#  SpENN | Hooke pair smoke evaluation
+#  SpENN | Legacy Hooke pair smoke evaluation test config
 # -----------------------------------------------------------------------------
 #  experiment : hooke_pair_smoke        runner : spenn.runner.Evaluate
 #  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
@@ -9,11 +9,13 @@
 #   Cheap end-to-end sampled-evaluation sanity check for the two-electron Hooke
 #   system. Exercises the Evaluate runner, EnergyEvaluation diagnostics, and
 #   the eval metric namespaces against a freshly initialized SpENN ansatz.
+#   Legacy test config; study-owned canonical configs live under
+#   experiments/hooke/studies/.
 #
 # Workflow position:
 #
-#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  benchmark configs
-#   (VMC training)                      (this file)          (future PRs)
+#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  study configs
+#   (VMC training)                      (this legacy test file) (canonical work)
 #
 # ---- BEGIN AI-FACED CONFIG GUIDANCE ----
 #

@@ -1,5 +1,5 @@
 # =============================================================================
-#  SpENN | Hooke pair smoke training
+#  SpENN | Legacy Hooke pair smoke training test config
 # -----------------------------------------------------------------------------
 #  experiment : hooke_pair_smoke        runner : spenn.runner.Train
 #  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
@@ -7,11 +7,13 @@
 #
 # Purpose:
 #   Cheap end-to-end training sanity check for the two-electron Hooke system.
+#   Legacy test config; study-owned canonical configs live under
+#   experiments/hooke/studies/.
 #
 # Workflow position:
 #
-#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  benchmark configs
-#   (this file)                         (sampled eval)       (future PRs)
+#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  study configs
+#   (this legacy test file)             (sampled eval)       (canonical work)
 #
 # ---- BEGIN AI-FACED CONFIG GUIDANCE ----
 #
@@ -232,7 +234,7 @@ validation:
   return_terms: true
 
 validation_sampler_params:
-  # Smoke-sized validation chain; benchmark configs use a much larger one.
+  # Smoke-sized validation chain; benchmark-shaped legacy configs use a much larger one.
   n_walkers: 32
   burn_in: 10
   n_steps: 5
@@ -598,7 +600,7 @@ callbacks:
         name: energy
         include_terms: true
 
-  # Save checkpoints. Smoke runs checkpoint every step; benchmark configs should
+  # Save checkpoints. Smoke runs checkpoint every step; benchmark-shaped legacy configs should
   # usually use a lower cadence.
   - _target_: spenn.callback.Checkpoint
     triggers:

@@ -1,5 +1,5 @@
 # =============================================================================
-#  SpENN | Hooke pair preflight training
+#  SpENN | Legacy Hooke pair CPU preflight test config
 # -----------------------------------------------------------------------------
 #  experiment : hooke_pair_smoke        runner : spenn.runner.Train
 #  system     : 2e Hooke atom, w=0.5    budget : ~seconds on CPU
@@ -7,11 +7,13 @@
 #
 # Purpose:
 #   Check numerical stability during basic training.
+#   Legacy test config; study-owned canonical configs live under
+#   experiments/hooke/studies/.
 #
 # Workflow position:
 #
-#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  benchmark configs
-#   (this file)                         (sampled eval)       (future PRs)
+#   pair_train.yaml  --checkpoints/-->  pair_eval.yaml  -->  study configs
+#   (this legacy test file)             (sampled eval)       (canonical work)
 #
 # Config style:
 #   The first half of this file contains parameter blocks: readable knobs that
@@ -526,7 +528,7 @@ callbacks:
         atol: ${checks.equivariance.atol}
         rtol: ${checks.equivariance.rtol}
 
-  # Save checkpoints. Smoke runs checkpoint every step; benchmark configs should
+  # Save checkpoints. Smoke runs checkpoint every step; benchmark-shaped legacy configs should
   # usually use a lower cadence.
   - _target_: spenn.callback.Checkpoint
     triggers:

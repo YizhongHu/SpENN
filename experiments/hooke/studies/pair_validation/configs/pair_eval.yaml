@@ -1,0 +1,489 @@
+# =============================================================================
+# Hooke pair validation study evaluation (PR8 post-selection reporting)
+# =============================================================================
+#
+# Purpose:
+#   Evaluation of the model/protocol selected by the pair
+#   validation study (experiments/hooke/studies/pair_validation/). Restores a
+#   trained checkpoint, samples with the large final-evaluation sampler, and
+#   reports eval/* metrics including exact-reference error.
+#
+# PR8.3 orchestrators apply manifest/job-row overrides to this one base config.
+# Each run remains a normal configured run:
+#
+#   uv run python run.py --config experiments/hooke/studies/pair_validation/configs/pair_eval.yaml \
+#     load.path=<checkpoint> runtime.seed=100000 \
+#     study.name=hooke_pair_validation study.version=v2 study.phase=final_eval
+#
+# =============================================================================
+
+
+# =============================================================================
+# Parameter blocks: user-facing knobs and shared values
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Experiment identity
+# -----------------------------------------------------------------------------
+experiment:
+  name: hooke_pair_benchmark
+  sector: pair
+  run_name: hooke_pair_benchmark_final_eval
+
+
+# -----------------------------------------------------------------------------
+# Study provenance
+# -----------------------------------------------------------------------------
+# Orchestration sets study provenance so final-benchmark summaries can group
+# eval runs; these fields land in resolved_config.yaml.
+study:
+  name: null
+  version: null
+  phase: final_eval
+  config_id: null
+
+
+# -----------------------------------------------------------------------------
+# Run directory
+# -----------------------------------------------------------------------------
+run:
+  root: outputs
+  run_id: null
+  dir: null
+  timezone: America/New_York
+
+
+# -----------------------------------------------------------------------------
+# Runtime
+# -----------------------------------------------------------------------------
+# runtime.seed is the *evaluation* seed: it seeds the evaluation sampler and
+# must come from the manifest's final_evaluation.eval_seeds, never from the
+# validation seeds.
+runtime:
+  seed: 100000
+  device: cuda
+  dtype: float64
+
+
+# -----------------------------------------------------------------------------
+# Terminal logging
+# -----------------------------------------------------------------------------
+terminal:
+  enabled: true
+  level: info
+  color: auto
+  rich: auto
+  # `progress` should remain false for SLURM-compatible, line-oriented logs.
+  progress: false
+
+
+# -----------------------------------------------------------------------------
+# Optional W&B dashboard tracking
+# -----------------------------------------------------------------------------
+# W&B is a dashboard projection only; the local run directory stays
+# authoritative and the final benchmark summary never reads W&B.
+wandb:
+  project: SpENN-QMC
+  entity: null
+  name: ${run.run_id}
+  mode: online
+  group: ${study.name}_${study.version}_${study.phase}
+  job_type: eval
+  tags:
+    - hooke-pair
+    - ${runtime.device}
+    - "${study.name}"
+    - "${study.version}"
+    - "${study.phase}"
+  mirror_scalars: true
+  dashboard_aliases: true
+  health_flags: true
+  log_artifacts: false
+
+
+# -----------------------------------------------------------------------------
+# Physical system
+# -----------------------------------------------------------------------------
+system:
+  name: hooke_pair
+  n_particles: 2
+  spatial_dim: 3
+  omega: 0.5
+  spin:
+    n_up: 1
+    n_down: 1
+
+
+# -----------------------------------------------------------------------------
+# Reference values
+# -----------------------------------------------------------------------------
+# Exact-reference comparison is allowed here (and only here): final evaluation
+# reports eval/energy_error and eval/energy_abs_error after the protocol froze.
+references:
+  # Exact ground-state energy of the omega=0.5 Hooke singlet (Taut 1993).
+  exact_energy: 2.0
+
+
+# -----------------------------------------------------------------------------
+# Model scale
+# -----------------------------------------------------------------------------
+# Template defaults only: final evaluation configs should set `model:` to the
+# explicit model spec of the training run. Checkpoint restore is runner-owned
+# through the top-level `load` block, so checkpoints are never hidden model
+# factories.
+gate_targets:
+  silu: torch.nn.SiLU
+  sigmoid: torch.nn.Sigmoid
+  tanh: torch.nn.Tanh
+
+model_params:
+  max_order: 2
+  max_virtual_order: 2
+  channels: 8
+  hidden_channels: 16
+  num_hidden_layers: 1
+  layers: 1
+  gate_activation: silu
+  include_spins: true
+  mixing_implementation: vectorized
+  mixing_initial_weight: 0.5
+  # Fixed Hooke Gaussian tail: exp(-(omega / 2) * sum_i |r_i|^2).
+  harmonic_confinement_coefficient: 0.25
+
+
+# -----------------------------------------------------------------------------
+# Final evaluation sampler scale
+# -----------------------------------------------------------------------------
+# Deliberately larger than the validation sampler. PR8.3 tooling preserves the
+# manifest-declared protocol through row overrides.
+sampler_params:
+  n_walkers: 8192
+  burn_in: 1000
+  n_steps: 500
+  proposal_scale: 0.35
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint restore
+# -----------------------------------------------------------------------------
+load:
+  # Path may be a checkpoint root containing latest.json, latest.json itself,
+  # or a complete step_000000-style checkpoint directory.
+  path: ???
+  mode: model_only
+  strict: true
+  allow_protocol_mismatch: false
+
+
+# -----------------------------------------------------------------------------
+# Evaluation
+# -----------------------------------------------------------------------------
+evaluation:
+  # Provenance only: the training seed of the restored checkpoint, recorded in
+  # resolved_config.yaml for the final benchmark summary.
+  training_seed: null
+  return_terms: true
+
+
+# -----------------------------------------------------------------------------
+# Physics-sanity diagnostics
+# -----------------------------------------------------------------------------
+diagnostic_params:
+  quantiles: [0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]
+
+  sampled_eval_table:
+    enabled: false
+    max_samples: 100000
+    selection: stride
+
+  pair_distance_probe:
+    enabled: true
+    r12_min: 1.0e-4
+    r12_max: 8.0
+    n_points: 200
+    n_directions: 3
+    center_of_mass_radii: [0.0, 0.5, 1.0]
+    include_exact_wavefunction: true
+    local_energy_chunk_size: 256
+
+  center_of_mass_probe:
+    enabled: true
+    com_radius_min: 0.0
+    com_radius_max: 8.0
+    n_points: 200
+    pair_distance: 1.0
+    n_directions: 3
+    include_exact_wavefunction: true
+    local_energy_chunk_size: 256
+
+  exchange:
+    enabled: true
+    max_samples: 1024
+    exchange_contract: symmetric_spatial_singlet
+
+  rotation:
+    enabled: true
+    max_samples: 1024
+    n_rotations: 8
+    local_energy_chunk_size: 256
+
+  trace_equivariance:
+    enabled: true
+    max_samples: 1024
+
+
+# -----------------------------------------------------------------------------
+# Timing
+# -----------------------------------------------------------------------------
+timing:
+  # Set true on GPU runs for accurate timings; adds a small synchronization cost.
+  cuda_synchronize: false
+
+
+# =============================================================================
+# Component specs: Hydra-instantiated objects
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Runner
+# -----------------------------------------------------------------------------
+# Evaluate samples once from the restored model and feeds one shared
+# EvaluationContext to the EnergyEvaluation diagnostic.
+runner:
+  _target_: spenn.runner.Evaluate
+  model: ${model}
+  load: ${load}
+  sampler: ${sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  return_terms: ${evaluation.return_terms}
+  diagnostics:
+    - _target_: spenn.diagnostics.EnergyEvaluation
+      name: energy
+      reference_energy: ${references.exact_energy}
+      include_terms: true
+      quantiles: ${diagnostic_params.quantiles}
+      include_local_energy_error_quantiles: true
+      sampled_eval_table: ${diagnostic_params.sampled_eval_table}
+      artifact_path: ${run.dir}/diagnostics/energy/sampled_eval_table.csv
+
+    - _target_: spenn.diagnostics.HookePairDistanceProbe
+      name: pair_distance_probe
+      artifact_path: ${run.dir}/diagnostics/pair_distance_probe/probe.csv
+      reference_energy: ${references.exact_energy}
+      include_exact_wavefunction: ${diagnostic_params.pair_distance_probe.include_exact_wavefunction}
+      r12_min: ${diagnostic_params.pair_distance_probe.r12_min}
+      r12_max: ${diagnostic_params.pair_distance_probe.r12_max}
+      n_points: ${diagnostic_params.pair_distance_probe.n_points}
+      n_directions: ${diagnostic_params.pair_distance_probe.n_directions}
+      center_of_mass_radii: ${diagnostic_params.pair_distance_probe.center_of_mass_radii}
+      local_energy_chunk_size: ${diagnostic_params.pair_distance_probe.local_energy_chunk_size}
+      enabled: ${diagnostic_params.pair_distance_probe.enabled}
+
+    - _target_: spenn.diagnostics.HookePairCenterOfMassProbe
+      name: center_of_mass_probe
+      artifact_path: ${run.dir}/diagnostics/center_of_mass_probe/probe.csv
+      reference_energy: ${references.exact_energy}
+      include_exact_wavefunction: ${diagnostic_params.center_of_mass_probe.include_exact_wavefunction}
+      com_radius_min: ${diagnostic_params.center_of_mass_probe.com_radius_min}
+      com_radius_max: ${diagnostic_params.center_of_mass_probe.com_radius_max}
+      n_points: ${diagnostic_params.center_of_mass_probe.n_points}
+      pair_distance: ${diagnostic_params.center_of_mass_probe.pair_distance}
+      n_directions: ${diagnostic_params.center_of_mass_probe.n_directions}
+      local_energy_chunk_size: ${diagnostic_params.center_of_mass_probe.local_energy_chunk_size}
+      enabled: ${diagnostic_params.center_of_mass_probe.enabled}
+
+    - _target_: spenn.diagnostics.PositionExchangeDiagnostic
+      name: exchange
+      artifact_path: ${run.dir}/diagnostics/exchange/trace.jsonl
+      exchange_contract: ${diagnostic_params.exchange.exchange_contract}
+      max_samples: ${diagnostic_params.exchange.max_samples}
+      enabled: ${diagnostic_params.exchange.enabled}
+
+    - _target_: spenn.diagnostics.RotationDiagnostic
+      name: rotation
+      artifact_path: ${run.dir}/diagnostics/rotation/trace.jsonl
+      max_samples: ${diagnostic_params.rotation.max_samples}
+      n_rotations: ${diagnostic_params.rotation.n_rotations}
+      local_energy_chunk_size: ${diagnostic_params.rotation.local_energy_chunk_size}
+      enabled: ${diagnostic_params.rotation.enabled}
+
+    - _target_: spenn.diagnostics.TraceEquivarianceDiagnostic
+      name: trace_equivariance
+      artifact_path: ${run.dir}/diagnostics/trace_equivariance/trace.jsonl
+      max_samples: ${diagnostic_params.trace_equivariance.max_samples}
+      enabled: ${diagnostic_params.trace_equivariance.enabled}
+
+
+# -----------------------------------------------------------------------------
+# Model
+# -----------------------------------------------------------------------------
+model:
+  _target_: spenn.nn.SpENNWaveFunction
+  trace_name: spenn
+
+  embedding:
+    _target_: spenn.nn.Embedding
+    max_order: ${model_params.max_order}
+    spatial_dim: ${system.spatial_dim}
+    out_channels: ${model_params.channels}
+    hidden_channels: ${model_params.hidden_channels}
+    num_hidden_layers: ${model_params.num_hidden_layers}
+    include_spins: ${model_params.include_spins}
+
+  layers:
+    - _target_: spenn.nn.SpENNLayer
+
+      mixing:
+        _target_: spenn.nn.EquivariantMixing
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+        implementation: ${model_params.mixing_implementation}
+        initial_weight: ${model_params.mixing_initial_weight}
+
+      fourier:
+        _target_: spenn.reps.FourierTransform
+
+      activation:
+        _target_: spenn.nn.GatedNormActivation
+        gate:
+          _target_: ${gate_targets.${model_params.gate_activation}}
+
+      path_aggregation:
+        _target_: spenn.nn.PathAggregation
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+
+      inverse_fourier:
+        _target_: spenn.reps.InverseFourierTransform
+
+      update:
+        _target_: spenn.nn.ResidualUpdate
+
+  envelope:
+    _target_: spenn.nn.AdditiveEnvelope
+    envelopes:
+      - _target_: spenn.nn.HarmonicConfinement
+        coefficient: ${model_params.harmonic_confinement_coefficient}
+      - _target_: spenn.nn.ElectronElectronCusp
+
+  readout:
+    _target_: spenn.nn.readout.PfaffianReadout
+    channels: ${model_params.channels}
+
+
+# -----------------------------------------------------------------------------
+# Hamiltonian
+# -----------------------------------------------------------------------------
+hamiltonian_terms:
+  kinetic:
+    _target_: spenn.physics.kinetic.KineticEnergy
+
+  harmonic_trap:
+    _target_: spenn.physics.potential.HarmonicTrap
+    omega: ${system.omega}
+
+  electron_electron:
+    _target_: spenn.physics.potential.ElectronElectronInteraction
+
+
+# -----------------------------------------------------------------------------
+# Sampler
+# -----------------------------------------------------------------------------
+sampler:
+  _target_: spenn.sampling.metropolis.MetropolisSampler
+  n_walkers: ${sampler_params.n_walkers}
+  burn_in: ${sampler_params.burn_in}
+  n_steps: ${sampler_params.n_steps}
+  proposal_scale: ${sampler_params.proposal_scale}
+  seed: ${runtime.seed}
+
+  n_electrons: ${system.n_particles}
+  spatial_dim: ${system.spatial_dim}
+  n_up: ${system.spin.n_up}
+  n_down: ${system.spin.n_down}
+  dtype: ${runtime.dtype}
+
+
+# -----------------------------------------------------------------------------
+# Callbacks
+# -----------------------------------------------------------------------------
+callbacks:
+  - _target_: spenn.callback.ConfigSnapshot
+    triggers:
+      - run_start
+    output_path: ${run.dir}/config.yaml
+
+  - _target_: spenn.callback.ResolvedConfigSnapshot
+    triggers:
+      - run_start
+    output_path: ${run.dir}/resolved_config.yaml
+
+  - _target_: spenn.callback.Metadata
+    triggers:
+      - run_start
+      - run_end
+      - exception
+    output_path: ${run.dir}/metadata.json
+
+  - _target_: spenn.callback.Status
+    triggers:
+      - run_start
+      - run_end
+      - evaluate_end
+      - exception
+    output_path: ${run.dir}/status.json
+
+  # Whole-run wall-clock timing: runtime/wall_time_sec.
+  - _target_: spenn.callback.RunTiming
+    triggers:
+      - run_start
+      - run_end
+      - exception
+    cuda_synchronize: ${timing.cuda_synchronize}
+
+  # Evaluation wall time: eval/perf/wall_time_sec.
+  - _target_: spenn.callback.EvaluationTiming
+    triggers:
+      - evaluate_start
+      - evaluate_end
+      - exception
+    cuda_synchronize: ${timing.cuda_synchronize}
+
+  # Per-diagnostic durations: diagnostics/<name>/time_sec.
+  - _target_: spenn.callback.DiagnosticTiming
+    triggers:
+      - diagnostic_start
+      - diagnostic_end
+      - diagnostic_failed
+    cuda_synchronize: ${timing.cuda_synchronize}
+
+
+# -----------------------------------------------------------------------------
+# Loggers
+# -----------------------------------------------------------------------------
+# Local metrics are authoritative. The final benchmark summary reads only the
+# run directories; W&B is optional visualization.
+loggers:
+  - _target_: spenn.logging.CSV
+    path: ${run.dir}/metrics.csv
+
+  - _target_: spenn.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
+
+  # Optional W&B dashboard logger. Uncomment only when optional W&B support is
+  # installed (`uv sync --extra cu126 --extra wandb`) and you are authenticated.
+  #
+  # - _target_: spenn.logging.WandB
+  #   project: ${wandb.project}
+  #   entity: ${wandb.entity}
+  #   name: ${wandb.name}
+  #   mode: ${wandb.mode}
+  #   group: ${wandb.group}
+  #   job_type: ${wandb.job_type}
+  #   tags: ${wandb.tags}
+  #   mirror_scalars: ${wandb.mirror_scalars}
+  #   dashboard_aliases: ${wandb.dashboard_aliases}
+  #   health_flags: ${wandb.health_flags}
+  #   log_artifacts: ${wandb.log_artifacts}

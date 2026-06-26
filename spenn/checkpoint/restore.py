@@ -323,9 +323,10 @@ def _assert_model_runtime(model: Any, context: Any) -> None:
     expected_dtype_name = getattr(metadata, "dtype", None)
     if expected_device is None or expected_dtype_name is None:
         return
+    expected_torch_device = _canonical_runtime_device(expected_device)
     expected_dtype = getattr(torch, str(expected_dtype_name))
     for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
-        if tensor.device != torch.device(expected_device):
+        if _canonical_runtime_device(tensor.device) != expected_torch_device:
             raise RuntimeError(
                 f"checkpoint restore left model tensor {name!r} on {tensor.device}, "
                 f"expected {expected_device}"
@@ -335,3 +336,15 @@ def _assert_model_runtime(model: Any, context: Any) -> None:
                 f"checkpoint restore left model tensor {name!r} with dtype {tensor.dtype}, "
                 f"expected {expected_dtype}"
             )
+
+
+def _canonical_runtime_device(device: Any) -> Any:
+    """Return a comparable torch device for runtime checks."""
+
+    import torch
+
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and resolved.index is None:
+        index = torch.cuda.current_device() if torch.cuda.is_available() else 0
+        return torch.device("cuda", index)
+    return resolved
