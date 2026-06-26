@@ -22,8 +22,27 @@ GRID = CONFIGS / "grid.yaml"
 while str(STUDY_DIR) in sys.path:
     sys.path.remove(str(STUDY_DIR))
 sys.path.insert(0, str(STUDY_DIR))
+_STUDY_TOP_LEVEL_MODULES = {
+    "artifacts",
+    "collect",
+    "final_collect",
+    "final_eval",
+    "final_plan",
+    "final_report",
+    "final_train",
+    "launch",
+    "plan",
+    "plot",
+    "run_ids",
+    "select_champions",
+    "stats",
+    "sync",
+    "train",
+    "utils",
+    "validate",
+}
 for module_name in list(sys.modules):
-    if module_name == "utils" or module_name.startswith("utils."):
+    if module_name.split(".", maxsplit=1)[0] in _STUDY_TOP_LEVEL_MODULES:
         del sys.modules[module_name]
 
 
@@ -42,7 +61,7 @@ def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
 
 from utils import io as json_io  # noqa: E402
 from utils import layout  # noqa: E402
-launch = _load_script("launch")
+launch = _load_script("launch", bind_direct=True)
 plan = _load_script("plan")
 train = _load_script("train")
 collect = _load_script("collect")

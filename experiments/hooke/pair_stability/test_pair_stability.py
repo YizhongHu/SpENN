@@ -27,8 +27,27 @@ GRID = CONFIGS / "grid.yaml"
 while str(STUDY_DIR) in sys.path:
     sys.path.remove(str(STUDY_DIR))
 sys.path.insert(0, str(STUDY_DIR))
+_STUDY_TOP_LEVEL_MODULES = {
+    "artifacts",
+    "collect",
+    "final_collect",
+    "final_eval",
+    "final_plan",
+    "final_report",
+    "final_train",
+    "launch",
+    "plan",
+    "plot",
+    "run_ids",
+    "select_champions",
+    "stats",
+    "sync",
+    "train",
+    "utils",
+    "validate",
+}
 for module_name in list(sys.modules):
-    if module_name == "utils" or module_name.startswith("utils."):
+    if module_name.split(".", maxsplit=1)[0] in _STUDY_TOP_LEVEL_MODULES:
         del sys.modules[module_name]
 
 import artifacts  # noqa: E402
