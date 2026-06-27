@@ -26,7 +26,7 @@ DEFAULT_SEED_OVERRIDES = {
     "final_eval": {
         "run_parameters.seed": "final_eval_seed",
         "runtime.seed": "final_eval_seed",
-        "model_initialization.seed": "final_eval_seed",
+        "model_initialization.seed": "final_train_model_seed",
         "evaluation.seed": "final_eval_seed",
     },
 }

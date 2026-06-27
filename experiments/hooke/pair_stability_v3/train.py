@@ -33,8 +33,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from experiments.toolkit import (  # noqa: E402
+    ExecutorOptions,
+    LocalExecutor,
     StagePlan,
-    execution_records_from_submission,
+    SubmissionRequest,
+    SubmititExecutor,
     write_execution_records,
 )
 from experiments.toolkit.resources import resource_from_profile  # noqa: E402
@@ -111,6 +114,34 @@ def _stage_plan_dir(results_root: Path, attempt_id: str) -> Path:
     """Return the durable train stage-plan directory."""
 
     return stage_dir(results_root, STAGE_TRAIN) / "stage_plans" / attempt_id
+
+
+def _executor(
+    *,
+    args: argparse.Namespace,
+    repo_root: Path,
+    results_root: Path,
+    study: str,
+    log_attempt: str,
+):
+    """Return the toolkit executor for train submissions."""
+
+    options = ExecutorOptions(
+        backend=args.backend,
+        args=args,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
+        job_name=stage_job_name(study, "train", smoke=args.smoke),
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        chunk_status_dir=stage_dir(results_root, STAGE_TRAIN) / "chunk_status" / log_attempt,
+    )
+    executor_cls = LocalExecutor if args.backend == "local" else SubmititExecutor
+    return executor_cls(
+        submit_command_sets=getattr(launch, "submit_command_sets"),
+        options=options,
+        claim_paths_for_statuses=launch.claim_paths_for_statuses,
+    )
 
 
 def _resource_spec(args: argparse.Namespace) -> Any:
@@ -351,19 +382,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         args=args,
     )
     stage_plan_dir = stage_plan.write(_stage_plan_dir(results_root, log_attempt))
-    chunk_status_dir = stage_dir(results_root, STAGE_TRAIN) / "chunk_status" / log_attempt
-    job_ids = launch.submit_command_sets(
-        command_sets,
+    execution_records = _executor(
         args=args,
-        backend=args.backend,
         repo_root=repo_root,
-        log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
-        job_name=stage_job_name(study, "train", smoke=args.smoke),
-        smoke=args.smoke,
-        chunk_size=args.chunk_size,
-        row_status_paths=row_status_paths,
-        chunk_status_dir=chunk_status_dir,
+        results_root=results_root,
+        study=study,
+        log_attempt=log_attempt,
+    ).submit(
+        stage_plan,
+        stage_plan.tasks,
+        SubmissionRequest(
+            command_sets=command_sets,
+            submitted_commands=submitted_commands,
+        ),
     )
+    job_ids = [record.launcher_job_id for record in execution_records]
 
     write_train_submission_records(
         jobs,
@@ -375,18 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         job_ids=job_ids,
         submitted_commands=submitted_commands,
     )
-    write_execution_records(
-        stage_plan_dir,
-        execution_records_from_submission(
-            tasks=stage_plan.tasks,
-            backend=args.backend,
-            job_ids=job_ids,
-            submitted_commands=submitted_commands,
-            claim_paths=launch.claim_paths_for_statuses(row_status_paths)
-            if launch.selected_device(args) == "cpu,cuda"
-            else None,
-        ),
-    )
+    write_execution_records(stage_plan_dir, execution_records)
     mode = "smoke train" if args.smoke else "train"
     print(f"{prefix} launched {len(job_ids)} {mode} jobs from 00_grid/{grid_attempt_id} via {args.backend}")
     return 0
