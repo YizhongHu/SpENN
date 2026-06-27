@@ -453,13 +453,17 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
 def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     results_root = _planned_results(tmp_path)
     submitted_commands: list[list[str]] = []
+    captured: dict[str, Any] = {}
 
-    def fake_submit_local(commands: Sequence[Sequence[str]], **kwargs: Any) -> list[str]:
+    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
+        commands = command_sets["cpu"]
         submitted_commands.extend([list(command) for command in commands])
+        captured["kwargs"] = kwargs
         assert len(kwargs["row_status_paths"]) == len(commands)
+        assert kwargs["chunk_status_dir"] == results_root / "01_train" / "chunk_status" / ATTEMPT
         return [f"local-train-{index}" for index, _ in enumerate(commands)]
 
-    monkeypatch.setattr(train.launch, "submit_local", fake_submit_local)
+    monkeypatch.setattr(train.launch, "submit_command_sets", fake_submit_command_sets)
 
     code = train.main(
         [
@@ -476,6 +480,7 @@ def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: py
 
     assert code == 0
     assert len(submitted_commands) == 16
+    assert captured["kwargs"]["backend"] == "local"
     plan_dir = results_root / "01_train" / "stage_plans" / ATTEMPT
     stage_plan = StagePlan.read(plan_dir)
     manifest = json.loads((plan_dir / "stage_manifest.json").read_text())
@@ -656,6 +661,12 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
         "model_initialization.seed": "scan_seed",
         "evaluation.seed": "scan_seed",
     }
+    assert manifest["seed_overrides"]["final_eval"] == {
+        "run_parameters.seed": "final_eval_seed",
+        "runtime.seed": "final_eval_seed",
+        "model_initialization.seed": "final_train_model_seed",
+        "evaluation.seed": "final_eval_seed",
+    }
     assert manifest["final_seed_sequences"] == {
         "final_train_sampler_seed": {"start": 101, "step": 1},
         "final_train_model_seed": {"start": 1001, "step": 1},
@@ -796,9 +807,12 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     job = manifest["jobs"][0]
     _write_checkpoint_pointer(results_root, str(job["run_id"]), ATTEMPT)
     submitted_commands: list[list[str]] = []
+    captured: dict[str, Any] = {}
 
-    def fake_submit_local(commands: Sequence[Sequence[str]], **kwargs: Any) -> list[str]:
+    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
+        commands = command_sets["cpu"]
         submitted_commands.extend([list(command) for command in commands])
+        captured["kwargs"] = kwargs
         assert len(kwargs["row_status_paths"]) == len(commands)
         assert kwargs["chunk_status_dir"] == results_root / "02_validation" / "chunk_status" / "V1"
         return [f"local-validation-{index}" for index, _ in enumerate(commands)]
@@ -807,7 +821,7 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     # a file; bind the v2 module explicitly so this test remains isolated from
     # the legacy pair_stability test module imports.
     monkeypatch.setattr(validate, "launch", launch)
-    monkeypatch.setattr(validate.launch, "submit_local", fake_submit_local)
+    monkeypatch.setattr(validate.launch, "submit_command_sets", fake_submit_command_sets)
 
     code = validate.main(
         [
@@ -826,6 +840,8 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
 
     assert code == 0
     assert len(submitted_commands) == 1
+    assert captured["kwargs"]["backend"] == "local"
+    assert captured["kwargs"]["allow_partial_failures"] is True
     script = submitted_commands[0][-1]
     assert str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml") in script
     assert "run_parameters.basis_slot=" in script

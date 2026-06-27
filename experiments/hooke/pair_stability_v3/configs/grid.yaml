@@ -113,7 +113,7 @@ seed_overrides:
   final_eval:
     run_parameters.seed: final_eval_seed
     runtime.seed: final_eval_seed
-    model_initialization.seed: final_eval_seed
+    model_initialization.seed: final_train_model_seed
     evaluation.seed: final_eval_seed
 
 # Independent final replicate seeds. replicate_index i uses start + i * step.
