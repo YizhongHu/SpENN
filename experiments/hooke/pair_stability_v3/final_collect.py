@@ -300,7 +300,7 @@ def _iter_final_eval_attempts(
         return []
     attempts = []
     for run_dir in sorted(child for child in eval_stage.iterdir() if child.is_dir()):
-        if run_dir.name in {"slurm_logs", "chunk_status"}:
+        if run_dir.name in {"slurm_logs", "chunk_status", "stage_plans"}:
             continue
         attempt_id = final_eval_attempt_id
         if attempt_id is None:

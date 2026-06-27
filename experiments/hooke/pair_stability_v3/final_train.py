@@ -31,6 +31,21 @@ from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_
 from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit import (  # noqa: E402
+    ExecutorOptions,
+    LocalExecutor,
+    StagePlan,
+    SubmissionRequest,
+    SubmititExecutor,
+    write_execution_records,
+)
+from experiments.toolkit.resources import resource_from_profile  # noqa: E402
+from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
+
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
 
@@ -345,6 +360,132 @@ def write_final_train_submission_records(
         )
 
 
+def _stage_plan_dir(results_root: Path, attempt_id: str) -> Path:
+    """Return the durable final-train stage-plan directory."""
+
+    return stage_dir(results_root, STAGE_FINAL_TRAIN) / "stage_plans" / attempt_id
+
+
+def _executor(
+    *,
+    args: argparse.Namespace,
+    repo_root: Path,
+    results_root: Path,
+    study: str,
+    attempt_id: str,
+):
+    """Return the toolkit executor for final-train submissions."""
+
+    options = ExecutorOptions(
+        backend=args.backend,
+        args=args,
+        repo_root=repo_root,
+        log_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "slurm_logs" / attempt_id,
+        job_name=stage_job_name(study, "final-train", smoke=args.smoke),
+        smoke=args.smoke,
+        chunk_size=args.chunk_size,
+        claim_rows=True,
+        chunk_status_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "chunk_status" / attempt_id,
+    )
+    executor_cls = LocalExecutor if args.backend == "local" else SubmititExecutor
+    return executor_cls(
+        submit_command_sets=getattr(launch, "submit_command_sets"),
+        options=options,
+        claim_paths_for_statuses=launch.claim_paths_for_statuses,
+    )
+
+
+def _resource_spec(args: argparse.Namespace) -> Any:
+    """Return a backend-neutral resource request for the selected device."""
+
+    selector = launch.selected_device(args)
+    profiles = launch.device_profiles(selector)
+    resolved_profiles = {}
+    for profile in profiles:
+        uv_environment, uv_extras, _runtime_device = launch.resolve_uv_settings_for_profile(args, profile)
+        slurm = launch.slurm_parameters(args, profile=profile, smoke=args.smoke)
+        resolved_profiles[profile] = resource_from_profile(
+            profile=profile,
+            partition=slurm.get("slurm_partition"),
+            timeout_min=slurm.get("timeout_min"),
+            mem_gb=slurm.get("mem_gb"),
+            cpus=slurm.get("cpus_per_task"),
+            gpus=slurm.get("gpus_per_node"),
+            uv_environment=uv_environment,
+            uv_extras=uv_extras,
+        ).to_dict()
+    if len(profiles) == 1:
+        return resource_from_profile(
+            profile=profiles[0],
+            partition=resolved_profiles[profiles[0]].get("partition"),
+            timeout_min=resolved_profiles[profiles[0]].get("timeout_min"),
+            mem_gb=resolved_profiles[profiles[0]].get("mem_gb"),
+            cpus=resolved_profiles[profiles[0]].get("threads"),
+            gpus=resolved_profiles[profiles[0]].get("gpus"),
+            uv_environment=resolved_profiles[profiles[0]].get("uv_environment"),
+            uv_extras=resolved_profiles[profiles[0]].get("uv_extras", ()),
+        )
+    return resource_from_profile(
+        profile=selector,
+        partition=None,
+        timeout_min=None,
+        mem_gb=None,
+        cpus=None,
+        gpus=None,
+        uv_environment=None,
+        uv_extras=(),
+        metadata={"profiles": resolved_profiles},
+    )
+
+
+def build_final_train_stage_plan(
+    jobs: Sequence[dict[str, Any]],
+    *,
+    manifest: dict[str, Any],
+    results_root: Path,
+    final_grid_attempt_id: str,
+    attempt_id: str,
+    commands: Sequence[Sequence[str]],
+    row_status_paths: Sequence[Path],
+    args: argparse.Namespace,
+) -> StagePlan:
+    """Build a reusable toolkit stage plan for final-train tasks."""
+
+    result_dirs = [
+        final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id)
+        for job in jobs
+    ]
+    checkpoint_paths = [result_dir / "checkpoints" / "latest.json" for result_dir in result_dirs]
+    tasks = tasks_from_commands(
+        stage=STAGE_FINAL_TRAIN,
+        attempt_id=attempt_id,
+        jobs=jobs,
+        commands=commands,
+        result_dirs=result_dirs,
+        row_status_paths=row_status_paths,
+        resources=_resource_spec(args),
+        completion_policy="status_completed_with_checkpoint",
+        checkpoint_paths=checkpoint_paths,
+        source_attempts={"final_grid": final_grid_attempt_id},
+    )
+    return StagePlan(
+        study=study_name_from_manifest(manifest),
+        stage=STAGE_FINAL_TRAIN,
+        attempt_id=attempt_id,
+        results_root=str(results_root),
+        source_attempts={"final_grid": final_grid_attempt_id},
+        timezone=manifest.get("timezone"),
+        smoke=bool(args.smoke),
+        metadata={
+            "backend": args.backend,
+            "device": launch.selected_device(args),
+            "chunk_size": args.chunk_size,
+            "claim_rows": True,
+        },
+        tasks=tasks,
+    )
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse final-train launch arguments."""
 
@@ -448,21 +589,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         final_train_attempt_dir(results_root, str(job["final_run_id"]), attempt_id) / "launcher_status.json"
         for job in jobs
     ]
-    chunk_status_dir = stage_dir(results_root, STAGE_FINAL_TRAIN) / "chunk_status" / attempt_id
-    log_attempt = attempt_id
-    job_ids = launch.submit_command_sets(
-        command_sets,
-        args=args,
-        backend=args.backend,
-        repo_root=repo_root,
-        log_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "slurm_logs" / log_attempt,
-        job_name=stage_job_name(study, "final-train", smoke=args.smoke),
-        smoke=args.smoke,
-        chunk_size=args.chunk_size,
+    stage_plan = build_final_train_stage_plan(
+        jobs,
+        manifest=manifest,
+        results_root=results_root,
+        final_grid_attempt_id=final_grid_attempt_id,
+        attempt_id=attempt_id,
+        commands=commands,
         row_status_paths=row_status_paths,
-        chunk_status_dir=chunk_status_dir,
-        claim_rows=True,
+        args=args,
     )
+    stage_plan_dir = stage_plan.write(_stage_plan_dir(results_root, attempt_id))
+    execution_records = _executor(
+        args=args,
+        repo_root=repo_root,
+        results_root=results_root,
+        study=study,
+        attempt_id=attempt_id,
+    ).submit(
+        stage_plan,
+        stage_plan.tasks,
+        SubmissionRequest(
+            command_sets=command_sets,
+            submitted_commands=submitted_commands,
+        ),
+    )
+    job_ids = [record.launcher_job_id for record in execution_records]
+    write_execution_records(stage_plan_dir, execution_records)
 
     if args.claim_existing_only:
         mode = "smoke final-train" if args.smoke else "final-train"

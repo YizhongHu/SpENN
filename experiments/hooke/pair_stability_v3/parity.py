@@ -401,7 +401,7 @@ def _compare_submission_presence(attempt_id: str) -> list[str]:
 
 def _check_v3_stage_plans(attempt_id: str) -> list[str]:
     differences = []
-    for stage in ("01_train", "02_validation"):
+    for stage in ("01_train", "02_validation", "06_final_train", "07_final_eval"):
         plan_dir = V3_DIR / "results" / stage / "stage_plans" / attempt_id
         for filename in ("stage_manifest.json", "tasks.jsonl", "execution_records.jsonl"):
             if not (plan_dir / filename).is_file():
