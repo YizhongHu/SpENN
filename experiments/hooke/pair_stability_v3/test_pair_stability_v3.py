@@ -71,6 +71,7 @@ final_train = _load_script("final_train", bind_direct=True)
 final_eval = _load_script("final_eval")
 final_collect = _load_script("final_collect")
 validate = _load_script("validate")
+from experiments.toolkit import StagePlan  # noqa: E402
 
 
 ATTEMPT = "20260623T120000-0400"
@@ -476,9 +477,12 @@ def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: py
     assert code == 0
     assert len(submitted_commands) == 16
     plan_dir = results_root / "01_train" / "stage_plans" / ATTEMPT
+    stage_plan = StagePlan.read(plan_dir)
     manifest = json.loads((plan_dir / "stage_manifest.json").read_text())
     tasks = [json.loads(line) for line in (plan_dir / "tasks.jsonl").read_text().splitlines()]
     executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
+    assert stage_plan.n_tasks == 16
+    assert stage_plan.tasks[0].stage == "01_train"
     assert manifest["study"] == "pair_stability_v3"
     assert manifest["stage"] == "01_train"
     assert manifest["n_tasks"] == 16
@@ -839,9 +843,12 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     assert submission["launcher_job_id"] == "local-validation-0"
     assert "validation_config.yaml" in submission["submitted_command"]
     plan_dir = results_root / "02_validation" / "stage_plans" / "V1"
+    stage_plan = StagePlan.read(plan_dir)
     manifest = json.loads((plan_dir / "stage_manifest.json").read_text())
     tasks = [json.loads(line) for line in (plan_dir / "tasks.jsonl").read_text().splitlines()]
     executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
+    assert stage_plan.n_tasks == 1
+    assert stage_plan.tasks[0].stage == "02_validation"
     assert manifest["study"] == "pair_stability_v3"
     assert manifest["stage"] == "02_validation"
     assert manifest["n_tasks"] == 1
