@@ -64,6 +64,13 @@ update_envelope
 The output Hooke Gaussian envelope and electron-electron cusp are common across
 all variants.
 
+Model initialization is explicit. `model_initialization.seed` is wired into
+`spenn.nn.TorchInitializer` objects on generated model components such as
+`Embedding` and `PathAggregation`. `runtime.seed` remains recorded for run
+lineage, and samplers/evaluators keep their own explicit seeds. `model.seed` is
+present only as a legacy OmegaConf interpolation shim; it does not seed the
+process or initialize the model.
+
 ## Blinding
 
 `plan.py` blinds the major axes by default. It shuffles each major axis

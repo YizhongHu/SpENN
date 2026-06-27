@@ -8,21 +8,25 @@ DEFAULT_SEED_OVERRIDES = {
     "scan_train": {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
+        "model_initialization.seed": "scan_seed",
         "sampler.seed": "scan_seed",
     },
     "validation": {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
+        "model_initialization.seed": "scan_seed",
         "evaluation.seed": "scan_seed",
     },
     "final_train": {
         "run_parameters.seed": "final_train_model_seed",
         "runtime.seed": "final_train_model_seed",
+        "model_initialization.seed": "final_train_model_seed",
         "sampler.seed": "final_train_sampler_seed",
     },
     "final_eval": {
         "run_parameters.seed": "final_eval_seed",
         "runtime.seed": "final_eval_seed",
+        "model_initialization.seed": "final_eval_seed",
         "evaluation.seed": "final_eval_seed",
     },
 }

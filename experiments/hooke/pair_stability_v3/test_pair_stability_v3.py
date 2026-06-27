@@ -643,11 +643,13 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert manifest["seed_overrides"]["scan_train"] == {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
+        "model_initialization.seed": "scan_seed",
         "sampler.seed": "scan_seed",
     }
     assert manifest["seed_overrides"]["validation"] == {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
+        "model_initialization.seed": "scan_seed",
         "evaluation.seed": "scan_seed",
     }
     assert manifest["final_seed_sequences"] == {
@@ -682,12 +684,14 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert job["seed_overrides"]["scan_train"] == {
         "run_parameters.seed": job["scan_seed"],
         "runtime.seed": job["scan_seed"],
+        "model_initialization.seed": job["scan_seed"],
         "sampler.seed": job["scan_seed"],
     }
     assert "study.name=pair_stability_v3" in job["overrides"]
     assert "experiment.name=pair_stability_v3" in job["overrides"]
     assert "experiment.run_name=pair_stability_v3_train" in job["overrides"]
     assert f"runtime.seed={job['scan_seed']}" in job["overrides"]
+    assert f"model_initialization.seed={job['scan_seed']}" in job["overrides"]
     assert f"sampler.seed={job['scan_seed']}" in job["overrides"]
     assert any(str(override).startswith("run_parameters.basis_slot=B") for override in job["overrides"])
     assert any(str(override).startswith("run_parameters.mechanism_slot=A") for override in job["overrides"])
@@ -703,6 +707,25 @@ def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) ->
     )
 
     assert resolved == str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml")
+
+
+def test_v3_configs_use_explicit_model_initializers() -> None:
+    train_cfg = OmegaConf.load(CONFIGS / "pair_stability.yaml")
+    validation_cfg = OmegaConf.load(CONFIGS / "pair_validation.yaml")
+
+    for cfg in (train_cfg, validation_cfg):
+        assert OmegaConf.select(cfg, "model_initialization.seed") == OmegaConf.select(cfg, "runtime.seed")
+        assert OmegaConf.select(cfg, "model.seed") == OmegaConf.select(cfg, "model_initialization.seed")
+        assert OmegaConf.select(cfg, "model.embedding.initializer._target_") == "spenn.nn.TorchInitializer"
+        assert OmegaConf.select(cfg, "model.embedding.initializer.seed") == OmegaConf.select(
+            cfg,
+            "model_initialization.seed",
+        )
+        assert OmegaConf.select(cfg, "model.layers.0.path_aggregation.initializer._target_") == "spenn.nn.TorchInitializer"
+        assert OmegaConf.select(cfg, "model.layers.0.path_aggregation.initializer.seed") == OmegaConf.select(
+            cfg,
+            "model_initialization.seed",
+        )
 
 
 def test_v2_collect_uses_status_for_required_train_wall_time(tmp_path: Path) -> None:

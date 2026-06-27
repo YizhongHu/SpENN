@@ -42,6 +42,9 @@ runtime:
   device: cuda
   dtype: float64
 
+model_initialization:
+  seed: ${runtime.seed}
+
 terminal:
   enabled: true
   level: info
@@ -335,6 +338,7 @@ runner:
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn
+  seed: ${model_initialization.seed}  # Legacy interpolation shim only.
 
   # Selected from the basis choice library or a planner-generated blinded slot.
   basis: ${choices.basis.${run_parameters.basis_slot}.basis}
@@ -350,6 +354,10 @@ model:
     include_spins: false
     # Input width is whatever the selected basis emits.
     in_features: ${spenn.basis_feature_dim:${model.basis}}
+    initializer:
+      _target_: spenn.nn.TorchInitializer
+      seed: ${model_initialization.seed}
+      stream: model.embedding
   embedding_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.embedding_activation}
 
   layers:
@@ -371,6 +379,10 @@ model:
         max_order: ${model_params.max_order}
         max_virtual_order: ${model_params.max_virtual_order}
         channels: ${model_params.channels}
+        initializer:
+          _target_: spenn.nn.TorchInitializer
+          seed: ${model_initialization.seed}
+          stream: model.layers.0.path_aggregation
       inverse_fourier:
         _target_: spenn.reps.InverseFourierTransform
       update:
