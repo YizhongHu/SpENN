@@ -449,6 +449,7 @@ def _normalize(value: Any) -> Any:
             key: (
                 "<VOLATILE>"
                 if _is_volatile_metric_value_field(key, volatile_metrics)
+                or _is_volatile_metric_identity_field(key, volatile_metrics)
                 else _normalize(item)
             )
             for key, item in sorted(value.items())
@@ -498,6 +499,14 @@ def _is_volatile_metric_value_field(key: str, volatile_metrics: set[str]) -> boo
     if key == "overall_metric_value":
         return "overall_metric" in volatile_metrics
     if key == "secondary_metric_value":
+        return "secondary_metric" in volatile_metrics
+    return False
+
+
+def _is_volatile_metric_identity_field(key: str, volatile_metrics: set[str]) -> bool:
+    if key == "overall_champion":
+        return "overall_metric" in volatile_metrics
+    if key == "secondary_champion":
         return "secondary_metric" in volatile_metrics
     return False
 
