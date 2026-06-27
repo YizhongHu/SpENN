@@ -766,16 +766,16 @@ Acceptance:
 
 ### Phase 2: Move Submission Behind the Executor Interface
 
-Status: planned.
+Status: active, split across two PRs.
 
 Make `train.py` and `validate.py` submit through a toolkit executor adapter
 instead of calling `launch.submit_command_sets(...)` directly. The first adapter
 can wrap the existing launcher implementation; it does not need to be a new
 scheduler.
 
-This phase starts after the contract-hardening PR. Phase 1 only validates the
-task/execution artifacts that current v3 scripts already write; it does not
-change launcher routing.
+The first Phase 2 PR adds and tests the adapter boundary without changing
+train/validate routing. The second Phase 2 PR should route v3 train/validate
+through those adapters and run the reduced v2/v3 parity gate.
 
 - Add `LocalExecutor` and `SubmititExecutor` adapters that consume `StagePlan`
   plus selected `TaskSpec` rows.
@@ -1086,9 +1086,9 @@ portable, and suitable for scratch/storage workflows on Cannon.
 
 The next PRs should be:
 
-1. Finish the active toolkit contract-hardening PR.
-2. Add executor adapters that wrap the existing local/Submitit launcher paths.
-3. Route v3 train/validate submission through the executor adapters.
+1. Finish the active executor-adapter PR without changing stage routing.
+2. Route v3 train/validate submission through the executor adapters.
+3. Run the reduced v2/v3 parity gate for the routed train/validate path.
 4. Extract task-state/checkpoint-resume helpers with focused tests.
 5. Port v3 final_train/final_eval to toolkit plans and executor adapters.
 6. Make task plans the primary input to collect/select/final_plan.
