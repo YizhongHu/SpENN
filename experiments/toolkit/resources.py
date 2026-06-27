@@ -21,6 +21,18 @@ class ResourceSpec:
     uv_extras: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
+    def validate(self) -> "ResourceSpec":
+        """Validate the resource request contract and return ``self``."""
+
+        _require_non_empty("profile", self.profile)
+        _require_non_empty("device", self.device)
+        _require_positive_optional("threads", self.threads)
+        _require_positive_optional("mem_gb", self.mem_gb)
+        _require_non_negative_optional("gpus", self.gpus)
+        _require_positive_optional("timeout_min", self.timeout_min)
+        _require_non_empty_sequence("uv_extras", self.uv_extras)
+        return self
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible mapping."""
 
@@ -51,9 +63,9 @@ class ResourceSpec:
             gpus=_optional_int(data.get("gpus")),
             timeout_min=_optional_int(data.get("timeout_min")),
             uv_environment=_optional_str(data.get("uv_environment")),
-            uv_extras=tuple(str(item) for item in data.get("uv_extras", ()) or ()),
+            uv_extras=_string_tuple(data.get("uv_extras", ()), "uv_extras"),
             metadata=_mapping(data.get("metadata")),
-        )
+        ).validate()
 
 
 def resource_from_profile(
@@ -99,3 +111,35 @@ def _optional_str(value: Any) -> str | None:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _string_tuple(value: Any, name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        raise ValueError(f"resource {name} must be a sequence, not a string")
+    try:
+        return tuple(str(item) for item in value)
+    except TypeError as exc:
+        raise ValueError(f"resource {name} must be a sequence") from exc
+
+
+def _require_non_empty(name: str, value: str) -> None:
+    if not str(value).strip():
+        raise ValueError(f"resource {name} must be a non-empty string")
+
+
+def _require_positive_optional(name: str, value: int | None) -> None:
+    if value is not None and value <= 0:
+        raise ValueError(f"resource {name} must be positive when set")
+
+
+def _require_non_negative_optional(name: str, value: int | None) -> None:
+    if value is not None and value < 0:
+        raise ValueError(f"resource {name} must be non-negative when set")
+
+
+def _require_non_empty_sequence(name: str, values: Sequence[str]) -> None:
+    empty = [index for index, value in enumerate(values) if not str(value).strip()]
+    if empty:
+        raise ValueError(f"resource {name} contains empty entries at indexes: {empty}")
