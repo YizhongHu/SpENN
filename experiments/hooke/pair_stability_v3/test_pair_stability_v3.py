@@ -1172,11 +1172,94 @@ def test_v2_final_train_excludes_completed_and_resumes_partial(
     assert code == 0
     cpu_commands = captured["command_sets"]["cpu"]
     assert len(cpu_commands) == 1
+    assert captured["kwargs"]["backend"] == "local"
+    assert captured["kwargs"]["claim_rows"] is True
+    assert captured["kwargs"]["chunk_status_dir"] == results_root / "06_final_train" / "chunk_status" / final_grid_id
     script = cpu_commands[0][-1]
     assert "run.run_id=partial/F0" in script
     assert "run.run_id=done/F0" not in script
     assert f"load.path={checkpoint}" in script
     assert "load.mode=train_resume" in script
+    plan_dir = results_root / "06_final_train" / "stage_plans" / final_grid_id
+    stage_plan = StagePlan.read(plan_dir)
+    assert stage_plan.stage == "06_final_train"
+    assert stage_plan.source_attempts == {"final_grid": final_grid_id}
+    assert len(stage_plan.tasks) == 1
+    executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
+    assert len(executions) == 1
+    assert executions[0]["launcher_job_id"] == "job-0"
+
+
+def test_v2_final_eval_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    results_root = tmp_path / "results"
+    final_grid_id = "F0"
+    final_grid_dir = results_root / "05_final_grid" / final_grid_id
+    final_grid_dir.mkdir(parents=True)
+    _write_csv(
+        final_grid_dir / "final_jobs.csv",
+        [
+            {
+                "final_run_id": "final-run-0",
+                "source_champion_id": "champion-0",
+                "final_train_model_seed": 1001,
+                "final_eval_seed": 10001,
+            },
+        ],
+    )
+    json_io.write_json(
+        final_grid_dir / "manifest.json",
+        {
+            "study": "pair_stability_v3",
+            "stage": layout.STAGE_FINAL_GRID,
+            "attempt_id": final_grid_id,
+            "eval_config": str(CONFIGS / "pair_validation.yaml"),
+            "major_axes": [],
+            "minor_axes": [],
+            "axis_overrides": {},
+        },
+    )
+    checkpoint = _write_final_checkpoint(results_root, "final-run-0", final_grid_id)
+    captured: dict[str, Any] = {}
+
+    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
+        captured["command_sets"] = command_sets
+        captured["kwargs"] = kwargs
+        return ["job-0"]
+
+    monkeypatch.setattr(final_eval.launch, "submit_command_sets", fake_submit_command_sets)
+
+    code = final_eval.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--final-grid-attempt-id",
+            final_grid_id,
+            "--final-train-attempt-id",
+            final_grid_id,
+            "--backend",
+            "local",
+            "--device",
+            "cpu",
+        ]
+    )
+
+    assert code == 0
+    cpu_commands = captured["command_sets"]["cpu"]
+    assert len(cpu_commands) == 1
+    assert captured["kwargs"]["backend"] == "local"
+    assert captured["kwargs"]["allow_partial_failures"] is True
+    assert captured["kwargs"]["chunk_status_dir"] == results_root / "07_final_eval" / "chunk_status" / final_grid_id
+    script = cpu_commands[0][-1]
+    assert "run.run_id=final-run-0/F0" in script
+    assert f"load.path={checkpoint}" in script
+    plan_dir = results_root / "07_final_eval" / "stage_plans" / final_grid_id
+    stage_plan = StagePlan.read(plan_dir)
+    assert stage_plan.stage == "07_final_eval"
+    assert stage_plan.source_attempts == {"final_grid": final_grid_id, "final_train": [final_grid_id]}
+    assert len(stage_plan.tasks) == 1
+    executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
+    assert len(executions) == 1
+    assert executions[0]["launcher_job_id"] == "job-0"
 
 
 def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
@@ -1203,6 +1286,7 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     (eval_run_dir / "zzz").mkdir(parents=True)
     (eval_run_dir / "aaa").mkdir()
     layout.write_latest(eval_run_dir, "aaa")
+    (results_root / "07_final_eval" / "stage_plans" / "aaa").mkdir(parents=True)
 
     assert final_collect._iter_final_eval_attempts(results_root, None) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
