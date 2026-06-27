@@ -54,6 +54,11 @@ class SpENNWaveFunction(EquivariantMap):
         Optional feature-scale normalization choice. Its ``mode`` selects the
         insertion site; ``update`` mode is wired into each layer's
         ``update_norm`` while the other sites are applied here in ``forward``.
+    seed : int or None, optional
+        Legacy config-resolution shim. This value may be used by OmegaConf
+        interpolations such as ``${model.seed}``, but the wavefunction does not
+        use it to seed or initialize anything. New configs should wire explicit
+        initializer objects into randomized components instead.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -68,6 +73,7 @@ class SpENNWaveFunction(EquivariantMap):
         basis: nn.Module | None = None,
         embedding_activation: nn.Module | None = None,
         feature_normalization: FeatureNormalization | None = None,
+        seed: int | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -80,6 +86,7 @@ class SpENNWaveFunction(EquivariantMap):
         self.readout = readout
         self.envelope = envelope
         self.feature_normalization = feature_normalization
+        self.legacy_config_seed = None if seed is None else int(seed)
         # The ``update`` site lives inside each layer, so inject the shared norm
         # into every layer's update_norm slot. Other sites are applied in forward.
         if feature_normalization is not None and feature_normalization.applies_at("update"):

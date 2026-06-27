@@ -28,7 +28,9 @@ class Evaluate(Runner):
         Composable task evaluator. It owns generators, calculators, summaries,
         and task failure policy.
     construction_seed : int or None, optional
-        Optional seed applied before model materialization checks.
+        Legacy compatibility shim. Accepted for old configs but not used for
+        process-global seeding; use explicit initializer objects on randomized
+        model components instead.
     """
 
     def __init__(
@@ -49,9 +51,6 @@ class Evaluate(Runner):
         """Prepare the model, delegate evaluation, and log task metrics."""
 
         self.emit("run_start", context)
-
-        if self.construction_seed is not None:
-            torch.manual_seed(self.construction_seed)
 
         if _is_torch_module(self.model):
             _place_module_for_runtime(self.model, context)
