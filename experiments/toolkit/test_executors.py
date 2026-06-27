@@ -17,6 +17,9 @@ from experiments.toolkit import (
     SubmissionRequest,
     SubmititExecutor,
     TaskSpec,
+    resource_spec_from_launcher,
+    stage_plan_directory,
+    submit_stage_plan,
     task_id_from_parts,
 )
 
@@ -170,3 +173,72 @@ def test_executor_rejects_misaligned_request_lengths(tmp_path: Path) -> None:
             submit_command_sets=fake_submit,
             options=_options(tmp_path, backend="local"),
         ).submit(plan, tasks, request)
+
+
+def test_resource_spec_from_launcher_records_mixed_profiles() -> None:
+    class FakeLauncher:
+        def selected_device(self, args: Any) -> str:
+            return "cpu,cuda"
+
+        def device_profiles(self, selector: str) -> Sequence[str]:
+            return ("cpu", "cuda")
+
+        def resolve_uv_settings_for_profile(self, args: Any, profile: str) -> tuple[str, Sequence[str], str]:
+            return (f".venv-{profile}", (profile,), profile)
+
+        def slurm_parameters(self, args: Any, *, profile: str, smoke: bool) -> dict[str, Any]:
+            return {
+                "slurm_partition": f"{profile}_test",
+                "timeout_min": 15 if smoke else 30,
+                "mem_gb": 4,
+                "cpus_per_task": 2,
+                "gpus_per_node": 1 if profile == "cuda" else 0,
+            }
+
+    spec = resource_spec_from_launcher(FakeLauncher(), SimpleNamespace(smoke=True))
+
+    assert spec.profile == "cpu,cuda"
+    assert spec.metadata["profiles"]["cpu"]["partition"] == "cpu_test"
+    assert spec.metadata["profiles"]["cuda"]["gpus"] == 1
+
+
+def test_submit_stage_plan_writes_plan_and_execution_records(tmp_path: Path) -> None:
+    tasks = (_task(tmp_path, "run-a"),)
+    plan = _plan(tmp_path, tasks)
+    captured: dict[str, Any] = {}
+
+    class FakeLauncher:
+        def submit_command_sets(self, command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
+            captured["command_sets"] = command_sets
+            captured["kwargs"] = kwargs
+            return ["job-1"]
+
+        def claim_paths_for_statuses(
+            self,
+            paths: Sequence[str | Path | None] | None,
+        ) -> Sequence[str | Path | None] | None:
+            return [None if path is None else Path(path).with_name("claim.json") for path in paths or ()]
+
+    records = submit_stage_plan(
+        FakeLauncher(),
+        stage_plan=plan,
+        stage_plan_dir=stage_plan_directory(tmp_path / "results", "01_train", "A1"),
+        command_sets={"cpu": [tasks[0].command]},
+        submitted_commands=[tasks[0].command],
+        args=SimpleNamespace(backend="local", smoke=False, chunk_size=1),
+        repo_root=tmp_path,
+        log_dir=tmp_path / "logs",
+        job_name="study-train",
+        chunk_status_dir=tmp_path / "chunks",
+        claim_rows=True,
+    )
+
+    plan_dir = tmp_path / "results" / "01_train" / "stage_plans" / "A1"
+    assert (plan_dir / "stage_manifest.json").is_file()
+    assert (plan_dir / "tasks.jsonl").is_file()
+    assert (plan_dir / "execution_records.jsonl").is_file()
+    assert captured["kwargs"]["chunk_status_dir"] == tmp_path / "chunks"
+    assert captured["kwargs"]["claim_rows"] is True
+    assert len(records) == 1
+    assert records[0].launcher_job_id == "job-1"
+    assert records[0].claim_path == str(Path(tasks[0].logs[0]).with_name("claim.json"))
