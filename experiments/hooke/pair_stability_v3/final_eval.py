@@ -44,14 +44,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from experiments.toolkit import (  # noqa: E402
-    ExecutorOptions,
-    LocalExecutor,
     StagePlan,
-    SubmissionRequest,
-    SubmititExecutor,
-    write_execution_records,
+    resource_spec_from_launcher,
+    stage_plan_directory,
+    submit_stage_plan,
 )
-from experiments.toolkit.resources import resource_from_profile  # noqa: E402
 from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
@@ -354,84 +351,6 @@ def write_final_eval_submission_records(
         )
 
 
-def _stage_plan_dir(results_root: Path, attempt_id: str) -> Path:
-    """Return the durable final-eval stage-plan directory."""
-
-    return stage_dir(results_root, STAGE_FINAL_EVAL) / "stage_plans" / attempt_id
-
-
-def _executor(
-    *,
-    args: argparse.Namespace,
-    repo_root: Path,
-    results_root: Path,
-    study: str,
-    attempt_id: str,
-):
-    """Return the toolkit executor for final-eval submissions."""
-
-    options = ExecutorOptions(
-        backend=args.backend,
-        args=args,
-        repo_root=repo_root,
-        log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / attempt_id,
-        job_name=stage_job_name(study, "final-eval", smoke=args.smoke),
-        smoke=args.smoke,
-        chunk_size=args.chunk_size,
-        allow_partial_failures=True,
-        chunk_status_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "chunk_status" / attempt_id,
-    )
-    executor_cls = LocalExecutor if args.backend == "local" else SubmititExecutor
-    return executor_cls(
-        submit_command_sets=getattr(launch, "submit_command_sets"),
-        options=options,
-        claim_paths_for_statuses=launch.claim_paths_for_statuses,
-    )
-
-
-def _resource_spec(args: argparse.Namespace) -> Any:
-    """Return a backend-neutral resource request for the selected device."""
-
-    selector = launch.selected_device(args)
-    profiles = launch.device_profiles(selector)
-    resolved_profiles = {}
-    for profile in profiles:
-        uv_environment, uv_extras, _runtime_device = launch.resolve_uv_settings_for_profile(args, profile)
-        slurm = launch.slurm_parameters(args, profile=profile, smoke=args.smoke)
-        resolved_profiles[profile] = resource_from_profile(
-            profile=profile,
-            partition=slurm.get("slurm_partition"),
-            timeout_min=slurm.get("timeout_min"),
-            mem_gb=slurm.get("mem_gb"),
-            cpus=slurm.get("cpus_per_task"),
-            gpus=slurm.get("gpus_per_node"),
-            uv_environment=uv_environment,
-            uv_extras=uv_extras,
-        ).to_dict()
-    if len(profiles) == 1:
-        return resource_from_profile(
-            profile=profiles[0],
-            partition=resolved_profiles[profiles[0]].get("partition"),
-            timeout_min=resolved_profiles[profiles[0]].get("timeout_min"),
-            mem_gb=resolved_profiles[profiles[0]].get("mem_gb"),
-            cpus=resolved_profiles[profiles[0]].get("threads"),
-            gpus=resolved_profiles[profiles[0]].get("gpus"),
-            uv_environment=resolved_profiles[profiles[0]].get("uv_environment"),
-            uv_extras=resolved_profiles[profiles[0]].get("uv_extras", ()),
-        )
-    return resource_from_profile(
-        profile=selector,
-        partition=None,
-        timeout_min=None,
-        mem_gb=None,
-        cpus=None,
-        gpus=None,
-        uv_environment=None,
-        uv_extras=(),
-        metadata={"profiles": resolved_profiles},
-    )
-
-
 def build_final_eval_stage_plan(
     jobs: Sequence[dict[str, Any]],
     *,
@@ -457,7 +376,7 @@ def build_final_eval_stage_plan(
         commands=[job["command_parts"] for job in jobs],
         result_dirs=result_dirs,
         row_status_paths=row_status_paths,
-        resources=_resource_spec(args),
+        resources=resource_spec_from_launcher(launch, args),
         completion_policy="status_completed",
         source_attempts=source_attempts,
     )
@@ -574,20 +493,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         attempt_id=attempt_id,
         args=args,
     )
-    stage_plan_dir = stage_plan.write(_stage_plan_dir(results_root, attempt_id))
-    execution_records = _executor(
+    execution_records = submit_stage_plan(
+        launch,
+        stage_plan=stage_plan,
+        stage_plan_dir=stage_plan_directory(results_root, STAGE_FINAL_EVAL, attempt_id),
+        command_sets=command_sets,
+        submitted_commands=submitted_commands,
         args=args,
         repo_root=repo_root,
-        results_root=results_root,
-        study=study,
-        attempt_id=attempt_id,
-    ).submit(
-        stage_plan,
-        stage_plan.tasks,
-        SubmissionRequest(
-            command_sets=command_sets,
-            submitted_commands=submitted_commands,
-        ),
+        log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / attempt_id,
+        job_name=stage_job_name(study, "final-eval", smoke=args.smoke),
+        chunk_status_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "chunk_status" / attempt_id,
+        allow_partial_failures=True,
     )
     job_ids = [record.launcher_job_id for record in execution_records]
 
@@ -597,7 +514,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         job_ids=job_ids,
         submitted_commands=submitted_commands,
     )
-    write_execution_records(stage_plan_dir, execution_records)
     mode = "smoke final-eval" if args.smoke else "final-eval"
     print(f"{prefix} launched {len(job_ids)} {mode} jobs from 05_final_grid/{final_grid_attempt_id} via {args.backend}")
     return 0
