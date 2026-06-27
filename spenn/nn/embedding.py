@@ -10,6 +10,7 @@ from spenn.data.real import RealFeature, zero_block
 from spenn.nn.basis import ElectronBasisFeatures
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
+from spenn.nn.initialization import TorchInitializer
 from spenn.nn.mlp import MLP
 
 torch = require_torch(feature="SpENN embedding modules")
@@ -58,6 +59,9 @@ class Embedding(EquivariantMap):
         for this width instead of the derived coordinate/spin/aux width; use it
         when an :class:`spenn.nn.ElectronBasis` supplies ``one_body`` features
         whose width is ``basis.out_features``.
+    initializer : TorchInitializer or None, optional
+        Explicit side-effect-free initializer for generated order MLPs. Supplied
+        custom ``mlps`` are already constructed and are not modified.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -76,6 +80,7 @@ class Embedding(EquivariantMap):
         include_spins: bool = True,
         aux_feature_channels: Mapping[str, int] | None = None,
         in_features: int | None = None,
+        initializer: TorchInitializer | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -116,6 +121,7 @@ class Embedding(EquivariantMap):
                     num_hidden_layers=num_hidden_layers,
                     activation=activation,
                     bias=bias,
+                    initializer=initializer.spawn(f"order_{order}") if initializer is not None else None,
                 )
             self.order_mlps[str(order)] = module
         unknown = sorted(order for order in supplied if order < 1 or order > self.max_order)
