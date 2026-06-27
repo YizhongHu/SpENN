@@ -9,6 +9,7 @@ from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition, as_partition, integer_partitions
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
+from spenn.nn.initialization import TorchInitializer
 from spenn.reps.irreps import irrep_dimension
 from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
 
@@ -68,6 +69,9 @@ class PathAggregation(EquivariantMap):
         `max_order` are initialized.
     path_counts_by_order : mapping of int to int or None, optional
         Explicit path counts, mainly for tests or custom path families.
+    initializer : TorchInitializer or None, optional
+        Explicit side-effect-free initializer for learned path weights. If
+        ``None``, weights use the legacy PyTorch global-RNG Xavier initializer.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -83,6 +87,7 @@ class PathAggregation(EquivariantMap):
         output_embedding: str = "canonical",
         partitions: Iterable[Partition] | None = None,
         path_counts_by_order: Mapping[int, int] | None = None,
+        initializer: TorchInitializer | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -115,6 +120,7 @@ class PathAggregation(EquivariantMap):
             if partitions is not None
             else tuple(partition for order in range(1, self.max_order + 1) for partition in integer_partitions(order))
         )
+        self.initializer = initializer
         self.weights = nn.ParameterDict()
         self._initialize_weights()
 
@@ -206,7 +212,10 @@ class PathAggregation(EquivariantMap):
             )
             weight = torch.empty(shape)
             if weight.numel() > 0:
-                nn.init.xavier_uniform_(weight)
+                if self.initializer is None:
+                    nn.init.xavier_uniform_(weight)
+                else:
+                    self.initializer.spawn(f"partition_{key}").xavier_uniform_(weight)
             self.weights[key] = nn.Parameter(weight)
 
 
