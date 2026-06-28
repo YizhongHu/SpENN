@@ -49,9 +49,10 @@ from stats import (
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
-EXPECTED_FINAL_SEEDS = 10
+DEFAULT_EXPECTED_FINAL_SEEDS = 10
 DEFAULT_HISTOGRAM_BINS = 32
 PATHOLOGY_ABS_LOCAL_ENERGY = 10.0
+AXIS_PROVENANCE_COLUMNS = ("major_id", "minor_id", "config_id")
 
 COMPACT_TABLES = (
     "run_index.csv",
@@ -318,6 +319,91 @@ def _winner_kind(job: dict[str, Any]) -> str:
     return "energy" if raw == "energy" else "stability"
 
 
+def _axis_names(manifest: dict[str, Any], key: str) -> tuple[str, ...]:
+    raw = manifest.get(key, [])
+    if not isinstance(raw, list | tuple):
+        return ()
+    return tuple(str(axis) for axis in raw if str(axis))
+
+
+def _major_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
+    return _axis_names(manifest, "major_axes")
+
+
+def _minor_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
+    return _axis_names(manifest, "minor_axes")
+
+
+def _axis_columns_from_contexts(contexts: Sequence[dict[str, Any]]) -> list[str]:
+    """Return stable configured-axis columns present in the final grid."""
+
+    columns: list[str] = []
+    for context in contexts:
+        manifest = context.get("final_grid_manifest", {})
+        for axis in (*_major_axes(manifest), *_minor_axes(manifest)):
+            if axis not in columns:
+                columns.append(axis)
+    if columns:
+        return columns
+    for context in contexts:
+        job = context.get("job", {})
+        choices = job.get("choices", {})
+        if isinstance(choices, dict):
+            for axis in choices:
+                axis = str(axis)
+                if axis not in columns:
+                    columns.append(axis)
+    return columns
+
+
+def _report_axes(manifest: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return the two axes used by legacy report grid aliases."""
+
+    major = _major_axes(manifest)
+    minor = _minor_axes(manifest)
+    first = major[0] if major else None
+    second = major[1] if len(major) > 1 else (minor[0] if minor else None)
+    return first, second
+
+
+def _axis_value(job: dict[str, Any], axis: str | None) -> str:
+    if not axis:
+        return ""
+    choices = job.get("choices", {})
+    if isinstance(choices, dict) and axis in choices:
+        return str(choices[axis])
+    if axis in job:
+        return str(job[axis])
+    source_champion = job.get("source_champion", {})
+    if isinstance(source_champion, dict) and axis in source_champion:
+        return str(source_champion[axis])
+    return ""
+
+
+def _config_id(job: dict[str, Any]) -> str:
+    source_champion = job.get("source_champion", {})
+    if isinstance(source_champion, dict) and source_champion.get("config_id"):
+        return str(source_champion["config_id"])
+    return str(job.get("config_id", job.get("source_scan_run_id", "")))
+
+
+def _axis_row(context: dict[str, Any]) -> dict[str, Any]:
+    job = context["job"]
+    manifest = context.get("final_grid_manifest", {})
+    row: dict[str, Any] = {
+        "major_id": job.get("major_id", ""),
+        "minor_id": job.get("minor_id", ""),
+        "config_id": _config_id(job),
+    }
+    for axis in (*_major_axes(manifest), *_minor_axes(manifest)):
+        row[axis] = _axis_value(job, axis)
+    if not any(axis in row for axis in (*_major_axes(manifest), *_minor_axes(manifest))):
+        choices = job.get("choices", {})
+        if isinstance(choices, dict):
+            row.update({str(axis): value for axis, value in choices.items()})
+    return row
+
+
 def _basis_class(job: dict[str, Any]) -> str:
     return str(job.get("basis_envelope", job.get("architecture", "")))
 
@@ -366,11 +452,16 @@ def _run_context(final_run_id: str, attempt_id: str, attempt_dir: Path) -> dict[
 
 def _base_row(context: dict[str, Any]) -> dict[str, Any]:
     job = context["job"]
+    axis_row = _axis_row(context)
+    row_axis, col_axis = _report_axes(context.get("final_grid_manifest", {}))
+    basis_class = _axis_value(job, row_axis) or _basis_class(job)
+    normalization = _axis_value(job, col_axis) or str(job.get("normalization", ""))
     return {
         "final_run_id": context["final_run_id"],
         "source_champion_id": job.get("source_champion_id", ""),
-        "basis_class": _basis_class(job),
-        "normalization": job.get("normalization", ""),
+        **axis_row,
+        "basis_class": basis_class,
+        "normalization": normalization,
         "winner_kind": _winner_kind(job),
         "seed_index": _seed_index(job),
         "model_seed": job.get("final_train_model_seed", ""),
@@ -856,10 +947,22 @@ def _resource_row(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _architecture_summary(energy_rows: Sequence[dict[str, Any]], tail_rows: Sequence[dict[str, Any]], trace_rows: Sequence[dict[str, Any]], failure_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+def _architecture_summary(
+    energy_rows: Sequence[dict[str, Any]],
+    tail_rows: Sequence[dict[str, Any]],
+    trace_rows: Sequence[dict[str, Any]],
+    failure_rows: Sequence[dict[str, Any]],
+    *,
+    major_axes: Sequence[str],
+    axis_columns: Sequence[str],
+    expected_final_seeds: int,
+) -> list[dict[str, Any]]:
+    group_axes = tuple(axis for axis in major_axes if axis)
+    if not group_axes:
+        group_axes = ("basis_class", "normalization")
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in energy_rows:
-        groups[(str(row["basis_class"]), str(row["normalization"]), str(row["winner_kind"]))].append(row)
+        groups[(*[str(row.get(axis, "")) for axis in group_axes], str(row["winner_kind"]))].append(row)
     tail_by_run = defaultdict(list)
     for row in tail_rows:
         tail_by_run[row["final_run_id"]].append(_as_float(row.get("outlier_fraction")))
@@ -867,12 +970,13 @@ def _architecture_summary(energy_rows: Sequence[dict[str, Any]], tail_rows: Sequ
     for row in trace_rows:
         trace_by_run[row["final_run_id"]].append(_as_float(row.get("comparison_error_count")))
         trace_by_run[row["final_run_id"]].append(_as_float(row.get("nonfinite_count")))
-    failures_by_group: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    failures_by_group: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in failure_rows:
-        failures_by_group[(str(row["basis_class"]), str(row["normalization"]), str(row["winner_kind"]))].append(row)
+        failures_by_group[(*[str(row.get(axis, "")) for axis in group_axes], str(row["winner_kind"]))].append(row)
 
     out = []
     for key, rows in sorted(groups.items()):
+        representative = rows[0]
         run_ids = [row["final_run_id"] for row in rows]
         energy_errors = [_as_float(row.get("energy_error")) for row in rows]
         variances = [_as_float(row.get("local_energy_var")) for row in rows]
@@ -881,11 +985,12 @@ def _architecture_summary(energy_rows: Sequence[dict[str, Any]], tail_rows: Sequ
         trace_failures = [_sum(trace_by_run[run_id]) for run_id in run_ids]
         successful = [row for row in rows if _as_float(row.get("energy_mean")) is not None]
         out.append({
-            "basis_class": key[0],
-            "normalization": key[1],
-            "winner_kind": key[2],
+            **{column: representative.get(column, "") for column in (*AXIS_PROVENANCE_COLUMNS, *axis_columns)},
+            "basis_class": representative.get("basis_class", ""),
+            "normalization": representative.get("normalization", ""),
+            "winner_kind": key[-1],
             "n_success": len(successful),
-            "n_expected": EXPECTED_FINAL_SEEDS,
+            "n_expected": expected_final_seeds,
             "energy_error_median": _format_number(_median(energy_errors)),
             "energy_error_q25": _format_number(_quantile(energy_errors, 0.25)),
             "energy_error_q75": _format_number(_quantile(energy_errors, 0.75)),
@@ -896,6 +1001,42 @@ def _architecture_summary(energy_rows: Sequence[dict[str, Any]], tail_rows: Sequ
             "major_failure_mode": _major_failure_mode(failures_by_group.get(key, [])),
         })
     return out
+
+
+def _expected_final_seeds(contexts: Sequence[dict[str, Any]]) -> int:
+    for context in contexts:
+        manifest = context.get("final_grid_manifest", {})
+        for key in ("final_replicates", "replicates"):
+            value = _as_float(manifest.get(key))
+            if value is not None and value > 0:
+                return int(value)
+    return DEFAULT_EXPECTED_FINAL_SEEDS
+
+
+def _first_final_grid_manifest(contexts: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    for context in contexts:
+        manifest = context.get("final_grid_manifest", {})
+        if isinstance(manifest, dict) and manifest:
+            return manifest
+    return {}
+
+
+def _insert_columns(columns: Sequence[str], insert_after: str, additions: Sequence[str]) -> list[str]:
+    output: list[str] = []
+    inserted = False
+    for column in columns:
+        if column not in output:
+            output.append(column)
+        if column == insert_after:
+            for addition in additions:
+                if addition not in output:
+                    output.append(addition)
+            inserted = True
+    if not inserted:
+        for addition in additions:
+            if addition not in output:
+                output.append(addition)
+    return output
 
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
@@ -952,7 +1093,30 @@ def collect_final_outputs(
             smoke=smoke,
         )
     ]
-    study = study_name_from_manifest(contexts[0]["final_grid_manifest"] if contexts else None)
+    final_grid_manifest = _first_final_grid_manifest(contexts)
+    study = study_name_from_manifest(final_grid_manifest if contexts else None)
+    major_axes = _major_axes(final_grid_manifest)
+    minor_axes = _minor_axes(final_grid_manifest)
+    axis_columns = _axis_columns_from_contexts(contexts)
+    axis_provenance_columns = [column for column in (*AXIS_PROVENANCE_COLUMNS, *axis_columns) if column]
+    run_columns = _insert_columns(RUN_INDEX_COLUMNS, "source_champion_id", axis_provenance_columns)
+    compact_columns = {
+        "run_index.csv": run_columns,
+        "architecture_summary.csv": _insert_columns(ARCHITECTURE_SUMMARY_COLUMNS, "normalization", axis_provenance_columns),
+        "energy_by_run.csv": _insert_columns(ENERGY_BY_RUN_COLUMNS, "final_run_id", axis_provenance_columns),
+        "local_energy_histograms.csv": _insert_columns(LOCAL_ENERGY_HISTOGRAM_COLUMNS, "final_run_id", axis_provenance_columns),
+        "cusp_profile_summary.csv": _insert_columns(CUSP_PROFILE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "tail_profile_summary.csv": _insert_columns(TAIL_PROFILE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "stratified_summary.csv": _insert_columns(STRATIFIED_COLUMNS, "final_run_id", axis_provenance_columns),
+        "hooke_orbital_summary.csv": _insert_columns(HOOKE_ORBITAL_COLUMNS, "final_run_id", axis_provenance_columns),
+        "symmetry_summary.csv": _insert_columns(SYMMETRY_COLUMNS, "final_run_id", axis_provenance_columns),
+        "trace_summary.csv": _insert_columns(TRACE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "training_curve_summary.csv": _insert_columns(TRAINING_CURVE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "resource_summary.csv": _insert_columns(RESOURCE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "failure_modes.csv": _insert_columns(FAILURE_COLUMNS, "final_run_id", axis_provenance_columns),
+    }
+    expected_final_seeds = _expected_final_seeds(contexts)
+    report_row_key, report_col_key = _report_axes(final_grid_manifest)
     resolved_eval_attempt_ids = sorted({str(context["attempt_id"]) for context in contexts})
     manifest_final_eval_attempt_id = final_eval_attempt_id
     if manifest_final_eval_attempt_id is None and len(resolved_eval_attempt_ids) == 1:
@@ -969,22 +1133,30 @@ def collect_final_outputs(
     training_rows = [row for context in contexts for row in _training_curve_summary(context)]
     resource_rows = [_resource_row(context) for context in contexts]
     failure_rows = [row for context in contexts for row in _failure_rows(context)]
-    architecture_rows = _architecture_summary(energy_rows, tail_rows, trace_rows, failure_rows)
+    architecture_rows = _architecture_summary(
+        energy_rows,
+        tail_rows,
+        trace_rows,
+        failure_rows,
+        major_axes=major_axes,
+        axis_columns=axis_columns,
+        expected_final_seeds=expected_final_seeds,
+    )
 
     table_specs = {
-        "run_index.csv": (run_index_rows, RUN_INDEX_COLUMNS),
-        "architecture_summary.csv": (architecture_rows, ARCHITECTURE_SUMMARY_COLUMNS),
-        "energy_by_run.csv": (energy_rows, ENERGY_BY_RUN_COLUMNS),
-        "local_energy_histograms.csv": (histogram_rows, LOCAL_ENERGY_HISTOGRAM_COLUMNS),
-        "cusp_profile_summary.csv": (cusp_rows, CUSP_PROFILE_COLUMNS),
-        "tail_profile_summary.csv": (tail_rows, TAIL_PROFILE_COLUMNS),
-        "stratified_summary.csv": (stratified_rows, STRATIFIED_COLUMNS),
-        "hooke_orbital_summary.csv": (hooke_rows, HOOKE_ORBITAL_COLUMNS),
-        "symmetry_summary.csv": (symmetry_rows, SYMMETRY_COLUMNS),
-        "trace_summary.csv": (trace_rows, TRACE_COLUMNS),
-        "training_curve_summary.csv": (training_rows, TRAINING_CURVE_COLUMNS),
-        "resource_summary.csv": (resource_rows, RESOURCE_COLUMNS),
-        "failure_modes.csv": (failure_rows, FAILURE_COLUMNS),
+        "run_index.csv": (run_index_rows, compact_columns["run_index.csv"]),
+        "architecture_summary.csv": (architecture_rows, compact_columns["architecture_summary.csv"]),
+        "energy_by_run.csv": (energy_rows, compact_columns["energy_by_run.csv"]),
+        "local_energy_histograms.csv": (histogram_rows, compact_columns["local_energy_histograms.csv"]),
+        "cusp_profile_summary.csv": (cusp_rows, compact_columns["cusp_profile_summary.csv"]),
+        "tail_profile_summary.csv": (tail_rows, compact_columns["tail_profile_summary.csv"]),
+        "stratified_summary.csv": (stratified_rows, compact_columns["stratified_summary.csv"]),
+        "hooke_orbital_summary.csv": (hooke_rows, compact_columns["hooke_orbital_summary.csv"]),
+        "symmetry_summary.csv": (symmetry_rows, compact_columns["symmetry_summary.csv"]),
+        "trace_summary.csv": (trace_rows, compact_columns["trace_summary.csv"]),
+        "training_curve_summary.csv": (training_rows, compact_columns["training_curve_summary.csv"]),
+        "resource_summary.csv": (resource_rows, compact_columns["resource_summary.csv"]),
+        "failure_modes.csv": (failure_rows, compact_columns["failure_modes.csv"]),
     }
     for filename, (rows, columns) in table_specs.items():
         _write_csv(attempt / filename, rows, columns)
@@ -998,6 +1170,12 @@ def collect_final_outputs(
         "final_eval_attempt_ids": resolved_eval_attempt_ids,
         "final_eval_attempts": {str(context["final_run_id"]): str(context["attempt_id"]) for context in contexts},
         "n_final_eval_attempts": len(contexts),
+        "major_axes": list(major_axes),
+        "minor_axes": list(minor_axes),
+        "axis_columns": axis_columns,
+        "report_row_key": report_row_key or "basis_class",
+        "report_col_key": report_col_key or "normalization",
+        "expected_final_replicates": expected_final_seeds,
         "tables": {filename: len(rows) for filename, (rows, _) in table_specs.items()},
         "source_stages": {
             "final_grid": "05_final_grid",

@@ -240,6 +240,35 @@ def _load_collect_tables(
     return collect_dir, _load_collect_manifest(collect_dir), {name: _read_csv(collect_dir / name) for name in COMPACT_TABLES}
 
 
+def _column_has_values(rows: Sequence[dict[str, Any]], key: str) -> bool:
+    return any(str(row.get(key, "")).strip() for row in rows)
+
+
+def _report_axis_keys(
+    collect_manifest: dict[str, Any],
+    tables: dict[str, list[dict[str, Any]]],
+) -> tuple[str, str]:
+    """Return the primary and secondary comparison axes for final reporting."""
+
+    summary_rows = tables.get("architecture_summary.csv", [])
+    configured = (
+        str(collect_manifest.get("report_row_key", "")).strip(),
+        str(collect_manifest.get("report_col_key", "")).strip(),
+    )
+    for row_key, col_key in (
+        configured,
+        ("basis", "mechanism"),
+        ("basis_class", "normalization"),
+    ):
+        if row_key and col_key and _column_has_values(summary_rows, row_key) and _column_has_values(summary_rows, col_key):
+            return row_key, col_key
+    return "basis_class", "normalization"
+
+
+def _row_axis_value(row: dict[str, Any], key: str, fallback: str) -> str:
+    return str(row.get(key, "")).strip() or str(row.get(fallback, "")).strip()
+
+
 def _architecture_label(row: dict[str, Any]) -> str:
     return str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
 
@@ -346,9 +375,9 @@ def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *,
         marker_key="normalization",
         x_label="abs energy error |E - 2|",
         y_label="local-energy variance",
-        title=f"{title}\nWinner type is separated by panel; color is architecture and marker shape is normalization.",
-        color_title="Architecture",
-        marker_title="Normalization",
+        title=f"{title}\nWinner type is separated by panel; color is the primary report axis and marker shape is the secondary report axis.",
+        color_title="Primary axis",
+        marker_title="Secondary axis",
     )
 
 
@@ -1110,6 +1139,8 @@ def _save_symmetry_metric_grid(
     *,
     metric_key: str,
     title: str,
+    row_key: str = "basis_class",
+    col_key: str = "normalization",
 ) -> None:
     """Save one symmetry metric as architecture-by-normalization heatmaps."""
 
@@ -1127,8 +1158,8 @@ def _save_symmetry_metric_grid(
         panel_rows,
         row_labels=symmetries,
         col_labels=WINNER_KINDS,
-        row_key="basis_class",
-        col_key="normalization",
+        row_key=row_key,
+        col_key=col_key,
         value_key=metric_key,
         title=title,
         panel_title=lambda symmetry, winner: f"{symmetry}\n{_winner_title(winner)}",
@@ -1144,6 +1175,8 @@ def _save_feature_trace_metric_grid(
     *,
     metric_key: str,
     title: str,
+    row_key: str = "basis_class",
+    col_key: str = "normalization",
 ) -> None:
     """Save one feature-trace metric as layer-by-winner heatmaps."""
 
@@ -1168,8 +1201,8 @@ def _save_feature_trace_metric_grid(
         panel_rows,
         row_labels=layers,
         col_labels=WINNER_KINDS,
-        row_key="basis_class",
-        col_key="normalization",
+        row_key=row_key,
+        col_key=col_key,
         value_key=metric_key,
         title=title,
         panel_title=lambda layer, winner: f"{layer}\n{_winner_title(winner)}",
@@ -1178,14 +1211,21 @@ def _save_feature_trace_metric_grid(
     )
 
 
-def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *, stat: str) -> None:
+def _save_virial_residual_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    stat: str,
+    row_key: str = "basis_class",
+    col_key: str = "normalization",
+) -> None:
     """Save one signed-log virial-residual winner-pair heatmap."""
 
     _save_winner_pair_heatmap(
         path,
         rows,
-        row_key="basis_class",
-        col_key="normalization",
+        row_key=row_key,
+        col_key=col_key,
         value_key=stat,
         title=f"Virial residual {stat}",
         transform="signed_log",
@@ -1193,9 +1233,14 @@ def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *,
     )
 
 
-def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
+def _write_figures(
+    figures_dir: Path,
+    tables: dict[str, list[dict[str, Any]]],
+    collect_manifest: dict[str, Any],
+) -> list[str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     written = []
+    row_key, col_key = _report_axis_keys(collect_manifest, tables)
     architecture_rows = tables["architecture_summary.csv"]
     energy = tables["energy_by_run.csv"]
     energy_components = _combined_energy_component_rows(energy)
@@ -1209,11 +1254,11 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
 
     add(
         "1A_real_scale_energy_error_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key=row_key, col_key=col_key, value_key="energy_error_median", title="Median signed final energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
     add(
         "1A_log_scale_energy_error_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key=row_key, col_key=col_key, value_key="energy_error_median", title="Median signed final energy error", transform="signed_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
     for winner in WINNER_KINDS:
         add(
@@ -1248,17 +1293,17 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
 
     add(
         "3E_tail_outlier_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key=row_key, col_key=col_key, value_key="tail_outlier_fraction_median", title="Tail outlier fraction", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
 
     aggregate = [row for row in stratified if row.get("stratum") == "all"]
     add(
         f"{_figure_label('4', 0)}_stratified_geometry_aggregate_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title="Stratified median absolute energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
     add(
         f"{_figure_label('4', 0)}_stratified_geometry_aggregate_log_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
 
     hooke_rows = tables["hooke_orbital_summary.csv"]
@@ -1280,13 +1325,13 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     for metric_index, metric in enumerate(SYMMETRY_METRICS):
         add(
             f"{_figure_label('6', metric_index)}_symmetry_{metric}_heatmap_grid.png",
-            lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}"),
+            lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}", row_key=row_key, col_key=col_key),
         )
 
     for metric_index, metric in enumerate(FEATURE_TRACE_METRICS):
         add(
             f"{_figure_label('7', metric_index)}_feature_trace_{metric}_heatmap_grid.png",
-            lambda path, metric=metric: _save_feature_trace_metric_grid(path, tables["trace_summary.csv"], metric_key=metric, title=f"Feature-trace stability diagnostic: {metric}"),
+            lambda path, metric=metric: _save_feature_trace_metric_grid(path, tables["trace_summary.csv"], metric_key=metric, title=f"Feature-trace stability diagnostic: {metric}", row_key=row_key, col_key=col_key),
         )
 
     add(
@@ -1309,7 +1354,7 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     for stat_index, stat in enumerate(VIRIAL_RESIDUAL_STATS):
         add(
             f"{_figure_label('9', stat_index)}_virial_residual_{stat}_log_heatmap.png",
-            lambda path, stat=stat: _save_virial_residual_heatmap(path, virial_residual, stat=stat),
+            lambda path, stat=stat: _save_virial_residual_heatmap(path, virial_residual, stat=stat, row_key=row_key, col_key=col_key),
         )
 
     strata = sorted({str(row.get("stratum", "")) for row in stratified if row.get("stratum", "") not in {"", "all"}})
@@ -1319,11 +1364,11 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         rows = [row for row in stratified if str(row.get("stratum", "")) == stratum]
         add(
             f"{label}_stratified_geometry_{safe}_heatmap.png",
-            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
         )
         add(
             f"{label}_stratified_geometry_{safe}_log_heatmap.png",
-            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
         )
     return written
 
@@ -1376,7 +1421,8 @@ def build_report(
     study = study_name_from_manifest(collect_manifest)
     table_counts = _copy_tables(collect_dir, tables_dir, tables)
     table_counts.update(_write_energy_component_tables(tables_dir, tables["energy_by_run.csv"]))
-    figures = _write_figures(figures_dir, tables)
+    report_row_key, report_col_key = _report_axis_keys(collect_manifest, tables)
+    figures = _write_figures(figures_dir, tables, collect_manifest)
 
     report = {
         "study": study,
@@ -1385,6 +1431,10 @@ def build_report(
         "smoke": bool(smoke),
         "final_collect_attempt_id": final_collect_attempt_id,
         "final_collect_dir": str(collect_dir),
+        "report_axes": {
+            "row": report_row_key,
+            "column": report_col_key,
+        },
         "tables": table_counts,
         "figures": figures,
         "caveats": [
@@ -1400,7 +1450,17 @@ def build_report(
 
 
 def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -> str:
-    architecture = sorted(tables["architecture_summary.csv"], key=lambda row: (row.get("basis_class", ""), row.get("normalization", ""), row.get("winner_kind", "")))
+    report_axes = report.get("report_axes", {}) if isinstance(report.get("report_axes"), dict) else {}
+    row_key = str(report_axes.get("row", "basis_class"))
+    col_key = str(report_axes.get("column", "normalization"))
+    architecture = sorted(
+        tables["architecture_summary.csv"],
+        key=lambda row: (
+            _row_axis_value(row, row_key, "basis_class"),
+            _row_axis_value(row, col_key, "normalization"),
+            row.get("winner_kind", ""),
+        ),
+    )
     report_title = str(report.get("study") or "Study").replace("_", " ").title()
     lines = [
         f"# {report_title} Final Report",
@@ -1409,6 +1469,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
         "",
         "This report consumes `08_final_collect` compact tables only. It does not parse raw model, train, or eval records.",
         f"Final collect attempt: `{report['final_collect_attempt_id']}`.",
+        f"Report axes: `{row_key}` by `{col_key}`.",
         "",
         "## Final Champion Summary",
         "",
@@ -1418,10 +1479,10 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
         "",
     ]
     if architecture:
-        lines.extend(["| basis_class | normalization | winner_kind | n_success/n_expected | energy_error_median | local_energy_var_median |", "|---|---|---|---:|---:|---:|"])
+        lines.extend([f"| {row_key} | {col_key} | winner_kind | n_success/n_expected | energy_error_median | local_energy_var_median |", "|---|---|---|---:|---:|---:|"])
         for row in architecture[:20]:
             lines.append(
-                f"| {row.get('basis_class', '')} | {row.get('normalization', '')} | {row.get('winner_kind', '')} | "
+                f"| {_row_axis_value(row, row_key, 'basis_class')} | {_row_axis_value(row, col_key, 'normalization')} | {row.get('winner_kind', '')} | "
                 f"{row.get('n_success', '')}/{row.get('n_expected', '')} | {row.get('energy_error_median', '')} | {row.get('local_energy_var_median', '')} |"
             )
     else:
@@ -1431,13 +1492,13 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Energy And Local-Energy Results",
             "",
-            "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps place energy and stability winners side by side with a shared color scale. Figure 1B separates energy and stability winners into adjacent panels while keeping architecture color and normalization marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
+            f"Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps place energy and stability winners side by side with a shared color scale over `{row_key}` by `{col_key}`. Figure 1B separates energy and stability winners into adjacent panels while keeping the primary-axis color and secondary-axis marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
             "",
             "Energy component and virial tables are written to `tables/energy_components_and_virial_by_winner.csv` and to one validation-style table per winner family under `tables/energy_components_and_virial/`. The virial residual is `2 * kinetic - 2 * harmonic_trap + electron_electron`; the relative residual divides its absolute value by the absolute component scale.",
             "",
             "## Cusp Diagnostics",
             "",
-            "Cusp tables preserve center-of-mass and direction columns when present. Figures 2A/2B/2C emit separate energy/stability grids for sampled local-energy, log-amplitude, and finite-fraction profiles against `r12`; directions and seeds are pooled so each subplot has one line per CoM and variance error bars aggregate all compact direction/seed records. Figure 2D emits separate energy/stability grids for `d_logabs_dr_median` against `r12`, with normalization rows, architecture columns, solid CoM model lines, and dashed target derivative references.",
+            f"Cusp tables preserve center-of-mass and direction columns when present. Figures 2A/2B/2C emit separate energy/stability grids for sampled local-energy, log-amplitude, and finite-fraction profiles against `r12`; directions and seeds are pooled so each subplot has one line per CoM and variance error bars aggregate all compact direction/seed records. Figure 2D emits separate energy/stability grids for `d_logabs_dr_median` against `r12`, with `{col_key}` rows, `{row_key}` columns, solid CoM model lines, and dashed target derivative references.",
             "",
             "## Tail Diagnostics",
             "",
@@ -1449,15 +1510,15 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Hooke-Orbital Diagnostics",
             "",
-            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted separately for energy and stability winners, with normalization rows, architecture columns, and the remaining bin dimension in the external legend.",
+            f"Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted separately for energy and stability winners, with `{col_key}` rows, `{row_key}` columns, and the remaining bin dimension in the external legend.",
             "",
             "## Symmetry Diagnostics",
             "",
-            "See `tables/symmetry_summary.csv` and the symmetry figures. Figures 6A, 6B, ... emit one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, energy/stability winners as columns, architecture by normalization inside each subplot, and one shared color scale per symmetry-task row. Positive-only metric heatmaps use a monochrome red bar, with log color selected by default when a row's shared values span orders of magnitude.",
+            f"See `tables/symmetry_summary.csv` and the symmetry figures. Figures 6A, 6B, ... emit one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, energy/stability winners as columns, `{row_key}` by `{col_key}` inside each subplot, and one shared color scale per symmetry-task row. Positive-only metric heatmaps use a monochrome red bar, with log color selected by default when a row's shared values span orders of magnitude.",
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures. Figures 7A, 7B, and 7C focus on feature-trace stability and emit one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, energy/stability winner columns, architecture by normalization inside each subplot, and one tick-only colorbar with its own scale for every layer row.",
+            f"See `tables/trace_summary.csv` and the trace figures. Figures 7A, 7B, and 7C focus on feature-trace stability and emit one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, energy/stability winner columns, `{row_key}` by `{col_key}` inside each subplot, and one tick-only colorbar with its own scale for every layer row.",
             "",
             "## Training And Resource Summary",
             "",
