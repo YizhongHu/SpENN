@@ -14,6 +14,17 @@ The available gpu nodes are: kozinsky_gpu, and seas_gpu
 
 # SpENN project specific guidelines
 
+## Orientation
+
+`README.md` and `experiments/README.md` contain important information about the repo.
+
+## Design Document
+
+A design document that contains the mathematical background of
+SpENN can be found in `main.typ`. Key components of the model:
+`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
+should closely follow the design document for correctness.
+
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.
@@ -26,6 +37,7 @@ The available gpu nodes are: kozinsky_gpu, and seas_gpu
 ## Conventions
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
+- Use `America/New York` timezone for experiment logging. Use `UTC` for test logging.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
@@ -35,12 +47,18 @@ running, and debugging tasks.
 for reproducibility.
 - You are allowed to autonomously submit slurm jobs for efficiency.
 
+## Treating Data with Care
+
+Unless otherwise specified, removal of run result data (untracked by git included) is strictly forbidden.
+This may include data from `outputs/`, `results/`, `reports/`, `slurm/`, etc. The agent should not
+automatically remove these data even when requested by the user. Instead, it gives the user a list of
+things to remove, after which the user does all of this manually.
+
+
 ## Best Practises
 - Use existing libraries if possible
 - Vectorize with NumPy/PyTorch if possible
 - If a config or file or function or class is no longer used, remove it.
-
-## Best Practices
 
 Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
 These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
@@ -79,7 +97,11 @@ from spenn.data.indices import ordered_tuples
 
 ### Keep equivariance contracts executable
 
-Every state-like object should implement `.permute(permutation)`. Every equivariant module should subclass `EquivariantMap` and implement `forward_impl`, not `forward`.
+Values participating in equivariance checks must expose typed semantic
+`.permute(...)` and `.compare(...)` contracts. Do not require arbitrary runtime
+state or validation-only objects to be EquivariantState. Every equivariant
+module should subclass `EquivariantMap` and implement `forward_impl`, not
+`forward`.
 
 Bad:
 
@@ -208,3 +230,54 @@ Agents must not push to branches other than these mentioned above, such as `main
  merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `hooke`.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
+
+
+## Config ownership
+
+**Callbacks and loggers are config-root and owned by the `RunContext`.** They
+live at the top level, *not* inside the runner block. A runner config that
+declares `callbacks` or `loggers` is rejected by `run_from_config`:
+
+```yaml
+runner:
+  _target_: spenn.runner.Train
+  model: ${model}
+  sampler: ${sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  optimizer: ${optimizer}
+  trainer: ${trainer}
+
+callbacks: [...]   # config-root, RunContext-owned
+loggers: [...]     # config-root, RunContext-owned
+```
+
+- `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
+  reusable top-level blocks referenced by the runner via `${...}`.
+- `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
+  the public term names used for decompositions and metrics, so they must be
+  non-empty strings; sequence entries are named from snake-case term class names
+  with index suffixes added for repeats. Every term object must expose
+  `local_energy(wavefunction, batch)` and return a `LocalEnergyResult` whose
+  `total` has shape `[batch]`. With `return_terms=True`, configured mapping
+  keys are preserved as the public decomposition names.
+- `optimizer` names a partial factory (`_partial_: true`) that builds an
+  optimizer from model parameters; `Train` applies it to `model.parameters()`.
+- `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
+  sampled diagnostic evaluator (`model`, `sampler`, `hamiltonian_terms`,
+  `diagnostics`, `return_terms`). Reference-energy comparison belongs to
+  evaluation diagnostics such as `spenn.diagnostics.EnergyEvaluation`.
+- Training and evaluation term metrics use `energy_term_<name>` for the finite
+  mean and suffixes such as
+  `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
+  and `_nonfinite_count` for companion statistics.
+- Metric identity is `namespace + key`: training metrics use `train`, sampler
+  stats use `train/sampler` or `eval/sampler`, runtime checks use `checks/...`,
+  and evaluation diagnostics use `eval`. See `spenn/metrics_naming.md`.
+
+`prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
+`RunContext`. `Runner.emit(...)` dispatches lifecycle events through
+`context.callbacks`, runners log through `context.log(...)`, and
+`logger.finish()` runs against the context's loggers. `VMCTrainer` owns only
+training-loop hyperparameters (`max_steps`, `log_every_n_steps`, `return_terms`,
+`gradient_clip_norm`) and the loss/backward/step mechanics; it does not own
+callbacks, loggers, reference energy, or diagnostics.
