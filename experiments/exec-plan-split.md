@@ -65,6 +65,11 @@ Any roadmap item that changes planning, execution, collection, or reporting
 should update this parity check or add a narrower equivalence check before the
 old behavior is removed.
 
+Things allowed to differ in end-to-end comparisons include:
+- Code structure
+- Config/Grid yaml structure
+- File/folder names
+
 ## Current Pain Points
 
 The current `pair_stability_v2` scripts have been useful and pragmatic, but they
