@@ -12,7 +12,7 @@ import math
 import shutil
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from artifacts import read_csv as _read_csv, write_csv as _write_csv_columns
 import plot
@@ -42,6 +42,7 @@ STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
 WINNER_KINDS = ("energy", "stability")
+PLOT_WINNER_KINDS = ("energy",)
 NARROW_WINNER_HEATMAP_WIDTH_SCALE = 0.75
 SYMMETRY_METRICS = (
     "logabs_error_max",
@@ -49,6 +50,12 @@ SYMMETRY_METRICS = (
     "sign_mismatch_count",
     "parity_mismatch_count",
     "finite_fraction",
+)
+SYMMETRY_LOG_METRICS = (
+    "logabs_error_max",
+    "logabs_error_median",
+    "sign_mismatch_count",
+    "parity_mismatch_count",
 )
 FEATURE_TRACE_METRICS = (
     "rms_q95",
@@ -132,8 +139,9 @@ def _aggregate_component_row(
     winner_kind: str,
     quantity: str,
     values: Sequence[float],
+    axis_values: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "winner_id": _winner_id(basis_class, normalization, winner_kind),
         "basis_class": basis_class,
         "normalization": normalization,
@@ -145,6 +153,9 @@ def _aggregate_component_row(
         "min": _format_number(min(values) if values else None),
         "max": _format_number(max(values) if values else None),
     }
+    if axis_values:
+        row.update({key: value for key, value in axis_values.items() if key})
+    return row
 
 
 def _energy_component_rows_for_group(
@@ -153,6 +164,7 @@ def _energy_component_rows_for_group(
     basis_class: str,
     normalization: str,
     winner_kind: str,
+    axis_values: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     output = []
     for quantity, key in ENERGY_COMPONENT_QUANTITIES:
@@ -164,36 +176,58 @@ def _energy_component_rows_for_group(
                 winner_kind=winner_kind,
                 quantity=quantity,
                 values=values,
+                axis_values=axis_values,
             )
         )
     return output
 
 
-def _energy_component_tables_by_winner(rows: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _energy_component_axis_values(row: dict[str, Any], axis_keys: Sequence[str]) -> dict[str, str]:
+    """Return report-axis values carried through derived virial tables."""
+
+    axis_values = {}
+    for index, key in enumerate(axis_keys):
+        fallback = "basis_class" if index == 0 else "normalization"
+        value = _row_axis_value(row, key, fallback)
+        axis_values[str(key)] = value or "all"
+    return axis_values
+
+
+def _energy_component_tables_by_winner(rows: Sequence[dict[str, Any]], *, axis_keys: Sequence[str] = ()) -> dict[str, list[dict[str, Any]]]:
     """Return validation-style energy-component tables for each winner family."""
 
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[tuple[str, ...], str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    axis_values_by_group: dict[tuple[tuple[str, ...], str, str, str], dict[str, str]] = {}
     for row in rows:
         basis_class = _architecture_label(row)
         normalization = str(row.get("normalization", "")) or "all"
         winner_kind = "energy" if str(row.get("winner_kind", "")).strip() == "energy" else "stability"
-        groups[(basis_class, normalization, winner_kind)].append(row)
+        axis_values = _energy_component_axis_values(row, axis_keys)
+        axis_tuple = tuple(axis_values.get(str(key), "") for key in axis_keys)
+        group_key = (axis_tuple, basis_class, normalization, winner_kind)
+        groups[group_key].append(row)
+        axis_values_by_group[group_key] = axis_values
 
     tables = {}
-    for (basis_class, normalization, winner_kind), group_rows in sorted(groups.items()):
-        tables[_winner_id(basis_class, normalization, winner_kind)] = _energy_component_rows_for_group(
+    for group_key, group_rows in sorted(groups.items()):
+        _axis_tuple, basis_class, normalization, winner_kind = group_key
+        winner_id = _winner_id(basis_class, normalization, winner_kind)
+        if winner_id in tables:
+            winner_id = _safe_label(f"{winner_id}_{'_'.join(_axis_tuple)}")
+        tables[winner_id] = _energy_component_rows_for_group(
             group_rows,
             basis_class=basis_class,
             normalization=normalization,
             winner_kind=winner_kind,
+            axis_values=axis_values_by_group[group_key],
         )
     return tables
 
 
-def _combined_energy_component_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+def _combined_energy_component_rows(rows: Sequence[dict[str, Any]], *, axis_keys: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Return combined energy-component rows in stable winner-id order."""
 
-    by_winner = _energy_component_tables_by_winner(rows)
+    by_winner = _energy_component_tables_by_winner(rows, axis_keys=axis_keys)
     return [row for winner_id in sorted(by_winner) for row in by_winner[winner_id]]
 
 
@@ -240,6 +274,35 @@ def _load_collect_tables(
     return collect_dir, _load_collect_manifest(collect_dir), {name: _read_csv(collect_dir / name) for name in COMPACT_TABLES}
 
 
+def _column_has_values(rows: Sequence[dict[str, Any]], key: str) -> bool:
+    return any(str(row.get(key, "")).strip() for row in rows)
+
+
+def _report_axis_keys(
+    collect_manifest: dict[str, Any],
+    tables: dict[str, list[dict[str, Any]]],
+) -> tuple[str, str]:
+    """Return the primary and secondary comparison axes for final reporting."""
+
+    summary_rows = tables.get("architecture_summary.csv", [])
+    configured = (
+        str(collect_manifest.get("report_row_key", "")).strip(),
+        str(collect_manifest.get("report_col_key", "")).strip(),
+    )
+    for row_key, col_key in (
+        configured,
+        ("basis", "mechanism"),
+        ("basis_class", "normalization"),
+    ):
+        if row_key and col_key and _column_has_values(summary_rows, row_key) and _column_has_values(summary_rows, col_key):
+            return row_key, col_key
+    return "basis_class", "normalization"
+
+
+def _row_axis_value(row: dict[str, Any], key: str, fallback: str) -> str:
+    return str(row.get(key, "")).strip() or str(row.get(fallback, "")).strip()
+
+
 def _architecture_label(row: dict[str, Any]) -> str:
     return str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
 
@@ -269,16 +332,16 @@ def _save_winner_pair_heatmap(
     transform: str | None = None,
     width_scale: float = 1.0,
 ) -> None:
-    """Save energy/stability winner heatmaps side by side with one scale."""
+    """Save configured winner heatmaps side by side with one scale."""
 
     plot.save_winner_pair_heatmap(
         path,
-        {winner: _winner_rows(rows, winner) for winner in WINNER_KINDS},
+        {winner: _winner_rows(rows, winner) for winner in PLOT_WINNER_KINDS},
         row_key=row_key,
         col_key=col_key,
         value_key=value_key,
         title=title,
-        panel_titles={winner: _winner_title(winner) for winner in WINNER_KINDS},
+        panel_titles={winner: _winner_title(winner) for winner in PLOT_WINNER_KINDS},
         transform=transform,
         width_scale=width_scale,
     )
@@ -306,7 +369,7 @@ def _unique_in_order(values: Sequence[Any]) -> list[str]:
 
 
 def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return positive log-log points for the 1B energy/stability scatter."""
+    """Return positive log-log points for the 1B winner scatter."""
 
     points = []
     for row in rows:
@@ -330,25 +393,26 @@ def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, An
 
 
 def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
-    points = _energy_variance_points(rows)
+    points = [point for point in _energy_variance_points(rows) if point["winner_kind"] in PLOT_WINNER_KINDS]
     if not points:
         plot.save_no_data(path, title)
         return
+    architectures = sorted({str(point["architecture"]) for point in points})
     plot.save_loglog_scatter_grid(
         path,
         points,
-        panel_key="winner_kind",
-        panel_keys=WINNER_KINDS,
-        panel_titles={winner: _winner_title(winner) for winner in WINNER_KINDS},
+        panel_key="architecture",
+        panel_keys=architectures,
+        panel_titles={architecture: architecture for architecture in architectures},
         x_key="abs_energy_error",
         y_key="local_energy_var",
-        color_key="architecture",
-        marker_key="normalization",
+        color_key="normalization",
+        marker_key="winner_kind",
         x_label="abs energy error |E - 2|",
         y_label="local-energy variance",
-        title=f"{title}\nWinner type is separated by panel; color is architecture and marker shape is normalization.",
-        color_title="Architecture",
-        marker_title="Normalization",
+        title=f"{title}\nPrimary report-axis values are separated by panel; color is the secondary report axis and marker shape is winner type.",
+        color_title="Secondary axis",
+        marker_title="Winner type",
     )
 
 
@@ -753,21 +817,14 @@ def _tail_local_energy_bar_points(
     return out
 
 
-def _tail_bar_width(radii: Sequence[float], n_groups: int) -> float:
-    unique = sorted({radius for radius in radii if math.isfinite(radius)})
-    gaps = [right - left for left, right in zip(unique, unique[1:], strict=False) if right > left]
-    base = min(gaps) * 0.75 if gaps else max(0.08, abs(unique[0]) * 0.08 if unique else 0.08)
-    return base / max(1, n_groups)
-
-
-def _save_tail_local_energy_bar_grid(
+def _save_tail_local_energy_line_grid(
     path: Path,
     rows: Sequence[dict[str, Any]],
     *,
     winner_kind: str,
     title: str,
 ) -> None:
-    """Save tail local-energy medians as bars with q5-q85 ranges."""
+    """Save tail local-energy medians as CoM lines with q5-q85 ranges."""
 
     profiles = _tail_local_energy_bar_points(rows, winner_kind=winner_kind)
     if not profiles:
@@ -778,30 +835,28 @@ def _save_tail_local_energy_bar_grid(
     normalizations = sorted({cell[1] for cell in profiles})
     com_labels = sorted({cell[2] for cell in profiles})
 
-    all_radii = [float(point["radius"]) for points in profiles.values() for point in points]
-    width = _tail_bar_width(all_radii, len(com_labels))
-    bars = [
+    series = [
         {
             "panel_key": (normalization, architecture),
-            "bar_key": com,
+            "line_key": com,
             "x": point["radius"],
-            "height": point["median"],
+            "y": point["median"],
             "yerr_low": max(0.0, float(point["median"]) - float(point["low"])),
             "yerr_high": max(0.0, float(point["high"]) - float(point["median"])),
-            "width": width,
+            "marker": "o",
         }
         for (architecture, normalization, com), points in profiles.items()
         for point in points
     ]
-    plot.save_grouped_bar_grid(
+    plot.save_grouped_line_grid(
         path,
-        bars,
+        series,
         row_keys=normalizations,
         col_keys=architectures,
-        bar_keys=com_labels,
+        line_keys=com_labels,
         x_label="radius",
         y_label="local energy",
-        title=f"{title}\nBars show median local energy; error bars show q5-q85.",
+        title=f"{title}\nLines are CoM groups; points show median local energy and error bars show q5-q85.",
         legend_title="CoM",
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
         rect=(0.0, 0.0, 0.88, 0.94),
@@ -1018,7 +1073,7 @@ def _training_run_curves(
     rows: Sequence[dict[str, Any]],
     *,
     value_mode: str = "energy_mean",
-    smooth_window: int = 5,
+    smooth_window: int = 25,
 ) -> dict[tuple[str, str, str, str], list[dict[str, float | str]]]:
     """Return one smoothed curve per final-training run."""
 
@@ -1054,7 +1109,7 @@ def _save_training_curve_grid(
     y_label: str,
     title: str,
     semilogy: bool = False,
-    smooth_window: int = 5,
+    smooth_window: int = 25,
 ) -> None:
     """Save one winner family's final-training curves."""
 
@@ -1110,6 +1165,8 @@ def _save_symmetry_metric_grid(
     *,
     metric_key: str,
     title: str,
+    row_key: str = "basis_class",
+    col_key: str = "normalization",
 ) -> None:
     """Save one symmetry metric as architecture-by-normalization heatmaps."""
 
@@ -1120,20 +1177,20 @@ def _save_symmetry_metric_grid(
     panel_rows = {}
     for symmetry in symmetries:
         symmetry_rows = [row for row in rows if str(row.get("symmetry_task", "")) == symmetry]
-        for winner in WINNER_KINDS:
+        for winner in PLOT_WINNER_KINDS:
             panel_rows[(symmetry, winner)] = _winner_rows(symmetry_rows, winner)
     plot.save_row_scoped_heatmap_grid(
         path,
         panel_rows,
         row_labels=symmetries,
-        col_labels=WINNER_KINDS,
-        row_key="basis_class",
-        col_key="normalization",
+        col_labels=PLOT_WINNER_KINDS,
+        row_key=row_key,
+        col_key=col_key,
         value_key=metric_key,
         title=title,
         panel_title=lambda symmetry, winner: f"{symmetry}\n{_winner_title(winner)}",
-        colorbar_ticks="none",
-        figsize=(max(14.0, 7.0 * len(WINNER_KINDS)), max(3.2, 3.0 * len(symmetries))),
+        transform="positive_log" if metric_key in SYMMETRY_LOG_METRICS else None,
+        figsize=(max(7.0, 7.0 * len(PLOT_WINNER_KINDS)), max(3.2, 3.0 * len(symmetries))),
         subplot_adjust={"left": 0.07, "right": 0.89, "bottom": 0.08, "top": 0.90, "wspace": 0.55, "hspace": 0.65},
     )
 
@@ -1144,6 +1201,8 @@ def _save_feature_trace_metric_grid(
     *,
     metric_key: str,
     title: str,
+    row_key: str = "basis_class",
+    col_key: str = "normalization",
 ) -> None:
     """Save one feature-trace metric as layer-by-winner heatmaps."""
 
@@ -1161,31 +1220,38 @@ def _save_feature_trace_metric_grid(
     panel_rows = {}
     for layer in layers:
         layer_rows = [row for row in trace_rows if str(row.get("layer", "")) == layer]
-        for winner in WINNER_KINDS:
+        for winner in PLOT_WINNER_KINDS:
             panel_rows[(layer, winner)] = _winner_rows(layer_rows, winner)
     plot.save_row_scoped_heatmap_grid(
         path,
         panel_rows,
         row_labels=layers,
-        col_labels=WINNER_KINDS,
-        row_key="basis_class",
-        col_key="normalization",
+        col_labels=PLOT_WINNER_KINDS,
+        row_key=row_key,
+        col_key=col_key,
         value_key=metric_key,
         title=title,
         panel_title=lambda layer, winner: f"{layer}\n{_winner_title(winner)}",
-        figsize=(max(11.0, 5.5 * len(WINNER_KINDS)), max(3.2, 2.55 * len(layers))),
+        figsize=(max(5.5, 5.5 * len(PLOT_WINNER_KINDS)), max(3.2, 2.55 * len(layers))),
         subplot_adjust={"left": 0.08, "right": 0.89, "bottom": 0.04, "top": 0.94, "wspace": 0.65, "hspace": 0.75},
     )
 
 
-def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *, stat: str) -> None:
+def _save_virial_residual_heatmap(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    stat: str,
+    row_key: str = "basis_class",
+    col_key: str = "normalization",
+) -> None:
     """Save one signed-log virial-residual winner-pair heatmap."""
 
     _save_winner_pair_heatmap(
         path,
         rows,
-        row_key="basis_class",
-        col_key="normalization",
+        row_key=row_key,
+        col_key=col_key,
         value_key=stat,
         title=f"Virial residual {stat}",
         transform="signed_log",
@@ -1193,12 +1259,17 @@ def _save_virial_residual_heatmap(path: Path, rows: Sequence[dict[str, Any]], *,
     )
 
 
-def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -> list[str]:
+def _write_figures(
+    figures_dir: Path,
+    tables: dict[str, list[dict[str, Any]]],
+    collect_manifest: dict[str, Any],
+) -> list[str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     written = []
+    row_key, col_key = _report_axis_keys(collect_manifest, tables)
     architecture_rows = tables["architecture_summary.csv"]
     energy = tables["energy_by_run.csv"]
-    energy_components = _combined_energy_component_rows(energy)
+    energy_components = _combined_energy_component_rows(energy, axis_keys=(row_key, col_key))
     virial_residual = _virial_residual_rows(energy_components)
     histograms = tables["local_energy_histograms.csv"]
     stratified = tables["stratified_summary.csv"]
@@ -1209,13 +1280,13 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
 
     add(
         "1A_real_scale_energy_error_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key=row_key, col_key=col_key, value_key="energy_error_median", title="Median signed final energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
     add(
         "1A_log_scale_energy_error_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="energy_error_median", title="Median signed final energy error", transform="signed_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key=row_key, col_key=col_key, value_key="energy_error_median", title="Median signed final energy error", transform="signed_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
-    for winner in WINNER_KINDS:
+    for winner in PLOT_WINNER_KINDS:
         add(
             _winner_filename("1C", winner, "local_energy_distribution_grid.png"),
             lambda path, winner=winner: _save_local_energy_distribution_grid(path, _winner_rows(histograms, winner), title=f"MCMC local-energy histograms: {_winner_title(winner)}"),
@@ -1223,7 +1294,7 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
 
     add("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance"))
     cusp_rows = tables["cusp_profile_summary.csv"]
-    for winner in WINNER_KINDS:
+    for winner in PLOT_WINNER_KINDS:
         add(
             _winner_filename("2A", winner, "cusp_local_energy_grid.png"),
             lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="local_energy_median", y_label="local energy", title=f"Cusp local energy profiles: {_winner_title(winner)}"),
@@ -1236,33 +1307,42 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
             _winner_filename("2C", winner, "cusp_finite_fraction_grid.png"),
             lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="finite_fraction", y_label="finite fraction", title=f"Cusp finite fraction profiles: {_winner_title(winner)}"),
         )
-    for winner in WINNER_KINDS:
+    for winner in PLOT_WINNER_KINDS:
         add(
             _winner_filename("2D", winner, "cusp_dlogabs_dr_grid.png"),
             lambda path, winner=winner: _save_cusp_derivative_winner_grid(path, cusp_rows, winner_kind=winner, title=f"Cusp derivative profiles: {_winner_title(winner)}"),
         )
-    add("3A_tail_energy_winner_local_energy_bars.png", lambda path: _save_tail_local_energy_bar_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail local energy: energy winners"))
-    add("3B_tail_stability_winner_local_energy_bars.png", lambda path: _save_tail_local_energy_bar_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail local energy: stability winners"))
-    add("3C_tail_energy_winner_logabs_grid.png", lambda path: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind="energy", title="Tail logabs: energy winners"))
-    add("3D_tail_stability_winner_logabs_grid.png", lambda path: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind="stability", title="Tail logabs: stability winners"))
+    tail_labels = {"energy": ("3A", "3C"), "stability": ("3B", "3D")}
+    for winner in PLOT_WINNER_KINDS:
+        local_energy_label, _logabs_label = tail_labels[winner]
+        add(
+            _winner_filename(local_energy_label, winner, "tail_local_energy_lines.png"),
+            lambda path, winner=winner: _save_tail_local_energy_line_grid(path, tables["tail_profile_summary.csv"], winner_kind=winner, title=f"Tail local energy: {_winner_title(winner)}"),
+        )
+    for winner in PLOT_WINNER_KINDS:
+        _local_energy_label, logabs_label = tail_labels[winner]
+        add(
+            _winner_filename(logabs_label, winner, "tail_logabs_grid.png"),
+            lambda path, winner=winner: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind=winner, title=f"Tail logabs: {_winner_title(winner)}"),
+        )
 
     add(
         "3E_tail_outlier_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key="basis_class", col_key="normalization", value_key="tail_outlier_fraction_median", title="Tail outlier fraction", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, architecture_rows, row_key=row_key, col_key=col_key, value_key="tail_outlier_fraction_median", title="Tail outlier fraction", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
 
     aggregate = [row for row in stratified if row.get("stratum") == "all"]
     add(
         f"{_figure_label('4', 0)}_stratified_geometry_aggregate_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title="Stratified median absolute energy error", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
     add(
         f"{_figure_label('4', 0)}_stratified_geometry_aggregate_log_heatmap.png",
-        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+        lambda path: _save_winner_pair_heatmap(path, aggregate, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title="Stratified median absolute energy error", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
     )
 
     hooke_rows = tables["hooke_orbital_summary.csv"]
-    for winner in WINNER_KINDS:
+    for winner in PLOT_WINNER_KINDS:
         rows = _winner_rows(hooke_rows, winner)
         add(
             _winner_filename("5A", winner, "hooke_orbital_local_energy_distribution.png"),
@@ -1280,36 +1360,31 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
     for metric_index, metric in enumerate(SYMMETRY_METRICS):
         add(
             f"{_figure_label('6', metric_index)}_symmetry_{metric}_heatmap_grid.png",
-            lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}"),
+            lambda path, metric=metric: _save_symmetry_metric_grid(path, tables["symmetry_summary.csv"], metric_key=metric, title=f"Symmetry diagnostic: {metric}", row_key=row_key, col_key=col_key),
         )
 
     for metric_index, metric in enumerate(FEATURE_TRACE_METRICS):
         add(
             f"{_figure_label('7', metric_index)}_feature_trace_{metric}_heatmap_grid.png",
-            lambda path, metric=metric: _save_feature_trace_metric_grid(path, tables["trace_summary.csv"], metric_key=metric, title=f"Feature-trace stability diagnostic: {metric}"),
+            lambda path, metric=metric: _save_feature_trace_metric_grid(path, tables["trace_summary.csv"], metric_key=metric, title=f"Feature-trace stability diagnostic: {metric}", row_key=row_key, col_key=col_key),
         )
 
-    add(
-        "8A_energy_winner_training_energy.png",
-        lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind="energy", value_mode="energy_mean", y_label="energy mean", title="Final-train energy curves: energy winners"),
-    )
-    add(
-        "8B_energy_winner_abs_energy_error_semilogy.png",
-        lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind="energy", value_mode="abs_energy_error", y_label="abs energy error |E - 2|", title="Final-train absolute energy error: energy winners", semilogy=True),
-    )
-    add(
-        "8C_stability_winner_training_energy.png",
-        lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind="stability", value_mode="energy_mean", y_label="energy mean", title="Final-train energy curves: stability winners"),
-    )
-    add(
-        "8D_stability_winner_abs_energy_error_semilogy.png",
-        lambda path: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind="stability", value_mode="abs_energy_error", y_label="abs energy error |E - 2|", title="Final-train absolute energy error: stability winners", semilogy=True),
-    )
+    training_labels = {"energy": ("8A", "8B"), "stability": ("8C", "8D")}
+    for winner in PLOT_WINNER_KINDS:
+        energy_label, error_label = training_labels[winner]
+        add(
+            _winner_filename(energy_label, winner, "training_energy.png"),
+            lambda path, winner=winner: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind=winner, value_mode="energy_mean", y_label="energy mean", title=f"Final-train energy curves: {_winner_title(winner)}"),
+        )
+        add(
+            _winner_filename(error_label, winner, "abs_energy_error_semilogy.png"),
+            lambda path, winner=winner: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind=winner, value_mode="abs_energy_error", y_label="abs energy error |E - 2|", title=f"Final-train absolute energy error: {_winner_title(winner)}", semilogy=True),
+        )
 
     for stat_index, stat in enumerate(VIRIAL_RESIDUAL_STATS):
         add(
             f"{_figure_label('9', stat_index)}_virial_residual_{stat}_log_heatmap.png",
-            lambda path, stat=stat: _save_virial_residual_heatmap(path, virial_residual, stat=stat),
+            lambda path, stat=stat: _save_virial_residual_heatmap(path, virial_residual, stat=stat, row_key=row_key, col_key=col_key),
         )
 
     strata = sorted({str(row.get("stratum", "")) for row in stratified if row.get("stratum", "") not in {"", "all"}})
@@ -1319,11 +1394,11 @@ def _write_figures(figures_dir: Path, tables: dict[str, list[dict[str, Any]]]) -
         rows = [row for row in stratified if str(row.get("stratum", "")) == stratum]
         add(
             f"{label}_stratified_geometry_{safe}_heatmap.png",
-            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
         )
         add(
             f"{label}_stratified_geometry_{safe}_log_heatmap.png",
-            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key="basis_class", col_key="normalization", value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
+            lambda path, rows=rows, stratum=stratum: _save_winner_pair_heatmap(path, rows, row_key=row_key, col_key=col_key, value_key="median_abs_energy_error", title=f"Stratified median absolute energy error: {stratum}", transform="positive_log", width_scale=NARROW_WINNER_HEATMAP_WIDTH_SCALE),
         )
     return written
 
@@ -1337,20 +1412,31 @@ def _copy_tables(collect_dir: Path, tables_dir: Path, tables: dict[str, list[dic
     return counts
 
 
-def _write_energy_component_tables(tables_dir: Path, energy_rows: Sequence[dict[str, Any]]) -> dict[str, int]:
+def _energy_component_columns(axis_keys: Sequence[str]) -> list[str]:
+    """Return energy-component table columns including configured report axes."""
+
+    columns = list(ENERGY_COMPONENT_COLUMNS)
+    insert_at = columns.index("basis_class")
+    for key in reversed([str(key) for key in axis_keys if str(key) and str(key) not in columns]):
+        columns.insert(insert_at, key)
+    return columns
+
+
+def _write_energy_component_tables(tables_dir: Path, energy_rows: Sequence[dict[str, Any]], *, axis_keys: Sequence[str] = ()) -> dict[str, int]:
     """Write combined and per-winner virial tables from final MCMC energy rows."""
 
-    by_winner = _energy_component_tables_by_winner(energy_rows)
+    by_winner = _energy_component_tables_by_winner(energy_rows, axis_keys=axis_keys)
     combined = [row for winner_id in sorted(by_winner) for row in by_winner[winner_id]]
     counts = {"energy_components_and_virial_by_winner.csv": len(combined)}
+    columns = _energy_component_columns(axis_keys)
     _write_csv_columns(
         tables_dir / "energy_components_and_virial_by_winner.csv",
         combined,
-        ENERGY_COMPONENT_COLUMNS,
+        columns,
     )
     for winner_id, rows in by_winner.items():
         relative_path = f"energy_components_and_virial/{winner_id}.csv"
-        _write_csv_columns(tables_dir / relative_path, rows, ENERGY_COMPONENT_COLUMNS)
+        _write_csv_columns(tables_dir / relative_path, rows, columns)
         counts[relative_path] = len(rows)
     return counts
 
@@ -1375,8 +1461,9 @@ def build_report(
     collect_dir, collect_manifest, tables = _load_collect_tables(results_root, final_collect_attempt_id)
     study = study_name_from_manifest(collect_manifest)
     table_counts = _copy_tables(collect_dir, tables_dir, tables)
-    table_counts.update(_write_energy_component_tables(tables_dir, tables["energy_by_run.csv"]))
-    figures = _write_figures(figures_dir, tables)
+    report_row_key, report_col_key = _report_axis_keys(collect_manifest, tables)
+    table_counts.update(_write_energy_component_tables(tables_dir, tables["energy_by_run.csv"], axis_keys=(report_row_key, report_col_key)))
+    figures = _write_figures(figures_dir, tables, collect_manifest)
 
     report = {
         "study": study,
@@ -1385,6 +1472,10 @@ def build_report(
         "smoke": bool(smoke),
         "final_collect_attempt_id": final_collect_attempt_id,
         "final_collect_dir": str(collect_dir),
+        "report_axes": {
+            "row": report_row_key,
+            "column": report_col_key,
+        },
         "tables": table_counts,
         "figures": figures,
         "caveats": [
@@ -1400,8 +1491,21 @@ def build_report(
 
 
 def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -> str:
-    architecture = sorted(tables["architecture_summary.csv"], key=lambda row: (row.get("basis_class", ""), row.get("normalization", ""), row.get("winner_kind", "")))
+    report_axes = report.get("report_axes", {}) if isinstance(report.get("report_axes"), dict) else {}
+    row_key = str(report_axes.get("row", "basis_class"))
+    col_key = str(report_axes.get("column", "normalization"))
+    architecture = sorted(
+        tables["architecture_summary.csv"],
+        key=lambda row: (
+            _row_axis_value(row, row_key, "basis_class"),
+            _row_axis_value(row, col_key, "normalization"),
+            row.get("winner_kind", ""),
+        ),
+    )
     report_title = str(report.get("study") or "Study").replace("_", " ").title()
+    winner_scope = "energy winners" if tuple(PLOT_WINNER_KINDS) == ("energy",) else "energy and stability winners"
+    winner_columns = "energy-winner columns" if tuple(PLOT_WINNER_KINDS) == ("energy",) else "energy/stability winner columns"
+    winner_heatmaps = "energy winners" if tuple(PLOT_WINNER_KINDS) == ("energy",) else "energy and stability winners side by side"
     lines = [
         f"# {report_title} Final Report",
         "",
@@ -1409,6 +1513,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
         "",
         "This report consumes `08_final_collect` compact tables only. It does not parse raw model, train, or eval records.",
         f"Final collect attempt: `{report['final_collect_attempt_id']}`.",
+        f"Report axes: `{row_key}` by `{col_key}`.",
         "",
         "## Final Champion Summary",
         "",
@@ -1418,10 +1523,10 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
         "",
     ]
     if architecture:
-        lines.extend(["| basis_class | normalization | winner_kind | n_success/n_expected | energy_error_median | local_energy_var_median |", "|---|---|---|---:|---:|---:|"])
+        lines.extend([f"| {row_key} | {col_key} | winner_kind | n_success/n_expected | energy_error_median | local_energy_var_median |", "|---|---|---|---:|---:|---:|"])
         for row in architecture[:20]:
             lines.append(
-                f"| {row.get('basis_class', '')} | {row.get('normalization', '')} | {row.get('winner_kind', '')} | "
+                f"| {_row_axis_value(row, row_key, 'basis_class')} | {_row_axis_value(row, col_key, 'normalization')} | {row.get('winner_kind', '')} | "
                 f"{row.get('n_success', '')}/{row.get('n_expected', '')} | {row.get('energy_error_median', '')} | {row.get('local_energy_var_median', '')} |"
             )
     else:
@@ -1431,41 +1536,41 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Energy And Local-Energy Results",
             "",
-            "Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps place energy and stability winners side by side with a shared color scale. Figure 1B separates energy and stability winners into adjacent panels while keeping architecture color and normalization marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
+            f"Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps render {winner_heatmaps} with a shared color scale over `{row_key}` by `{col_key}`. Figure 1B separates primary report-axis values into adjacent panels while keeping secondary-axis color and winner-marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
             "",
             "Energy component and virial tables are written to `tables/energy_components_and_virial_by_winner.csv` and to one validation-style table per winner family under `tables/energy_components_and_virial/`. The virial residual is `2 * kinetic - 2 * harmonic_trap + electron_electron`; the relative residual divides its absolute value by the absolute component scale.",
             "",
             "## Cusp Diagnostics",
             "",
-            "Cusp tables preserve center-of-mass and direction columns when present. Figures 2A/2B/2C emit separate energy/stability grids for sampled local-energy, log-amplitude, and finite-fraction profiles against `r12`; directions and seeds are pooled so each subplot has one line per CoM and variance error bars aggregate all compact direction/seed records. Figure 2D emits separate energy/stability grids for `d_logabs_dr_median` against `r12`, with normalization rows, architecture columns, solid CoM model lines, and dashed target derivative references.",
+            f"Cusp tables preserve center-of-mass and direction columns when present. Figures 2A/2B/2C emit {winner_scope} grids for sampled local-energy, log-amplitude, and finite-fraction profiles against `r12`; directions and seeds are pooled so each subplot has one line per CoM and variance error bars aggregate all compact direction/seed records. Figure 2D emits {winner_scope} grids for `d_logabs_dr_median` against `r12`, with `{col_key}` rows, `{row_key}` columns, solid CoM model lines, and dashed target derivative references.",
             "",
             "## Tail Diagnostics",
             "",
-            "Tail tables preserve path columns. Figures 3A/3B show local-energy bar grids for energy and stability winners; bars are grouped by CoM and their error bars show q5-q85. Figures 3C/3D show logabs line grids with seed-variance error bars. Figure 3E summarizes tail outlier fraction.",
+            f"Tail tables preserve path columns. Tail local-energy figures show line grids for {winner_scope}; lines are grouped by CoM and their error bars show q5-q85. Tail logabs figures use line grids with seed-variance error bars. Figure 3E summarizes tail outlier fraction.",
             "",
             "## Stratified Geometry Diagnostics",
             "",
-            "Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Figures 4A, 4B, ... group the aggregate and per-stratum heatmaps; each group has a real-scale and positive-log-color version with energy and stability winners side by side on a shared color scale.",
+            f"Stratified summaries include per-stratum rows and `stratum=all` aggregate rows. Figures 4A, 4B, ... group the aggregate and per-stratum heatmaps; each group has a real-scale and positive-log-color version with {winner_heatmaps} on a shared color scale.",
             "",
             "## Hooke-Orbital Diagnostics",
             "",
-            "Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted separately for energy and stability winners, with normalization rows, architecture columns, and the remaining bin dimension in the external legend.",
+            f"Hooke-orbital summaries are binned by CoM-radius and `r12` bins. Figure 5 line plots are emitted for {winner_scope}, with `{col_key}` rows, `{row_key}` columns, and the remaining bin dimension in the external legend.",
             "",
             "## Symmetry Diagnostics",
             "",
-            "See `tables/symmetry_summary.csv` and the symmetry figures. Figures 6A, 6B, ... emit one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, energy/stability winners as columns, architecture by normalization inside each subplot, and one shared color scale per symmetry-task row. Positive-only metric heatmaps use a monochrome red bar, with log color selected by default when a row's shared values span orders of magnitude.",
+            f"See `tables/symmetry_summary.csv` and the symmetry figures. Figures 6A, 6B, ... emit one heatmap-grid figure per scalar symmetry metric; each grid uses symmetry tasks as rows, {winner_columns}, `{row_key}` by `{col_key}` inside each subplot, and one ticked shared color scale per symmetry-task row. Error and count metric heatmaps use explicit monochrome log color.",
             "",
             "## Trace Diagnostics",
             "",
-            "See `tables/trace_summary.csv` and the trace figures. Figures 7A, 7B, and 7C focus on feature-trace stability and emit one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, energy/stability winner columns, architecture by normalization inside each subplot, and one tick-only colorbar with its own scale for every layer row.",
+            f"See `tables/trace_summary.csv` and the trace figures. Figures 7A, 7B, and 7C focus on feature-trace stability and emit one heatmap-grid figure each for `rms_q95`, `max_abs`, and `nonfinite_count`; each grid uses layer rows, {winner_columns}, `{row_key}` by `{col_key}` inside each subplot, and one ticked colorbar with its own scale for every layer row.",
             "",
             "## Training And Resource Summary",
             "",
-            "See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figures 8A and 8C show one smoothed training-energy curve per final-training run for energy and stability winners; Figures 8B and 8D show the corresponding semilogy absolute energy error curves with one shared vertical axis per grid.",
+            f"See `tables/training_curve_summary.csv` and `tables/resource_summary.csv`. Runtime is not mixed into quality ranking. Figure 8 shows one 25-point centered-smoothed training-energy curve per final-training run for {winner_scope}, plus the corresponding semilogy absolute energy error curves with one shared vertical axis per grid.",
             "",
             "## Virial Diagnostics",
             "",
-            "See `tables/energy_components_and_virial_by_winner.csv`. Figures 9A, 9B, 9C, and 9D show virial-residual mean, median, minimum, and maximum. Heatmaps place energy and stability winners side by side with signed-log color scales; cell labels remain on the real signed scale.",
+            f"See `tables/energy_components_and_virial_by_winner.csv`. Figures 9A, 9B, 9C, and 9D show virial-residual mean, median, minimum, and maximum. Heatmaps render {winner_heatmaps} with signed-log color scales; cell labels remain on the real signed scale.",
             "",
             "## Caveats",
             "",
@@ -1473,7 +1578,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
     )
     for caveat in report["caveats"]:
         lines.append(f"- {caveat}")
-    lines.extend(["", "## Next-Scan Implications", "", "Use energy, local-energy variance, pathology, cusp/tail, symmetry, and trace summaries jointly. Keep energy and stability winners separate.", "", "## Tables And Figures", "", "Tables:"])
+    lines.extend(["", "## Next-Scan Implications", "", "Use energy, local-energy variance, pathology, cusp/tail, symmetry, and trace summaries jointly.", "", "## Tables And Figures", "", "Tables:"])
     for name, n_rows in report["tables"].items():
         lines.append(f"- `tables/{name}`: {n_rows} rows")
     lines.append("")

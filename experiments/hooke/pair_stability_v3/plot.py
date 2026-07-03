@@ -412,6 +412,12 @@ def _series_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, float]]:
         yerr = _as_float(row.get("yerr"))
         if yerr is not None:
             point["yerr"] = yerr
+        yerr_low = _as_float(row.get("yerr_low"))
+        yerr_high = _as_float(row.get("yerr_high"))
+        if yerr_low is not None:
+            point["yerr_low"] = yerr_low
+        if yerr_high is not None:
+            point["yerr_high"] = yerr_high
         points.append(point)
     return sorted(points, key=lambda point: point["x"])
 
@@ -532,12 +538,23 @@ def save_grouped_line_grid(
                 alpha = _as_float(style_rows[0].get("alpha")) if style_rows else None
                 linewidth = _as_float(style_rows[0].get("linewidth")) if style_rows else None
                 marker = str(style_rows[0].get("marker", "o")) if style_rows else "o"
+                yerr_low = [point.get("yerr_low") for point in points]
+                yerr_high = [point.get("yerr_high") for point in points]
                 yerr = [point.get("yerr") for point in points]
-                if any(value is not None for value in yerr):
+                if any(value is not None for value in yerr_low + yerr_high):
+                    yerr_arg = [
+                        [0.0 if value is None else value for value in yerr_low],
+                        [0.0 if value is None else value for value in yerr_high],
+                    ]
+                elif any(value is not None for value in yerr):
+                    yerr_arg = [0.0 if value is None else value for value in yerr]
+                else:
+                    yerr_arg = None
+                if yerr_arg is not None:
                     ax.errorbar(
                         [point["x"] for point in points],
                         [point["y"] for point in points],
-                        yerr=[0.0 if value is None else value for value in yerr],
+                        yerr=yerr_arg,
                         marker=marker,
                         linewidth=linewidth or 1.1,
                         markersize=3.0,
@@ -749,7 +766,7 @@ def save_loglog_scatter_grid(
     markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "h", "p"]
     marker_by_value = {value: markers[index % len(markers)] for index, value in enumerate(marker_values)}
 
-    fig, axes = plt.subplots(1, len(panel_keys), figsize=(11.0, 4.8), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(panel_keys), figsize=(max(6.0, 3.7 * len(panel_keys)), 4.8), sharex=True, sharey=True)
     if len(panel_keys) == 1:
         axes = [axes]
     for ax, key in zip(axes, panel_keys, strict=True):
