@@ -238,13 +238,14 @@ after which `main` is the only trunk.)
 **Ownership split between SpENN and SpENN-dev:** SpENN (this repo) owns the
 `pair_stability_v2` implementation — it stays the stable, running reference here.
 SpENN-dev owns the `pair_stability_v3` / `experiments/toolkit` restructuring
-(exec-plan-split) going forward. SpENN's own `experiment`-branch history already
-contains an independently-built `pair_stability_v3`/`toolkit` implementation
-(parallel to SpENN-dev's) — that history is being kept as-is, not discarded, but
-it is not the place for further v3-toolkit development. Reconciling the two
-parallel implementations later (SpENN-dev's exec-plan-split work vs. SpENN's own
-`experiment`-branch v3-toolkit commits) is expected to require real, accepted
-merge conflicts — not resolved by picking one side and deleting the other.
+(exec-plan-split) going forward. `main` previously carried an independently-built
+`pair_stability_v3`/`toolkit` implementation (from PRs #71, #73-#76), built in
+parallel with SpENN-dev's exec-plan-split work since both forked from the same
+base before either existed. That duplication has been resolved: SpENN-dev's
+exec-plan-split implementation replaced main's wholesale (not merged
+file-by-file), since SpENN-dev is the one actively developing v3/toolkit going
+forward. Any future `pair_stability_v3`/`toolkit` changes should land through
+SpENN-dev.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
 

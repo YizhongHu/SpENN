@@ -744,7 +744,7 @@ Acceptance:
 
 ### Phase 1: Harden Toolkit Contracts
 
-Status: active in `codex/toolkit-contracts`.
+Status: next.
 
 Turn the current toolkit dataclasses into a stronger contract before more
 stages depend on them.
@@ -754,9 +754,9 @@ stages depend on them.
 - Add round-trip tests for `StagePlan`, `TaskSpec`, `ResourceSpec`, and
   `ExecutionRecord`.
 - Add explicit schema-version handling.
-- Validate generated train/validation plans through toolkit APIs.
-- Define the required fields for command-backed tasks. Collection/report task
-  shapes stay provisional until those stages are ported.
+- Add tests for resource profile materialization from current launcher profiles.
+- Decide which fields are required for command-backed tasks versus
+  collection/report tasks.
 
 Acceptance:
 
@@ -766,16 +766,12 @@ Acceptance:
 
 ### Phase 2: Move Submission Behind the Executor Interface
 
-Status: active, split across two PRs.
+Status: planned.
 
 Make `train.py` and `validate.py` submit through a toolkit executor adapter
 instead of calling `launch.submit_command_sets(...)` directly. The first adapter
 can wrap the existing launcher implementation; it does not need to be a new
 scheduler.
-
-The first Phase 2 PR adds and tests the adapter boundary without changing
-train/validate routing. The second Phase 2 PR should route v3 train/validate
-through those adapters and run the reduced v2/v3 parity gate.
 
 - Add `LocalExecutor` and `SubmititExecutor` adapters that consume `StagePlan`
   plus selected `TaskSpec` rows.
@@ -1086,9 +1082,9 @@ portable, and suitable for scratch/storage workflows on Cannon.
 
 The next PRs should be:
 
-1. Finish the active executor-adapter PR without changing stage routing.
-2. Route v3 train/validate submission through the executor adapters.
-3. Run the reduced v2/v3 parity gate for the routed train/validate path.
+1. Harden toolkit schema, serialization, and resource-profile tests.
+2. Add executor adapters that wrap the existing local/Submitit launcher paths.
+3. Route v3 train/validate submission through the executor adapters.
 4. Extract task-state/checkpoint-resume helpers with focused tests.
 5. Port v3 final_train/final_eval to toolkit plans and executor adapters.
 6. Make task plans the primary input to collect/select/final_plan.
