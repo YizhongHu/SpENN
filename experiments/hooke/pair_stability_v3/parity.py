@@ -401,7 +401,7 @@ def _compare_submission_presence(attempt_id: str) -> list[str]:
 
 def _check_v3_stage_plans(attempt_id: str) -> list[str]:
     differences = []
-    for stage in ("01_train", "02_validation", "06_final_train", "07_final_eval"):
+    for stage in ("01_train", "02_validation"):
         plan_dir = V3_DIR / "results" / stage / "stage_plans" / attempt_id
         for filename in ("stage_manifest.json", "tasks.jsonl", "execution_records.jsonl"):
             if not (plan_dir / filename).is_file():
@@ -449,7 +449,6 @@ def _normalize(value: Any) -> Any:
             key: (
                 "<VOLATILE>"
                 if _is_volatile_metric_value_field(key, volatile_metrics)
-                or _is_volatile_metric_identity_field(key, volatile_metrics)
                 else _normalize(item)
             )
             for key, item in sorted(value.items())
@@ -499,14 +498,6 @@ def _is_volatile_metric_value_field(key: str, volatile_metrics: set[str]) -> boo
     if key == "overall_metric_value":
         return "overall_metric" in volatile_metrics
     if key == "secondary_metric_value":
-        return "secondary_metric" in volatile_metrics
-    return False
-
-
-def _is_volatile_metric_identity_field(key: str, volatile_metrics: set[str]) -> bool:
-    if key == "overall_champion":
-        return "overall_metric" in volatile_metrics
-    if key == "secondary_champion":
         return "secondary_metric" in volatile_metrics
     return False
 

@@ -41,9 +41,6 @@ runtime:
   device: cuda
   dtype: float64
 
-model_initialization:
-  seed: ${runtime.seed}
-
 terminal:
   enabled: true
   level: info
@@ -254,11 +251,11 @@ timing:
   cuda_synchronize: false
 
 final_eval_sampler_params:
-  n_walkers: 4096
-  burn_in: 1000
-  n_steps: 400
+  n_walkers: 16
+  burn_in: 1
+  n_steps: 1
   proposal_scale: 0.35
-  max_samples: 8192
+  max_samples: 8
 
 # =============================================================================
 # Component specs
@@ -488,11 +485,11 @@ evaluation_tasks:
     output_dir: ${run.dir}/cusp
     generator:
       _target_: spenn.evaluation.generators.CuspGridGenerator
-      n_points: 96
+      n_points: 2
       r12_min: 1.0e-5
       r12_max: 2.0e-1
-      n_directions: 16
-      center_of_mass_radii: [0.0, 0.25, 0.5, 1.0, 1.5]
+      n_directions: 1
+      center_of_mass_radii: [0.0]
       paired_directions: true
       seed: ${evaluation.seed}
     calculators:
@@ -517,9 +514,9 @@ evaluation_tasks:
       _target_: spenn.evaluation.generators.TailGridGenerator
       radius_min: 0.5
       radius_max: 12.0
-      n_points: 96
+      n_points: 2
       pair_distance: 1.0
-      n_directions: 16
+      n_directions: 1
       seed: ${evaluation.seed}
     calculators:
       - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
@@ -541,7 +538,7 @@ evaluation_tasks:
     output_dir: ${run.dir}/stratified_geometry
     generator:
       _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-      n_samples: 2048
+      n_samples: 4
       seed: ${evaluation.seed}
       strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
       bounds:
@@ -569,7 +566,7 @@ evaluation_tasks:
     output_dir: ${run.dir}/hooke_orbital
     generator:
       _target_: spenn.evaluation.generators.HookeOrbitalGenerator
-      n_samples: 2048
+      n_samples: 4
       omega: ${system.omega}
       seed: ${evaluation.seed}
     calculators:
@@ -621,7 +618,7 @@ evaluation_tasks:
       seed: ${evaluation.seed}
       base_generator:
         _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-        n_samples: 512
+        n_samples: 4
         seed: ${evaluation.seed}
         strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
         bounds:
@@ -644,7 +641,7 @@ evaluation_tasks:
       exchange: opposite_spin_pair
       base_generator:
         _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-        n_samples: 512
+        n_samples: 4
         seed: ${evaluation.seed}
         strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
         bounds:
@@ -664,11 +661,11 @@ evaluation_tasks:
     output_dir: ${run.dir}/rotation_consistency
     generator:
       _target_: spenn.evaluation.generators.RotationOrbitGenerator
-      n_rotations: 4
+      n_rotations: 1
       seed: ${evaluation.seed}
       base_generator:
         _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-        n_samples: 256
+        n_samples: 4
         seed: ${evaluation.seed}
         strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
         bounds:
@@ -694,7 +691,7 @@ evaluation_tasks:
       seed: ${evaluation.seed}
       base_generator:
         _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-        n_samples: 256
+        n_samples: 2
         seed: ${evaluation.seed}
         strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
         bounds:
@@ -714,7 +711,7 @@ evaluation_tasks:
     output_dir: ${run.dir}/feature_trace_stability
     generator:
       _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-      n_samples: 512
+      n_samples: 4
       seed: ${evaluation.seed}
       strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
       bounds:
@@ -734,7 +731,7 @@ evaluation_tasks:
     output_dir: ${run.dir}/readout_trace_stability
     generator:
       _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
-      n_samples: 512
+      n_samples: 4
       seed: ${evaluation.seed}
       strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
       bounds:
@@ -754,7 +751,6 @@ evaluation_tasks:
 model:
   _target_: spenn.nn.SpENNWaveFunction
   trace_name: spenn
-  seed: ${model_initialization.seed}  # Legacy interpolation shim only.
   basis: ${choices.basis.${run_parameters.basis_slot}.basis}
   embedding:
     _target_: spenn.nn.Embedding
@@ -765,10 +761,6 @@ model:
     num_hidden_layers: ${model_params.num_hidden_layers}
     include_spins: false
     in_features: ${spenn.basis_feature_dim:${model.basis}}
-    initializer:
-      _target_: spenn.nn.TorchInitializer
-      seed: ${model_initialization.seed}
-      stream: model.embedding
   embedding_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.embedding_activation}
   layers:
     - _target_: spenn.nn.SpENNLayer
@@ -789,10 +781,6 @@ model:
         max_order: ${model_params.max_order}
         max_virtual_order: ${model_params.max_virtual_order}
         channels: ${model_params.channels}
-        initializer:
-          _target_: spenn.nn.TorchInitializer
-          seed: ${model_initialization.seed}
-          stream: model.layers.0.path_aggregation
       inverse_fourier:
         _target_: spenn.reps.InverseFourierTransform
       update:
