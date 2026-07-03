@@ -1,25 +1,29 @@
 # =============================================================================
-# Hooke pair-stability V2 screening grid (PR8.11)
+# Hooke pair-stability V2 smoke grid
 # =============================================================================
 #
-# This file is the contract between the study-specific configs and the
-# mechanical stage scripts:
+# Reduced-scale companion to grid.yaml for end-to-end parity checks against
+# pair_stability_v3, run through the normal (non-``--smoke``) pipeline so it
+# exercises the same code path as a real run. It is not the ``--smoke``/
+# ``smoke.yaml`` mechanism (job-count truncation for a quick scheduler check,
+# gated behind ``train.py --smoke``) -- that stays untouched.
 #
-# - study/config paths name the concrete study and base Hydra configs.
-# - major_grid defines blinded scientific comparison axes; minor_grid defines
-#   scan choices inside each bucket; scan_seeds are training/validation
-#   replicate seeds only.
-# - axis_id_labels control durable run id strings.
-# - axis_overrides maps each axis to the Hydra override path in the base
-#   configs. Stage code does not infer run_parameters.* paths.
-# - seed_overrides maps stage seed names to Hydra override paths. Final seeds
-#   come from final_seed_sequences, not from scan_seeds.
-# - blinding controls axis-wise slot assignment for major axes. Routine
-#   manifests carry slots; unblind.json carries semantic labels.
-# - champions declares selector semantics explicitly. PR8.11 selects energy
-#   representatives only; it does not choose a stability winner.
-# - smoke_config points to a separate workload-reduction profile used only when
-#   launchers receive --smoke.
+# Two kinds of reduction, both scoped to this file only (pair_stability.yaml
+# and pair_validation.yaml are not modified):
+#
+# - Fewer values per scientific axis (major_grid/minor_grid/scan_seeds/
+#   final_replicates), mirroring pair_stability_v2's grid_smoke.yaml: same
+#   axis structure, fewer combinations.
+# - A handful of extra single-value minor-grid axes (max_steps,
+#   log_every_n_steps, checks/checkpoint/status every_n_steps) that pin
+#   training's per-step workload down via the existing axis_overrides
+#   machinery. sampler_params and validation/final_eval evaluation_tasks
+#   knobs are intentionally left at production values.
+#
+# study/config/validation_config/smoke_config/results_root are unchanged from
+# grid.yaml: this is the same study, not a separate one, so smoke attempts
+# land under the same results tree as production attempts, isolated only by
+# attempt_id (same as any other grid re-plan).
 # =============================================================================
 
 study: pair_stability_v3
@@ -52,7 +56,24 @@ minor_grid:
     - 3.0e-4
 
   channels:
-    - 4
+    - 8
+
+  # Workload-reduction axes (not scientific scan dimensions): single value,
+  # applied uniformly via axis_overrides so every job gets a short train loop.
+  max_steps:
+    - 2
+
+  log_every_n_steps:
+    - 1
+
+  checks_every_n_steps:
+    - 1
+
+  checkpoint_every_n_steps:
+    - 1
+
+  status_every_n_steps:
+    - 1
 
 scan_seed_axis: seed
 scan_seeds:
@@ -72,6 +93,11 @@ axis_id_labels:
   lr: lr
   channels: ch
   seed: seed
+  max_steps: ms
+  log_every_n_steps: log
+  checks_every_n_steps: chk
+  checkpoint_every_n_steps: ckpt
+  status_every_n_steps: stat
 
 # Explicit Hydra override path for every non-seed grid axis.
 axis_overrides:
@@ -79,6 +105,11 @@ axis_overrides:
   mechanism: run_parameters.mechanism_slot
   lr: run_parameters.lr
   channels: run_parameters.channels
+  max_steps: training.max_steps
+  log_every_n_steps: training.log_every_n_steps
+  checks_every_n_steps: checks.every_n_steps
+  checkpoint_every_n_steps: checkpoint.every_n_steps
+  status_every_n_steps: status.every_n_steps
 
 # Optional validation against choice libraries in the base configs.
 choice_validation:
@@ -155,5 +186,6 @@ champion_reference_metrics:
     metric: eval/readout_trace_stability/condition_number_q95
 
 # Final planning keeps independent final seeds while staying small enough for
-# end-to-end restructuring checks.
+# end-to-end parity checks. The scan and champion-selection grid above remain
+# unchanged apart from the reductions noted above.
 final_replicates: 2

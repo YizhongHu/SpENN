@@ -620,7 +620,15 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert not (grid_attempt / "pair_validation.yaml").exists()
     assert manifest["grid_schema"] == "major_minor_scan"
     assert manifest["major_axes"] == ["basis", "mechanism"]
-    assert manifest["minor_axes"] == ["lr", "channels"]
+    assert manifest["minor_axes"] == [
+        "lr",
+        "channels",
+        "max_steps",
+        "log_every_n_steps",
+        "checks_every_n_steps",
+        "checkpoint_every_n_steps",
+        "status_every_n_steps",
+    ]
     assert manifest["scan_seed_axis"] == "seed"
     assert manifest["axis_id_labels"] == {
         "basis": "b",
@@ -628,12 +636,22 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
         "lr": "lr",
         "channels": "ch",
         "seed": "seed",
+        "max_steps": "ms",
+        "log_every_n_steps": "log",
+        "checks_every_n_steps": "chk",
+        "checkpoint_every_n_steps": "ckpt",
+        "status_every_n_steps": "stat",
     }
     assert manifest["axis_overrides"] == {
         "basis": "run_parameters.basis_slot",
         "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
+        "max_steps": "training.max_steps",
+        "log_every_n_steps": "training.log_every_n_steps",
+        "checks_every_n_steps": "checks.every_n_steps",
+        "checkpoint_every_n_steps": "checkpoint.every_n_steps",
+        "status_every_n_steps": "status.every_n_steps",
     }
     assert manifest["choice_validation"]["basis"]["choices_path"] == "choices.basis"
     assert manifest["choice_validation"]["mechanism"]["choices_path"] == "choices.mechanism"
@@ -677,7 +695,7 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert job["run_id"].startswith("b-")
     assert "_m-" in job["run_id"]
     assert job["minor_id"].startswith("lr-")
-    assert job["minor_choices"]["channels"] == 4
+    assert job["minor_choices"]["channels"] == 8
     assert job["scan_seed"] in {0, 1}
     assert job["seed_overrides"]["scan_train"] == {
         "run_parameters.seed": job["scan_seed"],
@@ -927,7 +945,7 @@ def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_defa
     assert len(Counter((row["basis"], row["mechanism"]) for row in champions)) == 4
     assert set(Counter((row["basis"], row["mechanism"]) for row in champions).values()) == {1}
     assert {row["winner_kind"] for row in champions} == {"energy"}
-    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-4"}
+    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-8_ms-2_log-1_chk-1_ckpt-1_stat-1"}
     true_grid = OmegaConf.load(GRID)
     assert not ({row["basis"] for row in champions} & set(true_grid.major_grid.basis))
     assert not ({row["mechanism"] for row in champions} & set(true_grid.major_grid.mechanism))
@@ -955,6 +973,11 @@ def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_defa
         "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
+        "max_steps": "training.max_steps",
+        "log_every_n_steps": "training.log_every_n_steps",
+        "checks_every_n_steps": "checks.every_n_steps",
+        "checkpoint_every_n_steps": "checkpoint.every_n_steps",
+        "status_every_n_steps": "status.every_n_steps",
     }
     assert len(jobs) == 8
     assert set(Counter(job["source_champion_id"] for job in jobs).values()) == {2}
