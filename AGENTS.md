@@ -212,8 +212,25 @@ Avoid large PRs that change state layout, path enumeration, Fourier logic, activ
 
 Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
-Agents must not push to branches other than these mentioned above, such as `main` or the `hooke` integration branch,
- merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `hooke`.
+Agents must not push to branches other than these mentioned above, such as `main`,
+ merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `main`.
+
+`hooke` and `experiment` are retired intermediate integration branches — do not open new
+PRs against them. (Historical note: the old tiered `main` -> `hooke` -> `experiment` ->
+feature-branch setup let `main`/`hooke` go stale while `experiment` silently became the
+real trunk. `main` is being caught back up to `experiment`'s tip once in-flight PRs land,
+after which `main` is the only trunk.)
+
+**Ownership split between SpENN and SpENN-dev:** SpENN (this repo) owns the
+`pair_stability_v2` implementation — it stays the stable, running reference here.
+SpENN-dev owns the `pair_stability_v3` / `experiments/toolkit` restructuring
+(exec-plan-split) going forward. SpENN's own `experiment`-branch history already
+contains an independently-built `pair_stability_v3`/`toolkit` implementation
+(parallel to SpENN-dev's) — that history is being kept as-is, not discarded, but
+it is not the place for further v3-toolkit development. Reconciling the two
+parallel implementations later (SpENN-dev's exec-plan-split work vs. SpENN's own
+`experiment`-branch v3-toolkit commits) is expected to require real, accepted
+merge conflicts — not resolved by picking one side and deleting the other.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
 
