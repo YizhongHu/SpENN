@@ -9,16 +9,12 @@ construction and provenance.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shlex
 import subprocess
 import sys
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
-from zoneinfo import ZoneInfo
 
 from omegaconf import OmegaConf
 
@@ -67,6 +63,23 @@ DEFAULT_DEPENDENT_LAUNCHER_CPUS = 1
 DEFAULT_LOCAL_DEADLINE_GUARD_MIN = 60
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit.task_state import (  # noqa: E402
+    _attempt_already_completed,
+    _claim_path_for_status,
+    _claim_row,
+    _deadline_guard_payload,
+    _deadline_guard_reached,
+    _read_json_mapping,
+    _terminal_row_status,
+    _write_claim,
+    _write_status,
+    claim_paths_for_statuses,
+    local_claim_deadline_unix,
+    parse_deadline_unix,
+)
 
 T = TypeVar("T")
 
@@ -507,74 +520,6 @@ def nonnegative_int(value: str) -> int:
     return parsed
 
 
-def parse_deadline_unix(value: str | None) -> float | None:
-    """Return a UNIX deadline from seconds or an ISO timestamp."""
-
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    timestamp = text[:-1] + "+00:00" if text.endswith("Z") else text
-    try:
-        parsed = datetime.fromisoformat(timestamp)
-    except ValueError as exc:
-        raise ValueError(
-            "local deadline must be UNIX seconds or an ISO timestamp"
-        ) from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=ZoneInfo(DEFAULT_STUDY_TIMEZONE))
-    return parsed.timestamp()
-
-
-def local_claim_deadline_unix(args: argparse.Namespace) -> float | None:
-    """Return the local claim deadline from CLI or Slurm environment."""
-
-    explicit = getattr(args, "local_deadline", None)
-    if explicit:
-        return parse_deadline_unix(explicit)
-    return parse_deadline_unix(os.environ.get("SLURM_JOB_END_TIME"))
-
-
-def _deadline_guard_reached(deadline_unix: float | None, guard_min: int | None) -> bool:
-    """Return whether a local worker should stop claiming new rows."""
-
-    if deadline_unix is None:
-        return False
-    guard_seconds = max(0, int(guard_min or 0)) * 60
-    if guard_seconds <= 0:
-        return False
-    return time.time() >= float(deadline_unix) - guard_seconds
-
-
-def _deadline_guard_payload(
-    *,
-    index: int,
-    command: str,
-    claim_label: str | None,
-    deadline_unix: float | None,
-    guard_min: int | None,
-) -> dict[str, Any]:
-    """Return a row status payload for a deadline-guarded skipped claim."""
-
-    remaining_min = None
-    if deadline_unix is not None:
-        remaining_min = (float(deadline_unix) - time.time()) / 60
-    return {
-        "status": "skipped_deadline_guard",
-        "chunk_index": index,
-        "command": command,
-        "claim_label": claim_label,
-        "deadline_unix": deadline_unix,
-        "guard_min": guard_min,
-        "remaining_min": remaining_min,
-    }
-
-
 def balanced_chunks(items: Sequence[T], *, chunk_size: int) -> list[list[T]]:
     """Split ``items`` into evenly sized chunks no larger than ``chunk_size``."""
 
@@ -592,120 +537,6 @@ def balanced_chunks(items: Sequence[T], *, chunk_size: int) -> list[list[T]]:
         chunks.append(items[start : start + size])
         start += size
     return chunks
-
-
-def _write_status(path: str | Path | None, payload: dict[str, Any]) -> None:
-    """Best-effort JSON status writer for launcher/chunk bookkeeping."""
-
-    if path is None:
-        return
-    status_path = Path(path)
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    status_path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
-
-
-def _read_json_mapping(path: Path) -> dict[str, Any] | None:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _claim_path_for_status(path: str | Path | None) -> Path | None:
-    """Return the atomic launch claim path next to a row status file."""
-
-    if path is None:
-        return None
-    return Path(path).with_name("launcher_claim.json")
-
-
-def claim_paths_for_statuses(paths: Sequence[str | Path | None] | None) -> list[Path | None] | None:
-    """Return per-row claim paths for mixed CPU/CUDA submissions."""
-
-    if paths is None:
-        return None
-    return [_claim_path_for_status(path) for path in paths]
-
-
-def _attempt_already_completed(status_path: str | Path | None) -> bool:
-    """Return whether the row already has a completed run checkpoint."""
-
-    if status_path is None:
-        return False
-    attempt_dir = Path(status_path).parent
-    checkpoint = attempt_dir / "checkpoints" / "latest.json"
-    status_file = attempt_dir / "status.json"
-    if not checkpoint.is_file() or not status_file.is_file():
-        return False
-    status = _read_json_mapping(status_file)
-    if status is None:
-        return False
-    return status.get("status") == "completed"
-
-
-def _terminal_row_status(status_path: str | Path | None) -> str | None:
-    """Return the terminal status that makes an old row claim reclaimable."""
-
-    if status_path is None:
-        return None
-    status_path = Path(status_path)
-    launcher_status = _read_json_mapping(status_path)
-    if launcher_status and launcher_status.get("status") in {"failed", "stopped"}:
-        return str(launcher_status["status"])
-    run_status = _read_json_mapping(status_path.parent / "status.json")
-    if run_status and run_status.get("status") in {"failed", "stopped"}:
-        return str(run_status["status"])
-    return None
-
-
-def _write_claim(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
-
-
-def _claim_row(path: str | Path | None, payload: dict[str, Any], status_path: str | Path | None = None) -> bool:
-    """Atomically claim one row for a racing CPU/CUDA submission."""
-
-    if path is None:
-        return True
-    claim_path = Path(path)
-    claim_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-    except FileExistsError:
-        terminal_status = _terminal_row_status(status_path)
-        if terminal_status is None:
-            return False
-        lock_path = claim_path.with_name(f"{claim_path.name}.reclaim.lock")
-        try:
-            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-        except FileExistsError:
-            return False
-        try:
-            with os.fdopen(lock_fd, "w") as handle:
-                handle.write(json.dumps({"pid": os.getpid(), "created_at_unix": time.time()}) + "\n")
-            terminal_status = _terminal_row_status(status_path)
-            if terminal_status is None:
-                return False
-            _write_claim(
-                claim_path,
-                {
-                    **payload,
-                    "reclaimed": True,
-                    "reclaim_reason": terminal_status,
-                    "previous_claim": _read_json_mapping(claim_path),
-                },
-            )
-            return True
-        finally:
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
-    with os.fdopen(fd, "w") as handle:
-        handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
-    return True
 
 
 def run_command_chunk(
