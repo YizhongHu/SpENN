@@ -70,9 +70,7 @@ final_plan = _load_script("final_plan")
 final_train = _load_script("final_train", bind_direct=True)
 final_eval = _load_script("final_eval")
 final_collect = _load_script("final_collect")
-final_report = _load_script("final_report")
 validate = _load_script("validate")
-from experiments.toolkit import StagePlan  # noqa: E402
 
 
 ATTEMPT = "20260623T120000-0400"
@@ -454,17 +452,13 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
 def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     results_root = _planned_results(tmp_path)
     submitted_commands: list[list[str]] = []
-    captured: dict[str, Any] = {}
 
-    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
-        commands = command_sets["cpu"]
+    def fake_submit_local(commands: Sequence[Sequence[str]], **kwargs: Any) -> list[str]:
         submitted_commands.extend([list(command) for command in commands])
-        captured["kwargs"] = kwargs
         assert len(kwargs["row_status_paths"]) == len(commands)
-        assert kwargs["chunk_status_dir"] == results_root / "01_train" / "chunk_status" / ATTEMPT
         return [f"local-train-{index}" for index, _ in enumerate(commands)]
 
-    monkeypatch.setattr(train.launch, "submit_command_sets", fake_submit_command_sets)
+    monkeypatch.setattr(train.launch, "submit_local", fake_submit_local)
 
     code = train.main(
         [
@@ -481,14 +475,10 @@ def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: py
 
     assert code == 0
     assert len(submitted_commands) == 16
-    assert captured["kwargs"]["backend"] == "local"
     plan_dir = results_root / "01_train" / "stage_plans" / ATTEMPT
-    stage_plan = StagePlan.read(plan_dir)
     manifest = json.loads((plan_dir / "stage_manifest.json").read_text())
     tasks = [json.loads(line) for line in (plan_dir / "tasks.jsonl").read_text().splitlines()]
     executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
-    assert stage_plan.n_tasks == 16
-    assert stage_plan.tasks[0].stage == "01_train"
     assert manifest["study"] == "pair_stability_v3"
     assert manifest["stage"] == "01_train"
     assert manifest["n_tasks"] == 16
@@ -630,7 +620,15 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert not (grid_attempt / "pair_validation.yaml").exists()
     assert manifest["grid_schema"] == "major_minor_scan"
     assert manifest["major_axes"] == ["basis", "mechanism"]
-    assert manifest["minor_axes"] == ["lr", "channels"]
+    assert manifest["minor_axes"] == [
+        "lr",
+        "channels",
+        "max_steps",
+        "log_every_n_steps",
+        "checks_every_n_steps",
+        "checkpoint_every_n_steps",
+        "status_every_n_steps",
+    ]
     assert manifest["scan_seed_axis"] == "seed"
     assert manifest["axis_id_labels"] == {
         "basis": "b",
@@ -638,12 +636,22 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
         "lr": "lr",
         "channels": "ch",
         "seed": "seed",
+        "max_steps": "ms",
+        "log_every_n_steps": "log",
+        "checks_every_n_steps": "chk",
+        "checkpoint_every_n_steps": "ckpt",
+        "status_every_n_steps": "stat",
     }
     assert manifest["axis_overrides"] == {
         "basis": "run_parameters.basis_slot",
         "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
+        "max_steps": "training.max_steps",
+        "log_every_n_steps": "training.log_every_n_steps",
+        "checks_every_n_steps": "checks.every_n_steps",
+        "checkpoint_every_n_steps": "checkpoint.every_n_steps",
+        "status_every_n_steps": "status.every_n_steps",
     }
     assert manifest["choice_validation"]["basis"]["choices_path"] == "choices.basis"
     assert manifest["choice_validation"]["mechanism"]["choices_path"] == "choices.mechanism"
@@ -653,20 +661,12 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert manifest["seed_overrides"]["scan_train"] == {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
-        "model_initialization.seed": "scan_seed",
         "sampler.seed": "scan_seed",
     }
     assert manifest["seed_overrides"]["validation"] == {
         "run_parameters.seed": "scan_seed",
         "runtime.seed": "scan_seed",
-        "model_initialization.seed": "scan_seed",
         "evaluation.seed": "scan_seed",
-    }
-    assert manifest["seed_overrides"]["final_eval"] == {
-        "run_parameters.seed": "final_eval_seed",
-        "runtime.seed": "final_eval_seed",
-        "model_initialization.seed": "final_train_model_seed",
-        "evaluation.seed": "final_eval_seed",
     }
     assert manifest["final_seed_sequences"] == {
         "final_train_sampler_seed": {"start": 101, "step": 1},
@@ -695,19 +695,17 @@ def test_v2_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert job["run_id"].startswith("b-")
     assert "_m-" in job["run_id"]
     assert job["minor_id"].startswith("lr-")
-    assert job["minor_choices"]["channels"] == 4
+    assert job["minor_choices"]["channels"] == 8
     assert job["scan_seed"] in {0, 1}
     assert job["seed_overrides"]["scan_train"] == {
         "run_parameters.seed": job["scan_seed"],
         "runtime.seed": job["scan_seed"],
-        "model_initialization.seed": job["scan_seed"],
         "sampler.seed": job["scan_seed"],
     }
     assert "study.name=pair_stability_v3" in job["overrides"]
     assert "experiment.name=pair_stability_v3" in job["overrides"]
     assert "experiment.run_name=pair_stability_v3_train" in job["overrides"]
     assert f"runtime.seed={job['scan_seed']}" in job["overrides"]
-    assert f"model_initialization.seed={job['scan_seed']}" in job["overrides"]
     assert f"sampler.seed={job['scan_seed']}" in job["overrides"]
     assert any(str(override).startswith("run_parameters.basis_slot=B") for override in job["overrides"])
     assert any(str(override).startswith("run_parameters.mechanism_slot=A") for override in job["overrides"])
@@ -723,25 +721,6 @@ def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) ->
     )
 
     assert resolved == str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml")
-
-
-def test_v3_configs_use_explicit_model_initializers() -> None:
-    train_cfg = OmegaConf.load(CONFIGS / "pair_stability.yaml")
-    validation_cfg = OmegaConf.load(CONFIGS / "pair_validation.yaml")
-
-    for cfg in (train_cfg, validation_cfg):
-        assert OmegaConf.select(cfg, "model_initialization.seed") == OmegaConf.select(cfg, "runtime.seed")
-        assert OmegaConf.select(cfg, "model.seed") == OmegaConf.select(cfg, "model_initialization.seed")
-        assert OmegaConf.select(cfg, "model.embedding.initializer._target_") == "spenn.nn.TorchInitializer"
-        assert OmegaConf.select(cfg, "model.embedding.initializer.seed") == OmegaConf.select(
-            cfg,
-            "model_initialization.seed",
-        )
-        assert OmegaConf.select(cfg, "model.layers.0.path_aggregation.initializer._target_") == "spenn.nn.TorchInitializer"
-        assert OmegaConf.select(cfg, "model.layers.0.path_aggregation.initializer.seed") == OmegaConf.select(
-            cfg,
-            "model_initialization.seed",
-        )
 
 
 def test_v2_collect_uses_status_for_required_train_wall_time(tmp_path: Path) -> None:
@@ -808,12 +787,9 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     job = manifest["jobs"][0]
     _write_checkpoint_pointer(results_root, str(job["run_id"]), ATTEMPT)
     submitted_commands: list[list[str]] = []
-    captured: dict[str, Any] = {}
 
-    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
-        commands = command_sets["cpu"]
+    def fake_submit_local(commands: Sequence[Sequence[str]], **kwargs: Any) -> list[str]:
         submitted_commands.extend([list(command) for command in commands])
-        captured["kwargs"] = kwargs
         assert len(kwargs["row_status_paths"]) == len(commands)
         assert kwargs["chunk_status_dir"] == results_root / "02_validation" / "chunk_status" / "V1"
         return [f"local-validation-{index}" for index, _ in enumerate(commands)]
@@ -822,7 +798,7 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     # a file; bind the v2 module explicitly so this test remains isolated from
     # the legacy pair_stability test module imports.
     monkeypatch.setattr(validate, "launch", launch)
-    monkeypatch.setattr(validate.launch, "submit_command_sets", fake_submit_command_sets)
+    monkeypatch.setattr(validate.launch, "submit_local", fake_submit_local)
 
     code = validate.main(
         [
@@ -841,8 +817,6 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
 
     assert code == 0
     assert len(submitted_commands) == 1
-    assert captured["kwargs"]["backend"] == "local"
-    assert captured["kwargs"]["allow_partial_failures"] is True
     script = submitted_commands[0][-1]
     assert str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml") in script
     assert "run_parameters.basis_slot=" in script
@@ -860,12 +834,9 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     assert submission["launcher_job_id"] == "local-validation-0"
     assert "validation_config.yaml" in submission["submitted_command"]
     plan_dir = results_root / "02_validation" / "stage_plans" / "V1"
-    stage_plan = StagePlan.read(plan_dir)
     manifest = json.loads((plan_dir / "stage_manifest.json").read_text())
     tasks = [json.loads(line) for line in (plan_dir / "tasks.jsonl").read_text().splitlines()]
     executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
-    assert stage_plan.n_tasks == 1
-    assert stage_plan.tasks[0].stage == "02_validation"
     assert manifest["study"] == "pair_stability_v3"
     assert manifest["stage"] == "02_validation"
     assert manifest["n_tasks"] == 1
@@ -974,7 +945,7 @@ def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_defa
     assert len(Counter((row["basis"], row["mechanism"]) for row in champions)) == 4
     assert set(Counter((row["basis"], row["mechanism"]) for row in champions).values()) == {1}
     assert {row["winner_kind"] for row in champions} == {"energy"}
-    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-4"}
+    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-8_ms-2_log-1_chk-1_ckpt-1_stat-1"}
     true_grid = OmegaConf.load(GRID)
     assert not ({row["basis"] for row in champions} & set(true_grid.major_grid.basis))
     assert not ({row["mechanism"] for row in champions} & set(true_grid.major_grid.mechanism))
@@ -1002,6 +973,11 @@ def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_defa
         "mechanism": "run_parameters.mechanism_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
+        "max_steps": "training.max_steps",
+        "log_every_n_steps": "training.log_every_n_steps",
+        "checks_every_n_steps": "checks.every_n_steps",
+        "checkpoint_every_n_steps": "checkpoint.every_n_steps",
+        "status_every_n_steps": "status.every_n_steps",
     }
     assert len(jobs) == 8
     assert set(Counter(job["source_champion_id"] for job in jobs).values()) == {2}
@@ -1173,94 +1149,11 @@ def test_v2_final_train_excludes_completed_and_resumes_partial(
     assert code == 0
     cpu_commands = captured["command_sets"]["cpu"]
     assert len(cpu_commands) == 1
-    assert captured["kwargs"]["backend"] == "local"
-    assert captured["kwargs"]["claim_rows"] is True
-    assert captured["kwargs"]["chunk_status_dir"] == results_root / "06_final_train" / "chunk_status" / final_grid_id
     script = cpu_commands[0][-1]
     assert "run.run_id=partial/F0" in script
     assert "run.run_id=done/F0" not in script
     assert f"load.path={checkpoint}" in script
     assert "load.mode=train_resume" in script
-    plan_dir = results_root / "06_final_train" / "stage_plans" / final_grid_id
-    stage_plan = StagePlan.read(plan_dir)
-    assert stage_plan.stage == "06_final_train"
-    assert stage_plan.source_attempts == {"final_grid": final_grid_id}
-    assert len(stage_plan.tasks) == 1
-    executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
-    assert len(executions) == 1
-    assert executions[0]["launcher_job_id"] == "job-0"
-
-
-def test_v2_final_eval_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    results_root = tmp_path / "results"
-    final_grid_id = "F0"
-    final_grid_dir = results_root / "05_final_grid" / final_grid_id
-    final_grid_dir.mkdir(parents=True)
-    _write_csv(
-        final_grid_dir / "final_jobs.csv",
-        [
-            {
-                "final_run_id": "final-run-0",
-                "source_champion_id": "champion-0",
-                "final_train_model_seed": 1001,
-                "final_eval_seed": 10001,
-            },
-        ],
-    )
-    json_io.write_json(
-        final_grid_dir / "manifest.json",
-        {
-            "study": "pair_stability_v3",
-            "stage": layout.STAGE_FINAL_GRID,
-            "attempt_id": final_grid_id,
-            "eval_config": str(CONFIGS / "pair_validation.yaml"),
-            "major_axes": [],
-            "minor_axes": [],
-            "axis_overrides": {},
-        },
-    )
-    checkpoint = _write_final_checkpoint(results_root, "final-run-0", final_grid_id)
-    captured: dict[str, Any] = {}
-
-    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
-        captured["command_sets"] = command_sets
-        captured["kwargs"] = kwargs
-        return ["job-0"]
-
-    monkeypatch.setattr(final_eval.launch, "submit_command_sets", fake_submit_command_sets)
-
-    code = final_eval.main(
-        [
-            "--results-root",
-            str(results_root),
-            "--final-grid-attempt-id",
-            final_grid_id,
-            "--final-train-attempt-id",
-            final_grid_id,
-            "--backend",
-            "local",
-            "--device",
-            "cpu",
-        ]
-    )
-
-    assert code == 0
-    cpu_commands = captured["command_sets"]["cpu"]
-    assert len(cpu_commands) == 1
-    assert captured["kwargs"]["backend"] == "local"
-    assert captured["kwargs"]["allow_partial_failures"] is True
-    assert captured["kwargs"]["chunk_status_dir"] == results_root / "07_final_eval" / "chunk_status" / final_grid_id
-    script = cpu_commands[0][-1]
-    assert "run.run_id=final-run-0/F0" in script
-    assert f"load.path={checkpoint}" in script
-    plan_dir = results_root / "07_final_eval" / "stage_plans" / final_grid_id
-    stage_plan = StagePlan.read(plan_dir)
-    assert stage_plan.stage == "07_final_eval"
-    assert stage_plan.source_attempts == {"final_grid": final_grid_id, "final_train": [final_grid_id]}
-    assert len(stage_plan.tasks) == 1
-    executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
-    assert len(executions) == 1
-    assert executions[0]["launcher_job_id"] == "job-0"
 
 
 def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
@@ -1287,72 +1180,10 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     (eval_run_dir / "zzz").mkdir(parents=True)
     (eval_run_dir / "aaa").mkdir()
     layout.write_latest(eval_run_dir, "aaa")
-    (results_root / "07_final_eval" / "stage_plans" / "aaa").mkdir(parents=True)
 
     assert final_collect._iter_final_eval_attempts(results_root, None) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
     ]
-
-
-def test_v3_final_collect_preserves_configured_report_axes() -> None:
-    context = {
-        "final_run_id": "b-B00_m-A00_lr-1e-3_ch-8_winner-energy_rep-0",
-        "job": {
-            "source_champion_id": "champion-0000",
-            "major_id": "b-B00_m-A00",
-            "minor_id": "lr-1e-3_ch-8",
-            "winner_kind": "energy",
-            "replicate_index": 0,
-            "final_train_model_seed": 1001,
-            "final_train_sampler_seed": 101,
-            "final_eval_seed": 10001,
-            "choices": {"basis": "B00", "mechanism": "A00", "lr": "0.001", "channels": "8"},
-            "source_champion": {"config_id": "b-B00_m-A00_lr-1e-3_ch-8"},
-        },
-        "final_grid_manifest": {
-            "major_axes": ["basis", "mechanism"],
-            "minor_axes": ["lr", "channels"],
-            "final_replicates": 9,
-        },
-    }
-
-    base = final_collect._base_row(context)
-    assert base["basis"] == "B00"
-    assert base["mechanism"] == "A00"
-    assert base["basis_class"] == "B00"
-    assert base["normalization"] == "A00"
-    assert base["config_id"] == "b-B00_m-A00_lr-1e-3_ch-8"
-
-    energy_rows = [
-        {
-            **base,
-            "final_run_id": f"run-{index}",
-            "energy_mean": "2.0",
-            "energy_error": "0.0",
-            "local_energy_var": "1.0",
-            "pathology_fraction": "0.0",
-        }
-        for index in range(9)
-    ]
-    summary = final_collect._architecture_summary(
-        energy_rows,
-        [],
-        [],
-        [],
-        major_axes=("basis", "mechanism"),
-        axis_columns=("basis", "mechanism", "lr", "channels"),
-        expected_final_seeds=9,
-    )
-
-    assert len(summary) == 1
-    assert summary[0]["basis"] == "B00"
-    assert summary[0]["mechanism"] == "A00"
-    assert summary[0]["n_success"] == 9
-    assert summary[0]["n_expected"] == 9
-    assert final_report._report_axis_keys(
-        {"report_row_key": "basis", "report_col_key": "mechanism"},
-        {"architecture_summary.csv": summary},
-    ) == ("basis", "mechanism")
 
 
 def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> None:

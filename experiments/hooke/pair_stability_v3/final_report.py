@@ -42,7 +42,7 @@ STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
 WINNER_KINDS = ("energy", "stability")
-PLOT_WINNER_KINDS = WINNER_KINDS
+PLOT_WINNER_KINDS = ("energy",)
 NARROW_WINNER_HEATMAP_WIDTH_SCALE = 0.75
 SYMMETRY_METRICS = (
     "logabs_error_max",

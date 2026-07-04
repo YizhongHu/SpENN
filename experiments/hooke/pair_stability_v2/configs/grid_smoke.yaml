@@ -12,7 +12,7 @@
 # and pair_validation.yaml are not modified):
 #
 # - Fewer values per scientific axis (major_grid/minor_grid/scan_seeds/
-#   final_replicates), mirroring pair_stability_v2's grid_smoke.yaml: same
+#   final_replicates), mirroring the old pair_stability_v2_small grid: same
 #   axis structure, fewer combinations.
 # - A handful of extra single-value minor-grid axes (max_steps,
 #   log_every_n_steps, checks/checkpoint/status every_n_steps) that pin
@@ -26,11 +26,11 @@
 # attempt_id (same as any other grid re-plan).
 # =============================================================================
 
-study: pair_stability_v3
-config: experiments/hooke/pair_stability_v3/configs/pair_stability.yaml
-validation_config: experiments/hooke/pair_stability_v3/configs/pair_validation.yaml
-smoke_config: experiments/hooke/pair_stability_v3/configs/smoke.yaml
-results_root: experiments/hooke/pair_stability_v3/results
+study: pair_stability_v2
+config: experiments/hooke/pair_stability_v2/configs/pair_stability.yaml
+validation_config: experiments/hooke/pair_stability_v2/configs/pair_validation.yaml
+smoke_config: experiments/hooke/pair_stability_v2/configs/smoke.yaml
+results_root: experiments/hooke/pair_stability_v2/results
 
 config_snapshots:
   train: train_config.yaml
