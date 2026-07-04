@@ -47,6 +47,7 @@ from experiments.toolkit import (  # noqa: E402
 )
 from experiments.toolkit.resources import resource_from_profile  # noqa: E402
 from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
+from experiments.toolkit.task_state import _checkpoint_ready  # noqa: E402
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 DEFAULT_GRID = STUDY_DIR / "configs" / "grid.yaml"
@@ -144,12 +145,6 @@ def latest_train_attempt_id(results_root: str | Path, run_id: str, *, smoke: boo
     """Return the latest eligible train attempt for ``run_id``."""
 
     return latest_attempt_id(train_run_dir(results_root, run_id), smoke=smoke)
-
-
-def _checkpoint_ready(train_attempt: Path) -> bool:
-    """Return whether a train attempt exposes a latest checkpoint pointer."""
-
-    return (train_attempt / "checkpoints" / "latest.json").is_file()
 
 
 def _validation_config_from_grid(

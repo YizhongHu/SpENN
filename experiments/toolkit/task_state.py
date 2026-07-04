@@ -10,6 +10,16 @@ The checkpoint pointer these functions read (``checkpoints/latest.json``,
 written by ``spenn.checkpoint``) is unrelated to the attempt-lineage
 ``latest.json`` pointer owned by a study's ``utils.layout`` module; the two
 share a filename but not a schema.
+
+This module also collects ``final_train.py``'s, ``final_eval.py``'s, and
+``validate.py``'s own, independently-implemented checkpoint-discovery and
+readiness checks. They are kept as distinct functions rather than merged with
+``_attempt_already_completed`` above: each answers a different question
+(is this row ready for the next stage, has it fully completed, what is the
+highest complete checkpoint to resume from) and they can legitimately
+disagree with each other and with ``_attempt_already_completed`` on the same
+attempt directory. Unifying them would be a behavior change, not a
+relocation.
 """
 
 from __future__ import annotations
@@ -206,3 +216,82 @@ def _claim_row(path: str | Path | None, payload: dict[str, Any], status_path: st
     with os.fdopen(fd, "w") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
     return True
+
+
+def _checkpoint_ready(train_attempt: Path) -> bool:
+    """Return whether a train attempt exposes a latest checkpoint pointer."""
+
+    return (train_attempt / "checkpoints" / "latest.json").is_file()
+
+
+def _checkpoint_step(path: Path) -> tuple[int, str]:
+    try:
+        return int(path.name.removeprefix("step_")), path.name
+    except ValueError:
+        return -1, path.name
+
+
+def _complete_checkpoint_dirs(attempt_dir: Path) -> list[Path]:
+    checkpoint_dir = attempt_dir / "checkpoints"
+    if not checkpoint_dir.is_dir():
+        return []
+    checkpoints = [
+        path
+        for path in checkpoint_dir.glob("step_*")
+        if path.is_dir() and not path.name.endswith(".tmp") and (path / "COMPLETE").is_file()
+    ]
+    return sorted(checkpoints, key=_checkpoint_step)
+
+
+def _latest_complete_checkpoint(attempt_dir: Path) -> Path | None:
+    checkpoints = _complete_checkpoint_dirs(attempt_dir)
+    return checkpoints[-1] if checkpoints else None
+
+
+def _final_train_completed(attempt_dir: Path) -> bool:
+    status_path = attempt_dir / "status.json"
+    if not status_path.is_file():
+        return False
+    try:
+        status = json.loads(status_path.read_text()).get("status")
+    except Exception:
+        return False
+    return status == "completed" and _latest_complete_checkpoint(attempt_dir) is not None
+
+
+def _resume_overrides(attempt_dir: Path) -> list[str]:
+    checkpoint = _latest_complete_checkpoint(attempt_dir)
+    if checkpoint is None:
+        return []
+    if _final_train_completed(attempt_dir):
+        return []
+    return [
+        f"load.path={checkpoint}",
+        "load.mode=train_resume",
+    ]
+
+
+def _resolved_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
+    selection_path = train_attempt / "selected_checkpoint.json"
+    if not selection_path.is_file():
+        return None
+    selection = json.loads(selection_path.read_text())
+    pointer = Path(str(selection.get("checkpoint_pointer", "")))
+    if not pointer.is_file():
+        return None
+    pointer_data = json.loads(pointer.read_text())
+    checkpoint_name = pointer_data.get("checkpoint_dir")
+    if not checkpoint_name:
+        return None
+    checkpoint_dir = pointer.parent / str(checkpoint_name)
+    if not checkpoint_dir.is_dir():
+        return None
+    if not (checkpoint_dir / "COMPLETE").is_file() or not (checkpoint_dir / "manifest.json").is_file():
+        return None
+    return {
+        "selection_path": str(selection_path),
+        "selection_policy": selection.get("selection_policy", ""),
+        "checkpoint_pointer": str(pointer),
+        "checkpoint_pointer_data": pointer_data,
+        "resolved_checkpoint_dir": str(checkpoint_dir),
+    }

@@ -21,7 +21,7 @@ from final_train import (
     load_final_grid_manifest,
     load_final_jobs,
 )
-from utils.io import read_json, write_json
+from utils.io import write_json
 from utils.layout import (
     STAGE_FINAL_EVAL,
     STAGE_FINAL_GRID,
@@ -40,6 +40,11 @@ from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit.task_state import _resolved_checkpoint  # noqa: E402
 
 SMOKE_FINAL_EVAL_OVERRIDES = {
     "evaluation_tasks.final_cusp.generator.n_points": 4,
@@ -120,32 +125,6 @@ def _final_train_attempt_id_for_job(
             )
         return args.final_train_attempt_id
     return _latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=args.smoke)
-
-
-def _resolved_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
-    selection_path = train_attempt / "selected_checkpoint.json"
-    if not selection_path.is_file():
-        return None
-    selection = read_json(selection_path)
-    pointer = Path(str(selection.get("checkpoint_pointer", "")))
-    if not pointer.is_file():
-        return None
-    pointer_data = read_json(pointer)
-    checkpoint_name = pointer_data.get("checkpoint_dir")
-    if not checkpoint_name:
-        return None
-    checkpoint_dir = pointer.parent / str(checkpoint_name)
-    if not checkpoint_dir.is_dir():
-        return None
-    if not (checkpoint_dir / "COMPLETE").is_file() or not (checkpoint_dir / "manifest.json").is_file():
-        return None
-    return {
-        "selection_path": str(selection_path),
-        "selection_policy": selection.get("selection_policy", ""),
-        "checkpoint_pointer": str(pointer),
-        "checkpoint_pointer_data": pointer_data,
-        "resolved_checkpoint_dir": str(checkpoint_dir),
-    }
 
 
 def _attempt_matches_smoke(run_dir: Path, attempt_id: str, *, smoke: bool) -> bool:

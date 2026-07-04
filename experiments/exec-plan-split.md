@@ -798,7 +798,8 @@ Acceptance:
 
 ### Phase 3: Extract Task State and Resume Semantics
 
-Status: step 1 landed (this PR); step 2 not started.
+Status: step 1 and step 2 landed; smoke/full latest-pointer interpretation and
+sentinel derivation still open (see below).
 
 Move completion and resume logic into reusable task-state helpers. This should
 not change task enumeration or resource selection.
@@ -830,19 +831,35 @@ Step 1 (landed):
   `launch.claim_paths_for_statuses` etc. still resolve for existing callers.
   `pair_stability_v2/launch.py` is untouched.
 
-Step 2 (not started):
+Step 2 (landed):
 
-- Complete checkpoint discovery.
-- Highest complete checkpoint selection.
-- Eval readiness checks.
+- Complete checkpoint discovery (`_checkpoint_step`, `_complete_checkpoint_dirs`).
+- Highest complete checkpoint selection (`_latest_complete_checkpoint`,
+  `_resume_overrides`, `_final_train_completed` — moved from `final_train.py`).
+- Eval readiness checks (`_resolved_checkpoint` — moved from `final_eval.py`;
+  `_checkpoint_ready` — moved from `validate.py`).
+- Each kept as its own distinct function, not merged with
+  `_attempt_already_completed` or with each other, per the divergence noted
+  above — this is a relocation, not a unification.
+- Left in place, deliberately: `final_train.py`'s `_exclude_completed_jobs`
+  and `_checkpoint_selection_record`, and `final_eval.py`'s
+  `_latest_ready_final_train_attempt_id`/`_attempt_matches_smoke`. These call
+  study-layout functions (`final_train_attempt_dir`, `final_train_run_dir`,
+  `attempt_smoke`, `latest_attempt_id`) to resolve *which* attempt directory
+  to check; only the layout-agnostic `Path -> bool/Path/dict` checks moved.
+- `read_json`'s raise-on-invalid-JSON behavior (no try/except in the
+  original `_resolved_checkpoint`) is preserved via inline `json.loads(...)`
+  in `task_state.py`, rather than depending on the study-local `utils.io`
+  module or the more lenient `_read_json_mapping` used by step 1's
+  functions — a real, if narrow, behavioral distinction worth keeping
+  visible rather than papering over.
+
+Still open:
+
 - Smoke/full latest-pointer interpretation (already shared via
   `utils/layout.py` today; decide whether it belongs in `task_state.py` too).
 - Sentinel derivation from authoritative run artifacts (net-new; no
   implementation exists yet).
-
-This is `final_train.py`'s/`final_eval.py`'s/`validate.py`'s own
-checkpoint-discovery logic, each kept as its own distinct function rather
-than merged, per the divergence noted above.
 
 Acceptance:
 

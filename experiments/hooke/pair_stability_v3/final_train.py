@@ -32,53 +32,17 @@ from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-
-def _checkpoint_step(path: Path) -> tuple[int, str]:
-    try:
-        return int(path.name.removeprefix("step_")), path.name
-    except ValueError:
-        return -1, path.name
-
-
-def _complete_checkpoint_dirs(attempt_dir: Path) -> list[Path]:
-    checkpoint_dir = attempt_dir / "checkpoints"
-    if not checkpoint_dir.is_dir():
-        return []
-    checkpoints = [
-        path
-        for path in checkpoint_dir.glob("step_*")
-        if path.is_dir() and not path.name.endswith(".tmp") and (path / "COMPLETE").is_file()
-    ]
-    return sorted(checkpoints, key=_checkpoint_step)
-
-
-def _latest_complete_checkpoint(attempt_dir: Path) -> Path | None:
-    checkpoints = _complete_checkpoint_dirs(attempt_dir)
-    return checkpoints[-1] if checkpoints else None
-
-
-def _final_train_completed(attempt_dir: Path) -> bool:
-    status_path = attempt_dir / "status.json"
-    if not status_path.is_file():
-        return False
-    try:
-        status = read_json(status_path).get("status")
-    except Exception:
-        return False
-    return status == "completed" and _latest_complete_checkpoint(attempt_dir) is not None
-
-
-def _resume_overrides(attempt_dir: Path) -> list[str]:
-    checkpoint = _latest_complete_checkpoint(attempt_dir)
-    if checkpoint is None:
-        return []
-    if _final_train_completed(attempt_dir):
-        return []
-    return [
-        f"load.path={checkpoint}",
-        "load.mode=train_resume",
-    ]
+from experiments.toolkit.task_state import (  # noqa: E402
+    _checkpoint_step,
+    _complete_checkpoint_dirs,
+    _final_train_completed,
+    _latest_complete_checkpoint,
+    _resume_overrides,
+)
 
 
 def _exclude_completed_jobs(
