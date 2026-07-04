@@ -749,7 +749,7 @@ Acceptance:
 
 ### Phase 1: Harden Toolkit Contracts
 
-Status: next.
+Status: done.
 
 Turn the current toolkit dataclasses into a stronger contract before more
 stages depend on them.
@@ -759,9 +759,9 @@ stages depend on them.
 - Add round-trip tests for `StagePlan`, `TaskSpec`, `ResourceSpec`, and
   `ExecutionRecord`.
 - Add explicit schema-version handling.
-- Add tests for resource profile materialization from current launcher profiles.
-- Decide which fields are required for command-backed tasks versus
-  collection/report tasks.
+- Validate generated train/validation plans through toolkit APIs.
+- Define the required fields for command-backed tasks. Collection/report task
+  shapes stay provisional until those stages are ported.
 
 Acceptance:
 
@@ -777,6 +777,10 @@ Make `train.py` and `validate.py` submit through a toolkit executor adapter
 instead of calling `launch.submit_command_sets(...)` directly. The first adapter
 can wrap the existing launcher implementation; it does not need to be a new
 scheduler.
+
+This phase starts after the contract-hardening PR. Phase 1 only validates the
+task/execution artifacts that current v3 scripts already write; it does not
+change launcher routing.
 
 - Add `LocalExecutor` and `SubmititExecutor` adapters that consume `StagePlan`
   plus selected `TaskSpec` rows.
@@ -1087,13 +1091,12 @@ portable, and suitable for scratch/storage workflows on Cannon.
 
 The next PRs should be:
 
-1. Harden toolkit schema, serialization, and resource-profile tests.
-2. Add executor adapters that wrap the existing local/Submitit launcher paths.
-3. Route v3 train/validate submission through the executor adapters.
-4. Extract task-state/checkpoint-resume helpers with focused tests.
-5. Port v3 final_train/final_eval to toolkit plans and executor adapters.
-6. Make task plans the primary input to collect/select/final_plan.
-7. Prove reuse in one second reduced experiment.
+1. Add executor adapters that wrap the existing local/Submitit launcher paths.
+2. Route v3 train/validate submission through the executor adapters.
+3. Extract task-state/checkpoint-resume helpers with focused tests.
+4. Port v3 final_train/final_eval to toolkit plans and executor adapters.
+5. Make task plans the primary input to collect/select/final_plan.
+6. Prove reuse in one second reduced experiment.
 
 The guiding rule: every step should be behavior-preserving unless explicitly
 creating a new study layout version. The end-to-end v2/v3 parity run is the
