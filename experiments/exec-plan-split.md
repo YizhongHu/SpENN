@@ -749,7 +749,7 @@ Acceptance:
 
 ### Phase 1: Harden Toolkit Contracts
 
-Status: active in `codex/toolkit-contracts`.
+Status: done.
 
 Turn the current toolkit dataclasses into a stronger contract before more
 stages depend on them.
@@ -1091,13 +1091,12 @@ portable, and suitable for scratch/storage workflows on Cannon.
 
 The next PRs should be:
 
-1. Finish the active toolkit contract-hardening PR.
-2. Add executor adapters that wrap the existing local/Submitit launcher paths.
-3. Route v3 train/validate submission through the executor adapters.
-4. Extract task-state/checkpoint-resume helpers with focused tests.
-5. Port v3 final_train/final_eval to toolkit plans and executor adapters.
-6. Make task plans the primary input to collect/select/final_plan.
-7. Prove reuse in one second reduced experiment.
+1. Add executor adapters that wrap the existing local/Submitit launcher paths.
+2. Route v3 train/validate submission through the executor adapters.
+3. Extract task-state/checkpoint-resume helpers with focused tests.
+4. Port v3 final_train/final_eval to toolkit plans and executor adapters.
+5. Make task plans the primary input to collect/select/final_plan.
+6. Prove reuse in one second reduced experiment.
 
 The guiding rule: every step should be behavior-preserving unless explicitly
 creating a new study layout version. The end-to-end v2/v3 parity run is the
