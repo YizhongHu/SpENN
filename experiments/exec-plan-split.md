@@ -771,16 +771,16 @@ Acceptance:
 
 ### Phase 2: Move Submission Behind the Executor Interface
 
-Status: planned.
+Status: adapters landed (this PR); routing not yet started.
 
 Make `train.py` and `validate.py` submit through a toolkit executor adapter
 instead of calling `launch.submit_command_sets(...)` directly. The first adapter
 can wrap the existing launcher implementation; it does not need to be a new
 scheduler.
 
-This phase starts after the contract-hardening PR. Phase 1 only validates the
-task/execution artifacts that current v3 scripts already write; it does not
-change launcher routing.
+The first Phase 2 PR adds and tests the adapter boundary without changing
+train/validate routing. The second Phase 2 PR should route v3 train/validate
+through those adapters and run the reduced v2/v3 parity gate.
 
 - Add `LocalExecutor` and `SubmititExecutor` adapters that consume `StagePlan`
   plus selected `TaskSpec` rows.
@@ -1091,12 +1091,12 @@ portable, and suitable for scratch/storage workflows on Cannon.
 
 The next PRs should be:
 
-1. Add executor adapters that wrap the existing local/Submitit launcher paths.
-2. Route v3 train/validate submission through the executor adapters.
-3. Extract task-state/checkpoint-resume helpers with focused tests.
-4. Port v3 final_train/final_eval to toolkit plans and executor adapters.
-5. Make task plans the primary input to collect/select/final_plan.
-6. Prove reuse in one second reduced experiment.
+1. Route v3 train/validate submission through the executor adapters and run
+   the reduced v2/v3 parity gate.
+2. Extract task-state/checkpoint-resume helpers with focused tests.
+3. Port v3 final_train/final_eval to toolkit plans and executor adapters.
+4. Make task plans the primary input to collect/select/final_plan.
+5. Prove reuse in one second reduced experiment.
 
 The guiding rule: every step should be behavior-preserving unless explicitly
 creating a new study layout version. The end-to-end v2/v3 parity run is the
