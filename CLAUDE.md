@@ -18,6 +18,10 @@ The available gpu nodes are: kozinsky_gpu, and seas_gpu
 
 `README.md` and `experiments/README.md` contain important information about the repo.
 
+There are two directories, `SpENN/` and `SpENN-dev/`. `SpENN` is where the experiments are run
+and it should ideally not contain any development and only fast-forward on main. 
+`SpENN-dev` can be unclean and contain all development branches. 
+
 ## Design Document
 
 A design document that contains the mathematical background of
@@ -28,7 +32,7 @@ should closely follow the design document for correctness.
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.
-- This repo uses `uv` to manage python packages. Most commands (including `pytest`) needs to be run with `uv`. Use `uv` to run if possible for reproducibility.
+- This repo uses `uv` to manage python packages. Most commands (including `pytest`) needs to be run with `uv`. 
 - If it may be necessary to install a new package, stop and inquire instead of proceeding
   with alternatives.
 - Do not use `uv run --nosync`. If `uv` environment needs to change, let `uv lock` update for
@@ -36,7 +40,6 @@ should closely follow the design document for correctness.
 
 ## Conventions
 - NumpyDoc is used for documentation
-- Use inline comments for comprehensibility
 - Use `America/New York` timezone for experiment logging. Use `UTC` for test logging.
 
 ## Tools
