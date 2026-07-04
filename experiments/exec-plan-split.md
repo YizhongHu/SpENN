@@ -798,18 +798,51 @@ Acceptance:
 
 ### Phase 3: Extract Task State and Resume Semantics
 
-Status: planned.
+Status: step 1 landed (this PR); step 2 not started.
 
 Move completion and resume logic into reusable task-state helpers. This should
 not change task enumeration or resource selection.
 
+Investigation before this PR found that "completion and resume" is not one
+implementation today but four independent, occasionally-disagreeing ones:
+`launch.py`'s row claim/skip check (`_attempt_already_completed`, keyed on
+`checkpoints/latest.json` + `status.json`), the dormant
+`toolkit.specs.CompletionSpec.is_complete()` (metadata-only, never called
+outside tests), `final_train.py`'s own `step_*`/`COMPLETE`-sentinel scan
+(`_complete_checkpoint_dirs`, `_latest_complete_checkpoint`), and
+`final_eval.py`'s stricter `_resolved_checkpoint` (also requires
+`manifest.json`). Step 1 relocates only the first of these — the
+`launch.py` claim/completion/deadline-guard cluster shared by every stage
+that submits through `run_command_chunk` — without touching the other three,
+so it changes no observable behavior. Unifying the four would be a real
+behavior change and needs its own explicitly-scoped follow-up, not a
+side effect of relocation.
+
+Step 1 (landed):
+
+- Failed/stopped/stale claim classification
+  (`_terminal_row_status`, `_claim_row`, `_write_claim`).
+- Train completion checks (`_attempt_already_completed`).
+- Deadline-guard and row-claim-path helpers used by both local and Submitit
+  submission.
+- Moved from `pair_stability_v3/launch.py` to `experiments/toolkit/task_state.py`
+  verbatim (no renames, no behavior changes); `launch.py` re-imports them so
+  `launch.claim_paths_for_statuses` etc. still resolve for existing callers.
+  `pair_stability_v2/launch.py` is untouched.
+
+Step 2 (not started):
+
 - Complete checkpoint discovery.
 - Highest complete checkpoint selection.
-- Train completion checks.
 - Eval readiness checks.
-- Failed/stopped/stale claim classification.
-- Smoke/full latest-pointer interpretation.
-- Sentinel derivation from authoritative run artifacts.
+- Smoke/full latest-pointer interpretation (already shared via
+  `utils/layout.py` today; decide whether it belongs in `task_state.py` too).
+- Sentinel derivation from authoritative run artifacts (net-new; no
+  implementation exists yet).
+
+This is `final_train.py`'s/`final_eval.py`'s/`validate.py`'s own
+checkpoint-discovery logic, each kept as its own distinct function rather
+than merged, per the divergence noted above.
 
 Acceptance:
 

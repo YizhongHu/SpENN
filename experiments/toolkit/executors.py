@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .execution import ExecutionRecord, execution_records_from_submission
 from .specs import StagePlan, TaskSpec
+from .task_state import claim_paths_for_statuses as _default_claim_paths_for_statuses
 
 Command = Sequence[str]
 CommandSets = Mapping[str, Sequence[Command]]
@@ -221,14 +222,6 @@ def _row_status_paths(tasks: Sequence[TaskSpec]) -> tuple[str | None, ...]:
 
 def _uses_row_claims(command_sets: Mapping[str, Sequence[Command]], claim_rows: bool) -> bool:
     return len(command_sets) > 1 or claim_rows
-
-
-def _default_claim_paths_for_statuses(
-    paths: Sequence[str | Path | None] | None,
-) -> list[Path | None] | None:
-    if paths is None:
-        return None
-    return [None if path is None else Path(path).with_name("launcher_claim.json") for path in paths]
 
 
 def _require_non_empty(name: str, value: str) -> None:
