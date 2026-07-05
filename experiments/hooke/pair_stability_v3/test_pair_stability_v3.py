@@ -71,7 +71,7 @@ final_train = _load_script("final_train", bind_direct=True)
 final_eval = _load_script("final_eval")
 final_collect = _load_script("final_collect")
 validate = _load_script("validate")
-from experiments.toolkit import StagePlan, read_task_lineage  # noqa: E402
+from experiments.toolkit import StagePlan, TaskLineageRow, read_task_lineage, write_task_lineage  # noqa: E402
 
 
 ATTEMPT = "20260623T120000-0400"
@@ -1037,6 +1037,46 @@ def test_v3_collect_writes_task_lineage_verified_against_real_stage_plan(
     # validate.py actually wrote.
     stage_plan = StagePlan.read(results_root / "02_validation" / "stage_plans" / "V1")
     assert lineage[run_id].task_ids["validation"] in {task.task_id for task in stage_plan.tasks}
+
+
+def test_v3_select_chains_task_lineage_from_collection_sidecar(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    _write_collection_summary(results_root)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    write_task_lineage(
+        results_root / "03_collect" / "C1",
+        [
+            TaskLineageRow(
+                row_id=str(job["run_id"]),
+                task_ids={
+                    "validation": f"02_validation:{job['run_id']}:V1",
+                    "train": f"01_train:{job['run_id']}:T1",
+                },
+            )
+            for job in manifest["jobs"]
+        ],
+    )
+
+    result = select_champions.select(results_root=results_root, select_attempt_id="S1")
+    champions = _read_csv(results_root / "04_select" / "S1" / "champions.csv")
+    lineage = read_task_lineage(results_root / "04_select" / "S1")
+
+    assert champions
+    checked = 0
+    for champion in champions:
+        contributing_run_ids = [run_id for run_id in champion["run_ids"].split(";") if run_id]
+        if not contributing_run_ids:
+            continue
+        row_id = f"{champion['winner_kind']}:" + "|".join(
+            f"{axis}={champion[axis]}" for axis in result["report"]["group_by"]
+        )
+        assert row_id in lineage
+        expected_validation = {f"02_validation:{run_id}:V1" for run_id in contributing_run_ids}
+        expected_train = {f"01_train:{run_id}:T1" for run_id in contributing_run_ids}
+        assert set(lineage[row_id].task_ids["validation"]) == expected_validation
+        assert set(lineage[row_id].task_ids["train"]) == expected_train
+        checked += 1
+    assert checked > 0
 
 
 def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_default(

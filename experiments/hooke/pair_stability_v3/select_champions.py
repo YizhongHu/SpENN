@@ -5,6 +5,13 @@ configs, and selects configured winner kinds per configured major-grid bucket.
 Local energy ranking uses seed medians, while overlap tests use the
 seed-combined mean and standard error. An explicit scalar metric can still be
 passed for debugging overrides.
+
+Also writes ``task_lineage.jsonl``, a toolkit sidecar mapping each champion
+row to the validation (and train) task ids of its contributing run ids,
+extending the chain from ``03_collect``'s own sidecar (see
+``experiments.toolkit.lineage``). This is additive: ``champions.csv`` and
+``selection_report.json`` are unchanged and still byte-compared against
+``pair_stability_v2`` by ``parity.py``.
 """
 
 from __future__ import annotations
@@ -12,8 +19,9 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from utils.ancestry import source_grid_from_attempt
 from utils.io import read_json, write_json
@@ -35,6 +43,12 @@ from utils.naming import (
 from utils.time import new_attempt_id
 
 STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit import TaskLineageRow, read_task_lineage, write_task_lineage  # noqa: E402
+
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 REFERENCE_STATISTICS = ("median", "mean", "stderr")
 WALL_TIME_METRICS = ("train/runtime/wall_time_sec",)
@@ -540,6 +554,31 @@ def _champion_record(
     return record
 
 
+def _champion_task_lineage(
+    row: dict[str, Any] | None,
+    *,
+    group_keys: Sequence[str],
+    group_key: Sequence[str],
+    winner_kind: str,
+    upstream_lineage: Mapping[str, TaskLineageRow],
+) -> TaskLineageRow:
+    """Return one champion row's task-id lineage from its contributing run ids."""
+
+    row_id = f"{winner_kind}:{_group_label_from_key(group_keys, group_key)}"
+    task_ids: dict[str, Any] = {}
+    if row is not None:
+        run_ids = [run_id for run_id in str(row.get("run_ids", "")).split(";") if run_id]
+        for kind in ("validation", "train"):
+            values = [
+                upstream_lineage[run_id].task_ids[kind]
+                for run_id in run_ids
+                if run_id in upstream_lineage and kind in upstream_lineage[run_id].task_ids
+            ]
+            if values:
+                task_ids[kind] = values
+    return TaskLineageRow(row_id=row_id, task_ids=task_ids)
+
+
 def _select_by_spec(
     rows: Sequence[dict[str, Any]],
     spec: dict[str, Any],
@@ -595,6 +634,7 @@ def select_champions(
     group_by: str | Sequence[str] | None = None,
     champion_specs: Sequence[Any] | None = None,
     reference_metrics: Sequence[Any] | None = None,
+    upstream_lineage: Mapping[str, TaskLineageRow] | None = None,
 ) -> dict[str, Any]:
     """Select configured winner kinds per major grid point."""
 
@@ -620,6 +660,7 @@ def select_champions(
         groups.setdefault(_group_key(row, group_keys), []).append(row)
 
     champions = []
+    task_lineage = []
     decisions_by_group: dict[str, dict[str, list[str]]] = {}
     for group_key, group_rows in sorted(groups.items()):
         group_decisions: dict[str, list[str]] = {}
@@ -648,6 +689,16 @@ def select_champions(
                     reference_metrics=reference_metric_pairs,
                 )
             )
+            if upstream_lineage is not None:
+                task_lineage.append(
+                    _champion_task_lineage(
+                        winner,
+                        group_keys=group_keys,
+                        group_key=group_key,
+                        winner_kind=kind,
+                        upstream_lineage=upstream_lineage,
+                    )
+                )
         decisions_by_group[_group_label_from_key(group_keys, group_key)] = group_decisions
 
     if candidates:
@@ -705,6 +756,7 @@ def select_champions(
             for label, source_metric in reference_metric_pairs
         ],
         "n_candidates": len(candidates),
+        "task_lineage": task_lineage,
     }
 
 
@@ -846,6 +898,7 @@ def select(
     config_keys = tuple(axis_metadata["config_keys"])
     champion_specs = _champion_specs_from_grid(results_root, collection_dir, champion_kinds)
     reference_metrics = _reference_metrics_from_grid(results_root, collection_dir)
+    upstream_lineage = read_task_lineage(collection_dir)
     selection = select_champions(
         rows,
         metric=metric,
@@ -855,6 +908,7 @@ def select(
         minor_axes=tuple(axis_metadata["minor_axes"]),
         seed_key=str(axis_metadata["scan_seed_axis"]),
         axis_id_labels=dict(axis_metadata["axis_id_labels"]),
+        upstream_lineage=upstream_lineage,
         group_by=group_by,
         champion_specs=champion_specs,
         reference_metrics=reference_metrics,
@@ -900,6 +954,7 @@ def select(
             "collection_attempt_dir": str(collection_dir),
         },
     )
+    write_task_lineage(attempt, selection["task_lineage"])
     report = {
         "study": study,
         "stage": STAGE_SELECT,
