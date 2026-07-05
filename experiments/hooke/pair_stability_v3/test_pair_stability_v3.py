@@ -71,7 +71,7 @@ final_train = _load_script("final_train", bind_direct=True)
 final_eval = _load_script("final_eval")
 final_collect = _load_script("final_collect")
 validate = _load_script("validate")
-from experiments.toolkit import StagePlan  # noqa: E402
+from experiments.toolkit import StagePlan, read_task_lineage  # noqa: E402
 
 
 ATTEMPT = "20260623T120000-0400"
@@ -988,6 +988,55 @@ def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) 
     assert len(result["rows"]) == 1
     assert result["rows"][0]["basis"].startswith("B")
     assert result["rows"][0]["mechanism"].startswith("A")
+
+
+def test_v3_collect_writes_task_lineage_verified_against_real_stage_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root = _planned_results(tmp_path)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    job = manifest["jobs"][0]
+    run_id = str(job["run_id"])
+    _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
+
+    def fake_submit_command_sets(command_sets: dict[str, list[list[str]]], **kwargs: Any) -> list[str]:
+        return [f"local-validation-{index}" for index, _ in enumerate(command_sets["cpu"])]
+
+    monkeypatch.setattr(validate, "launch", launch)
+    monkeypatch.setattr(validate.launch, "submit_command_sets", fake_submit_command_sets)
+    code = validate.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--grid-attempt-id",
+            ATTEMPT,
+            "--train-attempt-id",
+            ATTEMPT,
+            "--attempt-id",
+            "V1",
+            "--backend",
+            "local",
+        ]
+    )
+    assert code == 0
+
+    validation_attempt = results_root / "02_validation" / run_id / "V1"
+    (validation_attempt / "status.json").write_text(json.dumps({"status": "completed"}) + "\n")
+    (validation_attempt / "metrics.jsonl").write_text("")
+
+    result = collect.collect(results_root=results_root, collect_attempt_id="C0")
+    assert len(result["rows"]) == 1
+
+    lineage = read_task_lineage(results_root / "03_collect" / "C0")
+    assert set(lineage) == {run_id}
+    assert lineage[run_id].task_ids["validation"] == f"02_validation:{run_id}:V1"
+    assert lineage[run_id].task_ids["train"] == f"01_train:{run_id}:{ATTEMPT}"
+
+    # The recorded validation task id must be a real, plan-verified task id,
+    # not just a well-formed string: cross-check it against the stage plan
+    # validate.py actually wrote.
+    stage_plan = StagePlan.read(results_root / "02_validation" / "stage_plans" / "V1")
+    assert lineage[run_id].task_ids["validation"] in {task.task_id for task in stage_plan.tasks}
 
 
 def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_default(

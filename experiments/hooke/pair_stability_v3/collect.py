@@ -5,11 +5,18 @@ reads each attempt's status, evaluation metrics, required source train-attempt
 metrics, and recorded train-attempt provenance, and writes a ``03_collect`` attempt with
 ``summary.csv``, ``failures.csv``, ``collection_report.json``, and explicit
 source pointers to the exact validation (and grid) attempts consumed.
+
+Also writes ``task_lineage.jsonl``, a toolkit sidecar mapping each collected
+run id to the deterministic validation (and, when resolved, train) task ids
+that produced it (see ``experiments.toolkit.lineage``). This is additive:
+``summary.csv``/``failures.csv``/``collection_report.json`` are unchanged and
+still byte-compared against ``pair_stability_v2`` by ``parity.py``.
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -21,6 +28,7 @@ from utils.io import read_json, write_json
 from utils.layout import (
     STAGE_COLLECT,
     STAGE_GRID,
+    STAGE_TRAIN,
     STAGE_VALIDATION,
     latest_attempt_id,
     smoke_attempt_id,
@@ -38,6 +46,17 @@ from utils.naming import (
 from utils.time import new_attempt_id
 
 STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit import (  # noqa: E402
+    TaskLineageRow,
+    stage_plan_task_ids,
+    synthesized_task_id,
+    write_task_lineage,
+)
+
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
 NON_DIAGNOSTIC_DIRS = {"checkpoints", "diagnostics"}
@@ -227,6 +246,50 @@ def collect_validation_attempt(
     return row
 
 
+def _cached_stage_task_ids(
+    cache: dict[str, frozenset[str] | None], stage_root: Path, attempt_id: str
+) -> frozenset[str] | None:
+    """Return a stage's known task ids, reading its stage plan at most once."""
+
+    if attempt_id not in cache:
+        cache[attempt_id] = stage_plan_task_ids(stage_root / "stage_plans" / attempt_id)
+    return cache[attempt_id]
+
+
+def _row_task_lineage(
+    row: dict[str, Any],
+    *,
+    run_id: str,
+    validation_attempt_id: str,
+    results_root: Path,
+    validation_known_task_ids: dict[str, frozenset[str] | None],
+    train_known_task_ids: dict[str, frozenset[str] | None],
+) -> TaskLineageRow:
+    """Return one row's validation (and, if resolved, train) task-id lineage."""
+
+    task_ids: dict[str, str] = {
+        "validation": synthesized_task_id(
+            stage=STAGE_VALIDATION,
+            run_id=run_id,
+            attempt_id=validation_attempt_id,
+            known_task_ids=_cached_stage_task_ids(
+                validation_known_task_ids, stage_dir(results_root, STAGE_VALIDATION), validation_attempt_id
+            ),
+        )
+    }
+    train_attempt_id = str(row.get("train_attempt_id") or "")
+    if train_attempt_id:
+        task_ids["train"] = synthesized_task_id(
+            stage=STAGE_TRAIN,
+            run_id=run_id,
+            attempt_id=train_attempt_id,
+            known_task_ids=_cached_stage_task_ids(
+                train_known_task_ids, stage_dir(results_root, STAGE_TRAIN), train_attempt_id
+            ),
+        )
+    return TaskLineageRow(row_id=run_id, task_ids=task_ids)
+
+
 def _latest_validation_attempts(results_root: Path, *, smoke: bool | None = None) -> list[tuple[str, str, Path]]:
     """Return the latest validation attempt for each validation run id."""
 
@@ -317,6 +380,9 @@ def collect(
 
     rows: list[dict[str, Any]] = []
     consumed: list[dict[str, Any]] = []
+    lineage_rows: list[TaskLineageRow] = []
+    validation_known_task_ids: dict[str, frozenset[str] | None] = {}
+    train_known_task_ids: dict[str, frozenset[str] | None] = {}
     for run_id in _run_ids(results_root, grid_manifest, smoke=smoke):
         run_dir = validation_run_dir(results_root, run_id)
         attempt_id = latest_attempt_id(run_dir, smoke=smoke)
@@ -330,18 +396,27 @@ def collect(
             and attempt_source.attempt_id != source_grid.attempt_id
         ):
             continue
-        rows.append(
-            collect_validation_attempt(
-                run_id,
-                attempt_id,
-                attempt_dir,
-                grid_job=job_by_run.get(run_id),
-                axis_metadata=axis_metadata,
-                required_train_metrics=required_train_metrics,
-            )
+        row = collect_validation_attempt(
+            run_id,
+            attempt_id,
+            attempt_dir,
+            grid_job=job_by_run.get(run_id),
+            axis_metadata=axis_metadata,
+            required_train_metrics=required_train_metrics,
         )
+        rows.append(row)
         consumed.append(
             {"run_id": run_id, "validation_attempt_id": attempt_id, "validation_attempt_dir": str(attempt_dir)}
+        )
+        lineage_rows.append(
+            _row_task_lineage(
+                row,
+                run_id=run_id,
+                validation_attempt_id=attempt_id,
+                results_root=results_root,
+                validation_known_task_ids=validation_known_task_ids,
+                train_known_task_ids=train_known_task_ids,
+            )
         )
 
     attempt = stage_dir(results_root, STAGE_COLLECT) / collect_attempt_id
@@ -360,6 +435,7 @@ def collect(
         {} if source_grid is None else source_grid.to_record(),
     )
     write_json(attempt / "source_validation_attempts.json", consumed)
+    write_task_lineage(attempt, lineage_rows)
     report = {
         "study": study,
         "stage": STAGE_COLLECT,
