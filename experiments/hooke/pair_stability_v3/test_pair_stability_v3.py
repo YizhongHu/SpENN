@@ -545,6 +545,51 @@ def test_v2_real_validation_uses_non_smoke_train_attempts(tmp_path: Path) -> Non
         )
 
 
+def test_v3_validation_attempt_id_agrees_across_plan_and_stage_plan_when_smoked(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    job = manifest["jobs"][0]
+    run_id = str(job["run_id"])
+    _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
+
+    args = validate.parse_args(
+        ["--smoke", "--attempt-id", "V1", "--train-attempt-id", ATTEMPT, "--backend", "local", "--device", "cpu"]
+    )
+    scalar_axes = validate._scalar_axes(manifest)
+    planned, skipped = validate.plan_validation_jobs(
+        [job],
+        args=args,
+        study="pair_stability_v3",
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        validation_config="validation.yaml",
+        scalar_axes=scalar_axes,
+        override_paths=validate._axis_override_paths(manifest, scalar_axes),
+        seed_axis=str(manifest["scan_seed_axis"]),
+        smoke_overrides={},
+        seed_policy=manifest.get("seed_overrides"),
+    )
+    assert skipped == []
+    assert planned[0]["validation_attempt_id"] == "V1"
+
+    stage_plan = validate.build_validation_stage_plan(
+        planned,
+        manifest=manifest,
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        args=args,
+    )
+
+    # An explicit --attempt-id must win over --smoke's derived attempt id in
+    # both the actual result directory (validation_attempt_id, above) and the
+    # stage plan's attempt id / task ids; a prior bug used different
+    # precedence in each place, so a real validation attempt directory and
+    # its "real" stage_plans/tasks.jsonl could silently name different
+    # attempts whenever --smoke and --attempt-id were combined.
+    assert stage_plan.attempt_id == "V1"
+    assert stage_plan.tasks[0].task_id == f"02_validation:{run_id}:V1"
+
+
 def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> None:
     calls = []
 

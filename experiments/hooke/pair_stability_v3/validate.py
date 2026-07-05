@@ -187,6 +187,14 @@ def _validation_config_from_grid(
     raise FileNotFoundError("validation config was not requested and no grid validation_config was found")
 
 
+def _validation_attempt_id(args: argparse.Namespace, grid_attempt_id: str) -> str:
+    """Return the validation attempt id: explicit override, else grid-derived."""
+
+    return args.attempt_id or (
+        launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
+    )
+
+
 def _selected_jobs(jobs: Sequence[dict[str, Any]], *, smoke: bool) -> list[dict[str, Any]]:
     if not smoke:
         return [dict(job) for job in jobs]
@@ -226,9 +234,7 @@ def plan_validation_jobs(
     """Build validation launch records and write source-train provenance."""
 
     selected = _selected_jobs(jobs, smoke=args.smoke)
-    validation_attempt_id = args.attempt_id or (
-        launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
-    )
+    validation_attempt_id = _validation_attempt_id(args, grid_attempt_id)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for job in selected:
@@ -416,11 +422,7 @@ def build_validation_stage_plan(
 ) -> StagePlan:
     """Build a reusable toolkit stage plan for validation tasks."""
 
-    attempt_id = (
-        launch.smoke_attempt_id(grid_attempt_id)
-        if args.smoke
-        else (args.attempt_id or grid_attempt_id)
-    )
+    attempt_id = _validation_attempt_id(args, grid_attempt_id)
     result_dirs = [Path(str(job["validation_attempt_dir"])) for job in jobs]
     row_status_paths = [result_dir / "launcher_status.json" for result_dir in result_dirs]
     tasks = tasks_from_commands(
@@ -557,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         grid_attempt_id=grid_attempt_id,
         args=args,
     )
-    log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else (args.attempt_id or grid_attempt_id)
+    log_attempt = _validation_attempt_id(args, grid_attempt_id)
     stage_plan_dir = stage_plan.write(_stage_plan_dir(results_root, log_attempt))
     execution_records = _executor(
         args=args,
