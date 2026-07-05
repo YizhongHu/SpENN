@@ -102,6 +102,17 @@ def id_for_axes(
     )
 
 
+def champion_lineage_row_id(
+    winner_kind: str,
+    group_keys: Sequence[str],
+    group_key: Sequence[str],
+) -> str:
+    """Return a stable task-lineage row id for one champion group."""
+
+    label = "|".join(f"{name}={value}" for name, value in zip(group_keys, group_key, strict=True))
+    return f"{winner_kind}:{label}"
+
+
 def grid_axes_from_manifest(manifest: dict[str, Any] | None) -> dict[str, tuple[str, ...] | str]:
     """Return major/minor/seed axis metadata from a grid or final-grid manifest."""
 

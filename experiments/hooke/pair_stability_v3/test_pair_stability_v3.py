@@ -1161,6 +1161,50 @@ def test_v3_selects_energy_champions_per_major_and_plans_two_final_seeds_by_defa
     assert final_job["mechanism"] not in set(true_grid.major_grid.mechanism)
 
 
+def test_v3_final_plan_chains_task_lineage_from_selection_sidecar(tmp_path: Path) -> None:
+    results_root = _planned_results(tmp_path)
+    _write_collection_summary(results_root)
+    manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
+    write_task_lineage(
+        results_root / "03_collect" / "C1",
+        [
+            TaskLineageRow(
+                row_id=str(job["run_id"]),
+                task_ids={
+                    "validation": f"02_validation:{job['run_id']}:V1",
+                    "train": f"01_train:{job['run_id']}:T1",
+                },
+            )
+            for job in manifest["jobs"]
+        ],
+    )
+    select_champions.select(results_root=results_root, select_attempt_id="S1")
+
+    code = final_plan.main(
+        [
+            "--results-root",
+            str(results_root),
+            "--selection-attempt-id",
+            "S1",
+            "--attempt-id",
+            "F1",
+        ]
+    )
+    assert code == 0
+
+    jobs = [json.loads(path.read_text()) for path in (results_root / "05_final_grid" / "F1" / "jobs").glob("*.json")]
+    lineage = read_task_lineage(results_root / "05_final_grid" / "F1")
+    assert jobs
+    for job in jobs:
+        contributing_run_ids = [run_id for run_id in str(job["source_scan_run_ids"]).split(";") if run_id]
+        assert contributing_run_ids
+        expected_validation = {f"02_validation:{run_id}:V1" for run_id in contributing_run_ids}
+        expected_train = {f"01_train:{run_id}:T1" for run_id in contributing_run_ids}
+        row = lineage[job["final_run_id"]]
+        assert set(row.task_ids["validation"]) == expected_validation
+        assert set(row.task_ids["train"]) == expected_train
+
+
 def test_v2_final_plan_rejects_zero_configured_replicates_without_override(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     _write_collection_summary(results_root)
