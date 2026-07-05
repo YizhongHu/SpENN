@@ -3,20 +3,28 @@
 Consumes a durable ``04_select`` attempt and writes a durable ``05_final_grid``
 attempt. The final grid is the source of truth for final replicate indices and
 the independent final train/eval seed policy.
+
+Also writes ``task_lineage.jsonl``, a toolkit sidecar mapping each final job
+to the validation/train task ids of its source champion, inherited from
+``04_select``'s own sidecar (see ``experiments.toolkit.lineage``) -- the end
+of Phase 5's task-id chain, from ``00_grid`` down to a final replicate. This
+is additive: ``final_jobs.csv`` and ``manifest.json`` are unchanged and still
+byte-compared against ``pair_stability_v2`` by ``parity.py``.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from omegaconf import OmegaConf
 
 from utils.ancestry import source_grid_from_attempt
-from utils.io import write_json
+from utils.io import read_json, write_json
 from utils.layout import (
     STAGE_FINAL_GRID,
     STAGE_SELECT,
@@ -28,6 +36,7 @@ from utils.layout import (
 )
 from utils.naming import (
     axis_id_labels_from_manifest,
+    champion_lineage_row_id,
     grid_axes_from_manifest,
     id_for_axes,
     log_prefix,
@@ -37,6 +46,12 @@ from utils.seeds import final_seed_sequences, final_seed_values, seed_override_p
 from utils.time import STUDY_TIMEZONE, new_attempt_id
 
 STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit import TaskLineageRow, read_task_lineage, write_task_lineage  # noqa: E402
+
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 DEFAULT_GRID = STUDY_DIR / "configs" / "grid.yaml"
 DEFAULT_REPLICATES = 3
@@ -221,6 +236,40 @@ def build_final_jobs(
     return jobs
 
 
+def _selection_group_by(selection_dir: Path, *, major_axes: Sequence[str]) -> tuple[str, ...]:
+    """Return the group-by axes recorded by the source selection attempt."""
+
+    report_path = selection_dir / "selection_report.json"
+    if report_path.is_file():
+        report = read_json(report_path)
+        if isinstance(report, dict) and report.get("group_by"):
+            return tuple(str(axis) for axis in report["group_by"])
+    return tuple(major_axes)
+
+
+def _final_job_task_lineage(
+    jobs: Sequence[dict[str, Any]],
+    *,
+    champions: Sequence[dict[str, str]],
+    group_keys: Sequence[str],
+    upstream_lineage: Mapping[str, TaskLineageRow],
+) -> list[TaskLineageRow]:
+    """Return each final job's task-id lineage, inherited from its source champion."""
+
+    lineage = []
+    for job in jobs:
+        champion = champions[int(job["source_champion_row_index"])]
+        champion_row_id = champion_lineage_row_id(
+            str(champion.get("winner_kind", "")),
+            group_keys,
+            tuple(str(champion.get(axis, "")) for axis in group_keys),
+        )
+        source = upstream_lineage.get(champion_row_id)
+        task_ids = dict(source.task_ids) if source is not None else {}
+        lineage.append(TaskLineageRow(row_id=str(job["final_run_id"]), task_ids=task_ids))
+    return lineage
+
+
 def _csv_value(value: Any) -> Any:
     if isinstance(value, dict):
         return ""
@@ -258,6 +307,7 @@ def write_final_grid_attempt(
     seed_sequences: dict[str, dict[str, int]],
     champions: Sequence[dict[str, str]],
     jobs: Sequence[dict[str, Any]],
+    task_lineage: Sequence[TaskLineageRow] = (),
 ) -> Path:
     """Write ``05_final_grid`` artifacts and return the attempt directory."""
 
@@ -276,6 +326,7 @@ def write_final_grid_attempt(
     )
     champions_text = (source_selection_dir / "champions.csv").read_text()
     (attempt / "source_champions.csv").write_text(champions_text)
+    write_task_lineage(attempt, list(task_lineage))
 
     config_axes = (*major_axes, *minor_axes)
     columns = [
@@ -416,6 +467,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed_sequences=seed_sequences,
         champion_limit=champion_limit,
     )
+    task_lineage = _final_job_task_lineage(
+        jobs,
+        champions=champions,
+        group_keys=_selection_group_by(selection_dir, major_axes=major_axis_names),
+        upstream_lineage=read_task_lineage(selection_dir),
+    )
     attempt = write_final_grid_attempt(
         results_root=results_root,
         attempt_id=attempt_id,
@@ -437,6 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed_sequences=seed_sequences,
         champions=champions,
         jobs=jobs,
+        task_lineage=task_lineage,
     )
     print(f"{prefix} wrote 05_final_grid attempt {attempt_id} with {len(jobs)} jobs -> {attempt}")
     return 0

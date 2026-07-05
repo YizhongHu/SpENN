@@ -35,6 +35,7 @@ from utils.layout import (
 )
 from utils.naming import (
     axis_id_labels_from_manifest,
+    champion_lineage_row_id,
     grid_axes_from_manifest,
     id_for_axes,
     log_prefix,
@@ -564,7 +565,7 @@ def _champion_task_lineage(
 ) -> TaskLineageRow:
     """Return one champion row's task-id lineage from its contributing run ids."""
 
-    row_id = f"{winner_kind}:{_group_label_from_key(group_keys, group_key)}"
+    row_id = champion_lineage_row_id(winner_kind, group_keys, group_key)
     task_ids: dict[str, Any] = {}
     if row is not None:
         run_ids = [run_id for run_id in str(row.get("run_ids", "")).split(";") if run_id]

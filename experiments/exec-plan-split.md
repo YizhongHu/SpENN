@@ -914,24 +914,52 @@ Acceptance:
 
 ### Phase 5: Make Task Tables the Primary Stage Interface
 
-Status: planned.
+Status: scoped down, step 1-3 landed (PRs #88, #89, #90); manifest-field
+reduction deferred.
 
-After all fan-out stages write trusted toolkit plans, switch downstream stages
-to consume those plans instead of pair-stability-specific manifests wherever
-possible.
+This phase's own acceptance line ("v2/v3 parity still passes") structurally
+conflicts with its stated goal. `parity.py` byte-compares `collect.py`'s,
+`select_champions.py`'s, and `final_plan.py`'s exact output files
+(`summary.csv`/`failures.csv`/`collection_report.json`,
+`champions.csv`/`selection_report.json`, `final_jobs.csv`/`manifest.json`)
+against untouched `pair_stability_v2`, which has zero toolkit integration and
+never will. Any new column or key added to those specific files fails parity
+on field presence alone, regardless of whether the value is correct -- so
+"make task tables the primary interface" and "reduce manifest fields to
+scientific metadata" cannot land in one behavior-preserving step while parity
+still passes byte-for-byte.
 
-- `collect.py` reads validation task/execution metadata for expected inputs.
-- `select_champions.py` records selected task ids and source metric rows.
-- `final_plan.py` consumes selected task ids rather than reconstructing lineage
-  from study-local files alone.
-- Stage manifests keep source-attempt lineage and config snapshots.
+What actually landed (steps 1-3): each stage keeps its existing outputs
+byte-identical and additionally writes a new `task_lineage.jsonl` sidecar
+(`experiments/toolkit/lineage.py`) chaining task ids end to end --
+`collect.py` records each row's validation/train task id,
+`select_champions.py` inherits and re-keys those into per-champion lineage,
+and `final_plan.py` inherits that into per-final-job lineage. Task ids are
+synthesized deterministically from `(stage, run_id, attempt_id)` with zero
+file I/O and cross-checked against a real stage plan's `tasks.jsonl`
+whenever one exists; the check is best-effort because v2/v3 parity runs
+point `collect.py` at reused `pair_stability_v2` validation data with no
+`stage_plans/` directory at all.
 
-Acceptance:
+What's deferred: actually switching stage inputs (e.g. `collect.py`
+enumerating from `tasks.jsonl` instead of the grid manifest) and shrinking
+manifest fields to scientific-only metadata. `tasks.jsonl` only contains
+launched jobs post-readiness-filter, while the grid manifest's job list is
+all intended runs, so switching populations is a real behavior change, not
+just a schema change -- and any manifest-field reduction needs `parity.py`'s
+comparison rules to evolve first (e.g. an explicit carve-out for known v3-only
+fields, following the existing volatile-field normalization precedent) or v2
+data to gain the field too, which the SpENN/SpENN-dev ownership split
+forecloses. Revisit as an explicit, separately-scoped step if still wanted.
 
-- The source lineage for every collected metric can be traced through task ids.
+Acceptance (revised to match what actually landed):
+
+- The source lineage for every collected metric, champion, and final job can
+  be traced through task ids via the `task_lineage.jsonl` sidecars. Met.
+- v2/v3 parity still passes: zero changes to any parity-compared artifact.
+  Met.
 - Pair-stability-specific manifest fields are reduced to scientific metadata,
-  not execution bookkeeping.
-- v2/v3 parity still passes.
+  not execution bookkeeping. Deferred -- see above.
 
 ### Phase 6: Generalize Collection, Selection, and Reporting
 
