@@ -870,22 +870,47 @@ Acceptance:
 
 ### Phase 4: Port Final Train and Final Eval
 
-Status: planned.
+Status: done, except full v2/v3 final-report parity (see below).
 
 Bring the confirmation fan-out stages onto the same stage-plan and executor
 path as scan train/validate.
 
-- Have `final_train.py` build toolkit task specs before submission.
-- Have `final_eval.py` build toolkit task specs from ready final-train
-  checkpoints.
-- Write execution records for final fan-out stages.
-- Use task-state helpers for skip/resume/readiness checks.
+- `final_train.py`/`final_eval.py` now build toolkit task specs
+  (`build_final_train_stage_plan`/`build_final_eval_stage_plan`) and submit
+  through `LocalExecutor`/`SubmititExecutor`, mirroring `train.py`'s and
+  `validate.py`'s Phase 2 pattern exactly (`_executor`/`_resource_spec` are
+  near-identical per-script copies, same as the existing train/validate
+  duplication — not shared yet).
+- Write execution records for final fan-out stages: done
+  (`write_execution_records(stage_plan_dir, execution_records)`).
+- Use task-state helpers for skip/resume/readiness checks: already true
+  since Phase 3 — `final_train.py`'s `_exclude_completed_jobs`/
+  `_resume_overrides` and `final_eval.py`'s `_resolved_checkpoint` already
+  import from `task_state.py` and are unaffected by this phase, since
+  pre-filtering and resume-override injection both happen at
+  command-construction time, before the executor ever sees a command.
 
 Acceptance:
 
-- Final train skips completed rows and resumes partial rows exactly as before.
-- Final eval only consumes ready final-train checkpoints.
-- v2/v3 final E2E parity passes through `09_final_report`.
+- Final train skips completed rows and resumes partial rows exactly as
+  before: confirmed by the existing (unmodified)
+  `test_v2_final_train_excludes_completed_and_resumes_partial`, which
+  monkeypatches `final_train.launch.submit_command_sets` and asserts on
+  the exact command text — passes unchanged through the new executor path,
+  since `_executor()` resolves `submit_command_sets` from `launch` at call
+  time via `getattr`, so the mock is still picked up.
+- Final eval only consumes ready final-train checkpoints: unchanged,
+  `plan_final_eval_jobs` (not touched by this phase) still gates on
+  `_resolved_checkpoint`.
+- **v2/v3 final E2E parity through `09_final_report`: not run.** Only v3
+  final_train/final_eval were live-verified (real local run, fresh
+  checkpoint produced, correct `load.path=` resume threading, correct
+  skip-on-rerun) — `pair_stability_v2`'s final_train.py/final_eval.py are
+  untouched by this phase, so there is nothing on the v2 side to diverge
+  from, but the full-report-level parity comparison itself was not
+  exercised. Flagging as an explicit gap rather than overclaiming, matching
+  the same scope choice already accepted for Phase 3 steps 1 and 2 (v3-only
+  live verification, no fresh v2/v3 numeric comparison).
 
 ### Phase 5: Make Task Tables the Primary Stage Interface
 
@@ -927,6 +952,8 @@ Acceptance:
 - Pair-stability plots and metric names are unchanged.
 - Selector behavior is covered by deterministic table fixtures.
 - The generic collection utilities can be imported without pair-stability code.
+
+## Stages on hold (don't implement yet)
 
 ### Phase 7: Prove Reuse on a Second Study
 
