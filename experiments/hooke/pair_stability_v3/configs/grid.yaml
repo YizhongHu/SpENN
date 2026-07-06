@@ -167,7 +167,11 @@ champions:
       - hooke_orbital
     metric_template: eval/{task}/local_energy_mean
     mode: min
-    fallback_metric: train/runtime/wall_time_sec
+    # Deterministic fallback: when every ladder rung ends with overlapping
+    # seed error bars, take the lowest stratified-geometry seed-median
+    # outright. Wall time (the previous fallback) is machine/load-dependent,
+    # which made champion identity non-reproducible across independent runs.
+    fallback_metric: eval/stratified_geometry/local_energy_mean
     fallback_mode: min
 
 # Extra seed-aggregated metrics copied into champions.csv for auditability.
