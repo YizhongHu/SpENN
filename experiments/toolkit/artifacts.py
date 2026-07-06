@@ -1,4 +1,9 @@
-"""Study-local artifact readers and writers for staged runs."""
+"""Generic artifact readers and writers for staged experiment runs.
+
+Compact CSV/JSON/metrics-JSONL helpers shared by study collect/report stages.
+These are pure projection utilities: they read declared artifacts and never
+scan or mutate run directories.
+"""
 
 from __future__ import annotations
 

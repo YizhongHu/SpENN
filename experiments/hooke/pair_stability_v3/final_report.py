@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 import math
 import shutil
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from artifacts import read_csv as _read_csv, write_csv as _write_csv_columns
 import plot
 from utils.io import write_json
 from utils.layout import (
@@ -39,6 +39,15 @@ from stats import (
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit.artifacts import (  # noqa: E402
+    read_csv as _read_csv,
+    write_csv as _write_csv_columns,
+)
+
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
 WINNER_KINDS = ("energy", "stability")

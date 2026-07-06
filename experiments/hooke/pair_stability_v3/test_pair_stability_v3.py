@@ -23,7 +23,6 @@ while str(STUDY_DIR) in sys.path:
     sys.path.remove(str(STUDY_DIR))
 sys.path.insert(0, str(STUDY_DIR))
 _STUDY_TOP_LEVEL_MODULES = {
-    "artifacts",
     "collect",
     "final_collect",
     "final_eval",

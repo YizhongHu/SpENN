@@ -22,7 +22,6 @@ from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
-from artifacts import duration_from_status_file, read_metrics_map, status_of, write_csv
 from utils.ancestry import SourceGrid, source_grid_from_attempt, source_grid_from_id
 from utils.io import read_json, write_json
 from utils.layout import (
@@ -55,6 +54,12 @@ from experiments.toolkit import (  # noqa: E402
     stage_plan_task_ids,
     synthesized_task_id,
     write_task_lineage,
+)
+from experiments.toolkit.artifacts import (  # noqa: E402
+    duration_from_status_file,
+    read_metrics_map,
+    status_of,
+    write_csv,
 )
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
