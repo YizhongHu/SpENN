@@ -18,6 +18,7 @@ from experiments.toolkit import (
     task_id_from_parts,
     write_execution_records,
 )
+from experiments.toolkit.specs import tasks_from_commands
 
 
 def _task(
@@ -203,6 +204,35 @@ def test_execution_record_round_trip_and_validation(tmp_path: Path) -> None:
     row["submitted_command"] = "python run.py"
     with pytest.raises(ValueError, match="submitted_command must be a sequence"):
         ExecutionRecord.from_dict(row)
+
+
+def test_tasks_from_commands_completion_reads_run_status_not_launcher_status(tmp_path: Path) -> None:
+    result_dir = tmp_path / "run-a" / "A1"
+    launcher_status = result_dir / "launcher_status.json"
+    tasks = tasks_from_commands(
+        stage="01_train",
+        attempt_id="A1",
+        jobs=[{"run_id": "run-a"}],
+        commands=[("python", "run.py")],
+        result_dirs=[result_dir],
+        row_status_paths=[launcher_status],
+        resources=ResourceSpec(profile="cpu", device="cpu"),
+        completion_policy="status_completed",
+    )
+
+    task = tasks[0]
+    assert task.logs == (str(launcher_status),)
+    assert task.completion.status_path == str(result_dir / "status.json")
+
+    # The launcher's terminal vocabulary is success/failed/skipped_* --
+    # never "completed" -- so a completion predicate pointed at
+    # launcher_status.json could not ever be satisfied.
+    result_dir.mkdir(parents=True)
+    launcher_status.write_text('{"status": "success"}\n')
+    assert task.completion.is_complete() is False
+
+    (result_dir / "status.json").write_text('{"status": "completed"}\n')
+    assert task.completion.is_complete() is True
 
 
 def test_completion_specs_check_files(tmp_path: Path) -> None:

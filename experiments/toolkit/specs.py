@@ -382,7 +382,7 @@ def tasks_from_commands(
     for index, job in enumerate(jobs):
         run_id = str(job.get("run_id") or job.get("final_run_id") or index)
         result_dir = str(result_dirs[index])
-        status_path = str(row_status_paths[index])
+        row_status_path = str(row_status_paths[index])
         checkpoint_path = None if checkpoints[index] is None else str(checkpoints[index])
         task_id = task_id_from_parts(stage=stage, run_id=run_id, attempt_id=str(attempt_id))
         tasks.append(
@@ -395,12 +395,16 @@ def tasks_from_commands(
                 result_dir=result_dir,
                 inputs=tuple(str(path) for path in _input_paths(job)),
                 outputs=tuple(path for path in (checkpoint_path, result_dir) if path),
-                logs=(status_path,),
+                logs=(row_status_path,),
                 params={"source_attempts": dict(source_attempts or {})},
                 resources=resources,
                 completion=CompletionSpec(
                     policy=completion_policy,
-                    status_path=status_path,
+                    # The status_completed policies check for "completed",
+                    # which only the run's own status.json ever contains; the
+                    # launcher's row status file (kept in logs) uses a
+                    # running/success/failed/skipped_*/claimed vocabulary.
+                    status_path=str(Path(result_dir) / "status.json"),
                     checkpoint_path=checkpoint_path,
                 ),
                 metadata={"job": dict(job)},
