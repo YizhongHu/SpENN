@@ -11,6 +11,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import re
 import shlex
 from pathlib import Path
@@ -324,16 +325,32 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
     return commands
 
 
-def compare_lineages(*, attempt_id: str = DEFAULT_ATTEMPT_ID) -> list[str]:
-    """Return normalized parity differences for the completed v2/v3 lineages."""
+def compare_lineages(
+    *,
+    attempt_id: str = DEFAULT_ATTEMPT_ID,
+    v2_attempt_id: str | None = None,
+    v3_attempt_id: str | None = None,
+) -> list[str]:
+    """Return normalized parity differences for the completed v2/v3 lineages.
 
+    ``v2_attempt_id``/``v3_attempt_id`` default to ``attempt_id``. Passing a
+    different v2 attempt compares a fresh v3 lineage against a fixed,
+    already-completed v2 reference without rerunning v2 (v2 never changes);
+    both concrete attempt ids are normalized to one token before comparison.
+    """
+
+    v2_attempt = v2_attempt_id or attempt_id
+    v3_attempt = v3_attempt_id or attempt_id
+    attempt_ids = (v2_attempt, v3_attempt)
     differences: list[str] = []
-    for parts in _comparison_artifacts(attempt_id):
-        difference = _compare_artifact(parts)
+    for parts in _comparison_artifacts():
+        difference = _compare_artifact(parts, v2_attempt=v2_attempt, v3_attempt=v3_attempt)
         if difference is not None:
             differences.append(difference)
-    differences.extend(_compare_submission_presence(attempt_id))
-    differences.extend(_check_v3_stage_plans(attempt_id))
+    differences.extend(
+        _compare_submission_presence(v2_attempt=v2_attempt, v3_attempt=v3_attempt, attempt_ids=attempt_ids)
+    )
+    differences.extend(_check_v3_stage_plans(v3_attempt))
     return differences
 
 
@@ -347,40 +364,73 @@ def print_commands(commands: Sequence[str | Sequence[str]]) -> None:
             print(shlex.join([str(part) for part in command]))
 
 
-def _comparison_artifacts(attempt_id: str) -> list[tuple[str, ...]]:
+def _comparison_artifacts() -> list[tuple[str, ...]]:
     artifacts = [
-        ("00_grid", attempt_id, "manifest.json"),
-        ("00_grid", attempt_id, "unblind.json"),
-        ("03_collect", attempt_id, "summary.csv"),
-        ("03_collect", attempt_id, "failures.csv"),
-        ("03_collect", attempt_id, "collection_report.json"),
-        ("04_select", attempt_id, "champions.csv"),
-        ("04_select", attempt_id, "selection_report.json"),
-        ("05_final_grid", attempt_id, "source_champions.csv"),
-        ("05_final_grid", attempt_id, "final_jobs.csv"),
-        ("05_final_grid", attempt_id, "manifest.json"),
-        ("08_final_collect", attempt_id, "manifest.yaml"),
-        ("09_final_report", attempt_id, "final_report.json"),
-        ("09_final_report", attempt_id, "report.md"),
-        ("09_final_report", attempt_id, "tables", "energy_components_and_virial_by_winner.csv"),
+        ("00_grid", "manifest.json"),
+        ("00_grid", "unblind.json"),
+        ("03_collect", "summary.csv"),
+        ("03_collect", "failures.csv"),
+        ("03_collect", "collection_report.json"),
+        ("04_select", "champions.csv"),
+        ("04_select", "selection_report.json"),
+        ("05_final_grid", "source_champions.csv"),
+        ("05_final_grid", "final_jobs.csv"),
+        ("05_final_grid", "manifest.json"),
+        ("08_final_collect", "manifest.yaml"),
+        ("09_final_report", "final_report.json"),
+        ("09_final_report", "report.md"),
+        ("09_final_report", "tables", "energy_components_and_virial_by_winner.csv"),
     ]
-    artifacts.extend(("08_final_collect", attempt_id, table) for table in FINAL_COLLECT_TABLES)
-    artifacts.extend(("09_final_report", attempt_id, "tables", table) for table in FINAL_COLLECT_TABLES)
+    artifacts.extend(("08_final_collect", table) for table in FINAL_COLLECT_TABLES)
+    artifacts.extend(("09_final_report", "tables", table) for table in FINAL_COLLECT_TABLES)
     return artifacts
 
 
-def _compare_artifact(parts: tuple[str, ...]) -> str | None:
-    v2_path = V2_DIR / "results" / Path(*parts)
-    v3_path = V3_DIR / "results" / Path(*parts)
-    label = "/".join(parts)
+def _compare_artifact(parts: tuple[str, ...], *, v2_attempt: str, v3_attempt: str) -> str | None:
+    stage, *rest = parts
+    v2_path = V2_DIR / "results" / stage / v2_attempt / Path(*rest)
+    v3_path = V3_DIR / "results" / stage / v3_attempt / Path(*rest)
+    label = "/".join((stage, *rest))
+    attempt_ids = (v2_attempt, v3_attempt)
     if not v2_path.is_file() or not v3_path.is_file():
         return f"missing comparison artifact: {v2_path} / {v3_path}"
-    if _normalized_file(v2_path) != _normalized_file(v3_path):
+    if not _equivalent(_normalized_file(v2_path, attempt_ids), _normalized_file(v3_path, attempt_ids)):
         return f"normalized artifact differs: {label}"
     return None
 
 
-def _compare_submission_presence(attempt_id: str) -> list[str]:
+# Independent same-seed reruns reproduce metric values only to ~1e-12
+# relative (BLAS/thread-order noise), so numeric equality is tolerance-based;
+# structure, keys, and non-numeric values stay exact.
+FLOAT_REL_TOL = 1e-9
+FLOAT_ABS_TOL = 1e-12
+
+
+def _equivalent(left: Any, right: Any) -> bool:
+    """Return whether normalized artifacts match, with float tolerance."""
+
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_equivalent(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _equivalent(a, b) for a, b in zip(left, right, strict=True)
+        )
+    if left == right:
+        return True
+    numbers = []
+    for value in (left, right):
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return False
+        try:
+            numbers.append(float(value))
+        except ValueError:
+            return False
+    return math.isclose(numbers[0], numbers[1], rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL)
+
+
+def _compare_submission_presence(
+    *, v2_attempt: str, v3_attempt: str, attempt_ids: tuple[str, ...]
+) -> list[str]:
     differences = []
     for stage, run_root in (
         ("01_train", "01_train"),
@@ -388,13 +438,13 @@ def _compare_submission_presence(attempt_id: str) -> list[str]:
         ("06_final_train", "06_final_train"),
         ("07_final_eval", "07_final_eval"),
     ):
-        v2_submissions = sorted((V2_DIR / "results" / run_root).glob(f"**/{attempt_id}/submission.json"))
-        v3_submissions = sorted((V3_DIR / "results" / run_root).glob(f"**/{attempt_id}/submission.json"))
+        v2_submissions = sorted((V2_DIR / "results" / run_root).glob(f"**/{v2_attempt}/submission.json"))
+        v3_submissions = sorted((V3_DIR / "results" / run_root).glob(f"**/{v3_attempt}/submission.json"))
         if len(v2_submissions) != len(v3_submissions):
             differences.append(f"{stage}: submission count differs: {len(v2_submissions)} != {len(v3_submissions)}")
             continue
         for left, right in zip(v2_submissions, v3_submissions, strict=True):
-            if _normalized_file(left) != _normalized_file(right):
+            if _normalized_file(left, attempt_ids) != _normalized_file(right, attempt_ids):
                 differences.append(f"{stage}: normalized submission differs: {left.name}")
     return differences
 
@@ -409,14 +459,23 @@ def _check_v3_stage_plans(attempt_id: str) -> list[str]:
     return differences
 
 
-def _normalized_file(path: Path) -> Any:
+def _tokenize_attempt_ids(text: str, attempt_ids: tuple[str, ...]) -> str:
+    """Replace concrete attempt ids with one token so v2/v3 ids can differ."""
+
+    for attempt_id in sorted(set(attempt_ids), key=len, reverse=True):
+        text = text.replace(attempt_id, "<ATTEMPT_ID>")
+    return text
+
+
+def _normalized_file(path: Path, attempt_ids: tuple[str, ...] = ()) -> Any:
+    text = _tokenize_attempt_ids(path.read_text(), attempt_ids)
     if path.suffix == ".csv":
-        return _normalize_csv(path.read_text())
+        return _normalize_csv(text)
     if path.suffix == ".jsonl":
-        return [_normalize(json.loads(line)) for line in path.read_text().splitlines() if line.strip()]
+        return [_normalize(json.loads(line)) for line in text.splitlines() if line.strip()]
     if path.suffix == ".json":
-        return _normalize(json.loads(path.read_text()))
-    return _normalize(path.read_text())
+        return _normalize(json.loads(text))
+    return _normalize(text)
 
 
 def _normalize_csv(text: str) -> dict[str, Any]:
@@ -516,6 +575,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--attempt-id", default=DEFAULT_ATTEMPT_ID)
+    parser.add_argument(
+        "--v2-attempt-id",
+        default=None,
+        help="Fixed v2 reference attempt for compare (defaults to --attempt-id). "
+        "v2 never changes, so a completed v2 lineage can be reused across compares.",
+    )
+    parser.add_argument(
+        "--v3-attempt-id",
+        default=None,
+        help="v3 attempt for compare (defaults to --attempt-id).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("prepare-v2-config")
     subparsers.add_parser("print-runbook")
@@ -528,12 +598,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "print-runbook":
         print_commands(submission_runbook(attempt_id=args.attempt_id))
         return 0
-    differences = compare_lineages(attempt_id=args.attempt_id)
+    differences = compare_lineages(
+        attempt_id=args.attempt_id,
+        v2_attempt_id=args.v2_attempt_id,
+        v3_attempt_id=args.v3_attempt_id,
+    )
     if differences:
         for difference in differences:
             print(difference)
         return 1
-    print(f"pair-stability v2/v3 parity passed for attempt {args.attempt_id}")
+    v2_attempt = args.v2_attempt_id or args.attempt_id
+    v3_attempt = args.v3_attempt_id or args.attempt_id
+    if v2_attempt == v3_attempt:
+        print(f"pair-stability v2/v3 parity passed for attempt {v2_attempt}")
+    else:
+        print(f"pair-stability v2/v3 parity passed: v2 {v2_attempt} vs v3 {v3_attempt}")
     return 0
 
 

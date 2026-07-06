@@ -2,11 +2,95 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
 import parity
+
+
+def _write_fixture_lineages(root: Path, *, v2_attempt: str, v3_attempt: str) -> tuple[Path, Path]:
+    """Write minimal, comparison-complete v2/v3 result trees."""
+
+    v2_dir = root / "pair_stability_v2"
+    v3_dir = root / "pair_stability_v3"
+    for study_dir, attempt, study in ((v2_dir, v2_attempt, "pair_stability_v2"), (v3_dir, v3_attempt, "pair_stability_v3")):
+        for parts in parity._comparison_artifacts():
+            stage, *rest = parts
+            path = study_dir / "results" / stage / attempt / Path(*rest)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Embed the study name and the concrete attempt id so the test
+            # proves both are normalized before comparison.
+            if path.suffix == ".csv":
+                path.write_text(f"study,attempt_id\n{study},{attempt}\n")
+            elif path.suffix == ".json":
+                path.write_text(json.dumps({"study": study, "attempt_id": attempt}) + "\n")
+            else:
+                path.write_text(f"{study} report for {attempt}\n")
+    for stage in ("01_train", "02_validation"):
+        plan_dir = v3_dir / "results" / stage / "stage_plans" / v3_attempt
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        for filename in ("stage_manifest.json", "tasks.jsonl", "execution_records.jsonl"):
+            (plan_dir / filename).write_text("{}\n" if filename.endswith(".json") else "")
+    return v2_dir, v3_dir
+
+
+def test_pair_stability_v3_parity_compares_fixed_v2_reference_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh v3 attempt compares clean against a fixed, older v2 attempt."""
+
+    v2_attempt = "parity-v2v3"
+    v3_attempt = "parity-v2v3-20260705-210000"
+    v2_dir, v3_dir = _write_fixture_lineages(tmp_path, v2_attempt=v2_attempt, v3_attempt=v3_attempt)
+    monkeypatch.setattr(parity, "V2_DIR", v2_dir)
+    monkeypatch.setattr(parity, "V3_DIR", v3_dir)
+
+    differences = parity.compare_lineages(v2_attempt_id=v2_attempt, v3_attempt_id=v3_attempt)
+    assert differences == []
+
+    # A real content difference must still be caught after normalization.
+    summary = v3_dir / "results" / "03_collect" / v3_attempt / "summary.csv"
+    summary.write_text(f"study,attempt_id\npair_stability_v3,{v3_attempt}\nextra,row\n")
+    differences = parity.compare_lineages(v2_attempt_id=v2_attempt, v3_attempt_id=v3_attempt)
+    assert differences == ["normalized artifact differs: 03_collect/summary.csv"]
+
+
+def test_pair_stability_v3_parity_tolerates_cross_run_float_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same-seed rerun noise (~1e-12 rel) passes; real numeric drift fails."""
+
+    v2_attempt = "parity-v2v3"
+    v3_attempt = "parity-v2v3-20260705-210000"
+    v2_dir, v3_dir = _write_fixture_lineages(tmp_path, v2_attempt=v2_attempt, v3_attempt=v3_attempt)
+    monkeypatch.setattr(parity, "V2_DIR", v2_dir)
+    monkeypatch.setattr(parity, "V3_DIR", v3_dir)
+
+    v2_summary = v2_dir / "results" / "03_collect" / v2_attempt / "summary.csv"
+    v3_summary = v3_dir / "results" / "03_collect" / v3_attempt / "summary.csv"
+    v2_summary.write_text("energy,residual\n2.2687580424695081,2.220446049250313e-16\n")
+    v3_summary.write_text("energy,residual\n2.2687580424695312,1.1102230246251565e-16\n")
+    assert parity.compare_lineages(v2_attempt_id=v2_attempt, v3_attempt_id=v3_attempt) == []
+
+    v3_summary.write_text("energy,residual\n2.2687591424695312,1.1102230246251565e-16\n")
+    assert parity.compare_lineages(v2_attempt_id=v2_attempt, v3_attempt_id=v3_attempt) == [
+        "normalized artifact differs: 03_collect/summary.csv"
+    ]
+
+
+def test_pair_stability_v3_parity_equivalent_keeps_non_numeric_exact() -> None:
+    """Float tolerance must not blur non-numeric or structural differences."""
+
+    assert parity._equivalent({"a": [1.0, "x"]}, {"a": [1.0 + 1e-13, "x"]}) is True
+    assert parity._equivalent("2.0000000000001", "2.0") is True
+    assert parity._equivalent("b-B00", "b-B01") is False
+    assert parity._equivalent({"a": 1.0}, {"b": 1.0}) is False
+    assert parity._equivalent([1.0], [1.0, 2.0]) is False
+    assert parity._equivalent(True, 2.0) is False
+    assert parity._equivalent("", "0.0") is False
 
 
 def test_pair_stability_v3_parity_runbook_uses_test_partitions(
@@ -71,5 +155,9 @@ def test_pair_stability_v3_matches_v2_completed_submission_lineage() -> None:
             "`python experiments/hooke/pair_stability_v3/parity.py print-runbook` commands"
         )
     attempt_id = os.environ.get("SPENN_PAIR_STABILITY_PARITY_ATTEMPT", parity.DEFAULT_ATTEMPT_ID)
-    differences = parity.compare_lineages(attempt_id=attempt_id)
+    differences = parity.compare_lineages(
+        attempt_id=attempt_id,
+        v2_attempt_id=os.environ.get("SPENN_PAIR_STABILITY_PARITY_V2_ATTEMPT"),
+        v3_attempt_id=os.environ.get("SPENN_PAIR_STABILITY_PARITY_V3_ATTEMPT"),
+    )
     assert differences == []
