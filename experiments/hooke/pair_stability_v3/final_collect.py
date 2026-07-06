@@ -11,19 +11,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
 
-from artifacts import (
-    duration_from_status as _duration_from_status,
-    load_json_dict_if_present as _load_json_if_present,
-    metric_map as _metric_map,
-    read_csv as _read_csv,
-    read_metrics_jsonl as _read_metrics_jsonl,
-    status_of as _status_of,
-    write_csv as _write_csv,
-)
 from utils.layout import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
@@ -47,6 +39,20 @@ from stats import (
 )
 
 STUDY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = STUDY_DIR.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from experiments.toolkit.artifacts import (  # noqa: E402
+    duration_from_status as _duration_from_status,
+    load_json_dict_if_present as _load_json_if_present,
+    metric_map as _metric_map,
+    read_csv as _read_csv,
+    read_metrics_jsonl as _read_metrics_jsonl,
+    status_of as _status_of,
+    write_csv as _write_csv,
+)
+
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
 DEFAULT_EXPECTED_FINAL_SEEDS = 10
