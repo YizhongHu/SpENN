@@ -30,6 +30,10 @@ def __getattr__(name: str) -> object:
         from .timing import DiagnosticTiming
 
         return DiagnosticTiming
+    if name == "EvaluationComponentTiming":
+        from .timing import EvaluationComponentTiming
+
+        return EvaluationComponentTiming
     if name == "EvaluationTiming":
         from .timing import EvaluationTiming
 
@@ -63,8 +67,9 @@ __all__ = [
     "ConfigSnapshot",
     "DataIntegrity",
     "DiagnosticTiming",
-    "Event",
+    "EvaluationComponentTiming",
     "EvaluationTiming",
+    "Event",
     "FailureLog",
     "GradientStats",
     "Metadata",

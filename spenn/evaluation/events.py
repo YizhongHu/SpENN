@@ -20,6 +20,20 @@ def task_payload(task: EvaluationTask, *, output_dir: str | Path | None = None) 
     return payload
 
 
+def component_payload(
+    *,
+    task: EvaluationTask,
+    component_name: str | None,
+    output_dir: str | Path | None = None,
+) -> dict[str, object]:
+    """Return the standard payload for component lifecycle events."""
+
+    return {
+        **task_payload(task, output_dir=output_dir),
+        "component_name": component_name,
+    }
+
+
 def component_failure_payload(
     *,
     task: EvaluationTask,
@@ -42,4 +56,4 @@ def task_result_payload(task_result: TaskResult) -> dict[str, object]:
     return {"task_result": task_result.to_payload()}
 
 
-__all__ = ["component_failure_payload", "task_payload", "task_result_payload"]
+__all__ = ["component_failure_payload", "component_payload", "task_payload", "task_result_payload"]

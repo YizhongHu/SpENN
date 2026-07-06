@@ -8,6 +8,7 @@ import pytest
 
 from spenn.callback import (
     DiagnosticTiming,
+    EvaluationComponentTiming,
     EvaluationTiming,
     Event,
     RunTiming,
@@ -173,6 +174,110 @@ def test_evaluation_timing_logs_eval_perf_wall_time() -> None:
 
     assert context.latest("eval/perf") == {"wall_time_sec": 3.5}
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
+
+
+def _component_payload(component_name: str | None = None) -> dict[str, object]:
+    return {
+        "task_name": "energy",
+        "task_namespace": "eval/energy",
+        "component_name": component_name,
+    }
+
+
+def test_evaluation_component_timing_logs_one_record_per_task_at_task_end() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([1.0, 1.25, 2.0, 2.75, 3.0, 3.5]))
+
+    callback.handle(Event(name="generator_start", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="generator_end", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="calculator_start", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="calculator_end", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="summary_start", context=context, payload=_component_payload("energy_stats")))
+    callback.handle(Event(name="summary_end", context=context, payload=_component_payload("energy_stats")))
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.by_namespace("eval/perf/energy") == [
+        {
+            "metrics": {
+                "generator_time_sec": 0.25,
+                "calculator/local_energy_time_sec": 0.75,
+                "summary/energy_stats_time_sec": 0.5,
+            },
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "event": None,
+        }
+    ]
+
+
+def test_evaluation_component_timing_flushes_measured_components_at_task_failed() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([1.0, 1.5]))
+
+    callback.handle(Event(name="generator_start", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="generator_end", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="task_failed", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.by_namespace("eval/perf/energy") == [
+        {
+            "metrics": {"generator_time_sec": 0.5},
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "event": None,
+        }
+    ]
+
+
+def test_evaluation_component_timing_task_end_without_components_logs_nothing() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([]))
+
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.records == []
+
+
+def test_evaluation_component_timing_drops_unmatched_starts_at_task_boundary() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([1.0, 5.0, 5.5]))
+
+    # A component started in one task but never finished must not leak into
+    # the next run of the same task.
+    callback.handle(Event(name="calculator_start", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+    callback.handle(Event(name="calculator_start", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="calculator_end", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.by_namespace("eval/perf/energy") == [
+        {
+            "metrics": {"calculator/local_energy_time_sec": 0.5},
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "event": None,
+        }
+    ]
+
+
+def test_evaluation_component_timing_requires_task_name() -> None:
+    with pytest.raises(ValueError, match="task_name"):
+        EvaluationComponentTiming(clock=FakeClock([1.0])).handle(
+            Event(name="generator_start", context=RecordingContext(), payload={"component_name": "mcmc"})
+        )
+
+
+def test_evaluation_component_timing_requires_component_name() -> None:
+    with pytest.raises(ValueError, match="component_name"):
+        EvaluationComponentTiming(clock=FakeClock([1.0])).handle(
+            Event(name="calculator_start", context=RecordingContext(), payload=_component_payload(None))
+        )
+
+
+def test_evaluation_component_timing_requires_task_name_at_task_end() -> None:
+    with pytest.raises(ValueError, match="task name"):
+        EvaluationComponentTiming(clock=FakeClock([])).handle(
+            Event(name="task_end", context=RecordingContext(), payload={"task_result": {}})
+        )
 
 
 def test_diagnostic_timing_logs_named_diagnostic_duration() -> None:
