@@ -1386,6 +1386,31 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     ]
 
 
+def test_final_eval_enumeration_skips_reserved_stage_dirs(tmp_path: Path) -> None:
+    """Reserved stage subdirectories are never collected as final-eval runs.
+
+    ``stage_plans`` (toolkit stage plans), ``slurm_logs`` and ``chunk_status``
+    live alongside per-run directories under the final-eval stage. With an
+    explicit ``final_eval_attempt_id`` the enumeration bypasses the
+    latest-pointer guard, so a reserved directory that happens to hold a
+    matching attempt subdirectory must still be excluded rather than surface a
+    phantom run with empty metrics.
+    """
+
+    results_root = tmp_path / "results"
+    attempt_id = "A0"
+    eval_stage = layout.stage_dir(results_root, layout.STAGE_FINAL_EVAL)
+
+    run_dir = eval_stage / "final-run-0"
+    (run_dir / attempt_id).mkdir(parents=True)
+    for reserved in ("stage_plans", "slurm_logs", "chunk_status"):
+        (eval_stage / reserved / attempt_id).mkdir(parents=True)
+
+    assert final_collect._iter_final_eval_attempts(results_root, attempt_id) == [
+        ("final-run-0", attempt_id, run_dir / attempt_id)
+    ]
+
+
 def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     final_run_id = "final-run-0"
