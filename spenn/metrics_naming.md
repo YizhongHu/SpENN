@@ -579,16 +579,33 @@ runtime/end_time_unix
 runtime/wall_time_sec
 ```
 
-Recommended training timing:
+Recommended run-level memory (from the `ResourceUsage` callback; MiB units):
+
+```text
+runtime/peak_memory_mb
+runtime/cuda_max_memory_allocated_mb
+runtime/cuda_max_memory_reserved_mb
+runtime/cuda_device_count
+```
+
+Recommended training timing (`step_time_sec` from `TrainStepTiming`; the
+phase keys from `TrainPhaseTiming`, driven by the trainer's
+`train_phase_start`/`train_phase_end` events):
 
 ```text
 train/perf/step_time_sec
 train/perf/sampling_time_sec
-train/perf/forward_time_sec
+train/perf/batch_build_time_sec
 train/perf/local_energy_time_sec
+train/perf/forward_time_sec
+train/perf/objective_time_sec
 train/perf/backward_time_sec
 train/perf/optimizer_step_time_sec
+train/perf/post_step_metrics_time_sec
 ```
+
+Phase times approximately sum to at most `step_time_sec`; the difference is
+unclassified loop overhead (gradient clipping, event dispatch, logging).
 
 Recommended evaluation timing:
 

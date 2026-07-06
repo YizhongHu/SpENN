@@ -34,10 +34,18 @@ def __getattr__(name: str) -> object:
         from .timing import EvaluationTiming
 
         return EvaluationTiming
+    if name == "ResourceUsage":
+        from .resource_usage import ResourceUsage
+
+        return ResourceUsage
     if name == "RunTiming":
         from .timing import RunTiming
 
         return RunTiming
+    if name == "TrainPhaseTiming":
+        from .timing import TrainPhaseTiming
+
+        return TrainPhaseTiming
     if name == "TrainStepTiming":
         from .timing import TrainStepTiming
 
@@ -61,10 +69,12 @@ __all__ = [
     "GradientStats",
     "Metadata",
     "ResolvedConfigSnapshot",
+    "ResourceUsage",
     "RunTiming",
     "RuntimeEquivariance",
     "SamplerHealth",
     "Status",
+    "TrainPhaseTiming",
     "TrainStepTiming",
     "Validation",
     "configure_terminal_logging",

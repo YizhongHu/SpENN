@@ -107,3 +107,41 @@ def test_vmc_trainer_logs_term_metrics_when_return_terms_enabled() -> None:
         prefix = f"energy_term_{name}"
         assert prefix in state.metrics
         assert f"{prefix}_variance" in state.metrics
+
+
+def test_vmc_trainer_emits_paired_phase_timing_events() -> None:
+    model = build_tiny_spenn()
+    sampler = build_tiny_sampler()
+    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
+    phase_events: list[tuple[str, str]] = []
+
+    def emit(name: str, *, state=None, payload=None) -> None:
+        if name in {"train_phase_start", "train_phase_end"}:
+            assert payload is not None and payload["step"] == 0
+            phase_events.append((name, payload["phase"]))
+
+    trainer.fit(
+        model=model,
+        sampler=sampler,
+        hamiltonian_terms=terms,
+        optimizer=optimizer,
+        context=_StubContext(),
+        emit=emit,
+    )
+
+    started = [phase for name, phase in phase_events if name == "train_phase_start"]
+    ended = [phase for name, phase in phase_events if name == "train_phase_end"]
+    assert started == [
+        "sampling",
+        "batch_build",
+        "local_energy",
+        "forward",
+        "objective",
+        "backward",
+        "optimizer_step",
+        "post_step_metrics",
+    ]
+    # Phases are sequential and non-nested, so end order matches start order.
+    assert ended == started

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, Callable
 
 from spenn.artifacts import RunContext
@@ -23,6 +24,22 @@ def _parameter_norm(model) -> float:
         value = param.detach().pow(2).sum()
         total = value if total is None else total + value
     return float(torch.sqrt(total).item()) if total is not None else 0.0
+
+
+@contextmanager
+def _timed_phase(emit: Callable[..., None], step: int, phase: str):
+    """Bracket one training-loop phase with timing events.
+
+    The trainer owns the phase boundaries but no timing policy: it only emits
+    ``train_phase_start``/``train_phase_end`` events, and timing callbacks
+    such as ``TrainPhaseTiming`` decide whether and how to measure them.
+    """
+
+    emit("train_phase_start", payload={"step": step, "phase": phase})
+    try:
+        yield
+    finally:
+        emit("train_phase_end", payload={"step": step, "phase": phase})
 
 
 def _gradient_norm(model) -> float:
@@ -102,9 +119,12 @@ class VMCTrainer:
         for step in range(self.global_step, self.max_steps):
             emit("step_start", payload={"step": step})
 
-            walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)
-            batch = walkers.make_batch()
-            result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
+            with _timed_phase(emit, step, "sampling"):
+                walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)
+            with _timed_phase(emit, step, "batch_build"):
+                batch = walkers.make_batch()
+            with _timed_phase(emit, step, "local_energy"):
+                result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
             if isinstance(result, LocalEnergyResult):
                 total_local_energy = result.total
                 term_energies = result.terms
@@ -112,18 +132,22 @@ class VMCTrainer:
                 total_local_energy = result
                 term_energies = None
 
-            output = model(batch)
-            objective = compute_vmc_objective(output.logabs, total_local_energy)
+            with _timed_phase(emit, step, "forward"):
+                output = model(batch)
+            with _timed_phase(emit, step, "objective"):
+                objective = compute_vmc_objective(output.logabs, total_local_energy)
             loss = objective.loss
 
             optimizer.zero_grad(set_to_none=True)
             optimizer_step = False
             if loss.requires_grad:
-                loss.backward()
+                with _timed_phase(emit, step, "backward"):
+                    loss.backward()
                 if self.gradient_clip_norm is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip_norm)
                 grad_norm = _gradient_norm(model)
-                optimizer.step()
+                with _timed_phase(emit, step, "optimizer_step"):
+                    optimizer.step()
                 optimizer_step = True
             elif batch.n_electrons == 0:
                 # The zero-electron vacuum has no sampled coordinate degrees of
@@ -139,14 +163,15 @@ class VMCTrainer:
             # Canonical VMC-native metrics come from the objective helper; the
             # trainer only adds trainer-owned mechanics and optional per-term
             # local-energy metrics (metrics only, never part of the objective).
-            metrics: dict[str, Any] = dict(objective.metrics)
-            metrics.update(summarize_logabs(output.logabs))
-            if term_energies is not None:
-                metrics.update(summarize_local_energy_terms(term_energies))
-            metrics["grad_norm"] = grad_norm
-            metrics["param_norm"] = _parameter_norm(model)
-            metrics["loss_has_grad"] = bool(loss.requires_grad)
-            metrics["optimizer_step"] = optimizer_step
+            with _timed_phase(emit, step, "post_step_metrics"):
+                metrics: dict[str, Any] = dict(objective.metrics)
+                metrics.update(summarize_logabs(output.logabs))
+                if term_energies is not None:
+                    metrics.update(summarize_local_energy_terms(term_energies))
+                metrics["grad_norm"] = grad_norm
+                metrics["param_norm"] = _parameter_norm(model)
+                metrics["loss_has_grad"] = bool(loss.requires_grad)
+                metrics["optimizer_step"] = optimizer_step
 
             state.step = step
             state.metrics = metrics
