@@ -58,6 +58,41 @@ def test_pair_stability_v3_parity_compares_fixed_v2_reference_attempt(
     assert differences == ["normalized artifact differs: 03_collect/summary.csv"]
 
 
+def test_pair_stability_v3_parity_tolerates_cross_run_float_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same-seed rerun noise (~1e-12 rel) passes; real numeric drift fails."""
+
+    v2_attempt = "parity-v2v3"
+    v3_attempt = "parity-v2v3-20260705-210000"
+    v2_dir, v3_dir = _write_fixture_lineages(tmp_path, v2_attempt=v2_attempt, v3_attempt=v3_attempt)
+    monkeypatch.setattr(parity, "V2_DIR", v2_dir)
+    monkeypatch.setattr(parity, "V3_DIR", v3_dir)
+
+    v2_summary = v2_dir / "results" / "03_collect" / v2_attempt / "summary.csv"
+    v3_summary = v3_dir / "results" / "03_collect" / v3_attempt / "summary.csv"
+    v2_summary.write_text("energy,residual\n2.2687580424695081,2.220446049250313e-16\n")
+    v3_summary.write_text("energy,residual\n2.2687580424695312,1.1102230246251565e-16\n")
+    assert parity.compare_lineages(v2_attempt_id=v2_attempt, v3_attempt_id=v3_attempt) == []
+
+    v3_summary.write_text("energy,residual\n2.2687591424695312,1.1102230246251565e-16\n")
+    assert parity.compare_lineages(v2_attempt_id=v2_attempt, v3_attempt_id=v3_attempt) == [
+        "normalized artifact differs: 03_collect/summary.csv"
+    ]
+
+
+def test_pair_stability_v3_parity_equivalent_keeps_non_numeric_exact() -> None:
+    """Float tolerance must not blur non-numeric or structural differences."""
+
+    assert parity._equivalent({"a": [1.0, "x"]}, {"a": [1.0 + 1e-13, "x"]}) is True
+    assert parity._equivalent("2.0000000000001", "2.0") is True
+    assert parity._equivalent("b-B00", "b-B01") is False
+    assert parity._equivalent({"a": 1.0}, {"b": 1.0}) is False
+    assert parity._equivalent([1.0], [1.0, 2.0]) is False
+    assert parity._equivalent(True, 2.0) is False
+    assert parity._equivalent("", "0.0") is False
+
+
 def test_pair_stability_v3_parity_runbook_uses_test_partitions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -11,6 +11,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import re
 import shlex
 from pathlib import Path
@@ -393,9 +394,38 @@ def _compare_artifact(parts: tuple[str, ...], *, v2_attempt: str, v3_attempt: st
     attempt_ids = (v2_attempt, v3_attempt)
     if not v2_path.is_file() or not v3_path.is_file():
         return f"missing comparison artifact: {v2_path} / {v3_path}"
-    if _normalized_file(v2_path, attempt_ids) != _normalized_file(v3_path, attempt_ids):
+    if not _equivalent(_normalized_file(v2_path, attempt_ids), _normalized_file(v3_path, attempt_ids)):
         return f"normalized artifact differs: {label}"
     return None
+
+
+# Independent same-seed reruns reproduce metric values only to ~1e-12
+# relative (BLAS/thread-order noise), so numeric equality is tolerance-based;
+# structure, keys, and non-numeric values stay exact.
+FLOAT_REL_TOL = 1e-9
+FLOAT_ABS_TOL = 1e-12
+
+
+def _equivalent(left: Any, right: Any) -> bool:
+    """Return whether normalized artifacts match, with float tolerance."""
+
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_equivalent(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _equivalent(a, b) for a, b in zip(left, right, strict=True)
+        )
+    if left == right:
+        return True
+    numbers = []
+    for value in (left, right):
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return False
+        try:
+            numbers.append(float(value))
+        except ValueError:
+            return False
+    return math.isclose(numbers[0], numbers[1], rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL)
 
 
 def _compare_submission_presence(
