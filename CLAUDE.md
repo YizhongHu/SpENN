@@ -11,16 +11,11 @@ want to keep a note of them in the project directories.
 The cluster uses slurm scripts for job submission. Please refer to slurm docs for
 details. The available cpu clusters are: sapphire, kozinsky, and seas_compute.
 The available gpu nodes are: kozinsky_gpu, and seas_gpu
-
 # SpENN project specific guidelines
 
 ## Orientation
 
 `README.md` and `experiments/README.md` contain important information about the repo.
-
-There are two directories, `SpENN/` and `SpENN-dev/`. `SpENN` is where the experiments are run
-and it should ideally not contain any development and only fast-forward on main. 
-`SpENN-dev` can be unclean and contain all development branches. 
 
 ## Design Document
 
@@ -32,7 +27,7 @@ should closely follow the design document for correctness.
 ## Environment
 
 - Any environment problems is not worth trouble-shooting by the agent on its own. If it happens, stop and the issue will be resolved interactively.
-- This repo uses `uv` to manage python packages. Most commands (including `pytest`) needs to be run with `uv`. 
+- This repo uses `uv` to manage python packages. Most commands (including `pytest`) needs to be run with `uv`. Use `uv` to run if possible for reproducibility.
 - If it may be necessary to install a new package, stop and inquire instead of proceeding
   with alternatives.
 - Do not use `uv run --nosync`. If `uv` environment needs to change, let `uv lock` update for
@@ -40,7 +35,8 @@ should closely follow the design document for correctness.
 
 ## Conventions
 - NumpyDoc is used for documentation
-- Use `America/New York` timezone for experiment logging. Use `UTC` for test logging.
+- Use inline comments for comprehensibility
+- Use `America/New_York` timezone for experiment logging. Use `UTC` for test logging.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
@@ -173,82 +169,30 @@ fast(x) == slow(x)
 fast(pi x) == pi fast(x)
 ```
 
-### Do not preserve legacy names in new code
-
-Backwards compatibility is not required for this restructure. Do not use old abstractions in the new path.
-
-Avoid:
-
-```text
-SpechtMP
-FusionMap
-BranchMap
-MessageHead
-UpdateHead
-Convolution
-Pooling
-FeatureDict
-MessageDict
-RealTensor
-```
-
-Use:
-
-```text
-RealFeature
-RealInteraction
-IrrepInteraction
-IrrepFeature
-RealUpdate
-EquivariantMixing
-PathAggregation
-Update
-SpENNLayer
-SpENNWaveFunction
-PfaffianReadout
-```
-
 ### Prefer small PR steps
 
 For this project, correctness is more important than breadth. Prefer small changes with strong tests.
 
-Good PR sequence:
+Avoid large PRs that change multiple things at the same time.
 
-```text
-1. Add state dataclasses and permute tests.
-2. Add EquivariantMap and runtime-check tests.()
-3. Add path metadata and path-count tests.
-4. Add slow EquivariantMixing and equivariance tests.
-5. Add Fourier/Specht activation.
-6. Add readout and wavefunction integration.
-```
-
-Avoid large PRs that change state layout, path enumeration, Fourier logic, activation, readout, and experiments at the same time.
 
 ## Branches
 
 Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
 Agents must not push to branches other than these mentioned above, such as `main`,
- merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `main`.
+ merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `dev`.
 
 `hooke` and `experiment` are retired intermediate integration branches — do not open new
-PRs against them. (Historical note: the old tiered `main` -> `hooke` -> `experiment` ->
-feature-branch setup let `main`/`hooke` go stale while `experiment` silently became the
-real trunk. `main` is being caught back up to `experiment`'s tip once in-flight PRs land,
-after which `main` is the only trunk.)
+PRs against them. 
 
-**Ownership split between SpENN and SpENN-dev:** SpENN (this repo) owns the
-`pair_stability_v2` implementation — it stays the stable, running reference here.
-SpENN-dev owns the `pair_stability_v3` / `experiments/toolkit` restructuring
-(exec-plan-split) going forward. `main` previously carried an independently-built
-`pair_stability_v3`/`toolkit` implementation (from PRs #71, #73-#76), built in
-parallel with SpENN-dev's exec-plan-split work since both forked from the same
-base before either existed. That duplication has been resolved: SpENN-dev's
-exec-plan-split implementation replaced main's wholesale (not merged
-file-by-file), since SpENN-dev is the one actively developing v3/toolkit going
-forward. Any future `pair_stability_v3`/`toolkit` changes should land through
-SpENN-dev.
+**Ownership split between SpENN and SpENN-dev:** 
+`SpENN/` is the production directory with experiments run. It stays on the `main` branch and does
+not commit to remote. 
+`SpENN-dev/` is the development directory. It stays on `dev` branch and submits PRs into `dev`.
+It is also responsible for running smoke runs before full runs are run in `SpENN/`.
+
+`dev` branch will be periodically merged into `main` by the user only.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
 
@@ -271,34 +215,3 @@ runner:
 callbacks: [...]   # config-root, RunContext-owned
 loggers: [...]     # config-root, RunContext-owned
 ```
-
-- `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
-  reusable top-level blocks referenced by the runner via `${...}`.
-- `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
-  the public term names used for decompositions and metrics, so they must be
-  non-empty strings; sequence entries are named from snake-case term class names
-  with index suffixes added for repeats. Every term object must expose
-  `local_energy(wavefunction, batch)` and return a `LocalEnergyResult` whose
-  `total` has shape `[batch]`. With `return_terms=True`, configured mapping
-  keys are preserved as the public decomposition names.
-- `optimizer` names a partial factory (`_partial_: true`) that builds an
-  optimizer from model parameters; `Train` applies it to `model.parameters()`.
-- `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
-  sampled diagnostic evaluator (`model`, `sampler`, `hamiltonian_terms`,
-  `diagnostics`, `return_terms`). Reference-energy comparison belongs to
-  evaluation diagnostics such as `spenn.diagnostics.EnergyEvaluation`.
-- Training and evaluation term metrics use `energy_term_<name>` for the finite
-  mean and suffixes such as
-  `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
-  and `_nonfinite_count` for companion statistics.
-- Metric identity is `namespace + key`: training metrics use `train`, sampler
-  stats use `train/sampler` or `eval/sampler`, runtime checks use `checks/...`,
-  and evaluation diagnostics use `eval`. See `spenn/metrics_naming.md`.
-
-`prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
-`RunContext`. `Runner.emit(...)` dispatches lifecycle events through
-`context.callbacks`, runners log through `context.log(...)`, and
-`logger.finish()` runs against the context's loggers. `VMCTrainer` owns only
-training-loop hyperparameters (`max_steps`, `log_every_n_steps`, `return_terms`,
-`gradient_clip_norm`) and the loss/backward/step mechanics; it does not own
-callbacks, loggers, reference energy, or diagnostics.

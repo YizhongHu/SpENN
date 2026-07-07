@@ -156,81 +156,30 @@ fast(x) == slow(x)
 fast(pi x) == pi fast(x)
 ```
 
-### Do not preserve legacy names in new code
-
-Backwards compatibility is not required for this restructure. Do not use old abstractions in the new path.
-
-Avoid:
-
-```text
-SpechtMP
-FusionMap
-BranchMap
-MessageHead
-UpdateHead
-Convolution
-Pooling
-FeatureDict
-MessageDict
-RealTensor
-```
-
-Use:
-
-```text
-RealFeature
-RealInteraction
-IrrepInteraction
-IrrepFeature
-RealUpdate
-EquivariantMixing
-PathAggregation
-Update
-SpENNLayer
-SpENNWaveFunction
-PfaffianReadout
-```
-
 ### Prefer small PR steps
 
 For this project, correctness is more important than breadth. Prefer small changes with strong tests.
 
-Good PR sequence:
+Avoid large PRs that change multiple things at the same time.
 
-```text
-1. Add state dataclasses and permute tests.
-2. Add EquivariantMap and runtime-check tests.()
-3. Add path metadata and path-count tests.
-4. Add slow EquivariantMixing and equivariance tests.
-5. Add Fourier/Specht activation.
-6. Add readout and wavefunction integration.
-```
-
-Avoid large PRs that change state layout, path enumeration, Fourier logic, activation, readout, and experiments at the same time.
 
 ## Branches
 
 Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
 Agents must not push to branches other than these mentioned above, such as `main`,
- merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `main`.
+ merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `dev`.
 
 `hooke` and `experiment` are retired intermediate integration branches — do not open new
-PRs against them. (Historical note: the old tiered `main` -> `hooke` -> `experiment` ->
-feature-branch setup let `main`/`hooke` go stale while `experiment` silently became the
-real trunk. `main` is being caught back up to `experiment`'s tip once in-flight PRs land,
-after which `main` is the only trunk.)
+PRs against them. 
 
-**Ownership split between SpENN and SpENN-dev:** SpENN (this repo) owns the
-`pair_stability_v2` implementation — it stays the stable, running reference here.
-SpENN-dev owns the `pair_stability_v3` / `experiments/toolkit` restructuring
-(exec-plan-split) going forward. SpENN's own `experiment`-branch history already
-contains an independently-built `pair_stability_v3`/`toolkit` implementation
-(parallel to SpENN-dev's) — that history is being kept as-is, not discarded, but
-it is not the place for further v3-toolkit development. Reconciling the two
-parallel implementations later (SpENN-dev's exec-plan-split work vs. SpENN's own
-`experiment`-branch v3-toolkit commits) is expected to require real, accepted
-merge conflicts — not resolved by picking one side and deleting the other.
+**Ownership split between SpENN and SpENN-dev:** 
+`SpENN/` is the production directory with experiments run. It stays on the `main` branch and does
+not commit to remote. 
+`SpENN-dev/` is the development directory. It stays on `dev` branch and submits PRs into `dev`.
+It is also responsible for running smoke runs before full runs are run in `SpENN/`.
+
+`dev` branch will be periodically merged into `main` by the user only.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
 
@@ -253,34 +202,3 @@ runner:
 callbacks: [...]   # config-root, RunContext-owned
 loggers: [...]     # config-root, RunContext-owned
 ```
-
-- `model`, `sampler`, `hamiltonian_terms`, `optimizer`, and `trainer` are
-  reusable top-level blocks referenced by the runner via `${...}`.
-- `hamiltonian_terms` may be either a sequence or a mapping. Mapping keys are
-  the public term names used for decompositions and metrics, so they must be
-  non-empty strings; sequence entries are named from snake-case term class names
-  with index suffixes added for repeats. Every term object must expose
-  `local_energy(wavefunction, batch)` and return a `LocalEnergyResult` whose
-  `total` has shape `[batch]`. With `return_terms=True`, configured mapping
-  keys are preserved as the public decomposition names.
-- `optimizer` names a partial factory (`_partial_: true`) that builds an
-  optimizer from model parameters; `Train` applies it to `model.parameters()`.
-- `spenn.runner.Train` runs the VMC training loop. `spenn.runner.Evaluate` is a
-  sampled diagnostic evaluator (`model`, `sampler`, `hamiltonian_terms`,
-  `diagnostics`, `return_terms`). Reference-energy comparison belongs to
-  evaluation diagnostics such as `spenn.diagnostics.EnergyEvaluation`.
-- Training and evaluation term metrics use `energy_term_<name>` for the finite
-  mean and suffixes such as
-  `_variance`, `_std`, `_stderr`, `_n_finite`, `_n_total`, `_finite_fraction`,
-  and `_nonfinite_count` for companion statistics.
-- Metric identity is `namespace + key`: training metrics use `train`, sampler
-  stats use `train/sampler` or `eval/sampler`, runtime checks use `checks/...`,
-  and evaluation diagnostics use `eval`. See `spenn/metrics_naming.md`.
-
-`prepare_run_context` instantiates the config-root `callbacks`/`loggers` into the
-`RunContext`. `Runner.emit(...)` dispatches lifecycle events through
-`context.callbacks`, runners log through `context.log(...)`, and
-`logger.finish()` runs against the context's loggers. `VMCTrainer` owns only
-training-loop hyperparameters (`max_steps`, `log_every_n_steps`, `return_terms`,
-`gradient_clip_norm`) and the loss/backward/step mechanics; it does not own
-callbacks, loggers, reference energy, or diagnostics.
