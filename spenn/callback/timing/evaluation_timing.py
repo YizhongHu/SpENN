@@ -14,7 +14,7 @@ class EvaluationTiming(Callback):
 
     def __init__(
         self,
-        triggers: Iterable[str] = ("evaluate_start", "evaluate_end", "eval_start", "eval_end", "exception", "eval_failed"),
+        triggers: Iterable[str] = ("evaluate_start", "evaluate_end", "exception"),
         *,
         cuda_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
@@ -30,28 +30,13 @@ class EvaluationTiming(Callback):
 
         self._start_timing()
 
-    def on_eval_start(self, event: Event) -> None:
-        """Alias for ``evaluate_start``."""
-
-        self._start_timing()
-
     def on_evaluate_end(self, event: Event) -> None:
         """Log evaluation duration."""
 
         self._log_end(event, failed=False)
 
-    def on_eval_end(self, event: Event) -> None:
-        """Alias for ``evaluate_end``."""
-
-        self._log_end(event, failed=False)
-
     def on_exception(self, event: Event) -> None:
         """Log elapsed evaluation time on failure when evaluation had started."""
-
-        self._log_end(event, failed=True)
-
-    def on_eval_failed(self, event: Event) -> None:
-        """Alias for failed evaluation events."""
 
         self._log_end(event, failed=True)
 

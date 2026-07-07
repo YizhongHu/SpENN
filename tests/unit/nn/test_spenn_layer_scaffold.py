@@ -100,7 +100,7 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
     layer = SpENNLayer(
         mixing=IdentityMixing(),
         fourier=IdentityFourier(),
-        activation=IdentityActivation(),
+        irrep_activation=IdentityActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
         update=ResidualUpdate(),
@@ -154,7 +154,7 @@ def test_spenn_layer_applies_activation_before_path_aggregation() -> None:
     layer = SpENNLayer(
         mixing=TwoPathMixing(),
         fourier=IdentityFourier(),
-        activation=SquareActivation(),
+        irrep_activation=SquareActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
         update=ResidualUpdate(),
@@ -184,7 +184,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             initial_weight=0.5,
         ),
         fourier=FourierTransform(partitions=(partition,)),
-        activation=GatedNormActivation(gate=torch.nn.Sigmoid()),
+        irrep_activation=GatedNormActivation(gate=torch.nn.Sigmoid()),
         path_aggregation=PathAggregation(
             max_order=1,
             channels=2,

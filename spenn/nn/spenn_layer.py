@@ -26,8 +26,6 @@ class SpENNLayer(EquivariantMap):
     feature_envelope, update_envelope : torch.nn.Module or None, optional
         Optional context-dependent real-state envelopes applied before mixing
         and before the residual update, respectively.
-    activation : torch.nn.Module or None, optional
-        Backward-compatible alias for ``irrep_activation``.
     bilinear_mixing : bool, optional
         If ``True``, call ``mixing(x, x)``. Otherwise call ``mixing(x)``.
     update_norm : torch.nn.Module or None, optional
@@ -49,20 +47,17 @@ class SpENNLayer(EquivariantMap):
         feature_envelope: nn.Module | None = None,
         update_activation: nn.Module | None = None,
         update_envelope: nn.Module | None = None,
-        activation: nn.Module | None = None,
         bilinear_mixing: bool = False,
         update_norm: nn.Module | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        if activation is not None and irrep_activation is not None:
-            raise ValueError("Specify only one of activation or irrep_activation")
         if update_norm is not None and update_activation is not None:
             raise ValueError("Specify only one of update_norm or update_activation")
         self.mixing = mixing
         self.fourier = fourier
-        self.irrep_activation = irrep_activation or activation or GatedNormActivation(gate=nn.SiLU())
-        # Compatibility aliases for older configs/tests and legacy feature-normalization wiring.
+        self.irrep_activation = irrep_activation or GatedNormActivation(gate=nn.SiLU())
+        # Compatibility alias for old attribute reads.
         self.activation = self.irrep_activation
         self.path_aggregation = path_aggregation
         self.inverse_fourier = inverse_fourier
