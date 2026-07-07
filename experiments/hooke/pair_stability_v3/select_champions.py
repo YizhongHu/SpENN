@@ -10,8 +10,7 @@ Also writes ``task_lineage.jsonl``, a toolkit sidecar mapping each champion
 row to the validation (and train) task ids of its contributing run ids,
 extending the chain from ``03_collect``'s own sidecar (see
 ``experiments.toolkit.lineage``). This is additive: ``champions.csv`` and
-``selection_report.json`` are unchanged and still byte-compared against
-``pair_stability_v2`` by ``parity.py``.
+``selection_report.json`` keep their stable public schema.
 
 The generic, layout-agnostic selection engine (metric ladders, single-metric
 selection, spec/reference normalization, group-by and seed aggregation) lives in

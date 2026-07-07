@@ -1,9 +1,14 @@
 # Hooke pair-stability V3 study
 
-This package is a resource-reduced copy of
-`experiments/hooke/pair_stability_v2`. It keeps the same stage layout, scan
-axes, validation/final-evaluation task suites, plots, reports, and metric names,
-but uses a smaller default grid and shorter run budgets for restructuring work.
+This is the current runnable pair-stability study and the behavioral baseline
+for future restructuring work (which continues in a v4 study, compared back
+against this one). It descends from `experiments/hooke/pair_stability_v2`
+(retired as a comparison target after end-to-end parity was confirmed) with
+the same stage layout, scan axes, validation/final-evaluation task suites,
+plots, reports, and metric names, plus profiling instrumentation
+(`train/perf` phase timing, `eval/perf` component timing, `runtime` peak
+memory) and compact cost tables (`cost_by_run.csv`, `cost_by_axis.csv`,
+`cost_by_task.csv`), on a smaller default grid with shorter run budgets.
 
 The default grid is:
 

@@ -1,5 +1,16 @@
 """Pair-stability v2/v3 parity helpers.
 
+.. deprecated:: 0.1.1
+    The ``pair_stability_v2`` comparison target is retired. The final v2
+    end-to-end confirm passed on the pre-profiling surface (fresh v3
+    ``parity-v2v3-20260706-114955`` vs the frozen v2 reference
+    ``parity-v2v3-20260705-220843``); the profiling metrics wired in
+    afterwards intentionally diverge from v2, so ``compare`` against the
+    frozen v2 reference now fails on new ``summary.csv`` columns by design.
+    Do not run the v2 compare. The harness is kept so its fixed-reference
+    comparison machinery can be repurposed as the v4-vs-v3 parity check when
+    the v4 restructuring study starts; until then it has no valid target.
+
 The parity workflow is intentionally explicit because it submits real scheduler
 jobs. It compares existing completed result trees after normalizing path,
 study-name, and scheduler-id fields that are expected to differ.
@@ -9,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import warnings
 import io
 import json
 import math
@@ -573,6 +585,13 @@ def _is_volatile_metric_identity_field(key: str, volatile_metrics: set[str]) -> 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run parity helper commands."""
 
+    warnings.warn(
+        "parity.py is deprecated: the pair_stability_v2 comparison target is "
+        "retired (profiling metrics diverge from the frozen v2 reference by "
+        "design); the harness is kept to be repurposed for v4-vs-v3 parity.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--attempt-id", default=DEFAULT_ATTEMPT_ID)
     parser.add_argument(
