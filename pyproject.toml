@@ -98,6 +98,8 @@ markers = [
 ]
 addopts = "--typeguard-packages=spenn"
 norecursedirs = [
+  ".agent-scratch",
+  ".agent-worktrees",
   "experiments/hooke/pair_validation",
   "experiments/hooke/pair_stability_small",
 ]
