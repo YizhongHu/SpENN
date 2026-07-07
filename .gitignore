@@ -17,3 +17,5 @@ docs/api/generated/
 experiments/*/*/plots/
 experiments/hooke/pair_validation/
 experiments/*/*/results/
+.agent-scratch/
+.agent-worktrees/
