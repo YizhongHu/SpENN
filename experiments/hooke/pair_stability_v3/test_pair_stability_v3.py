@@ -1437,3 +1437,51 @@ def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) 
             results_root=results_root,
             final_run_id=final_run_id,
         )
+
+
+def _callback_entries(config_name: str) -> list[dict[str, Any]]:
+    config = OmegaConf.to_container(OmegaConf.load(CONFIGS / config_name), resolve=False)
+    assert isinstance(config, dict)
+    callbacks = config.get("callbacks")
+    assert isinstance(callbacks, list)
+    return [entry for entry in callbacks if isinstance(entry, dict)]
+
+
+def _callback_targets(entries: list[dict[str, Any]]) -> set[str]:
+    return {str(entry.get("_target_", "")) for entry in entries}
+
+
+def test_train_config_wires_profiling_callbacks() -> None:
+    entries = _callback_entries("pair_stability.yaml")
+    targets = _callback_targets(entries)
+
+    assert "spenn.callback.TrainPhaseTiming" in targets
+    assert "spenn.callback.ResourceUsage" in targets
+    phase_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.TrainPhaseTiming")
+    assert phase_timing["triggers"] == ["train_phase_start", "train_phase_end", "step_end"]
+
+
+def test_validation_config_wires_profiling_callbacks() -> None:
+    entries = _callback_entries("pair_validation.yaml")
+    targets = _callback_targets(entries)
+
+    assert "spenn.callback.EvaluationComponentTiming" in targets
+    assert "spenn.callback.ResourceUsage" in targets
+    diagnostic_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.DiagnosticTiming")
+    assert diagnostic_timing["triggers"] == ["task_start", "task_end", "task_failed"], (
+        "DiagnosticTiming must subscribe to the composable evaluator's task_* events; "
+        "the diagnostic_* triggers never fire on this path"
+    )
+    component_timing = next(
+        entry for entry in entries if entry["_target_"] == "spenn.callback.EvaluationComponentTiming"
+    )
+    assert set(component_timing["triggers"]) == {
+        "generator_start",
+        "generator_end",
+        "calculator_start",
+        "calculator_end",
+        "summary_start",
+        "summary_end",
+        "task_end",
+        "task_failed",
+    }

@@ -839,8 +839,23 @@ callbacks:
     triggers: [evaluate_start, evaluate_end, exception]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.DiagnosticTiming
-    triggers: [diagnostic_start, diagnostic_end, diagnostic_failed]
+    triggers: [task_start, task_end, task_failed]
     cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.EvaluationComponentTiming
+    triggers:
+      [
+        generator_start,
+        generator_end,
+        calculator_start,
+        calculator_end,
+        summary_start,
+        summary_end,
+        task_end,
+        task_failed,
+      ]
+    cuda_synchronize: ${timing.cuda_synchronize}
+  - _target_: spenn.callback.ResourceUsage
+    triggers: [run_start, run_end, exception, run_failed]
   - _target_: spenn.callback.ArtifactIndex
   - _target_: spenn.callback.FailureLog
 
