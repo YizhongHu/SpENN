@@ -944,11 +944,13 @@ def _resource_row(context: dict[str, Any]) -> dict[str, Any]:
     base = _base_row(context)
     metadata = context["train_metadata"]
     runtime = metadata.get("runtime", {}) if isinstance(metadata.get("runtime"), dict) else {}
+    train_metric_map = _metric_map(context["train_metrics"])
+    peak_memory = train_metric_map.get("runtime/peak_memory_mb", metadata.get("peak_memory_mb", ""))
     return {
         **base,
         "train_wall_time_sec": _format_number(_duration_from_status(context["train_status_json"])),
         "eval_wall_time_sec": _format_number(_duration_from_status(context["eval_status_json"])),
-        "peak_memory_mb": metadata.get("peak_memory_mb", ""),
+        "peak_memory_mb": peak_memory,
         "device_type": runtime.get("device", metadata.get("device", "")),
     }
 
