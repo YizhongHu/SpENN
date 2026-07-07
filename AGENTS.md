@@ -184,6 +184,8 @@ It is also responsible for running smoke runs before full runs are run in `SpENN
 
 `dev` branch will be periodically merged into `main` by the user only.
 
+`dev` is persistent, `dev` fast-forwards to new main after every merge.
+
 ### Require PR for changes
 
 When directed to make changes to the repo, agent should do it as a branch from the
