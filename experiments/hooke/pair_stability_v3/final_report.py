@@ -72,10 +72,9 @@ FEATURE_TRACE_METRICS = (
     "nonfinite_count",
 )
 FEATURE_TRACE_EXCLUDED_LAYERS = {
-    "feature_normalization.norm",
-    "feature_normalize.norm",
-    "layers.0.update_norm",
-    "update_norm",
+    "embedding.embedding_normalization",
+    "layers.0.feature_normalization",
+    "layers.0.update_normalization",
 }
 ENERGY_COMPONENT_QUANTITIES = (
     ("kinetic", "kinetic_mean"),

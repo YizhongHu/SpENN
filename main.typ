@@ -781,7 +781,15 @@ $
 
 This keeps smooth long-range factors and short-range cusp enforcement independent from the determinant/Pfaffian/Specht readout and preserves the antisymmetry of $psi_theta$.
 
-`nn.SpENNWaveFunction` takes one required `nn.Envelope`. Composite envelopes use `nn.AdditiveEnvelope`, which adds the scalar outputs of its component envelopes. For the Hooke pair config, the composite envelope is the sum of `nn.HarmonicConfinement` and `nn.ElectronElectronCusp`.
+`nn.SpENNWaveFunction` takes one required log-amplitude `nn.Envelope`.
+Composite envelopes use `nn.AdditiveEnvelope`, which adds the scalar outputs of
+its component envelopes. For the Hooke pair config, the composite envelope is
+the sum of `nn.HarmonicConfinement` and `nn.ElectronElectronCusp`.
+
+This log-amplitude envelope is distinct from real-state envelopes such as
+`nn.RealCoordinateEnvelope`. Real-state envelopes multiply intermediate
+`RealFeature` or `RealUpdate` blocks inside `nn.Embedding` or `nn.SpENNLayer`;
+the log-amplitude `nn.Envelope` adds only to the final `log abs(psi)`.
 
 For a harmonically confined system,
 
@@ -935,6 +943,7 @@ Implemented in `nn.SpENNWaveFunction`.
 
 + Input: particle positions $bv_i = (br_i, s_i)$ 
 + Embedding (`nn.Embedding`), learnable: $phi^(m): bv_I mapsto bx_I^(0, c, m)$
+  + Optional embedding normalization, then optional embedding real-state envelope, both owned by `nn.Embedding`.
 + SpENN Stack (`nn.SpeNNStack`)
   + SpENN layer 1 (`nn.SpENNLayer`)
     + mixing in real space (`nn.EquivariantMixing`)
@@ -953,9 +962,11 @@ Implemented in `nn.SpENNWaveFunction`.
     + Project back into real space with `reps.InverseFourierTransform`:
       $ bu^(1, c)_(I)
       = sum_(lambda tack m) P^(-1) hat(bu)^(1, c, lambda)_(I) $
+    + Optional update normalization, then optional update real-state envelope, both owned by `nn.SpENNLayer`.
     + Feature update (`nn.update`)
       $ bx^1 = "Update"(bx^0, bu^1) $
       most commonly with `nn.update.ResidualUpdate`.
+    + Optional end-of-layer feature normalization, then optional feature real-state envelope, both owned by `nn.SpENNLayer`.
   + SpENN layer 2
     $
     bx^2 = "SpENNLayer"(bx^1).
