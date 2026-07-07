@@ -27,10 +27,6 @@ class Evaluate(Runner):
     evaluator : Evaluator
         Composable task evaluator. It owns generators, calculators, summaries,
         and task failure policy.
-    construction_seed : int or None, optional
-        Legacy compatibility shim. Accepted for old configs but not used for
-        process-global seeding; use explicit initializer objects on randomized
-        model components instead.
     """
 
     def __init__(
@@ -38,14 +34,12 @@ class Evaluate(Runner):
         model,
         load=None,
         evaluator: Evaluator | None = None,
-        construction_seed: int | None = None,
     ) -> None:
         self.model = model
         self.load = load
         if evaluator is None:
             raise ValueError("Evaluate requires an evaluator")
         self.evaluator = evaluator
-        self.construction_seed = None if construction_seed is None else int(construction_seed)
 
     def run(self, context: RunContext) -> RunResult:
         """Prepare the model, delegate evaluation, and log task metrics."""

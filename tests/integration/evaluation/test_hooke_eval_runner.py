@@ -44,7 +44,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
 
 def test_evaluate_constructor_uses_evaluator_boundary() -> None:
     params = set(inspect.signature(Evaluate.__init__).parameters)
-    assert params == {"self", "model", "load", "evaluator", "construction_seed"}
+    assert params == {"self", "model", "load", "evaluator"}
 
 
 def test_evaluate_requires_evaluator() -> None:
@@ -281,7 +281,26 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
     result = runner.run(context)
 
     assert result.status == "completed"
-    assert recorder.events == ["run_start", "evaluate_start", "task_start", "task_end", "evaluate_end", "run_end"]
+    assert recorder.events == [
+        "run_start",
+        "evaluate_start",
+        "task_start",
+        "generator_start",
+        "generator_end",
+        "calculator_start",
+        "calculator_end",
+        "calculator_start",
+        "calculator_end",
+        "summary_start",
+        "summary_end",
+        "summary_start",
+        "summary_end",
+        "summary_start",
+        "summary_end",
+        "task_end",
+        "evaluate_end",
+        "run_end",
+    ]
     energy_records = [m for ns, m in context.records if ns == "eval/energy"]
     assert energy_records
     assert "local_energy_mean" in energy_records[-1]

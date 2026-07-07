@@ -276,52 +276,10 @@ def _summarize_values(prefix: str, values: torch.Tensor) -> dict[str, Any]:
     }
 
 
-def reference_energy_metrics(
-    *,
-    energy: float,
-    reference_energy: float,
-) -> dict[str, float]:
-    """Compare a mean energy against a known reference energy.
-
-    .. deprecated::
-        Transitional. Reference/exact-energy comparison belongs to the
-        evaluation-side diagnostics introduced in PR6 (``EnergyEvaluation``),
-        not to this physics module. This helper is kept only so the Hooke eval
-        smoke path keeps working until then, and is scheduled for removal when
-        PR6 diagnostics land. ``VMCTrainer`` must never call it: training
-        metrics stay VMC-native, and reference comparison stays in evaluation.
-
-    Kept separate from `summarize_local_energy` so the trainer and energy
-    summary never depend on benchmark reference values; reference comparison is
-    an explicit run/diagnostics choice.
-
-    Parameters
-    ----------
-    energy : float
-        Estimated mean energy.
-    reference_energy : float
-        Known reference energy to compare against.
-
-    Returns
-    -------
-    dict
-        ``reference_energy``, ``energy_error`` (mean minus reference), and
-        ``energy_abs_error``.
-    """
-
-    error = float(energy) - float(reference_energy)
-    return {
-        "reference_energy": float(reference_energy),
-        "energy_error": error,
-        "energy_abs_error": abs(error),
-    }
-
-
 __all__ = [
     "HamiltonianTerm",
     "LocalEnergyResult",
     "local_energy",
     "normalize_hamiltonian_terms",
-    "reference_energy_metrics",
     "summarize_local_energy",
 ]

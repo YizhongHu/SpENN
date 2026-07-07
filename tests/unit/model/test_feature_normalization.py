@@ -41,7 +41,7 @@ def _model_config(mode: str) -> dict:
             "initial_weight": 0.5,
         },
         "fourier": {"_target_": "spenn.reps.FourierTransform"},
-        "activation": {"_target_": "spenn.nn.GatedNormActivation", "gate": {"_target_": "torch.nn.SiLU"}},
+        "irrep_activation": {"_target_": "spenn.nn.GatedNormActivation", "gate": {"_target_": "torch.nn.SiLU"}},
         "path_aggregation": {
             "_target_": "spenn.nn.PathAggregation",
             "max_order": 2,
