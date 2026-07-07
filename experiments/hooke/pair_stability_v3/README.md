@@ -58,13 +58,19 @@ run_parameters:
 the explicit layer controls:
 
 ```text
-embedding_activation
-feature_activation
+embedding_normalization
+embedding_envelope
+feature_normalization
 feature_envelope
 irrep_activation
-update_activation
+update_normalization
 update_envelope
 ```
+
+When both a normalization and an envelope are configured at the same site, the
+normalization runs first and the real-state envelope runs second. Embedding
+controls are owned by `nn.Embedding`; update and feature controls are owned by
+`nn.SpENNLayer`.
 
 The output Hooke Gaussian envelope and electron-electron cusp are common across
 all variants.
