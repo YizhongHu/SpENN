@@ -105,40 +105,43 @@ choices:
 
   mechanism:
     baseline_silu:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [baseline]
 
     update_rms:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation:
-        _target_: spenn.nn.RealRMSGate
+      update_normalization:
+        _target_: spenn.nn.RMSNorm
         eps: 1.0e-8
       update_envelope: null
       tags: [update_scale, rms]
 
     update_gaussian_envelope:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation: null
+      update_normalization: null
       update_envelope:
         _target_: spenn.nn.RealCoordinateEnvelope
         envelope:
@@ -147,36 +150,39 @@ choices:
       tags: [update_scale, coordinate_envelope]
 
     update_gaussian_norm:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation:
+      update_normalization:
         _target_: spenn.nn.RealGaussianNormGate
         sigma: 1.0
       update_envelope: null
       tags: [update_scale, norm_gate]
 
     feature_rms:
-      embedding_activation: null
-      feature_activation:
-        _target_: spenn.nn.RealRMSGate
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization:
+        _target_: spenn.nn.RMSNorm
         eps: 1.0e-8
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [feature_scale, rms]
 
     feature_gaussian_envelope:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope:
         _target_: spenn.nn.RealCoordinateEnvelope
         envelope:
@@ -186,13 +192,14 @@ choices:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [feature_scale, coordinate_envelope]
 
     feature_gaussian_norm:
-      embedding_activation: null
-      feature_activation:
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization:
         _target_: spenn.nn.RealGaussianNormGate
         sigma: 1.0
       feature_envelope: null
@@ -200,44 +207,47 @@ choices:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: torch.nn.SiLU
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [feature_scale, norm_gate]
 
     activation_sigmoid:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: spenn.nn.SigmoidGate
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [irrep_activation]
 
     activation_tanh:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: spenn.nn.TanhGate
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [irrep_activation]
 
     activation_gaussian:
-      embedding_activation: null
-      feature_activation: null
+      embedding_normalization: null
+      embedding_envelope: null
+      feature_normalization: null
       feature_envelope: null
       irrep_activation:
         _target_: spenn.nn.GatedNormActivation
         gate:
           _target_: spenn.nn.GaussianDecayGate
           sigma: 1.0
-      update_activation: null
+      update_normalization: null
       update_envelope: null
       tags: [irrep_activation, gaussian]
 
@@ -350,7 +360,8 @@ model:
     include_spins: false
     # Input width is whatever the selected basis emits.
     in_features: ${spenn.basis_feature_dim:${model.basis}}
-  embedding_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.embedding_activation}
+    embedding_normalization: ${choices.mechanism.${run_parameters.mechanism_slot}.embedding_normalization}
+    embedding_envelope: ${choices.mechanism.${run_parameters.mechanism_slot}.embedding_envelope}
 
   layers:
     - _target_: spenn.nn.SpENNLayer
@@ -363,7 +374,7 @@ model:
         initial_weight: ${model_params.mixing_initial_weight}
       fourier:
         _target_: spenn.reps.FourierTransform
-      feature_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.feature_activation}
+      feature_normalization: ${choices.mechanism.${run_parameters.mechanism_slot}.feature_normalization}
       feature_envelope: ${choices.mechanism.${run_parameters.mechanism_slot}.feature_envelope}
       irrep_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.irrep_activation}
       path_aggregation:
@@ -375,7 +386,7 @@ model:
         _target_: spenn.reps.InverseFourierTransform
       update:
         _target_: spenn.nn.ResidualUpdate
-      update_activation: ${choices.mechanism.${run_parameters.mechanism_slot}.update_activation}
+      update_normalization: ${choices.mechanism.${run_parameters.mechanism_slot}.update_normalization}
       update_envelope: ${choices.mechanism.${run_parameters.mechanism_slot}.update_envelope}
 
   # Common Gaussian output prior plus the constant analytic electron-electron
