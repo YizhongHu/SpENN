@@ -8,6 +8,7 @@ from spenn.data.batch import ElectronBatch
 from spenn.data.indices import no_repeated_particle_mask, tuple_particle_inputs
 from spenn.data.real import RealFeature, zero_block
 from spenn.nn.basis import ElectronBasisFeatures
+from spenn.nn.context import SpENNForwardContext
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.initialization import TorchInitializer
@@ -62,6 +63,11 @@ class Embedding(EquivariantMap):
     initializer : TorchInitializer or None, optional
         Explicit side-effect-free initializer for generated order MLPs. Supplied
         custom ``mlps`` are already constructed and are not modified.
+    embedding_normalization : torch.nn.Module or None, optional
+        Optional normalization applied to the embedded :class:`RealFeature`.
+    embedding_envelope : torch.nn.Module or None, optional
+        Optional context-dependent real-state envelope applied after
+        ``embedding_normalization``.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -81,6 +87,8 @@ class Embedding(EquivariantMap):
         aux_feature_channels: Mapping[str, int] | None = None,
         in_features: int | None = None,
         initializer: TorchInitializer | None = None,
+        embedding_envelope: nn.Module | None = None,
+        embedding_normalization: nn.Module | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -108,6 +116,8 @@ class Embedding(EquivariantMap):
         else:
             self.particle_input_channels = derived_channels
         self.in_features = None if in_features is None else int(in_features)
+        self.embedding_envelope = embedding_envelope
+        self.embedding_normalization = embedding_normalization
         self.order_mlps = nn.ModuleDict()
         supplied = {} if mlps is None else {int(order): module for order, module in mlps.items()}
         for order in range(1, self.max_order + 1):
@@ -128,7 +138,11 @@ class Embedding(EquivariantMap):
         if unknown:
             raise ValueError(f"mlps contains orders outside [1, {self.max_order}]: {unknown}")
 
-    def forward_impl(self, inputs: ElectronBatch | ElectronBasisFeatures) -> RealFeature:
+    def forward_impl(
+        self,
+        inputs: ElectronBatch | ElectronBasisFeatures,
+        context: SpENNForwardContext | None = None,
+    ) -> RealFeature:
         """Embed electron inputs as persistent real tuple features.
 
         Accepts either a raw :class:`ElectronBatch` (the per-particle vector is
@@ -168,7 +182,14 @@ class Embedding(EquivariantMap):
                 *((n_electrons,) * order),
             ).to(dtype=block.dtype)
             blocks.append(block)
-        return RealFeature(blocks)
+        features = RealFeature(blocks)
+        if self.embedding_normalization is not None:
+            features = self.embedding_normalization(features)
+        if self.embedding_envelope is not None:
+            if context is None:
+                raise ValueError("embedding_envelope requires a SpENNForwardContext")
+            features = self.embedding_envelope(features, context)
+        return features
 
     def _out_channels(self, order: int) -> int:
         if isinstance(self.out_channels, dict):

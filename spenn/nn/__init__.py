@@ -21,7 +21,7 @@ from spenn.nn.envelope import (
 from spenn.nn.equivariant_mixing import EquivariantMixing
 from spenn.nn.initialization import SeededLinear, TorchInitializer
 from spenn.nn.mlp import MLP
-from spenn.nn.normalization import FeatureNormalization, IrrepRMSNorm
+from spenn.nn.normalization import RMSNorm
 from spenn.nn.path_aggregation import PathAggregation
 from spenn.nn.real_gates import RealGaussianNormGate, RealNormGate, RealRMSGate
 from spenn.nn.scalar_gates import GaussianDecayGate, RMSInverseGate, ScalarGate, SigmoidGate, TanhGate
@@ -39,7 +39,6 @@ __all__ = [
     "Embedding",
     "Envelope",
     "EquivariantMixing",
-    "FeatureNormalization",
     "GaussianActivation",
     "GaussianCoordinateEnvelope",
     "GaussianDecayGate",
@@ -48,11 +47,11 @@ __all__ = [
     "HookeGaussianEnvelope",
     "HookeHermiteBasis",
     "HookeOrbitalBasis",
-    "IrrepRMSNorm",
     "MLP",
     "PathAggregation",
     "RawCoordinateBasis",
     "RMSInverseGate",
+    "RMSNorm",
     "RealCoordinateEnvelope",
     "RealGaussianNormGate",
     "RealNormGate",

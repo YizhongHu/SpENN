@@ -7,7 +7,10 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch
-from spenn.nn import Embedding
+from spenn.data.permutation import Permutation
+from spenn.data.real import RealFeature
+from spenn.equivariance import EquivariantMap
+from spenn.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, RealCoordinateEnvelope, SpENNForwardContext
 
 
 class SliceTupleInputs(nn.Module):
@@ -17,6 +20,29 @@ class SliceTupleInputs(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return inputs[..., : self.channels]
+
+
+class RecordingRealMap(EquivariantMap):
+    def __init__(self, label: str, calls: list[str]) -> None:
+        super().__init__()
+        self.label = label
+        self.calls = calls
+
+    def forward_impl(self, x: RealFeature) -> RealFeature:
+        self.calls.append(self.label)
+        return x
+
+
+class RecordingRealEnvelope(EquivariantMap):
+    def __init__(self, label: str, calls: list[str]) -> None:
+        super().__init__()
+        self.label = label
+        self.calls = calls
+
+    def forward_impl(self, x: RealFeature, context: SpENNForwardContext) -> RealFeature:
+        assert context.batch is not None
+        self.calls.append(self.label)
+        return x
 
 
 def test_embedding_feeds_raw_coordinate_tuples_to_order_mlps() -> None:
@@ -50,6 +76,90 @@ def test_embedding_feeds_raw_coordinate_tuples_to_order_mlps() -> None:
     )
     torch.testing.assert_close(feature.blocks[2][:, :, 0, 0], torch.zeros(1, 4, dtype=torch.float64))
     torch.testing.assert_close(feature.blocks[2][:, :, 1, 1], torch.zeros(1, 4, dtype=torch.float64))
+
+
+def test_embedding_default_controls_are_noop() -> None:
+    batch = ElectronBatch(positions=torch.tensor([[[1.0, 0.0], [0.0, 2.0]]], dtype=torch.float64))
+    kwargs = {
+        "max_order": 2,
+        "spatial_dim": 2,
+        "mlps": {
+            1: SliceTupleInputs(2),
+            2: SliceTupleInputs(4),
+        },
+        "include_spins": False,
+    }
+    base = Embedding(**kwargs)
+    explicit_none = Embedding(
+        **kwargs,
+        embedding_envelope=None,
+        embedding_normalization=None,
+    )
+
+    baseline = base(batch)
+    controlled = explicit_none(batch, context=SpENNForwardContext(batch=batch))
+
+    for left, right in zip(baseline.blocks, controlled.blocks):
+        torch.testing.assert_close(left, right)
+
+
+def test_embedding_applies_normalization_before_envelope() -> None:
+    calls: list[str] = []
+    batch = ElectronBatch(positions=torch.tensor([[[1.0, 0.0], [0.0, 2.0]]], dtype=torch.float64))
+    embedding = Embedding(
+        max_order=1,
+        spatial_dim=2,
+        mlps={1: SliceTupleInputs(2)},
+        include_spins=False,
+        embedding_normalization=RecordingRealMap("embedding_normalization", calls),
+        embedding_envelope=RecordingRealEnvelope("embedding_envelope", calls),
+    )
+
+    embedding(batch, context=SpENNForwardContext(batch=batch))
+
+    assert calls == ["embedding_normalization", "embedding_envelope"]
+
+
+def test_embedding_envelope_requires_context() -> None:
+    batch = ElectronBatch(positions=torch.tensor([[[1.0, 0.0], [0.0, 2.0]]], dtype=torch.float64))
+    embedding = Embedding(
+        max_order=1,
+        spatial_dim=2,
+        mlps={1: SliceTupleInputs(2)},
+        include_spins=False,
+        embedding_envelope=RecordingRealEnvelope("embedding_envelope", []),
+    )
+
+    with pytest.raises(ValueError, match="embedding_envelope"):
+        embedding(batch)
+
+
+def test_embedding_controls_are_equivariant_with_context() -> None:
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[1.0, 0.0], [0.0, 2.0], [3.0, 1.0]]],
+            dtype=torch.float64,
+        )
+    )
+    permutation = Permutation((2, 0, 1))
+    embedding = Embedding(
+        max_order=2,
+        spatial_dim=2,
+        out_channels=3,
+        hidden_channels=5,
+        num_hidden_layers=1,
+        include_spins=False,
+        embedding_normalization=RMSNorm(eps=1.0e-8),
+        embedding_envelope=RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0)),
+    ).to(dtype=torch.float64)
+
+    output = embedding(batch, context=SpENNForwardContext(batch=batch))
+    permuted_batch = batch.permute(permutation)
+    lhs = embedding(permuted_batch, context=SpENNForwardContext(batch=permuted_batch))
+    rhs = output.permute(permutation)
+
+    close, comparison = lhs.compare(rhs)
+    assert close, comparison
 
 
 def test_embedding_particle_vectors_include_spins_and_aux_features() -> None:
