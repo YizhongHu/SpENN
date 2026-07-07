@@ -614,6 +614,18 @@ eval/perf/wall_time_sec
 diagnostics/energy/time_sec
 ```
 
+Recommended per-task evaluation component timing (from
+`EvaluationComponentTiming`, driven by the evaluator's
+`generator_start`/`generator_end`, `calculator_start`/`calculator_end`, and
+`summary_start`/`summary_end` events; logged as one `eval/perf/<task_name>`
+record at `task_end` or `task_failed`):
+
+```text
+eval/perf/<task_name>/generator_time_sec
+eval/perf/<task_name>/calculator/<calculator_name>_time_sec
+eval/perf/<task_name>/summary/<summary_name>_time_sec
+```
+
 CSV examples:
 
 ```csv
@@ -625,6 +637,8 @@ step,namespace,key,value
 1,train/perf,sampling_time_sec,0.301
 1,train/perf,local_energy_time_sec,0.412
 0,eval/perf,wall_time_sec,12.4
+0,eval/perf/energy,generator_time_sec,3.1
+0,eval/perf/energy,calculator/local_energy_time_sec,7.9
 0,diagnostics/energy,time_sec,11.8
 ```
 
