@@ -57,9 +57,19 @@ from experiments.toolkit import (  # noqa: E402
 )
 from experiments.toolkit.artifacts import (  # noqa: E402
     duration_from_status_file,
+    load_json_dict_if_present,
+    read_metrics_jsonl as read_metrics_rows,
     read_metrics_map,
     status_of,
     write_csv,
+)
+from experiments.toolkit.cost import (  # noqa: E402
+    COST_BY_AXIS_COLUMNS,
+    COST_BY_RUN_BASE_COLUMNS,
+    COST_BY_TASK_COLUMNS,
+    cost_by_axis_rows,
+    cost_by_run_row,
+    cost_by_task_rows,
 )
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
@@ -358,6 +368,70 @@ def _run_ids(results_root: Path, grid_manifest: dict[str, Any] | None, *, smoke:
     return [run_id for run_id, _attempt_id, _attempt_dir in _latest_validation_attempts(results_root, smoke=smoke)]
 
 
+def _run_device(attempt_dir: Path) -> str:
+    """Return the recorded runtime device for one run attempt."""
+
+    metadata = load_json_dict_if_present(attempt_dir / "metadata.json")
+    runtime = metadata.get("runtime", {}) if isinstance(metadata.get("runtime"), dict) else {}
+    return str(runtime.get("device", metadata.get("device", "")))
+
+
+def _cost_tables(
+    rows: Sequence[dict[str, Any]],
+    consumed: Sequence[dict[str, Any]],
+    *,
+    axis_metadata: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project validation and source-train run metrics into cost rows."""
+
+    run_axes = tuple(axis_metadata["run_axes"])
+    cost_rows: list[dict[str, Any]] = []
+    task_rows: list[dict[str, Any]] = []
+    for row, meta in zip(rows, consumed, strict=True):
+        attempt_dir = Path(meta["validation_attempt_dir"])
+        attempt_id = str(meta["validation_attempt_id"])
+        run_id = str(row["run_id"])
+        axes = {axis: row.get(axis, "") for axis in run_axes}
+        validation_metrics = read_metrics_rows(attempt_dir / "metrics.jsonl")
+        device = _run_device(attempt_dir)
+        cost_rows.append(
+            cost_by_run_row(
+                validation_metrics,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stage="validation",
+                status=str(row["status"]),
+                device_type=device,
+                axes=axes,
+            )
+        )
+        task_rows.extend(
+            cost_by_task_rows(
+                validation_metrics,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stage="validation",
+                device_type=device,
+            )
+        )
+        source_path = attempt_dir / "source_train_attempt.json"
+        source = read_json(source_path) if source_path.is_file() else {}
+        train_dir = _train_attempt_dir(source)
+        if train_dir is not None and train_dir.is_dir():
+            cost_rows.append(
+                cost_by_run_row(
+                    read_metrics_rows(train_dir / "metrics.jsonl"),
+                    run_id=run_id,
+                    attempt_id=str(source.get("train_attempt_id", "")),
+                    stage="train",
+                    status=status_of(train_dir),
+                    device_type=_run_device(train_dir),
+                    axes=axes,
+                )
+            )
+    return cost_rows, task_rows
+
+
 def collect(
     *,
     results_root: str | Path,
@@ -435,6 +509,17 @@ def collect(
 
     write_csv(attempt / "summary.csv", rows, columns)
     write_csv(attempt / "failures.csv", failures, columns)
+    cost_rows, cost_task_rows = _cost_tables(rows, consumed, axis_metadata=axis_metadata)
+    cost_axis_names = [*axis_metadata["major_axes"], *axis_metadata["minor_axes"]]
+    if axis_metadata["scan_seed_axis"]:
+        cost_axis_names.append(axis_metadata["scan_seed_axis"])
+    write_csv(attempt / "cost_by_run.csv", cost_rows, [*COST_BY_RUN_BASE_COLUMNS, *axis_columns])
+    write_csv(attempt / "cost_by_task.csv", cost_task_rows, COST_BY_TASK_COLUMNS)
+    write_csv(
+        attempt / "cost_by_axis.csv",
+        cost_by_axis_rows(cost_rows, axis_names=cost_axis_names),
+        COST_BY_AXIS_COLUMNS,
+    )
     write_json(
         attempt / "source_grid_attempt.json",
         {} if source_grid is None else source_grid.to_record(),

@@ -113,6 +113,9 @@ COMPACT_TABLES = (
     "training_curve_summary.csv",
     "resource_summary.csv",
     "failure_modes.csv",
+    "cost_by_run.csv",
+    "cost_by_axis.csv",
+    "cost_by_task.csv",
 )
 
 

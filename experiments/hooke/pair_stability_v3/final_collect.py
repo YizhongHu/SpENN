@@ -52,6 +52,14 @@ from experiments.toolkit.artifacts import (  # noqa: E402
     status_of as _status_of,
     write_csv as _write_csv,
 )
+from experiments.toolkit.cost import (  # noqa: E402
+    COST_BY_AXIS_COLUMNS,
+    COST_BY_RUN_BASE_COLUMNS,
+    COST_BY_TASK_COLUMNS,
+    cost_by_axis_rows,
+    cost_by_run_row,
+    cost_by_task_rows,
+)
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
@@ -74,6 +82,9 @@ COMPACT_TABLES = (
     "training_curve_summary.csv",
     "resource_summary.csv",
     "failure_modes.csv",
+    "cost_by_run.csv",
+    "cost_by_axis.csv",
+    "cost_by_task.csv",
 )
 
 RUN_INDEX_COLUMNS = [
@@ -955,6 +966,58 @@ def _resource_row(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _attempt_device(attempt_dir: Path) -> str:
+    """Return the recorded runtime device for one attempt directory."""
+
+    metadata = _load_json_if_present(Path(attempt_dir) / "metadata.json")
+    runtime = metadata.get("runtime", {}) if isinstance(metadata.get("runtime"), dict) else {}
+    return str(runtime.get("device", metadata.get("device", "")))
+
+
+def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project final-train and final-eval run metrics into cost rows."""
+
+    cost_rows: list[dict[str, Any]] = []
+    task_rows: list[dict[str, Any]] = []
+    for context in contexts:
+        axes = {key: value for key, value in _base_row(context).items() if key != "final_run_id"}
+        run_id = str(context["final_run_id"])
+        eval_attempt_id = str(context["attempt_id"])
+        eval_device = _attempt_device(context["attempt_dir"])
+        cost_rows.append(
+            cost_by_run_row(
+                context["train_metrics"],
+                run_id=run_id,
+                attempt_id=str(context["source_train"].get("final_train_attempt_id", "")),
+                stage="final_train",
+                status=str(context["train_status_json"].get("status", "")),
+                device_type=_attempt_device(context["train_attempt_dir"]),
+                axes=axes,
+            )
+        )
+        cost_rows.append(
+            cost_by_run_row(
+                context["eval_metrics"],
+                run_id=run_id,
+                attempt_id=eval_attempt_id,
+                stage="final_eval",
+                status=str(context["eval_status"]),
+                device_type=eval_device,
+                axes=axes,
+            )
+        )
+        task_rows.extend(
+            cost_by_task_rows(
+                context["eval_metrics"],
+                run_id=run_id,
+                attempt_id=eval_attempt_id,
+                stage="final_eval",
+                device_type=eval_device,
+            )
+        )
+    return cost_rows, task_rows
+
+
 def _architecture_summary(
     energy_rows: Sequence[dict[str, Any]],
     tail_rows: Sequence[dict[str, Any]],
@@ -1141,6 +1204,17 @@ def collect_final_outputs(
     training_rows = [row for context in contexts for row in _training_curve_summary(context)]
     resource_rows = [_resource_row(context) for context in contexts]
     failure_rows = [row for context in contexts for row in _failure_rows(context)]
+    cost_rows, cost_task_rows = _cost_tables_rows(contexts)
+    cost_axis_names = [column for column in (*major_axes, *minor_axes, "basis_class", "normalization", "winner_kind") if column]
+    cost_by_run_columns = [
+        *COST_BY_RUN_BASE_COLUMNS,
+        "source_champion_id",
+        *(column for column in axis_provenance_columns if column),
+        "basis_class",
+        "normalization",
+        "winner_kind",
+        "seed_index",
+    ]
     architecture_rows = _architecture_summary(
         energy_rows,
         tail_rows,
@@ -1165,6 +1239,9 @@ def collect_final_outputs(
         "training_curve_summary.csv": (training_rows, compact_columns["training_curve_summary.csv"]),
         "resource_summary.csv": (resource_rows, compact_columns["resource_summary.csv"]),
         "failure_modes.csv": (failure_rows, compact_columns["failure_modes.csv"]),
+        "cost_by_run.csv": (cost_rows, cost_by_run_columns),
+        "cost_by_axis.csv": (cost_by_axis_rows(cost_rows, axis_names=cost_axis_names), COST_BY_AXIS_COLUMNS),
+        "cost_by_task.csv": (cost_task_rows, COST_BY_TASK_COLUMNS),
     }
     for filename, (rows, columns) in table_specs.items():
         _write_csv(attempt / filename, rows, columns)
