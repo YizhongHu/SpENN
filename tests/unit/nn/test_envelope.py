@@ -13,7 +13,7 @@ from tests.helpers.equivariance import assert_equivariant_all
 
 
 class EmptyEncoder(nn.Module):
-    def forward(self, batch: ElectronBatch) -> RealFeature:
+    def forward(self, batch: ElectronBatch, *, context=None) -> RealFeature:
         return RealFeature()
 
 

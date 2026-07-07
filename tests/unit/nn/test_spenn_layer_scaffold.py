@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
+from spenn.data.batch import ElectronBatch
 from spenn.equivariance import EquivariantMap
 from spenn.data.irrep import IrrepFeature, IrrepInteraction
+from spenn.data.permutation import Permutation
 from spenn.data.partition import Partition
 from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
 from spenn.nn import (
     EquivariantMixing,
+    GaussianCoordinateEnvelope,
     GatedNormActivation,
     PathAggregation,
+    RMSNorm,
+    RealCoordinateEnvelope,
     ResidualUpdate,
     SpENNForwardContext,
     SpENNLayer,
@@ -100,7 +106,7 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
     layer = SpENNLayer(
         mixing=IdentityMixing(),
         fourier=IdentityFourier(),
-        activation=IdentityActivation(),
+        irrep_activation=IdentityActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
         update=ResidualUpdate(),
@@ -124,24 +130,81 @@ def test_spenn_layer_applies_optional_real_controls_in_declared_order() -> None:
     layer = SpENNLayer(
         mixing=TwoPathMixing(),
         fourier=IdentityFourier(),
-        feature_activation=RecordingRealMap("feature_activation", calls),
-        feature_envelope=RecordingRealEnvelope("feature_envelope", calls),
         irrep_activation=IdentityActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
-        update_activation=RecordingRealMap("update_activation", calls),
+        update_normalization=RecordingRealMap("update_normalization", calls),
         update_envelope=RecordingRealEnvelope("update_envelope", calls),
+        feature_normalization=RecordingRealMap("feature_normalization", calls),
+        feature_envelope=RecordingRealEnvelope("feature_envelope", calls),
         update=ResidualUpdate(),
     )
 
     layer(feature, context)
 
     assert calls == [
-        "feature_activation",
-        "feature_envelope",
-        "update_activation",
+        "update_normalization",
         "update_envelope",
+        "feature_normalization",
+        "feature_envelope",
     ]
+
+
+def test_spenn_layer_envelopes_require_context() -> None:
+    feature = RealFeature(
+        [
+            zero_block(dtype=torch.float64),
+            torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
+        ]
+    )
+    layer = SpENNLayer(
+        mixing=TwoPathMixing(),
+        fourier=IdentityFourier(),
+        irrep_activation=IdentityActivation(),
+        path_aggregation=SumPathAggregation(),
+        inverse_fourier=IdentityInverseFourier(),
+        update_envelope=RecordingRealEnvelope("update_envelope", []),
+        update=ResidualUpdate(),
+    )
+
+    with pytest.raises(ValueError, match="update_envelope"):
+        layer(feature)
+
+
+def test_spenn_layer_controls_are_equivariant_with_context() -> None:
+    feature = RealFeature(
+        [
+            zero_block(dtype=torch.float64),
+            torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
+        ]
+    )
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.0], [1.0], [2.0]]],
+            dtype=torch.float64,
+        )
+    )
+    permutation = Permutation((2, 0, 1))
+    layer = SpENNLayer(
+        mixing=TwoPathMixing(),
+        fourier=IdentityFourier(),
+        irrep_activation=IdentityActivation(),
+        path_aggregation=SumPathAggregation(),
+        inverse_fourier=IdentityInverseFourier(),
+        update_normalization=RMSNorm(eps=1.0e-8),
+        update_envelope=RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0)),
+        feature_normalization=RMSNorm(eps=1.0e-8),
+        feature_envelope=RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0)),
+        update=ResidualUpdate(),
+    )
+
+    output = layer(feature, SpENNForwardContext(batch=batch))
+    permuted_batch = batch.permute(permutation)
+    lhs = layer(feature.permute(permutation), SpENNForwardContext(batch=permuted_batch))
+    rhs = output.permute(permutation)
+
+    close, comparison = lhs.compare(rhs)
+    assert close, comparison
 
 
 def test_spenn_layer_applies_activation_before_path_aggregation() -> None:
@@ -154,7 +217,7 @@ def test_spenn_layer_applies_activation_before_path_aggregation() -> None:
     layer = SpENNLayer(
         mixing=TwoPathMixing(),
         fourier=IdentityFourier(),
-        activation=SquareActivation(),
+        irrep_activation=SquareActivation(),
         path_aggregation=SumPathAggregation(),
         inverse_fourier=IdentityInverseFourier(),
         update=ResidualUpdate(),
@@ -184,7 +247,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             initial_weight=0.5,
         ),
         fourier=FourierTransform(partitions=(partition,)),
-        activation=GatedNormActivation(gate=torch.nn.Sigmoid()),
+        irrep_activation=GatedNormActivation(gate=torch.nn.Sigmoid()),
         path_aggregation=PathAggregation(
             max_order=1,
             channels=2,

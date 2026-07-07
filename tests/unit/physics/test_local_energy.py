@@ -14,7 +14,6 @@ from spenn.physics.hamiltonian import (
     LocalEnergyResult,
     local_energy,
     normalize_hamiltonian_terms,
-    reference_energy_metrics,
     summarize_local_energy,
 )
 from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
@@ -539,21 +538,6 @@ def test_summarize_local_energy_is_reference_free() -> None:
     assert "reference_energy" not in metrics
     assert "energy_error" not in metrics
     assert "energy_abs_error" not in metrics
-
-
-def test_reference_energy_metrics_computes_signed_and_absolute_error() -> None:
-    metrics = reference_energy_metrics(energy=2.5, reference_energy=2.0)
-
-    assert metrics["reference_energy"] == 2.0
-    assert metrics["energy_error"] == pytest.approx(0.5)
-    assert metrics["energy_abs_error"] == pytest.approx(0.5)
-
-
-def test_reference_energy_metrics_absolute_error_is_nonnegative() -> None:
-    metrics = reference_energy_metrics(energy=1.5, reference_energy=2.0)
-
-    assert metrics["energy_error"] == pytest.approx(-0.5)
-    assert metrics["energy_abs_error"] == pytest.approx(0.5)
 
 
 def test_summarize_local_energy_result_with_finite_terms() -> None:

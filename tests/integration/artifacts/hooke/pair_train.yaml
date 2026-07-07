@@ -48,7 +48,7 @@ model:
       initial_weight: 0.5
     fourier:
       _target_: spenn.reps.FourierTransform
-    activation:
+    irrep_activation:
       _target_: spenn.nn.GatedNormActivation
       gate:
         _target_: torch.nn.SiLU

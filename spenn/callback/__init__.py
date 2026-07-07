@@ -54,10 +54,6 @@ def __getattr__(name: str) -> object:
         from .timing import TrainStepTiming
 
         return TrainStepTiming
-    if name == "Validation":
-        from .validation import Validation
-
-        return Validation
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -81,6 +77,5 @@ __all__ = [
     "Status",
     "TrainPhaseTiming",
     "TrainStepTiming",
-    "Validation",
     "configure_terminal_logging",
 ]

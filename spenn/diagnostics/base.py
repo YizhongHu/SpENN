@@ -64,8 +64,8 @@ class Diagnostic(Protocol):
 def validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnostic, ...]:
     """Validate configured diagnostics without invoking them.
 
-    Used by every phase that runs diagnostics (`Evaluate`, the `Validation`
-    callback) so misconfigured diagnostics fail at construction time.
+    Used by every phase that runs diagnostics so misconfigured diagnostics fail
+    at construction time.
     """
 
     if diagnostics is None:
@@ -149,4 +149,3 @@ def _validate_json_scalar(diagnostic_name: str, key: str, value: object) -> None
         f"diagnostic {diagnostic_name!r} metric {key!r} must be a JSON scalar, "
         f"got {type(value).__name__}"
     )
-

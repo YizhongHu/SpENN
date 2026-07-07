@@ -162,8 +162,9 @@ For this project, correctness is more important than breadth. Prefer small chang
 
 Avoid large PRs that change multiple things at the same time.
 
-
 ## Branches
+
+### Sectioning
 
 Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
@@ -173,6 +174,8 @@ Agents must not push to branches other than these mentioned above, such as `main
 `hooke` and `experiment` are retired intermediate integration branches — do not open new
 PRs against them. 
 
+### `main` and `dev`
+
 **Ownership split between SpENN and SpENN-dev:** 
 `SpENN/` is the production directory with experiments run. It stays on the `main` branch and does
 not commit to remote. 
@@ -180,6 +183,13 @@ not commit to remote.
 It is also responsible for running smoke runs before full runs are run in `SpENN/`.
 
 `dev` branch will be periodically merged into `main` by the user only.
+
+`dev` is persistent, `dev` fast-forwards to new main after every merge.
+
+### Require PR for changes
+
+When directed to make changes to the repo, agent should do it as a branch from the
+latest `dev` commit. The changes needs to be reviewed as a PR against `dev`.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
 
