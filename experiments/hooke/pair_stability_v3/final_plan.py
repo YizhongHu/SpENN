@@ -8,8 +8,8 @@ Also writes ``task_lineage.jsonl``, a toolkit sidecar mapping each final job
 to the validation/train task ids of its source champion, inherited from
 ``04_select``'s own sidecar (see ``experiments.toolkit.lineage``) -- the end
 of Phase 5's task-id chain, from ``00_grid`` down to a final replicate. This
-is additive: ``final_jobs.csv`` and ``manifest.json`` are unchanged and still
-byte-compared against ``pair_stability_v2`` by ``parity.py``.
+is additive: ``final_jobs.csv`` and ``manifest.json`` keep their stable
+public schema.
 """
 
 from __future__ import annotations

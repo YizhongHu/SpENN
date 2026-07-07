@@ -2,20 +2,19 @@
 
 Fan-out stages (e.g. ``02_validation``) assign each row a deterministic
 task id (see :func:`specs.task_id_from_parts`). Aggregation stages downstream
-(collect, select, final_plan, ...) keep their existing outputs unchanged --
-those are byte-compared against ``pair_stability_v2`` by ``parity.py``, which
-has no toolkit integration and can never grow a new column or key. Instead,
-each aggregation stage writes a ``task_lineage.jsonl`` sidecar next to its
-regular outputs, and reads the upstream stage's sidecar (when one exists) to
-extend the chain.
+(collect, select, final_plan, ...) keep their existing public outputs
+unchanged -- lineage never grows a new column or key in a stage table.
+Instead, each aggregation stage writes a ``task_lineage.jsonl`` sidecar next
+to its regular outputs, and reads the upstream stage's sidecar (when one
+exists) to extend the chain.
 
 A row's task id never requires a file read to compute: it is deterministic
 from ``(stage, run_id, attempt_id)``, all of which an aggregation stage
 already holds. :func:`stage_plan_task_ids` and :func:`synthesized_task_id`
 verify that synthesized id against the upstream stage's real ``tasks.jsonl``
 whenever one exists, to catch synthesis bugs; the check is best-effort
-because v2/v3 parity runs point collect at reused ``pair_stability_v2``
-validation data that has no ``stage_plans/`` directory at all.
+because collect may point at reused or older validation data that predates
+stage plans and has no ``stage_plans/`` directory at all.
 """
 
 from __future__ import annotations

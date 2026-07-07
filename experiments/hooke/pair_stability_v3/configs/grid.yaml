@@ -1,10 +1,10 @@
 # =============================================================================
-# Hooke pair-stability V2 smoke grid
+# Hooke pair-stability V3 grid
 # =============================================================================
 #
-# Reduced-scale companion to grid.yaml for end-to-end parity checks against
-# pair_stability_v3, run through the normal (non-``--smoke``) pipeline so it
-# exercises the same code path as a real run. It is not the ``--smoke``/
+# Reduced-scale scan used as this study's default grid, run through the
+# normal (non-``--smoke``) pipeline so it exercises the same code path as a
+# real run. It is not the ``--smoke``/
 # ``smoke.yaml`` mechanism (job-count truncation for a quick scheduler check,
 # gated behind ``train.py --smoke``) -- that stays untouched.
 #
@@ -190,6 +190,6 @@ champion_reference_metrics:
     metric: eval/readout_trace_stability/condition_number_q95
 
 # Final planning keeps independent final seeds while staying small enough for
-# end-to-end parity checks. The scan and champion-selection grid above remain
+# end-to-end pipeline checks. The scan and champion-selection grid above remain
 # unchanged apart from the reductions noted above.
 final_replicates: 2

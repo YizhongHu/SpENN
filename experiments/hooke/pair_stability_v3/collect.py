@@ -9,8 +9,8 @@ source pointers to the exact validation (and grid) attempts consumed.
 Also writes ``task_lineage.jsonl``, a toolkit sidecar mapping each collected
 run id to the deterministic validation (and, when resolved, train) task ids
 that produced it (see ``experiments.toolkit.lineage``). This is additive:
-``summary.csv``/``failures.csv``/``collection_report.json`` are unchanged and
-still byte-compared against ``pair_stability_v2`` by ``parity.py``.
+``summary.csv``/``failures.csv``/``collection_report.json`` keep their stable
+public schema.
 """
 
 from __future__ import annotations
