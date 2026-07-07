@@ -231,10 +231,9 @@ Launch final training from the latest final grid:
 
 ```bash
 uv run --extra submitit python $STUDY/final_train.py \
-  --backend submitit --device cpu,cuda \
-  --chunk-size 1 \
-  --slurm-cpu-timeout-min 60 \
-  --slurm-cuda-timeout-min 30
+  --backend submitit --device cuda \
+  --chunk-size 6 \
+  --slurm-cuda-timeout-min 480
 ```
 
 The final-train launcher excludes rows whose selected attempt already completed
@@ -258,8 +257,9 @@ final-train checkpoint for each final run:
 ```bash
 uv run --extra submitit python $STUDY/final_eval.py \
   --backend submitit --device cuda \
+  --chunk-size 30 \
   --slurm-timeout-min 480 \
-  --wait-job <final_train_launcher_job_id>
+  --wait-job 27314510
 ```
 
 Keep final-eval `--chunk-size` at the default `1` unless you intentionally want

@@ -255,21 +255,21 @@ model_params:
   mixing_initial_weight: 0.5
 
 sampler_params:
-  n_walkers: 128
-  burn_in: 10
-  n_steps: 5
+  n_walkers: 1024
+  burn_in: 500
+  n_steps: 10
   proposal_scale: 0.35
 
 training:
   max_steps: 2000
-  log_every_n_steps: 1
+  log_every_n_steps: 10
   return_terms: true
 
 optimizer_params:
   lr: ${run_parameters.lr}
 
 checks:
-  every_n_steps: 1
+  every_n_steps: 50
   fail_fast: true
   data_integrity:
     max_nonfinite_energy_fraction: 0.0
@@ -300,7 +300,7 @@ load:
   allow_protocol_mismatch: false
 
 checkpoint:
-  every_n_steps: 1
+  every_n_steps: 500
   keep_last: 3
   save_optimizer: true
   save_trainer: true
@@ -308,7 +308,7 @@ checkpoint:
   save_rng: true
 
 status:
-  every_n_steps: 1
+  every_n_steps: 50
   include:
     - train/loss
     - train/energy

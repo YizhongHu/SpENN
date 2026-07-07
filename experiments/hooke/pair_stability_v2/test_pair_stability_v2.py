@@ -70,6 +70,7 @@ final_plan = _load_script("final_plan")
 final_train = _load_script("final_train", bind_direct=True)
 final_eval = _load_script("final_eval")
 final_collect = _load_script("final_collect")
+final_report = _load_script("final_report")
 validate = _load_script("validate")
 
 
@@ -1111,6 +1112,139 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     assert final_collect._iter_final_eval_attempts(results_root, None) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
     ]
+
+
+def test_v2_final_collect_preserves_configured_report_axes() -> None:
+    context = {
+        "final_run_id": "b-B00_m-A00_lr-1e-3_ch-8_winner-energy_rep-0",
+        "job": {
+            "source_champion_id": "champion-0000",
+            "major_id": "b-B00_m-A00",
+            "minor_id": "lr-1e-3_ch-8",
+            "winner_kind": "energy",
+            "replicate_index": 0,
+            "final_train_model_seed": 1001,
+            "final_train_sampler_seed": 101,
+            "final_eval_seed": 10001,
+            "choices": {"basis": "B00", "mechanism": "A00", "lr": "0.001", "channels": "8"},
+            "source_champion": {"config_id": "b-B00_m-A00_lr-1e-3_ch-8"},
+        },
+        "final_grid_manifest": {
+            "major_axes": ["basis", "mechanism"],
+            "minor_axes": ["lr", "channels"],
+            "final_replicates": 9,
+        },
+    }
+
+    base = final_collect._base_row(context)
+    assert base["basis"] == "B00"
+    assert base["mechanism"] == "A00"
+    assert base["basis_class"] == "B00"
+    assert base["normalization"] == "A00"
+    assert base["config_id"] == "b-B00_m-A00_lr-1e-3_ch-8"
+
+    energy_rows = [
+        {
+            **base,
+            "final_run_id": f"run-{index}",
+            "energy_mean": "2.0",
+            "energy_error": "0.0",
+            "local_energy_var": "1.0",
+            "pathology_fraction": "0.0",
+        }
+        for index in range(9)
+    ]
+    summary = final_collect._architecture_summary(
+        energy_rows,
+        [],
+        [],
+        [],
+        major_axes=("basis", "mechanism"),
+        axis_columns=("basis", "mechanism", "lr", "channels"),
+        expected_final_seeds=9,
+    )
+
+    assert len(summary) == 1
+    assert summary[0]["basis"] == "B00"
+    assert summary[0]["mechanism"] == "A00"
+    assert summary[0]["n_success"] == 9
+    assert summary[0]["n_expected"] == 9
+    assert final_report._report_axis_keys(
+        {"report_row_key": "basis", "report_col_key": "mechanism"},
+        {"architecture_summary.csv": summary},
+    ) == ("basis", "mechanism")
+
+
+def test_v2_final_report_plots_energy_only_and_virial_axes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def touch(path: Path, *_args: Any, **_kwargs: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+
+    for name in (
+        "_save_winner_pair_heatmap",
+        "_save_energy_variance_scatter",
+        "_save_local_energy_distribution_grid",
+        "_save_cusp_winner_grid",
+        "_save_cusp_derivative_winner_grid",
+        "_save_tail_local_energy_line_grid",
+        "_save_tail_logabs_line_grid",
+        "_save_architecture_normalization_line_grid",
+        "_save_symmetry_metric_grid",
+        "_save_feature_trace_metric_grid",
+        "_save_training_curve_grid",
+        "_save_virial_residual_heatmap",
+    ):
+        monkeypatch.setattr(final_report, name, touch)
+
+    base = {
+        "basis": "B00",
+        "mechanism": "A00",
+        "basis_class": "B00",
+        "normalization": "A00",
+        "energy_error_median": "0.1",
+        "tail_outlier_fraction_median": "0.0",
+    }
+    energy_rows = [
+        {
+            **base,
+            "winner_kind": winner_kind,
+            "energy_mean": "2.1",
+            "energy_error": "0.1",
+            "kinetic_mean": "1.0",
+            "harmonic_trap_mean": "0.4",
+            "electron_electron_mean": "0.2",
+            "local_energy_var": "0.01",
+        }
+        for winner_kind in ("energy", "stability")
+    ]
+    tables = {name: [] for name in final_report.COMPACT_TABLES}
+    tables["architecture_summary.csv"] = [{**base, "winner_kind": "energy"}, {**base, "winner_kind": "stability"}]
+    tables["energy_by_run.csv"] = energy_rows
+    tables["stratified_summary.csv"] = [{**base, "winner_kind": "energy", "stratum": "all", "median_abs_energy_error": "0.1"}]
+
+    figures = final_report._write_figures(
+        tmp_path / "figures",
+        tables,
+        {"report_row_key": "basis", "report_col_key": "mechanism"},
+    )
+
+    assert not any("stability_winner" in figure for figure in figures)
+    assert "3A_energy_winner_tail_local_energy_lines.png" in figures
+    assert "3B_stability_winner_tail_local_energy_lines.png" not in figures
+    assert "8A_energy_winner_training_energy.png" in figures
+    assert "8C_stability_winner_training_energy.png" not in figures
+
+    virial_rows = final_report._combined_energy_component_rows(
+        energy_rows,
+        axis_keys=("basis", "mechanism"),
+    )
+    virial_energy = next(row for row in virial_rows if row["winner_kind"] == "energy" and row["quantity"] == "virial_residual")
+    assert virial_energy["basis"] == "B00"
+    assert virial_energy["mechanism"] == "A00"
+    assert virial_energy["mean"] == "1.4"
 
 
 def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> None:

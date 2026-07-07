@@ -6,7 +6,16 @@ import logging
 
 import pytest
 
-from spenn.callback import DiagnosticTiming, EvaluationTiming, Event, RunTiming, Status, TrainStepTiming
+from spenn.callback import (
+    DiagnosticTiming,
+    EvaluationComponentTiming,
+    EvaluationTiming,
+    Event,
+    RunTiming,
+    Status,
+    TrainPhaseTiming,
+    TrainStepTiming,
+)
 from spenn.callback.timing import base as timing_base
 from tests.unit.callback.support import FakeState, RecordingContext
 
@@ -99,6 +108,63 @@ def test_status_can_render_train_step_timing_metric(caplog: pytest.LogCaptureFix
     assert caplog.records[-1].getMessage() == "[train] step=1 step_time=0.25"
 
 
+def test_train_phase_timing_logs_one_record_per_step_at_step_end() -> None:
+    context = RecordingContext()
+    callback = TrainPhaseTiming(clock=FakeClock([1.0, 1.25, 2.0, 2.75]))
+
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 3, "phase": "sampling"}))
+    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 3, "phase": "sampling"}))
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 3, "phase": "backward"}))
+    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 3, "phase": "backward"}))
+    callback.handle(Event(name="step_end", context=context, payload={"step": 3}))
+
+    assert context.by_namespace("train/perf") == [
+        {
+            "metrics": {"sampling_time_sec": 0.25, "backward_time_sec": 0.75},
+            "step": 3,
+            "namespace": "train/perf",
+            "event": None,
+        }
+    ]
+
+
+def test_train_phase_timing_requires_phase_name() -> None:
+    with pytest.raises(ValueError, match="phase"):
+        TrainPhaseTiming(clock=FakeClock([1.0])).handle(
+            Event(name="train_phase_start", context=RecordingContext(), payload={"step": 1})
+        )
+
+
+def test_train_phase_timing_step_end_without_phases_logs_nothing() -> None:
+    context = RecordingContext()
+    callback = TrainPhaseTiming(clock=FakeClock([]))
+
+    callback.handle(Event(name="step_end", context=context, payload={"step": 1}))
+
+    assert context.records == []
+
+
+def test_train_phase_timing_drops_unmatched_phase_starts_at_step_end() -> None:
+    context = RecordingContext()
+    callback = TrainPhaseTiming(clock=FakeClock([1.0, 5.0, 5.5]))
+
+    # A phase started in step 1 but never finished must not leak into step 2.
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 1, "phase": "sampling"}))
+    callback.handle(Event(name="step_end", context=context, payload={"step": 1}))
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 2, "phase": "sampling"}))
+    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 2, "phase": "sampling"}))
+    callback.handle(Event(name="step_end", context=context, payload={"step": 2}))
+
+    assert context.by_namespace("train/perf") == [
+        {
+            "metrics": {"sampling_time_sec": 0.5},
+            "step": 2,
+            "namespace": "train/perf",
+            "event": None,
+        }
+    ]
+
+
 def test_evaluation_timing_logs_eval_perf_wall_time() -> None:
     context = RecordingContext()
     callback = EvaluationTiming(clock=FakeClock([2.0, 5.5]))
@@ -108,6 +174,110 @@ def test_evaluation_timing_logs_eval_perf_wall_time() -> None:
 
     assert context.latest("eval/perf") == {"wall_time_sec": 3.5}
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
+
+
+def _component_payload(component_name: str | None = None) -> dict[str, object]:
+    return {
+        "task_name": "energy",
+        "task_namespace": "eval/energy",
+        "component_name": component_name,
+    }
+
+
+def test_evaluation_component_timing_logs_one_record_per_task_at_task_end() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([1.0, 1.25, 2.0, 2.75, 3.0, 3.5]))
+
+    callback.handle(Event(name="generator_start", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="generator_end", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="calculator_start", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="calculator_end", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="summary_start", context=context, payload=_component_payload("energy_stats")))
+    callback.handle(Event(name="summary_end", context=context, payload=_component_payload("energy_stats")))
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.by_namespace("eval/perf/energy") == [
+        {
+            "metrics": {
+                "generator_time_sec": 0.25,
+                "calculator/local_energy_time_sec": 0.75,
+                "summary/energy_stats_time_sec": 0.5,
+            },
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "event": None,
+        }
+    ]
+
+
+def test_evaluation_component_timing_flushes_measured_components_at_task_failed() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([1.0, 1.5]))
+
+    callback.handle(Event(name="generator_start", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="generator_end", context=context, payload=_component_payload("mcmc")))
+    callback.handle(Event(name="task_failed", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.by_namespace("eval/perf/energy") == [
+        {
+            "metrics": {"generator_time_sec": 0.5},
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "event": None,
+        }
+    ]
+
+
+def test_evaluation_component_timing_task_end_without_components_logs_nothing() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([]))
+
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.records == []
+
+
+def test_evaluation_component_timing_drops_unmatched_starts_at_task_boundary() -> None:
+    context = RecordingContext()
+    callback = EvaluationComponentTiming(clock=FakeClock([1.0, 5.0, 5.5]))
+
+    # A component started in one task but never finished must not leak into
+    # the next run of the same task.
+    callback.handle(Event(name="calculator_start", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+    callback.handle(Event(name="calculator_start", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="calculator_end", context=context, payload=_component_payload("local_energy")))
+    callback.handle(Event(name="task_end", context=context, payload={"task_result": {"name": "energy"}}))
+
+    assert context.by_namespace("eval/perf/energy") == [
+        {
+            "metrics": {"calculator/local_energy_time_sec": 0.5},
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "event": None,
+        }
+    ]
+
+
+def test_evaluation_component_timing_requires_task_name() -> None:
+    with pytest.raises(ValueError, match="task_name"):
+        EvaluationComponentTiming(clock=FakeClock([1.0])).handle(
+            Event(name="generator_start", context=RecordingContext(), payload={"component_name": "mcmc"})
+        )
+
+
+def test_evaluation_component_timing_requires_component_name() -> None:
+    with pytest.raises(ValueError, match="component_name"):
+        EvaluationComponentTiming(clock=FakeClock([1.0])).handle(
+            Event(name="calculator_start", context=RecordingContext(), payload=_component_payload(None))
+        )
+
+
+def test_evaluation_component_timing_requires_task_name_at_task_end() -> None:
+    with pytest.raises(ValueError, match="task name"):
+        EvaluationComponentTiming(clock=FakeClock([])).handle(
+            Event(name="task_end", context=RecordingContext(), payload={"task_result": {}})
+        )
 
 
 def test_diagnostic_timing_logs_named_diagnostic_duration() -> None:

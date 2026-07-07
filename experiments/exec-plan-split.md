@@ -1,10 +1,14 @@
 # Experiment Planning / Execution Split
 
 This note records the proposed direction for separating experiment design from
-execution orchestration in SpENN experiments. It is intentionally a design note,
-not an implementation patch. The current `hooke/pair_stability_v2` run is live;
-do not refactor its execution path until the run is finished or we have a tested
-compatibility layer that can prove it preserves existing behavior.
+execution orchestration in SpENN experiments. It is both a design note and a
+roadmap for the `hooke/pair_stability_v3` restructuring path.
+
+`hooke/pair_stability_v2` remains the behavioral reference. Do not refactor its
+execution path directly. `hooke/pair_stability_v3` is the resource-reduced,
+behavior-preserving playground for extracting reusable experiment tooling. Every
+roadmap step should either preserve v2/v3 parity or intentionally create a new
+study layout version with an explicit migration note.
 
 ## Motivation
 
@@ -25,6 +29,46 @@ jobs.
 
 This split matters because we want a reusable experiment toolkit for SpENN, not
 a growing collection of bespoke launch scripts for each study.
+
+## Current V3 Baseline
+
+`pair_stability_v3` currently preserves the v2 stage layout, scan axes, plots,
+metrics, and reports while using the smaller default resource profile from
+`pair_stability_v2_small`.
+
+The first reusable pieces already live under `experiments/toolkit/`:
+
+- `StagePlan`, `TaskSpec`, and `CompletionSpec` describe durable stage/task
+  plans.
+- `ResourceSpec` records backend-neutral resource intent.
+- Execution records capture submitted command provenance and launcher job ids.
+- A minimal `Executor` protocol exists as the future backend boundary.
+
+The important limitation: v3 does not yet use the toolkit as the orchestration
+engine. `train.py` and `validate.py` write toolkit stage plans and execution
+records, but submission still flows through the existing pair-stability
+`launch.submit_command_sets(...)` implementation. This is intentional for the
+first step because it keeps behavior close to v2 while making the future task
+contract visible and testable.
+
+The current end-to-end acceptance gate is:
+
+```text
+pair_stability_v3 parity with pair_stability_v2
+  - same small grid lineage
+  - same submissions to test/gpu_test for the reduced run
+  - same collected/selected/final report artifacts after normalization of
+    volatile paths, ids, and timing fields
+```
+
+Any roadmap item that changes planning, execution, collection, or reporting
+should update this parity check or add a narrower equivalence check before the
+old behavior is removed.
+
+Things allowed to differ in end-to-end comparisons include:
+- Code structure
+- Config/Grid yaml structure
+- File/folder names
 
 ## Current Pain Points
 
@@ -675,106 +719,332 @@ Owns:
 
 Initially this can be a refactor of the current `launch.py`.
 
-## Migration Plan
+## Roadmap
 
-The migration should be staged carefully because live experiments depend on the
-current behavior.
+The roadmap starts from the current `pair_stability_v3` baseline: additive
+toolkit artifacts exist for train/validate, while the legacy launcher still owns
+submission. The goal is to move one responsibility at a time behind reusable
+interfaces without changing scientific behavior.
 
-### Phase 0: Freeze Active Behavior
+Each phase should be a small PR unless the implementation is purely
+documentation. The main acceptance test for behavior-changing phases is an
+end-to-end v2/v3 comparison on the reduced grid, using `test` for CPU work and
+`gpu_test` for CUDA work.
 
-Do not refactor active `pair_stability_v2` execution during the current run.
+### Phase 0: Preserve V2 and Keep V3 as the Playground
 
-Allowed changes during active runs should be limited to:
+Status: in progress.
 
-- Bug fixes necessary to prevent wasted compute or data loss.
-- Documentation.
-- Read-only inspection scripts.
-- Additive compatibility helpers that do not change default paths.
+- Keep `pair_stability_v2` as the golden reference.
+- Keep `pair_stability_v2_small` untracked as a local diagnostic copy.
+- Make tracked restructuring changes in `pair_stability_v3` and
+  `experiments/toolkit/`.
+- Use v2/v3 parity before removing compatibility code.
 
-### Phase 1: Document and Add Tests Around Current Semantics
+Acceptance:
 
-Before extracting abstractions, capture current behavior in tests:
+- v3 produces the same normalized artifacts as v2 for the reduced run.
+- v3 writes toolkit stage-plan artifacts for changed fan-out stages.
+- v2 remains untouched except for bug fixes that are independently necessary.
 
-- Completed final-train rows are skipped.
-- Partial final-train rows resume from highest complete checkpoint.
-- Failed/stopped claims are reclaimable.
-- Existing claimed/running rows are skipped by competing submissions.
-- CPU/CUDA profile resolution is deterministic.
-- `.venv-submitit` launcher re-exec is preserved.
-- Smoke and full latest pointers remain separate.
-- Final eval only consumes ready final-train checkpoints.
+### Phase 1: Harden Toolkit Contracts
 
-These tests become the safety net for refactoring.
+Status: done.
 
-### Phase 2: Extract Task State Helpers
+Turn the current toolkit dataclasses into a stronger contract before more
+stages depend on them.
 
-Move reusable completion/resume helpers out of stage scripts:
+- Validate deterministic task ids and stable JSON serialization.
+- Validate stage-plan manifests against task rows.
+- Add round-trip tests for `StagePlan`, `TaskSpec`, `ResourceSpec`, and
+  `ExecutionRecord`.
+- Add explicit schema-version handling.
+- Validate generated train/validation plans through toolkit APIs.
+- Define the required fields for command-backed tasks. Collection/report task
+  shapes stay provisional until those stages are ported.
 
-- complete checkpoint discovery
-- latest complete checkpoint selection
-- final train completion check
-- eval readiness check
-- stale claim classification
+Acceptance:
 
-This is low risk because it does not yet change task generation.
+- Toolkit tests fail on missing required task fields.
+- A plan written by v3 can be read without importing pair-stability modules.
+- Existing v3 train/validate parity still passes.
 
-### Phase 3: Introduce TaskSpec Without Changing Launch Behavior
+### Phase 2: Move Submission Behind the Executor Interface
 
-Have `final_train.py` build `TaskSpec` objects internally, then convert them
-back to the existing command/status path lists.
+Status: adapters landed (this PR); routing not yet started.
 
-This allows tests to assert the task table without changing Submitit behavior.
+Make `train.py` and `validate.py` submit through a toolkit executor adapter
+instead of calling `launch.submit_command_sets(...)` directly. The first adapter
+can wrap the existing launcher implementation; it does not need to be a new
+scheduler.
 
-### Phase 4: Write Task Tables as Stage Artifacts
+The first Phase 2 PR adds and tests the adapter boundary without changing
+train/validate routing. The second Phase 2 PR should route v3 train/validate
+through those adapters and run the reduced v2/v3 parity gate.
 
-In addition to current files, write:
+- Add `LocalExecutor` and `SubmititExecutor` adapters that consume `StagePlan`
+  plus selected `TaskSpec` rows.
+- Move command-set wrapping, chunk status, row status, claim paths, and
+  execution-record writing behind the adapter boundary.
+- Keep the current command materialization path until tests cover replacement.
+- Preserve CPU-only, CUDA-only, and `cpu,cuda` mixed behavior.
 
-```text
-05_final_grid/<attempt>/tasks.final_train.jsonl
-07_final_eval/<attempt>/tasks.final_eval.jsonl
-```
+Acceptance:
 
-or similar. Do this additively at first.
+- v3 train/validate produce byte- or structure-equivalent stage plans to the
+  previous v3 implementation.
+- v2/v3 reduced E2E parity passes.
+- Stage scripts no longer call `launch.submit_command_sets(...)` directly.
 
-The existing scripts can continue to use legacy manifests until the new task
-tables have been validated.
+### Phase 3: Extract Task State and Resume Semantics
 
-### Phase 5: Make Execution Consume Task Tables
+Status: step 1 and step 2 landed; smoke/full latest-pointer interpretation and
+sentinel derivation still open (see below).
 
-Refactor launch submission to accept `TaskSpec` objects. The execution backend
-then handles:
+Move completion and resume logic into reusable task-state helpers. This should
+not change task enumeration or resource selection.
 
-- command materialization
-- environment wrapping
-- status path selection
-- chunking
-- submission metadata
+Investigation before this PR found that "completion and resume" is not one
+implementation today but four independent, occasionally-disagreeing ones:
+`launch.py`'s row claim/skip check (`_attempt_already_completed`, keyed on
+`checkpoints/latest.json` + `status.json`), the dormant
+`toolkit.specs.CompletionSpec.is_complete()` (metadata-only, never called
+outside tests), `final_train.py`'s own `step_*`/`COMPLETE`-sentinel scan
+(`_complete_checkpoint_dirs`, `_latest_complete_checkpoint`), and
+`final_eval.py`'s stricter `_resolved_checkpoint` (also requires
+`manifest.json`). Step 1 relocates only the first of these — the
+`launch.py` claim/completion/deadline-guard cluster shared by every stage
+that submits through `run_command_chunk` — without touching the other three,
+so it changes no observable behavior. Unifying the four would be a real
+behavior change and needs its own explicitly-scoped follow-up, not a
+side effect of relocation.
 
-At this point, the scientific plan and execution mechanism are mostly separated.
+Step 1 (landed):
 
-### Phase 6: Generalize Across Scan Train / Validate
+- Failed/stopped/stale claim classification
+  (`_terminal_row_status`, `_claim_row`, `_write_claim`).
+- Train completion checks (`_attempt_already_completed`).
+- Deadline-guard and row-claim-path helpers used by both local and Submitit
+  submission.
+- Moved from `pair_stability_v3/launch.py` to `experiments/toolkit/task_state.py`
+  verbatim (no renames, no behavior changes); `launch.py` re-imports them so
+  `launch.claim_paths_for_statuses` etc. still resolve for existing callers.
+  `pair_stability_v2/launch.py` is untouched.
 
-Apply the same pattern to:
+Step 2 (landed):
 
-- `train.py`
-- `validate.py`
-- `final_train.py`
-- `final_eval.py`
+- Complete checkpoint discovery (`_checkpoint_step`, `_complete_checkpoint_dirs`).
+- Highest complete checkpoint selection (`_latest_complete_checkpoint`,
+  `_resume_overrides`, `_final_train_completed` — moved from `final_train.py`).
+- Eval readiness checks (`_resolved_checkpoint` — moved from `final_eval.py`;
+  `_checkpoint_ready` — moved from `validate.py`).
+- Each kept as its own distinct function, not merged with
+  `_attempt_already_completed` or with each other, per the divergence noted
+  above — this is a relocation, not a unification.
+- Left in place, deliberately: `final_train.py`'s `_exclude_completed_jobs`
+  and `_checkpoint_selection_record`, and `final_eval.py`'s
+  `_latest_ready_final_train_attempt_id`/`_attempt_matches_smoke`. These call
+  study-layout functions (`final_train_attempt_dir`, `final_train_run_dir`,
+  `attempt_smoke`, `latest_attempt_id`) to resolve *which* attempt directory
+  to check; only the layout-agnostic `Path -> bool/Path/dict` checks moved.
+- `read_json`'s raise-on-invalid-JSON behavior (no try/except in the
+  original `_resolved_checkpoint`) is preserved via inline `json.loads(...)`
+  in `task_state.py`, rather than depending on the study-local `utils.io`
+  module or the more lenient `_read_json_mapping` used by step 1's
+  functions — a real, if narrow, behavioral distinction worth keeping
+  visible rather than papering over.
 
-Collect/select/report stages can follow later because they are lower fan-out.
+Still open:
 
-### Phase 7: Consider Snakemake Wrapper
+- Smoke/full latest-pointer interpretation (already shared via
+  `utils/layout.py` today; decide whether it belongs in `task_state.py` too).
+- Sentinel derivation from authoritative run artifacts (net-new; no
+  implementation exists yet).
 
-Once task specs and sentinel logic exist, prototype a Snakemake wrapper that
-calls the same Python task runner. Do not make Snakemake the source of scientific
-truth. It should consume task tables and sentinel outputs.
+Acceptance:
 
-### Phase 8: Consider Adaptive Search or Worker Pools
+- Unit tests cover completed, partial, failed, stopped, and missing-artifact
+  cases.
+- Existing train/final-train resume behavior is unchanged.
+- No helper deletes or rewrites existing result data.
 
-Only after the fixed workflow is stable:
+### Phase 4: Port Final Train and Final Eval
 
-- Add Optuna/controller layer for adaptive task generation.
-- Add TaskVine/Parsl dynamic workers if queue pressure justifies it.
+Status: done, except full v2/v3 final-report parity (see below).
+
+Bring the confirmation fan-out stages onto the same stage-plan and executor
+path as scan train/validate.
+
+- `final_train.py`/`final_eval.py` now build toolkit task specs
+  (`build_final_train_stage_plan`/`build_final_eval_stage_plan`) and submit
+  through `LocalExecutor`/`SubmititExecutor`, mirroring `train.py`'s and
+  `validate.py`'s Phase 2 pattern exactly (`_executor`/`_resource_spec` are
+  near-identical per-script copies, same as the existing train/validate
+  duplication — not shared yet).
+- Write execution records for final fan-out stages: done
+  (`write_execution_records(stage_plan_dir, execution_records)`).
+- Use task-state helpers for skip/resume/readiness checks: already true
+  since Phase 3 — `final_train.py`'s `_exclude_completed_jobs`/
+  `_resume_overrides` and `final_eval.py`'s `_resolved_checkpoint` already
+  import from `task_state.py` and are unaffected by this phase, since
+  pre-filtering and resume-override injection both happen at
+  command-construction time, before the executor ever sees a command.
+
+Acceptance:
+
+- Final train skips completed rows and resumes partial rows exactly as
+  before: confirmed by the existing (unmodified)
+  `test_v2_final_train_excludes_completed_and_resumes_partial`, which
+  monkeypatches `final_train.launch.submit_command_sets` and asserts on
+  the exact command text — passes unchanged through the new executor path,
+  since `_executor()` resolves `submit_command_sets` from `launch` at call
+  time via `getattr`, so the mock is still picked up.
+- Final eval only consumes ready final-train checkpoints: unchanged,
+  `plan_final_eval_jobs` (not touched by this phase) still gates on
+  `_resolved_checkpoint`.
+- **v2/v3 final E2E parity through `09_final_report`: not run.** Only v3
+  final_train/final_eval were live-verified (real local run, fresh
+  checkpoint produced, correct `load.path=` resume threading, correct
+  skip-on-rerun) — `pair_stability_v2`'s final_train.py/final_eval.py are
+  untouched by this phase, so there is nothing on the v2 side to diverge
+  from, but the full-report-level parity comparison itself was not
+  exercised. Flagging as an explicit gap rather than overclaiming, matching
+  the same scope choice already accepted for Phase 3 steps 1 and 2 (v3-only
+  live verification, no fresh v2/v3 numeric comparison).
+
+### Phase 5: Make Task Tables the Primary Stage Interface
+
+Status: scoped down, step 1-3 landed (PRs #88, #89, #90); manifest-field
+reduction deferred.
+
+This phase's own acceptance line ("v2/v3 parity still passes") structurally
+conflicts with its stated goal. `parity.py` byte-compares `collect.py`'s,
+`select_champions.py`'s, and `final_plan.py`'s exact output files
+(`summary.csv`/`failures.csv`/`collection_report.json`,
+`champions.csv`/`selection_report.json`, `final_jobs.csv`/`manifest.json`)
+against untouched `pair_stability_v2`, which has zero toolkit integration and
+never will. Any new column or key added to those specific files fails parity
+on field presence alone, regardless of whether the value is correct -- so
+"make task tables the primary interface" and "reduce manifest fields to
+scientific metadata" cannot land in one behavior-preserving step while parity
+still passes byte-for-byte.
+
+What actually landed (steps 1-3): each stage keeps its existing outputs
+byte-identical and additionally writes a new `task_lineage.jsonl` sidecar
+(`experiments/toolkit/lineage.py`) chaining task ids end to end --
+`collect.py` records each row's validation/train task id,
+`select_champions.py` inherits and re-keys those into per-champion lineage,
+and `final_plan.py` inherits that into per-final-job lineage. Task ids are
+synthesized deterministically from `(stage, run_id, attempt_id)` with zero
+file I/O and cross-checked against a real stage plan's `tasks.jsonl`
+whenever one exists; the check is best-effort because v2/v3 parity runs
+point `collect.py` at reused `pair_stability_v2` validation data with no
+`stage_plans/` directory at all.
+
+What's deferred: actually switching stage inputs (e.g. `collect.py`
+enumerating from `tasks.jsonl` instead of the grid manifest) and shrinking
+manifest fields to scientific-only metadata. `tasks.jsonl` only contains
+launched jobs post-readiness-filter, while the grid manifest's job list is
+all intended runs, so switching populations is a real behavior change, not
+just a schema change -- and any manifest-field reduction needs `parity.py`'s
+comparison rules to evolve first (e.g. an explicit carve-out for known v3-only
+fields, following the existing volatile-field normalization precedent) or v2
+data to gain the field too, which the SpENN/SpENN-dev ownership split
+forecloses. Revisit as an explicit, separately-scoped step if still wanted.
+
+Acceptance (revised to match what actually landed):
+
+- The source lineage for every collected metric, champion, and final job can
+  be traced through task ids via the `task_lineage.jsonl` sidecars. Met.
+- v2/v3 parity still passes: zero changes to any parity-compared artifact.
+  Met.
+- Pair-stability-specific manifest fields are reduced to scientific metadata,
+  not execution bookkeeping. Deferred -- see above.
+
+### Phase 6: Generalize Collection, Selection, and Reporting
+
+Status: planned.
+
+The low fan-out stages are where reuse across studies will be tested.
+
+- Define generic metric table readers for `metrics.csv` and `metrics.jsonl`.
+- Separate metric normalization from pair-stability plotting.
+- Define selector interfaces for champion policies.
+- Keep plot/report code study-specific until a second study needs the same
+  figures.
+- Write provenance that records consumed tasks, metric keys, selector names, and
+  report inputs.
+
+Acceptance:
+
+- Pair-stability plots and metric names are unchanged.
+- Selector behavior is covered by deterministic table fixtures.
+- The generic collection utilities can be imported without pair-stability code.
+
+## Stages on hold (don't implement yet)
+
+### Phase 7: Prove Reuse on a Second Study
+
+Status: planned.
+
+Before treating the toolkit as stable, use it in a second small experiment. This
+is the best way to distinguish real abstractions from pair-stability-specific
+convenience.
+
+- Pick a low-cost Hooke diagnostic or a new reduced study.
+- Use toolkit stage plans, resource profiles, and execution records.
+- Avoid copying pair-stability launch scripts wholesale.
+- Keep the study-specific scientific planning local to that study.
+
+Acceptance:
+
+- The second study can run at least plan -> execute -> collect using toolkit
+  primitives.
+- Any pair-stability assumptions discovered in the toolkit are either removed
+  or documented as deliberate constraints.
+
+### Phase 8: Add Optional Workflow Adapters
+
+Status: future.
+
+Only after the fixed task-plan workflow is stable, prototype adapters for
+external workflow tools.
+
+- Snakemake should consume task plans and produce sentinels; it should not own
+  scientific task generation.
+- Snakemake rules should call Python wrappers rather than construct long
+  OmegaConf commands.
+- A single-hardware-profile workflow invocation is the likely first target.
+- The existing Submitit adapter remains the reference backend on Cannon.
+
+Acceptance:
+
+- A Snakemake prototype can run a tiny fixed plan without changing task ids,
+  output paths, or completion semantics.
+- Removing Snakemake leaves the Python toolkit path functional.
+
+### Phase 9: Add Adaptive Search or Worker Pools Only if Needed
+
+Status: future.
+
+Adaptive search and heterogeneous worker pools are useful but should not drive
+the initial design.
+
+- Optuna belongs behind a search/controller interface that appends task rows and
+  receives completed metric values.
+- Optuna trials should mirror SpENN task results; they should not be direct
+  Slurm jobs.
+- TaskVine/Parsl-style workers require durable leases, heartbeats, stale-lease
+  reclaim, and a stronger central task-state store.
+- SQLite should be introduced only when immutable JSONL plans are no longer
+  enough.
+
+Acceptance:
+
+- Fixed-grid studies continue to work without Optuna, Snakemake, TaskVine,
+  Parsl, or SQLite.
+- Adaptive or worker-pool state is additive and does not rewrite historical
+  task plans.
 
 ## Sentinels
 
@@ -922,20 +1192,20 @@ portable, and suitable for scratch/storage workflows on Cannon.
 - Do not require a database.
 - Do not delete or migrate existing result data.
 
-## Near-Term Recommendation
+## Near-Term PR Queue
 
-After the current run is complete, implement the split in this order:
+The next PRs should be:
 
-1. Extract task-state/checkpoint-resume helpers with tests.
-2. Introduce `TaskSpec` internally for final train/eval.
-3. Write additive task tables next to existing manifests.
-4. Refactor Submitit execution to consume task specs.
-5. Port scan train/validate to the same machinery.
-6. Add sentinel generation.
-7. Evaluate Snakemake as a wrapper for one-hardware-profile workflows.
+1. Route v3 train/validate submission through the executor adapters and run
+   the reduced v2/v3 parity gate.
+2. Extract task-state/checkpoint-resume helpers with focused tests.
+3. Port v3 final_train/final_eval to toolkit plans and executor adapters.
+4. Make task plans the primary input to collect/select/final_plan.
+5. Prove reuse in one second reduced experiment.
 
 The guiding rule: every step should be behavior-preserving unless explicitly
-creating a new study layout version.
+creating a new study layout version. The end-to-end v2/v3 parity run is the
+release gate for changes that affect stage behavior.
 
 ## Summary
 

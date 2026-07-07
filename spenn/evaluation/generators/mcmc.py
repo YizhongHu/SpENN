@@ -34,8 +34,6 @@ class MCMCGenerator:
     ) -> GeneratedConfigurations:
         """Collect sampler configurations and expose bookkeeping metadata."""
 
-        if self.seed is not None:
-            torch.manual_seed(self.seed)
         collect = getattr(self.sampler, "collect_samples", None)
         if not callable(collect):
             raise TypeError("MCMCGenerator sampler must expose collect_samples(model, device=...)")
@@ -48,6 +46,8 @@ class MCMCGenerator:
             "sample_index": sample_index,
             "sampler_stats": dict(sampler_stats),
         }
+        if self.seed is not None:
+            metadata["seed"] = self.seed
         if "walker_index" not in metadata:
             metadata["walker_index"] = sample_index
         return GeneratedConfigurations(batch=batch, metadata=metadata)

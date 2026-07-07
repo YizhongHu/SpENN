@@ -19,6 +19,7 @@ from spenn.nn.envelope import (
     HookeGaussianEnvelope,
 )
 from spenn.nn.equivariant_mixing import EquivariantMixing
+from spenn.nn.initialization import SeededLinear, TorchInitializer
 from spenn.nn.mlp import MLP
 from spenn.nn.normalization import FeatureNormalization, IrrepRMSNorm
 from spenn.nn.path_aggregation import PathAggregation
@@ -58,10 +59,12 @@ __all__ = [
     "RealRMSGate",
     "ResidualUpdate",
     "ScalarGate",
+    "SeededLinear",
     "SigmoidGate",
     "SpENNForwardContext",
     "SpENNLayer",
     "SpENNWaveFunction",
     "TanhGate",
+    "TorchInitializer",
     "Update",
 ]

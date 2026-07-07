@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from spenn.dependencies import require_torch, require_torch_nn
+from spenn.nn.initialization import SeededLinear, TorchInitializer
 
 torch = require_torch(feature="SpENN MLP modules")
 nn = require_torch_nn(feature="SpENN MLP modules")
@@ -27,6 +28,10 @@ class MLP(nn.Module):
         Activation copied after each hidden layer. If ``None``, SiLU is used.
     bias : bool, optional
         Whether linear layers include bias terms.
+    initializer : TorchInitializer or None, optional
+        Explicit side-effect-free initializer for generated linear layers. If
+        ``None``, generated layers use the standard ``torch.nn.Linear``
+        initializer, which follows PyTorch's global RNG behavior.
     """
 
     def __init__(
@@ -37,6 +42,7 @@ class MLP(nn.Module):
         num_hidden_layers: int = 2,
         activation: nn.Module | None = None,
         bias: bool = True,
+        initializer: TorchInitializer | None = None,
     ) -> None:
         super().__init__()
         if in_channels <= 0:
@@ -50,11 +56,11 @@ class MLP(nn.Module):
 
         layers: list[nn.Module] = []
         current_channels = int(in_channels)
-        for _layer_idx in range(num_hidden_layers):
-            layers.append(nn.Linear(current_channels, hidden_channels, bias=bias))
+        for layer_idx in range(num_hidden_layers):
+            layers.append(_linear(current_channels, hidden_channels, bias=bias, initializer=initializer, name=f"hidden_{layer_idx}"))
             layers.append(deepcopy(activation) if activation is not None else nn.SiLU())
             current_channels = int(hidden_channels)
-        layers.append(nn.Linear(current_channels, out_channels, bias=bias))
+        layers.append(_linear(current_channels, out_channels, bias=bias, initializer=initializer, name="output"))
         self.layers = nn.Sequential(*layers)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -72,6 +78,24 @@ class MLP(nn.Module):
         """
 
         return self.layers(inputs)
+
+
+def _linear(
+    in_features: int,
+    out_features: int,
+    *,
+    bias: bool,
+    initializer: TorchInitializer | None,
+    name: str,
+) -> nn.Module:
+    if initializer is None:
+        return nn.Linear(in_features, out_features, bias=bias)
+    return SeededLinear(
+        in_features,
+        out_features,
+        bias=bias,
+        initializer=initializer.spawn(name),
+    )
 
 
 __all__ = ["MLP"]

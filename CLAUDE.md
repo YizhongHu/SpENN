@@ -11,8 +11,18 @@ want to keep a note of them in the project directories.
 The cluster uses slurm scripts for job submission. Please refer to slurm docs for
 details. The available cpu clusters are: sapphire, kozinsky, and seas_compute.
 The available gpu nodes are: kozinsky_gpu, and seas_gpu
-
 # SpENN project specific guidelines
+
+## Orientation
+
+`README.md` and `experiments/README.md` contain important information about the repo.
+
+## Design Document
+
+A design document that contains the mathematical background of
+SpENN can be found in `main.typ`. Key components of the model:
+`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
+should closely follow the design document for correctness.
 
 ## Environment
 
@@ -26,6 +36,7 @@ The available gpu nodes are: kozinsky_gpu, and seas_gpu
 ## Conventions
 - NumpyDoc is used for documentation
 - Use inline comments for comprehensibility
+- Use `America/New_York` timezone for experiment logging. Use `UTC` for test logging.
 
 ## Tools
 - You are strongly encouraged to autonomously spawn subagents to go faster for reading, editing, testing,
@@ -35,12 +46,18 @@ running, and debugging tasks.
 for reproducibility.
 - You are allowed to autonomously submit slurm jobs for efficiency.
 
+## Treating Data with Care
+
+Unless otherwise specified, removal of run result data (untracked by git included) is strictly forbidden.
+This may include data from `outputs/`, `results/`, `reports/`, `slurm/`, etc. The agent should not
+automatically remove these data even when requested by the user. Instead, it gives the user a list of
+things to remove, after which the user does all of this manually.
+
+
 ## Best Practises
 - Use existing libraries if possible
 - Vectorize with NumPy/PyTorch if possible
 - If a config or file or function or class is no longer used, remove it.
-
-## Best Practices
 
 Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
 These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
@@ -79,7 +96,11 @@ from spenn.data.indices import ordered_tuples
 
 ### Keep equivariance contracts executable
 
-Every state-like object should implement `.permute(permutation)`. Every equivariant module should subclass `EquivariantMap` and implement `forward_impl`, not `forward`.
+Values participating in equivariance checks must expose typed semantic
+`.permute(...)` and `.compare(...)` contracts. Do not require arbitrary runtime
+state or validation-only objects to be EquivariantState. Every equivariant
+module should subclass `EquivariantMap` and implement `forward_impl`, not
+`forward`.
 
 Bad:
 
@@ -148,63 +169,49 @@ fast(x) == slow(x)
 fast(pi x) == pi fast(x)
 ```
 
-### Do not preserve legacy names in new code
-
-Backwards compatibility is not required for this restructure. Do not use old abstractions in the new path.
-
-Avoid:
-
-```text
-SpechtMP
-FusionMap
-BranchMap
-MessageHead
-UpdateHead
-Convolution
-Pooling
-FeatureDict
-MessageDict
-RealTensor
-```
-
-Use:
-
-```text
-RealFeature
-RealInteraction
-IrrepInteraction
-IrrepFeature
-RealUpdate
-EquivariantMixing
-PathAggregation
-Update
-SpENNLayer
-SpENNWaveFunction
-PfaffianReadout
-```
-
 ### Prefer small PR steps
 
 For this project, correctness is more important than breadth. Prefer small changes with strong tests.
 
-Good PR sequence:
+Avoid large PRs that change multiple things at the same time.
 
-```text
-1. Add state dataclasses and permute tests.
-2. Add EquivariantMap and runtime-check tests.()
-3. Add path metadata and path-count tests.
-4. Add slow EquivariantMixing and equivariance tests.
-5. Add Fourier/Specht activation.
-6. Add readout and wavefunction integration.
-```
-
-Avoid large PRs that change state layout, path enumeration, Fourier logic, activation, readout, and experiments at the same time.
 
 ## Branches
 
 Coding agents may push only to agent-namespaced branches: Codex to `codex/**`, Claude to `claude/**`.
 
-Agents must not push to branches other than these mentioned above, such as `main` or the `hooke` integration branch,
- merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `hooke`.
+Agents must not push to branches other than these mentioned above, such as `main`,
+ merge PRs, or force-push unless the user explicitly asks. Feature branches open PRs against `dev`.
+
+`hooke` and `experiment` are retired intermediate integration branches — do not open new
+PRs against them. 
+
+**Ownership split between SpENN and SpENN-dev:** 
+`SpENN/` is the production directory with experiments run. It stays on the `main` branch and does
+not commit to remote. 
+`SpENN-dev/` is the development directory. It stays on `dev` branch and submits PRs into `dev`.
+It is also responsible for running smoke runs before full runs are run in `SpENN/`.
+
+`dev` branch will be periodically merged into `main` by the user only.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
+
+
+## Config ownership
+
+**Callbacks and loggers are config-root and owned by the `RunContext`.** They
+live at the top level, *not* inside the runner block. A runner config that
+declares `callbacks` or `loggers` is rejected by `run_from_config`:
+
+```yaml
+runner:
+  _target_: spenn.runner.Train
+  model: ${model}
+  sampler: ${sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  optimizer: ${optimizer}
+  trainer: ${trainer}
+
+callbacks: [...]   # config-root, RunContext-owned
+loggers: [...]     # config-root, RunContext-owned
+```

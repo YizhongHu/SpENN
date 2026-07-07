@@ -28,6 +28,21 @@ live in `spenn.equivariance`. Trainable or callable neural modules live in
 `spenn.nn`. Representation metadata, virtual paths, and Fourier transforms live
 in `spenn.reps`.
 
+## Initialization RNGs
+
+SpENN-owned randomized modules should use explicit initializer objects rather
+than process-global RNG seeding. New configs should wire
+`spenn.nn.TorchInitializer` into randomized model components, for example into
+generated `Embedding` MLPs and `PathAggregation` weights. These initializers
+materialize local `torch.Generator` instances and do not call
+`torch.manual_seed`, `numpy.random.seed`, or `random.seed`.
+
+`model.seed` is a legacy OmegaConf interpolation shim only. It may remain in old
+configs so values like `${model.seed}` resolve into explicit initializer specs,
+but `SpENNWaveFunction(seed=...)` does not seed or initialize anything. New
+configs should prefer a separate initialization seed field plus explicit
+initializer wiring.
+
 Runtime equivariance checks are checker-driven:
 `spenn.equivariance.checks.FullModelEquivarianceChecker` and
 `TraceEquivarianceChecker`, scheduled by `spenn.callback.RuntimeEquivariance`.

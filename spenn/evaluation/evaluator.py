@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import traceback as traceback_module
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -11,10 +12,42 @@ from typing import Any
 import torch
 
 from spenn.evaluation.bundle import EvaluationBundle
-from spenn.evaluation.events import component_failure_payload, task_payload, task_result_payload
+from spenn.evaluation.events import component_failure_payload, component_payload, task_payload, task_result_payload
 from spenn.evaluation.protocols import EvaluationContext
 from spenn.evaluation.results import ArtifactRecord, EvaluationFailure, EvaluationResult, MetricScalar, TaskResult
 from spenn.evaluation.task import ArtifactLevel, EvaluationTask, FailurePolicy, coerce_task
+
+
+@contextmanager
+def _component_span(
+    emit: Callable[..., None],
+    *,
+    task: EvaluationTask,
+    component_type: str,
+    component_name: str | None,
+    output_dir: Path,
+):
+    """Bracket one evaluation component with lifecycle events.
+
+    The evaluator owns the component boundaries but no timing policy: it only
+    emits ``<component_type>_start``/``<component_type>_end`` events, and
+    timing callbacks such as ``EvaluationComponentTiming`` decide whether and
+    how to measure them. The ``_end`` event fires on success and failure
+    alike; failures additionally emit the existing ``<component_type>_failed``
+    events.
+    """
+
+    emit(
+        f"{component_type}_start",
+        payload=component_payload(task=task, component_name=component_name, output_dir=output_dir),
+    )
+    try:
+        yield
+    finally:
+        emit(
+            f"{component_type}_end",
+            payload=component_payload(task=task, component_name=component_name, output_dir=output_dir),
+        )
 
 
 class Evaluator:
@@ -119,7 +152,14 @@ class Evaluator:
         bundle: EvaluationBundle | None = None
 
         try:
-            generated = task.generator.generate(model=model, context=context)
+            with _component_span(
+                emit,
+                task=task,
+                component_type="generator",
+                component_name=_component_name(task.generator),
+                output_dir=output_dir,
+            ):
+                generated = task.generator.generate(model=model, context=context)
             bundle = EvaluationBundle(generated=generated)
         except Exception as exc:
             failure = _failure(context, task=task, component=task.generator, component_type="generator", exc=exc)
@@ -139,7 +179,14 @@ class Evaluator:
 
         for calculator in task.calculators:
             try:
-                bundle = calculator.calculate(model=model, bundle=bundle, context=context)
+                with _component_span(
+                    emit,
+                    task=task,
+                    component_type="calculator",
+                    component_name=_component_name(calculator),
+                    output_dir=output_dir,
+                ):
+                    bundle = calculator.calculate(model=model, bundle=bundle, context=context)
             except Exception as exc:
                 failure = _failure(context, task=task, component=calculator, component_type="calculator", exc=exc)
                 failures.append(failure)
@@ -175,7 +222,14 @@ class Evaluator:
                     )
                     continue
                 try:
-                    result = summary.summarize(bundle=bundle, context=context, namespace=task.namespace)
+                    with _component_span(
+                        emit,
+                        task=task,
+                        component_type="summary",
+                        component_name=_component_name(summary),
+                        output_dir=output_dir,
+                    ):
+                        result = summary.summarize(bundle=bundle, context=context, namespace=task.namespace)
                     _merge_metrics(metrics, result.metrics, component_name=_component_name(summary))
                 except Exception as exc:
                     failure = _failure(context, task=task, component=summary, component_type="summary", exc=exc)
