@@ -17,7 +17,7 @@ for module_name in list(sys.modules):
     if module_name.split(".", maxsplit=1)[0] == "utils":
         del sys.modules[module_name]
 
-from utils.overrides import format_override_value, rewrite_cli_overrides  # noqa: E402
+from utils.overrides import axis_value_overrides, format_override_value, rewrite_cli_overrides  # noqa: E402
 
 
 def _parse_back(key: str, formatted: str) -> object:
@@ -77,3 +77,55 @@ def test_rewrite_cli_overrides_bool_and_list_values_parse_correctly_in_hydra() -
     for part in rewritten[2:]:
         key, _, formatted = part.partition("=")
         assert _parse_back(key, formatted) == overrides[key]
+
+
+def test_axis_value_overrides_support_stage_specific_and_mapped_specs() -> None:
+    point = {
+        "max_steps": 100,
+        "mechanism": "feature_gaussian_norm",
+        "channels": 8,
+    }
+    specs = {
+        "max_steps": {
+            "train": "training.max_steps",
+            "final_train": "training.max_steps",
+        },
+        "mechanism": {
+            "run_parameters.update_normalization_slot": {
+                "baseline": "no-update-normalization",
+                "feature_gaussian_norm": "no-update-normalization",
+                "update_gaussian_norm": "update-gaussian-norm",
+            },
+            "run_parameters.feature_normalization_slot": {
+                "baseline": "no-feature-normalization",
+                "feature_gaussian_norm": "feature-gaussian-norm",
+                "update_gaussian_norm": "no-feature-normalization",
+            },
+        },
+        "channels": "run_parameters.channels",
+    }
+
+    train_overrides = axis_value_overrides(
+        point,
+        axes=("max_steps", "mechanism", "channels"),
+        override_specs=specs,
+        stage="train",
+    )
+    validation_overrides = axis_value_overrides(
+        point,
+        axes=("max_steps", "mechanism", "channels"),
+        override_specs=specs,
+        stage="validation",
+    )
+
+    assert train_overrides == [
+        "training.max_steps=100",
+        "run_parameters.update_normalization_slot=no-update-normalization",
+        "run_parameters.feature_normalization_slot=feature-gaussian-norm",
+        "run_parameters.channels=8",
+    ]
+    assert validation_overrides == [
+        "run_parameters.update_normalization_slot=no-update-normalization",
+        "run_parameters.feature_normalization_slot=feature-gaussian-norm",
+        "run_parameters.channels=8",
+    ]

@@ -27,7 +27,12 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
-from utils.overrides import format_override_value
+from utils.overrides import (
+    AxisOverrideSpec,
+    axis_value_overrides,
+    format_override_value,
+    normalize_axis_override_specs,
+)
 from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -129,16 +134,11 @@ def final_scalar_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(axis) for axis in (*manifest.get("major_axes", []), *manifest.get("minor_axes", [])))
 
 
-def final_axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, str]:
+def final_axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, AxisOverrideSpec]:
     """Return axis -> config override path from a final-grid manifest."""
 
     configured = manifest.get("axis_overrides")
-    if not isinstance(configured, dict):
-        raise ValueError("final-grid manifest axis_overrides must be a mapping")
-    missing = [axis for axis in axes if axis not in configured]
-    if missing:
-        raise ValueError(f"final-grid manifest axis_overrides is missing axes: {', '.join(missing)}")
-    return {axis: str(configured[axis]) for axis in axes}
+    return normalize_axis_override_specs(configured, axes, context="final-grid manifest")
 
 
 def _job_choices(job: dict[str, Any]) -> dict[str, Any]:
@@ -160,18 +160,14 @@ def axis_value_overrides_for_job(
     job: dict[str, Any],
     *,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
+    stage: str | None = None,
     static_stage_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return config overrides for all scalar non-seed final-job choices."""
 
     choices = _job_choices(job)
-    overrides = []
-    for axis in scalar_axes:
-        if axis not in choices:
-            raise ValueError(f"final job {job.get('final_run_id', '<unknown>')!r} is missing axis {axis!r}")
-        overrides.append(f"{override_paths[axis]}={choices[axis]}")
-    return overrides
+    return axis_value_overrides(choices, axes=scalar_axes, override_specs=override_paths, stage=stage)
 
 
 def final_train_overrides(
@@ -182,7 +178,7 @@ def final_train_overrides(
     attempt_id: str,
     results_root: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     static_stage_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return OmegaConf overrides for one final training run."""
@@ -196,7 +192,12 @@ def final_train_overrides(
     if seed_overrides is None:
         seed_overrides = seed_override_values(None, "final_train", job)
     return [
-        *axis_value_overrides_for_job(job, scalar_axes=scalar_axes, override_paths=override_paths),
+        *axis_value_overrides_for_job(
+            job,
+            scalar_axes=scalar_axes,
+            override_paths=override_paths,
+            stage="final_train",
+        ),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
         *(f"{path}={format_override_value(value)}" for path, value in (static_stage_overrides or {}).items()),
         f"run.root={stage_dir(results_root, STAGE_FINAL_TRAIN)}",
@@ -223,7 +224,7 @@ def _command_for_job(
     attempt_id: str,
     results_root: Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     static_stage_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     final_run_id = str(job["final_run_id"])

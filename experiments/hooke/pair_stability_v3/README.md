@@ -28,6 +28,24 @@ The checked-in scan has:
 24 selected champions x 9 final seeds = 216 final jobs by default
 ```
 
+`configs/pilot.yaml` is the full-workflow budget pilot:
+
+```text
+major_grid: max_steps x sampler_n_steps
+minor_grid: basis x mechanism x lr x channels
+mechanism: baseline, feature_gaussian_norm, update_gaussian_norm
+activation: fixed to Tanh
+channels: fixed to 8
+3 max_steps x 2 sampler_n_steps x 2 bases x 3 mechanisms x 2 learning rates x 1 channel x 3 seed rows = 216 scan jobs
+6 major points x 1 energy representative = 6 selected champions
+6 selected champions x 9 final seeds = 54 final jobs by default
+```
+
+Channel count is fixed at 8 in the pilot. The v2 full-result lineage under
+`SpENN/experiments/hooke/pair_stability_v2/results` did not scan channel 16;
+all collect, select, and final rows used channel 8, so there is no result-backed
+reason to keep channel count as a pilot axis.
+
 ## Stages
 
 The stage layout remains:
@@ -172,6 +190,19 @@ STUDY=experiments/hooke/pair_stability_v3
 ```
 
 ### Full Scan Stages
+
+Use `configs/pilot.yaml` for the full-workflow pilot where report axes are
+`max_steps` and `sampler_n_steps`. Do not pass `--blind`; these numeric axes
+are meant to remain visible.
+
+```bash
+uv run python $STUDY/plan.py \
+  --grid $STUDY/configs/pilot.yaml \
+  --no-blind
+```
+
+After planning the pilot grid, run the same scan, final, collect, and report
+commands below. Later stages default to the latest planned grid lineage.
 
 Plan the full grid. The attempt id is generated automatically in
 `America/New_York` and recorded in `results/00_grid/latest.json`.
