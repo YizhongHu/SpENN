@@ -8,24 +8,24 @@ the same stage layout, scan axes, validation/final-evaluation task suites,
 plots, reports, and metric names, plus profiling instrumentation
 (`train/perf` phase timing, `eval/perf` component timing, `runtime` peak
 memory) and compact cost tables (`cost_by_run.csv`, `cost_by_axis.csv`,
-`cost_by_task.csv`), on a smaller default grid with shorter run budgets.
+`cost_by_task.csv`).
 
 The default grid is:
 
 ```text
-major_grid: basis x mechanism
-minor_grid: lr x channels
-scan_seeds: training/validation replicate seeds
+major_grid: basis x update_normalization x feature_normalization
+minor_grid: lr x channels x activation
+scan_seed_rows: paired train-model/train-sampler/validation-sampler seeds
 champions: energy selector only
-final_replicates: 2
+final_replicates: 9
 ```
 
 The checked-in scan has:
 
 ```text
-2 bases x 2 mechanisms x 2 learning rates x 1 channel count x 2 seeds = 16 scan jobs
-4 major points x 1 energy representative = 4 selected champions
-4 selected champions x 2 final seeds = 8 final jobs by default
+2 bases x 3 update choices x 4 feature choices x 2 learning rates x 2 channel counts x 4 activations x 3 seed rows = 1152 scan jobs
+24 major points x 1 energy representative = 24 selected champions
+24 selected champions x 9 final seeds = 216 final jobs by default
 ```
 
 ## Stages
@@ -38,7 +38,7 @@ The stage layout remains:
         -> 08_final_collect -> 09_final_report
 ```
 
-`final_plan.py` writes two final seeds per selected champion by default. Pass
+`final_plan.py` writes nine final seeds per selected champion by default. Pass
 `--replicates` only to override that configured count.
 
 ## Config Semantics
@@ -48,23 +48,24 @@ The training and validation configs expose slot-like run parameters:
 ```yaml
 run_parameters:
   basis_slot: B00
-  mechanism_slot: A00
+  update_normalization_slot: U00
+  feature_normalization_slot: F00
+  activation_slot: SiLU
   lr: 1.0e-3
-  channels: 4
+  channels: 8
   seed: 0
 ```
 
-`choices.basis` owns the concrete input basis specs. `choices.mechanism` owns
-the explicit layer controls:
+`choices.basis` owns the concrete input basis specs.
+`choices.update_normalization`, `choices.feature_normalization`, and
+`choices.activation` own the explicit layer controls:
 
 ```text
-embedding_normalization
-embedding_envelope
+update_normalization
+update_envelope
 feature_normalization
 feature_envelope
 irrep_activation
-update_normalization
-update_envelope
 ```
 
 When both a normalization and an envelope are configured at the same site, the
@@ -217,8 +218,8 @@ uv run python $STUDY/select_champions.py
 
 ### Final Stages
 
-The checked-in grid sets `final_replicates: 2`, so the default final plan
-continues selected champions through two independent final seeds. The commands
+The checked-in grid sets `final_replicates: 9`, so the default final plan
+continues selected champions through nine independent final seeds. The commands
 below consume the latest non-smoke previous stage and write their own latest
 pointers.
 
@@ -234,9 +235,9 @@ aliases, frozen minor choices, source champion row, replicate index, and
 independent final seeds:
 
 ```text
-final_train_sampler_seed = 101 + replicate_index
-final_train_model_seed   = 1001 + replicate_index
-final_eval_seed          = 10001 + replicate_index
+final_train_model_seed    = 100 + replicate_index
+final_train_sampler_seed  = 1000 + replicate_index
+final_eval_sampler_seed   = 10000 + replicate_index
 ```
 
 Launch final training from the latest final grid:

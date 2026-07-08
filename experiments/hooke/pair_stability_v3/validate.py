@@ -30,7 +30,7 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
-from utils.seeds import seed_override_values
+from utils.seeds import scan_seed_values, seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]
@@ -122,7 +122,7 @@ def validation_overrides(
     seed_overrides = seed_override_values(
         seed_policy,
         "validation",
-        {"scan_seed": int(point[seed_axis])},
+        scan_seed_values(point, seed_axis),
     )
     overrides = [
         *_axis_value_overrides(point, scalar_axes=scalar_axes, override_paths=override_paths),
@@ -253,6 +253,9 @@ def plan_validation_jobs(
             continue
 
         point = dict(job.get("choices", {}))
+        seed_values = job.get("seed_values")
+        if isinstance(seed_values, dict):
+            point.update(seed_values)
         if seed_axis not in point and "scan_seed" in job:
             point[seed_axis] = job["scan_seed"]
         checkpoint_path = train_attempt / "checkpoints"
