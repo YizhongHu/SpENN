@@ -360,3 +360,42 @@ ready. The lightweight launcher defaults to the `test` partition; override it
 with `--wait-launcher-partition` if needed. The real validation/final-eval array
 uses the Slurm partition flags from the command that the dependent launcher
 reruns.
+
+### Smoke Review Gate
+
+The smoke lineage is the release-readiness gate for this study. It should reach
+`09_final_report` before any `0.2.1` version bump. Do not use `--smoke`; the
+smoke attempt is normal grid lineage generated from `configs/smoke.yaml`.
+Keep review smoke attempts in the default study results directory,
+`experiments/hooke/pair_stability_v3/results`, so the artifacts remain
+available for comparison and audit. Do not pass a temporary `--results-root`
+for the Slurm smoke gate.
+
+Expected smoke artifacts:
+
+```text
+results/00_grid/<attempt_id>/manifest.json          64 scan jobs
+results/03_collect/<attempt_id>/summary.csv         64 validation rows when complete
+results/04_select/<attempt_id>/champions.csv        8 energy champions
+results/05_final_grid/<attempt_id>/final_jobs.csv   8 final jobs
+results/08_final_collect/<attempt_id>/*.csv         compact report tables
+results/09_final_report/<attempt_id>/report.md      review report
+results/09_final_report/<attempt_id>/figures/*.png  review figures
+```
+
+Smoke Slurm sanity should use `test` and `gpu_test` partitions and the same
+stage order as the full run. Record the launcher job id from train and
+final-train submissions, then pass it to downstream `--wait-job` commands so
+validation and final-eval enter the queue as dependencies rather than requiring
+manual polling.
+
+Minimum pre-bump checks:
+
+```bash
+uv run --extra cpu pytest -q experiments/hooke/pair_stability_v3
+```
+
+Optional local mini-lineage for debugging uses the same smoke grid with
+`--backend local`, but the release gate is the Slurm smoke lineage in the
+regular results directory. After the Slurm report exists, inspect report
+tables/figures and cost summaries before promoting any version bump.
