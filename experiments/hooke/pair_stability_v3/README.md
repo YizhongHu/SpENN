@@ -46,6 +46,14 @@ Channel count is fixed at 8 in the pilot. The v2 full-result lineage under
 all collect, select, and final rows used channel 8, so there is no result-backed
 reason to keep channel count as a pilot axis.
 
+`configs/pilot_smoke.yaml` is the matching smoke grid:
+
+```text
+2 max_steps x 2 sampler_n_steps x 2 bases x 3 mechanisms x 1 learning rate x 1 channel x 1 seed row = 24 scan jobs
+4 major points x 1 energy representative = 4 selected champions
+4 selected champions x 1 final seed = 4 final jobs
+```
+
 ## Stages
 
 The stage layout remains:
@@ -203,6 +211,14 @@ uv run python $STUDY/plan.py \
 
 After planning the pilot grid, run the same scan, final, collect, and report
 commands below. Later stages default to the latest planned grid lineage.
+
+Use `configs/pilot_smoke.yaml` for the smaller pilot smoke lineage:
+
+```bash
+uv run python $STUDY/plan.py \
+  --grid $STUDY/configs/pilot_smoke.yaml \
+  --no-blind
+```
 
 Plan the full grid. The attempt id is generated automatically in
 `America/New_York` and recorded in `results/00_grid/latest.json`.

@@ -19,6 +19,7 @@ STUDY_DIR = Path(__file__).resolve().parent
 CONFIGS = STUDY_DIR / "configs"
 GRID = CONFIGS / "grid.yaml"
 PILOT_GRID = CONFIGS / "pilot.yaml"
+PILOT_SMOKE_GRID = CONFIGS / "pilot_smoke.yaml"
 SMOKE_GRID = CONFIGS / "smoke.yaml"
 
 while str(STUDY_DIR) in sys.path:
@@ -899,6 +900,48 @@ def test_v3_pilot_grid_rejects_blinding_numeric_major_axes(tmp_path: Path) -> No
                 "--blind",
             ]
         )
+
+
+def test_v3_pilot_smoke_grid_is_smaller_full_pilot(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    code = plan.main(["--grid", str(PILOT_SMOKE_GRID), "--results-root", str(results_root), "--attempt-id", "PSMOKE"])
+    assert code == 0
+
+    manifest = json.loads((results_root / "00_grid" / "PSMOKE" / "manifest.json").read_text())
+    assert manifest["major_axes"] == ["max_steps", "sampler_n_steps"]
+    assert manifest["minor_axes"] == ["basis", "mechanism", "lr", "channels"]
+    assert manifest["major_grid"] == {"max_steps": [2, 3], "sampler_n_steps": [1, 2]}
+    assert manifest["minor_grid"]["basis"] == ["raw-envelope", "hooke-s1-envelope"]
+    assert manifest["minor_grid"]["mechanism"] == [
+        "baseline",
+        "feature_gaussian_norm",
+        "update_gaussian_norm",
+    ]
+    assert manifest["minor_grid"]["lr"] == [1.0e-3]
+    assert manifest["minor_grid"]["channels"] == [8]
+    assert manifest["n_jobs"] == 24
+    assert manifest["final_replicates"] == 1
+    assert manifest["scan_seed_rows"] == [
+        {
+            "seed_index": 0,
+            "training_model_seed": 0,
+            "training_sampler_seed": 10,
+            "validation_sampler_seed": 20,
+        }
+    ]
+
+    train_static = manifest["static_overrides"]["train"]
+    assert train_static["run_parameters.activation_slot"] == "Tanh"
+    assert train_static["training.log_every_n_steps"] == 1
+    assert "training.max_steps" not in train_static
+    assert "sampler_params.n_steps" not in train_static
+    assert manifest["static_overrides"]["validation"] == {"run_parameters.activation_slot": "Tanh"}
+    assert manifest["static_overrides"]["final_eval"] == {"run_parameters.activation_slot": "Tanh"}
+
+    job = manifest["jobs"][0]
+    assert "training.max_steps=2" in job["overrides"]
+    assert "sampler_params.n_steps=1" in job["overrides"]
+    assert "run_parameters.activation_slot=Tanh" in job["overrides"]
 
 
 def test_v3_smoke_grid_is_smaller_full_grid(tmp_path: Path) -> None:
