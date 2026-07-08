@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
+SCAN_SEED_VALUE_NAME = "scan_seed"
+
 DEFAULT_SEED_OVERRIDES = {
     "scan_train": {
-        "run_parameters.seed": "scan_seed",
-        "runtime.seed": "scan_seed",
-        "sampler.seed": "scan_seed",
+        "run_parameters.seed": "training_model_seed",
+        "runtime.seed": "training_model_seed",
+        "sampler.seed": "training_sampler_seed",
     },
     "validation": {
-        "run_parameters.seed": "scan_seed",
-        "runtime.seed": "scan_seed",
-        "evaluation.seed": "scan_seed",
+        "run_parameters.seed": "training_model_seed",
+        "runtime.seed": "training_model_seed",
+        "evaluation.seed": "validation_sampler_seed",
     },
     "final_train": {
         "run_parameters.seed": "final_train_model_seed",
@@ -21,15 +23,15 @@ DEFAULT_SEED_OVERRIDES = {
         "sampler.seed": "final_train_sampler_seed",
     },
     "final_eval": {
-        "run_parameters.seed": "final_eval_seed",
-        "runtime.seed": "final_eval_seed",
-        "evaluation.seed": "final_eval_seed",
+        "run_parameters.seed": "final_eval_sampler_seed",
+        "runtime.seed": "final_eval_sampler_seed",
+        "evaluation.seed": "final_eval_sampler_seed",
     },
 }
 DEFAULT_FINAL_SEED_SEQUENCES = {
-    "final_train_sampler_seed": {"start": 101, "step": 1},
-    "final_train_model_seed": {"start": 1001, "step": 1},
-    "final_eval_seed": {"start": 10001, "step": 1},
+    "final_train_model_seed": {"start": 100, "step": 1},
+    "final_train_sampler_seed": {"start": 1000, "step": 1},
+    "final_eval_sampler_seed": {"start": 10000, "step": 1},
 }
 
 
@@ -62,6 +64,22 @@ def seed_override_values(
             raise KeyError(f"seed policy for {stage!r} references missing seed {seed_name!r}")
         resolved[path] = values[seed_name]
     return resolved
+
+
+def scan_seed_values(point: dict[str, Any], seed_axis: str) -> dict[str, Any]:
+    """Return named seed values carried by one planned scan point."""
+
+    if seed_axis not in point:
+        raise KeyError(f"scan point is missing seed axis {seed_axis!r}")
+    values = {
+        seed_axis: point[seed_axis],
+        SCAN_SEED_VALUE_NAME: point[seed_axis],
+        "training_model_seed": point[seed_axis],
+        "training_sampler_seed": point[seed_axis],
+        "validation_sampler_seed": point[seed_axis],
+    }
+    values.update({str(key): value for key, value in point.items() if str(key).endswith("_seed")})
+    return values
 
 
 def final_seed_sequences(configured: Any | None = None) -> dict[str, dict[str, int]]:

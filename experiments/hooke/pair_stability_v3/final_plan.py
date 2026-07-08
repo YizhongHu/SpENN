@@ -30,7 +30,6 @@ from utils.layout import (
     STAGE_SELECT,
     final_grid_attempt_dir,
     latest_attempt_id,
-    smoke_attempt_id,
     stage_dir,
     write_latest,
 )
@@ -42,6 +41,7 @@ from utils.naming import (
     log_prefix,
     study_name_from_manifest,
 )
+from utils.overrides import AxisOverrideSpec, normalize_axis_override_specs
 from utils.seeds import final_seed_sequences, final_seed_values, seed_override_policy, seed_override_values
 from utils.time import STUDY_TIMEZONE, new_attempt_id
 
@@ -55,8 +55,6 @@ from experiments.toolkit import TaskLineageRow, read_task_lineage, write_task_li
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 DEFAULT_GRID = STUDY_DIR / "configs" / "grid.yaml"
 DEFAULT_REPLICATES = 3
-SMOKE_CHAMPION_LIMIT = 2
-SMOKE_REPLICATES = 1
 
 
 def positive_int(value: str) -> int:
@@ -71,13 +69,11 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | None, *, smoke: bool) -> str:
+def _resolve_selection_attempt(results_root: Path, selection_attempt_id: str | None) -> str:
     if selection_attempt_id is not None:
         return selection_attempt_id
     select_stage = stage_dir(results_root, STAGE_SELECT)
-    attempt_id = latest_attempt_id(select_stage, smoke=smoke)
-    if attempt_id is None and smoke:
-        attempt_id = latest_attempt_id(select_stage, smoke=False)
+    attempt_id = latest_attempt_id(select_stage)
     if attempt_id is None:
         raise FileNotFoundError(f"no selection attempts under {select_stage}")
     return attempt_id
@@ -295,16 +291,15 @@ def write_final_grid_attempt(
     study: str,
     train_config: str | Path,
     eval_config: str | Path,
-    smoke_config: str | None,
     config_snapshots: dict[str, str],
     replicates: int,
-    smoke: bool,
     major_axes: Sequence[str],
     minor_axes: Sequence[str],
     axis_id_labels: dict[str, str],
-    axis_overrides: dict[str, str],
+    axis_overrides: dict[str, AxisOverrideSpec],
     seed_policy: dict[str, dict[str, str]],
     seed_sequences: dict[str, dict[str, int]],
+    static_overrides: dict[str, Any] | None,
     champions: Sequence[dict[str, str]],
     jobs: Sequence[dict[str, Any]],
     task_lineage: Sequence[TaskLineageRow] = (),
@@ -346,7 +341,7 @@ def write_final_grid_attempt(
         "metric_value",
         "final_train_sampler_seed",
         "final_train_model_seed",
-        "final_eval_seed",
+        "final_eval_sampler_seed",
     ]
     _write_csv(attempt / "final_jobs.csv", jobs, columns)
     for job in jobs:
@@ -362,11 +357,9 @@ def write_final_grid_attempt(
         "source_selection_attempt_dir": str(source_selection_dir),
         "train_config": str(train_config),
         "eval_config": str(eval_config),
-        "smoke_config": smoke_config,
         "config_snapshots": config_snapshots,
         "replicates": int(replicates),
         "final_replicates": int(replicates),
-        "smoke": bool(smoke),
         "n_source_champions": len(champions),
         "n_jobs": len(jobs),
         "major_axes": list(major_axes),
@@ -376,10 +369,11 @@ def write_final_grid_attempt(
         "champion_kinds": sorted({str(champion.get("winner_kind", "")) for champion in champions if champion.get("winner_kind")}),
         "seed_overrides": seed_policy,
         "final_seed_sequences": seed_sequences,
+        "static_overrides": static_overrides or {},
     }
     write_json(attempt / "manifest.json", manifest)
     OmegaConf.save(OmegaConf.create(manifest), attempt / "manifest.yaml")
-    write_latest(stage_dir(results_root, STAGE_FINAL_GRID), attempt_id, smoke=smoke)
+    write_latest(stage_dir(results_root, STAGE_FINAL_GRID), attempt_id)
     return attempt
 
 
@@ -394,8 +388,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eval-config", default=None)
     parser.add_argument("--replicates", type=positive_int, default=None)
     parser.add_argument("--limit-champions", type=positive_int, default=None)
-    parser.add_argument("--smoke", action="store_true", help="Plan first 1-2 champions with one replicate each.")
-    return parser.parse_args(argv)
+    parser.add_argument("--smoke", action="store_true", help="Deprecated; use configs/smoke.yaml with the normal stack.")
+    args = parser.parse_args(argv)
+    if args.smoke:
+        parser.error("use --grid experiments/hooke/pair_stability_v3/configs/smoke.yaml with the normal stage stack")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -403,7 +400,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parse_args(argv)
     results_root = Path(args.results_root)
-    selection_attempt_id = _resolve_selection_attempt(results_root, args.selection_attempt_id, smoke=args.smoke)
+    selection_attempt_id = _resolve_selection_attempt(results_root, args.selection_attempt_id)
     selection_dir = stage_dir(results_root, STAGE_SELECT) / selection_attempt_id
     champions = read_champions(selection_dir)
     source_grid_manifest = _source_grid_manifest(results_root, selection_dir)
@@ -412,7 +409,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     prefix = log_prefix(study)
     train_config = _config_from_grid(source_grid_manifest, "config", args.train_config)
     eval_config = _config_from_grid(source_grid_manifest, "validation_config", args.eval_config)
-    smoke_config = source_or_default_grid.get("smoke_config")
     config_snapshots = source_or_default_grid.get("config_snapshots", {})
     if not isinstance(config_snapshots, dict):
         raise ValueError("grid metadata config_snapshots must be a mapping")
@@ -426,34 +422,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             if configured_replicates is not None
             else DEFAULT_REPLICATES
         )
-    replicates = SMOKE_REPLICATES if args.smoke else requested_replicates
-    champion_limit = SMOKE_CHAMPION_LIMIT if args.smoke else args.limit_champions
+    replicates = requested_replicates
+    champion_limit = args.limit_champions
     attempt_id = args.attempt_id or new_attempt_id()
-    if args.smoke:
-        attempt_id = smoke_attempt_id(attempt_id)
     created_at = datetime.now(STUDY_TIMEZONE).isoformat(timespec="seconds")
     seed_policy = seed_override_policy(source_or_default_grid.get("seed_overrides"))
     seed_sequences = final_seed_sequences(source_or_default_grid.get("final_seed_sequences"))
+    configured_static_overrides = source_or_default_grid.get("static_overrides") or {}
+    if not isinstance(configured_static_overrides, dict):
+        raise ValueError("grid metadata static_overrides must be a mapping")
     axis_metadata = _axis_metadata_from_grid(source_or_default_grid)
     major_axis_names = tuple(axis_metadata["major_axes"])
     minor_axis_names = tuple(axis_metadata["minor_axes"])
     config_axis_names = tuple(axis_metadata["config_axes"])
     axis_id_labels = dict(axis_metadata["axis_id_labels"])
-    configured_axis_overrides = source_or_default_grid.get("axis_overrides", {})
-    if not isinstance(configured_axis_overrides, dict):
-        raise ValueError("grid metadata axis_overrides must be a mapping")
-    missing_axis_overrides = [
-        axis for axis in config_axis_names if axis not in configured_axis_overrides
-    ]
-    if missing_axis_overrides:
-        raise ValueError(
-            "grid metadata axis_overrides is missing axes: "
-            + ", ".join(missing_axis_overrides)
-        )
-    axis_overrides = {
-        axis: str(configured_axis_overrides[axis])
-        for axis in config_axis_names
-    }
+    axis_overrides = normalize_axis_override_specs(
+        source_or_default_grid.get("axis_overrides", {}),
+        config_axis_names,
+        context="grid metadata",
+    )
 
     jobs = build_final_jobs(
         champions,
@@ -482,16 +469,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         study=study,
         train_config=train_config,
         eval_config=eval_config,
-        smoke_config=None if smoke_config is None else str(smoke_config),
         config_snapshots={str(key): str(value) for key, value in config_snapshots.items()},
         replicates=replicates,
-        smoke=args.smoke,
         major_axes=major_axis_names,
         minor_axes=minor_axis_names,
         axis_id_labels=axis_id_labels,
         axis_overrides=axis_overrides,
         seed_policy=seed_policy,
         seed_sequences=seed_sequences,
+        static_overrides={str(stage): dict(values or {}) for stage, values in configured_static_overrides.items()},
         champions=champions,
         jobs=jobs,
         task_lineage=task_lineage,

@@ -39,7 +39,13 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import axis_value_label, experiment_run_name, log_prefix, study_name
-from utils.seeds import final_seed_sequences, seed_override_policy, seed_override_values
+from utils.overrides import (
+    AxisOverrideSpec,
+    axis_value_overrides,
+    format_override_value,
+    normalize_axis_override_specs,
+)
+from utils.seeds import final_seed_sequences, scan_seed_values, seed_override_policy, seed_override_values
 from utils.time import DEFAULT_STUDY_TIMEZONE, new_attempt_id, resolve_timezone
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -79,13 +85,33 @@ def minor_axes(grid_data: dict[str, Any]) -> tuple[str, ...]:
 def scan_seed_axis(grid_data: dict[str, Any]) -> str:
     """Return the scan seed axis name."""
 
-    return str(grid_data.get("scan_seed_axis", "seed"))
+    return str(grid_data.get("scan_seed_axis", "seed_index" if "scan_seed_rows" in grid_data else "seed"))
+
+
+def scan_seed_rows(grid_data: dict[str, Any], seed_axis: str) -> list[dict[str, Any]]:
+    """Return configured paired scan seed rows."""
+
+    if "scan_seed_rows" in grid_data:
+        configured = grid_data["scan_seed_rows"]
+        if not isinstance(configured, Sequence) or isinstance(configured, (str, bytes)):
+            raise ValueError("scan_seed_rows must be a sequence of mappings")
+        rows = []
+        for index, row in enumerate(configured):
+            if not isinstance(row, dict):
+                raise ValueError(f"scan_seed_rows[{index}] must be a mapping")
+            if seed_axis not in row:
+                raise ValueError(f"scan_seed_rows[{index}] is missing seed axis {seed_axis!r}")
+            rows.append(dict(row))
+        if not rows:
+            raise ValueError("scan_seed_rows must contain at least one row")
+        return rows
+    return [{seed_axis: seed} for seed in grid_data.get("scan_seeds", [])]
 
 
 def grid_axes(grid_data: dict[str, Any]) -> tuple[str, ...]:
     """Return the full scalar train axis order."""
 
-    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data:
+    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data or "scan_seed_rows" in grid_data:
         return (*major_axes(grid_data), *minor_axes(grid_data), scan_seed_axis(grid_data))
     return _axis_names(grid_data["grid"], grid_data.get("grid_axes"))
 
@@ -124,21 +150,23 @@ def expand_split_grid(
     for major in _axis_points(major_grid, major_axis_names):
         for minor in _axis_points(minor_grid, minor_axis_names):
             for seed in scan_seeds:
-                points.append({**major, **minor, seed_axis: seed})
+                seed_row = dict(seed) if isinstance(seed, dict) else {seed_axis: seed}
+                points.append({**major, **minor, **seed_row})
     return points
 
 
 def expand_grid_spec(grid_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Expand either a split grid spec or a legacy flat grid spec."""
 
-    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data:
+    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data or "scan_seed_rows" in grid_data:
+        seed_axis = scan_seed_axis(grid_data)
         return expand_split_grid(
             grid_data["major_grid"],
             grid_data["minor_grid"],
-            grid_data["scan_seeds"],
+            scan_seed_rows(grid_data, seed_axis),
             major_axis_names=major_axes(grid_data),
             minor_axis_names=minor_axes(grid_data),
-            seed_axis=scan_seed_axis(grid_data),
+            seed_axis=seed_axis,
         )
     return expand_grid(grid_data["grid"], grid_data.get("grid_axes"))
 
@@ -299,6 +327,20 @@ def blinding_enabled(grid_data: dict[str, Any], requested: bool | None) -> bool:
     return bool(blinding_config(grid_data)["enabled_by_default"])
 
 
+def validate_blindable_axes(
+    major_axis_names: Sequence[str],
+    validation_specs: dict[str, dict[str, Any]],
+) -> None:
+    """Reject blinding for axes that have no choice-library indirection."""
+
+    missing = [axis for axis in major_axis_names if axis not in validation_specs]
+    if missing:
+        raise ValueError(
+            "cannot blind major axes without choice_validation entries: "
+            + ", ".join(missing)
+        )
+
+
 def build_blinding_maps(
     grid_data: dict[str, Any],
     *,
@@ -371,7 +413,7 @@ def _materialize_slot_config(
     *,
     validation_specs: dict[str, dict[str, Any]],
     maps: dict[str, dict[str, dict[str, str]]],
-    axis_override_paths: dict[str, str],
+    axis_override_paths: dict[str, AxisOverrideSpec],
 ) -> Any:
     """Return a config copy whose choice libraries are keyed by blind slots."""
 
@@ -392,7 +434,7 @@ def _materialize_slot_config(
         OmegaConf.update(materialized, choices_path, choices, merge=False)
         first_slot = next(iter(axis_maps["slot_to_value"]))
         override_path = axis_override_paths.get(axis)
-        if override_path:
+        if isinstance(override_path, str):
             OmegaConf.update(materialized, override_path, first_slot, merge=False)
     return materialized
 
@@ -430,16 +472,23 @@ def axis_id_labels(grid_data: dict[str, Any], axes: Sequence[str]) -> dict[str, 
     return {axis: str(configured.get(axis, axis)) for axis in axes}
 
 
-def axis_override_paths(grid_data: dict[str, Any], axes: Sequence[str]) -> dict[str, str]:
+def axis_override_paths(grid_data: dict[str, Any], axes: Sequence[str]) -> dict[str, AxisOverrideSpec]:
     """Return axis -> OmegaConf override path mapping."""
 
     configured = grid_data.get("axis_overrides") or {}
+    return normalize_axis_override_specs(configured, axes, context="grid")
+
+
+def static_overrides(grid_data: dict[str, Any] | None, stage: str) -> dict[str, Any]:
+    """Return static override values configured for one stage."""
+
+    configured = (grid_data or {}).get("static_overrides") or {}
     if not isinstance(configured, dict):
-        raise ValueError("axis_overrides must be a mapping")
-    missing = [axis for axis in axes if axis not in configured]
-    if missing:
-        raise ValueError(f"axis_overrides is missing required axes: {', '.join(missing)}")
-    return {axis: str(configured[axis]) for axis in axes}
+        raise ValueError("static_overrides must be a mapping")
+    stage_overrides = configured.get(stage) or {}
+    if not isinstance(stage_overrides, dict):
+        raise ValueError(f"static_overrides.{stage} must be a mapping")
+    return {str(path): value for path, value in stage_overrides.items()}
 
 
 def _id_value(value: Any) -> str:
@@ -454,15 +503,6 @@ def id_for(point: dict[str, Any], axes: Sequence[str], labels: dict[str, str]) -
     return "_".join(f"{labels.get(axis, axis)}-{_id_value(point[axis])}" for axis in axes)
 
 
-def _axis_value_overrides(
-    point: dict[str, Any],
-    *,
-    axes: Sequence[str],
-    override_paths: dict[str, str],
-) -> list[str]:
-    return [f"{override_paths[axis]}={point[axis]}" for axis in axes]
-
-
 def train_overrides(
     point: dict[str, Any],
     *,
@@ -471,9 +511,10 @@ def train_overrides(
     attempt_id: str,
     results_root: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     seed_axis: str,
     seed_policy: dict[str, dict[str, str]] | None = None,
+    static_stage_overrides: dict[str, Any] | None = None,
     timezone: str | None = None,
 ) -> list[str]:
     """Return scalar OmegaConf-style overrides for one train job."""
@@ -481,11 +522,12 @@ def train_overrides(
     seed_overrides = seed_override_values(
         seed_policy,
         "scan_train",
-        {"scan_seed": point[seed_axis]},
+        scan_seed_values(point, seed_axis),
     )
     overrides = [
-        *_axis_value_overrides(point, axes=scalar_axes, override_paths=override_paths),
+        *axis_value_overrides(point, axes=scalar_axes, override_specs=override_paths, stage="train"),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
+        *(f"{path}={format_override_value(value)}" for path, value in (static_stage_overrides or {}).items()),
         f"run.root={stage_dir(results_root, STAGE_TRAIN)}",
         "run.layout=flat",
         f"run.run_id={run_id}/{attempt_id}",
@@ -519,9 +561,10 @@ def build_jobs(
     minor_axis_names: Sequence[str],
     seed_axis: str,
     id_labels: dict[str, str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     tags_by_axis: dict[str, dict[str, list[str]]],
     seed_policy: dict[str, dict[str, str]] | None = None,
+    static_stage_overrides: dict[str, Any] | None = None,
     python: str = "python",
     timezone: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -531,6 +574,7 @@ def build_jobs(
     config_axes = (*major_axis_names, *minor_axis_names)
     run_axes = (*config_axes, seed_axis)
     for point in points:
+        seed_values = scan_seed_values(point, seed_axis)
         run_id = id_for(point, run_axes, id_labels)
         major_id = id_for(point, major_axis_names, id_labels)
         minor_id = id_for(point, minor_axis_names, id_labels)
@@ -545,12 +589,13 @@ def build_jobs(
             override_paths=override_paths,
             seed_axis=seed_axis,
             seed_policy=seed_policy,
+            static_stage_overrides=static_stage_overrides,
             timezone=timezone,
         )
         scan_seed_overrides = seed_override_values(
             seed_policy,
             "scan_train",
-            {"scan_seed": point[seed_axis]},
+            seed_values,
         )
         jobs.append(
             {
@@ -561,7 +606,9 @@ def build_jobs(
                 "major_choices": {axis: point[axis] for axis in major_axis_names},
                 "minor_choices": {axis: point[axis] for axis in minor_axis_names},
                 "scan_seed": point[seed_axis],
+                "seed_values": seed_values,
                 "seed_overrides": {"scan_train": scan_seed_overrides},
+                "static_overrides": {"train": dict(static_stage_overrides or {})},
                 "train_dir": str(train_run_dir(results_root, run_id)),
                 "validation_dir": str(validation_run_dir(results_root, run_id)),
                 "train_attempt_dir": str(train_attempt_dir(results_root, run_id, attempt_id)),
@@ -615,12 +662,14 @@ def build_manifest(
                 "major_grid": grid_data.get("major_grid", {}),
                 "minor_grid": grid_data.get("minor_grid", {}),
                 "scan_seeds": list(grid_data.get("scan_seeds", [])),
+                "scan_seed_rows": scan_seed_rows(grid_data, seed_axis),
                 "axis_id_labels": axis_id_labels(grid_data, all_axes),
                 "axis_overrides": axis_override_paths(grid_data, (*major_axis_names, *minor_axis_names)),
                 "config_snapshots": config_snapshot_names(grid_data.get("config_snapshots")),
                 "choice_validation": choice_validation_specs(grid_data),
                 "seed_overrides": seed_override_policy(grid_data.get("seed_overrides")),
                 "final_seed_sequences": final_seed_sequences(grid_data.get("final_seed_sequences")),
+                "static_overrides": grid_data.get("static_overrides", {}),
                 "champions": champion_specs(grid_data),
                 "champion_kinds": champion_kinds(grid_data),
                 "champion_reference_metrics": champion_reference_metrics(grid_data),
@@ -642,9 +691,6 @@ def build_manifest(
     validation_config = grid_data.get("validation_config")
     if validation_config is not None:
         manifest["validation_config"] = str(validation_config)
-    smoke_config = grid_data.get("smoke_config")
-    if smoke_config is not None:
-        manifest["smoke_config"] = str(smoke_config)
     if "blinding" in grid_data:
         manifest["blinding"] = grid_data["blinding"]
     return manifest
@@ -700,10 +746,6 @@ def write_grid_attempt(
         OmegaConf.save(config_snapshot_data["validation"], attempt / snapshots["validation"])
     elif validation_config is not None and Path(validation_config).exists():
         (attempt / snapshots["validation"]).write_text(Path(validation_config).read_text())
-    smoke_config = grid_data.get("smoke_config") if isinstance(grid_data, dict) else None
-    smoke_snapshot = snapshots.get("smoke")
-    if smoke_config is not None and smoke_snapshot and Path(smoke_config).exists():
-        (attempt / smoke_snapshot).write_text(Path(smoke_config).read_text())
     if unblind_data is not None:
         write_json(attempt / "unblind.json", unblind_data)
 
@@ -806,6 +848,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     unblind_data: dict[str, Any] | None = None
     tag_config = config_obj
     if blinding_enabled(grid_data, args.blind):
+        validate_blindable_axes(major_axis_names, validation_specs)
         maps = build_blinding_maps(grid_data, blind_seed=args.blind_seed)
         points = apply_blinding_to_points(true_points, maps)
         snapshots = config_snapshot_names(grid_data.get("config_snapshots"))
@@ -872,6 +915,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         override_paths=override_paths,
         tags_by_axis=tags_by_axis,
         seed_policy=seed_policy,
+        static_stage_overrides=static_overrides(grid_data, "train"),
         python=args.python,
         timezone=args.timezone,
     )

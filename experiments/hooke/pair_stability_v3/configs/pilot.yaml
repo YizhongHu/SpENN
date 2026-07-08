@@ -1,9 +1,10 @@
 # =============================================================================
-# Hooke pair-stability V3 full grid
+# Hooke pair-stability V3 pilot full-run grid
 # =============================================================================
 #
-# Full v0.2.1 scan grid. Smoke runs use configs/smoke.yaml as a smaller grid
-# with the same staged workflow, not a special launcher mode.
+# Pilot uses the normal full workflow, but makes training budget the report
+# comparison: max_steps x sampler_n_steps. Scientific/model choices are minor
+# axes, activation is fixed to Tanh, and channel count is fixed at 8.
 # =============================================================================
 
 study: pair_stability_v3
@@ -15,42 +16,33 @@ config_snapshots:
   train: train_config.yaml
   validation: validation_config.yaml
 
-# Major axes define independent comparison buckets. The planner can blind these
-# true values into stable slots before writing routine manifests.
 major_grid:
+  max_steps:
+    - 100
+    - 200
+    - 500
+
+  sampler_n_steps:
+    - 5
+    - 10
+
+minor_grid:
   basis:
     - raw-envelope
     - hooke-s1-envelope
 
-  update_normalization:
-    - no-update-normalization
-    - update-gaussian-norm
-    - update-gaussian-envelope
+  mechanism:
+    - baseline
+    - feature_gaussian_norm
+    - update_gaussian_norm
 
-  feature_normalization:
-    - no-feature-normalization
-    - feature-gaussian-norm
-    - feature-rms-norm
-    - feature-gaussian-envelope
-
-# Minor axes are scanned within each major point. Final planning freezes the
-# selected minor values and drops scan_seed_axis.
-minor_grid:
   lr:
     - 1.0e-3
     - 3.0e-4
 
   channels:
     - 8
-    - 16
 
-  activation:
-    - SiLU
-    - Tanh
-    - Sigmoid
-    - Exponential
-
-# Seed rows are paired, not a Cartesian seed grid.
 scan_seed_axis: seed_index
 scan_seed_rows:
   - seed_index: 0
@@ -66,49 +58,40 @@ scan_seed_rows:
     training_sampler_seed: 12
     validation_sampler_seed: 22
 
-blinding:
-  enabled_by_default: true
-  slot_prefixes:
-    basis: B
-    update_normalization: U
-    feature_normalization: F
-
-# Short labels used only for durable ids such as run_id, major_id, and minor_id.
 axis_id_labels:
+  max_steps: max
+  sampler_n_steps: samp
   basis: b
-  update_normalization: u
-  feature_normalization: f
+  mechanism: mech
   lr: lr
   channels: ch
-  activation: act
   seed_index: seed
 
-# Explicit Hydra override path for every non-seed grid axis.
 axis_overrides:
+  max_steps:
+    train: training.max_steps
+    final_train: training.max_steps
+  sampler_n_steps:
+    train: sampler_params.n_steps
+    final_train: sampler_params.n_steps
   basis: run_parameters.basis_slot
-  update_normalization: run_parameters.update_normalization_slot
-  feature_normalization: run_parameters.feature_normalization_slot
+  mechanism:
+    run_parameters.update_normalization_slot:
+      baseline: no-update-normalization
+      feature_gaussian_norm: no-update-normalization
+      update_gaussian_norm: update-gaussian-norm
+    run_parameters.feature_normalization_slot:
+      baseline: no-feature-normalization
+      feature_gaussian_norm: feature-gaussian-norm
+      update_gaussian_norm: no-feature-normalization
   lr: run_parameters.lr
   channels: run_parameters.channels
-  activation: run_parameters.activation_slot
 
-# Optional validation against choice libraries in the base configs.
 choice_validation:
   basis:
     choices_path: choices.basis
     tags_path: choices.basis.{value}.tags
-  update_normalization:
-    choices_path: choices.update_normalization
-    tags_path: choices.update_normalization.{value}.tags
-  feature_normalization:
-    choices_path: choices.feature_normalization
-    tags_path: choices.feature_normalization.{value}.tags
-  activation:
-    choices_path: choices.activation
-    tags_path: choices.activation.{value}.tags
 
-# Stage-specific seed policy. Values on the right are named seed values supplied
-# by the planner/final planner; keys on the left are Hydra override paths.
 seed_overrides:
   scan_train:
     run_parameters.seed: training_model_seed
@@ -130,7 +113,6 @@ seed_overrides:
     runtime.seed: final_eval_sampler_seed
     evaluation.seed: final_eval_sampler_seed
 
-# Independent final replicate seeds. replicate_index i uses start + i * step.
 final_seed_sequences:
   final_train_model_seed:
     start: 100
@@ -142,8 +124,16 @@ final_seed_sequences:
     start: 10000
     step: 1
 
-# Champion selectors are data, not code. "name" is only a label used in
-# manifests/reports; selector, metrics, modes, and exclusions define behavior.
+static_overrides:
+  train:
+    run_parameters.activation_slot: Tanh
+  validation:
+    run_parameters.activation_slot: Tanh
+  final_train:
+    run_parameters.activation_slot: Tanh
+  final_eval:
+    run_parameters.activation_slot: Tanh
+
 champions:
   - name: energy
     selector: metric_ladder
@@ -154,14 +144,9 @@ champions:
       - hooke_orbital
     metric_template: eval/{task}/local_energy_mean
     mode: min
-    # Deterministic fallback: when every ladder rung ends with overlapping
-    # seed error bars, take the lowest stratified-geometry seed-median
-    # outright. Wall time (the previous fallback) is machine/load-dependent,
-    # which made champion identity non-reproducible across independent runs.
     fallback_metric: eval/stratified_geometry/local_energy_mean
     fallback_mode: min
 
-# Extra seed-aggregated metrics copied into champions.csv for auditability.
 champion_reference_metrics:
   - label: stratified_geometry_energy
     metric: eval/stratified_geometry/local_energy_mean

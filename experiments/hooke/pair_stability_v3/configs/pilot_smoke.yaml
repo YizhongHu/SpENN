@@ -1,10 +1,10 @@
 # =============================================================================
-# Hooke pair-stability V3 smoke grid
+# Hooke pair-stability V3 pilot smoke grid
 # =============================================================================
 #
-# Smaller full-run grid for v0.2.1 smoke validation. It uses the same staged
-# workflow as configs/grid.yaml; only axis cardinality, train workload, Slurm
-# partitions, and chunk sizes should differ from the full run stack.
+# Smaller full-workflow pilot grid for smoke validation. It keeps the pilot
+# schema and report axes, but uses tiny training-budget axis values and one
+# paired scan seed row.
 # =============================================================================
 
 study: pair_stability_v3
@@ -17,30 +17,29 @@ config_snapshots:
   validation: validation_config.yaml
 
 major_grid:
+  max_steps:
+    - 2
+    - 3
+
+  sampler_n_steps:
+    - 1
+    - 2
+
+minor_grid:
   basis:
     - raw-envelope
     - hooke-s1-envelope
 
-  update_normalization:
-    - no-update-normalization
-    - update-gaussian-norm
+  mechanism:
+    - baseline
+    - feature_gaussian_norm
+    - update_gaussian_norm
 
-  feature_normalization:
-    - no-feature-normalization
-    - feature-gaussian-norm
-
-minor_grid:
   lr:
     - 1.0e-3
-    - 3.0e-4
 
   channels:
     - 8
-    - 16
-
-  activation:
-    - SiLU
-    - Exponential
 
 scan_seed_axis: seed_index
 scan_seed_rows:
@@ -49,43 +48,39 @@ scan_seed_rows:
     training_sampler_seed: 10
     validation_sampler_seed: 20
 
-blinding:
-  enabled_by_default: true
-  slot_prefixes:
-    basis: B
-    update_normalization: U
-    feature_normalization: F
-
 axis_id_labels:
+  max_steps: max
+  sampler_n_steps: samp
   basis: b
-  update_normalization: u
-  feature_normalization: f
+  mechanism: mech
   lr: lr
   channels: ch
-  activation: act
   seed_index: seed
 
 axis_overrides:
+  max_steps:
+    train: training.max_steps
+    final_train: training.max_steps
+  sampler_n_steps:
+    train: sampler_params.n_steps
+    final_train: sampler_params.n_steps
   basis: run_parameters.basis_slot
-  update_normalization: run_parameters.update_normalization_slot
-  feature_normalization: run_parameters.feature_normalization_slot
+  mechanism:
+    run_parameters.update_normalization_slot:
+      baseline: no-update-normalization
+      feature_gaussian_norm: no-update-normalization
+      update_gaussian_norm: update-gaussian-norm
+    run_parameters.feature_normalization_slot:
+      baseline: no-feature-normalization
+      feature_gaussian_norm: feature-gaussian-norm
+      update_gaussian_norm: no-feature-normalization
   lr: run_parameters.lr
   channels: run_parameters.channels
-  activation: run_parameters.activation_slot
 
 choice_validation:
   basis:
     choices_path: choices.basis
     tags_path: choices.basis.{value}.tags
-  update_normalization:
-    choices_path: choices.update_normalization
-    tags_path: choices.update_normalization.{value}.tags
-  feature_normalization:
-    choices_path: choices.feature_normalization
-    tags_path: choices.feature_normalization.{value}.tags
-  activation:
-    choices_path: choices.activation
-    tags_path: choices.activation.{value}.tags
 
 seed_overrides:
   scan_train:
@@ -121,24 +116,25 @@ final_seed_sequences:
 
 static_overrides:
   train:
-    training.max_steps: 2
+    run_parameters.activation_slot: Tanh
     training.log_every_n_steps: 1
     sampler_params.n_walkers: 16
     sampler_params.burn_in: 1
-    sampler_params.n_steps: 1
     checks.every_n_steps: 1
     checkpoint.every_n_steps: 1
     status.every_n_steps: 1
-
+  validation:
+    run_parameters.activation_slot: Tanh
   final_train:
-    training.max_steps: 2
+    run_parameters.activation_slot: Tanh
     training.log_every_n_steps: 1
     sampler_params.n_walkers: 16
     sampler_params.burn_in: 1
-    sampler_params.n_steps: 1
     checks.every_n_steps: 1
     checkpoint.every_n_steps: 1
     status.every_n_steps: 1
+  final_eval:
+    run_parameters.activation_slot: Tanh
 
 champions:
   - name: energy

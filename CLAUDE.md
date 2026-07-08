@@ -206,6 +206,8 @@ latest `dev` commit. The changes needs to be reviewed as a PR against `dev`.
 
 Agents should respond to PR review comments by adding commits to the existing PR branch.
 
+Clean local branches and their remote counterparts after they are merged into `dev`.
+
 
 ## Config ownership
 

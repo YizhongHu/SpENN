@@ -20,7 +20,6 @@ from utils.config import config_snapshot_names
 from utils.io import read_json, write_json
 from utils.layout import (
     STAGE_VALIDATION,
-    attempt_smoke,
     grid_attempt_dir,
     latest_attempt_id,
     stage_dir,
@@ -30,7 +29,8 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
-from utils.seeds import seed_override_values
+from utils.overrides import AxisOverrideSpec, axis_value_overrides, normalize_axis_override_specs
+from utils.seeds import scan_seed_values, seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]
@@ -61,30 +61,11 @@ def _scalar_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(axis) for axis in manifest.get("grid_axes", []) if str(axis) != seed_axis)
 
 
-def _axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, str]:
+def _axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, AxisOverrideSpec]:
     """Return axis -> config override path from a grid manifest."""
 
     configured = manifest.get("axis_overrides")
-    if not isinstance(configured, dict):
-        raise ValueError("grid manifest axis_overrides must be a mapping")
-    missing = [axis for axis in axes if axis not in configured]
-    if missing:
-        raise ValueError(f"grid manifest axis_overrides is missing axes: {', '.join(missing)}")
-    return {axis: str(configured[axis]) for axis in axes}
-
-
-def _axis_value_overrides(
-    point: dict[str, Any],
-    *,
-    scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
-) -> list[str]:
-    overrides = []
-    for axis in scalar_axes:
-        if axis not in point:
-            raise ValueError(f"job choices are missing configured axis {axis!r}")
-        overrides.append(f"{override_paths[axis]}={point[axis]}")
-    return overrides
+    return normalize_axis_override_specs(configured, axes, context="grid manifest")
 
 
 def _command_for(config: str | Path, overrides: Sequence[str], *, python: str = "python") -> list[str]:
@@ -112,7 +93,7 @@ def validation_overrides(
     results_root: str | Path,
     checkpoint_path: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     seed_axis: str,
     seed_policy: dict[str, dict[str, str]] | None = None,
     timezone: str | None = None,
@@ -122,10 +103,10 @@ def validation_overrides(
     seed_overrides = seed_override_values(
         seed_policy,
         "validation",
-        {"scan_seed": int(point[seed_axis])},
+        scan_seed_values(point, seed_axis),
     )
     overrides = [
-        *_axis_value_overrides(point, scalar_axes=scalar_axes, override_paths=override_paths),
+        *axis_value_overrides(point, axes=scalar_axes, override_specs=override_paths, stage="validation"),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
         f"load.path={checkpoint_path}",
         f"run.root={stage_dir(results_root, STAGE_VALIDATION)}",
@@ -141,10 +122,10 @@ def validation_overrides(
     return overrides
 
 
-def latest_train_attempt_id(results_root: str | Path, run_id: str, *, smoke: bool) -> str | None:
+def latest_train_attempt_id(results_root: str | Path, run_id: str) -> str | None:
     """Return the latest eligible train attempt for ``run_id``."""
 
-    return latest_attempt_id(train_run_dir(results_root, run_id), smoke=smoke)
+    return latest_attempt_id(train_run_dir(results_root, run_id))
 
 
 def _validation_config_from_grid(
@@ -190,15 +171,11 @@ def _validation_config_from_grid(
 def _validation_attempt_id(args: argparse.Namespace, grid_attempt_id: str) -> str:
     """Return the validation attempt id: explicit override, else grid-derived."""
 
-    return args.attempt_id or (
-        launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
-    )
+    return args.attempt_id or grid_attempt_id
 
 
-def _selected_jobs(jobs: Sequence[dict[str, Any]], *, smoke: bool) -> list[dict[str, Any]]:
-    if not smoke:
-        return [dict(job) for job in jobs]
-    return [dict(job) for job in list(jobs)[: launch.SMOKE_JOB_LIMIT]]
+def _selected_jobs(jobs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(job) for job in jobs]
 
 
 def _train_attempt_id_for_job(
@@ -208,13 +185,8 @@ def _train_attempt_id_for_job(
     run_id: str,
 ) -> str | None:
     if args.train_attempt_id is not None:
-        is_smoke = attempt_smoke(train_run_dir(results_root, run_id), args.train_attempt_id)
-        if not args.smoke and is_smoke is True:
-            raise ValueError("full validation refuses a smoke train attempt; pass --smoke for smoke validation")
         return args.train_attempt_id
-    if args.smoke:
-        return latest_train_attempt_id(results_root, run_id, smoke=True)
-    return latest_train_attempt_id(results_root, run_id, smoke=False)
+    return latest_train_attempt_id(results_root, run_id)
 
 
 def plan_validation_jobs(
@@ -226,14 +198,14 @@ def plan_validation_jobs(
     grid_attempt_id: str,
     validation_config: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     seed_axis: str,
-    smoke_overrides: dict[str, object],
+    static_stage_overrides: dict[str, object] | None = None,
     seed_policy: dict[str, dict[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Build validation launch records and write source-train provenance."""
 
-    selected = _selected_jobs(jobs, smoke=args.smoke)
+    selected = _selected_jobs(jobs)
     validation_attempt_id = _validation_attempt_id(args, grid_attempt_id)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -253,6 +225,9 @@ def plan_validation_jobs(
             continue
 
         point = dict(job.get("choices", {}))
+        seed_values = job.get("seed_values")
+        if isinstance(seed_values, dict):
+            point.update(seed_values)
         if seed_axis not in point and "scan_seed" in job:
             point[seed_axis] = job["scan_seed"]
         checkpoint_path = train_attempt / "checkpoints"
@@ -290,9 +265,8 @@ def plan_validation_jobs(
         )
         command = _command_for(validation_config, overrides)
         command = launch.with_study_timezone(command, timezone=_job_timezone(job))
-        if args.smoke:
-            command = launch.with_overrides(command, smoke_overrides)
-        write_latest(validation_attempt.parent, validation_attempt_id, smoke=args.smoke)
+        command = launch.with_overrides(command, static_stage_overrides or {})
+        write_latest(validation_attempt.parent, validation_attempt_id)
         planned.append(
             {
                 "run_id": run_id,
@@ -355,8 +329,8 @@ def _executor(
         args=args,
         repo_root=repo_root,
         log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / log_attempt,
-        job_name=stage_job_name(study, "validate", smoke=args.smoke),
-        smoke=args.smoke,
+        job_name=stage_job_name(study, "validate"),
+        smoke=False,
         chunk_size=args.chunk_size,
         allow_partial_failures=True,
         chunk_status_dir=stage_dir(results_root, STAGE_VALIDATION) / "chunk_status" / log_attempt,
@@ -377,7 +351,7 @@ def _resource_spec(args: argparse.Namespace) -> Any:
     resolved_profiles = {}
     for profile in profiles:
         uv_environment, uv_extras, _runtime_device = launch.resolve_uv_settings_for_profile(args, profile)
-        slurm = launch.slurm_parameters(args, profile=profile, smoke=args.smoke)
+        slurm = launch.slurm_parameters(args, profile=profile)
         resolved_profiles[profile] = resource_from_profile(
             profile=profile,
             partition=slurm.get("slurm_partition"),
@@ -443,7 +417,7 @@ def build_validation_stage_plan(
         results_root=str(results_root),
         source_attempts={"grid": grid_attempt_id},
         timezone=manifest.get("timezone"),
-        smoke=bool(args.smoke),
+        smoke=False,
         metadata={
             "backend": args.backend,
             "device": launch.selected_device(args),
@@ -464,21 +438,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--train-attempt-id",
         default=None,
-        help="Exact train attempt to validate. Full validation rejects smoke attempts.",
+        help="Exact train attempt to validate.",
     )
     parser.add_argument(
         "--attempt-id",
         default=None,
-        help="Validation attempt id (defaults to the grid attempt id, or grid-smoke with --smoke).",
+        help="Validation attempt id (defaults to the grid attempt id).",
     )
     launch.add_launch_arguments(
         parser,
         smoke_help=(
-            "Validate the first two smoke-capable jobs with smoke-marked attempt ids, "
-            "small evaluation grids, and 15-minute test partitions."
+            "Deprecated. Use configs/smoke.yaml with the normal stage stack."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    launch.reject_deprecated_smoke(parser, args)
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -505,18 +480,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             argv=raw_argv,
             repo_root=repo_root,
             log_dir=stage_dir(results_root, STAGE_VALIDATION) / "slurm_logs" / "dependent_launchers",
-            job_name=stage_job_name(study, "validate-launcher", smoke=args.smoke),
+            job_name=stage_job_name(study, "validate-launcher"),
             partition=args.wait_launcher_partition,
             timeout_min=args.wait_launcher_timeout_min,
             study=study,
         )
         return 0
     seed_policy = manifest.get("seed_overrides")
-    grid_dir = grid_attempt_dir(results_root, grid_attempt_id)
-    configured_smoke_overrides = launch.load_smoke_overrides(
+    static_stage_overrides = launch.static_overrides_for_stage(
         "validation",
         manifest=manifest,
-        attempt_dir=grid_dir,
     )
     scalar_axes = _scalar_axes(manifest)
     override_paths = _axis_override_paths(manifest, scalar_axes)
@@ -536,7 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         scalar_axes=scalar_axes,
         override_paths=override_paths,
         seed_axis=seed_axis,
-        smoke_overrides=configured_smoke_overrides,
+        static_stage_overrides=static_stage_overrides,
         seed_policy=seed_policy,
     )
     command_sets = launch.environment_command_sets(
@@ -585,8 +558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         submitted_commands=submitted_commands,
     )
     write_execution_records(stage_plan_dir, execution_records)
-    mode = "smoke validation" if args.smoke else "validation"
-    print(f"{prefix} launched {len(job_ids)} {mode} jobs from 00_grid/{grid_attempt_id} via {args.backend}")
+    print(f"{prefix} launched {len(job_ids)} validation jobs from 00_grid/{grid_attempt_id} via {args.backend}")
     return 0
 
 

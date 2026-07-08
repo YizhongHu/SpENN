@@ -19,7 +19,6 @@ from utils.io import read_json, write_json
 from utils.layout import (
     STAGE_FINAL_GRID,
     STAGE_FINAL_TRAIN,
-    attempt_smoke,
     final_grid_attempt_dir,
     final_train_attempt_dir,
     final_train_run_dir,
@@ -28,6 +27,12 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
+from utils.overrides import (
+    AxisOverrideSpec,
+    axis_value_overrides,
+    format_override_value,
+    normalize_axis_override_specs,
+)
 from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -72,19 +77,13 @@ def _exclude_completed_jobs(
     return eligible, completed
 
 
-def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
+def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
-        is_smoke = attempt_smoke(stage_dir(results_root, STAGE_FINAL_GRID), requested)
-        if not smoke and is_smoke is True:
-            raise ValueError("full final training refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
-    attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
-    if attempt_id is None and smoke:
-        attempt_id = latest_attempt_id(final_grid_stage, smoke=False)
+    attempt_id = latest_attempt_id(final_grid_stage)
     if attempt_id is None:
-        mode = "smoke" if smoke else "production"
-        raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
+        raise FileNotFoundError(f"no final-grid attempts under {final_grid_stage}")
     return attempt_id
 
 
@@ -119,16 +118,14 @@ def load_final_jobs(results_root: Path, final_grid_attempt_id: str) -> list[dict
     return jobs
 
 
-def _selected_jobs(jobs: Sequence[dict[str, Any]], *, smoke: bool) -> list[dict[str, Any]]:
-    if not smoke:
-        return [dict(job) for job in jobs]
-    return [dict(job) for job in list(jobs)[: launch.SMOKE_JOB_LIMIT]]
+def _selected_jobs(jobs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(job) for job in jobs]
 
 
 def _attempt_id(args: argparse.Namespace, *, final_grid_attempt_id: str) -> str:
     if args.attempt_id:
-        return launch.smoke_attempt_id(args.attempt_id) if args.smoke else args.attempt_id
-    return launch.smoke_attempt_id(final_grid_attempt_id) if args.smoke else final_grid_attempt_id
+        return args.attempt_id
+    return final_grid_attempt_id
 
 
 def final_scalar_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
@@ -137,16 +134,11 @@ def final_scalar_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(axis) for axis in (*manifest.get("major_axes", []), *manifest.get("minor_axes", [])))
 
 
-def final_axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, str]:
+def final_axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, AxisOverrideSpec]:
     """Return axis -> config override path from a final-grid manifest."""
 
     configured = manifest.get("axis_overrides")
-    if not isinstance(configured, dict):
-        raise ValueError("final-grid manifest axis_overrides must be a mapping")
-    missing = [axis for axis in axes if axis not in configured]
-    if missing:
-        raise ValueError(f"final-grid manifest axis_overrides is missing axes: {', '.join(missing)}")
-    return {axis: str(configured[axis]) for axis in axes}
+    return normalize_axis_override_specs(configured, axes, context="final-grid manifest")
 
 
 def _job_choices(job: dict[str, Any]) -> dict[str, Any]:
@@ -168,17 +160,14 @@ def axis_value_overrides_for_job(
     job: dict[str, Any],
     *,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
+    stage: str | None = None,
+    static_stage_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return config overrides for all scalar non-seed final-job choices."""
 
     choices = _job_choices(job)
-    overrides = []
-    for axis in scalar_axes:
-        if axis not in choices:
-            raise ValueError(f"final job {job.get('final_run_id', '<unknown>')!r} is missing axis {axis!r}")
-        overrides.append(f"{override_paths[axis]}={choices[axis]}")
-    return overrides
+    return axis_value_overrides(choices, axes=scalar_axes, override_specs=override_paths, stage=stage)
 
 
 def final_train_overrides(
@@ -189,7 +178,8 @@ def final_train_overrides(
     attempt_id: str,
     results_root: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
+    static_stage_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return OmegaConf overrides for one final training run."""
 
@@ -202,8 +192,14 @@ def final_train_overrides(
     if seed_overrides is None:
         seed_overrides = seed_override_values(None, "final_train", job)
     return [
-        *axis_value_overrides_for_job(job, scalar_axes=scalar_axes, override_paths=override_paths),
+        *axis_value_overrides_for_job(
+            job,
+            scalar_axes=scalar_axes,
+            override_paths=override_paths,
+            stage="final_train",
+        ),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
+        *(f"{path}={format_override_value(value)}" for path, value in (static_stage_overrides or {}).items()),
         f"run.root={stage_dir(results_root, STAGE_FINAL_TRAIN)}",
         "run.layout=flat",
         f"run.run_id={final_run_id}/{attempt_id}",
@@ -228,7 +224,8 @@ def _command_for_job(
     attempt_id: str,
     results_root: Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
+    static_stage_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     final_run_id = str(job["final_run_id"])
     attempt_dir = final_train_attempt_dir(results_root, final_run_id, attempt_id)
@@ -243,6 +240,7 @@ def _command_for_job(
                 results_root=results_root,
                 scalar_axes=scalar_axes,
                 override_paths=override_paths,
+                static_stage_overrides=static_stage_overrides,
             ),
             *_resume_overrides(attempt_dir),
         ],
@@ -281,8 +279,8 @@ def _executor(
         args=args,
         repo_root=repo_root,
         log_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "slurm_logs" / log_attempt,
-        job_name=stage_job_name(study, "final-train", smoke=args.smoke),
-        smoke=args.smoke,
+        job_name=stage_job_name(study, "final-train"),
+        smoke=False,
         chunk_size=args.chunk_size,
         claim_rows=True,
         chunk_status_dir=stage_dir(results_root, STAGE_FINAL_TRAIN) / "chunk_status" / log_attempt,
@@ -303,7 +301,7 @@ def _resource_spec(args: argparse.Namespace) -> Any:
     resolved_profiles = {}
     for profile in profiles:
         uv_environment, uv_extras, _runtime_device = launch.resolve_uv_settings_for_profile(args, profile)
-        slurm = launch.slurm_parameters(args, profile=profile, smoke=args.smoke)
+        slurm = launch.slurm_parameters(args, profile=profile)
         resolved_profiles[profile] = resource_from_profile(
             profile=profile,
             partition=slurm.get("slurm_partition"),
@@ -375,7 +373,7 @@ def build_final_train_stage_plan(
         results_root=str(results_root),
         source_attempts={"final_grid": final_grid_attempt_id},
         timezone=manifest.get("timezone"),
-        smoke=bool(args.smoke),
+        smoke=False,
         metadata={
             "backend": args.backend,
             "device": launch.selected_device(args),
@@ -392,7 +390,6 @@ def write_final_train_provenance(
     final_grid_attempt_id: str,
     attempt_id: str,
     commands: Sequence[Sequence[str]],
-    smoke: bool = False,
 ) -> None:
     """Write per-final-run source pointers before launch."""
 
@@ -412,7 +409,7 @@ def write_final_train_provenance(
         write_json(attempt_dir / "source_champion.json", job.get("source_champion", {}))
         write_json(attempt_dir / "selected_checkpoint.json", _checkpoint_selection_record(attempt_dir))
         (attempt_dir / "command.txt").write_text(shlex.join([str(part) for part in command]) + "\n")
-        write_latest(final_train_run_dir(results_root, final_run_id), attempt_id, smoke=smoke)
+        write_latest(final_train_run_dir(results_root, final_run_id), attempt_id)
 
 
 def write_final_train_submission_records(
@@ -463,11 +460,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     launch.add_launch_arguments(
         parser,
         smoke_help=(
-            "Launch two short final-train smoke jobs from a smoke final grid, "
-            "with smoke-marked attempt ids and test partitions."
+            "Deprecated. Use configs/smoke.yaml with the normal stage stack."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    launch.reject_deprecated_smoke(parser, args)
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -488,7 +486,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     final_grid_attempt_id = _resolve_final_grid_attempt_id(
         results_root,
         args.final_grid_attempt_id,
-        smoke=args.smoke,
     )
     manifest = load_final_grid_manifest(results_root, final_grid_attempt_id)
     study = study_name_from_manifest(manifest)
@@ -497,24 +494,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not config:
         raise ValueError("final-grid manifest does not record train_config; pass --config")
     attempt_id = _attempt_id(args, final_grid_attempt_id=final_grid_attempt_id)
-    jobs = _selected_jobs(load_final_jobs(results_root, final_grid_attempt_id), smoke=args.smoke)
+    jobs = _selected_jobs(load_final_jobs(results_root, final_grid_attempt_id))
     if not jobs:
         raise ValueError(f"final grid attempt {final_grid_attempt_id} has no jobs")
     jobs, completed_jobs = _exclude_completed_jobs(jobs, results_root=results_root, attempt_id=attempt_id)
     if not jobs:
-        mode = "smoke final-train" if args.smoke else "final-train"
         print(
-            f"{prefix} no {mode} rows to launch from 05_final_grid/{final_grid_attempt_id}; "
+            f"{prefix} no final-train rows to launch from 05_final_grid/{final_grid_attempt_id}; "
             f"excluded {len(completed_jobs)} completed rows"
         )
         return 0
     scalar_axes = final_scalar_axes(manifest)
     override_paths = final_axis_override_paths(manifest, scalar_axes)
-    configured_smoke_overrides = launch.load_smoke_overrides(
-        "final_train",
-        manifest=manifest,
-        attempt_dir=final_grid_attempt_dir(results_root, final_grid_attempt_id),
-    )
+    static_stage_overrides = {}
+    configured_static_overrides = manifest.get("static_overrides")
+    if isinstance(configured_static_overrides, dict):
+        stage_overrides = configured_static_overrides.get("final_train") or {}
+        if isinstance(stage_overrides, dict):
+            static_stage_overrides = {str(path): value for path, value in stage_overrides.items()}
     commands = [
         launch.with_study_timezone(
             _command_for_job(
@@ -525,19 +522,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 results_root=results_root,
                 scalar_axes=scalar_axes,
                 override_paths=override_paths,
+                static_stage_overrides=static_stage_overrides,
             )
         )
         for job in jobs
     ]
-    if args.smoke:
-        commands = [launch.with_overrides(command, configured_smoke_overrides) for command in commands]
     write_final_train_provenance(
         jobs,
         results_root=results_root,
         final_grid_attempt_id=final_grid_attempt_id,
         attempt_id=attempt_id,
         commands=commands,
-        smoke=args.smoke,
     )
 
     command_sets = launch.environment_command_sets(commands, args=args, repo_root=repo_root)
@@ -571,9 +566,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     job_ids = [record.launcher_job_id for record in execution_records]
 
     if args.claim_existing_only:
-        mode = "smoke final-train" if args.smoke else "final-train"
         print(
-            f"{prefix} locally claimed {len(job_ids)} {mode} rows from "
+            f"{prefix} locally claimed {len(job_ids)} final-train rows from "
             f"05_final_grid/{final_grid_attempt_id}; submission records unchanged"
         )
         return 0
@@ -588,10 +582,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         submitted_commands=submitted_commands,
     )
     write_execution_records(stage_plan_dir, execution_records)
-    mode = "smoke final-train" if args.smoke else "final-train"
     excluded = f"; excluded {len(completed_jobs)} completed rows" if completed_jobs else ""
     print(
-        f"{prefix} launched {len(job_ids)} {mode} jobs from "
+        f"{prefix} launched {len(job_ids)} final-train jobs from "
         f"05_final_grid/{final_grid_attempt_id} via {args.backend}{excluded}"
     )
     return 0

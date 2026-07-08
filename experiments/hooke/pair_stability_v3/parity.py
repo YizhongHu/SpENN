@@ -101,7 +101,6 @@ def prepare_v2_config(*, attempt_id: str = DEFAULT_ATTEMPT_ID) -> Path:
     grid["study"] = "pair_stability_v2"
     grid["config"] = str(target / "pair_stability.yaml")
     grid["validation_config"] = str(target / "pair_validation.yaml")
-    grid["smoke_config"] = str(target / "smoke.yaml")
     grid["results_root"] = str(V2_DIR / "results")
     grid_path = target / "grid.yaml"
     OmegaConf.save(OmegaConf.create(grid), grid_path)
