@@ -35,6 +35,7 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
+from utils.overrides import AxisOverrideSpec
 from utils.seeds import seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -124,7 +125,7 @@ def final_eval_overrides(
     results_root: str | Path,
     checkpoint_dir: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
 ) -> list[str]:
     """Return OmegaConf overrides for one final evaluation run."""
 
@@ -137,7 +138,12 @@ def final_eval_overrides(
     if seed_overrides is None:
         seed_overrides = seed_override_values(None, "final_eval", job)
     return [
-        *axis_value_overrides_for_job(job, scalar_axes=scalar_axes, override_paths=override_paths),
+        *axis_value_overrides_for_job(
+            job,
+            scalar_axes=scalar_axes,
+            override_paths=override_paths,
+            stage="final_eval",
+        ),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
         "evaluation.suite=final_eval",
         f"load.path={checkpoint_dir}",
@@ -166,7 +172,7 @@ def plan_final_eval_jobs(
     final_grid_attempt_id: str,
     eval_config: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     static_stage_overrides: dict[str, object] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Build final-eval launch records and write source provenance."""

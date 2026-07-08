@@ -415,10 +415,14 @@ def _axis_columns_from_contexts(contexts: Sequence[dict[str, Any]]) -> list[str]
 def _report_axes(manifest: dict[str, Any]) -> tuple[str | None, str | None]:
     """Return the two axes used by legacy report grid aliases."""
 
-    major = set(_major_axes(manifest))
+    major_axes = _major_axes(manifest)
+    major = set(major_axes)
     if {"basis", "update_normalization", "feature_normalization"}.issubset(major):
         return REPORT_ROW_KEY, REPORT_COL_KEY
-    return "basis_class", "normalization"
+    minor_axes = _minor_axes(manifest)
+    row_axis = major_axes[0] if major_axes else None
+    col_axis = major_axes[1] if len(major_axes) > 1 else (minor_axes[0] if minor_axes else None)
+    return row_axis, col_axis
 
 
 def _report_axis_values(job: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, str]:

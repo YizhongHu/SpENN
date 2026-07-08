@@ -264,13 +264,25 @@ def _load_collect_manifest(collect_dir: Path) -> dict[str, Any]:
     if not manifest_path.is_file():
         return {}
     manifest: dict[str, Any] = {}
+    current_list_key: str | None = None
     for line in manifest_path.read_text().splitlines():
-        if line.startswith(" ") or ":" not in line:
+        if line.startswith(" "):
+            if current_list_key is not None:
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    values = manifest.setdefault(current_list_key, [])
+                    if isinstance(values, list):
+                        values.append(stripped[2:].strip())
+            continue
+        current_list_key = None
+        if ":" not in line:
             continue
         key, value = line.split(":", 1)
         value = value.strip()
         if value:
             manifest[key.strip()] = value
+        else:
+            current_list_key = key.strip()
     return manifest
 
 
@@ -288,6 +300,13 @@ def _column_has_values(rows: Sequence[dict[str, Any]], key: str) -> bool:
     return any(str(row.get(key, "")).strip() for row in rows)
 
 
+def _manifest_axis_names(collect_manifest: dict[str, Any], key: str) -> tuple[str, ...]:
+    raw = collect_manifest.get(key, [])
+    if not isinstance(raw, list | tuple):
+        return ()
+    return tuple(str(axis).strip() for axis in raw if str(axis).strip())
+
+
 def _report_axis_keys(
     collect_manifest: dict[str, Any],
     tables: dict[str, list[dict[str, Any]]],
@@ -295,16 +314,28 @@ def _report_axis_keys(
     """Return the primary and secondary comparison axes for final reporting."""
 
     summary_rows = tables.get("architecture_summary.csv", [])
+    major_axes = _manifest_axis_names(collect_manifest, "major_axes")
+    minor_axes = _manifest_axis_names(collect_manifest, "minor_axes")
     configured = (
         str(collect_manifest.get("report_row_key", "")).strip(),
         str(collect_manifest.get("report_col_key", "")).strip(),
     )
-    for row_key, col_key in (
-        configured,
-        ("basis_update", "feature_normalization"),
-        ("basis", "mechanism"),
-        ("basis_class", "normalization"),
-    ):
+    candidates: list[tuple[str | None, str | None]] = []
+    if {"basis", "update_normalization", "feature_normalization"}.issubset(set(major_axes)):
+        candidates.append(("basis_update", "feature_normalization"))
+    elif len(major_axes) >= 2:
+        candidates.append((major_axes[0], major_axes[1]))
+    elif major_axes and minor_axes:
+        candidates.append((major_axes[0], minor_axes[0]))
+    candidates.extend(
+        [
+            configured,
+            ("basis_update", "feature_normalization"),
+            ("basis", "mechanism"),
+            ("basis_class", "normalization"),
+        ]
+    )
+    for row_key, col_key in candidates:
         if row_key and col_key and _column_has_values(summary_rows, row_key) and _column_has_values(summary_rows, col_key):
             return row_key, col_key
     return "basis_class", "normalization"
@@ -379,7 +410,7 @@ def _unique_in_order(values: Sequence[Any]) -> list[str]:
     return out
 
 
-def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+def _energy_variance_points(rows: Sequence[dict[str, Any]], *, row_key: str, col_key: str) -> list[dict[str, Any]]:
     """Return positive log-log points for the 1B winner scatter."""
 
     points = []
@@ -395,34 +426,49 @@ def _energy_variance_points(rows: Sequence[dict[str, Any]]) -> list[dict[str, An
             {
                 "abs_energy_error": abs_error,
                 "local_energy_var": variance,
-                "architecture": str(row.get("basis_class", row.get("architecture", ""))),
-                "normalization": str(row.get("normalization", "")),
+                "primary_axis": _row_axis_value(row, row_key, "basis_class"),
+                "secondary_axis": _row_axis_value(row, col_key, "normalization"),
                 "winner_kind": "energy" if str(row.get("winner_kind", "")).strip() == "energy" else "stability",
             }
         )
     return points
 
 
-def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
-    points = [point for point in _energy_variance_points(rows) if point["winner_kind"] in PLOT_WINNER_KINDS]
+def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *, row_key: str, col_key: str, title: str) -> None:
+    points = [point for point in _energy_variance_points(rows, row_key=row_key, col_key=col_key) if point["winner_kind"] in PLOT_WINNER_KINDS]
     if not points:
         plot.save_no_data(path, title)
         return
-    architectures = sorted({str(point["architecture"]) for point in points})
+    if (row_key, col_key) == ("max_steps", "sampler_n_steps"):
+        plot.save_loglog_scatter(
+            path,
+            points,
+            x_key="abs_energy_error",
+            y_key="local_energy_var",
+            color_key="secondary_axis",
+            marker_key="primary_axis",
+            x_label="abs energy error |E - 2|",
+            y_label="local-energy variance",
+            title=f"{title}\nMarker shape encodes {row_key}; color encodes {col_key}.",
+            color_title=col_key,
+            marker_title=row_key,
+        )
+        return
+    primary_values = sorted({str(point["primary_axis"]) for point in points})
     plot.save_loglog_scatter_grid(
         path,
         points,
-        panel_key="architecture",
-        panel_keys=architectures,
-        panel_titles={architecture: architecture for architecture in architectures},
+        panel_key="primary_axis",
+        panel_keys=primary_values,
+        panel_titles={value: value for value in primary_values},
         x_key="abs_energy_error",
         y_key="local_energy_var",
-        color_key="normalization",
+        color_key="secondary_axis",
         marker_key="winner_kind",
         x_label="abs energy error |E - 2|",
         y_label="local-energy variance",
-        title=f"{title}\nPrimary report-axis values are separated by panel; color is the secondary report axis and marker shape is winner type.",
-        color_title="Secondary axis",
+        title=f"{title}\nPanels encode {row_key}; color encodes {col_key}; marker shape is winner type.",
+        color_title=col_key,
         marker_title="Winner type",
     )
 
@@ -462,7 +508,14 @@ def _local_energy_bar_series(rows: Sequence[dict[str, Any]]) -> tuple[list[float
     return _crop_bar_series_to_weighted_quantiles(centers, counts, widths)
 
 
-def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, Any]], *, title: str) -> None:
+def _save_local_energy_distribution_grid(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    title: str,
+    row_axis_label: str,
+    col_axis_label: str,
+) -> None:
     normalizations, architectures, groups = _local_energy_distribution_groups(rows)
     if not groups:
         plot.save_no_data(path, title)
@@ -496,6 +549,8 @@ def _save_local_energy_distribution_grid(path: Path, rows: Sequence[dict[str, An
         rect=(0.0, 0.0, 1.0, 0.94),
         suptitle_y=0.98,
         bbox_inches=None,
+        row_axis_label=row_axis_label,
+        col_axis_label=col_axis_label,
     )
 
 
@@ -557,6 +612,8 @@ def _save_cusp_winner_grid(
     value_key: str,
     y_label: str,
     title: str,
+    row_axis_label: str,
+    col_axis_label: str,
 ) -> None:
     """Save one cusp profile metric as a winner-specific architecture grid."""
 
@@ -593,6 +650,8 @@ def _save_cusp_winner_grid(
         legend_title="CoM",
         rect=(0.0, 0.0, 0.86, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.1 * len(normalizations))),
+        row_axis_label=row_axis_label,
+        col_axis_label=col_axis_label,
     )
 
 
@@ -642,6 +701,8 @@ def _save_cusp_derivative_winner_grid(
     *,
     winner_kind: str,
     title: str,
+    row_axis_label: str,
+    col_axis_label: str,
 ) -> None:
     """Save Figure 2D for one winner type."""
 
@@ -724,6 +785,7 @@ def _save_cusp_derivative_winner_grid(
         )
     fig.suptitle(title, y=0.995)
     fig.tight_layout(rect=(0.0, 0.0, 0.86 if legend_handles else 1.0, 0.92))
+    plot.add_major_axis_labels(fig, axes, row_label=row_axis_label, col_label=col_axis_label, col_position="top")
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -834,6 +896,8 @@ def _save_tail_local_energy_line_grid(
     *,
     winner_kind: str,
     title: str,
+    row_axis_label: str,
+    col_axis_label: str,
 ) -> None:
     """Save tail local-energy medians as CoM lines with q5-q85 ranges."""
 
@@ -871,6 +935,8 @@ def _save_tail_local_energy_line_grid(
         legend_title="CoM",
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
         rect=(0.0, 0.0, 0.88, 0.94),
+        row_axis_label=row_axis_label,
+        col_axis_label=col_axis_label,
     )
 
 
@@ -880,6 +946,8 @@ def _save_tail_logabs_line_grid(
     *,
     winner_kind: str,
     title: str,
+    row_axis_label: str,
+    col_axis_label: str,
 ) -> None:
     """Save tail logabs profiles as lines."""
 
@@ -915,6 +983,8 @@ def _save_tail_logabs_line_grid(
         legend_title="CoM",
         rect=(0.0, 0.0, 0.88, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        row_axis_label=row_axis_label,
+        col_axis_label=col_axis_label,
     )
 
 
@@ -1009,6 +1079,8 @@ def _save_architecture_normalization_line_grid(
     group_keys: Sequence[str],
     title: str,
     legend_title: str,
+    row_axis_label: str,
+    col_axis_label: str,
 ) -> None:
     """Save a line grid with normalization rows and architecture columns."""
 
@@ -1049,6 +1121,8 @@ def _save_architecture_normalization_line_grid(
         legend_title=legend_title,
         rect=(0.0, 0.0, 0.84, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        row_axis_label=row_axis_label,
+        col_axis_label=col_axis_label,
     )
 
 
@@ -1121,6 +1195,8 @@ def _save_training_curve_grid(
     title: str,
     semilogy: bool = False,
     smooth_window: int = 25,
+    row_axis_label: str | None = None,
+    col_axis_label: str | None = None,
 ) -> None:
     """Save one winner family's final-training curves."""
 
@@ -1167,6 +1243,8 @@ def _save_training_curve_grid(
         panel_notes=panel_notes,
         rect=(0.0, 0.0, 1.0, 0.94),
         figsize=(max(5.0, 3.1 * len(architectures)), max(3.2, 2.2 * len(normalizations))),
+        row_axis_label=row_axis_label,
+        col_axis_label=col_axis_label,
     )
 
 
@@ -1278,6 +1356,8 @@ def _write_figures(
     figures_dir.mkdir(parents=True, exist_ok=True)
     written = []
     row_key, col_key = _report_axis_keys(collect_manifest, tables)
+    grid_row_axis_label = col_key
+    grid_col_axis_label = row_key
     architecture_rows = tables["architecture_summary.csv"]
     energy = tables["energy_by_run.csv"]
     energy_components = _combined_energy_component_rows(energy, axis_keys=(row_key, col_key))
@@ -1300,41 +1380,41 @@ def _write_figures(
     for winner in PLOT_WINNER_KINDS:
         add(
             _winner_filename("1C", winner, "local_energy_distribution_grid.png"),
-            lambda path, winner=winner: _save_local_energy_distribution_grid(path, _winner_rows(histograms, winner), title=f"MCMC local-energy histograms: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_local_energy_distribution_grid(path, _winner_rows(histograms, winner), title=f"MCMC local-energy histograms: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
 
-    add("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, title="Absolute energy error vs local-energy variance"))
+    add("1B_energy_error_vs_local_energy_variance.png", lambda path: _save_energy_variance_scatter(path, energy, row_key=row_key, col_key=col_key, title="Absolute energy error vs local-energy variance"))
     cusp_rows = tables["cusp_profile_summary.csv"]
     for winner in PLOT_WINNER_KINDS:
         add(
             _winner_filename("2A", winner, "cusp_local_energy_grid.png"),
-            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="local_energy_median", y_label="local energy", title=f"Cusp local energy profiles: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="local_energy_median", y_label="local energy", title=f"Cusp local energy profiles: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
         add(
             _winner_filename("2B", winner, "cusp_logabs_grid.png"),
-            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="logabs_median", y_label="logabs", title=f"Cusp logabs profiles: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="logabs_median", y_label="logabs", title=f"Cusp logabs profiles: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
         add(
             _winner_filename("2C", winner, "cusp_finite_fraction_grid.png"),
-            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="finite_fraction", y_label="finite fraction", title=f"Cusp finite fraction profiles: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_cusp_winner_grid(path, cusp_rows, winner_kind=winner, value_key="finite_fraction", y_label="finite fraction", title=f"Cusp finite fraction profiles: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
     for winner in PLOT_WINNER_KINDS:
         add(
             _winner_filename("2D", winner, "cusp_dlogabs_dr_grid.png"),
-            lambda path, winner=winner: _save_cusp_derivative_winner_grid(path, cusp_rows, winner_kind=winner, title=f"Cusp derivative profiles: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_cusp_derivative_winner_grid(path, cusp_rows, winner_kind=winner, title=f"Cusp derivative profiles: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
     tail_labels = {"energy": ("3A", "3C"), "stability": ("3B", "3D")}
     for winner in PLOT_WINNER_KINDS:
         local_energy_label, _logabs_label = tail_labels[winner]
         add(
             _winner_filename(local_energy_label, winner, "tail_local_energy_lines.png"),
-            lambda path, winner=winner: _save_tail_local_energy_line_grid(path, tables["tail_profile_summary.csv"], winner_kind=winner, title=f"Tail local energy: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_tail_local_energy_line_grid(path, tables["tail_profile_summary.csv"], winner_kind=winner, title=f"Tail local energy: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
     for winner in PLOT_WINNER_KINDS:
         _local_energy_label, logabs_label = tail_labels[winner]
         add(
             _winner_filename(logabs_label, winner, "tail_logabs_grid.png"),
-            lambda path, winner=winner: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind=winner, title=f"Tail logabs: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_tail_logabs_line_grid(path, tables["tail_profile_summary.csv"], winner_kind=winner, title=f"Tail logabs: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
 
     add(
@@ -1357,15 +1437,15 @@ def _write_figures(
         rows = _winner_rows(hooke_rows, winner)
         add(
             _winner_filename("5A", winner, "hooke_orbital_local_energy_distribution.png"),
-            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("com_bin",), title=f"Hooke-orbital local-energy medians: {_winner_title(winner)}", legend_title="CoM bin"),
+            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("com_bin",), title=f"Hooke-orbital local-energy medians: {_winner_title(winner)}", legend_title="CoM bin", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
         add(
             _winner_filename("5B", winner, "hooke_orbital_local_energy_vs_r12.png"),
-            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("com_bin",), title=f"Hooke-orbital local energy vs r12: {_winner_title(winner)}", legend_title="CoM bin"),
+            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="r12_center", y_key="local_energy_median", group_keys=("com_bin",), title=f"Hooke-orbital local energy vs r12: {_winner_title(winner)}", legend_title="CoM bin", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
         add(
             _winner_filename("5C", winner, "hooke_orbital_local_energy_vs_radius.png"),
-            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="R_norm_center", y_key="local_energy_median", group_keys=("r12_bin",), title=f"Hooke-orbital local energy vs CoM radius: {_winner_title(winner)}", legend_title="r12 bin"),
+            lambda path, rows=rows, winner=winner: _save_architecture_normalization_line_grid(path, rows, x_key="R_norm_center", y_key="local_energy_median", group_keys=("r12_bin",), title=f"Hooke-orbital local energy vs CoM radius: {_winner_title(winner)}", legend_title="r12 bin", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
 
     for metric_index, metric in enumerate(SYMMETRY_METRICS):
@@ -1385,11 +1465,11 @@ def _write_figures(
         energy_label, error_label = training_labels[winner]
         add(
             _winner_filename(energy_label, winner, "training_energy.png"),
-            lambda path, winner=winner: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind=winner, value_mode="energy_mean", y_label="energy mean", title=f"Final-train energy curves: {_winner_title(winner)}"),
+            lambda path, winner=winner: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind=winner, value_mode="energy_mean", y_label="energy mean", title=f"Final-train energy curves: {_winner_title(winner)}", row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
         add(
             _winner_filename(error_label, winner, "abs_energy_error_semilogy.png"),
-            lambda path, winner=winner: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind=winner, value_mode="abs_energy_error", y_label="abs energy error |E - 2|", title=f"Final-train absolute energy error: {_winner_title(winner)}", semilogy=True),
+            lambda path, winner=winner: _save_training_curve_grid(path, tables["training_curve_summary.csv"], winner_kind=winner, value_mode="abs_energy_error", y_label="abs energy error |E - 2|", title=f"Final-train absolute energy error: {_winner_title(winner)}", semilogy=True, row_axis_label=grid_row_axis_label, col_axis_label=grid_col_axis_label),
         )
 
     for stat_index, stat in enumerate(VIRIAL_RESIDUAL_STATS):

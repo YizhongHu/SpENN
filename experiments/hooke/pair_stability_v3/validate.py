@@ -29,6 +29,7 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
+from utils.overrides import AxisOverrideSpec, axis_value_overrides, normalize_axis_override_specs
 from utils.seeds import scan_seed_values, seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -60,30 +61,11 @@ def _scalar_axes(manifest: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(axis) for axis in manifest.get("grid_axes", []) if str(axis) != seed_axis)
 
 
-def _axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, str]:
+def _axis_override_paths(manifest: dict[str, Any], axes: Sequence[str]) -> dict[str, AxisOverrideSpec]:
     """Return axis -> config override path from a grid manifest."""
 
     configured = manifest.get("axis_overrides")
-    if not isinstance(configured, dict):
-        raise ValueError("grid manifest axis_overrides must be a mapping")
-    missing = [axis for axis in axes if axis not in configured]
-    if missing:
-        raise ValueError(f"grid manifest axis_overrides is missing axes: {', '.join(missing)}")
-    return {axis: str(configured[axis]) for axis in axes}
-
-
-def _axis_value_overrides(
-    point: dict[str, Any],
-    *,
-    scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
-) -> list[str]:
-    overrides = []
-    for axis in scalar_axes:
-        if axis not in point:
-            raise ValueError(f"job choices are missing configured axis {axis!r}")
-        overrides.append(f"{override_paths[axis]}={point[axis]}")
-    return overrides
+    return normalize_axis_override_specs(configured, axes, context="grid manifest")
 
 
 def _command_for(config: str | Path, overrides: Sequence[str], *, python: str = "python") -> list[str]:
@@ -111,7 +93,7 @@ def validation_overrides(
     results_root: str | Path,
     checkpoint_path: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     seed_axis: str,
     seed_policy: dict[str, dict[str, str]] | None = None,
     timezone: str | None = None,
@@ -124,7 +106,7 @@ def validation_overrides(
         scan_seed_values(point, seed_axis),
     )
     overrides = [
-        *_axis_value_overrides(point, scalar_axes=scalar_axes, override_paths=override_paths),
+        *axis_value_overrides(point, axes=scalar_axes, override_specs=override_paths, stage="validation"),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
         f"load.path={checkpoint_path}",
         f"run.root={stage_dir(results_root, STAGE_VALIDATION)}",
@@ -216,7 +198,7 @@ def plan_validation_jobs(
     grid_attempt_id: str,
     validation_config: str | Path,
     scalar_axes: Sequence[str],
-    override_paths: dict[str, str],
+    override_paths: dict[str, AxisOverrideSpec],
     seed_axis: str,
     static_stage_overrides: dict[str, object] | None = None,
     seed_policy: dict[str, dict[str, str]] | None = None,

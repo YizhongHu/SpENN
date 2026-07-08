@@ -41,6 +41,7 @@ from utils.naming import (
     log_prefix,
     study_name_from_manifest,
 )
+from utils.overrides import AxisOverrideSpec, normalize_axis_override_specs
 from utils.seeds import final_seed_sequences, final_seed_values, seed_override_policy, seed_override_values
 from utils.time import STUDY_TIMEZONE, new_attempt_id
 
@@ -295,7 +296,7 @@ def write_final_grid_attempt(
     major_axes: Sequence[str],
     minor_axes: Sequence[str],
     axis_id_labels: dict[str, str],
-    axis_overrides: dict[str, str],
+    axis_overrides: dict[str, AxisOverrideSpec],
     seed_policy: dict[str, dict[str, str]],
     seed_sequences: dict[str, dict[str, int]],
     static_overrides: dict[str, Any] | None,
@@ -435,21 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     minor_axis_names = tuple(axis_metadata["minor_axes"])
     config_axis_names = tuple(axis_metadata["config_axes"])
     axis_id_labels = dict(axis_metadata["axis_id_labels"])
-    configured_axis_overrides = source_or_default_grid.get("axis_overrides", {})
-    if not isinstance(configured_axis_overrides, dict):
-        raise ValueError("grid metadata axis_overrides must be a mapping")
-    missing_axis_overrides = [
-        axis for axis in config_axis_names if axis not in configured_axis_overrides
-    ]
-    if missing_axis_overrides:
-        raise ValueError(
-            "grid metadata axis_overrides is missing axes: "
-            + ", ".join(missing_axis_overrides)
-        )
-    axis_overrides = {
-        axis: str(configured_axis_overrides[axis])
-        for axis in config_axis_names
-    }
+    axis_overrides = normalize_axis_override_specs(
+        source_or_default_grid.get("axis_overrides", {}),
+        config_axis_names,
+        context="grid metadata",
+    )
 
     jobs = build_final_jobs(
         champions,
