@@ -15,6 +15,121 @@ from typing import Any, Callable, Mapping, Sequence
 from stats import as_float as _as_float, mean as _mean
 
 POSITIVE_HEATMAP_CMAP = "Reds"
+MAJOR_AXIS_LABEL_PAD_POINTS = 6.0
+LEGEND_TITLE_WRAP_COLUMNS = 18
+
+
+def _flatten_axes(axes: Any) -> list[Any]:
+    """Return a flat list of visible Matplotlib axes."""
+
+    if axes is None:
+        return []
+    if hasattr(axes, "ravel"):
+        flat = list(axes.ravel())
+    elif isinstance(axes, Sequence) and not hasattr(axes, "get_position"):
+        flat = []
+        for axis in axes:
+            flat.extend(_flatten_axes(axis))
+    else:
+        flat = [axes]
+    return [axis for axis in flat if hasattr(axis, "get_position") and axis.get_visible()]
+
+
+def _points_to_figure_fraction(fig: Any, points: float, *, axis: str) -> float:
+    """Convert point spacing to figure coordinates."""
+
+    size = fig.get_size_inches()[0 if axis == "x" else 1]
+    return (points / 72.0) / size
+
+
+def _bbox_limits(boxes: Sequence[Any]) -> tuple[float, float, float, float]:
+    """Return left, right, bottom, top limits for figure-coordinate boxes."""
+
+    return (
+        min(box.x0 for box in boxes),
+        max(box.x1 for box in boxes),
+        min(box.y0 for box in boxes),
+        max(box.y1 for box in boxes),
+    )
+
+
+def _legend_title(title: str | None) -> str | None:
+    """Return a compact legend title without hiding long parameter names."""
+
+    if title is None:
+        return None
+    label = str(title)
+    if len(label) <= LEGEND_TITLE_WRAP_COLUMNS:
+        return label
+    parts = label.split("_")
+    if len(parts) <= 1:
+        return label
+    pivot = len(parts) // 2
+    return f"{'_'.join(parts[:pivot])}_\n{'_'.join(parts[pivot:])}"
+
+
+def add_major_axis_labels(
+    fig: Any,
+    axes: Any,
+    *,
+    row_label: str | None,
+    col_label: str | None,
+    col_position: str = "bottom",
+    fontsize: int = 9,
+    pad_points: float = MAJOR_AXIS_LABEL_PAD_POINTS,
+    clamp_to_figure: bool = False,
+) -> None:
+    """Add figure-level labels for row/column parameter axes."""
+
+    visible_axes = _flatten_axes(axes)
+    if not visible_axes:
+        return
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    axis_boxes = [axis.get_position() for axis in visible_axes]
+    tight_boxes = [
+        tight_box.transformed(fig.transFigure.inverted())
+        for axis in visible_axes
+        if (tight_box := axis.get_tightbbox(renderer)) is not None
+    ]
+    left, right, bottom, top = _bbox_limits(axis_boxes)
+    tight_left, _tight_right, tight_bottom, tight_top = _bbox_limits(tight_boxes or axis_boxes)
+    center_x = 0.5 * (left + right)
+    center_y = 0.5 * (bottom + top)
+    x_pad = _points_to_figure_fraction(fig, pad_points, axis="x")
+    y_pad = _points_to_figure_fraction(fig, pad_points, axis="y")
+    if row_label:
+        row_x = tight_left - x_pad
+        if clamp_to_figure:
+            row_x = max(0.012, row_x)
+        fig.text(
+            row_x,
+            center_y,
+            str(row_label),
+            rotation=90,
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            fontweight="bold",
+        )
+    if col_label:
+        if col_position == "top":
+            y = tight_top + y_pad
+            va = "bottom"
+        else:
+            y = tight_bottom - y_pad
+            va = "top"
+        if clamp_to_figure:
+            y = min(0.985, max(0.012, y))
+        fig.text(
+            center_x,
+            y,
+            str(col_label),
+            ha="center",
+            va=va,
+            fontsize=fontsize,
+            fontweight="bold",
+        )
 
 
 def pyplot():
@@ -39,7 +154,7 @@ def save_no_data(path: Path, title: str) -> None:
     ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=14)
     ax.set_title(title)
     fig.tight_layout()
-    fig.savefig(path, dpi=160)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -196,7 +311,8 @@ def save_heatmap(
         transform=transform,
     )
     fig.tight_layout()
-    fig.savefig(path, dpi=160)
+    add_major_axis_labels(fig, ax, row_label=row_key, col_label=col_key)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -261,6 +377,7 @@ def save_winner_pair_heatmap(
         fig.colorbar(images[0], ax=list(axes.ravel()), label=heatmap_colorbar_label(value_key, transform), fraction=0.046, pad=0.04)
     fig.suptitle(title, y=0.98)
     fig.subplots_adjust(left=0.08, right=0.86, bottom=0.16, top=0.84, wspace=0.45)
+    add_major_axis_labels(fig, axes, row_label=row_key, col_label=col_key)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -344,6 +461,7 @@ def save_row_scoped_heatmap_grid(
     if subplot_adjust is None:
         subplot_adjust = {"left": 0.08, "right": 0.89, "bottom": 0.04, "top": 0.94, "wspace": 0.65, "hspace": 0.75}
     fig.subplots_adjust(**subplot_adjust)
+    add_major_axis_labels(fig, axes, row_label=row_key, col_label=col_key)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -473,6 +591,9 @@ def save_grouped_line_grid(
     rect: tuple[float, float, float, float] | None = None,
     suptitle_y: float = 0.995,
     single_panel: bool = False,
+    row_axis_label: str | None = None,
+    col_axis_label: str | None = None,
+    col_axis_label_position: str = "top",
 ) -> None:
     """Save grouped lines in either an auto grid or a row/column grid."""
 
@@ -608,6 +729,14 @@ def save_grouped_line_grid(
     if rect is None:
         rect = (0.0, 0.0, 0.84 if show_legend and legend_outside and handles else 1.0, 0.94)
     fig.tight_layout(rect=rect)
+    if row_keys is not None and col_keys is not None:
+        add_major_axis_labels(
+            fig,
+            axes,
+            row_label=row_axis_label,
+            col_label=col_axis_label,
+            col_position=col_axis_label_position,
+        )
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -629,6 +758,9 @@ def save_grouped_bar_grid(
     rect: tuple[float, float, float, float] | None = None,
     suptitle_y: float = 0.995,
     bbox_inches: str | None = "tight",
+    row_axis_label: str | None = None,
+    col_axis_label: str | None = None,
+    col_axis_label_position: str = "top",
 ) -> None:
     """Save grouped bars in a row/column subplot grid."""
 
@@ -723,7 +855,86 @@ def save_grouped_bar_grid(
     if rect is None:
         rect = (0.0, 0.0, 0.88 if use_legend else 1.0, 0.94)
     fig.tight_layout(rect=rect)
+    add_major_axis_labels(
+        fig,
+        axes,
+        row_label=row_axis_label,
+        col_label=col_axis_label,
+        col_position=col_axis_label_position,
+        clamp_to_figure=bbox_inches != "tight",
+    )
     fig.savefig(path, dpi=160, bbox_inches=bbox_inches)
+    plt.close(fig)
+
+
+def save_loglog_scatter(
+    path: Path,
+    points: Sequence[dict[str, Any]],
+    *,
+    x_key: str,
+    y_key: str,
+    color_key: str,
+    marker_key: str,
+    x_label: str,
+    y_label: str,
+    title: str,
+    color_title: str,
+    marker_title: str,
+) -> None:
+    """Save one log-log scatter with separate color and marker legends."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean_points = [
+        point
+        for point in points
+        if _as_float(point.get(x_key)) is not None and _as_float(point.get(y_key)) is not None
+    ]
+    if not clean_points:
+        save_no_data(path, title)
+        return
+
+    plt = pyplot()
+    from matplotlib.lines import Line2D
+
+    color_values = sorted({str(point.get(color_key, "")) for point in clean_points})
+    marker_values = sorted({str(point.get(marker_key, "")) for point in clean_points})
+    cmap = plt.get_cmap("tab20" if len(color_values) > 10 else "tab10")
+    colors = {value: cmap(index % cmap.N) for index, value in enumerate(color_values)}
+    markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "h", "p"]
+    marker_by_value = {value: markers[index % len(markers)] for index, value in enumerate(marker_values)}
+
+    fig, ax = plt.subplots(figsize=(6.6, 4.8))
+    for point in clean_points:
+        ax.scatter(
+            float(point[x_key]),
+            float(point[y_key]),
+            color=colors[str(point.get(color_key, ""))],
+            marker=marker_by_value[str(point.get(marker_key, ""))],
+            s=58,
+            edgecolors="black",
+            linewidths=0.45,
+            alpha=0.9,
+        )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.grid(True, which="both", linewidth=0.4, alpha=0.35)
+
+    color_handles = [
+        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors[value], markeredgecolor="black", markersize=7, label=value)
+        for value in color_values
+    ]
+    marker_handles = [
+        Line2D([0], [0], marker=marker_by_value[value], color="black", markerfacecolor="lightgray", markeredgecolor="black", linestyle="none", markersize=7, label=value)
+        for value in marker_values
+    ]
+    color_legend = ax.legend(handles=color_handles, title=_legend_title(color_title), fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
+    ax.add_artist(color_legend)
+    ax.legend(handles=marker_handles, title=_legend_title(marker_title), fontsize=7, title_fontsize=8, loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
+    fig.suptitle(title, y=0.99)
+    fig.tight_layout(rect=(0.0, 0.0, 0.82, 0.92))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -799,9 +1010,9 @@ def save_loglog_scatter_grid(
         Line2D([0], [0], marker=marker_by_value[value], color="black", markerfacecolor="lightgray", markeredgecolor="black", linestyle="none", markersize=7, label=value)
         for value in marker_values
     ]
-    color_legend = axes[-1].legend(handles=color_handles, title=color_title, fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
+    color_legend = axes[-1].legend(handles=color_handles, title=_legend_title(color_title), fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
     axes[-1].add_artist(color_legend)
-    axes[-1].legend(handles=marker_handles, title=marker_title, fontsize=7, title_fontsize=8, loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
+    axes[-1].legend(handles=marker_handles, title=_legend_title(marker_title), fontsize=7, title_fontsize=8, loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
     fig.suptitle(title, y=0.99)
     fig.tight_layout(rect=(0.0, 0.0, 0.86, 0.90))
     fig.savefig(path, dpi=160, bbox_inches="tight")
