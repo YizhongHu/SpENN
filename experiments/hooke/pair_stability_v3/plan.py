@@ -39,6 +39,7 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import axis_value_label, experiment_run_name, log_prefix, study_name
+from utils.overrides import format_override_value
 from utils.seeds import final_seed_sequences, scan_seed_values, seed_override_policy, seed_override_values
 from utils.time import DEFAULT_STUDY_TIMEZONE, new_attempt_id, resolve_timezone
 
@@ -464,6 +465,18 @@ def axis_override_paths(grid_data: dict[str, Any], axes: Sequence[str]) -> dict[
     return {axis: str(configured[axis]) for axis in axes}
 
 
+def static_overrides(grid_data: dict[str, Any] | None, stage: str) -> dict[str, Any]:
+    """Return static override values configured for one stage."""
+
+    configured = (grid_data or {}).get("static_overrides") or {}
+    if not isinstance(configured, dict):
+        raise ValueError("static_overrides must be a mapping")
+    stage_overrides = configured.get(stage) or {}
+    if not isinstance(stage_overrides, dict):
+        raise ValueError(f"static_overrides.{stage} must be a mapping")
+    return {str(path): value for path, value in stage_overrides.items()}
+
+
 def _id_value(value: Any) -> str:
     """Return a compact value label for durable ids."""
 
@@ -496,6 +509,7 @@ def train_overrides(
     override_paths: dict[str, str],
     seed_axis: str,
     seed_policy: dict[str, dict[str, str]] | None = None,
+    static_stage_overrides: dict[str, Any] | None = None,
     timezone: str | None = None,
 ) -> list[str]:
     """Return scalar OmegaConf-style overrides for one train job."""
@@ -508,6 +522,7 @@ def train_overrides(
     overrides = [
         *_axis_value_overrides(point, axes=scalar_axes, override_paths=override_paths),
         *(f"{path}={value}" for path, value in seed_overrides.items()),
+        *(f"{path}={format_override_value(value)}" for path, value in (static_stage_overrides or {}).items()),
         f"run.root={stage_dir(results_root, STAGE_TRAIN)}",
         "run.layout=flat",
         f"run.run_id={run_id}/{attempt_id}",
@@ -544,6 +559,7 @@ def build_jobs(
     override_paths: dict[str, str],
     tags_by_axis: dict[str, dict[str, list[str]]],
     seed_policy: dict[str, dict[str, str]] | None = None,
+    static_stage_overrides: dict[str, Any] | None = None,
     python: str = "python",
     timezone: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -568,6 +584,7 @@ def build_jobs(
             override_paths=override_paths,
             seed_axis=seed_axis,
             seed_policy=seed_policy,
+            static_stage_overrides=static_stage_overrides,
             timezone=timezone,
         )
         scan_seed_overrides = seed_override_values(
@@ -586,6 +603,7 @@ def build_jobs(
                 "scan_seed": point[seed_axis],
                 "seed_values": seed_values,
                 "seed_overrides": {"scan_train": scan_seed_overrides},
+                "static_overrides": {"train": dict(static_stage_overrides or {})},
                 "train_dir": str(train_run_dir(results_root, run_id)),
                 "validation_dir": str(validation_run_dir(results_root, run_id)),
                 "train_attempt_dir": str(train_attempt_dir(results_root, run_id, attempt_id)),
@@ -646,6 +664,7 @@ def build_manifest(
                 "choice_validation": choice_validation_specs(grid_data),
                 "seed_overrides": seed_override_policy(grid_data.get("seed_overrides")),
                 "final_seed_sequences": final_seed_sequences(grid_data.get("final_seed_sequences")),
+                "static_overrides": grid_data.get("static_overrides", {}),
                 "champions": champion_specs(grid_data),
                 "champion_kinds": champion_kinds(grid_data),
                 "champion_reference_metrics": champion_reference_metrics(grid_data),
@@ -667,9 +686,6 @@ def build_manifest(
     validation_config = grid_data.get("validation_config")
     if validation_config is not None:
         manifest["validation_config"] = str(validation_config)
-    smoke_config = grid_data.get("smoke_config")
-    if smoke_config is not None:
-        manifest["smoke_config"] = str(smoke_config)
     if "blinding" in grid_data:
         manifest["blinding"] = grid_data["blinding"]
     return manifest
@@ -725,10 +741,6 @@ def write_grid_attempt(
         OmegaConf.save(config_snapshot_data["validation"], attempt / snapshots["validation"])
     elif validation_config is not None and Path(validation_config).exists():
         (attempt / snapshots["validation"]).write_text(Path(validation_config).read_text())
-    smoke_config = grid_data.get("smoke_config") if isinstance(grid_data, dict) else None
-    smoke_snapshot = snapshots.get("smoke")
-    if smoke_config is not None and smoke_snapshot and Path(smoke_config).exists():
-        (attempt / smoke_snapshot).write_text(Path(smoke_config).read_text())
     if unblind_data is not None:
         write_json(attempt / "unblind.json", unblind_data)
 
@@ -897,6 +909,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         override_paths=override_paths,
         tags_by_axis=tags_by_axis,
         seed_policy=seed_policy,
+        static_stage_overrides=static_overrides(grid_data, "train"),
         python=args.python,
         timezone=args.timezone,
     )

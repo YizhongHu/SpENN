@@ -26,7 +26,6 @@ from utils.layout import (
     STAGE_FINAL_EVAL,
     STAGE_FINAL_GRID,
     attempt_ids,
-    attempt_smoke,
     final_eval_attempt_dir,
     final_grid_attempt_dir,
     final_train_attempt_dir,
@@ -56,66 +55,33 @@ from experiments.toolkit.resources import resource_from_profile  # noqa: E402
 from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
 from experiments.toolkit.task_state import _resolved_checkpoint  # noqa: E402
 
-SMOKE_FINAL_EVAL_OVERRIDES = {
-    "evaluation_tasks.final_cusp.generator.n_points": 4,
-    "evaluation_tasks.final_cusp.generator.n_directions": 2,
-    "evaluation_tasks.final_cusp.generator.center_of_mass_radii": [0.0],
-    "evaluation_tasks.final_tail.generator.n_points": 4,
-    "evaluation_tasks.final_tail.generator.n_directions": 2,
-    "evaluation_tasks.final_stratified_geometry.generator.n_samples": 16,
-    "evaluation_tasks.final_hooke_orbital.generator.n_samples": 16,
-    "evaluation_tasks.final_mcmc_energy.generator.max_samples": 32,
-    "final_eval_sampler_params.n_walkers": 128,
-    "final_eval_sampler_params.burn_in": 10,
-    "final_eval_sampler_params.n_steps": 5,
-    "final_eval_sampler_params.max_samples": 32,
-    "evaluation_tasks.final_full_model_antisymmetry.generator.base_generator.n_samples": 8,
-    "evaluation_tasks.final_spatial_exchange_symmetry.generator.base_generator.n_samples": 8,
-    "evaluation_tasks.final_rotation_consistency.generator.base_generator.n_samples": 8,
-    "evaluation_tasks.final_rotation_consistency.generator.n_rotations": 1,
-    "evaluation_tasks.final_trace_equivariance.generator.base_generator.n_samples": 4,
-    "evaluation_tasks.final_feature_trace_stability.generator.n_samples": 8,
-    "evaluation_tasks.final_readout_trace_stability.generator.n_samples": 8,
-}
-
-
-def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
+def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
-        is_smoke = attempt_smoke(stage_dir(results_root, STAGE_FINAL_GRID), requested)
-        if not smoke and is_smoke is True:
-            raise ValueError("full final eval refuses a smoke final grid; pass --smoke")
         return requested
     final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
-    attempt_id = latest_attempt_id(final_grid_stage, smoke=smoke)
-    if attempt_id is None and smoke:
-        attempt_id = latest_attempt_id(final_grid_stage, smoke=False)
+    attempt_id = latest_attempt_id(final_grid_stage)
     if attempt_id is None:
-        mode = "smoke" if smoke else "production"
-        raise FileNotFoundError(f"no {mode} final-grid attempts under {final_grid_stage}")
+        raise FileNotFoundError(f"no final-grid attempts under {final_grid_stage}")
     return attempt_id
 
 
-def _selected_jobs(jobs: Sequence[dict[str, Any]], *, smoke: bool) -> list[dict[str, Any]]:
-    if not smoke:
-        return [dict(job) for job in jobs]
-    return [dict(job) for job in list(jobs)[: launch.SMOKE_JOB_LIMIT]]
+def _selected_jobs(jobs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(job) for job in jobs]
 
 
 def _attempt_id(args: argparse.Namespace, *, final_grid_attempt_id: str) -> str:
     if args.attempt_id:
-        return launch.smoke_attempt_id(args.attempt_id) if args.smoke else args.attempt_id
-    return launch.smoke_attempt_id(final_grid_attempt_id) if args.smoke else final_grid_attempt_id
+        return args.attempt_id
+    return final_grid_attempt_id
 
 
 def latest_final_train_attempt_id(
     results_root: str | Path,
     final_run_id: str,
-    *,
-    smoke: bool,
 ) -> str | None:
     """Return the latest eligible final-train attempt id for ``final_run_id``."""
 
-    return latest_attempt_id(final_train_run_dir(results_root, final_run_id), smoke=smoke)
+    return latest_attempt_id(final_train_run_dir(results_root, final_run_id))
 
 
 def _final_train_attempt_id_for_job(
@@ -125,45 +91,23 @@ def _final_train_attempt_id_for_job(
     final_run_id: str,
 ) -> str | None:
     if args.final_train_attempt_id is not None:
-        is_smoke = attempt_smoke(final_train_run_dir(results_root, final_run_id), args.final_train_attempt_id)
-        if not args.smoke and is_smoke is True:
-            raise ValueError("full final eval refuses a smoke final-train attempt; pass --smoke")
-        if args.smoke and is_smoke is False and not args.allow_production_final_train:
-            raise ValueError(
-                "smoke final eval refuses a production final-train attempt unless "
-                "--allow-production-final-train is passed"
-            )
         return args.final_train_attempt_id
-    return _latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=args.smoke)
-
-
-def _attempt_matches_smoke(run_dir: Path, attempt_id: str, *, smoke: bool) -> bool:
-    """Return whether a final-train attempt belongs to the requested lineage."""
-
-    known_smoke = attempt_smoke(run_dir, attempt_id)
-    return (False if known_smoke is None else known_smoke) is smoke
+    return _latest_ready_final_train_attempt_id(results_root, final_run_id)
 
 
 def _latest_ready_final_train_attempt_id(
     results_root: str | Path,
     final_run_id: str,
-    *,
-    smoke: bool,
 ) -> str | None:
     """Return the newest final-train attempt with a completed selected checkpoint."""
 
     run_dir = final_train_run_dir(results_root, final_run_id)
-    preferred = latest_attempt_id(run_dir, smoke=smoke)
+    preferred = latest_attempt_id(run_dir)
     ids = attempt_ids(run_dir)
-    candidates = [
-        attempt_id
-        for attempt_id in ids
-        if _attempt_matches_smoke(run_dir, attempt_id, smoke=smoke)
-    ]
     ordered = []
     if preferred is not None:
         ordered.append(preferred)
-    ordered.extend(attempt_id for attempt_id in reversed(candidates) if attempt_id != preferred)
+    ordered.extend(attempt_id for attempt_id in reversed(ids) if attempt_id != preferred)
     for attempt_id in ordered:
         train_attempt = final_train_attempt_dir(results_root, final_run_id, attempt_id)
         if _resolved_checkpoint(train_attempt) is not None:
@@ -223,10 +167,11 @@ def plan_final_eval_jobs(
     eval_config: str | Path,
     scalar_axes: Sequence[str],
     override_paths: dict[str, str],
+    static_stage_overrides: dict[str, object] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Build final-eval launch records and write source provenance."""
 
-    selected = _selected_jobs(jobs, smoke=args.smoke)
+    selected = _selected_jobs(jobs)
     final_eval_attempt_id = _attempt_id(args, final_grid_attempt_id=final_grid_attempt_id)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
@@ -283,10 +228,9 @@ def plan_final_eval_jobs(
             ),
         )
         command = launch.with_study_timezone(command)
-        if args.smoke:
-            command = launch.with_overrides(command, SMOKE_FINAL_EVAL_OVERRIDES)
+        command = launch.with_overrides(command, static_stage_overrides or {})
         (final_eval_attempt / "command.txt").write_text(shlex.join(command) + "\n")
-        write_latest(final_eval_attempt.parent, final_eval_attempt_id, smoke=args.smoke)
+        write_latest(final_eval_attempt.parent, final_eval_attempt_id)
         planned.append(
             {
                 "final_run_id": final_run_id,
@@ -323,8 +267,8 @@ def _executor(
         args=args,
         repo_root=repo_root,
         log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / log_attempt,
-        job_name=stage_job_name(study, "final-eval", smoke=args.smoke),
-        smoke=args.smoke,
+        job_name=stage_job_name(study, "final-eval"),
+        smoke=False,
         chunk_size=args.chunk_size,
         allow_partial_failures=True,
         chunk_status_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "chunk_status" / log_attempt,
@@ -345,7 +289,7 @@ def _resource_spec(args: argparse.Namespace) -> Any:
     resolved_profiles = {}
     for profile in profiles:
         uv_environment, uv_extras, _runtime_device = launch.resolve_uv_settings_for_profile(args, profile)
-        slurm = launch.slurm_parameters(args, profile=profile, smoke=args.smoke)
+        slurm = launch.slurm_parameters(args, profile=profile)
         resolved_profiles[profile] = resource_from_profile(
             profile=profile,
             partition=slurm.get("slurm_partition"),
@@ -411,7 +355,7 @@ def build_final_eval_stage_plan(
         results_root=str(results_root),
         source_attempts={"final_grid": final_grid_attempt_id},
         timezone=manifest.get("timezone"),
-        smoke=bool(args.smoke),
+        smoke=False,
         metadata={
             "backend": args.backend,
             "device": launch.selected_device(args),
@@ -457,19 +401,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--final-train-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None)
     parser.add_argument("--config", default=None, help="Eval config path (defaults to final-grid manifest).")
-    parser.add_argument(
-        "--allow-production-final-train",
-        action="store_true",
-        help="With --smoke, allow explicitly requested production final-train attempts.",
-    )
     launch.add_launch_arguments(
         parser,
         smoke_help=(
-            "Launch final-eval smoke jobs from smoke final-train attempts with "
-            "small report-grade task sizes and smoke-marked attempt ids."
+            "Deprecated. Use configs/smoke.yaml with the normal stage stack."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    launch.reject_deprecated_smoke(parser, args)
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -488,7 +428,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     final_grid_attempt_id = _resolve_final_grid_attempt_id(
         results_root,
         args.final_grid_attempt_id,
-        smoke=args.smoke,
     )
     manifest = load_final_grid_manifest(results_root, final_grid_attempt_id)
     study = study_name_from_manifest(manifest)
@@ -500,7 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             argv=raw_argv,
             repo_root=repo_root,
             log_dir=stage_dir(results_root, STAGE_FINAL_EVAL) / "slurm_logs" / "dependent_launchers",
-            job_name=stage_job_name(study, "final-eval-launcher", smoke=args.smoke),
+            job_name=stage_job_name(study, "final-eval-launcher"),
             partition=args.wait_launcher_partition,
             timeout_min=args.wait_launcher_timeout_min,
             study=study,
@@ -511,6 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("final-grid manifest does not record eval_config; pass --config")
     scalar_axes = final_scalar_axes(manifest)
     override_paths = final_axis_override_paths(manifest, scalar_axes)
+    static_stage_overrides = launch.static_overrides_for_stage("final_eval", manifest=manifest)
     jobs, skipped = plan_final_eval_jobs(
         load_final_jobs(results_root, final_grid_attempt_id),
         args=args,
@@ -520,6 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         eval_config=eval_config,
         scalar_axes=scalar_axes,
         override_paths=override_paths,
+        static_stage_overrides=static_stage_overrides,
     )
     command_sets = launch.environment_command_sets(
         [job["command_parts"] for job in jobs],
@@ -567,8 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         submitted_commands=submitted_commands,
     )
     write_execution_records(stage_plan_dir, execution_records)
-    mode = "smoke final-eval" if args.smoke else "final-eval"
-    print(f"{prefix} launched {len(job_ids)} {mode} jobs from 05_final_grid/{final_grid_attempt_id} via {args.backend}")
+    print(f"{prefix} launched {len(job_ids)} final-eval jobs from 05_final_grid/{final_grid_attempt_id} via {args.backend}")
     return 0
 
 

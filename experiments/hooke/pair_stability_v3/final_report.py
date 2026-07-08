@@ -21,7 +21,6 @@ from utils.layout import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_REPORT,
     latest_attempt_id,
-    smoke_attempt_id,
     stage_dir,
     write_latest,
 )
@@ -248,11 +247,11 @@ def _virial_residual_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]
     return [row for row in rows if row.get("quantity") == "virial_residual"]
 
 
-def _resolve_collect_attempt_id(results_root: Path, requested: str | None, *, smoke: bool) -> str:
+def _resolve_collect_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
         return requested
     collect_stage = stage_dir(results_root, STAGE_FINAL_COLLECT)
-    attempt_id = latest_attempt_id(collect_stage, smoke=smoke)
+    attempt_id = latest_attempt_id(collect_stage)
     if attempt_id is None:
         raise FileNotFoundError(f"no final-collect attempts under {stage_dir(results_root, STAGE_FINAL_COLLECT)}")
     return attempt_id
@@ -1457,15 +1456,12 @@ def build_report(
     results_root: str | Path,
     report_attempt_id: str | None = None,
     final_collect_attempt_id: str | None = None,
-    smoke: bool = False,
 ) -> dict[str, Any]:
     """Write ``09_final_report`` artifacts from compact collect outputs."""
 
     results_root = Path(results_root)
-    final_collect_attempt_id = _resolve_collect_attempt_id(results_root, final_collect_attempt_id, smoke=smoke)
+    final_collect_attempt_id = _resolve_collect_attempt_id(results_root, final_collect_attempt_id)
     report_attempt_id = report_attempt_id or final_collect_attempt_id or new_attempt_id()
-    if smoke:
-        report_attempt_id = smoke_attempt_id(report_attempt_id)
     report_dir = stage_dir(results_root, STAGE_FINAL_REPORT) / report_attempt_id
     tables_dir = report_dir / "tables"
     figures_dir = report_dir / "figures"
@@ -1480,7 +1476,6 @@ def build_report(
         "study": study,
         "stage": STAGE_FINAL_REPORT,
         "attempt_id": report_attempt_id,
-        "smoke": bool(smoke),
         "final_collect_attempt_id": final_collect_attempt_id,
         "final_collect_dir": str(collect_dir),
         "report_axes": {
@@ -1497,7 +1492,7 @@ def build_report(
     }
     write_json(report_dir / "final_report.json", report)
     (report_dir / "report.md").write_text(_report_markdown(report, tables))
-    write_latest(stage_dir(results_root, STAGE_FINAL_REPORT), report_attempt_id, smoke=smoke)
+    write_latest(stage_dir(results_root, STAGE_FINAL_REPORT), report_attempt_id)
     return {"attempt_dir": str(report_dir), "report": report}
 
 
@@ -1606,8 +1601,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--final-collect-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None)
-    parser.add_argument("--smoke", action="store_true", help="Render the latest smoke final-collect attempt.")
-    return parser.parse_args(argv)
+    parser.add_argument("--smoke", action="store_true", help="Deprecated; use configs/smoke.yaml with the normal stack.")
+    args = parser.parse_args(argv)
+    if args.smoke:
+        parser.error("use --grid experiments/hooke/pair_stability_v3/configs/smoke.yaml with the normal stage stack")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1624,7 +1622,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         results_root=args.results_root,
         report_attempt_id=args.attempt_id,
         final_collect_attempt_id=args.final_collect_attempt_id,
-        smoke=args.smoke,
     )
     report = result["report"]
     prefix = log_prefix(report.get("study"))

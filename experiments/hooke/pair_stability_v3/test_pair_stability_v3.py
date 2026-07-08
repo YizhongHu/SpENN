@@ -18,6 +18,7 @@ from omegaconf import OmegaConf
 STUDY_DIR = Path(__file__).resolve().parent
 CONFIGS = STUDY_DIR / "configs"
 GRID = CONFIGS / "grid.yaml"
+SMOKE_GRID = CONFIGS / "smoke.yaml"
 
 while str(STUDY_DIR) in sys.path:
     sys.path.remove(str(STUDY_DIR))
@@ -69,6 +70,7 @@ final_plan = _load_script("final_plan")
 final_train = _load_script("final_train", bind_direct=True)
 final_eval = _load_script("final_eval")
 final_collect = _load_script("final_collect")
+final_report = _load_script("final_report")
 validate = _load_script("validate")
 from experiments.toolkit import StagePlan, TaskLineageRow, read_task_lineage, write_task_lineage  # noqa: E402
 
@@ -130,29 +132,24 @@ def _write_final_checkpoint(results_root: Path, final_run_id: str, attempt_id: s
     return checkpoint_dir
 
 
-def test_v2_smoke_slurm_defaults_match_pair_stability() -> None:
+def test_v3_test_partition_slurm_overrides_are_explicit() -> None:
     args = types.SimpleNamespace(
-        slurm_partition=None,
+        slurm_partition="gpu_test",
         slurm_array_parallelism=None,
-        slurm_timeout_min=None,
-        slurm_mem_gb=None,
-        slurm_cpus=None,
+        slurm_timeout_min=60,
+        slurm_mem_gb=32,
+        slurm_cpus=6,
         slurm_gpus=None,
     )
 
-    smoke_cpu = launch.slurm_parameters(args, profile="cpu", smoke=True)
-    smoke_cuda = launch.slurm_parameters(args, profile="cuda", smoke=True)
+    cuda = launch.slurm_parameters(args, profile="cuda")
 
-    assert smoke_cpu["slurm_partition"] == "test"
-    assert smoke_cuda["slurm_partition"] == "gpu_test"
-    assert smoke_cpu["timeout_min"] == 15
-    assert smoke_cuda["timeout_min"] == 15
-    assert smoke_cpu["mem_gb"] == 128
-    assert smoke_cpu["cpus_per_task"] == 16
-    assert smoke_cuda["cpus_per_task"] == 4
-    assert smoke_cpu["slurm_array_parallelism"] == 2
-    assert smoke_cuda["slurm_array_parallelism"] == 2
-    assert smoke_cuda["gpus_per_node"] == 1
+    assert cuda["slurm_partition"] == "gpu_test"
+    assert cuda["timeout_min"] == 60
+    assert cuda["mem_gb"] == 32
+    assert cuda["cpus_per_task"] == 6
+    assert cuda["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
+    assert cuda["gpus_per_node"] == 1
 
 
 def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
@@ -384,31 +381,32 @@ def test_v2_latest_attempt_id_prefers_pointer_with_sorted_fallback(tmp_path: Pat
     parent = tmp_path / "stage"
     (parent / "zzz").mkdir(parents=True)
     (parent / "aaa").mkdir()
+    (parent / "diagnostic").mkdir()
+
+    assert layout.latest_attempt_id(parent) == "zzz"
     layout.write_latest(parent, "aaa")
 
     assert layout.latest_attempt_id(parent) == "aaa"
 
-    layout.write_latest(parent, "diagnostic", smoke=True)
-    assert layout.latest_attempt_id(parent) == "aaa"
-    assert layout.latest_attempt_id(parent, smoke=False) == "aaa"
-    assert layout.latest_attempt_id(parent, smoke=True) == "diagnostic"
+    layout.write_latest(parent, "diagnostic")
+    assert layout.latest_attempt_id(parent) == "diagnostic"
     assert layout.latest_attempt_id(parent / "missing") is None
 
 
-def test_v2_smoke_final_workflow_falls_back_to_full_upstream_attempts(tmp_path: Path) -> None:
+def test_v2_final_workflow_defaults_to_single_latest_upstream_attempts(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
 
     select_stage = layout.stage_dir(results_root, layout.STAGE_SELECT)
     (select_stage / "select-full").mkdir(parents=True)
-    layout.write_latest(select_stage, "select-full", smoke=False)
+    layout.write_latest(select_stage, "select-full")
 
     final_grid_stage = layout.stage_dir(results_root, layout.STAGE_FINAL_GRID)
     (final_grid_stage / "final-grid-full").mkdir(parents=True)
-    layout.write_latest(final_grid_stage, "final-grid-full", smoke=False)
+    layout.write_latest(final_grid_stage, "final-grid-full")
 
-    assert final_plan._resolve_selection_attempt(results_root, None, smoke=True) == "select-full"
-    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "final-grid-full"
-    assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "final-grid-full"
+    assert final_plan._resolve_selection_attempt(results_root, None) == "select-full"
+    assert final_train._resolve_final_grid_attempt_id(results_root, None) == "final-grid-full"
+    assert final_eval._resolve_final_grid_attempt_id(results_root, None) == "final-grid-full"
 
 
 def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path) -> None:
@@ -429,7 +427,7 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
     _write_checkpoint_pointer(results_root, run_id, "zzz")
 
     assert row_status_paths == [layout.train_attempt_dir(results_root, run_id, ATTEMPT) / "launcher_status.json"]
-    assert validate.latest_train_attempt_id(results_root, run_id, smoke=False) == ATTEMPT
+    assert validate.latest_train_attempt_id(results_root, run_id) == ATTEMPT
 
     scalar_axes = validate._scalar_axes(manifest)
     args = types.SimpleNamespace(smoke=False, train_attempt_id=None, attempt_id="manual-validation")
@@ -443,7 +441,7 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
         scalar_axes=scalar_axes,
         override_paths=validate._axis_override_paths(manifest, scalar_axes),
         seed_axis=str(manifest["scan_seed_axis"]),
-        smoke_overrides={},
+        static_stage_overrides={},
         seed_policy=manifest.get("seed_overrides"),
     )
 
@@ -500,18 +498,17 @@ def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: py
     assert executions[0]["launcher_job_id"] == "local-train-0"
 
 
-def test_v2_real_validation_uses_non_smoke_train_attempts(tmp_path: Path) -> None:
+def test_v2_validation_defaults_to_single_latest_train_attempt(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
     job = manifest["jobs"][0]
     run_id = str(job["run_id"])
-    smoke_attempt = "diagnostic-train"
+    diagnostic_attempt = "diagnostic-train"
     _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
-    _write_checkpoint_pointer(results_root, run_id, smoke_attempt)
-    layout.write_latest(layout.train_run_dir(results_root, run_id), smoke_attempt, smoke=True)
+    _write_checkpoint_pointer(results_root, run_id, diagnostic_attempt)
+    layout.write_latest(layout.train_run_dir(results_root, run_id), diagnostic_attempt)
 
-    assert validate.latest_train_attempt_id(results_root, run_id, smoke=False) == ATTEMPT
-    assert validate.latest_train_attempt_id(results_root, run_id, smoke=True) == smoke_attempt
+    assert validate.latest_train_attempt_id(results_root, run_id) == diagnostic_attempt
 
     args = types.SimpleNamespace(smoke=False, train_attempt_id=None, attempt_id="real-validation")
     scalar_axes = validate._scalar_axes(manifest)
@@ -525,39 +522,38 @@ def test_v2_real_validation_uses_non_smoke_train_attempts(tmp_path: Path) -> Non
         scalar_axes=scalar_axes,
         override_paths=validate._axis_override_paths(manifest, scalar_axes),
         seed_axis=str(manifest["scan_seed_axis"]),
-        smoke_overrides={},
+        static_stage_overrides={},
+        seed_policy=manifest.get("seed_overrides"),
+    )
+    assert skipped == []
+    assert planned[0]["train_attempt_id"] == diagnostic_attempt
+
+    args.train_attempt_id = ATTEMPT
+    planned, skipped = validate.plan_validation_jobs(
+        [job],
+        args=args,
+        study="pair_stability_v3",
+        results_root=results_root,
+        grid_attempt_id=ATTEMPT,
+        validation_config="validation.yaml",
+        scalar_axes=scalar_axes,
+        override_paths=validate._axis_override_paths(manifest, scalar_axes),
+        seed_axis=str(manifest["scan_seed_axis"]),
+        static_stage_overrides={},
         seed_policy=manifest.get("seed_overrides"),
     )
     assert skipped == []
     assert planned[0]["train_attempt_id"] == ATTEMPT
 
-    args.train_attempt_id = smoke_attempt
-    with pytest.raises(ValueError, match="refuses a smoke train attempt"):
-        validate.plan_validation_jobs(
-            [job],
-            args=args,
-            study="pair_stability_v3",
-            results_root=results_root,
-            grid_attempt_id=ATTEMPT,
-            validation_config="validation.yaml",
-            scalar_axes=scalar_axes,
-            override_paths=validate._axis_override_paths(manifest, scalar_axes),
-            seed_axis=str(manifest["scan_seed_axis"]),
-            smoke_overrides={},
-            seed_policy=manifest.get("seed_overrides"),
-        )
 
-
-def test_v3_validation_attempt_id_agrees_across_plan_and_stage_plan_when_smoked(tmp_path: Path) -> None:
+def test_v3_validation_attempt_id_agrees_across_plan_and_stage_plan(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
     job = manifest["jobs"][0]
     run_id = str(job["run_id"])
     _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
 
-    args = validate.parse_args(
-        ["--smoke", "--attempt-id", "V1", "--train-attempt-id", ATTEMPT, "--backend", "local", "--device", "cpu"]
-    )
+    args = validate.parse_args(["--attempt-id", "V1", "--train-attempt-id", ATTEMPT, "--backend", "local", "--device", "cpu"])
     scalar_axes = validate._scalar_axes(manifest)
     planned, skipped = validate.plan_validation_jobs(
         [job],
@@ -569,7 +565,7 @@ def test_v3_validation_attempt_id_agrees_across_plan_and_stage_plan_when_smoked(
         scalar_axes=scalar_axes,
         override_paths=validate._axis_override_paths(manifest, scalar_axes),
         seed_axis=str(manifest["scan_seed_axis"]),
-        smoke_overrides={},
+        static_stage_overrides={},
         seed_policy=manifest.get("seed_overrides"),
     )
     assert skipped == []
@@ -583,12 +579,8 @@ def test_v3_validation_attempt_id_agrees_across_plan_and_stage_plan_when_smoked(
         args=args,
     )
 
-    # An explicit --attempt-id must win over --smoke's derived attempt id in
-    # both the actual result directory (validation_attempt_id, above) and the
-    # stage plan's attempt id / task ids; a prior bug used different
-    # precedence in each place, so a real validation attempt directory and
-    # its "real" stage_plans/tasks.jsonl could silently name different
-    # attempts whenever --smoke and --attempt-id were combined.
+    # An explicit --attempt-id must agree between the actual result directory
+    # and the stage plan's attempt id / task ids.
     assert stage_plan.attempt_id == "V1"
     assert stage_plan.tasks[0].task_id == f"02_validation:{run_id}:V1"
 
@@ -668,11 +660,10 @@ def test_v3_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert manifest["config_snapshots"] == {
         "train": "train_config.yaml",
         "validation": "validation_config.yaml",
-        "smoke": "smoke_config.yaml",
     }
     assert (grid_attempt / "train_config.yaml").is_file()
     assert (grid_attempt / "validation_config.yaml").is_file()
-    assert (grid_attempt / "smoke_config.yaml").is_file()
+    assert not (grid_attempt / "smoke_config.yaml").exists()
     assert not (grid_attempt / "pair_stability.yaml").exists()
     assert not (grid_attempt / "pair_validation.yaml").exists()
     assert manifest["grid_schema"] == "major_minor_scan"
@@ -743,6 +734,7 @@ def test_v3_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
         "final_train_sampler_seed": {"start": 1000, "step": 1},
         "final_eval_sampler_seed": {"start": 10000, "step": 1},
     }
+    assert manifest["static_overrides"] == {}
     assert manifest["final_replicates"] == 9
     assert manifest["n_jobs"] == 1152
     assert manifest["blinding"]["enabled"] is True
@@ -840,6 +832,60 @@ def test_v3_config_choices_cover_grid_axes() -> None:
         for activation in grid.minor_grid.activation:
             resolved = _config_with_overrides(config_path, [f"run_parameters.activation_slot={activation}"])
             assert OmegaConf.select(resolved, "model.layers.0.irrep_activation.gate._target_")
+
+
+def test_v3_smoke_grid_is_smaller_full_grid(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    code = plan.main(["--grid", str(SMOKE_GRID), "--results-root", str(results_root), "--attempt-id", "SMOKE"])
+    assert code == 0
+
+    manifest = json.loads((results_root / "00_grid" / "SMOKE" / "manifest.json").read_text())
+    assert manifest["major_axes"] == ["basis", "update_normalization", "feature_normalization"]
+    assert manifest["minor_axes"] == ["lr", "channels", "activation"]
+    assert manifest["scan_seed_axis"] == "seed_index"
+    assert manifest["n_jobs"] == 64
+    assert manifest["final_replicates"] == 1
+    assert manifest["scan_seed_rows"] == [
+        {
+            "seed_index": 0,
+            "training_model_seed": 0,
+            "training_sampler_seed": 10,
+            "validation_sampler_seed": 20,
+        }
+    ]
+    assert set(manifest["static_overrides"]) == {"train", "final_train"}
+    assert "validation" not in manifest["static_overrides"]
+    assert "final_eval" not in manifest["static_overrides"]
+
+    job = manifest["jobs"][0]
+    assert "training.max_steps=2" in job["overrides"]
+    assert "training.log_every_n_steps=1" in job["overrides"]
+    assert "sampler_params.n_walkers=16" in job["overrides"]
+    assert job["seed_overrides"]["scan_train"] == {
+        "run_parameters.seed": 0,
+        "runtime.seed": 0,
+        "sampler.seed": 10,
+    }
+
+
+@pytest.mark.parametrize(
+    ("module", "argv"),
+    [
+        (train, ["--smoke", "--backend", "local"]),
+        (validate, ["--smoke", "--backend", "local"]),
+        (final_train, ["--smoke", "--backend", "local"]),
+        (final_eval, ["--smoke", "--backend", "local"]),
+        (collect, ["--smoke"]),
+        (select_champions, ["--smoke"]),
+        (final_plan, ["--smoke"]),
+        (final_collect, ["--smoke"]),
+        (final_report, ["--smoke"]),
+    ],
+)
+def test_v3_smoke_flag_is_deprecated(module: ModuleType, argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        module.parse_args(argv)
+    assert exc_info.value.code == 2
 
 
 def test_v2_collect_uses_status_for_required_train_wall_time(tmp_path: Path) -> None:
@@ -1434,19 +1480,22 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     (final_grid_stage / "zzz").mkdir(parents=True)
     (final_grid_stage / "aaa").mkdir()
     layout.write_latest(final_grid_stage, "aaa")
-    layout.write_latest(final_grid_stage, "diagnostic-final-grid", smoke=True)
 
-    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
-    assert final_eval._resolve_final_grid_attempt_id(results_root, None, smoke=False) == "aaa"
-    assert final_train._resolve_final_grid_attempt_id(results_root, None, smoke=True) == "diagnostic-final-grid"
+    assert final_train._resolve_final_grid_attempt_id(results_root, None) == "aaa"
+    assert final_eval._resolve_final_grid_attempt_id(results_root, None) == "aaa"
+
+    (final_grid_stage / "diagnostic-final-grid").mkdir()
+    layout.write_latest(final_grid_stage, "diagnostic-final-grid")
+    assert final_train._resolve_final_grid_attempt_id(results_root, None) == "diagnostic-final-grid"
+    assert final_eval._resolve_final_grid_attempt_id(results_root, None) == "diagnostic-final-grid"
 
     final_run_id = "final-run-0"
     _write_final_checkpoint(results_root, final_run_id, "zzz")
     _write_final_checkpoint(results_root, final_run_id, "aaa")
     layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), "aaa")
 
-    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
-    assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False) == "aaa"
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id) == "aaa"
+    assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id) == "aaa"
 
     eval_run_dir = layout.final_eval_run_dir(results_root, final_run_id)
     (eval_run_dir / "zzz").mkdir(parents=True)
@@ -1483,33 +1532,50 @@ def test_final_eval_enumeration_skips_reserved_stage_dirs(tmp_path: Path) -> Non
     ]
 
 
-def test_v2_real_final_eval_uses_non_smoke_final_train_attempts(tmp_path: Path) -> None:
+def test_v3_final_collect_merges_basis_and_update_for_report_axes() -> None:
+    manifest = {
+        "major_axes": ["basis", "update_normalization", "feature_normalization"],
+        "minor_axes": ["lr", "channels", "activation"],
+    }
+    job = {
+        "choices": {
+            "basis": "raw-envelope",
+            "update_normalization": "update-gaussian-norm",
+            "feature_normalization": "feature-gaussian-norm",
+        }
+    }
+
+    assert final_collect._report_axes(manifest) == ("basis_class", "normalization")
+    assert final_collect._report_axis_values(job, manifest) == (
+        "raw-envelope+update-gaussian-norm",
+        "feature-gaussian-norm",
+    )
+
+
+def test_v2_final_eval_defaults_to_single_latest_final_train_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     final_run_id = "final-run-0"
     final_grid_attempt_id = "FG0"
-    smoke_attempt = "diagnostic-final-train"
+    diagnostic_attempt = "diagnostic-final-train"
     _write_final_checkpoint(results_root, final_run_id, final_grid_attempt_id)
-    _write_final_checkpoint(results_root, final_run_id, smoke_attempt)
-    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), smoke_attempt, smoke=True)
+    _write_final_checkpoint(results_root, final_run_id, diagnostic_attempt)
+    layout.write_latest(layout.final_train_run_dir(results_root, final_run_id), diagnostic_attempt)
 
-    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=False) == final_grid_attempt_id
-    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id, smoke=True) == smoke_attempt
-    assert (
-        final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id, smoke=False)
-        == final_grid_attempt_id
-    )
+    assert final_eval.latest_final_train_attempt_id(results_root, final_run_id) == diagnostic_attempt
+    assert final_eval._latest_ready_final_train_attempt_id(results_root, final_run_id) == diagnostic_attempt
 
     args = types.SimpleNamespace(
         smoke=False,
-        final_train_attempt_id=smoke_attempt,
-        allow_production_final_train=False,
+        final_train_attempt_id=final_grid_attempt_id,
     )
-    with pytest.raises(ValueError, match="refuses a smoke final-train attempt"):
+    assert (
         final_eval._final_train_attempt_id_for_job(
             args=args,
             results_root=results_root,
             final_run_id=final_run_id,
         )
+        == final_grid_attempt_id
+    )
 
 
 def _callback_entries(config_name: str) -> list[dict[str, Any]]:

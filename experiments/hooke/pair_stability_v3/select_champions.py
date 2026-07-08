@@ -33,7 +33,6 @@ from utils.layout import (
     STAGE_COLLECT,
     STAGE_SELECT,
     latest_attempt_id,
-    smoke_attempt_id,
     stage_dir,
     write_latest,
 )
@@ -252,11 +251,11 @@ def select_champions(
     }
 
 
-def _resolve_collection_attempt(results_root: Path, collection_attempt_id: str | None, *, smoke: bool) -> str:
+def _resolve_collection_attempt(results_root: Path, collection_attempt_id: str | None) -> str:
     if collection_attempt_id is not None:
         return collection_attempt_id
     collect_dir = stage_dir(results_root, STAGE_COLLECT)
-    attempt_id = latest_attempt_id(collect_dir, smoke=smoke)
+    attempt_id = latest_attempt_id(collect_dir)
     if attempt_id is None:
         raise FileNotFoundError(f"no collection attempts under {collect_dir}")
     return attempt_id
@@ -373,15 +372,12 @@ def select(
     mode: str = "min",
     group_by: str | Sequence[str] | None = None,
     champion_kinds: Sequence[str] | None = None,
-    smoke: bool = False,
 ) -> dict[str, Any]:
     """Select champions from a collection attempt and write a ``04_select`` attempt."""
 
     results_root = Path(results_root)
-    collection_attempt_id = _resolve_collection_attempt(results_root, collection_attempt_id, smoke=smoke)
+    collection_attempt_id = _resolve_collection_attempt(results_root, collection_attempt_id)
     select_attempt_id = select_attempt_id or new_attempt_id()
-    if smoke:
-        select_attempt_id = smoke_attempt_id(select_attempt_id)
     collection_dir = stage_dir(results_root, STAGE_COLLECT) / collection_attempt_id
 
     rows = read_summary(collection_dir)
@@ -451,7 +447,6 @@ def select(
         "study": study,
         "stage": STAGE_SELECT,
         "attempt_id": select_attempt_id,
-        "smoke": bool(smoke),
         "collection_attempt_id": collection_attempt_id,
         "metric": metric,
         "mode": mode,
@@ -489,7 +484,7 @@ def select(
         "configs": selection["configs"],
     }
     write_json(attempt / "selection_report.json", report)
-    write_latest(stage_dir(results_root, STAGE_SELECT), select_attempt_id, smoke=smoke)
+    write_latest(stage_dir(results_root, STAGE_SELECT), select_attempt_id)
     return {"attempt_dir": str(attempt), "report": report}
 
 
@@ -500,7 +495,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--collection-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None, help="Select attempt id (defaults to now).")
-    parser.add_argument("--smoke", action="store_true", help="Select champions from a smoke collection attempt.")
+    parser.add_argument("--smoke", action="store_true", help="Deprecated; use configs/smoke.yaml with the normal stack.")
     parser.add_argument(
         "--metric",
         default=None,
@@ -518,7 +513,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Champion kinds to select, e.g. 'energy stability'. Defaults to source grid manifest.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.smoke:
+        parser.error("use --grid experiments/hooke/pair_stability_v3/configs/smoke.yaml with the normal stage stack")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -533,7 +531,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         mode=args.mode,
         group_by=args.group_by,
         champion_kinds=_parse_champion_args(args.champions),
-        smoke=args.smoke,
     )
     report = result["report"]
     prefix = log_prefix(report.get("study"))

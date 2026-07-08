@@ -20,7 +20,6 @@ from utils.layout import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
     latest_attempt_id,
-    smoke_attempt_id,
     stage_dir,
     write_latest,
 )
@@ -310,8 +309,6 @@ FAILURE_COLUMNS = [
 def _iter_final_eval_attempts(
     results_root: Path,
     final_eval_attempt_id: str | None,
-    *,
-    smoke: bool | None = None,
 ) -> list[tuple[str, str, Path]]:
     eval_stage = stage_dir(results_root, STAGE_FINAL_EVAL)
     if not eval_stage.is_dir():
@@ -322,7 +319,7 @@ def _iter_final_eval_attempts(
             continue
         attempt_id = final_eval_attempt_id
         if attempt_id is None:
-            attempt_id = latest_attempt_id(run_dir, smoke=smoke)
+            attempt_id = latest_attempt_id(run_dir)
             if attempt_id is None:
                 continue
         attempt_dir = run_dir / attempt_id
@@ -376,11 +373,30 @@ def _axis_columns_from_contexts(contexts: Sequence[dict[str, Any]]) -> list[str]
 def _report_axes(manifest: dict[str, Any]) -> tuple[str | None, str | None]:
     """Return the two axes used by legacy report grid aliases."""
 
-    major = _major_axes(manifest)
-    minor = _minor_axes(manifest)
-    first = major[0] if major else None
-    second = major[1] if len(major) > 1 else (minor[0] if minor else None)
-    return first, second
+    return "basis_class", "normalization"
+
+
+def _report_axis_values(job: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, str]:
+    """Return report-only two-axis labels, preserving raw axes separately."""
+
+    major = set(_major_axes(manifest))
+    if {"basis", "update_normalization", "feature_normalization"}.issubset(major):
+        basis = _axis_value(job, "basis") or _basis_class(job)
+        update = _axis_value(job, "update_normalization")
+        feature = _axis_value(job, "feature_normalization")
+        basis_update = "+".join(value for value in (basis, update) if value)
+        return basis_update or _basis_class(job), feature or str(job.get("normalization", ""))
+
+    configured_major = _major_axes(manifest)
+    configured_minor = _minor_axes(manifest)
+    row_axis = configured_major[0] if configured_major else None
+    col_axis = configured_major[1] if len(configured_major) > 1 else (
+        configured_minor[0] if configured_minor else None
+    )
+    return (
+        _axis_value(job, row_axis) or _basis_class(job),
+        _axis_value(job, col_axis) or str(job.get("normalization", "")),
+    )
 
 
 def _axis_value(job: dict[str, Any], axis: str | None) -> str:
@@ -470,9 +486,7 @@ def _run_context(final_run_id: str, attempt_id: str, attempt_dir: Path) -> dict[
 def _base_row(context: dict[str, Any]) -> dict[str, Any]:
     job = context["job"]
     axis_row = _axis_row(context)
-    row_axis, col_axis = _report_axes(context.get("final_grid_manifest", {}))
-    basis_class = _axis_value(job, row_axis) or _basis_class(job)
-    normalization = _axis_value(job, col_axis) or str(job.get("normalization", ""))
+    basis_class, normalization = _report_axis_values(job, context.get("final_grid_manifest", {}))
     return {
         "final_run_id": context["final_run_id"],
         "source_champion_id": job.get("source_champion_id", ""),
@@ -1145,14 +1159,11 @@ def collect_final_outputs(
     results_root: str | Path,
     collect_attempt_id: str | None = None,
     final_eval_attempt_id: str | None = None,
-    smoke: bool = False,
 ) -> dict[str, Any]:
     """Collect compact final-summary tables from final train/eval artifacts."""
 
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
-    if smoke:
-        collect_attempt_id = smoke_attempt_id(collect_attempt_id)
     attempt = stage_dir(results_root, STAGE_FINAL_COLLECT) / collect_attempt_id
     attempt.mkdir(parents=True, exist_ok=True)
 
@@ -1161,7 +1172,6 @@ def collect_final_outputs(
         for final_run_id, attempt_id, attempt_dir in _iter_final_eval_attempts(
             results_root,
             final_eval_attempt_id,
-            smoke=smoke,
         )
     ]
     final_grid_manifest = _first_final_grid_manifest(contexts)
@@ -1250,7 +1260,6 @@ def collect_final_outputs(
         "study": study,
         "stage": STAGE_FINAL_COLLECT,
         "attempt_id": collect_attempt_id,
-        "smoke": bool(smoke),
         "final_eval_attempt_id": manifest_final_eval_attempt_id,
         "final_eval_attempt_ids": resolved_eval_attempt_ids,
         "final_eval_attempts": {str(context["final_run_id"]): str(context["attempt_id"]) for context in contexts},
@@ -1269,7 +1278,7 @@ def collect_final_outputs(
         },
     }
     _write_manifest(attempt / "manifest.yaml", manifest)
-    write_latest(stage_dir(results_root, STAGE_FINAL_COLLECT), collect_attempt_id, smoke=smoke)
+    write_latest(stage_dir(results_root, STAGE_FINAL_COLLECT), collect_attempt_id)
     return {"attempt_dir": str(attempt), "manifest": manifest}
 
 
@@ -1280,8 +1289,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
     parser.add_argument("--final-eval-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None)
-    parser.add_argument("--smoke", action="store_true", help="Collect smoke final-eval attempts.")
-    return parser.parse_args(argv)
+    parser.add_argument("--smoke", action="store_true", help="Deprecated; use configs/smoke.yaml with the normal stack.")
+    args = parser.parse_args(argv)
+    if args.smoke:
+        parser.error("use --grid experiments/hooke/pair_stability_v3/configs/smoke.yaml with the normal stage stack")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1298,7 +1310,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
         final_eval_attempt_id=args.final_eval_attempt_id,
-        smoke=args.smoke,
     )
     manifest = result["manifest"]
     prefix = log_prefix(manifest.get("study"))

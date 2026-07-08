@@ -16,16 +16,12 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
-from omegaconf import OmegaConf
-
-from utils.config import config_snapshot_names
 from utils.io import read_json
 from utils.layout import (
     STAGE_GRID,
     attempt_ids,
     grid_attempt_dir,
     latest_attempt_id,
-    smoke_attempt_id,
     stage_dir,
 )
 from utils.naming import log_prefix
@@ -40,8 +36,6 @@ DEFAULT_CUDA_EXTRA = "cu126"
 DEVICE_CHOICES = ("cpu", "cuda", "cpu,cuda")
 DEFAULT_CPU_PARTITION = "sapphire,kozinsky,seas_compute"
 DEFAULT_CUDA_PARTITION = "seas_gpu,kozinsky_gpu"
-DEFAULT_SMOKE_CPU_PARTITION = "test"
-DEFAULT_SMOKE_CUDA_PARTITION = "gpu_test"
 DEFAULT_TIMEOUT_MIN = 30
 DEFAULT_CPU_MEM_GB = 128
 DEFAULT_CUDA_MEM_GB = 80
@@ -49,18 +43,15 @@ DEFAULT_CPU_CPUS = 16
 DEFAULT_CUDA_CPUS = 8
 DEFAULT_ARRAY_PARALLELISM = 16
 DEFAULT_CHUNK_SIZE = 1
-SMOKE_JOB_LIMIT = 2
-SMOKE_TIMEOUT_MIN = 15
-SMOKE_CPU_MEM_GB = 128
-SMOKE_CUDA_MEM_GB = 16
-SMOKE_CPU_CPUS = 16
-SMOKE_CUDA_CPUS = 4
-SMOKE_ARRAY_PARALLELISM = 2
 DEFAULT_DEPENDENT_LAUNCHER_PARTITION = "test"
 DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN = 30
 DEFAULT_DEPENDENT_LAUNCHER_MEM_GB = 4
 DEFAULT_DEPENDENT_LAUNCHER_CPUS = 1
 DEFAULT_LOCAL_DEADLINE_GUARD_MIN = 60
+DEPRECATED_SMOKE_MESSAGE = (
+    "--smoke is deprecated; use --grid "
+    "experiments/hooke/pair_stability_v3/configs/smoke.yaml with the normal stage stack"
+)
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -227,36 +218,20 @@ def load_grid_manifest(results_root: str | Path, grid_attempt_id: str) -> dict[s
     return manifest
 
 
-def load_smoke_overrides(
+def static_overrides_for_stage(
     stage: str,
     *,
     manifest: dict[str, Any],
-    attempt_dir: str | Path,
 ) -> dict[str, object]:
-    """Return configured smoke overrides for one stage."""
+    """Return manifest static override values for one stage."""
 
-    attempt_dir = Path(attempt_dir)
-    snapshots = config_snapshot_names(manifest.get("config_snapshots"))
-    candidates = []
-    smoke_snapshot = snapshots.get("smoke")
-    if smoke_snapshot:
-        candidates.append(attempt_dir / smoke_snapshot)
-    smoke_config = manifest.get("smoke_config")
-    if smoke_config:
-        candidates.append(Path(str(smoke_config)))
-    for path in candidates:
-        if not path.is_file():
-            continue
-        data = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
-        if not isinstance(data, dict):
-            raise ValueError(f"smoke config must be a mapping: {path}")
-        overrides = data.get(stage, {})
-        if overrides is None:
-            return {}
-        if not isinstance(overrides, dict):
-            raise ValueError(f"smoke config section {stage!r} must be a mapping: {path}")
-        return {str(key): value for key, value in overrides.items()}
-    return {}
+    configured = manifest.get("static_overrides") or {}
+    if not isinstance(configured, dict):
+        raise ValueError("manifest static_overrides must be a mapping")
+    values = configured.get(stage) or {}
+    if not isinstance(values, dict):
+        raise ValueError(f"manifest static_overrides.{stage} must be a mapping")
+    return {str(key): value for key, value in values.items()}
 
 
 def command_for_job(job: dict[str, Any]) -> list[str]:
@@ -934,7 +909,7 @@ def submit_command_sets(
             command_sets[profile],
             log_dir=profile_log_dir,
             job_name=profile_job_name,
-            slurm=slurm_parameters(args, profile=profile, smoke=smoke),
+            slurm=slurm_parameters(args, profile=profile),
             chunk_size=chunk_size,
             allow_partial_failures=allow_partial_failures,
             row_status_paths=row_status_paths,
@@ -945,7 +920,7 @@ def submit_command_sets(
     return _summarize_profile_job_ids(job_ids_by_profile)
 
 
-def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = False) -> dict[str, Any]:
+def slurm_parameters(args: argparse.Namespace, *, profile: str) -> dict[str, Any]:
     """Return Submitit Slurm parameters for the selected profile."""
 
     profile_partition = (
@@ -954,25 +929,15 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = Fa
         else getattr(args, "slurm_cpu_partition", None)
     )
     partition = profile_partition or args.slurm_partition or (
-        (DEFAULT_SMOKE_CUDA_PARTITION if profile == "cuda" else DEFAULT_SMOKE_CPU_PARTITION)
-        if smoke
-        else (DEFAULT_CUDA_PARTITION if profile == "cuda" else DEFAULT_CPU_PARTITION)
+        DEFAULT_CUDA_PARTITION if profile == "cuda" else DEFAULT_CPU_PARTITION
     )
     array_parallelism = args.slurm_array_parallelism
     if array_parallelism is None:
-        array_parallelism = SMOKE_ARRAY_PARALLELISM if smoke else DEFAULT_ARRAY_PARALLELISM
+        array_parallelism = DEFAULT_ARRAY_PARALLELISM
     if array_parallelism < 0:
         raise ValueError("slurm_array_parallelism must be >= 0")
-    cpus_per_task = args.slurm_cpus or (
-        (SMOKE_CPU_CPUS if smoke else DEFAULT_CPU_CPUS)
-        if profile == "cpu"
-        else (SMOKE_CUDA_CPUS if smoke else DEFAULT_CUDA_CPUS)
-    )
-    mem_gb = args.slurm_mem_gb or (
-        (SMOKE_CPU_MEM_GB if smoke else DEFAULT_CPU_MEM_GB)
-        if profile == "cpu"
-        else (SMOKE_CUDA_MEM_GB if smoke else DEFAULT_CUDA_MEM_GB)
-    )
+    cpus_per_task = args.slurm_cpus or (DEFAULT_CPU_CPUS if profile == "cpu" else DEFAULT_CUDA_CPUS)
+    mem_gb = args.slurm_mem_gb or (DEFAULT_CPU_MEM_GB if profile == "cpu" else DEFAULT_CUDA_MEM_GB)
     profile_timeout = (
         getattr(args, "slurm_cuda_timeout_min", None)
         if profile == "cuda"
@@ -980,7 +945,7 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = Fa
     )
     slurm = {
         "slurm_partition": partition,
-        "timeout_min": profile_timeout or args.slurm_timeout_min or (SMOKE_TIMEOUT_MIN if smoke else DEFAULT_TIMEOUT_MIN),
+        "timeout_min": profile_timeout or args.slurm_timeout_min or DEFAULT_TIMEOUT_MIN,
         "mem_gb": mem_gb,
         "cpus_per_task": cpus_per_task,
         "tasks_per_node": 1,
@@ -995,7 +960,7 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str, smoke: bool = Fa
 def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) -> None:
     """Add shared local/Submitit and device launch arguments."""
 
-    parser.add_argument("--smoke", action="store_true", help=smoke_help)
+    parser.add_argument("--smoke", action="store_true", help=f"Deprecated. {DEPRECATED_SMOKE_MESSAGE}")
     parser.add_argument("--backend", choices=["local", "submitit"], required=True)
     parser.add_argument(
         "--device",
@@ -1054,8 +1019,7 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         help=(
             "Override the Slurm partition for all selected devices. Defaults "
             "to sapphire,kozinsky,seas_compute for CPU and "
-            "seas_gpu,kozinsky_gpu for CUDA; with --smoke, CPU defaults to "
-            "test and CUDA defaults to gpu_test."
+            "seas_gpu,kozinsky_gpu for CUDA."
         ),
     )
     parser.add_argument("--slurm-cpu-partition", default=None, help="CPU partition override for --device cpu,cuda.")
@@ -1099,8 +1063,7 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
         default=None,
         help=(
             "Maximum number of Submitit array tasks allowed to run at once "
-            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}, or {SMOKE_ARRAY_PARALLELISM} with --smoke; "
-            "set 0 to omit the cap)."
+            f"(defaults to {DEFAULT_ARRAY_PARALLELISM}; set 0 to omit the cap)."
         ),
     )
     parser.add_argument(
@@ -1118,3 +1081,10 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
     # Backward-compatible aliases for the first CUDA-only train launcher.
     parser.add_argument("--gpu-uv-environment", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--gpu-extra", action="append", dest="gpu_extras", default=None, help=argparse.SUPPRESS)
+
+
+def reject_deprecated_smoke(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Fail fast for retired special smoke launcher mode."""
+
+    if getattr(args, "smoke", False):
+        parser.error(DEPRECATED_SMOKE_MESSAGE)
