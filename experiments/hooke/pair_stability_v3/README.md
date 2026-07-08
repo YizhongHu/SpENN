@@ -122,12 +122,9 @@ Fan-out stages also write per-run latest pointers:
 `06_final_train/{final_run_id}/latest.json`, and
 `07_final_eval/{final_run_id}/latest.json`.
 
-Attempt ids are names only. Smoke/full identity is recorded in each attempt's
-`attempt_metadata.json` and in latest-pointer payloads. When a full attempt is
-known, `latest.json` points to the latest full attempt; smoke diagnostics update
-`latest-smoke.json` and never displace an existing full default. Full stages
-therefore default to the latest non-smoke upstream run, while smoke stages
-default to the latest smoke upstream run.
+Attempt ids are names only. Full and smoke runs are both normal attempts; the
+planned grid file (`grid.yaml` or `smoke.yaml`) is recorded in the grid manifest
+and determines the run scale.
 
 Pass explicit `--attempt-id`, `--grid-attempt-id`, or previous-stage attempt
 flags only when reproducing an older lineage or debugging.
@@ -162,11 +159,11 @@ and `gpu_test` for smoke sanity checks. Use `--slurm-cpu-timeout-min` and
 `--slurm-cuda-timeout-min` when CPU and CUDA candidates need different walltime
 limits.
 
-## Non-Smoke Runbook
+## Runbook
 
-Use the commands in this section for the real study run. They intentionally
-omit `--smoke`; each stage consumes the latest non-smoke upstream attempt by
-default and will not pick up a newer smoke diagnostic run.
+Full and smoke runs use the same stage stack. The differences are the grid file,
+Slurm partitions, and chunk sizes. `--smoke` is retired; use `configs/smoke.yaml`
+for the smaller full-workflow smoke run.
 
 Set the study path once:
 
@@ -174,18 +171,19 @@ Set the study path once:
 STUDY=experiments/hooke/pair_stability_v3
 ```
 
-### Scan Stages
+### Full Scan Stages
 
-Plan the grid. The attempt id is generated automatically in
+Plan the full grid. The attempt id is generated automatically in
 `America/New_York` and recorded in `results/00_grid/latest.json`.
 
 ```bash
 uv run python $STUDY/plan.py \
+  --grid $STUDY/configs/grid.yaml \
   --blind \
   --blind-seed 811
 ```
 
-Train the latest grid:
+Train and validate the latest full grid:
 
 ```bash
 uv run --extra submitit python $STUDY/train.py \
@@ -206,9 +204,7 @@ uv run --extra submitit python $STUDY/validate.py \
   --wait-job <train_launcher_job_id>
 ```
 
-Collect the newest non-smoke validation lineage and select energy
-representatives. These commands do not need a grid attempt id; collection
-traces validation ancestry to the source grid manifest.
+Collect the latest validation lineage and select energy representatives.
 
 ```bash
 uv run python $STUDY/collect.py
@@ -216,12 +212,10 @@ uv run python $STUDY/collect.py
 uv run python $STUDY/select_champions.py
 ```
 
-### Final Stages
+### Full Final Stages
 
 The checked-in grid sets `final_replicates: 9`, so the default final plan
-continues selected champions through nine independent final seeds. The commands
-below consume the latest non-smoke previous stage and write their own latest
-pointers.
+continues selected champions through nine independent final seeds.
 
 Plan final replicates from the latest champion selection:
 
@@ -293,45 +287,67 @@ CSV summaries under `08_final_collect/{attempt_id}/`. `final_report.py` reads
 only those compact tables and writes `09_final_report/{attempt_id}/report.md`,
 `tables/*.csv`, and `figures/*.png`.
 
-## Smoke Runs
+### Smoke Scan Stages
 
-Smoke runs are separate from full runs. Passing `--smoke` keeps the same source
-grid but writes smoke-marked attempts, limits launchers to two jobs, sends CPU
-smoke jobs to `test` and CUDA smoke jobs to `gpu_test` by default, and applies
-only the stage-specific workload reductions in `configs/smoke.yaml`. The smoke
-profile mirrors the small scaling used by `experiments/hooke/pair_stability`:
-two train steps, small sampler settings, checkpoint/status every step, and
-compact validation sample counts.
+Plan the smoke grid. It has the same axes as the full grid, reduced to 64 scan
+jobs and one paired seed row. It does not reduce validation or final-eval
+parameters.
 
-Example GPU smoke train from the latest grid:
+```bash
+uv run python $STUDY/plan.py \
+  --grid $STUDY/configs/smoke.yaml \
+  --blind \
+  --blind-seed 811
+```
+
+Train and validate the latest smoke grid on test partitions. Larger chunk sizes
+reduce submitted Slurm array size.
 
 ```bash
 uv run --extra submitit python $STUDY/train.py \
-  --smoke \
   --backend submitit --device cuda \
-  --chunk-size 1
+  --chunk-size 16 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 60
+
+uv run --extra submitit python $STUDY/validate.py \
+  --backend submitit --device cuda \
+  --chunk-size 32 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 120 \
+  --wait-job <train_launcher_job_id>
+
+uv run python $STUDY/collect.py
+
+uv run python $STUDY/select_champions.py
 ```
 
-Smoke final stages use the same lineage defaults but cap the final grid to the
-first one or two champions, use one final seed, record smoke metadata, and use
-the test partitions:
+### Smoke Final Stages
+
+The smoke grid sets `final_replicates: 1`, so final planning continues each
+smoke champion through one final seed.
 
 ```bash
-uv run python $STUDY/final_plan.py --smoke
+uv run python $STUDY/final_plan.py
 
 uv run --extra submitit python $STUDY/final_train.py \
-  --smoke \
   --backend submitit --device cpu,cuda \
-  --chunk-size 1
+  --chunk-size 8 \
+  --slurm-cpu-partition test \
+  --slurm-cuda-partition gpu_test \
+  --slurm-cpu-timeout-min 60 \
+  --slurm-cuda-timeout-min 60
 
 uv run --extra submitit python $STUDY/final_eval.py \
-  --smoke \
   --backend submitit --device cuda \
+  --chunk-size 8 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 120 \
   --wait-job <final_train_launcher_job_id>
 
-uv run python $STUDY/final_collect.py --smoke
+uv run python $STUDY/final_collect.py
 
-uv run python $STUDY/final_report.py --smoke
+uv run python $STUDY/final_report.py
 ```
 
 `validate.py` and `final_eval.py` support `--wait-job <job_id>` when the
@@ -342,5 +358,5 @@ performs the normal readiness checks. Otherwise, rerun validation/final eval
 after upstream checkpoints are ready; these stages always skip rows that are not
 ready. The lightweight launcher defaults to the `test` partition; override it
 with `--wait-launcher-partition` if needed. The real validation/final-eval array
-still follows `--device` and `--smoke` partition defaults when the
-dependent launcher runs.
+uses the Slurm partition flags from the command that the dependent launcher
+reruns.

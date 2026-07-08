@@ -9,13 +9,11 @@
 study: pair_stability_v3
 config: experiments/hooke/pair_stability_v3/configs/pair_stability.yaml
 validation_config: experiments/hooke/pair_stability_v3/configs/pair_validation.yaml
-smoke_config: experiments/hooke/pair_stability_v3/configs/smoke.yaml
 results_root: experiments/hooke/pair_stability_v3/results
 
 config_snapshots:
   train: train_config.yaml
   validation: validation_config.yaml
-  smoke: smoke_config.yaml
 
 # Major axes define independent comparison buckets. The planner can blind these
 # true values into stable slots before writing routine manifests.

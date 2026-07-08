@@ -45,61 +45,16 @@ from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
-def _smoke_run_id(run_id: str, grid_attempt_id: str) -> str:
-    """Return the flat-layout run id for a smoke train attempt."""
-
-    return f"{run_id}/{launch.smoke_attempt_id(grid_attempt_id)}"
-
-
-def _smoke_job(job: dict[str, Any], *, grid_attempt_id: str) -> dict[str, Any]:
-    """Return a manifest job copy redirected to its smoke attempt directory."""
-
-    job = dict(job)
-    train_dir = Path(str(job["train_dir"]))
-    job["train_attempt_dir"] = str(train_dir / launch.smoke_attempt_id(grid_attempt_id))
-    return job
-
-
-def _launch_jobs(jobs: Sequence[dict[str, Any]], *, grid_attempt_id: str, smoke: bool) -> list[dict[str, Any]]:
+def _launch_jobs(jobs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return the jobs selected for this launch."""
 
-    if not smoke:
-        return [dict(job) for job in jobs]
-    return [_smoke_job(job, grid_attempt_id=grid_attempt_id) for job in list(jobs)[: launch.SMOKE_JOB_LIMIT]]
+    return [dict(job) for job in jobs]
 
 
-def _smoke_overrides(
-    job: dict[str, Any],
-    *,
-    grid_attempt_id: str,
-    configured: dict[str, object],
-) -> dict[str, object]:
-    """Return smoke-only command overrides for one selected job."""
-
-    smoke_attempt = launch.smoke_attempt_id(grid_attempt_id)
-    return {
-        **configured,
-        "run.run_id": _smoke_run_id(str(job["run_id"]), grid_attempt_id),
-        "study.attempt_id": smoke_attempt,
-    }
-
-
-def _execution_command(
-    command: Sequence[str],
-    job: dict[str, Any],
-    *,
-    grid_attempt_id: str,
-    smoke: bool,
-    smoke_overrides: dict[str, object],
-) -> list[str]:
+def _execution_command(command: Sequence[str]) -> list[str]:
     """Return the run command after launch-mode overrides are applied."""
 
-    if not smoke:
-        return [str(part) for part in command]
-    return launch.with_overrides(
-        command,
-        _smoke_overrides(job, grid_attempt_id=grid_attempt_id, configured=smoke_overrides),
-    )
+    return [str(part) for part in command]
 
 
 def _train_attempt_dir(job: dict[str, Any], *, manifest: dict[str, Any], repo_root: Path) -> Path:
@@ -131,8 +86,8 @@ def _executor(
         args=args,
         repo_root=repo_root,
         log_dir=stage_dir(results_root, STAGE_TRAIN) / "slurm_logs" / log_attempt,
-        job_name=stage_job_name(study, "train", smoke=args.smoke),
-        smoke=args.smoke,
+        job_name=stage_job_name(study, "train"),
+        smoke=False,
         chunk_size=args.chunk_size,
         chunk_status_dir=stage_dir(results_root, STAGE_TRAIN) / "chunk_status" / log_attempt,
     )
@@ -152,7 +107,7 @@ def _resource_spec(args: argparse.Namespace) -> Any:
     resolved_profiles = {}
     for profile in profiles:
         uv_environment, uv_extras, _runtime_device = launch.resolve_uv_settings_for_profile(args, profile)
-        slurm = launch.slurm_parameters(args, profile=profile, smoke=args.smoke)
+        slurm = launch.slurm_parameters(args, profile=profile)
         resolved_profiles[profile] = resource_from_profile(
             profile=profile,
             partition=slurm.get("slurm_partition"),
@@ -200,7 +155,7 @@ def build_train_stage_plan(
 ) -> StagePlan:
     """Build a reusable toolkit stage plan for train tasks."""
 
-    attempt_id = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
+    attempt_id = grid_attempt_id
     result_dirs = [
         _train_attempt_dir(job, manifest=manifest, repo_root=repo_root)
         for job in jobs
@@ -225,7 +180,7 @@ def build_train_stage_plan(
         results_root=str(results_root),
         source_attempts={"grid": grid_attempt_id},
         timezone=manifest.get("timezone"),
-        smoke=bool(args.smoke),
+        smoke=False,
         metadata={
             "backend": args.backend,
             "device": launch.selected_device(args),
@@ -280,7 +235,6 @@ def write_train_launch_provenance(
     grid_attempt_id: str,
     repo_root: Path,
     submitted_commands: Sequence[Sequence[str]],
-    smoke: bool = False,
 ) -> list[Path]:
     """Create train attempt directories before scheduler execution starts."""
 
@@ -299,7 +253,7 @@ def write_train_launch_provenance(
         (train_attempt / "command.txt").write_text(
             shlex.join([str(part) for part in submitted_commands[index]]) + "\n"
         )
-        write_latest(train_attempt.parent, train_attempt.name, smoke=smoke)
+        write_latest(train_attempt.parent, train_attempt.name)
         row_status_paths.append(train_attempt / "launcher_status.json")
     return row_status_paths
 
@@ -313,11 +267,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     launch.add_launch_arguments(
         parser,
         smoke_help=(
-            "Submit two short smoke jobs with smoke-marked attempt ids, small "
-            "samplers, two train steps, and 15-minute test partitions."
+            "Deprecated. Use configs/smoke.yaml with the normal stage stack."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    launch.reject_deprecated_smoke(parser, args)
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -337,21 +292,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest = launch.load_grid_manifest(results_root, grid_attempt_id)
     study = study_name_from_manifest(manifest)
     prefix = log_prefix(study)
-    grid_dir = grid_attempt_dir(results_root, grid_attempt_id)
-    configured_smoke_overrides = launch.load_smoke_overrides(
-        "train",
-        manifest=manifest,
-        attempt_dir=grid_dir,
-    )
-    jobs = _launch_jobs(list(manifest.get("jobs", [])), grid_attempt_id=grid_attempt_id, smoke=args.smoke)
+    jobs = _launch_jobs(list(manifest.get("jobs", [])))
     commands = [
-        _execution_command(
-            launch.command_for_job(job),
-            job,
-            grid_attempt_id=grid_attempt_id,
-            smoke=args.smoke,
-            smoke_overrides=configured_smoke_overrides,
-        )
+        _execution_command(launch.command_for_job(job))
         for job in jobs
     ]
     command_sets = launch.environment_command_sets(commands, args=args, repo_root=repo_root)
@@ -368,9 +311,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         grid_attempt_id=grid_attempt_id,
         repo_root=repo_root,
         submitted_commands=submitted_commands,
-        smoke=args.smoke,
     )
-    log_attempt = launch.smoke_attempt_id(grid_attempt_id) if args.smoke else grid_attempt_id
+    log_attempt = grid_attempt_id
     stage_plan = build_train_stage_plan(
         jobs,
         manifest=manifest,
@@ -409,8 +351,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         submitted_commands=submitted_commands,
     )
     write_execution_records(stage_plan_dir, execution_records)
-    mode = "smoke train" if args.smoke else "train"
-    print(f"{prefix} launched {len(job_ids)} {mode} jobs from 00_grid/{grid_attempt_id} via {args.backend}")
+    print(f"{prefix} launched {len(job_ids)} train jobs from 00_grid/{grid_attempt_id} via {args.backend}")
     return 0
 
 
