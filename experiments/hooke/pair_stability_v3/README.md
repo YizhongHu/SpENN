@@ -395,6 +395,87 @@ Minimum pre-bump checks:
 uv run --extra cpu pytest -q experiments/hooke/pair_stability_v3
 ```
 
+Executed smoke validation for attempt `20260708T003541-0400-smoke` used the
+commands below. `gpu_test` rejected the default CUDA memory request, so the
+Submitit stages used `--slurm-mem-gb 48`. The train and validation scan stages
+used one Slurm array task to stay under submit limits.
+
+```bash
+UV_CACHE_DIR=/tmp/rhu/uv-cache uv run python experiments/hooke/pair_stability_v3/plan.py \
+  --grid experiments/hooke/pair_stability_v3/configs/smoke.yaml \
+  --blind \
+  --blind-seed 811 \
+  --attempt-id 20260708T003541-0400-smoke
+
+.venv-submitit/bin/python experiments/hooke/pair_stability_v3/train.py \
+  --backend submitit \
+  --device cuda \
+  --grid-attempt-id 20260708T003541-0400-smoke \
+  --chunk-size 64 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 120 \
+  --slurm-mem-gb 48 \
+  --slurm-array-parallelism 1
+
+.venv-submitit/bin/python experiments/hooke/pair_stability_v3/validate.py \
+  --backend submitit \
+  --device cuda \
+  --grid-attempt-id 20260708T003541-0400-smoke \
+  --train-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke \
+  --chunk-size 64 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 720 \
+  --slurm-mem-gb 48 \
+  --slurm-array-parallelism 1 \
+  --wait-job 29259914 \
+  --wait-launcher-partition test \
+  --wait-launcher-timeout-min 60
+
+.venv/bin/python experiments/hooke/pair_stability_v3/collect.py \
+  --grid-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke
+
+.venv/bin/python experiments/hooke/pair_stability_v3/select_champions.py \
+  --collection-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke
+
+.venv/bin/python experiments/hooke/pair_stability_v3/final_plan.py \
+  --selection-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke
+
+.venv-submitit/bin/python experiments/hooke/pair_stability_v3/final_train.py \
+  --backend submitit \
+  --device cuda \
+  --final-grid-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke \
+  --chunk-size 8 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 120 \
+  --slurm-mem-gb 48 \
+  --slurm-array-parallelism 1
+
+.venv-submitit/bin/python experiments/hooke/pair_stability_v3/final_eval.py \
+  --backend submitit \
+  --device cuda \
+  --final-grid-attempt-id 20260708T003541-0400-smoke \
+  --final-train-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke \
+  --chunk-size 8 \
+  --slurm-partition gpu_test \
+  --slurm-timeout-min 720 \
+  --slurm-mem-gb 48 \
+  --slurm-array-parallelism 1
+
+.venv/bin/python experiments/hooke/pair_stability_v3/final_collect.py \
+  --final-eval-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke
+
+.venv/bin/python experiments/hooke/pair_stability_v3/final_report.py \
+  --final-collect-attempt-id 20260708T003541-0400-smoke \
+  --attempt-id 20260708T003541-0400-smoke
+```
+
 Optional local mini-lineage for debugging uses the same smoke grid with
 `--backend local`, but the release gate is the Slurm smoke lineage in the
 regular results directory. After the Slurm report exists, inspect report
