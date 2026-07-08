@@ -301,6 +301,7 @@ def _report_axis_keys(
     )
     for row_key, col_key in (
         configured,
+        ("basis_update", "feature_normalization"),
         ("basis", "mechanism"),
         ("basis_class", "normalization"),
     ):
@@ -314,7 +315,7 @@ def _row_axis_value(row: dict[str, Any], key: str, fallback: str) -> str:
 
 
 def _architecture_label(row: dict[str, Any]) -> str:
-    return str(row.get("basis_class", row.get("architecture", row.get("basis", "")))) or "all"
+    return str(row.get("basis_update", row.get("basis_class", row.get("architecture", row.get("basis", ""))))) or "all"
 
 
 def _winner_rows(rows: Sequence[dict[str, Any]], winner_kind: str) -> list[dict[str, Any]]:
