@@ -411,8 +411,8 @@ reruns.
 ### Smoke Review Gate
 
 The smoke lineage is the release-readiness gate for this study. It should reach
-`09_final_report` before any `0.2.1` version bump. Do not use `--smoke`; the
-smoke attempt is normal grid lineage generated from `configs/smoke.yaml`.
+`09_final_report` before the `0.2.1` release. Do not use `--smoke`; the smoke
+attempt is normal grid lineage generated from `configs/smoke.yaml`.
 Keep review smoke attempts in the default study results directory,
 `experiments/hooke/pair_stability_v3/results`, so the artifacts remain
 available for comparison and audit. Do not pass a temporary `--results-root`
