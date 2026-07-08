@@ -1545,11 +1545,152 @@ def test_v3_final_collect_merges_basis_and_update_for_report_axes() -> None:
         }
     }
 
-    assert final_collect._report_axes(manifest) == ("basis_class", "normalization")
+    assert final_collect._report_axes(manifest) == ("basis_update", "feature_normalization")
     assert final_collect._report_axis_values(job, manifest) == (
         "raw-envelope+update-gaussian-norm",
         "feature-gaussian-norm",
     )
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload) + "\n")
+
+
+def _append_metrics(path: Path, records: Sequence[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+
+def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
+    final_run_id = "final-run-0"
+    final_grid_attempt_id = "FG0"
+    final_train_attempt_id = "FT0"
+    final_eval_attempt_id = "FE0"
+    final_grid_dir = layout.stage_dir(results_root, layout.STAGE_FINAL_GRID) / final_grid_attempt_id
+    final_train_dir = layout.final_train_attempt_dir(results_root, final_run_id, final_train_attempt_id)
+    final_eval_dir = layout.final_eval_attempt_dir(results_root, final_run_id, final_eval_attempt_id)
+
+    _write_json(
+        final_grid_dir / "manifest.json",
+        {
+            "study": "pair_stability_v3",
+            "major_axes": ["basis", "update_normalization", "feature_normalization"],
+            "minor_axes": ["lr", "channels", "activation"],
+            "final_replicates": 1,
+        },
+    )
+    job = {
+        "source_champion_id": "champion-0",
+        "winner_kind": "energy",
+        "replicate_index": 0,
+        "major_id": "b-B00_u-U00_f-F00",
+        "minor_id": "lr-1e-3_ch-8_a-SiLU",
+        "config_id": "b-B00_u-U00_f-F00_lr-1e-3_ch-8_a-SiLU",
+        "choices": {
+            "basis": "raw-envelope",
+            "update_normalization": "update-gaussian-norm",
+            "feature_normalization": "feature-gaussian-norm",
+            "lr": "1.0e-3",
+            "channels": 8,
+            "activation": "SiLU",
+        },
+        "final_train_model_seed": 100,
+        "final_train_sampler_seed": 1000,
+        "final_eval_sampler_seed": 10000,
+    }
+    _write_json(final_eval_dir / "source_final_job.json", job)
+    _write_json(final_eval_dir / "source_final_grid_attempt.json", {"final_grid_attempt_dir": str(final_grid_dir)})
+    _write_json(final_eval_dir / "evaluated_checkpoint.json", {"resolved_checkpoint_dir": str(final_train_dir / "checkpoints" / "step_000000")})
+    _write_json(
+        final_eval_dir / "source_final_train_attempt.json",
+        {
+            "final_train_attempt_id": final_train_attempt_id,
+            "final_train_attempt_dir": str(final_train_dir),
+        },
+    )
+    _write_json(final_eval_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:10+00:00"})
+    _write_json(final_train_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:05+00:00"})
+    _write_json(final_train_dir / "metadata.json", {"runtime": {"device": "cuda"}, "peak_memory_mb": 123})
+    _append_metrics(
+        final_train_dir / "metrics.jsonl",
+        [
+            {"namespace": "train", "step": 0, "metrics": {"energy": 2.1, "energy_stderr": 0.01, "energy_variance": 0.02, "grad_norm": 1.5}},
+            {"namespace": "train/sampler", "step": 0, "metrics": {"acceptance_rate": 0.7}},
+            {"namespace": "train/perf", "step": 0, "metrics": {"step_time_sec": 1.0, "local_energy_time_sec": 0.2, "forward_time_sec": 0.3, "backward_time_sec": 0.4}},
+            {"namespace": "runtime", "step": 0, "metrics": {"wall_time_sec": 5.0, "peak_memory_mb": 123}},
+            {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
+        ],
+    )
+    _append_metrics(
+        final_eval_dir / "metrics.jsonl",
+        [
+            {"namespace": "eval/energy", "step": 0, "metrics": {"local_energy_mean": 2.01, "local_energy_stderr": 0.02, "local_energy_variance": 0.03, "local_energy_n_finite": 2, "local_energy_n_total": 2, "local_energy_finite_fraction": 1.0, "local_energy_pathology_count": 0}},
+            {"namespace": "eval/energy/term", "step": 0, "metrics": {"kinetic_mean": 1.0, "harmonic_trap_mean": 0.5, "electron_electron_mean": 1.0}},
+            {"namespace": "eval/stratified_geometry/status", "step": 0, "metrics": {"task_success": True, "task_failed": False}},
+            {"namespace": "diagnostics/cusp", "step": 0, "metrics": {"time_sec": 1.0}},
+            {"namespace": "eval/perf/cusp", "step": 0, "metrics": {"generator_time_sec": 0.1, "calculator/local_energy_time_sec": 0.2, "summary/profile_time_sec": 0.3}},
+            {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
+        ],
+    )
+
+    _write_csv(final_eval_dir / "energy" / "mcmc_energy_samples.csv", [{"local_energy": 2.0}, {"local_energy": 2.1}])
+    _write_csv(final_eval_dir / "cusp" / "cusp_profiles.csv", [{"center_of_mass_id": "com0", "direction_id": "dir0", "r12": 0.1, "local_energy": 2.0, "logabs": -0.2, "d_logabs_dr": 0.5, "finite": True}])
+    _write_csv(final_eval_dir / "tail" / "tail_profiles.csv", [{"com_id": "com0", "tail_path": "path0", "radius": 4.0, "local_energy": 2.0, "logabs": -4.0, "exact_logabs": -4.1, "finite": True}])
+    _write_csv(final_eval_dir / "stratified_geometry" / "stratified_metrics.csv", [{"stratum": "near", "local_energy": 2.0, "finite": True}])
+    _write_csv(final_eval_dir / "hooke_orbital" / "hooke_orbital_metrics.csv", [{"radius": 1.0, "r12": 0.5, "local_energy": 2.0, "finite": True}])
+    for task in ("full_model_antisymmetry", "spatial_exchange_symmetry", "rotation_consistency"):
+        _write_csv(final_eval_dir / task / "transform_records.csv", [{"logabs_abs_error": 0.0, "sign_mismatch": False, "parity_mismatch": False, "finite": True}])
+    for task in ("trace_equivariance", "feature_trace_stability", "readout_trace_stability"):
+        _write_csv(final_eval_dir / task / "trace_records.csv", [{"entry_key": "layers.0.mixing/value", "q95_abs": 0.01, "q99_abs": 0.02, "max_abs_error": 0.03, "nonfinite_count": 0, "compared_entry_count": 4, "comparison_error_count": 0}])
+    (final_eval_dir / "unused_task").mkdir()
+    (final_eval_dir / "unused_task" / "all_metrics_dump.csv").write_text("not,a,real,table\n")
+    layout.write_latest(layout.final_eval_run_dir(results_root, final_run_id), final_eval_attempt_id)
+    return final_eval_attempt_id, final_run_id
+
+
+def test_v3_final_collect_writes_report_contract_and_explicit_plot_axis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results_root = tmp_path / "results"
+    final_eval_attempt_id, _final_run_id = _write_minimal_final_artifacts(results_root)
+    read_paths: list[Path] = []
+    real_read_csv = final_collect._read_csv
+
+    def tracked_read_csv(path: Path) -> list[dict[str, Any]]:
+        read_paths.append(Path(path))
+        return real_read_csv(path)
+
+    monkeypatch.setattr(final_collect, "_read_csv", tracked_read_csv)
+
+    result = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC0",
+        final_eval_attempt_id=final_eval_attempt_id,
+    )
+    collect_dir = Path(result["attempt_dir"])
+    manifest = result["manifest"]
+    run_index = _read_csv(collect_dir / "run_index.csv")
+    architecture = _read_csv(collect_dir / "architecture_summary.csv")
+
+    assert tuple(manifest["tables"]) == final_report.COMPACT_TABLES
+    assert manifest["report_row_key"] == "basis_update"
+    assert manifest["report_col_key"] == "feature_normalization"
+    assert manifest["major_axes"] == ["basis", "update_normalization", "feature_normalization"]
+    assert run_index[0]["basis"] == "raw-envelope"
+    assert run_index[0]["update_normalization"] == "update-gaussian-norm"
+    assert run_index[0]["feature_normalization"] == "feature-gaussian-norm"
+    assert run_index[0]["basis_update"] == "raw-envelope+update-gaussian-norm"
+    assert architecture[0]["basis_update"] == "raw-envelope+update-gaussian-norm"
+    assert all("unused_task" not in str(path) for path in read_paths)
+
+    report = final_report.build_report(
+        results_root=results_root,
+        final_collect_attempt_id="FC0",
+        report_attempt_id="FR0",
+    )["report"]
+
+    assert report["report_axes"] == {"row": "basis_update", "column": "feature_normalization"}
 
 
 def test_v2_final_eval_defaults_to_single_latest_final_train_attempt(tmp_path: Path) -> None:
