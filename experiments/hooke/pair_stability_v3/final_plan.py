@@ -346,7 +346,7 @@ def write_final_grid_attempt(
         "metric_value",
         "final_train_sampler_seed",
         "final_train_model_seed",
-        "final_eval_seed",
+        "final_eval_sampler_seed",
     ]
     _write_csv(attempt / "final_jobs.csv", jobs, columns)
     for job in jobs:

@@ -483,7 +483,7 @@ def _base_row(context: dict[str, Any]) -> dict[str, Any]:
         "seed_index": _seed_index(job),
         "model_seed": job.get("final_train_model_seed", ""),
         "sampler_seed": job.get("final_train_sampler_seed", ""),
-        "eval_seed": job.get("final_eval_seed", ""),
+        "eval_seed": job.get("final_eval_sampler_seed", ""),
     }
 
 

@@ -1,29 +1,9 @@
 # =============================================================================
-# Hooke pair-stability V3 grid
+# Hooke pair-stability V3 full grid
 # =============================================================================
 #
-# Reduced-scale scan used as this study's default grid, run through the
-# normal (non-``--smoke``) pipeline so it exercises the same code path as a
-# real run. It is not the ``--smoke``/
-# ``smoke.yaml`` mechanism (job-count truncation for a quick scheduler check,
-# gated behind ``train.py --smoke``) -- that stays untouched.
-#
-# Two kinds of reduction, both scoped to this file only (pair_stability.yaml
-# and pair_validation.yaml are not modified):
-#
-# - Fewer values per scientific axis (major_grid/minor_grid/scan_seeds/
-#   final_replicates), mirroring pair_stability_v2's grid_smoke.yaml: same
-#   axis structure, fewer combinations.
-# - A handful of extra single-value minor-grid axes (max_steps,
-#   log_every_n_steps, checks/checkpoint/status every_n_steps) that pin
-#   training's per-step workload down via the existing axis_overrides
-#   machinery. sampler_params and validation/final_eval evaluation_tasks
-#   knobs are intentionally left at production values.
-#
-# study/config/validation_config/smoke_config/results_root are unchanged from
-# grid.yaml: this is the same study, not a separate one, so smoke attempts
-# land under the same results tree as production attempts, isolated only by
-# attempt_id (same as any other grid re-plan).
+# Full v0.2.1 scan grid. Smoke runs use configs/smoke.yaml as a smaller grid
+# with the same staged workflow, not a special launcher mode.
 # =============================================================================
 
 study: pair_stability_v3
@@ -41,12 +21,19 @@ config_snapshots:
 # true values into stable slots before writing routine manifests.
 major_grid:
   basis:
-    - raw_envelope
-    - orbital_s1_envelope
+    - raw-envelope
+    - hooke-s1-envelope
 
-  mechanism:
-    - baseline_silu
-    - update_rms
+  update_normalization:
+    - no-update-normalization
+    - update-gaussian-norm
+    - update-gaussian-envelope
+
+  feature_normalization:
+    - no-feature-normalization
+    - feature-gaussian-norm
+    - feature-rms-norm
+    - feature-gaussian-envelope
 
 # Minor axes are scanned within each major point. Final planning freezes the
 # selected minor values and drops scan_seed_axis.
@@ -57,81 +44,83 @@ minor_grid:
 
   channels:
     - 8
+    - 16
 
-  # Workload-reduction axes (not scientific scan dimensions): single value,
-  # applied uniformly via axis_overrides so every job gets a short train loop.
-  max_steps:
-    - 2
+  activation:
+    - SiLU
+    - Tanh
+    - Sigmoid
+    - Exponential
 
-  log_every_n_steps:
-    - 1
-
-  checks_every_n_steps:
-    - 1
-
-  checkpoint_every_n_steps:
-    - 1
-
-  status_every_n_steps:
-    - 1
-
-scan_seed_axis: seed
-scan_seeds:
-  - 0
-  - 1
+# Seed rows are paired, not a Cartesian seed grid.
+scan_seed_axis: seed_index
+scan_seed_rows:
+  - seed_index: 0
+    training_model_seed: 0
+    training_sampler_seed: 10
+    validation_sampler_seed: 20
+  - seed_index: 1
+    training_model_seed: 1
+    training_sampler_seed: 11
+    validation_sampler_seed: 21
+  - seed_index: 2
+    training_model_seed: 2
+    training_sampler_seed: 12
+    validation_sampler_seed: 22
 
 blinding:
   enabled_by_default: true
   slot_prefixes:
     basis: B
-    mechanism: A
+    update_normalization: U
+    feature_normalization: F
 
 # Short labels used only for durable ids such as run_id, major_id, and minor_id.
 axis_id_labels:
   basis: b
-  mechanism: m
+  update_normalization: u
+  feature_normalization: f
   lr: lr
   channels: ch
-  seed: seed
-  max_steps: ms
-  log_every_n_steps: log
-  checks_every_n_steps: chk
-  checkpoint_every_n_steps: ckpt
-  status_every_n_steps: stat
+  activation: act
+  seed_index: seed
 
 # Explicit Hydra override path for every non-seed grid axis.
 axis_overrides:
   basis: run_parameters.basis_slot
-  mechanism: run_parameters.mechanism_slot
+  update_normalization: run_parameters.update_normalization_slot
+  feature_normalization: run_parameters.feature_normalization_slot
   lr: run_parameters.lr
   channels: run_parameters.channels
-  max_steps: training.max_steps
-  log_every_n_steps: training.log_every_n_steps
-  checks_every_n_steps: checks.every_n_steps
-  checkpoint_every_n_steps: checkpoint.every_n_steps
-  status_every_n_steps: status.every_n_steps
+  activation: run_parameters.activation_slot
 
 # Optional validation against choice libraries in the base configs.
 choice_validation:
   basis:
     choices_path: choices.basis
     tags_path: choices.basis.{value}.tags
-  mechanism:
-    choices_path: choices.mechanism
-    tags_path: choices.mechanism.{value}.tags
+  update_normalization:
+    choices_path: choices.update_normalization
+    tags_path: choices.update_normalization.{value}.tags
+  feature_normalization:
+    choices_path: choices.feature_normalization
+    tags_path: choices.feature_normalization.{value}.tags
+  activation:
+    choices_path: choices.activation
+    tags_path: choices.activation.{value}.tags
 
 # Stage-specific seed policy. Values on the right are named seed values supplied
 # by the planner/final planner; keys on the left are Hydra override paths.
 seed_overrides:
   scan_train:
-    run_parameters.seed: scan_seed
-    runtime.seed: scan_seed
-    sampler.seed: scan_seed
+    run_parameters.seed: training_model_seed
+    runtime.seed: training_model_seed
+    sampler.seed: training_sampler_seed
 
   validation:
-    run_parameters.seed: scan_seed
-    runtime.seed: scan_seed
-    evaluation.seed: scan_seed
+    run_parameters.seed: training_model_seed
+    runtime.seed: training_model_seed
+    evaluation.seed: validation_sampler_seed
 
   final_train:
     run_parameters.seed: final_train_model_seed
@@ -139,20 +128,20 @@ seed_overrides:
     sampler.seed: final_train_sampler_seed
 
   final_eval:
-    run_parameters.seed: final_eval_seed
-    runtime.seed: final_eval_seed
-    evaluation.seed: final_eval_seed
+    run_parameters.seed: final_eval_sampler_seed
+    runtime.seed: final_eval_sampler_seed
+    evaluation.seed: final_eval_sampler_seed
 
 # Independent final replicate seeds. replicate_index i uses start + i * step.
 final_seed_sequences:
-  final_train_sampler_seed:
-    start: 101
-    step: 1
   final_train_model_seed:
-    start: 1001
+    start: 100
     step: 1
-  final_eval_seed:
-    start: 10001
+  final_train_sampler_seed:
+    start: 1000
+    step: 1
+  final_eval_sampler_seed:
+    start: 10000
     step: 1
 
 # Champion selectors are data, not code. "name" is only a label used in
@@ -189,7 +178,4 @@ champion_reference_metrics:
   - label: readout_stability
     metric: eval/readout_trace_stability/condition_number_q95
 
-# Final planning keeps independent final seeds while staying small enough for
-# end-to-end pipeline checks. The scan and champion-selection grid above remain
-# unchanged apart from the reductions noted above.
-final_replicates: 2
+final_replicates: 9

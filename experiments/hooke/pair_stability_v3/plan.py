@@ -39,7 +39,7 @@ from utils.layout import (
     write_latest,
 )
 from utils.naming import axis_value_label, experiment_run_name, log_prefix, study_name
-from utils.seeds import final_seed_sequences, seed_override_policy, seed_override_values
+from utils.seeds import final_seed_sequences, scan_seed_values, seed_override_policy, seed_override_values
 from utils.time import DEFAULT_STUDY_TIMEZONE, new_attempt_id, resolve_timezone
 
 STUDY_DIR = Path(__file__).resolve().parent
@@ -79,13 +79,33 @@ def minor_axes(grid_data: dict[str, Any]) -> tuple[str, ...]:
 def scan_seed_axis(grid_data: dict[str, Any]) -> str:
     """Return the scan seed axis name."""
 
-    return str(grid_data.get("scan_seed_axis", "seed"))
+    return str(grid_data.get("scan_seed_axis", "seed_index" if "scan_seed_rows" in grid_data else "seed"))
+
+
+def scan_seed_rows(grid_data: dict[str, Any], seed_axis: str) -> list[dict[str, Any]]:
+    """Return configured paired scan seed rows."""
+
+    if "scan_seed_rows" in grid_data:
+        configured = grid_data["scan_seed_rows"]
+        if not isinstance(configured, Sequence) or isinstance(configured, (str, bytes)):
+            raise ValueError("scan_seed_rows must be a sequence of mappings")
+        rows = []
+        for index, row in enumerate(configured):
+            if not isinstance(row, dict):
+                raise ValueError(f"scan_seed_rows[{index}] must be a mapping")
+            if seed_axis not in row:
+                raise ValueError(f"scan_seed_rows[{index}] is missing seed axis {seed_axis!r}")
+            rows.append(dict(row))
+        if not rows:
+            raise ValueError("scan_seed_rows must contain at least one row")
+        return rows
+    return [{seed_axis: seed} for seed in grid_data.get("scan_seeds", [])]
 
 
 def grid_axes(grid_data: dict[str, Any]) -> tuple[str, ...]:
     """Return the full scalar train axis order."""
 
-    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data:
+    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data or "scan_seed_rows" in grid_data:
         return (*major_axes(grid_data), *minor_axes(grid_data), scan_seed_axis(grid_data))
     return _axis_names(grid_data["grid"], grid_data.get("grid_axes"))
 
@@ -124,21 +144,23 @@ def expand_split_grid(
     for major in _axis_points(major_grid, major_axis_names):
         for minor in _axis_points(minor_grid, minor_axis_names):
             for seed in scan_seeds:
-                points.append({**major, **minor, seed_axis: seed})
+                seed_row = dict(seed) if isinstance(seed, dict) else {seed_axis: seed}
+                points.append({**major, **minor, **seed_row})
     return points
 
 
 def expand_grid_spec(grid_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Expand either a split grid spec or a legacy flat grid spec."""
 
-    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data:
+    if "major_grid" in grid_data or "minor_grid" in grid_data or "scan_seeds" in grid_data or "scan_seed_rows" in grid_data:
+        seed_axis = scan_seed_axis(grid_data)
         return expand_split_grid(
             grid_data["major_grid"],
             grid_data["minor_grid"],
-            grid_data["scan_seeds"],
+            scan_seed_rows(grid_data, seed_axis),
             major_axis_names=major_axes(grid_data),
             minor_axis_names=minor_axes(grid_data),
-            seed_axis=scan_seed_axis(grid_data),
+            seed_axis=seed_axis,
         )
     return expand_grid(grid_data["grid"], grid_data.get("grid_axes"))
 
@@ -481,7 +503,7 @@ def train_overrides(
     seed_overrides = seed_override_values(
         seed_policy,
         "scan_train",
-        {"scan_seed": point[seed_axis]},
+        scan_seed_values(point, seed_axis),
     )
     overrides = [
         *_axis_value_overrides(point, axes=scalar_axes, override_paths=override_paths),
@@ -531,6 +553,7 @@ def build_jobs(
     config_axes = (*major_axis_names, *minor_axis_names)
     run_axes = (*config_axes, seed_axis)
     for point in points:
+        seed_values = scan_seed_values(point, seed_axis)
         run_id = id_for(point, run_axes, id_labels)
         major_id = id_for(point, major_axis_names, id_labels)
         minor_id = id_for(point, minor_axis_names, id_labels)
@@ -550,7 +573,7 @@ def build_jobs(
         scan_seed_overrides = seed_override_values(
             seed_policy,
             "scan_train",
-            {"scan_seed": point[seed_axis]},
+            seed_values,
         )
         jobs.append(
             {
@@ -561,6 +584,7 @@ def build_jobs(
                 "major_choices": {axis: point[axis] for axis in major_axis_names},
                 "minor_choices": {axis: point[axis] for axis in minor_axis_names},
                 "scan_seed": point[seed_axis],
+                "seed_values": seed_values,
                 "seed_overrides": {"scan_train": scan_seed_overrides},
                 "train_dir": str(train_run_dir(results_root, run_id)),
                 "validation_dir": str(validation_run_dir(results_root, run_id)),
@@ -615,6 +639,7 @@ def build_manifest(
                 "major_grid": grid_data.get("major_grid", {}),
                 "minor_grid": grid_data.get("minor_grid", {}),
                 "scan_seeds": list(grid_data.get("scan_seeds", [])),
+                "scan_seed_rows": scan_seed_rows(grid_data, seed_axis),
                 "axis_id_labels": axis_id_labels(grid_data, all_axes),
                 "axis_overrides": axis_override_paths(grid_data, (*major_axis_names, *minor_axis_names)),
                 "config_snapshots": config_snapshot_names(grid_data.get("config_snapshots")),
