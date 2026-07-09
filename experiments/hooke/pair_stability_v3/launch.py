@@ -37,15 +37,14 @@ DEVICE_CHOICES = ("cpu", "cuda", "cpu,cuda")
 DEFAULT_CPU_PARTITION = "sapphire,kozinsky,seas_compute"
 DEFAULT_CUDA_PARTITION = "seas_gpu,kozinsky_gpu"
 DEFAULT_TIMEOUT_MIN = 30
-DEFAULT_CPU_MEM_GB = 128
-DEFAULT_CUDA_MEM_GB = 80
+DEFAULT_MEM_PER_CPU_GB = 8
 DEFAULT_CPU_CPUS = 16
 DEFAULT_CUDA_CPUS = 8
 DEFAULT_ARRAY_PARALLELISM = 16
 DEFAULT_CHUNK_SIZE = 1
 DEFAULT_DEPENDENT_LAUNCHER_PARTITION = "test"
 DEFAULT_DEPENDENT_LAUNCHER_TIMEOUT_MIN = 30
-DEFAULT_DEPENDENT_LAUNCHER_MEM_GB = 4
+DEFAULT_DEPENDENT_LAUNCHER_MEM_PER_CPU_GB = 8
 DEFAULT_DEPENDENT_LAUNCHER_CPUS = 1
 DEFAULT_LOCAL_DEADLINE_GUARD_MIN = 60
 DEPRECATED_SMOKE_MESSAGE = (
@@ -142,6 +141,38 @@ def _slurm_time(minutes: int) -> str:
     return f"{hours:02d}:{mins:02d}:00"
 
 
+def _format_gb(value: int) -> str:
+    if value < 1:
+        raise ValueError("memory GB must be >= 1")
+    return f"{int(value)}G"
+
+
+def _parse_gb(value: object) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    for suffix in ("GB", "G"):
+        if text.endswith(suffix):
+            return int(text[: -len(suffix)])
+    return int(text)
+
+
+def slurm_resource_mem_gb(slurm: dict[str, Any]) -> int | None:
+    """Return total requested memory in GB for resource metadata only."""
+
+    if slurm.get("mem_gb") is not None:
+        return int(slurm["mem_gb"])
+    cpus = int(slurm.get("cpus_per_task") or 1)
+    mem_per_cpu_gb = _parse_gb(slurm.get("mem_per_cpu"))
+    if mem_per_cpu_gb is not None:
+        return mem_per_cpu_gb * cpus
+    mem_per_gpu_gb = _parse_gb(slurm.get("mem_per_gpu"))
+    gpus = int(slurm.get("gpus_per_node") or slurm.get("gpus_per_task") or 1)
+    if mem_per_gpu_gb is not None:
+        return mem_per_gpu_gb * gpus
+    return None
+
+
 def submit_dependent_launcher(
     job_id: str,
     *,
@@ -187,7 +218,7 @@ def submit_dependent_launcher(
             f"--job-name={job_name}",
             f"--partition={partition}",
             f"--time={_slurm_time(timeout_min)}",
-            f"--mem={DEFAULT_DEPENDENT_LAUNCHER_MEM_GB}G",
+            f"--mem-per-cpu={_format_gb(DEFAULT_DEPENDENT_LAUNCHER_MEM_PER_CPU_GB)}",
             f"--cpus-per-task={DEFAULT_DEPENDENT_LAUNCHER_CPUS}",
             f"--output={log_dir / '%x-%j.out'}",
         ],
@@ -937,16 +968,23 @@ def slurm_parameters(args: argparse.Namespace, *, profile: str) -> dict[str, Any
     if array_parallelism < 0:
         raise ValueError("slurm_array_parallelism must be >= 0")
     cpus_per_task = args.slurm_cpus or (DEFAULT_CPU_CPUS if profile == "cpu" else DEFAULT_CUDA_CPUS)
-    mem_gb = args.slurm_mem_gb or (DEFAULT_CPU_MEM_GB if profile == "cpu" else DEFAULT_CUDA_MEM_GB)
     profile_timeout = (
         getattr(args, "slurm_cuda_timeout_min", None)
         if profile == "cuda"
         else getattr(args, "slurm_cpu_timeout_min", None)
     )
+    requested_mem_per_cpu_gb = getattr(args, "slurm_mem_per_cpu_gb", None)
+    legacy_mem_gb = getattr(args, "slurm_mem_gb", None)
+    if requested_mem_per_cpu_gb is not None:
+        mem_per_cpu_gb = requested_mem_per_cpu_gb
+    elif legacy_mem_gb is not None:
+        mem_per_cpu_gb = max(DEFAULT_MEM_PER_CPU_GB, (int(legacy_mem_gb) + cpus_per_task - 1) // cpus_per_task)
+    else:
+        mem_per_cpu_gb = DEFAULT_MEM_PER_CPU_GB
     slurm = {
         "slurm_partition": partition,
         "timeout_min": profile_timeout or args.slurm_timeout_min or DEFAULT_TIMEOUT_MIN,
-        "mem_gb": mem_gb,
+        "mem_per_cpu": _format_gb(mem_per_cpu_gb),
         "cpus_per_task": cpus_per_task,
         "tasks_per_node": 1,
     }
@@ -1028,7 +1066,8 @@ def add_launch_arguments(parser: argparse.ArgumentParser, *, smoke_help: str) ->
     parser.add_argument("--slurm-timeout-min", type=int, default=None)
     parser.add_argument("--slurm-cpu-timeout-min", type=int, default=None)
     parser.add_argument("--slurm-cuda-timeout-min", type=int, default=None)
-    parser.add_argument("--slurm-mem-gb", type=int, default=None)
+    parser.add_argument("--slurm-mem-per-cpu-gb", type=positive_int, default=None)
+    parser.add_argument("--slurm-mem-gb", type=positive_int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--slurm-cpus", type=int, default=None)
     parser.add_argument(
         "--chunk-size",

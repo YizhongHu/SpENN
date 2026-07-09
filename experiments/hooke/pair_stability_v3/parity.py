@@ -107,10 +107,18 @@ def prepare_v2_config(*, attempt_id: str = DEFAULT_ATTEMPT_ID) -> Path:
     return grid_path
 
 
-def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int = DEFAULT_BLIND_SEED) -> list[str | list[str]]:
+def submission_runbook(
+    *, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int = DEFAULT_BLIND_SEED
+) -> list[str | list[str]]:
     """Return deterministic v2/v3 parity commands that submit to test partitions."""
 
     v2_grid = prepare_v2_config(attempt_id=attempt_id)
+
+    def memory_args(study_dir: Path) -> list[str]:
+        if study_dir == V3_DIR:
+            return ["--slurm-mem-per-cpu-gb", "8"]
+        return ["--slurm-mem-gb", "60"]
+
     commands: list[str | list[str]] = [
         [
             "uv",
@@ -163,8 +171,7 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                 "test",
                 "--slurm-cpu-timeout-min",
                 "30",
-                "--slurm-mem-gb",
-                "60",
+                *memory_args(study_dir),
                 "--chunk-size",
                 "8",
             ]
@@ -194,8 +201,7 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                 "gpu_test",
                 "--slurm-timeout-min",
                 "30",
-                "--slurm-mem-gb",
-                "60",
+                *memory_args(study_dir),
                 "--chunk-size",
                 "8",
             ]
@@ -262,8 +268,7 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                     "test",
                     "--slurm-cpu-timeout-min",
                     "30",
-                    "--slurm-mem-gb",
-                    "60",
+                    *memory_args(study_dir),
                     "--chunk-size",
                     "8",
                 ],
@@ -296,8 +301,7 @@ def submission_runbook(*, attempt_id: str = DEFAULT_ATTEMPT_ID, blind_seed: int 
                 "gpu_test",
                 "--slurm-timeout-min",
                 "30",
-                "--slurm-mem-gb",
-                "60",
+                *memory_args(study_dir),
                 "--chunk-size",
                 "8",
             ]
