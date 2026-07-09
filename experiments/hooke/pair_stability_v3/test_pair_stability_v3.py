@@ -139,7 +139,7 @@ def test_v3_test_partition_slurm_overrides_are_explicit() -> None:
         slurm_partition="gpu_test",
         slurm_array_parallelism=None,
         slurm_timeout_min=60,
-        slurm_mem_gb=32,
+        slurm_mem_per_cpu_gb=8,
         slurm_cpus=6,
         slurm_gpus=None,
     )
@@ -148,7 +148,9 @@ def test_v3_test_partition_slurm_overrides_are_explicit() -> None:
 
     assert cuda["slurm_partition"] == "gpu_test"
     assert cuda["timeout_min"] == 60
-    assert cuda["mem_gb"] == 32
+    assert cuda["mem_per_cpu"] == "8G"
+    assert "mem_gb" not in cuda
+    assert launch.slurm_resource_mem_gb(cuda) == 48
     assert cuda["cpus_per_task"] == 6
     assert cuda["slurm_array_parallelism"] == launch.DEFAULT_ARRAY_PARALLELISM
     assert cuda["gpus_per_node"] == 1
@@ -192,10 +194,15 @@ def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
 
     cpu_slurm = launch.slurm_parameters(args, profile="cpu")
     assert cpu_slurm["slurm_partition"] == "test"
-    assert cpu_slurm["mem_gb"] == 128
+    assert cpu_slurm["mem_per_cpu"] == "8G"
+    assert "mem_gb" not in cpu_slurm
+    assert launch.slurm_resource_mem_gb(cpu_slurm) == 128
     assert cpu_slurm["cpus_per_task"] == 16
     cuda_slurm = launch.slurm_parameters(args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "gpu_test"
+    assert cuda_slurm["mem_per_cpu"] == "8G"
+    assert "mem_gb" not in cuda_slurm
+    assert launch.slurm_resource_mem_gb(cuda_slurm) == 64
     assert cuda_slurm["cpus_per_task"] == 8
     assert cuda_slurm["gpus_per_node"] == 1
 
@@ -259,11 +266,13 @@ def test_v2_mixed_submitit_submits_separate_claimed_arrays(
     assert len(captured_parameters) == 2
     assert captured_parameters[0]["slurm_partition"] == "test"
     assert captured_parameters[0]["timeout_min"] == 60
-    assert captured_parameters[0]["mem_gb"] == 128
+    assert captured_parameters[0]["mem_per_cpu"] == "8G"
+    assert "mem_gb" not in captured_parameters[0]
     assert captured_parameters[0]["cpus_per_task"] == 16
     assert captured_parameters[1]["slurm_partition"] == "gpu_test"
     assert captured_parameters[1]["timeout_min"] == 30
-    assert captured_parameters[1]["mem_gb"] == 80
+    assert captured_parameters[1]["mem_per_cpu"] == "8G"
+    assert "mem_gb" not in captured_parameters[1]
     assert captured_parameters[1]["cpus_per_task"] == 8
     assert captured_parameters[1]["gpus_per_node"] == 1
     assert captured_calls[0][0] is launch.run_command_chunk
@@ -619,6 +628,8 @@ def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> 
     assert "--dependency=afterany:24211558" in command
     assert "--partition=test" in command
     assert "--time=00:19:00" in command
+    assert "--mem-per-cpu=8G" in command
+    assert not any(part.startswith("--mem=") for part in command)
     assert "--output=" + str(tmp_path / "logs" / "%x-%j.out") in command
     script = str(kwargs["input"])
     assert "UV_PROJECT_ENVIRONMENT=.venv-submitit" in script
