@@ -32,6 +32,10 @@ running, and debugging tasks.
 - You are strongly encouraged to autonomously initiate slurm runs for parallizability. Keep slurm logs around
 for reproducibility.
 - You are allowed to autonomously submit slurm jobs for efficiency.
+- Smoke runs should stay as close to the corresponding real run as possible.
+  Prefer the same stage stack, launcher flags, partitions, resource defaults,
+  and dependency pattern; reduce only grid size or explicitly requested scale
+  controls.
 
 ## Treating Data with Care
 
