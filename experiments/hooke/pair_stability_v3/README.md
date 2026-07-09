@@ -164,8 +164,8 @@ together:
 
 | selector | uv environment | uv extra | runtime override | Submitit hardware default |
 |----------|----------------|----------|------------------|---------------------------|
-| `--device cpu` | `.venv` | `cpu` | `runtime.device=cpu` | `slurm_partition=sapphire,kozinsky,seas_compute`, `cpus_per_task=16`, `mem_gb=128`, no GPUs |
-| `--device cuda` | `.venv-gpu` | `cu126` | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `cpus_per_task=8`, `mem_gb=80`, `gpus_per_node=1` |
+| `--device cpu` | `.venv` | `cpu` | `runtime.device=cpu` | `slurm_partition=sapphire,kozinsky,seas_compute`, `cpus_per_task=16`, `mem_per_cpu=8G`, no GPUs |
+| `--device cuda` | `.venv-gpu` | `cu126` | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `cpus_per_task=8`, `mem_per_cpu=8G`, `gpus_per_node=1` |
 | `--device cpu,cuda` | both of the above | both | per claimed row | submits separate CPU and CUDA candidate arrays; the first candidate that starts claims each row |
 
 Submitit launchers re-exec through `.venv-submitit` before creating arrays, so
@@ -177,6 +177,11 @@ immediately.
 CPU workers export `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
 `NUMEXPR_NUM_THREADS`, and `VECLIB_MAXIMUM_THREADS` from the Slurm CPU
 allocation so PyTorch and BLAS use the requested CPU allocation.
+
+Submitit stages request memory with Slurm `--mem-per-cpu`, not `--mem`, to avoid
+conflicting cluster-level memory environment variables. The default is 8G per
+requested CPU; override it with `--slurm-mem-per-cpu-gb` only when a partition
+requires a different per-CPU request.
 
 Mixed `cpu,cuda` mode uses separate Submitit submissions because GPU resources
 cannot be requested on CPU partitions. Use `--slurm-cpu-partition` and
@@ -197,7 +202,7 @@ Set the study path once:
 STUDY=experiments/hooke/pair_stability_v3
 ```
 
-### Full Scan Stages
+### Pilot Scan Stages
 
 Use `configs/pilot.yaml` for the full-workflow pilot where report axes are
 `max_steps` and `sampler_n_steps`. Do not pass `--blind`; these numeric axes
@@ -210,7 +215,8 @@ uv run python $STUDY/plan.py \
 ```
 
 After planning the pilot grid, run the same scan, final, collect, and report
-commands below. Later stages default to the latest planned grid lineage.
+commands from the non-pilot full or smoke sections, skipping their `plan.py`
+command. Later stages default to the latest planned grid lineage.
 
 Use `configs/pilot_smoke.yaml` for the smaller pilot smoke lineage:
 
@@ -220,7 +226,9 @@ uv run python $STUDY/plan.py \
   --no-blind
 ```
 
-Plan the full grid. The attempt id is generated automatically in
+### Non-Pilot Full Run
+
+Plan the full grid from `configs/grid.yaml`. The attempt id is generated automatically in
 `America/New_York` and recorded in `results/00_grid/latest.json`.
 
 ```bash
@@ -230,12 +238,13 @@ uv run python $STUDY/plan.py \
   --blind-seed 811
 ```
 
-Train and validate the latest full grid:
+Train and validate the latest full grid on production GPU partitions:
 
 ```bash
 uv run --extra submitit python $STUDY/train.py \
   --backend submitit --device cuda \
   --chunk-size 6 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-timeout-min 480
 ```
 
@@ -247,6 +256,7 @@ run the same command after train checkpoints are ready.
 uv run --extra submitit python $STUDY/validate.py \
   --backend submitit --device cuda \
   --chunk-size 32 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-timeout-min 480 \
   --wait-job <train_launcher_job_id>
 ```
@@ -287,6 +297,7 @@ Launch final training from the latest final grid:
 uv run --extra submitit python $STUDY/final_train.py \
   --backend submitit --device cpu,cuda \
   --chunk-size 1 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-cpu-timeout-min 60 \
   --slurm-cuda-timeout-min 30
 ```
@@ -312,6 +323,7 @@ final-train checkpoint for each final run:
 ```bash
 uv run --extra submitit python $STUDY/final_eval.py \
   --backend submitit --device cuda \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-timeout-min 480 \
   --wait-job <final_train_launcher_job_id>
 ```
@@ -334,7 +346,7 @@ CSV summaries under `08_final_collect/{attempt_id}/`. `final_report.py` reads
 only those compact tables and writes `09_final_report/{attempt_id}/report.md`,
 `tables/*.csv`, and `figures/*.png`.
 
-### Smoke Scan Stages
+### Non-Pilot Smoke Run
 
 Plan the smoke grid. It has the same axes as the full grid, reduced to 64 scan
 jobs and one paired seed row. It does not reduce validation or final-eval
@@ -355,12 +367,14 @@ uv run --extra submitit python $STUDY/train.py \
   --backend submitit --device cuda \
   --chunk-size 16 \
   --slurm-partition gpu_test \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-timeout-min 60
 
 uv run --extra submitit python $STUDY/validate.py \
   --backend submitit --device cuda \
   --chunk-size 32 \
   --slurm-partition gpu_test \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-timeout-min 120 \
   --wait-job <train_launcher_job_id>
 
@@ -369,7 +383,7 @@ uv run python $STUDY/collect.py
 uv run python $STUDY/select_champions.py
 ```
 
-### Smoke Final Stages
+### Non-Pilot Smoke Final Stages
 
 The smoke grid sets `final_replicates: 1`, so final planning continues each
 smoke champion through one final seed.
@@ -382,6 +396,7 @@ uv run --extra submitit python $STUDY/final_train.py \
   --chunk-size 8 \
   --slurm-cpu-partition test \
   --slurm-cuda-partition gpu_test \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-cpu-timeout-min 60 \
   --slurm-cuda-timeout-min 60
 
@@ -389,6 +404,7 @@ uv run --extra submitit python $STUDY/final_eval.py \
   --backend submitit --device cuda \
   --chunk-size 8 \
   --slurm-partition gpu_test \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-timeout-min 120 \
   --wait-job <final_train_launcher_job_id>
 
@@ -443,8 +459,8 @@ uv run --extra cpu pytest -q experiments/hooke/pair_stability_v3
 ```
 
 Executed smoke validation for attempt `20260708T003541-0400-smoke` used the
-commands below. `gpu_test` rejected the default CUDA memory request, so the
-Submitit stages used `--slurm-mem-gb 48`. The train and validation scan stages
+commands below. Current Submitit commands use `--slurm-mem-per-cpu-gb 8` so
+Slurm emits `--mem-per-cpu`, not `--mem`. The train and validation scan stages
 used one Slurm array task to stay under submit limits.
 
 ```bash
@@ -461,7 +477,7 @@ UV_CACHE_DIR=/tmp/rhu/uv-cache uv run python experiments/hooke/pair_stability_v3
   --chunk-size 64 \
   --slurm-partition gpu_test \
   --slurm-timeout-min 120 \
-  --slurm-mem-gb 48 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-array-parallelism 1
 
 .venv-submitit/bin/python experiments/hooke/pair_stability_v3/validate.py \
@@ -473,7 +489,7 @@ UV_CACHE_DIR=/tmp/rhu/uv-cache uv run python experiments/hooke/pair_stability_v3
   --chunk-size 64 \
   --slurm-partition gpu_test \
   --slurm-timeout-min 720 \
-  --slurm-mem-gb 48 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-array-parallelism 1 \
   --wait-job 29259914 \
   --wait-launcher-partition test \
@@ -499,7 +515,7 @@ UV_CACHE_DIR=/tmp/rhu/uv-cache uv run python experiments/hooke/pair_stability_v3
   --chunk-size 8 \
   --slurm-partition gpu_test \
   --slurm-timeout-min 120 \
-  --slurm-mem-gb 48 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-array-parallelism 1
 
 .venv-submitit/bin/python experiments/hooke/pair_stability_v3/final_eval.py \
@@ -511,7 +527,7 @@ UV_CACHE_DIR=/tmp/rhu/uv-cache uv run python experiments/hooke/pair_stability_v3
   --chunk-size 8 \
   --slurm-partition gpu_test \
   --slurm-timeout-min 720 \
-  --slurm-mem-gb 48 \
+  --slurm-mem-per-cpu-gb 8 \
   --slurm-array-parallelism 1
 
 .venv/bin/python experiments/hooke/pair_stability_v3/final_collect.py \

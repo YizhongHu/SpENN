@@ -306,7 +306,7 @@ def _resource_spec(args: argparse.Namespace) -> Any:
             profile=profile,
             partition=slurm.get("slurm_partition"),
             timeout_min=slurm.get("timeout_min"),
-            mem_gb=slurm.get("mem_gb"),
+            mem_gb=launch.slurm_resource_mem_gb(slurm),
             cpus=slurm.get("cpus_per_task"),
             gpus=slurm.get("gpus_per_node"),
             uv_environment=uv_environment,
