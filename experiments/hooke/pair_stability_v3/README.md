@@ -164,8 +164,8 @@ together:
 
 | selector | uv environment | uv extra | runtime override | Submitit hardware default |
 |----------|----------------|----------|------------------|---------------------------|
-| `--device cpu` | `.venv` | `cpu` | `runtime.device=cpu` | `slurm_partition=sapphire,kozinsky,seas_compute`, `cpus_per_task=16`, `mem_per_cpu=8G`, no GPUs |
-| `--device cuda` | `.venv-gpu` | `cu126` | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `cpus_per_task=8`, `mem_per_cpu=8G`, `gpus_per_node=1` |
+| `--device cpu` | `.venv` | `cpu` | `runtime.device=cpu` | `slurm_partition=sapphire,kozinsky,seas_compute`, `cpus_per_task=4`, `mem_per_cpu=8G`, no GPUs |
+| `--device cuda` | `.venv-gpu` | `cu126` | `runtime.device=cuda` | `slurm_partition=seas_gpu,kozinsky_gpu`, `cpus_per_task=4`, `mem_per_cpu=8G`, `gpus_per_node=1` |
 | `--device cpu,cuda` | both of the above | both | per claimed row | submits separate CPU and CUDA candidate arrays; the first candidate that starts claims each row |
 
 Submitit launchers re-exec through `.venv-submitit` before creating arrays, so
@@ -192,9 +192,11 @@ limits.
 
 ## Runbook
 
-Full and smoke runs use the same stage stack. The differences are the grid file,
-Slurm partitions, and chunk sizes. `--smoke` is retired; use `configs/smoke.yaml`
-for the smaller full-workflow smoke run.
+Full and smoke runs use the same stage stack and should keep launcher flags,
+partitions, resources, and dependencies as close to the real run as possible.
+The normal difference is the grid file. Use different partitions or chunk sizes
+only for an explicitly requested test-partition sanity check. `--smoke` is
+retired; use `configs/smoke.yaml` for the smaller full-workflow smoke run.
 
 Set the study path once:
 
@@ -225,6 +227,10 @@ uv run python $STUDY/plan.py \
   --grid $STUDY/configs/pilot_smoke.yaml \
   --no-blind
 ```
+
+After planning `pilot_smoke.yaml`, run the same commands as the pilot/full
+lineage. Do not switch to the non-pilot smoke/test-partition launch stack unless
+that is the explicit test objective.
 
 ### Non-Pilot Full Run
 
@@ -446,11 +452,10 @@ results/09_final_report/<attempt_id>/report.md      review report
 results/09_final_report/<attempt_id>/figures/*.png  review figures
 ```
 
-Smoke Slurm sanity should use `test` and `gpu_test` partitions and the same
-stage order as the full run. Record the launcher job id from train and
-final-train submissions, then pass it to downstream `--wait-job` commands so
-validation and final-eval enter the queue as dependencies rather than requiring
-manual polling.
+Smoke Slurm sanity should use the same stage order as the full run. Record the
+launcher job id from train and final-train submissions, then pass it to
+downstream `--wait-job` commands so validation and final-eval enter the queue as
+dependencies rather than requiring manual polling.
 
 Minimum pre-bump checks:
 
@@ -458,10 +463,11 @@ Minimum pre-bump checks:
 uv run --extra cpu pytest -q experiments/hooke/pair_stability_v3
 ```
 
-Executed smoke validation for attempt `20260708T003541-0400-smoke` used the
-commands below. Current Submitit commands use `--slurm-mem-per-cpu-gb 8` so
-Slurm emits `--mem-per-cpu`, not `--mem`. The train and validation scan stages
-used one Slurm array task to stay under submit limits.
+Historical smoke validation attempt `20260708T003541-0400-smoke` used the
+commands below. This attempt predates the current per-CPU memory launch path and
+is retained for artifact provenance only. New smoke gates should follow the
+runbook above and keep commands as close to the corresponding real run as
+possible.
 
 ```bash
 UV_CACHE_DIR=/tmp/rhu/uv-cache uv run python experiments/hooke/pair_stability_v3/plan.py \

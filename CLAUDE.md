@@ -45,6 +45,10 @@ running, and debugging tasks.
 - You are strongly encouraged to autonomously initiate slurm runs for parallizability. Keep slurm logs around
 for reproducibility.
 - You are allowed to autonomously submit slurm jobs for efficiency.
+- Smoke runs should stay as close to the corresponding real run as possible.
+  Prefer the same stage stack, launcher flags, partitions, resource defaults,
+  and dependency pattern; reduce only grid size or explicitly requested scale
+  controls.
 
 ## Treating Data with Care
 
@@ -53,6 +57,12 @@ This may include data from `outputs/`, `results/`, `reports/`, `slurm/`, etc. Th
 automatically remove these data even when requested by the user. Instead, it gives the user a list of
 things to remove, after which the user does all of this manually.
 
+## TODO.md
+
+The repository `TODO.md` file is a dynamically-maintained by multiple agents. Agents may add items or refine 
+items on the todo list, but they should exercise extreme caution when deleting. If you are not sure, double
+check with the user. In general, finished tasks and stale records can be discarded, but unfinished tasks 
+and currently important information should not. 
 
 ## Best Practises
 - Use existing libraries if possible
@@ -190,8 +200,10 @@ PRs against them.
 ### `main` and `dev`
 
 **Ownership split between SpENN and SpENN-dev:** 
-`SpENN/` is the production directory with experiments run. It stays on the `main` branch and does
-not commit to remote. 
+`SpENN/` is the production directory with experiments run. It stays on the `main` 
+branch and does not commit to remote. 
+`SpENN/` always tracks the lastest `main`. When `main` updates, update `SpENN`.
+
 `SpENN-dev/` is the development directory. It stays on `dev` branch and submits PRs into `dev`.
 It is also responsible for running smoke runs before full runs are run in `SpENN/`.
 

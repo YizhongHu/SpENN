@@ -156,6 +156,43 @@ def test_v3_test_partition_slurm_overrides_are_explicit() -> None:
     assert cuda["gpus_per_node"] == 1
 
 
+def test_v3_submitit_mem_per_cpu_unsets_inherited_memory_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_parameters: dict[str, Any] = {}
+
+    class FakeExecutor:
+        def __init__(self, folder: str):
+            self.folder = folder
+
+        def update_parameters(self, **kwargs: Any) -> None:
+            captured_parameters.update(kwargs)
+
+        def map_array(self, fn: Any, *args: Any) -> list[types.SimpleNamespace]:
+            return [types.SimpleNamespace(job_id="12345")]
+
+    monkeypatch.setitem(sys.modules, "submitit", types.SimpleNamespace(AutoExecutor=FakeExecutor))
+
+    launch.submit_submitit(
+        [["bash", "-lc", "true"]],
+        log_dir=tmp_path / "logs",
+        job_name="mem-test",
+        slurm={
+            "slurm_partition": "gpu_test",
+            "timeout_min": 10,
+            "mem_per_cpu": "8G",
+            "cpus_per_task": 8,
+            "tasks_per_node": 1,
+            "gpus_per_node": 1,
+        },
+    )
+
+    setup = captured_parameters["slurm_setup"]
+    assert "unset SLURM_MEM_PER_NODE SLURM_MEM_PER_GPU" in setup
+    assert "unset SLURM_MEM_PER_CPU" not in setup
+
+
 def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
     args = train.parse_args(
         [
@@ -196,14 +233,14 @@ def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
     assert cpu_slurm["slurm_partition"] == "test"
     assert cpu_slurm["mem_per_cpu"] == "8G"
     assert "mem_gb" not in cpu_slurm
-    assert launch.slurm_resource_mem_gb(cpu_slurm) == 128
-    assert cpu_slurm["cpus_per_task"] == 16
+    assert launch.slurm_resource_mem_gb(cpu_slurm) == 32
+    assert cpu_slurm["cpus_per_task"] == 4
     cuda_slurm = launch.slurm_parameters(args, profile="cuda")
     assert cuda_slurm["slurm_partition"] == "gpu_test"
     assert cuda_slurm["mem_per_cpu"] == "8G"
     assert "mem_gb" not in cuda_slurm
-    assert launch.slurm_resource_mem_gb(cuda_slurm) == 64
-    assert cuda_slurm["cpus_per_task"] == 8
+    assert launch.slurm_resource_mem_gb(cuda_slurm) == 32
+    assert cuda_slurm["cpus_per_task"] == 4
     assert cuda_slurm["gpus_per_node"] == 1
 
 
@@ -268,12 +305,12 @@ def test_v2_mixed_submitit_submits_separate_claimed_arrays(
     assert captured_parameters[0]["timeout_min"] == 60
     assert captured_parameters[0]["mem_per_cpu"] == "8G"
     assert "mem_gb" not in captured_parameters[0]
-    assert captured_parameters[0]["cpus_per_task"] == 16
+    assert captured_parameters[0]["cpus_per_task"] == 4
     assert captured_parameters[1]["slurm_partition"] == "gpu_test"
     assert captured_parameters[1]["timeout_min"] == 30
     assert captured_parameters[1]["mem_per_cpu"] == "8G"
     assert "mem_gb" not in captured_parameters[1]
-    assert captured_parameters[1]["cpus_per_task"] == 8
+    assert captured_parameters[1]["cpus_per_task"] == 4
     assert captured_parameters[1]["gpus_per_node"] == 1
     assert captured_calls[0][0] is launch.run_command_chunk
     assert captured_calls[0][1][5] == [[row_status.with_name("launcher_claim.json")]]

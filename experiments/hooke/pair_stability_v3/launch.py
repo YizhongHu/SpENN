@@ -38,8 +38,8 @@ DEFAULT_CPU_PARTITION = "sapphire,kozinsky,seas_compute"
 DEFAULT_CUDA_PARTITION = "seas_gpu,kozinsky_gpu"
 DEFAULT_TIMEOUT_MIN = 30
 DEFAULT_MEM_PER_CPU_GB = 8
-DEFAULT_CPU_CPUS = 16
-DEFAULT_CUDA_CPUS = 8
+DEFAULT_CPU_CPUS = 4
+DEFAULT_CUDA_CPUS = 4
 DEFAULT_ARRAY_PARALLELISM = 16
 DEFAULT_CHUNK_SIZE = 1
 DEFAULT_DEPENDENT_LAUNCHER_PARTITION = "test"
@@ -716,6 +716,29 @@ def _submitit_import_path_setup() -> str:
     return f"export PYTHONPATH={paths}${{PYTHONPATH:+:$PYTHONPATH}}"
 
 
+def _slurm_memory_env_setup(slurm: dict[str, Any]) -> str | None:
+    """Return setup that removes inherited conflicting Slurm memory exports."""
+
+    memory_env_by_parameter = {
+        "mem_gb": "SLURM_MEM_PER_NODE",
+        "mem_per_cpu": "SLURM_MEM_PER_CPU",
+        "mem_per_gpu": "SLURM_MEM_PER_GPU",
+    }
+    requested = [
+        env_name
+        for parameter, env_name in memory_env_by_parameter.items()
+        if slurm.get(parameter) is not None
+    ]
+    if len(requested) != 1:
+        return None
+    conflicts = [
+        env_name
+        for env_name in memory_env_by_parameter.values()
+        if env_name not in requested
+    ]
+    return f"unset {' '.join(conflicts)}"
+
+
 def _with_submitit_import_path(slurm: dict[str, Any]) -> dict[str, Any]:
     """Return Slurm parameters with the launcher import path setup prepended."""
 
@@ -727,6 +750,9 @@ def _with_submitit_import_path(slurm: dict[str, Any]) -> dict[str, Any]:
     import_path_setup = _submitit_import_path_setup()
     if import_path_setup not in setup:
         setup = [import_path_setup, *setup]
+    memory_env_setup = _slurm_memory_env_setup(slurm)
+    if memory_env_setup is not None and memory_env_setup not in setup:
+        setup.append(memory_env_setup)
     cpu_bind_setup = "export SLURM_CPU_BIND=none"
     if cpu_bind_setup not in setup:
         setup.append(cpu_bind_setup)
