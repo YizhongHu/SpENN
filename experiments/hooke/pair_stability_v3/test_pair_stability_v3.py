@@ -193,6 +193,38 @@ def test_v3_submitit_mem_per_cpu_unsets_inherited_memory_conflicts(
     assert "unset SLURM_MEM_PER_CPU" not in setup
 
 
+def test_submitit_prints_parent_slurm_job_id_after_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeExecutor:
+        def __init__(self, folder: str):
+            self.folder = folder
+
+        def update_parameters(self, **kwargs: Any) -> None:
+            pass
+
+        def map_array(self, fn: Any, *args: Any) -> list[types.SimpleNamespace]:
+            return [
+                types.SimpleNamespace(job_id="12345_0"),
+                types.SimpleNamespace(job_id="12345_1"),
+            ]
+
+    monkeypatch.setitem(sys.modules, "submitit", types.SimpleNamespace(AutoExecutor=FakeExecutor))
+
+    job_ids = launch.submit_submitit(
+        [["bash", "-lc", "first"], ["bash", "-lc", "second"]],
+        log_dir=tmp_path / "logs",
+        job_name="pair-stability-train",
+        slurm={"slurm_partition": "gpu_test"},
+        chunk_size=1,
+    )
+
+    assert job_ids == ["12345_0", "12345_1"]
+    assert capsys.readouterr().out == "[pair-stability-train] submitted Slurm job_id=12345\n"
+
+
 def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
     args = train.parse_args(
         [
