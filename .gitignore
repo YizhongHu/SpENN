@@ -1,5 +1,7 @@
 .venv/
 .venv-gpu/
+.envrc
+.codex_slurm/
 __pycache__/
 *.py[cod]
 .pytest_cache/
