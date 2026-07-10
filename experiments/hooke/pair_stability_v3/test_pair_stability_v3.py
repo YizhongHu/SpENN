@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import subprocess
 import sys
 import types
 from collections import Counter
@@ -132,6 +133,44 @@ def _write_final_checkpoint(results_root: Path, final_run_id: str, attempt_id: s
         + "\n"
     )
     return checkpoint_dir
+
+
+def test_v3_submit_stack_script_is_valid_and_complete() -> None:
+    script = STUDY_DIR / "submit_stack.sh"
+    text = script.read_text()
+
+    syntax = subprocess.run(["bash", "-n", str(script)], check=False, capture_output=True, text=True)
+    assert syntax.returncode == 0, syntax.stderr
+    assert script.stat().st_mode & 0o111
+    assert "--cpus-per-task=4" in text
+    assert "--mem-per-cpu=8G" in text
+    assert "--mem=" not in text
+    assert "results/stack/<stack_id>/" in text
+
+    ordered_markers = (
+        "STAGE=plan",
+        "STAGE=train",
+        "STAGE=validation",
+        "STAGE=collect",
+        "STAGE=select",
+        "STAGE=final-plan",
+        "STAGE=final-train",
+        "STAGE=final-eval",
+        "STAGE=final-collect",
+        "STAGE=final-report",
+    )
+    positions = [text.index(marker) for marker in ordered_markers]
+    assert positions == sorted(positions)
+
+
+def test_v3_submit_stack_usage_does_not_submit() -> None:
+    script = STUDY_DIR / "submit_stack.sh"
+    result = subprocess.run([str(script)], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 2
+    assert "usage:" in result.stdout
+    assert "{full|smoke|pilot|pilot-smoke}" in result.stdout
+    assert "results/stack/<stack_id>/" in result.stdout
 
 
 def test_v3_test_partition_slurm_overrides_are_explicit() -> None:
