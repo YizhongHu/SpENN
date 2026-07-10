@@ -1207,7 +1207,7 @@ def _write_collection_summary(results_root: Path) -> None:
     layout.write_latest(results_root / "03_collect", "C1")
 
 
-def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) -> None:
+def test_collect_defaults_to_latest_grid_plan_not_newest_validation(tmp_path: Path) -> None:
     results_root = _planned_results(tmp_path)
     manifest = json.loads((results_root / "00_grid" / ATTEMPT / "manifest.json").read_text())
     job = manifest["jobs"][0]
@@ -1245,6 +1245,25 @@ def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) 
         + "\n"
     )
 
+    stale_grid_id = "stale-grid"
+    stale_run_id = "stale-run"
+    stale_manifest = dict(manifest)
+    stale_manifest["attempt_id"] = stale_grid_id
+    stale_manifest["jobs"] = [{**job, "run_id": stale_run_id}]
+    stale_grid_dir = results_root / "00_grid" / stale_grid_id
+    _write_json(stale_grid_dir / "manifest.json", stale_manifest)
+    stale_validation_dir = results_root / "02_validation" / stale_run_id / "ZZZ"
+    _write_json(stale_validation_dir / "status.json", {"status": "completed"})
+    _write_json(
+        stale_validation_dir / "source_grid_attempt.json",
+        {
+            "grid_attempt_id": stale_grid_id,
+            "grid_attempt_dir": str(stale_grid_dir),
+            "manifest_path": str(stale_grid_dir / "manifest.json"),
+        },
+    )
+    (stale_validation_dir / "metrics.jsonl").write_text("")
+
     result = collect.collect(results_root=results_root, collect_attempt_id="C0")
     report = result["report"]
     source = json.loads((results_root / "03_collect" / "C0" / "source_grid_attempt.json").read_text())
@@ -1255,9 +1274,15 @@ def test_v2_collect_traces_grid_from_latest_validation_attempts(tmp_path: Path) 
     assert source["grid_attempt_id"] == ATTEMPT
     assert source["manifest_path"].endswith("/00_grid/20260623T120000-0400/manifest.json")
     assert len(result["rows"]) == 1
+    assert result["rows"][0]["run_id"] == job["run_id"]
     assert result["rows"][0]["basis"].startswith("B")
     assert result["rows"][0]["update_normalization"].startswith("U")
     assert result["rows"][0]["feature_normalization"].startswith("F")
+
+    parallel = collect.collect(results_root=results_root, collect_attempt_id="C1")
+    assert parallel["report"]["grid_attempt_id"] == ATTEMPT
+    assert (results_root / "03_collect" / "C0" / "summary.csv").is_file()
+    assert (results_root / "03_collect" / "C1" / "summary.csv").is_file()
 
 
 def test_v3_collect_writes_task_lineage_verified_against_real_stage_plan(
@@ -1660,7 +1685,23 @@ def test_v2_final_stage_defaults_use_latest_pointers(tmp_path: Path) -> None:
     (eval_run_dir / "aaa").mkdir()
     layout.write_latest(eval_run_dir, "aaa")
 
-    assert final_collect._iter_final_eval_attempts(results_root, None) == [
+    _write_csv(
+        final_grid_stage / "diagnostic-final-grid" / "final_jobs.csv",
+        [{"final_run_id": final_run_id}],
+    )
+    _write_json(
+        eval_run_dir / "aaa" / "source_final_grid_attempt.json",
+        {
+            "final_grid_attempt_id": "diagnostic-final-grid",
+            "final_grid_attempt_dir": str(final_grid_stage / "diagnostic-final-grid"),
+        },
+    )
+
+    assert final_collect._iter_final_eval_attempts(
+        results_root,
+        None,
+        "diagnostic-final-grid",
+    ) == [
         (final_run_id, "aaa", eval_run_dir / "aaa")
     ]
 
@@ -1679,15 +1720,75 @@ def test_final_eval_enumeration_skips_reserved_stage_dirs(tmp_path: Path) -> Non
     results_root = tmp_path / "results"
     attempt_id = "A0"
     eval_stage = layout.stage_dir(results_root, layout.STAGE_FINAL_EVAL)
+    final_grid_id = "FG0"
+    final_grid_dir = layout.final_grid_attempt_dir(results_root, final_grid_id)
+    _write_csv(final_grid_dir / "final_jobs.csv", [{"final_run_id": "final-run-0"}])
 
     run_dir = eval_stage / "final-run-0"
     (run_dir / attempt_id).mkdir(parents=True)
+    _write_json(
+        run_dir / attempt_id / "source_final_grid_attempt.json",
+        {
+            "final_grid_attempt_id": final_grid_id,
+            "final_grid_attempt_dir": str(final_grid_dir),
+        },
+    )
     for reserved in ("stage_plans", "slurm_logs", "chunk_status"):
         (eval_stage / reserved / attempt_id).mkdir(parents=True)
 
-    assert final_collect._iter_final_eval_attempts(results_root, attempt_id) == [
+    assert final_collect._iter_final_eval_attempts(results_root, attempt_id, final_grid_id) == [
         ("final-run-0", attempt_id, run_dir / attempt_id)
     ]
+
+
+def test_final_collect_defaults_to_latest_final_grid_plan(tmp_path: Path) -> None:
+    results_root = tmp_path / "results"
+    old_grid_id = "FG-old"
+    latest_grid_id = "FG-latest"
+    old_run_id = "old-final-run"
+    latest_run_id = "latest-final-run"
+
+    for grid_id, run_id in ((old_grid_id, old_run_id), (latest_grid_id, latest_run_id)):
+        grid_dir = layout.final_grid_attempt_dir(results_root, grid_id)
+        _write_csv(grid_dir / "final_jobs.csv", [{"final_run_id": run_id}])
+        _write_json(
+            grid_dir / "manifest.json",
+            {
+                "study": "pair_stability_v3",
+                "stage": layout.STAGE_FINAL_GRID,
+                "attempt_id": grid_id,
+                "major_axes": [],
+                "minor_axes": [],
+                "final_replicates": 1,
+            },
+        )
+        eval_dir = layout.final_eval_attempt_dir(results_root, run_id, "FE0")
+        _write_json(
+            eval_dir / "source_final_grid_attempt.json",
+            {
+                "final_grid_attempt_id": grid_id,
+                "final_grid_attempt_dir": str(grid_dir),
+            },
+        )
+        layout.write_latest(layout.final_eval_run_dir(results_root, run_id), "FE0")
+    layout.write_latest(layout.stage_dir(results_root, layout.STAGE_FINAL_GRID), latest_grid_id)
+
+    result = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC0",
+    )
+
+    assert result["manifest"]["final_grid_attempt_id"] == latest_grid_id
+    assert result["manifest"]["n_final_eval_attempts"] == 1
+    assert _read_csv(Path(result["attempt_dir"]) / "run_index.csv")[0]["final_run_id"] == latest_run_id
+
+    parallel = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC1",
+    )
+    assert parallel["manifest"]["final_grid_attempt_id"] == latest_grid_id
+    assert (results_root / "08_final_collect" / "FC0" / "run_index.csv").is_file()
+    assert (results_root / "08_final_collect" / "FC1" / "run_index.csv").is_file()
 
 
 def test_v3_final_collect_merges_basis_and_update_for_report_axes() -> None:
@@ -1733,12 +1834,15 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
         final_grid_dir / "manifest.json",
         {
             "study": "pair_stability_v3",
+            "stage": layout.STAGE_FINAL_GRID,
+            "attempt_id": final_grid_attempt_id,
             "major_axes": ["basis", "update_normalization", "feature_normalization"],
             "minor_axes": ["lr", "channels", "activation"],
             "final_replicates": 1,
         },
     )
     job = {
+        "final_run_id": final_run_id,
         "source_champion_id": "champion-0",
         "winner_kind": "energy",
         "replicate_index": 0,
@@ -1757,8 +1861,16 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
         "final_train_sampler_seed": 1000,
         "final_eval_sampler_seed": 10000,
     }
+    _write_csv(final_grid_dir / "final_jobs.csv", [job])
+    layout.write_latest(layout.stage_dir(results_root, layout.STAGE_FINAL_GRID), final_grid_attempt_id)
     _write_json(final_eval_dir / "source_final_job.json", job)
-    _write_json(final_eval_dir / "source_final_grid_attempt.json", {"final_grid_attempt_dir": str(final_grid_dir)})
+    _write_json(
+        final_eval_dir / "source_final_grid_attempt.json",
+        {
+            "final_grid_attempt_id": final_grid_attempt_id,
+            "final_grid_attempt_dir": str(final_grid_dir),
+        },
+    )
     _write_json(final_eval_dir / "evaluated_checkpoint.json", {"resolved_checkpoint_dir": str(final_train_dir / "checkpoints" / "step_000000")})
     _write_json(
         final_eval_dir / "source_final_train_attempt.json",
