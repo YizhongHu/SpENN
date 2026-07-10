@@ -1899,6 +1899,16 @@ def test_train_config_wires_profiling_callbacks() -> None:
     assert phase_timing["triggers"] == ["train_phase_start", "train_phase_end", "step_end"]
 
 
+def test_train_config_writes_periodic_and_final_checkpoints() -> None:
+    entries = _callback_entries("pair_stability.yaml")
+    checkpoints = [entry for entry in entries if entry["_target_"] == "spenn.callback.Checkpoint"]
+
+    periodic = next(entry for entry in checkpoints if entry["triggers"] == ["step_end"])
+    final = next(entry for entry in checkpoints if entry["triggers"] == ["train_end"])
+    assert periodic["keep_last"] == "${checkpoint.keep_last}"
+    assert "keep_last" not in final
+
+
 def test_validation_config_wires_profiling_callbacks() -> None:
     entries = _callback_entries("pair_validation.yaml")
     targets = _callback_targets(entries)
