@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +121,24 @@ def test_checkpoint_train_end_skips_existing_complete_checkpoint(tmp_path) -> No
     assert sorted(path.name for path in tmp_path.glob("step_*")) == ["step_000002"]
 
 
+def test_train_end_updates_latest_when_cadence_misses_terminal_step(tmp_path) -> None:
+    periodic = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=2)
+    terminal = Checkpoint(triggers=["train_end"], output_dir=tmp_path)
+
+    periodic.handle(_event(_state(1, completed_steps=2)))
+    final_state = _state(2, completed_steps=3)
+    periodic.handle(_event(final_state))
+    terminal.handle(_event(final_state, name="train_end"))
+
+    assert sorted(path.name for path in tmp_path.glob("step_*")) == [
+        "step_000002",
+        "step_000003",
+    ]
+    latest = json.loads((tmp_path / "latest.json").read_text())
+    assert latest["checkpoint_dir"] == "step_000003"
+    assert latest["step"] == 3
+
+
 def _context() -> SimpleNamespace:
     """Minimal RunContext stand-in carrying resolved config and metadata."""
 
@@ -149,8 +168,6 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
     state = _state(1)
 
     callback.handle(Event(name="step_end", context=context, state=state, payload={"step": 1}))
-
-    import json
 
     manifest = json.loads((tmp_path / "step_000002" / "manifest.json").read_text())
     assert manifest["schema_version"] == 1
