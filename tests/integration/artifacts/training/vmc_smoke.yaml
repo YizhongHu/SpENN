@@ -79,7 +79,11 @@ callbacks:
 - _target_: spenn.callback.Checkpoint
   triggers:
   - step_end
-  every_n_steps: 1
+  every_n_steps: 2
+  output_dir: ${run.dir}/checkpoints
+- _target_: spenn.callback.Checkpoint
+  triggers:
+  - train_end
   output_dir: ${run.dir}/checkpoints
 loggers:
 - _target_: spenn.logging.CSV

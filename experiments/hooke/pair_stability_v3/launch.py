@@ -704,6 +704,22 @@ def _expanded_chunk_job_ids(chunk_job_ids: Sequence[str], chunks: Sequence[Seque
     return expanded
 
 
+def _print_submitted_slurm_job_ids(job_name: str, job_ids: Sequence[str]) -> None:
+    """Print distinct parent Slurm job IDs after successful submission."""
+
+    parent_ids: list[str] = []
+    for job_id in job_ids:
+        text = str(job_id)
+        candidate = text.split("_", maxsplit=1)[0]
+        parent_id = candidate if candidate.isdigit() else text
+        if parent_id not in parent_ids:
+            parent_ids.append(parent_id)
+    if not parent_ids:
+        return
+    label = "job_id" if len(parent_ids) == 1 else "job_ids"
+    print(f"[{job_name}] submitted Slurm {label}={','.join(parent_ids)}", flush=True)
+
+
 def _submitit_import_path_setup() -> str:
     """Return a Slurm setup line that makes this script module importable.
 
@@ -871,6 +887,7 @@ def submit_submitit(
     else:
         jobs = executor.map_array(run_command_chunk, command_chunks)
     chunk_job_ids = [str(job.job_id) for job in jobs]
+    _print_submitted_slurm_job_ids(job_name, chunk_job_ids)
     return _expanded_chunk_job_ids(chunk_job_ids, command_chunks)
 
 

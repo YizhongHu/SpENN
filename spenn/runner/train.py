@@ -89,13 +89,14 @@ class Train(Runner):
             context=context,
             emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
         )
-        # train_end carries the trained model and final step so lifecycle
-        # callbacks do not depend on trainer internals.
+        # train_end carries the trained model and completed update count so
+        # lifecycle callbacks can label terminal artifacts consistently.
+        completed_steps = getattr(self.trainer, "global_step", int(final_state.step) + 1)
         self.emit(
             "train_end",
             context,
             state=final_state,
-            payload={"model": self.model, "step": int(final_state.step)},
+            payload={"model": self.model, "step": int(completed_steps)},
         )
         self.emit("run_end", context)
         return RunResult(status="completed")

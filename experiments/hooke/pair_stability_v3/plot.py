@@ -17,6 +17,10 @@ from stats import as_float as _as_float, mean as _mean
 POSITIVE_HEATMAP_CMAP = "Reds"
 MAJOR_AXIS_LABEL_PAD_POINTS = 6.0
 LEGEND_TITLE_WRAP_COLUMNS = 18
+NARROW_LOG_AXIS_MAX_INTERVALS = 4
+HOLLOW_SCATTER_MARKERS = ("o", "s", "^", "v", "<", ">", "D", "d", "p", "h", "H", "8")
+SCATTER_MARKER_SIZE = 58
+SCATTER_MARKER_LINEWIDTH = 1.2
 
 
 def _flatten_axes(axes: Any) -> list[Any]:
@@ -66,6 +70,20 @@ def _legend_title(title: str | None) -> str | None:
         return label
     pivot = len(parts) // 2
     return f"{'_'.join(parts[:pivot])}_\n{'_'.join(parts[pivot:])}"
+
+
+def _configure_narrow_log_ticks(ax: Any, *, axis: str) -> None:
+    """Use sparse scalar ticks when a log axis spans less than one decade."""
+
+    from matplotlib.ticker import MaxNLocator, NullLocator, ScalarFormatter
+
+    lower, upper = ax.get_xlim() if axis == "x" else ax.get_ylim()
+    if lower <= 0.0 or upper <= lower or upper / lower >= 10.0:
+        return
+    target = ax.xaxis if axis == "x" else ax.yaxis
+    target.set_major_locator(MaxNLocator(nbins=NARROW_LOG_AXIS_MAX_INTERVALS, prune="both"))
+    target.set_major_formatter(ScalarFormatter())
+    target.set_minor_locator(NullLocator())
 
 
 def add_major_axis_labels(
@@ -867,84 +885,13 @@ def save_grouped_bar_grid(
     plt.close(fig)
 
 
-def save_loglog_scatter(
-    path: Path,
-    points: Sequence[dict[str, Any]],
-    *,
-    x_key: str,
-    y_key: str,
-    color_key: str,
-    marker_key: str,
-    x_label: str,
-    y_label: str,
-    title: str,
-    color_title: str,
-    marker_title: str,
-) -> None:
-    """Save one log-log scatter with separate color and marker legends."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    clean_points = [
-        point
-        for point in points
-        if _as_float(point.get(x_key)) is not None and _as_float(point.get(y_key)) is not None
-    ]
-    if not clean_points:
-        save_no_data(path, title)
-        return
-
-    plt = pyplot()
-    from matplotlib.lines import Line2D
-
-    color_values = sorted({str(point.get(color_key, "")) for point in clean_points})
-    marker_values = sorted({str(point.get(marker_key, "")) for point in clean_points})
-    cmap = plt.get_cmap("tab20" if len(color_values) > 10 else "tab10")
-    colors = {value: cmap(index % cmap.N) for index, value in enumerate(color_values)}
-    markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "h", "p"]
-    marker_by_value = {value: markers[index % len(markers)] for index, value in enumerate(marker_values)}
-
-    fig, ax = plt.subplots(figsize=(6.6, 4.8))
-    for point in clean_points:
-        ax.scatter(
-            float(point[x_key]),
-            float(point[y_key]),
-            color=colors[str(point.get(color_key, ""))],
-            marker=marker_by_value[str(point.get(marker_key, ""))],
-            s=58,
-            edgecolors="black",
-            linewidths=0.45,
-            alpha=0.9,
-        )
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.grid(True, which="both", linewidth=0.4, alpha=0.35)
-
-    color_handles = [
-        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors[value], markeredgecolor="black", markersize=7, label=value)
-        for value in color_values
-    ]
-    marker_handles = [
-        Line2D([0], [0], marker=marker_by_value[value], color="black", markerfacecolor="lightgray", markeredgecolor="black", linestyle="none", markersize=7, label=value)
-        for value in marker_values
-    ]
-    color_legend = ax.legend(handles=color_handles, title=_legend_title(color_title), fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)
-    ax.add_artist(color_legend)
-    ax.legend(handles=marker_handles, title=_legend_title(marker_title), fontsize=7, title_fontsize=8, loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
-    fig.suptitle(title, y=0.99)
-    fig.tight_layout(rect=(0.0, 0.0, 0.82, 0.92))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-
-
 def save_loglog_scatter_grid(
     path: Path,
     points: Sequence[dict[str, Any]],
     *,
     panel_key: str,
-    panel_keys: Sequence[str],
-    panel_titles: Mapping[str, str],
+    panel_keys: Sequence[Any],
+    panel_titles: Mapping[Any, str],
     x_key: str,
     y_key: str,
     color_key: str,
@@ -974,24 +921,26 @@ def save_loglog_scatter_grid(
     marker_values = sorted({str(point.get(marker_key, "")) for point in clean_points})
     cmap = plt.get_cmap("tab20" if len(color_values) > 10 else "tab10")
     colors = {value: cmap(index % cmap.N) for index, value in enumerate(color_values)}
-    markers = ["o", "s", "^", "D", "P", "X", "*", "v", "<", ">", "h", "p"]
-    marker_by_value = {value: markers[index % len(markers)] for index, value in enumerate(marker_values)}
+    marker_by_value = {
+        value: HOLLOW_SCATTER_MARKERS[index % len(HOLLOW_SCATTER_MARKERS)]
+        for index, value in enumerate(marker_values)
+    }
 
     fig, axes = plt.subplots(1, len(panel_keys), figsize=(max(6.0, 3.7 * len(panel_keys)), 4.8), sharex=True, sharey=True)
     if len(panel_keys) == 1:
         axes = [axes]
     for ax, key in zip(axes, panel_keys, strict=True):
-        panel_points = [point for point in clean_points if str(point.get(panel_key, "")) == key]
+        panel_points = [point for point in clean_points if point.get(panel_key) == key]
         for point in panel_points:
             ax.scatter(
                 float(point[x_key]),
                 float(point[y_key]),
-                color=colors[str(point.get(color_key, ""))],
                 marker=marker_by_value[str(point.get(marker_key, ""))],
-                s=58,
-                edgecolors="black",
-                linewidths=0.45,
-                alpha=0.9,
+                s=SCATTER_MARKER_SIZE,
+                facecolors="none",
+                edgecolors=colors[str(point.get(color_key, ""))],
+                linewidths=SCATTER_MARKER_LINEWIDTH,
+                alpha=0.95,
             )
         if not panel_points:
             ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=9)
@@ -1000,14 +949,36 @@ def save_loglog_scatter_grid(
         ax.set_xlabel(x_label)
         ax.set_title(panel_titles.get(key, key))
         ax.grid(True, which="both", linewidth=0.4, alpha=0.35)
+    _configure_narrow_log_ticks(axes[0], axis="x")
     axes[0].set_ylabel(y_label)
 
     color_handles = [
-        Line2D([0], [0], marker="o", color="none", markerfacecolor=colors[value], markeredgecolor="black", markersize=7, label=value)
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor="none",
+            markeredgecolor=colors[value],
+            markeredgewidth=SCATTER_MARKER_LINEWIDTH,
+            markersize=7,
+            label=value,
+        )
         for value in color_values
     ]
     marker_handles = [
-        Line2D([0], [0], marker=marker_by_value[value], color="black", markerfacecolor="lightgray", markeredgecolor="black", linestyle="none", markersize=7, label=value)
+        Line2D(
+            [0],
+            [0],
+            marker=marker_by_value[value],
+            color="black",
+            markerfacecolor="none",
+            markeredgecolor="black",
+            markeredgewidth=SCATTER_MARKER_LINEWIDTH,
+            linestyle="none",
+            markersize=7,
+            label=value,
+        )
         for value in marker_values
     ]
     color_legend = axes[-1].legend(handles=color_handles, title=_legend_title(color_title), fontsize=7, title_fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0)

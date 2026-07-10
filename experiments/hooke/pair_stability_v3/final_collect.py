@@ -20,6 +20,7 @@ from typing import Any, Sequence
 from utils.layout import (
     STAGE_FINAL_COLLECT,
     STAGE_FINAL_EVAL,
+    STAGE_FINAL_GRID,
     latest_attempt_id,
     stage_dir,
     write_latest,
@@ -348,25 +349,74 @@ FAILURE_COLUMNS = [
 ]
 
 
+def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None) -> str:
+    """Return the explicitly requested or latest planned final grid."""
+
+    final_grid_stage = stage_dir(results_root, STAGE_FINAL_GRID)
+    attempt_id = requested or latest_attempt_id(final_grid_stage)
+    if attempt_id is None:
+        raise FileNotFoundError(f"no final-grid attempts under {final_grid_stage}")
+    final_jobs_path = final_grid_stage / attempt_id / "final_jobs.csv"
+    if not final_jobs_path.is_file():
+        raise FileNotFoundError(f"final-grid attempt has no final_jobs.csv: {final_jobs_path}")
+    manifest_path = final_grid_stage / attempt_id / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"final-grid attempt has no manifest.json: {manifest_path}")
+    return attempt_id
+
+
+def _planned_final_run_ids(results_root: Path, final_grid_attempt_id: str) -> list[str]:
+    """Return final-run ids listed by one final-grid plan."""
+
+    final_jobs_path = stage_dir(results_root, STAGE_FINAL_GRID) / final_grid_attempt_id / "final_jobs.csv"
+    return [str(row["final_run_id"]) for row in _read_csv(final_jobs_path)]
+
+
+def _final_grid_manifest(results_root: Path, final_grid_attempt_id: str) -> dict[str, Any]:
+    """Return manifest for one resolved final-grid plan."""
+
+    manifest_path = stage_dir(results_root, STAGE_FINAL_GRID) / final_grid_attempt_id / "manifest.json"
+    manifest = _load_json_if_present(manifest_path)
+    if manifest.get("stage") != STAGE_FINAL_GRID:
+        raise ValueError(f"manifest {manifest_path} is not a {STAGE_FINAL_GRID} manifest")
+    return manifest
+
+
+def _source_final_grid_attempt_id(attempt_dir: Path) -> str | None:
+    """Return final-grid attempt id recorded by one final-eval attempt."""
+
+    source = _load_json_if_present(attempt_dir / "source_final_grid_attempt.json")
+    attempt_id = str(source.get("final_grid_attempt_id", "")).strip()
+    if attempt_id:
+        return attempt_id
+    attempt_path = str(source.get("final_grid_attempt_dir", "")).strip()
+    return Path(attempt_path).name if attempt_path else None
+
+
 def _iter_final_eval_attempts(
     results_root: Path,
     final_eval_attempt_id: str | None,
+    final_grid_attempt_id: str,
 ) -> list[tuple[str, str, Path]]:
+    """Return final-eval attempts belonging to one planned final grid."""
+
     eval_stage = stage_dir(results_root, STAGE_FINAL_EVAL)
     if not eval_stage.is_dir():
         return []
     attempts = []
-    for run_dir in sorted(child for child in eval_stage.iterdir() if child.is_dir()):
-        if run_dir.name in {"slurm_logs", "chunk_status", "stage_plans"}:
-            continue
+    for final_run_id in _planned_final_run_ids(results_root, final_grid_attempt_id):
+        run_dir = eval_stage / final_run_id
         attempt_id = final_eval_attempt_id
         if attempt_id is None:
             attempt_id = latest_attempt_id(run_dir)
             if attempt_id is None:
                 continue
         attempt_dir = run_dir / attempt_id
-        if attempt_dir.is_dir():
-            attempts.append((run_dir.name, attempt_id, attempt_dir))
+        if (
+            attempt_dir.is_dir()
+            and _source_final_grid_attempt_id(attempt_dir) == final_grid_attempt_id
+        ):
+            attempts.append((final_run_id, attempt_id, attempt_dir))
     return attempts
 
 
@@ -1200,14 +1250,6 @@ def _expected_final_seeds(contexts: Sequence[dict[str, Any]]) -> int:
     return DEFAULT_EXPECTED_FINAL_SEEDS
 
 
-def _first_final_grid_manifest(contexts: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    for context in contexts:
-        manifest = context.get("final_grid_manifest", {})
-        if isinstance(manifest, dict) and manifest:
-            return manifest
-    return {}
-
-
 def _insert_columns(columns: Sequence[str], insert_after: str, additions: Sequence[str]) -> list[str]:
     output: list[str] = []
     inserted = False
@@ -1267,11 +1309,14 @@ def collect_final_outputs(
     results_root: str | Path,
     collect_attempt_id: str | None = None,
     final_eval_attempt_id: str | None = None,
+    final_grid_attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Collect compact final-summary tables from final train/eval artifacts."""
 
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
+    final_grid_attempt_id = _resolve_final_grid_attempt_id(results_root, final_grid_attempt_id)
+    final_grid_manifest = _final_grid_manifest(results_root, final_grid_attempt_id)
     attempt = stage_dir(results_root, STAGE_FINAL_COLLECT) / collect_attempt_id
     attempt.mkdir(parents=True, exist_ok=True)
 
@@ -1280,10 +1325,10 @@ def collect_final_outputs(
         for final_run_id, attempt_id, attempt_dir in _iter_final_eval_attempts(
             results_root,
             final_eval_attempt_id,
+            final_grid_attempt_id,
         )
     ]
-    final_grid_manifest = _first_final_grid_manifest(contexts)
-    study = study_name_from_manifest(final_grid_manifest if contexts else None)
+    study = study_name_from_manifest(final_grid_manifest)
     major_axes = _major_axes(final_grid_manifest)
     minor_axes = _minor_axes(final_grid_manifest)
     axis_columns = _axis_columns_from_contexts(contexts)
@@ -1369,6 +1414,7 @@ def collect_final_outputs(
         "study": study,
         "stage": STAGE_FINAL_COLLECT,
         "attempt_id": collect_attempt_id,
+        "final_grid_attempt_id": final_grid_attempt_id,
         "final_eval_attempt_id": manifest_final_eval_attempt_id,
         "final_eval_attempt_ids": resolved_eval_attempt_ids,
         "final_eval_attempts": {str(context["final_run_id"]): str(context["attempt_id"]) for context in contexts},
@@ -1396,6 +1442,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-root", default=str(DEFAULT_RESULTS_ROOT))
+    parser.add_argument(
+        "--final-grid-attempt-id",
+        default=None,
+        help="Override source final grid; defaults to 05_final_grid/latest.json.",
+    )
     parser.add_argument("--final-eval-attempt-id", default=None)
     parser.add_argument("--attempt-id", default=None)
     parser.add_argument("--smoke", action="store_true", help="Deprecated; use configs/smoke.yaml with the normal stack.")
@@ -1411,14 +1462,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     prefix = log_prefix()
     print(f"{prefix} final collect results_root={args.results_root}")
+    if args.final_grid_attempt_id:
+        print(f"{prefix} final collect using final_grid_attempt_id={args.final_grid_attempt_id}")
+    else:
+        print(f"{prefix} final collect using latest final-grid plan")
     if args.final_eval_attempt_id:
         print(f"{prefix} final collect using final_eval_attempt_id={args.final_eval_attempt_id}")
     else:
-        print(f"{prefix} final collect using latest/all ready final-eval attempts")
+        print(f"{prefix} final collect using latest final-eval attempt per planned run")
     result = collect_final_outputs(
         results_root=args.results_root,
         collect_attempt_id=args.attempt_id,
         final_eval_attempt_id=args.final_eval_attempt_id,
+        final_grid_attempt_id=args.final_grid_attempt_id,
     )
     manifest = result["manifest"]
     prefix = log_prefix(manifest.get("study"))

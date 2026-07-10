@@ -114,8 +114,8 @@ class VMCTrainer:
         """Run the training loop and return the final `TrainerState`."""
 
         state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
-        # Steps are 0-indexed: the first step always satisfies the
-        # step % every_n_steps == 0 cadence gates in callbacks and logging.
+        # Training-loop steps are 0-indexed for metrics and most callbacks.
+        # Checkpoint callbacks convert them to completed-update counts.
         for step in range(self.global_step, self.max_steps):
             emit("step_start", payload={"step": step})
 
