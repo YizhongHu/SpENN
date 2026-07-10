@@ -248,6 +248,17 @@ def _latest_complete_checkpoint(attempt_dir: Path) -> Path | None:
     return checkpoints[-1] if checkpoints else None
 
 
+def _latest_restorable_checkpoint(attempt_dir: Path) -> Path | None:
+    """Return highest complete checkpoint containing a manifest."""
+
+    checkpoints = [
+        checkpoint
+        for checkpoint in _complete_checkpoint_dirs(attempt_dir)
+        if (checkpoint / "manifest.json").is_file()
+    ]
+    return checkpoints[-1] if checkpoints else None
+
+
 def _final_train_completed(attempt_dir: Path) -> bool:
     status_path = attempt_dir / "status.json"
     if not status_path.is_file():
@@ -293,5 +304,21 @@ def _resolved_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
         "selection_policy": selection.get("selection_policy", ""),
         "checkpoint_pointer": str(pointer),
         "checkpoint_pointer_data": pointer_data,
+        "resolved_checkpoint_dir": str(checkpoint_dir),
+    }
+
+
+def _resolved_latest_checkpoint(train_attempt: Path) -> dict[str, Any] | None:
+    """Resolve highest complete restorable checkpoint in an attempt."""
+
+    checkpoint_dir = _latest_restorable_checkpoint(train_attempt)
+    if checkpoint_dir is None:
+        return None
+    pointer = train_attempt / "checkpoints" / "latest.json"
+    pointer_data = _read_json_mapping(pointer) if pointer.is_file() else None
+    return {
+        "selection_policy": "latest_complete_checkpoint",
+        "checkpoint_pointer": str(pointer) if pointer.is_file() else "",
+        "checkpoint_pointer_data": pointer_data or {},
         "resolved_checkpoint_dir": str(checkpoint_dir),
     }
