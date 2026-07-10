@@ -1843,6 +1843,96 @@ def test_v3_final_collect_merges_basis_and_update_for_report_axes() -> None:
     )
 
 
+def test_v3_figure_1b_splits_basis_within_winner_panels_and_encodes_major_axes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture_scatter_grid(path: Path, points: Sequence[dict[str, Any]], **kwargs: Any) -> None:
+        captured.update({"path": path, "points": points, **kwargs})
+
+    monkeypatch.setattr(final_report.plot, "save_loglog_scatter_grid", capture_scatter_grid)
+    final_report._save_energy_variance_scatter(
+        tmp_path / "1B.png",
+        [
+            {
+                "winner_kind": "energy",
+                "energy_error": 0.1,
+                "local_energy_var": 0.2,
+                "basis": "raw",
+                "update_normalization": "baseline",
+                "basis_update": "raw+baseline",
+                "feature_normalization": "baseline",
+            },
+            {
+                "winner_kind": "energy",
+                "energy_error": -0.05,
+                "local_energy_var": 0.1,
+                "basis": "envelope",
+                "update_normalization": "update_gaussian_norm",
+                "basis_update": "envelope+update_gaussian_norm",
+                "feature_normalization": "feature_gaussian_norm",
+            },
+        ],
+        row_key="basis_update",
+        col_key="feature_normalization",
+        title="Figure 1B",
+    )
+
+    assert captured["panel_key"] == "panel_axis"
+    assert captured["panel_keys"] == [("energy", "envelope"), ("energy", "raw")]
+    assert captured["panel_titles"] == {
+        ("energy", "envelope"): "basis=envelope\nenergy winners",
+        ("energy", "raw"): "basis=raw\nenergy winners",
+    }
+    assert captured["marker_key"] == "primary_axis"
+    assert captured["marker_title"] == "update_normalization"
+    assert {point["primary_axis"] for point in captured["points"]} == {
+        "baseline",
+        "update_gaussian_norm",
+    }
+    assert captured["color_key"] == "secondary_axis"
+    assert captured["color_title"] == "feature_normalization"
+
+
+def test_v3_pilot_figure_1b_keeps_pilot_major_axis_encodings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def capture_scatter_grid(path: Path, points: Sequence[dict[str, Any]], **kwargs: Any) -> None:
+        captured.update({"path": path, "points": points, **kwargs})
+
+    monkeypatch.setattr(final_report.plot, "save_loglog_scatter_grid", capture_scatter_grid)
+    final_report._save_energy_variance_scatter(
+        tmp_path / "1B.png",
+        [
+            {
+                "winner_kind": "energy",
+                "energy_error": 0.1,
+                "local_energy_var": 0.2,
+                "basis": basis,
+                "max_steps": max_steps,
+                "sampler_n_steps": sampler_n_steps,
+            }
+            for basis, max_steps, sampler_n_steps in (
+                ("raw-envelope", 100, 5),
+                ("hooke-s1-envelope", 200, 10),
+            )
+        ],
+        row_key="max_steps",
+        col_key="sampler_n_steps",
+        title="Figure 1B",
+    )
+
+    assert captured["panel_keys"] == ["energy"]
+    assert captured["panel_titles"] == {"energy": "energy winners"}
+    assert captured["marker_title"] == "max_steps"
+    assert {point["primary_axis"] for point in captured["points"]} == {"100", "200"}
+    assert captured["color_title"] == "sampler_n_steps"
+    assert {point["secondary_axis"] for point in captured["points"]} == {"5", "10"}
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload) + "\n")

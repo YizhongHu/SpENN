@@ -52,6 +52,7 @@ EXACT_HOOKE_ENERGY = 2.0
 WINNER_KINDS = ("energy", "stability")
 PLOT_WINNER_KINDS = ("energy",)
 NARROW_WINNER_HEATMAP_WIDTH_SCALE = 0.75
+FULL_GRID_REPORT_AXES = ("basis_update", "feature_normalization")
 SYMMETRY_METRICS = (
     "logabs_error_max",
     "logabs_error_median",
@@ -410,9 +411,16 @@ def _unique_in_order(values: Sequence[Any]) -> list[str]:
     return out
 
 
+def _figure_1b_splits_basis(row_key: str, col_key: str) -> bool:
+    """Return whether 1B expands the merged full-grid basis/update axis."""
+
+    return (row_key, col_key) == FULL_GRID_REPORT_AXES
+
+
 def _energy_variance_points(rows: Sequence[dict[str, Any]], *, row_key: str, col_key: str) -> list[dict[str, Any]]:
     """Return positive log-log points for the 1B winner scatter."""
 
+    split_basis = _figure_1b_splits_basis(row_key, col_key)
     points = []
     for row in rows:
         energy_error = _as_float(row.get("energy_error"))
@@ -422,54 +430,74 @@ def _energy_variance_points(rows: Sequence[dict[str, Any]], *, row_key: str, col
         abs_error = abs(energy_error)
         if abs_error <= 0.0 or variance <= 0.0:
             continue
+        winner_kind = "energy" if str(row.get("winner_kind", "")).strip() == "energy" else "stability"
+        primary_axis = _row_axis_value(row, row_key, "basis_class")
+        if split_basis and str(row.get("update_normalization", "")).strip():
+            primary_axis = str(row["update_normalization"])
+        basis = str(row.get("basis", "")).strip() or "all"
         points.append(
             {
                 "abs_energy_error": abs_error,
                 "local_energy_var": variance,
-                "primary_axis": _row_axis_value(row, row_key, "basis_class"),
+                "panel_axis": (winner_kind, basis) if split_basis else winner_kind,
+                "primary_axis": primary_axis,
                 "secondary_axis": _row_axis_value(row, col_key, "normalization"),
-                "winner_kind": "energy" if str(row.get("winner_kind", "")).strip() == "energy" else "stability",
+                "winner_kind": winner_kind,
+                "basis": basis,
             }
         )
     return points
 
 
 def _save_energy_variance_scatter(path: Path, rows: Sequence[dict[str, Any]], *, row_key: str, col_key: str, title: str) -> None:
-    points = [point for point in _energy_variance_points(rows, row_key=row_key, col_key=col_key) if point["winner_kind"] in PLOT_WINNER_KINDS]
+    points = [
+        point
+        for point in _energy_variance_points(rows, row_key=row_key, col_key=col_key)
+        if point["winner_kind"] in PLOT_WINNER_KINDS
+    ]
     if not points:
         plot.save_no_data(path, title)
         return
-    if (row_key, col_key) == ("max_steps", "sampler_n_steps"):
-        plot.save_loglog_scatter(
-            path,
-            points,
-            x_key="abs_energy_error",
-            y_key="local_energy_var",
-            color_key="secondary_axis",
-            marker_key="primary_axis",
-            x_label="abs energy error |E - 2|",
-            y_label="local-energy variance",
-            title=f"{title}\nMarker shape encodes {row_key}; color encodes {col_key}.",
-            color_title=col_key,
-            marker_title=row_key,
-        )
-        return
-    primary_values = sorted({str(point["primary_axis"]) for point in points})
+    winner_kinds = [
+        winner
+        for winner in PLOT_WINNER_KINDS
+        if any(point["winner_kind"] == winner for point in points)
+    ]
+    split_basis = _figure_1b_splits_basis(row_key, col_key)
+    if split_basis:
+        basis_values = sorted({str(point["basis"]) for point in points})
+        panel_keys: Sequence[Any] = [
+            (winner, basis)
+            for winner in winner_kinds
+            for basis in basis_values
+            if any(point["panel_axis"] == (winner, basis) for point in points)
+        ]
+        panel_titles: Mapping[Any, str] = {
+            panel: f"basis={panel[1]}\n{_winner_title(panel[0])}"
+            for panel in panel_keys
+        }
+        marker_title = "update_normalization"
+        layout_description = "Panels split basis choices within winner type"
+    else:
+        panel_keys = winner_kinds
+        panel_titles = {winner: _winner_title(winner) for winner in winner_kinds}
+        marker_title = row_key
+        layout_description = "Panels separate winner type"
     plot.save_loglog_scatter_grid(
         path,
         points,
-        panel_key="primary_axis",
-        panel_keys=primary_values,
-        panel_titles={value: value for value in primary_values},
+        panel_key="panel_axis",
+        panel_keys=panel_keys,
+        panel_titles=panel_titles,
         x_key="abs_energy_error",
         y_key="local_energy_var",
         color_key="secondary_axis",
-        marker_key="winner_kind",
+        marker_key="primary_axis",
         x_label="abs energy error |E - 2|",
         y_label="local-energy variance",
-        title=f"{title}\nPanels encode {row_key}; color encodes {col_key}; marker shape is winner type.",
+        title=f"{title}\n{layout_description}; marker shape encodes {marker_title}; color encodes {col_key}.",
         color_title=col_key,
-        marker_title="Winner type",
+        marker_title=marker_title,
     )
 
 
@@ -1593,6 +1621,11 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
     winner_scope = "energy winners" if tuple(PLOT_WINNER_KINDS) == ("energy",) else "energy and stability winners"
     winner_columns = "energy-winner columns" if tuple(PLOT_WINNER_KINDS) == ("energy",) else "energy/stability winner columns"
     winner_heatmaps = "energy winners" if tuple(PLOT_WINNER_KINDS) == ("energy",) else "energy and stability winners side by side"
+    figure_1b_layout = (
+        "Figure 1B uses basis panels, marker shape for `update_normalization`, and color for `feature_normalization`."
+        if _figure_1b_splits_basis(row_key, col_key)
+        else f"Figure 1B separates winner types into panels, uses marker shape for `{row_key}`, and color for `{col_key}`."
+    )
     lines = [
         f"# {report_title} Final Report",
         "",
@@ -1623,7 +1656,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
             "",
             "## Energy And Local-Energy Results",
             "",
-            f"Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps render {winner_heatmaps} with a shared color scale over `{row_key}` by `{col_key}`. Figure 1B separates primary report-axis values into adjacent panels while keeping secondary-axis color and winner-marker encodings fixed. Signed-log heatmap variants use real-scale cell labels.",
+            f"Energy figures use signed error relative to exact Hooke energy `E = 2`; heatmaps render {winner_heatmaps} with a shared color scale over `{row_key}` by `{col_key}`. {figure_1b_layout} Signed-log heatmap variants use real-scale cell labels.",
             "",
             "Energy component and virial tables are written to `tables/energy_components_and_virial_by_winner.csv` and to one validation-style table per winner family under `tables/energy_components_and_virial/`. The virial residual is `2 * kinetic - 2 * harmonic_trap + electron_electron`; the relative residual divides its absolute value by the absolute component scale.",
             "",
