@@ -110,11 +110,7 @@ def _config_with_overrides(path: Path, overrides: Sequence[str]) -> Any:
 def _write_checkpoint_pointer(results_root: Path, run_id: str, attempt_id: str) -> Path:
     checkpoint_dir = layout.train_attempt_dir(results_root, run_id, attempt_id) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint = checkpoint_dir / "step_000000"
-    checkpoint.mkdir()
-    (checkpoint / "COMPLETE").write_text("")
-    (checkpoint / "manifest.json").write_text(json.dumps({"step": 0}) + "\n")
-    (checkpoint_dir / "latest.json").write_text(json.dumps({"checkpoint_dir": checkpoint.name}) + "\n")
+    (checkpoint_dir / "latest.json").write_text(json.dumps({"path": "step_000000"}))
     return checkpoint_dir
 
 
@@ -135,14 +131,6 @@ def _write_final_checkpoint(results_root: Path, final_run_id: str, attempt_id: s
         )
         + "\n"
     )
-    return checkpoint_dir
-
-
-def _write_checkpoint_step(attempt_dir: Path, step: int) -> Path:
-    checkpoint_dir = attempt_dir / "checkpoints" / f"step_{step:06d}"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    (checkpoint_dir / "COMPLETE").write_text("")
-    (checkpoint_dir / "manifest.json").write_text(json.dumps({"step": step}) + "\n")
     return checkpoint_dir
 
 
@@ -483,8 +471,7 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
         repo_root=ROOT,
         submitted_commands=[["python", "run.py"]],
     )
-    checkpoint_root = _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
-    latest_checkpoint = _write_checkpoint_step(checkpoint_root.parent, 3)
+    _write_checkpoint_pointer(results_root, run_id, ATTEMPT)
     _write_checkpoint_pointer(results_root, run_id, "zzz")
 
     assert row_status_paths == [layout.train_attempt_dir(results_root, run_id, ATTEMPT) / "launcher_status.json"]
@@ -508,9 +495,6 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
 
     assert skipped == []
     assert planned[0]["train_attempt_id"] == ATTEMPT
-    assert f"load.path={latest_checkpoint}" in planned[0]["command_parts"]
-    assert planned[0]["source_train_attempt"]["checkpoint_path"] == str(latest_checkpoint)
-    assert planned[0]["source_train_attempt"]["checkpoint"]["resolved_checkpoint_dir"] == str(latest_checkpoint)
     latest_validation = json.loads((layout.validation_run_dir(results_root, run_id) / "latest.json").read_text())
     assert latest_validation["attempt_id"] == "manual-validation"
 
@@ -1891,45 +1875,6 @@ def test_v2_final_eval_defaults_to_single_latest_final_train_attempt(tmp_path: P
         )
         == final_grid_attempt_id
     )
-
-
-def test_final_eval_uses_highest_complete_checkpoint(tmp_path: Path) -> None:
-    results_root = tmp_path / "results"
-    final_run_id = "final-run-0"
-    final_grid_attempt_id = "FG0"
-    stale = _write_final_checkpoint(results_root, final_run_id, final_grid_attempt_id)
-    train_attempt = layout.final_train_attempt_dir(results_root, final_run_id, final_grid_attempt_id)
-    latest = _write_checkpoint_step(train_attempt, 3)
-    assert stale.name == "step_000000"
-
-    args = types.SimpleNamespace(
-        attempt_id=None,
-        final_train_attempt_id=final_grid_attempt_id,
-    )
-    job = {
-        "final_run_id": final_run_id,
-        "source_champion_id": "champion-0",
-        "stage_seed_overrides": {"final_eval": {}},
-    }
-    planned, skipped = final_eval.plan_final_eval_jobs(
-        [job],
-        args=args,
-        study="pair_stability_v3",
-        results_root=results_root,
-        final_grid_attempt_id=final_grid_attempt_id,
-        eval_config="eval.yaml",
-        scalar_axes=(),
-        override_paths={},
-    )
-
-    assert skipped == []
-    assert f"load.path={latest}" in planned[0]["command_parts"]
-    assert planned[0]["checkpoint"]["resolved_checkpoint_dir"] == str(latest)
-    eval_attempt = layout.final_eval_attempt_dir(results_root, final_run_id, final_grid_attempt_id)
-    evaluated = json.loads((eval_attempt / "evaluated_checkpoint.json").read_text())
-    source = json.loads((eval_attempt / "source_final_train_attempt.json").read_text())
-    assert evaluated["resolved_checkpoint_dir"] == str(latest)
-    assert source["checkpoint"]["resolved_checkpoint_dir"] == str(latest)
 
 
 def _callback_entries(config_name: str) -> list[dict[str, Any]]:

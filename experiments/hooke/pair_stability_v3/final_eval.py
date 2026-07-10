@@ -54,7 +54,7 @@ from experiments.toolkit import (  # noqa: E402
 )
 from experiments.toolkit.resources import resource_from_profile  # noqa: E402
 from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
-from experiments.toolkit.task_state import _resolved_latest_checkpoint  # noqa: E402
+from experiments.toolkit.task_state import _resolved_checkpoint  # noqa: E402
 
 def _resolve_final_grid_attempt_id(results_root: Path, requested: str | None) -> str:
     if requested is not None:
@@ -100,7 +100,7 @@ def _latest_ready_final_train_attempt_id(
     results_root: str | Path,
     final_run_id: str,
 ) -> str | None:
-    """Return newest final-train attempt containing a restorable checkpoint."""
+    """Return the newest final-train attempt with a completed selected checkpoint."""
 
     run_dir = final_train_run_dir(results_root, final_run_id)
     preferred = latest_attempt_id(run_dir)
@@ -111,7 +111,7 @@ def _latest_ready_final_train_attempt_id(
     ordered.extend(attempt_id for attempt_id in reversed(ids) if attempt_id != preferred)
     for attempt_id in ordered:
         train_attempt = final_train_attempt_dir(results_root, final_run_id, attempt_id)
-        if _resolved_latest_checkpoint(train_attempt) is not None:
+        if _resolved_checkpoint(train_attempt) is not None:
             return attempt_id
     return None
 
@@ -193,9 +193,9 @@ def plan_final_eval_jobs(
             skipped.append({"final_run_id": final_run_id, "reason": "no eligible final-train attempt"})
             continue
         train_attempt = final_train_attempt_dir(results_root, final_run_id, train_attempt_id)
-        checkpoint = _resolved_latest_checkpoint(train_attempt)
+        checkpoint = _resolved_checkpoint(train_attempt)
         if checkpoint is None:
-            skipped.append({"final_run_id": final_run_id, "reason": f"missing complete checkpoint in {train_attempt}"})
+            skipped.append({"final_run_id": final_run_id, "reason": f"missing selected checkpoint in {train_attempt}"})
             continue
 
         final_eval_attempt = final_eval_attempt_dir(results_root, final_run_id, final_eval_attempt_id)

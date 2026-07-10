@@ -47,7 +47,7 @@ from experiments.toolkit import (  # noqa: E402
 )
 from experiments.toolkit.resources import resource_from_profile  # noqa: E402
 from experiments.toolkit.specs import tasks_from_commands  # noqa: E402
-from experiments.toolkit.task_state import _resolved_latest_checkpoint  # noqa: E402
+from experiments.toolkit.task_state import _checkpoint_ready  # noqa: E402
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 DEFAULT_GRID = STUDY_DIR / "configs" / "grid.yaml"
@@ -220,9 +220,8 @@ def plan_validation_jobs(
             skipped.append({"run_id": run_id, "reason": "no eligible train attempt"})
             continue
         train_attempt = train_attempt_dir(results_root, run_id, train_attempt_id)
-        checkpoint = _resolved_latest_checkpoint(train_attempt)
-        if checkpoint is None:
-            skipped.append({"run_id": run_id, "reason": f"missing complete checkpoint in {train_attempt}"})
+        if not _checkpoint_ready(train_attempt):
+            skipped.append({"run_id": run_id, "reason": f"missing checkpoint in {train_attempt}"})
             continue
 
         point = dict(job.get("choices", {}))
@@ -231,7 +230,7 @@ def plan_validation_jobs(
             point.update(seed_values)
         if seed_axis not in point and "scan_seed" in job:
             point[seed_axis] = job["scan_seed"]
-        checkpoint_path = Path(str(checkpoint["resolved_checkpoint_dir"]))
+        checkpoint_path = train_attempt / "checkpoints"
         validation_attempt = validation_attempt_dir(results_root, run_id, validation_attempt_id)
         source = {
             "run_id": run_id,
@@ -240,7 +239,6 @@ def plan_validation_jobs(
             "train_dir": str(train_run_dir(results_root, run_id)),
             "train_attempt_dir": str(train_attempt),
             "checkpoint_path": str(checkpoint_path),
-            "checkpoint": checkpoint,
         }
         write_json(validation_attempt / "source_train_attempt.json", source)
         write_json(

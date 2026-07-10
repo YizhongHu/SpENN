@@ -15,9 +15,7 @@ from experiments.toolkit.task_state import (
     _deadline_guard_reached,
     _final_train_completed,
     _latest_complete_checkpoint,
-    _latest_restorable_checkpoint,
     _resolved_checkpoint,
-    _resolved_latest_checkpoint,
     _resume_overrides,
     _terminal_row_status,
     claim_paths_for_statuses,
@@ -163,14 +161,6 @@ def test_latest_complete_checkpoint_picks_highest_step(tmp_path: Path) -> None:
     assert _latest_complete_checkpoint(tmp_path).name == "step_000003"
 
 
-def test_latest_restorable_checkpoint_requires_manifest(tmp_path: Path) -> None:
-    _touch_complete_checkpoint(tmp_path, 3)
-    latest = _touch_complete_checkpoint(tmp_path, 2)
-    (latest / "manifest.json").write_text("{}")
-
-    assert _latest_restorable_checkpoint(tmp_path) == latest
-
-
 def test_final_train_completed_requires_status_and_checkpoint(tmp_path: Path) -> None:
     assert _final_train_completed(tmp_path) is False
 
@@ -239,19 +229,3 @@ def test_resolved_checkpoint_requires_complete_and_manifest(tmp_path: Path) -> N
     resolved = _resolved_checkpoint(tmp_path)
     assert resolved is not None
     assert resolved["resolved_checkpoint_dir"] == str(checkpoint_dir)
-
-
-def test_resolved_latest_checkpoint_ignores_stale_pointer(tmp_path: Path) -> None:
-    stale = _touch_complete_checkpoint(tmp_path, 1)
-    latest = _touch_complete_checkpoint(tmp_path, 3)
-    (stale / "manifest.json").write_text("{}")
-    (latest / "manifest.json").write_text("{}")
-    pointer = tmp_path / "checkpoints" / "latest.json"
-    _write(pointer, {"checkpoint_dir": stale.name})
-
-    resolved = _resolved_latest_checkpoint(tmp_path)
-
-    assert resolved is not None
-    assert resolved["selection_policy"] == "latest_complete_checkpoint"
-    assert resolved["checkpoint_pointer_data"] == {"checkpoint_dir": stale.name}
-    assert resolved["resolved_checkpoint_dir"] == str(latest)
