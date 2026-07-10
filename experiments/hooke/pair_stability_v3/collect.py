@@ -1,6 +1,7 @@
-"""Collect validation attempts into a summary table.
+"""Collect validation attempts from one planned grid into a summary table.
 
-Walks ``02_validation/{run_id}/*`` (the latest attempt per run id),
+Reads run ids from ``00_grid/{attempt_id}/manifest.json``, then consumes the
+latest validation attempt for each planned run id,
 reads each attempt's status, evaluation metrics, required source train-attempt
 metrics, and recorded train-attempt provenance, and writes a ``03_collect`` attempt with
 ``summary.csv``, ``failures.csv``, ``collection_report.json``, and explicit
@@ -304,67 +305,23 @@ def _row_task_lineage(
     return TaskLineageRow(row_id=run_id, task_ids=task_ids)
 
 
-def _latest_validation_attempts(results_root: Path) -> list[tuple[str, str, Path]]:
-    """Return the latest validation attempt for each validation run id."""
+def _resolve_grid_source(results_root: Path, grid_attempt_id: str | None) -> SourceGrid:
+    """Return the explicitly requested or latest planned source grid."""
 
-    validation_root = stage_dir(results_root, STAGE_VALIDATION)
-    if not validation_root.is_dir():
-        return []
-    attempts = []
-    for run_dir in sorted(child for child in validation_root.iterdir() if child.is_dir()):
-        attempt_id = latest_attempt_id(run_dir)
-        if attempt_id is not None:
-            attempts.append((run_dir.name, attempt_id, run_dir / attempt_id))
-    return attempts
-
-
-def _latest_validation_attempt(results_root: Path) -> tuple[str, str, Path] | None:
-    """Return the newest validation attempt across run ids."""
-
-    attempts = _latest_validation_attempts(results_root)
-    if not attempts:
-        return None
-    return max(attempts, key=lambda item: item[1])
+    grid_stage = stage_dir(results_root, STAGE_GRID)
+    attempt_id = grid_attempt_id or latest_attempt_id(grid_stage)
+    if attempt_id is None:
+        raise FileNotFoundError(f"no grid attempts under {grid_stage}")
+    source_grid = source_grid_from_id(results_root, attempt_id)
+    if not source_grid.manifest_path.is_file():
+        raise FileNotFoundError(f"grid attempt has no manifest.json: {source_grid.manifest_path}")
+    return source_grid
 
 
-def _source_grid_from_latest_validations(results_root: Path) -> SourceGrid | None:
-    """Trace the newest validation attempt back to its source grid."""
+def _run_ids(grid_manifest: dict[str, Any]) -> list[str]:
+    """Return run ids listed by one grid manifest."""
 
-    latest = _latest_validation_attempt(results_root)
-    if latest is None:
-        return None
-    _run_id, _attempt_id, attempt_dir = latest
-    return source_grid_from_attempt(results_root, attempt_dir)
-
-
-def _resolve_grid_source(results_root: Path, grid_attempt_id: str | None) -> SourceGrid | None:
-    """Return explicit, traced, or latest source grid for collection."""
-
-    if grid_attempt_id is not None:
-        return source_grid_from_id(results_root, grid_attempt_id)
-    traced = _source_grid_from_latest_validations(results_root)
-    if traced is not None:
-        return traced
-    attempt_id = latest_attempt_id(stage_dir(results_root, STAGE_GRID))
-    if attempt_id is not None:
-        return source_grid_from_id(results_root, attempt_id)
-    return None
-
-
-def _grid_manifest(source_grid: SourceGrid | None) -> dict[str, Any] | None:
-    """Return a source grid manifest if it is available."""
-
-    if source_grid is None or not source_grid.manifest_path.is_file():
-        return None
-    return source_grid.read_manifest()
-
-
-def _run_ids(results_root: Path, grid_manifest: dict[str, Any] | None) -> list[str]:
-    """Return run ids to collect, from the grid manifest if available."""
-
-    if grid_manifest is not None:
-        return [str(job["run_id"]) for job in grid_manifest.get("jobs", [])]
-    return [run_id for run_id, _attempt_id, _attempt_dir in _latest_validation_attempts(results_root)]
+    return [str(job["run_id"]) for job in grid_manifest.get("jobs", [])]
 
 
 def _run_device(attempt_dir: Path) -> str:
@@ -442,8 +399,8 @@ def collect(
     results_root = Path(results_root)
     collect_attempt_id = collect_attempt_id or new_attempt_id()
     source_grid = _resolve_grid_source(results_root, grid_attempt_id)
-    grid_attempt_id = None if source_grid is None else source_grid.attempt_id
-    grid_manifest = _grid_manifest(source_grid)
+    grid_attempt_id = source_grid.attempt_id
+    grid_manifest = source_grid.read_manifest()
     study = study_name_from_manifest(grid_manifest)
     axis_metadata = _axis_metadata(grid_manifest)
     required_train_metrics = _required_train_metrics(grid_manifest)
@@ -458,18 +415,14 @@ def collect(
     lineage_rows: list[TaskLineageRow] = []
     validation_known_task_ids: dict[str, frozenset[str] | None] = {}
     train_known_task_ids: dict[str, frozenset[str] | None] = {}
-    for run_id in _run_ids(results_root, grid_manifest):
+    for run_id in _run_ids(grid_manifest):
         run_dir = validation_run_dir(results_root, run_id)
         attempt_id = latest_attempt_id(run_dir)
         if attempt_id is None:
             continue
         attempt_dir = run_dir / attempt_id
         attempt_source = source_grid_from_attempt(results_root, attempt_dir)
-        if (
-            source_grid is not None
-            and attempt_source is not None
-            and attempt_source.attempt_id != source_grid.attempt_id
-        ):
+        if attempt_source is None or attempt_source.attempt_id != source_grid.attempt_id:
             continue
         row = collect_validation_attempt(
             run_id,
@@ -518,7 +471,7 @@ def collect(
     )
     write_json(
         attempt / "source_grid_attempt.json",
-        {} if source_grid is None else source_grid.to_record(),
+        source_grid.to_record(),
     )
     write_json(attempt / "source_validation_attempts.json", consumed)
     write_task_lineage(attempt, lineage_rows)
@@ -550,7 +503,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--grid-attempt-id",
         default=None,
-        help="Override source grid attempt; defaults to the grid traced from the newest validation attempt.",
+        help="Override source grid attempt; defaults to 00_grid/latest.json.",
     )
     parser.add_argument("--attempt-id", default=None, help="Collect attempt id (defaults to now).")
     parser.add_argument("--smoke", action="store_true", help="Deprecated; use configs/smoke.yaml with the normal stack.")
