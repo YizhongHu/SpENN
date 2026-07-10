@@ -483,7 +483,7 @@ Health flags do not replace detailed metrics under `checks/...`.
 
 Steps are 0-indexed: the first training step is `step = 0`. This means the
 first step always satisfies `step % every_n_steps == 0` cadence gates, so
-periodic callbacks and loggers report at the start of every run.
+periodic metric callbacks and loggers report at the start of every run.
 
 Training metrics use the training step:
 
@@ -498,6 +498,11 @@ Training runtime checks use the same training step:
 step = trainer step
 namespace = checks/...
 ```
+
+Checkpoint directory names use completed optimizer updates, not the 0-indexed
+training step. A run with `max_steps = N` writes its terminal checkpoint as
+the zero-padded `N` directory; for example, `max_steps = 500` writes
+`checkpoints/step_000500`.
 
 Evaluation metrics use an evaluation step or `0` if there is only one evaluation event:
 

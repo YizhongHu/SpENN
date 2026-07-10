@@ -198,7 +198,7 @@ sampler_params:
   proposal_scale: 0.35
 
 training:
-  max_steps: 2000
+  max_steps: 500
   log_every_n_steps: 10
   return_terms: true
 
@@ -237,7 +237,7 @@ load:
   allow_protocol_mismatch: false
 
 checkpoint:
-  every_n_steps: 500
+  every_n_steps: 100
   keep_last: 3
   save_optimizer: true
   save_trainer: true
@@ -419,6 +419,13 @@ callbacks:
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
     keep_last: ${checkpoint.keep_last}
+    save_optimizer: ${checkpoint.save_optimizer}
+    save_trainer: ${checkpoint.save_trainer}
+    save_sampler: ${checkpoint.save_sampler}
+    save_rng: ${checkpoint.save_rng}
+  - _target_: spenn.callback.Checkpoint
+    triggers: [train_end]
+    output_dir: ${run.dir}/checkpoints
     save_optimizer: ${checkpoint.save_optimizer}
     save_trainer: ${checkpoint.save_trainer}
     save_sampler: ${checkpoint.save_sampler}
