@@ -356,3 +356,130 @@ uv run --extra cpu pytest tests/unit/evaluation/test_hooke_evaluation_tasks.py -
 ```
 
 The exact, fresh, and restored-champion diagnostic runs completed. A focused patch review returned no findings.
+
+## 10. Addendum: general Coulomb cusp policy
+
+### The cusp/tail connection
+
+The concise conclusion is: **the same wrong pair-factor parameterization is the leading source of both graphs, but the tail error is not literally the $r_{12}\to0$ curvature coefficient transported outward.**
+
+At coalescence, the $b=1$ rational factor has the correct slope and wrong curvature. At the tail-grid value $r_{12}=1$, that same factor has wrong finite-distance derivatives:
+
+$$
+\begin{aligned}
+u_\mathrm{exact}'(1)&=1/3, &u_{b=1}'(1)&=1/8,\\
+u_\mathrm{exact}''(1)&=-1/9, &u_{b=1}''(1)&=-1/8.
+\end{aligned}
+$$
+
+The tail grid fixes $r_{12}=1$, so it exposes the pair factor's full finite-distance derivative error while moving the center of mass outward. The $b=1$ envelope-only prediction `2.421875` explains 90.8% of the trained mean tail bias `2.464764 - 2`. Learned features create the remaining radius-dependent variation. The correct statement is therefore:
+
+> The cusp and tail graphs are both driven primarily by the same incorrect pair factor. The cusp graph reveals its wrong short-range curvature; the tail graph reveals its wrong derivatives at the fixed finite pair distance $r_{12}=1$.
+
+This tail diagnostic does **not** establish behavior at large electron-electron separation, because `TailGridGenerator` does not vary $r_{12}$.
+
+### What is universal and what is Hooke-specific
+
+The Hooke-exact factor
+
+$$
+\log(1+r_{12}/2)
+$$
+
+is not a universal electron-electron factor. It is exact only for this two-electron Hooke singlet at $\omega=1/2$. The $b=0.25$ range is also Hooke-specific: it matches the quadratic Taylor coefficient of that exact factor, not a universal Coulomb condition.
+
+The universal all-electron, three-dimensional Coulomb information is the Kato cusp slope:
+
+$$
+\begin{aligned}
+u_{\uparrow\downarrow}'(0)&=\frac12,\\
+u_{\uparrow\uparrow}'(0)&=\frac14,\\
+\chi_{eA}'(0)&=-Z_A.
+\end{aligned}
+$$
+
+The same-spin condition applies to the regular radial coefficient after the Pauli-required $r_{ij}Y_{1m}$ node is factored out; the full same-spin spatial wavefunction vanishes at coalescence. The electron-nucleus condition applies to point, clamped, all-electron nuclei. Pseudopotentials with no Coulomb singularity must not receive an electron-nucleus cusp factor.
+
+The existing `ElectronElectronCusp` already encodes the spin-resolved $1/2$ and $1/4$ slopes. The project has `ElectronNucleusInteraction`, and `ElectronBatch` already carries nuclear positions and charges, but no corresponding output-side electron-nucleus cusp envelope exists yet.
+
+### Minimal general architecture
+
+Adopt a positive, symmetric, non-backflow Coulomb cusp envelope:
+
+$$
+J_\mathrm{cusp} =
+\sum_{i<j}
+\frac{a_{\sigma_i\sigma_j}r_{ij}}{1+b_{\sigma_i\sigma_j}r_{ij}}
+
+\sum_{i,A}
+\frac{-Z_A r_{iA}}{1+\beta_A r_{iA}},
+$$
+
+with fixed
+
+$$
+a_{\uparrow\downarrow}=\frac12,
+\qquad
+a_{\uparrow\uparrow}=\frac14.
+$$
+
+The slopes and nuclear charges are physics, not trainable parameters. The ranges $b$ and $\beta$ only control smooth finite-distance behavior; they may be fixed, species-specific, or learned as a very small number of scalars. They are not cusp conditions.
+
+This is technically a fixed short-range Jastrow factor in QMC terminology, but it is **not Jastrow-backflow**:
+
+- it is positive and symmetric, so it preserves the Pfaffian/determinantal nodes and fermionic symmetry;
+- it does not transform electron coordinates;
+- it does not add a flexible many-body correlation architecture;
+- it is $O(N^2+N N_\mathrm{nuc})$, negligible next to the current Hessian-based kinetic evaluation.
+
+The residual SpENN/Pfaffian component should remain responsible for all nonlocal and many-body correlation. It must be cusp-free after the explicit factor: do not let an unconstrained learned radial linear term alter the fixed slopes. A later optional residual can be made $O(r^3)$ near each coalescence, preserving the value, slope, and curvature of a chosen base factor without introducing backflow.
+
+Do **not** promote the Hooke exact factor, $b=0.25$, or an explicit center-of-mass branch to the generic architecture. The center-of-mass decomposition is a diagnostic of the harmonic trap, not an inductive bias appropriate for general molecules. Generic inputs should remain electron-electron and electron-nucleus local invariants plus the existing equivariant residual.
+
+### Make the local-energy calculation cusp-stable
+
+The exact local energy must contain physical cancellation, but it should not rely on numerical subtraction of separately evaluated divergent tensors. The present raw component dump is useful for diagnostics; it should not be the desired numerical form of the training aggregate near a cusp.
+
+For unlike-spin electron pairs, write the total log amplitude as $u(r)+f$. The singular kinetic-plus-Coulomb piece is
+
+$$
+\frac{1-2u'(r)}{r}.
+$$
+
+For the rational $u(r)=r/[2(1+br)]$, evaluate it algebraically as
+
+$$
+\frac{1-2u'(r)}{r}
+=
+\frac{b(2+br)}{(1+br)^2},
+$$
+
+which stays finite instead of subtracting $1/r$ from $-2u'(r)/r$. At $r=10^{-5}$, the raw terms are approximately `100000` and `-99998`, while this grouped expression is approximately `2`.
+
+For an electron-nucleus factor $u(r)=-Zr/(1+\beta r)$, the corresponding grouped singular piece is
+
+$$
+-\frac{Z+u'(r)}{r}
+=
+-\frac{Z\beta(2+\beta r)}{(1+\beta r)^2}.
+$$
+
+This does not remove physical kinetic terms or alter the Hamiltonian; it changes only the algebra used to evaluate the known cancellation. Cross terms with the smooth residual remain finite.
+
+Recommended sequence:
+
+1. Implement the generic, spin-resolved electron-electron and optional all-electron electron-nucleus cusp envelope.
+2. Keep the Hooke-exact factor and $b=0.25$ as benchmark-only ablations.
+3. Add a typed cusp-factor contract shared by the model and kinetic evaluator, then evaluate singular kinetic-plus-potential pieces in grouped analytic form.
+4. Add hydrogenic electron-nucleus, Hooke singlet, and Hooke triplet cusp tests over progressively smaller distances in float64.
+5. Consider transcorrelation only later. It is a different non-Hermitian, up-to-three-body solver formulation, not a necessary local-energy patch.
+
+The current exact Hooke test shows that float64 is accurate at $r_{12}=10^{-5}$: the pointwise error remains below about $5.4\times10^{-10}$. That validates the current calculation at the present diagnostic floor, but does not justify relying on raw cancellation at smaller distances, in float32, or at larger system size.
+
+### QMC references
+
+- T. Kato, [On the eigenfunctions of many-particle systems in quantum mechanics](https://doi.org/10.1002/cpa.3160100201), *Communications on Pure and Applied Mathematics* **10** (1957).
+- N. D. Drummond, M. D. Towler, and R. J. Needs, [Jastrow correlation factor for atoms, molecules, and solids](https://arxiv.org/pdf/0801.0378), *Physical Review B* **70**, 235119 (2004).
+- R. J. Needs et al., [Variational and diffusion quantum Monte Carlo calculations with the CASINO code](https://eprints.lancs.ac.uk/id/eprint/143418/1/casino_jcp.pdf), *Journal of Chemical Physics* **152**, 154106 (2020).
+- A. Ma et al., [Scheme for adding electron-nucleus cusps to Gaussian orbitals](https://arxiv.org/pdf/0801.2742), *Journal of Chemical Physics* **122**, 224322 (2005).
+- D. Haupt et al., [Optimizing Jastrow factors for the transcorrelated method](https://arxiv.org/pdf/2302.13683), *Journal of Chemical Physics* **158**, 224105 (2023).
