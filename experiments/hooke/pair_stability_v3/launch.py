@@ -441,6 +441,7 @@ def environment_shell_command(
     sync_command = ["uv", "sync"]
     for extra in uv_extras:
         sync_command.extend(["--extra", str(extra)])
+    sync_lock = repo_root / ".uv-sync.lock"
     activate_path = Path(uv_environment) / "bin" / "activate"
     run_command = _activated_python_command(with_runtime_device(command, device=device))
     script = "\n".join(
@@ -449,7 +450,8 @@ def environment_shell_command(
             f"cd {shlex.quote(str(repo_root))}",
             f"export UV_PROJECT_ENVIRONMENT={shlex.quote(str(uv_environment))}",
             *_cpu_thread_exports(device),
-            shlex.join(sync_command),
+            "# Submitit chunks share this checkout and must not sync concurrently.",
+            f"flock {shlex.quote(str(sync_lock))} {shlex.join(sync_command)}",
             f"source {shlex.quote(str(activate_path))}",
             f"exec {shlex.join(run_command)}",
         ]

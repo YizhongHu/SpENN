@@ -332,10 +332,12 @@ def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
     assert "export UV_PROJECT_ENVIRONMENT=.venv" in cpu_script
     assert "export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-1}}" in cpu_script
     assert "uv sync --extra cpu" in cpu_script
+    assert f"flock {ROOT / '.uv-sync.lock'} uv sync --extra cpu" in cpu_script
     assert "runtime.device=cpu" in cpu_script
     assert "export UV_PROJECT_ENVIRONMENT=.venv-gpu" in cuda_script
     assert "OMP_NUM_THREADS" not in cuda_script
     assert "uv sync --extra cu126" in cuda_script
+    assert f"flock {ROOT / '.uv-sync.lock'} uv sync --extra cu126" in cuda_script
     assert "runtime.device=cuda" in cuda_script
 
     cpu_slurm = launch.slurm_parameters(args, profile="cpu")
