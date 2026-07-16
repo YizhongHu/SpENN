@@ -483,3 +483,30 @@ The current exact Hooke test shows that float64 is accurate at $r_{12}=10^{-5}$:
 - R. J. Needs et al., [Variational and diffusion quantum Monte Carlo calculations with the CASINO code](https://eprints.lancs.ac.uk/id/eprint/143418/1/casino_jcp.pdf), *Journal of Chemical Physics* **152**, 154106 (2020).
 - A. Ma et al., [Scheme for adding electron-nucleus cusps to Gaussian orbitals](https://arxiv.org/pdf/0801.2742), *Journal of Chemical Physics* **122**, 224322 (2005).
 - D. Haupt et al., [Optimizing Jastrow factors for the transcorrelated method](https://arxiv.org/pdf/2302.13683), *Journal of Chemical Physics* **158**, 224105 (2023).
+
+### Range policy and numerical-precision clarification
+
+The cusp coefficients are definitive; the rational range parameters are not:
+
+| Parameter | Status |
+|---|---|
+| Electron-electron $a_{\uparrow\downarrow}=1/2$, $a_{\uparrow\uparrow}=1/4$ | Fixed by the three-dimensional Coulomb cusp condition |
+| Electron-nucleus slope $-Z_A$ | Fixed by the point all-electron Coulomb cusp condition |
+| Electron-electron $b$ | Finite-range correlation scale; system and representation dependent |
+| Electron-nucleus $\beta$ | Finite-range correlation scale; system and representation dependent |
+
+For the next **Hooke-only successor/ablation**, use fixed `b=0.25`. Do not rewrite V3's historical baseline: changing the model envelope invalidates the existing checkpoint configuration hash and would muddle the comparison. The generic architecture should retain a configurable positive range, initialized and optionally trained independently of the fixed cusp slope.
+
+There is no definitive $b$ or $\beta$ determined only by elemental species. In conventional QMC, the cusp slopes are constrained and the remaining range parameters are commonly optimized. For SpENN, train at most a small number of positive shared or species-resolved range scalars, initialize them conservatively, and monitor deterministic cusp diagnostics. Do not let a free range parameter modify the fixed cusp slopes.
+
+High numerical accuracy comes from cancelling analytically before floating-point evaluation, not from hoping that two large tensors subtract accurately. In float64, the spacing near `1e5` is approximately $1.46\times10^{-11}$, which explains the present exact-Hooke success at $r_{12}=10^{-5}$. Near `1e12`, the spacing is approximately $1.22\times10^{-4}$; raw cancellation is then materially less reliable. The grouped cusp expressions above remain order-one at either distance, provided the smooth residual is differentiated separately from the explicit cusp factor.
+
+### Is large cancellation solved in QMC?
+
+It is solved at the **wavefunction and local-energy-formula level**, but not by treating separately evaluated divergent kinetic and potential tensors as harmless.
+
+Standard real-space QMC uses explicit Kato-correct cusp factors or cusp-corrected orbitals so that the leading $1/r$ divergence cancels analytically in the total local energy. This removes divergent local-energy spikes and their variance. Individual kinetic and Coulomb components may still be large and are not separately well-conditioned observables near coalescence.
+
+The present exact Hooke result establishes that the current float64 implementation is accurate at the checked floor $r_{12}=10^{-5}$; the measured V3 energy defect is therefore an envelope/model-curvature error, not evidence of roundoff failure. Nevertheless, SpENN does not yet expose the cusp/residual decomposition needed to evaluate the grouped formulas directly. That remains the correct general robustness improvement before probing much smaller distances or moving to larger all-electron systems.
+
+Compensated summation or a different order of term addition cannot repair cancellation that has already occurred inside independently evaluated kinetic and potential terms. A complete implementation must factor the wavefunction into explicit cusp and smooth residual pieces, differentiate the smooth residual, and add the finite analytic cusp contribution.
