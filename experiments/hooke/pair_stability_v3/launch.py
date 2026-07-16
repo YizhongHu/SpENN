@@ -441,7 +441,7 @@ def environment_shell_command(
     sync_command = ["uv", "sync"]
     for extra in uv_extras:
         sync_command.extend(["--extra", str(extra)])
-    sync_lock = repo_root / ".uv-sync.lock"
+    sync_lock = repo_root.parent / f".{repo_root.name}.uv-sync.lock"
     activate_path = Path(uv_environment) / "bin" / "activate"
     run_command = _activated_python_command(with_runtime_device(command, device=device))
     script = "\n".join(
