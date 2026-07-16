@@ -100,7 +100,9 @@ controls are owned by `nn.Embedding`; update and feature controls are owned by
 `nn.SpENNLayer`.
 
 The output Hooke Gaussian envelope and electron-electron cusp are common across
-all variants.
+all variants. The Hooke singlet's fixed opposite-spin cusp range is
+`model_params.cusp_opposite_range_parameter: 0.25`; it is deliberately outside
+the scan axes but may be overridden explicitly for a named ablation.
 
 ## Blinding
 
@@ -462,4 +464,32 @@ allocation efficiency. Override controller placement or walltime when needed:
 STACK_CONTROLLER_PARTITION=kozinsky \
 STACK_CONTROLLER_TIME=7-00:00:00 \
 $STUDY/submit_stack.sh full
+```
+
+## Archive a completed V3 lineage
+
+`sync.py` is intentionally a study-local archival procedure. It traces one
+`09_final_report` lineage through all ten stages, writes a durable `10_sync`
+dry run, and refuses a transfer above its hard byte limit. Checkpoint
+directories are excluded; raw output files, stage plans, chunk status, and
+Slurm logs selected by explicit provenance are retained.
+
+Plan without copying:
+
+```bash
+uv run --extra cpu python $STUDY/sync.py plan \
+  --source-root /path/to/historical/SpENN \
+  --destination /path/to/archive/pair_stability_v3 \
+  --report-attempt-id <09_final_report_attempt>
+```
+
+The command prints the `10_sync` attempt directory and byte budget. Submit
+only an under-limit plan, then verify the immutable archive:
+
+```bash
+uv run --extra cpu python $STUDY/sync.py submit \
+  --sync-attempt /path/to/results/10_sync/<attempt>
+
+uv run --extra cpu python $STUDY/sync.py verify \
+  --sync-attempt /path/to/results/10_sync/<attempt>
 ```
