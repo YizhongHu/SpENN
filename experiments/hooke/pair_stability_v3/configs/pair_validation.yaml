@@ -241,14 +241,6 @@ evaluation_suites:
       - ${evaluation_tasks.final_trace_equivariance}
       - ${evaluation_tasks.final_feature_trace_stability}
       - ${evaluation_tasks.final_readout_trace_stability}
-  cusp_tail_diagnostics:
-    artifact_level: records
-    tasks:
-      - ${evaluation_tasks.final_cusp}
-      - ${evaluation_tasks.final_tail}
-      - ${evaluation_tasks.final_trace_equivariance}
-      - ${evaluation_tasks.final_feature_trace_stability}
-      - ${evaluation_tasks.final_readout_trace_stability}
 
 evaluation_tasks:
   cusp:
@@ -453,7 +445,6 @@ evaluation_tasks:
       - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
       - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
       - _target_: spenn.evaluation.summaries.SampledRecordWriter
-        include_term_energies: true
         filename: cusp_profiles.csv
 
   final_tail:
@@ -480,7 +471,6 @@ evaluation_tasks:
         abs_threshold: 10.0
       - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
       - _target_: spenn.evaluation.summaries.SampledRecordWriter
-        include_term_energies: true
         filename: tail_profiles.csv
 
   final_stratified_geometry:
