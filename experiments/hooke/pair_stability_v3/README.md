@@ -100,7 +100,9 @@ controls are owned by `nn.Embedding`; update and feature controls are owned by
 `nn.SpENNLayer`.
 
 The output Hooke Gaussian envelope and electron-electron cusp are common across
-all variants.
+all variants. The Hooke singlet's fixed opposite-spin cusp range is
+`model_params.cusp_opposite_range_parameter: 0.25`; it is deliberately outside
+the scan axes but may be overridden explicitly for a named ablation.
 
 ## Blinding
 

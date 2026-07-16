@@ -170,6 +170,8 @@ model_params:
   layers: 1
   mixing_implementation: vectorized
   mixing_initial_weight: 0.5
+  # Must match pair_stability.yaml so validation restores the trained model.
+  cusp_opposite_range_parameter: 0.25
 
 evaluation:
   suite: validation
@@ -733,6 +735,7 @@ model:
       - _target_: spenn.nn.HookeGaussianEnvelope
         omega: ${system.omega}
       - _target_: spenn.nn.ElectronElectronCusp
+        opposite_range_parameter: ${model_params.cusp_opposite_range_parameter}
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     channels: ${model_params.channels}
