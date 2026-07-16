@@ -81,6 +81,7 @@ def _lineage(tmp_path: Path) -> tuple[Path, Path, str]:
         (path / "artifact.txt").write_text(path.name, encoding="utf-8")
         _write_json(path / "metadata.json", {"git_commit": revision})
     _write_json(paths["grid"] / "manifest.json", {})
+    (paths["grid"] / "newline\nin-name.txt").write_text("NUL-delimited rsync input", encoding="utf-8")
     _write_json(paths["train"] / "source_grid_attempt.json", {"grid_attempt_dir": str(paths["grid"])})
     _write_json(paths["validation"] / "source_train_attempt.json", {"train_attempt_dir": str(paths["train"])})
     _write_json(paths["collect"] / "source_validation_attempts.json", [{"validation_attempt_dir": str(paths["validation"])}])
@@ -111,13 +112,28 @@ def test_sync_archives_complete_lineage_without_checkpoint_payload(tmp_path: Pat
     assert set(plan.stage_counts) == sync.REQUIRED_STAGES
     assert plan.skipped_checkpoint_dirs == 1
     assert all("checkpoints" not in entry.relative_path for entry in plan.result_files)
+    assert plan.sync_bytes > 0
     attempt = sync.write_dry_run(plan, results_root=results_root, attempt_id="sync")
     transfer = sync.execute_sync(sync_attempt_dir=attempt.directory)
 
     assert transfer["checkpoint_payload_transferred"] is False
     assert (destination / "SOURCE_REVISION").read_text().strip() == revision
+    assert (destination / sync.STUDY_RELATIVE / "results" / "00_grid" / "grid" / "newline\nin-name.txt").is_file()
     assert not (destination / sync.STUDY_RELATIVE / "results" / "06_final_train" / "final-run" / "final-train" / "checkpoints").exists()
     assert sync.verify_archive(plan=plan, archive_root=destination)["result_file_count"] == len(plan.result_files)
+    drift = sync.build_archive_plan(
+        source_root=source_root,
+        destination=tmp_path / "drift",
+        report_attempt_id="report",
+        source_revision=revision,
+        max_bytes=10_000_000,
+    )
+    source_file = source_root / drift.result_files[0].relative_path
+    source_file.write_bytes(b"x" * source_file.stat().st_size)
+    with pytest.raises(RuntimeError, match="changed content"):
+        sync.execute_sync(
+            sync_attempt_dir=sync.write_dry_run(drift, results_root=results_root, attempt_id="drift").directory
+        )
 
     too_small = sync.build_archive_plan(
         source_root=source_root,

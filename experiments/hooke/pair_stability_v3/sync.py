@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import shlex
@@ -19,7 +20,7 @@ import stat
 import subprocess
 import sys
 import tarfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -49,6 +50,9 @@ DEFAULT_MAX_BYTES = 10_000_000_000
 DEFAULT_TIMEZONE = "America/New_York"
 CHECKPOINT_DIRNAME = "checkpoints"
 PYCACHE_DIRNAME = "__pycache__"
+MAX_ATTEMPT_ID_BYTES = 64
+HASH_BUFFER_BYTES = 1024 * 1024
+FINAL_MANIFEST_RESERVE_BYTES = 1024
 SOURCE_PATHS = (
     "run.py",
     "pyproject.toml",
@@ -81,6 +85,7 @@ class PlannedFile:
 
     relative_path: str
     size_bytes: int
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,7 @@ class ArchivePlan:
     max_bytes: int
     source_bytes: int
     result_bytes: int
+    sync_bytes: int
     skipped_checkpoint_dirs: int
     stage_counts: dict[str, int]
     attempt_roots: tuple[str, ...]
@@ -103,9 +109,9 @@ class ArchivePlan:
 
     @property
     def planned_bytes(self) -> int:
-        """Return total payload plus a small durable-manifest allowance."""
+        """Return source, result, and durable sync artifact bytes."""
 
-        return self.source_bytes + self.result_bytes + 1_000_000
+        return self.source_bytes + self.result_bytes + self.sync_bytes
 
     @property
     def under_limit(self) -> bool:
@@ -135,6 +141,7 @@ class ArchivePlan:
             max_bytes=int(record["max_bytes"]),
             source_bytes=int(record["source_bytes"]),
             result_bytes=int(record["result_bytes"]),
+            sync_bytes=int(record.get("sync_bytes", 1_000_000)),
             skipped_checkpoint_dirs=int(record["skipped_checkpoint_dirs"]),
             stage_counts={str(key): int(value) for key, value in record["stage_counts"].items()},
             attempt_roots=tuple(str(value) for value in record["attempt_roots"]),
@@ -207,7 +214,7 @@ def build_archive_plan(
     if missing_stages:
         raise ValueError(f"report ancestry is incomplete; missing stages: {', '.join(missing_stages)}")
 
-    return ArchivePlan(
+    plan = ArchivePlan(
         source_root=str(source_root),
         results_relative=str(results_relative),
         destination=str(Path(destination).resolve()),
@@ -216,12 +223,14 @@ def build_archive_plan(
         max_bytes=int(max_bytes),
         source_bytes=source_bytes,
         result_bytes=sum(entry.size_bytes for entry in result_files),
+        sync_bytes=0,
         skipped_checkpoint_dirs=skipped_checkpoint_dirs,
         stage_counts=stage_counts,
         attempt_roots=tuple(sorted(_relative_to_source(path, source_root) for path in attempt_roots)),
         support_roots=tuple(sorted(_relative_to_source(path, source_root) for path in support_roots)),
         result_files=result_files,
     )
+    return _with_sync_budget(plan)
 
 
 def write_dry_run(plan: ArchivePlan, *, results_root: str | Path, attempt_id: str | None = None) -> SyncAttempt:
@@ -229,6 +238,13 @@ def write_dry_run(plan: ArchivePlan, *, results_root: str | Path, attempt_id: st
 
     results_root = Path(results_root).resolve()
     attempt_id = attempt_id or _new_attempt_id()
+    if len(attempt_id.encode("utf-8")) > MAX_ATTEMPT_ID_BYTES:
+        raise ValueError(f"sync attempt id exceeds {MAX_ATTEMPT_ID_BYTES} UTF-8 bytes")
+    plan = _with_sync_budget(plan)
+    actual_sync_bytes = _sync_artifact_bytes(plan, attempt_id)
+    if actual_sync_bytes > plan.sync_bytes:
+        raise ValueError("sync artifact payload exceeds the plan's pre-transfer byte budget")
+
     sync_root = stage_dir(results_root, STAGE_SYNC)
     directory = sync_root / attempt_id
     if directory.exists():
@@ -240,23 +256,8 @@ def write_dry_run(plan: ArchivePlan, *, results_root: str | Path, attempt_id: st
     files_path = directory / "result_files.txt"
     dry_run_path = directory / "dry_run.json"
     write_json(plan_path, plan.to_record())
-    files_path.write_text("".join(f"{entry.relative_path}\n" for entry in plan.result_files), encoding="utf-8")
-    dry_record = {
-        "stage": STAGE_SYNC,
-        "attempt_id": attempt_id,
-        "report_attempt_id": plan.report_attempt_id,
-        "source_revision": plan.source_revision,
-        "destination": plan.destination,
-        "source_bytes": plan.source_bytes,
-        "result_bytes": plan.result_bytes,
-        "planned_bytes": plan.planned_bytes,
-        "max_bytes": plan.max_bytes,
-        "under_limit": plan.under_limit,
-        "result_file_count": len(plan.result_files),
-        "skipped_checkpoint_dirs": plan.skipped_checkpoint_dirs,
-        "stage_counts": plan.stage_counts,
-    }
-    write_json(dry_run_path, dry_record)
+    files_path.write_bytes(_file_list_bytes(plan.result_files))
+    write_json(dry_run_path, _dry_run_record(plan, attempt_id))
     return SyncAttempt(directory=directory, plan_path=plan_path, files_path=files_path, dry_run_path=dry_run_path)
 
 
@@ -341,6 +342,7 @@ def execute_sync(*, sync_attempt_dir: str | Path) -> dict[str, Any]:
         _copy_result_files(plan, sync_attempt.files_path, partial)
         verification = verify_archive(plan=plan, archive_root=partial)
         write_json(sync_dir / "archive_manifest.json", verification)
+        verification = verify_archive(plan=plan, archive_root=partial)
         partial.rename(destination)
     except BaseException:
         write_json(
@@ -369,16 +371,22 @@ def verify_archive(*, plan: ArchivePlan, archive_root: str | Path) -> dict[str, 
         raise NotADirectoryError(f"archive does not exist: {archive_root}")
     missing: list[str] = []
     size_mismatches: list[str] = []
+    content_mismatches: list[str] = []
+    hash_buffer = bytearray(HASH_BUFFER_BYTES)
     for entry in plan.result_files:
         path = archive_root / entry.relative_path
         if not path.is_file() or path.is_symlink():
             missing.append(entry.relative_path)
         elif path.stat().st_size != entry.size_bytes:
             size_mismatches.append(entry.relative_path)
+        elif entry.sha256 and _sha256(path, hash_buffer) != entry.sha256:
+            content_mismatches.append(entry.relative_path)
     if missing:
         raise RuntimeError(f"archive is missing {len(missing)} planned files; first: {missing[:3]}")
     if size_mismatches:
         raise RuntimeError(f"archive has {len(size_mismatches)} size mismatches; first: {size_mismatches[:3]}")
+    if content_mismatches:
+        raise RuntimeError(f"archive has {len(content_mismatches)} content mismatches; first: {content_mismatches[:3]}")
 
     checkpoint_dirs: list[str] = []
     symlinks: list[str] = []
@@ -467,10 +475,11 @@ def _record_path(record: dict[str, Any], key: str, results_root: Path) -> Path:
 
 
 def _collect_result_files(*, roots: Iterable[Path], source_root: Path) -> tuple[tuple[PlannedFile, ...], int]:
-    """Collect regular files under roots while excluding checkpoint payloads."""
+    """Collect content-addressed regular files while excluding checkpoint payloads."""
 
-    files: dict[str, int] = {}
+    files: dict[str, PlannedFile] = {}
     skipped_checkpoint_dirs = 0
+    hash_buffer = bytearray(HASH_BUFFER_BYTES)
     for root in roots:
         for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
             current = Path(directory)
@@ -489,12 +498,17 @@ def _collect_result_files(*, roots: Iterable[Path], source_root: Path) -> tuple[
                 path = current / filename
                 if path.is_symlink() or path.suffix == ".pyc":
                     continue
-                mode = path.lstat().st_mode
-                if not stat.S_ISREG(mode):
+                if not stat.S_ISREG(path.lstat().st_mode):
                     continue
                 relative = _relative_to_source(path, source_root)
-                files[relative] = path.stat().st_size
-    return tuple(PlannedFile(relative_path=path, size_bytes=size) for path, size in sorted(files.items())), skipped_checkpoint_dirs
+                if relative in files:
+                    continue
+                size_bytes = path.stat().st_size
+                sha256 = _sha256(path, hash_buffer)
+                if path.stat().st_size != size_bytes:
+                    raise RuntimeError(f"source file changed while hashing: {path}")
+                files[relative] = PlannedFile(relative_path=relative, size_bytes=size_bytes, sha256=sha256)
+    return tuple(files[path] for path in sorted(files)), skipped_checkpoint_dirs
 
 
 def _infer_source_revision(roots: Iterable[Path]) -> str:
@@ -575,6 +589,7 @@ def _copy_result_files(plan: ArchivePlan, file_list: Path, destination: Path) ->
             "rsync",
             "-a",
             "--no-links",
+            "--from0",
             "--files-from",
             str(file_list),
             f"{Path(plan.source_root)}/",
@@ -591,12 +606,15 @@ def _assert_plan_is_current(plan: ArchivePlan) -> None:
         raise ValueError(f"planned payload {plan.planned_bytes} exceeds {plan.max_bytes}")
     source_root = Path(plan.source_root)
     _require_git_revision(source_root, plan.source_revision)
+    hash_buffer = bytearray(HASH_BUFFER_BYTES)
     for entry in plan.result_files:
         path = source_root / entry.relative_path
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"planned source file is unavailable: {path}")
         if path.stat().st_size != entry.size_bytes:
             raise RuntimeError(f"planned source file changed size: {path}")
+        if entry.sha256 and _sha256(path, hash_buffer) != entry.sha256:
+            raise RuntimeError(f"planned source file changed content: {path}")
 
 
 def _load_sync_attempt(directory: str | Path) -> SyncAttempt:
@@ -665,6 +683,76 @@ def _tree_bytes(root: Path) -> int:
             if not path.is_symlink() and path.is_file():
                 total += path.stat().st_size
     return total
+
+def _with_sync_budget(plan: ArchivePlan) -> ArchivePlan:
+    """Return a plan with a stable upper bound for durable sync artifacts."""
+
+    placeholder_attempt_id = "x" * MAX_ATTEMPT_ID_BYTES
+    for _ in range(4):
+        sync_bytes = _sync_artifact_bytes(plan, placeholder_attempt_id)
+        if sync_bytes == plan.sync_bytes:
+            return plan
+        plan = replace(plan, sync_bytes=sync_bytes)
+    raise RuntimeError("sync artifact byte budget did not converge")
+
+
+def _sync_artifact_bytes(plan: ArchivePlan, attempt_id: str) -> int:
+    """Return the durable plan, file-list, dry-run, and manifest byte budget."""
+
+    return (
+        len(_json_bytes(plan.to_record()))
+        + len(_file_list_bytes(plan.result_files))
+        + len(_json_bytes(_dry_run_record(plan, attempt_id)))
+        + FINAL_MANIFEST_RESERVE_BYTES
+    )
+
+
+def _file_list_bytes(files: Iterable[PlannedFile]) -> bytes:
+    """Encode rsync-safe relative paths with NUL delimiters."""
+
+    payload = bytearray()
+    for entry in files:
+        payload.extend(entry.relative_path.encode("utf-8"))
+        payload.append(0)
+    return bytes(payload)
+
+
+def _json_bytes(payload: Any) -> bytes:
+    """Match the on-disk encoding emitted by :func:`write_json`."""
+
+    return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8")
+
+
+def _dry_run_record(plan: ArchivePlan, attempt_id: str) -> dict[str, Any]:
+    """Return the durable no-copy accounting record for one sync attempt."""
+
+    return {
+        "stage": STAGE_SYNC,
+        "attempt_id": attempt_id,
+        "report_attempt_id": plan.report_attempt_id,
+        "source_revision": plan.source_revision,
+        "destination": plan.destination,
+        "source_bytes": plan.source_bytes,
+        "result_bytes": plan.result_bytes,
+        "sync_bytes": plan.sync_bytes,
+        "planned_bytes": plan.planned_bytes,
+        "max_bytes": plan.max_bytes,
+        "under_limit": plan.under_limit,
+        "result_file_count": len(plan.result_files),
+        "skipped_checkpoint_dirs": plan.skipped_checkpoint_dirs,
+        "stage_counts": plan.stage_counts,
+    }
+
+
+def _sha256(path: Path, buffer: bytearray) -> str:
+    """Return one regular file's SHA-256 using a caller-owned buffer."""
+
+    digest = hashlib.sha256()
+    view = memoryview(buffer)
+    with path.open("rb", buffering=0) as handle:
+        while count := handle.readinto(view):
+            digest.update(view[:count])
+    return digest.hexdigest()
 
 
 def _new_attempt_id() -> str:
