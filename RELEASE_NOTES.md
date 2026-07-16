@@ -1,5 +1,32 @@
 # Release Notes
 
+## v0.2.3 - Pair Stability v3 diagnostics and durable execution
+
+### Added
+
+- Sampled evaluation records can retain named local energies for individual
+  Hamiltonian terms.
+- Pair Stability v3 can archive a bounded, checkpoint-free study snapshot from
+  final-report provenance.
+
+### Changed
+
+- Hooke singlet opposite-spin cusp range is fixed at `b=0.25` in the training
+  and validation model configurations, with an explicit named override for
+  controlled ablations.
+- Stack workers retain their source checkout paths, and concurrent Submitit
+  chunks serialize `uv sync` outside the checkout to preserve clean run
+  provenance.
+
+### Validation
+
+- `uv lock --check`
+- Package and runtime metadata agree on `0.2.3`.
+- Focused local-energy record tests: `10 passed`.
+- Pair Stability v3 GPU smoke stack controller `31658932` completed scan train
+  and validation (`64/64` each) plus final train and evaluation (`8/8` each).
+
+
 ## v0.2.2 - Pair Stability v3 operations and checkpointing
 
 ### Added
