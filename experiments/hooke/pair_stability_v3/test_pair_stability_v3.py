@@ -955,6 +955,19 @@ def test_v3_config_choices_cover_grid_axes() -> None:
             assert OmegaConf.select(resolved, "model.layers.0.irrep_activation.gate._target_")
 
 
+@pytest.mark.parametrize("config_name", ["pair_stability.yaml", "pair_validation.yaml"])
+def test_v3_configs_expose_opposite_spin_cusp_range_override(config_name: str) -> None:
+    config_path = CONFIGS / config_name
+    cusp_path = "model.envelope.envelopes.1"
+
+    default = _config_with_overrides(config_path, [])
+    assert OmegaConf.select(default, f"{cusp_path}._target_") == "spenn.nn.ElectronElectronCusp"
+    assert OmegaConf.select(default, f"{cusp_path}.opposite_range_parameter") == pytest.approx(0.25)
+    assert OmegaConf.select(default, f"{cusp_path}.trainable_range", default=False) is False
+
+    overridden = _config_with_overrides(config_path, ["model_params.cusp_opposite_range_parameter=0.5"])
+    assert OmegaConf.select(overridden, f"{cusp_path}.opposite_range_parameter") == pytest.approx(0.5)
+
 def test_v3_pilot_grid_scans_training_budget_with_fixed_channel_and_activation(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     code = plan.main(["--grid", str(PILOT_GRID), "--results-root", str(results_root), "--attempt-id", "PILOT"])
