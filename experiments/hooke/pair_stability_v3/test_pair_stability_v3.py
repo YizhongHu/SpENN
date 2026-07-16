@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import types
@@ -163,6 +164,43 @@ def test_v3_submit_stack_script_is_valid_and_complete() -> None:
     assert positions == sorted(positions)
 
 
+def test_v3_submit_stack_preserves_worker_source_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Slurm worker must use the source checkout, not Slurm's copied script."""
+
+    script = (STUDY_DIR / "submit_stack.sh").resolve()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture = tmp_path / "sbatch-argv.txt"
+    fake_sbatch = fake_bin / "sbatch"
+    fake_sbatch.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$SBATCH_CAPTURE\"\n"
+        "printf '12345\\n'\n",
+    )
+    fake_sbatch.chmod(0o755)
+    fake_jq = fake_bin / "jq"
+    fake_jq.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_jq.chmod(0o755)
+    results_root = tmp_path / "results"
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    monkeypatch.setenv("SBATCH_CAPTURE", str(capture))
+    monkeypatch.setenv("RESULTS_ROOT", str(results_root))
+    monkeypatch.setenv("STACK_ID", "stack-test")
+
+    result = subprocess.run([str(script), "smoke"], check=False, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    arguments = capture.read_text().splitlines()
+    assert arguments[-7:] == [
+        str(script),
+        "--worker",
+        "smoke",
+        "stack-test",
+        str(results_root.resolve()),
+        str(STUDY_DIR.resolve()),
+        str(ROOT.resolve()),
+    ]
+
 def test_v3_submit_stack_usage_does_not_submit() -> None:
     script = STUDY_DIR / "submit_stack.sh"
     result = subprocess.run([str(script)], check=False, capture_output=True, text=True)
@@ -294,10 +332,12 @@ def test_v2_mixed_device_prepares_cpu_and_cuda_commands() -> None:
     assert "export UV_PROJECT_ENVIRONMENT=.venv" in cpu_script
     assert "export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-1}}" in cpu_script
     assert "uv sync --extra cpu" in cpu_script
+    assert f"flock {ROOT.parent / f'.{ROOT.name}.uv-sync.lock'} uv sync --extra cpu" in cpu_script
     assert "runtime.device=cpu" in cpu_script
     assert "export UV_PROJECT_ENVIRONMENT=.venv-gpu" in cuda_script
     assert "OMP_NUM_THREADS" not in cuda_script
     assert "uv sync --extra cu126" in cuda_script
+    assert f"flock {ROOT.parent / f'.{ROOT.name}.uv-sync.lock'} uv sync --extra cu126" in cuda_script
     assert "runtime.device=cuda" in cuda_script
 
     cpu_slurm = launch.slurm_parameters(args, profile="cpu")

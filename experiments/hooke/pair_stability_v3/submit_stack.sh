@@ -50,7 +50,7 @@ if [[ "${1:-}" != "--worker" ]]; then
     --mem-per-cpu=8G \
     --chdir="$REPO" \
     --output="$STACK_DIR/controller-%j.log" \
-    "$SCRIPT" --worker "$MODE" "$STACK_ID" "$RESULTS_ROOT" 2>&1)
+    "$SCRIPT" --worker "$MODE" "$STACK_ID" "$RESULTS_ROOT" "$STUDY" "$REPO" 2>&1)
   RC=$?
   set -e
   printf '%s\n' "$OUTPUT" | tee "$STACK_DIR/submission.log"
@@ -63,10 +63,13 @@ if [[ "${1:-}" != "--worker" ]]; then
   exit 0
 fi
 
-[[ $# == 4 ]] || { echo "invalid worker invocation" >&2; exit 2; }
+[[ $# == 6 ]] || { echo "invalid worker invocation" >&2; exit 2; }
 MODE="$2"
 STACK_ID="$3"
 RESULTS_ROOT="$(realpath -m "$4")"
+STUDY="$(realpath "$5")"
+REPO="$(realpath "$6")"
+[[ -d "$STUDY" && -d "$REPO" ]] || { echo "invalid worker source paths" >&2; exit 2; }
 STACK_DIR="$RESULTS_ROOT/stack/$STACK_ID"
 mkdir -p "$STACK_DIR"
 exec > >(tee -a "$STACK_DIR/stack.log") 2>&1
