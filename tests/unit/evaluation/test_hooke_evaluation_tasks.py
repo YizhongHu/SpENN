@@ -212,7 +212,7 @@ def test_stratified_geometry_rejects_flat_bounds() -> None:
         )
 
 
-def test_sampled_record_writer_includes_scalar_generator_metadata(tmp_path: Path) -> None:
+def test_sampled_record_writer_includes_metadata_and_requested_term_energies(tmp_path: Path) -> None:
     context = _context(tmp_path)
     context = EvaluationContext(
         namespace=context.namespace,
@@ -238,7 +238,11 @@ def test_sampled_record_writer_includes_scalar_generator_metadata(tmp_path: Path
         local_energy=LocalEnergyValues(
             local_energy=local_energy,
             finite_mask=torch.isfinite(local_energy),
-            term_energies=None,
+            term_energies={
+                "kinetic": torch.tensor([0.5, 0.6], dtype=torch.float64),
+                "harmonic_trap": torch.tensor([0.75, 0.7], dtype=torch.float64),
+                "electron_electron": torch.tensor([0.75, 0.7], dtype=torch.float64),
+            },
         ),
         wavefunction=WavefunctionValues(
             logabs=torch.zeros(2, dtype=torch.float64),
@@ -246,7 +250,7 @@ def test_sampled_record_writer_includes_scalar_generator_metadata(tmp_path: Path
         ),
     )
 
-    result = SampledRecordWriter(max_samples=2).summarize(
+    result = SampledRecordWriter(max_samples=2, include_term_energies=True).summarize(
         bundle=bundle,
         context=context,
         namespace="validation/tail",
@@ -257,6 +261,22 @@ def test_sampled_record_writer_includes_scalar_generator_metadata(tmp_path: Path
     assert float(rows[0]["radius"]) == pytest.approx(1.0)
     assert rows[0]["direction_id"] == "0"
     assert float(rows[0]["pair_distance"]) == pytest.approx(0.5)
+    assert float(rows[0]["term/kinetic"]) == pytest.approx(0.5)
+    assert float(rows[0]["term/harmonic_trap"]) == pytest.approx(0.75)
+    assert float(rows[0]["term/electron_electron"]) == pytest.approx(0.75)
+
+    default_result = SampledRecordWriter(
+        max_samples=2,
+        filename="without_term_energies.csv",
+    ).summarize(
+        bundle=bundle,
+        context=context,
+        namespace="validation/tail",
+    )
+    default_rows = list(
+        csv.DictReader(default_result.artifacts[0].path.read_text(encoding="utf-8").splitlines())
+    )
+    assert not any(column.startswith("term/") for column in default_rows[0])
 
 
 def test_old_hooke_probe_names_are_not_public() -> None:

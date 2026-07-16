@@ -16,7 +16,19 @@ from spenn.evaluation.results import ArtifactRecord, SummaryResult
 
 
 class SampledRecordWriter:
-    """Write a bounded per-sample local-energy table."""
+    """Write a bounded per-sample local-energy table.
+
+    Parameters
+    ----------
+    enabled : bool, optional
+        Whether to emit records.
+    max_samples : int, optional
+        Maximum number of flattened samples to write.
+    include_term_energies : bool, optional
+        Include one ``term/<name>`` column per returned Hamiltonian term.
+    filename : str, optional
+        File name relative to the evaluation task artifact directory.
+    """
 
     name = "sampled_records"
     required_fields = frozenset({"local_energy", "wavefunction"})
@@ -26,10 +38,12 @@ class SampledRecordWriter:
         *,
         enabled: bool = True,
         max_samples: int = 100000,
+        include_term_energies: bool = False,
         filename: str = "sampled_eval_table.csv",
     ) -> None:
         self.enabled = bool(enabled)
         self.max_samples = int(max_samples)
+        self.include_term_energies = bool(include_term_energies)
         self.filename = str(filename)
 
     def summarize(
@@ -53,11 +67,23 @@ class SampledRecordWriter:
         n_keep = min(n_total, max(0, self.max_samples))
         indices = list(range(n_keep))
         base_fields = ["sample_index", "local_energy", "logabs", "sign", "finite"]
+        term_columns: dict[str, torch.Tensor] = {}
+        if self.include_term_energies:
+            terms = local.term_energies
+            if terms is None:
+                raise ValueError("SampledRecordWriter(include_term_energies=True) requires term_energies")
+            for name in sorted(terms):
+                values = terms[name].detach().reshape(-1)
+                if values.numel() != n_total:
+                    raise ValueError(
+                        f"term energy {name!r} has {values.numel()} values, expected {n_total}"
+                    )
+                term_columns[f"term/{name}"] = values
         metadata_columns = _metadata_columns(
             bundle.generated.metadata,
             n_total=n_total,
             indices=indices,
-            reserved=set(base_fields),
+            reserved={*base_fields, *term_columns},
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8", newline="") as handle:
@@ -67,6 +93,7 @@ class SampledRecordWriter:
                     "sample_index",
                     *metadata_columns,
                     "local_energy",
+                    *term_columns,
                     "logabs",
                     "sign",
                     "finite",
@@ -83,6 +110,8 @@ class SampledRecordWriter:
                     "sign": _float_or_text(wavefunction.sign.detach().reshape(-1)[index]),
                     "finite": bool(torch.isfinite(value).item()),
                 }
+                for key, values in term_columns.items():
+                    row[key] = _float_or_text(values[index])
                 for key, values in metadata_columns.items():
                     row[key] = values[index]
                 writer.writerow(row)
