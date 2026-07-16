@@ -465,3 +465,31 @@ STACK_CONTROLLER_PARTITION=kozinsky \
 STACK_CONTROLLER_TIME=7-00:00:00 \
 $STUDY/submit_stack.sh full
 ```
+
+## Archive a completed V3 lineage
+
+`sync.py` is intentionally a study-local archival procedure. It traces one
+`09_final_report` lineage through all ten stages, writes a durable `10_sync`
+dry run, and refuses a transfer above its hard byte limit. Checkpoint
+directories are excluded; raw output files, stage plans, chunk status, and
+Slurm logs selected by explicit provenance are retained.
+
+Plan without copying:
+
+```bash
+uv run --extra cpu python $STUDY/sync.py plan \
+  --source-root /path/to/historical/SpENN \
+  --destination /path/to/archive/pair_stability_v3 \
+  --report-attempt-id <09_final_report_attempt>
+```
+
+The command prints the `10_sync` attempt directory and byte budget. Submit
+only an under-limit plan, then verify the immutable archive:
+
+```bash
+uv run --extra cpu python $STUDY/sync.py submit \
+  --sync-attempt /path/to/results/10_sync/<attempt>
+
+uv run --extra cpu python $STUDY/sync.py verify \
+  --sync-attempt /path/to/results/10_sync/<attempt>
+```
