@@ -164,6 +164,23 @@ trailing smoother for future timing diagnosis.
 5. Plot raw training energy with sampling uncertainty beside any smoothed
    curve, and label any smoother as causal or centered.
 
+## Archived lineage
+
+The completed V3.1 lineage was **copied, not moved** from scratch to:
+
+```text
+/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/spenn-studies/hooke/pair_stability_v3_1
+```
+
+Archive plan `10_sync/20260719T153016-0400` selected 43,148 result files
+(6,809,683,058 planned bytes) from source revision
+`c13e070baad7b1db65353a87b8cb0e102755d3fb`. Slurm job `33159786` completed
+successfully. The immutable archive was independently verified at
+6,809,682,451 bytes, below the 10,000,000,000-byte limit; it contains every
+required stage, no checkpoint payloads (2,736 checkpoint directories were
+excluded), and no symlinks. The original scratch lineage remains at
+`/n/netscratch/kozinsky_lab/Lab/rhu/SpENN/experiments/hooke/pair_stability_v3/results/`.
+
 ## Verification
 
 - `uv run --extra cpu pytest -q experiments/hooke/pair_stability_v3/test_pair_stability_v3.py`
