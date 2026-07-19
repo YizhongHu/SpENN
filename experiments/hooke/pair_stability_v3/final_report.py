@@ -1644,7 +1644,7 @@ def _report_markdown(report: dict[str, Any], tables: dict[str, list[dict[str, An
     ]
     if architecture:
         lines.extend([f"| {row_key} | {col_key} | winner_kind | n_success/n_expected | energy_error_median | local_energy_var_median |", "|---|---|---|---:|---:|---:|"])
-        for row in architecture[:20]:
+        for row in architecture:
             lines.append(
                 f"| {_row_axis_value(row, row_key, 'basis_class')} | {_row_axis_value(row, col_key, 'normalization')} | {row.get('winner_kind', '')} | "
                 f"{row.get('n_success', '')}/{row.get('n_expected', '')} | {row.get('energy_error_median', '')} | {row.get('local_energy_var_median', '')} |"
