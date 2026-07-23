@@ -18,6 +18,7 @@ from spenn.checkpoint import (
     save_checkpoint,
     stable_config_hash,
 )
+from spenn.nn import HookeOrbitalBasis
 
 
 def _cfg(*, model_out: int = 2):
@@ -168,6 +169,78 @@ def test_restore_rejects_model_config_hash_mismatch(tmp_path: Path) -> None:
             model=torch.nn.Linear(3, 4).double(),
             context=_context(_cfg(model_out=4)),
         )
+
+
+def test_restore_rejects_equal_width_legacy_and_product_basis_semantics(tmp_path: Path) -> None:
+    """Equal parameter shapes cannot permit an axiswise/product checkpoint swap."""
+
+    legacy_basis_kwargs = {
+        "omega": 0.5,
+        "spatial_dim": 2,
+        "max_shell": 2,
+        "include_gaussian_factor": True,
+        "include_spin": False,
+    }
+    product_basis_kwargs = {
+        "omega": 0.5,
+        "spatial_dim": 2,
+        "basis_semantics": "product_v2",
+        "truncation": "total_shell",
+        "max_total_shell": 2,
+        "include_gaussian_factor": True,
+        "include_spin": False,
+    }
+    legacy_basis_config = {"_target_": "spenn.nn.HookeOrbitalBasis", **legacy_basis_kwargs}
+    product_basis_config = {"_target_": "spenn.nn.HookeOrbitalBasis", **product_basis_kwargs}
+    legacy_basis = HookeOrbitalBasis(**legacy_basis_kwargs)
+    product_basis = HookeOrbitalBasis(**product_basis_kwargs)
+
+    # d * (S + 1) == binomial(S + d, d) == 6 here, but channel meanings differ.
+    assert legacy_basis.out_features == product_basis.out_features == 6
+    legacy_config = OmegaConf.merge(
+        _cfg(),
+        {"model": {"in_features": legacy_basis.out_features, "basis": legacy_basis_config}},
+    )
+    product_config = OmegaConf.merge(
+        _cfg(),
+        {"model": {"in_features": product_basis.out_features, "basis": product_basis_config}},
+    )
+    assert "max_shell" not in product_config.model.basis
+    trained = torch.nn.Linear(legacy_basis.out_features, 2).double()
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        step=1,
+        model=trained,
+        context=_context(legacy_config),
+        save_optimizer=False,
+        save_trainer=False,
+        save_sampler=False,
+        save_rng=False,
+    )
+
+    same_semantics = torch.nn.Linear(legacy_basis.out_features, 2).double()
+    restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "model_only", "strict": True},
+        model=same_semantics,
+        context=_context(legacy_config),
+    )
+    assert torch.equal(same_semantics.weight, trained.weight)
+
+    different_semantics = torch.nn.Linear(product_basis.out_features, 2).double()
+    before_restore = {name: value.detach().clone() for name, value in different_semantics.state_dict().items()}
+    assert {name: value.shape for name, value in trained.state_dict().items()} == {
+        name: value.shape for name, value in different_semantics.state_dict().items()
+    }
+
+    with pytest.raises(ValueError, match="model_config"):
+        restore_checkpoint(
+            load={"path": str(checkpoint_dir), "mode": "model_only", "strict": True},
+            model=different_semantics,
+            context=_context(product_config),
+        )
+
+    for name, value in different_semantics.state_dict().items():
+        assert torch.equal(value, before_restore[name])
 
 
 def test_model_only_does_not_require_train_resume_files(tmp_path: Path) -> None:
