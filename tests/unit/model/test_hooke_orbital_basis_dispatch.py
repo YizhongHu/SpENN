@@ -190,6 +190,37 @@ def test_product_v2_exposes_canonical_immutable_multi_index_order(
     assert basis.out_features == len(expected_indices) + 1
 
 
+@pytest.mark.parametrize(
+    ("truncation", "bound"),
+    [("total_shell", 2), ("cartesian_box", 3)],
+)
+def test_product_v2_one_dimension_reduces_to_hermite_sequence(
+    truncation: str,
+    bound: int,
+) -> None:
+    """One-dimensional product modes agree with the independent Hermite oracle."""
+
+    positions = torch.tensor([[[-0.4], [0.3], [1.2]]], dtype=torch.float64)
+    expected_indices = ((0,), (1,), (2,))
+    basis = _product_basis(
+        spatial_dim=1,
+        truncation=truncation,
+        bound=bound,
+        include_gaussian_factor=False,
+    )
+
+    assert basis.multi_indices == expected_indices
+    torch.testing.assert_close(
+        basis(ElectronBatch(positions=positions)).one_body,
+        _product_reference(
+            positions,
+            omega=0.5,
+            multi_indices=expected_indices,
+            include_gaussian_factor=False,
+        ),
+    )
+
+
 def test_product_v2_total_shell_matches_independent_product_oracle_and_metadata() -> None:
     """V2 channels are true multidimensional products, including mixed terms."""
 

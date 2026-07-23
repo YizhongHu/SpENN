@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.equivariant_state import JsonScalar, compare_tensor_blocks
@@ -32,6 +33,14 @@ from spenn.dependencies import require_torch
 from spenn.equivariance import EquivariantMap
 
 torch = require_torch(feature="SpENN basis modules")
+
+
+HookeBasisSemantics = Literal["axiswise_v1", "product_v2"]
+HookeProductTruncation = Literal["total_shell", "cartesian_box"]
+
+# Changing this order changes the meaning of every product-basis channel. Keep
+# the version in both the implementation and feature metadata explicit.
+_MULTI_INDEX_ORDER_V1 = "shell-major-coordinate-priority-v1"
 
 
 @dataclass(frozen=True)
@@ -146,7 +155,14 @@ class ElectronBasis(EquivariantMap):
         spins = batch.spins.unsqueeze(-1).to(device=coordinate_features.device, dtype=coordinate_features.dtype)
         return torch.cat([coordinate_features, spins], dim=-1)
 
-    def _features(self, coordinate_features: torch.Tensor, batch: ElectronBatch, *, name: str) -> ElectronBasisFeatures:
+    def _features(
+        self,
+        coordinate_features: torch.Tensor,
+        batch: ElectronBatch,
+        *,
+        name: str,
+        provenance: Mapping[str, JsonScalar] | None = None,
+    ) -> ElectronBasisFeatures:
         """Assemble the typed features and record provenance metadata."""
 
         one_body = self._one_body(coordinate_features, batch)
@@ -156,6 +172,8 @@ class ElectronBasis(EquivariantMap):
             "include_spin": self.include_spin,
             "out_features": self.out_features,
         }
+        if provenance is not None:
+            metadata.update(provenance)
         features = ElectronBasisFeatures(one_body=one_body, metadata=metadata)
         self.trace("features", features)
         return features
@@ -267,30 +285,40 @@ class HookeHermiteBasis(ElectronBasis):
 
 
 class HookeOrbitalBasis(ElectronBasis):
-    """Hooke / quantum-harmonic-oscillator orbital-shaped features.
+    """Versioned Hooke / harmonic-oscillator one-body basis.
 
-    For each electron and each spatial component ``x`` the basis evaluates
-    ``H_n(xi) * g(xi)`` for ``n = 0, ..., max_shell`` where ``xi = sqrt(omega) x``
-    and ``g(xi) = exp(-xi^2 / 2)`` when ``include_gaussian_factor`` is set. With
-    the factor enabled these are the 1D oscillator eigenfunction shapes.
+    ``axiswise_v1`` is the historical coordinatewise feature map. It is kept
+    only to reproduce existing configurations and checkpoints, and will be
+    removed at the next incompatible version bump. An omitted
+    ``basis_semantics`` selects this legacy contract, so old configurations
+    retain their exact output ordering and Gaussian default.
 
-    Even though this basis already carries oscillator-decay structure, the
-    pair-stability scan still applies the output Gaussian envelope to every main
-    variant so the asymptotic output prior is consistent across architecture
-    choices. This may be mildly double-normalized for orbital inputs, but it is
-    intentional for a common-envelope comparison.
+    ``product_v2`` is the multidimensional orbital basis. Each spatial channel
+    has a configured multi-index ``n`` and evaluates
+    ``prod_k H_(n_k)(sqrt(omega) * x_k)``. Its truncation and Gaussian choice
+    are explicit so channel meanings cannot be inferred from a shared width.
 
     Parameters
     ----------
     omega : float
-        Oscillator frequency setting the scaled coordinate ``xi = sqrt(omega) x``.
-    max_shell : int
-        Highest oscillator shell index. ``max_shell + 1`` functions are produced
-        per spatial component.
-    include_gaussian_factor : bool, optional
-        If ``True``, multiply each polynomial by ``exp(-xi^2 / 2)``.
+        Oscillator frequency setting ``xi = sqrt(omega) * x``.
     spatial_dim : int
         Coordinate dimension of each electron.
+    basis_semantics : {"axiswise_v1", "product_v2"} or None, optional
+        Versioned channel contract. ``None`` selects legacy ``axiswise_v1``.
+    max_shell : int or None, optional
+        Legacy highest per-coordinate Hermite order. Valid only for
+        ``axiswise_v1`` and required by that contract.
+    truncation : {"total_shell", "cartesian_box"} or None, optional
+        Product-v2 multi-index admission rule.
+    max_total_shell : int or None, optional
+        Product-v2 total-shell bound. Valid only with ``total_shell``.
+    box_size : int or None, optional
+        Product-v2 number of admitted orders per coordinate. Valid only with
+        ``cartesian_box``.
+    include_gaussian_factor : bool or None, optional
+        Multiply channels by their oscillator Gaussian. Legacy V1 defaults to
+        ``True`` for compatibility; V2 requires this choice explicitly.
     include_spin : bool, optional
         If ``True``, append spin as a final one-body channel.
     **kwargs : object
@@ -301,44 +329,198 @@ class HookeOrbitalBasis(ElectronBasis):
         self,
         *,
         omega: float,
-        max_shell: int,
-        include_gaussian_factor: bool = True,
         spatial_dim: int,
+        basis_semantics: str | None = None,
+        max_shell: int | None = None,
+        truncation: str | None = None,
+        max_total_shell: int | None = None,
+        box_size: int | None = None,
+        include_gaussian_factor: bool | None = None,
         include_spin: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(spatial_dim=spatial_dim, include_spin=include_spin, **kwargs)
         if omega <= 0.0:
             raise ValueError(f"omega must be positive, got {omega}")
-        if max_shell < 0:
-            raise ValueError(f"max_shell must be nonnegative, got {max_shell}")
         self.omega = float(omega)
-        self.max_shell = int(max_shell)
-        self.include_gaussian_factor = bool(include_gaussian_factor)
         # xi = sqrt(omega) * x, i.e. an oscillator length of 1 / sqrt(omega).
         self.length_scale = self.omega ** -0.5
+        self._multi_indices: tuple[tuple[int, ...], ...] = ()
+        self._product_max_order: int | None = None
+        self._provenance: Mapping[str, JsonScalar] = {}
+
+        if basis_semantics is None or basis_semantics == "axiswise_v1":
+            self._initialize_axiswise_v1(
+                explicit_semantics=basis_semantics is not None,
+                max_shell=max_shell,
+                truncation=truncation,
+                max_total_shell=max_total_shell,
+                box_size=box_size,
+                include_gaussian_factor=include_gaussian_factor,
+            )
+        elif basis_semantics == "product_v2":
+            self._initialize_product_v2(
+                max_shell=max_shell,
+                truncation=truncation,
+                max_total_shell=max_total_shell,
+                box_size=box_size,
+                include_gaussian_factor=include_gaussian_factor,
+            )
+        else:
+            raise ValueError(f"Unsupported Hooke basis_semantics {basis_semantics!r}")
+
+    def _initialize_axiswise_v1(
+        self,
+        *,
+        explicit_semantics: bool,
+        max_shell: int | None,
+        truncation: str | None,
+        max_total_shell: int | None,
+        box_size: int | None,
+        include_gaussian_factor: bool | None,
+    ) -> None:
+        """Initialize frozen axiswise V1 behavior for historical configs."""
+
+        if truncation is not None or max_total_shell is not None or box_size is not None:
+            version = "explicit axiswise_v1" if explicit_semantics else "unversioned legacy"
+            raise ValueError(f"{version} HookeOrbitalBasis does not accept product-v2 arguments")
+        if max_shell is None:
+            raise ValueError("axiswise_v1 HookeOrbitalBasis requires max_shell")
+        if max_shell < 0:
+            raise ValueError(f"max_shell must be nonnegative, got {max_shell}")
+
+        self.basis_semantics: HookeBasisSemantics = "axiswise_v1"
+        self.max_shell: int | None = int(max_shell)
+        self.truncation: HookeProductTruncation | None = None
+        self.max_total_shell: int | None = None
+        self.box_size: int | None = None
+        self.truncation_bound: int | None = None
+        self._product_max_order = None
+        self.include_gaussian_factor = (
+            True if include_gaussian_factor is None else bool(include_gaussian_factor)
+        )
+        self._provenance = {
+            "basis_semantics": "axiswise_v1",
+            "legacy": True,
+            "max_shell": self.max_shell,
+            "include_gaussian_factor": self.include_gaussian_factor,
+        }
+        self.register_buffer(
+            "_multi_index_tensor",
+            torch.empty((0, self.spatial_dim), dtype=torch.long),
+            persistent=False,
+        )
+
+    def _initialize_product_v2(
+        self,
+        *,
+        max_shell: int | None,
+        truncation: str | None,
+        max_total_shell: int | None,
+        box_size: int | None,
+        include_gaussian_factor: bool | None,
+    ) -> None:
+        """Initialize one explicit, multidimensional product-basis contract."""
+
+        if max_shell is not None:
+            raise ValueError("product_v2 HookeOrbitalBasis does not accept legacy max_shell")
+        if include_gaussian_factor is None:
+            raise ValueError("product_v2 HookeOrbitalBasis requires include_gaussian_factor")
+        if truncation not in {"total_shell", "cartesian_box"}:
+            raise ValueError(
+                "product_v2 HookeOrbitalBasis truncation must be 'total_shell' or 'cartesian_box'"
+            )
+
+        self.basis_semantics = "product_v2"
+        self.max_shell = None
+        self.include_gaussian_factor = bool(include_gaussian_factor)
+        self.truncation = truncation
+
+        if truncation == "total_shell":
+            if max_total_shell is None:
+                raise ValueError("total_shell product_v2 HookeOrbitalBasis requires max_total_shell")
+            if box_size is not None:
+                raise ValueError("total_shell product_v2 HookeOrbitalBasis does not accept box_size")
+            if max_total_shell < 0:
+                raise ValueError(f"max_total_shell must be nonnegative, got {max_total_shell}")
+            self.max_total_shell = int(max_total_shell)
+            self.box_size = None
+            self.truncation_bound = self.max_total_shell
+            self._multi_indices = _total_shell_multi_indices(self.spatial_dim, self.max_total_shell)
+        else:
+            if box_size is None:
+                raise ValueError("cartesian_box product_v2 HookeOrbitalBasis requires box_size")
+            if max_total_shell is not None:
+                raise ValueError("cartesian_box product_v2 HookeOrbitalBasis does not accept max_total_shell")
+            if box_size <= 0:
+                raise ValueError(f"box_size must be positive, got {box_size}")
+            self.max_total_shell = None
+            self.box_size = int(box_size)
+            self.truncation_bound = self.box_size
+            self._multi_indices = _cartesian_box_multi_indices(self.spatial_dim, self.box_size)
+
+        self._product_max_order = _max_multi_index_order(self._multi_indices)
+        self._provenance = {
+            "basis_semantics": "product_v2",
+            "truncation": self.truncation,
+            "truncation_bound": self.truncation_bound,
+            "multi_index_order": _MULTI_INDEX_ORDER_V1,
+            "include_gaussian_factor": self.include_gaussian_factor,
+        }
+        self.register_buffer(
+            "_multi_index_tensor",
+            torch.tensor(self._multi_indices, dtype=torch.long),
+            persistent=False,
+        )
+
+    @property
+    def multi_indices(self) -> tuple[tuple[int, ...], ...]:
+        """Return immutable product-v2 channel indices in canonical order.
+
+        Legacy V1 has no multidimensional channel meaning, so it returns an
+        empty tuple rather than an inferred or misleading product index set.
+        """
+
+        return self._multi_indices
 
     @property
     def coordinate_features(self) -> int:
-        """Return ``spatial_dim * (max_shell + 1)`` orbital channels."""
+        """Return configured spatial-channel width without the spin channel."""
 
-        return self.spatial_dim * (self.max_shell + 1)
+        if self.basis_semantics == "axiswise_v1":
+            if self.max_shell is None:  # Defensive invariant for static config state.
+                raise RuntimeError("axiswise_v1 HookeOrbitalBasis is missing max_shell")
+            return self.spatial_dim * (self.max_shell + 1)
+        return len(self._multi_indices)
 
     def forward_impl(self, batch: ElectronBatch) -> ElectronBasisFeatures:
-        """Return oscillator orbital-shaped features."""
+        """Return the configured legacy or product oscillator features."""
 
         if batch.spatial_dim != self.spatial_dim:
             raise ValueError(
                 f"ElectronBatch spatial_dim={batch.spatial_dim} disagrees with "
                 f"{type(self).__name__} spatial_dim={self.spatial_dim}"
             )
-        features = _hermite_features(
-            batch.positions,
-            max_order=self.max_shell,
-            length_scale=self.length_scale,
-            gaussian=self.include_gaussian_factor,
-        )
-        return self._features(features, batch, name="orbital")
+        if self.basis_semantics == "axiswise_v1":
+            if self.max_shell is None:  # Defensive invariant for static config state.
+                raise RuntimeError("axiswise_v1 HookeOrbitalBasis is missing max_shell")
+            features = _hermite_features(
+                batch.positions,
+                max_order=self.max_shell,
+                length_scale=self.length_scale,
+                gaussian=self.include_gaussian_factor,
+            )
+        else:
+            if self._product_max_order is None:
+                raise RuntimeError("product_v2 HookeOrbitalBasis is missing maximum Hermite order")
+            features = _product_hermite_features(
+                batch.positions,
+                max_order=self._product_max_order,
+                length_scale=self.length_scale,
+                multi_index_tensor=self._multi_index_tensor,
+                gaussian=self.include_gaussian_factor,
+            )
+        return self._features(features, batch, name="orbital", provenance=self._provenance)
 
 
 def _hermite_features(
@@ -382,6 +564,98 @@ def _hermite_features(
         stacked = stacked * torch.exp(-0.5 * xi.square()).unsqueeze(-1)
     sample_shape = positions.shape[:-1]
     return stacked.reshape(*sample_shape, positions.shape[-1] * (max_order + 1))
+
+
+def _total_shell_multi_indices(
+    spatial_dim: int,
+    max_total_shell: int,
+) -> tuple[tuple[int, ...], ...]:
+    """Enumerate ``|n| <= max_total_shell`` in the canonical V1 order."""
+
+    return tuple(
+        multi_index
+        for shell in range(max_total_shell + 1)
+        for multi_index in _multi_indices_in_shell(spatial_dim, shell)
+    )
+
+
+def _cartesian_box_multi_indices(
+    spatial_dim: int,
+    box_size: int,
+) -> tuple[tuple[int, ...], ...]:
+    """Enumerate ``0 <= n_k < box_size`` in the canonical V1 order."""
+
+    return tuple(
+        multi_index
+        for shell in range(spatial_dim * (box_size - 1) + 1)
+        for multi_index in _multi_indices_in_shell(spatial_dim, shell)
+        if all(order < box_size for order in multi_index)
+    )
+
+
+def _multi_indices_in_shell(spatial_dim: int, shell: int) -> tuple[tuple[int, ...], ...]:
+    """Enumerate one shell with earlier coordinates descending first.
+
+    This recursion is over configured integer dimensions at initialization, not
+    over model data. For example, its three-dimensional shell-two order is
+    ``(2, 0, 0), (1, 1, 0), (1, 0, 1), (0, 2, 0), (0, 1, 1), (0, 0, 2)``.
+    """
+
+    if spatial_dim == 1:
+        return ((shell,),)
+    return tuple(
+        (first_order, *suffix)
+        for first_order in range(shell, -1, -1)
+        for suffix in _multi_indices_in_shell(spatial_dim - 1, shell - first_order)
+    )
+
+
+def _max_multi_index_order(multi_indices: tuple[tuple[int, ...], ...]) -> int:
+    """Return highest one-dimensional Hermite order admitted by a product basis."""
+
+    if not multi_indices:
+        raise ValueError("product basis must contain at least one multi-index")
+    return max(max(multi_index) for multi_index in multi_indices)
+
+
+def _product_hermite_features(
+    positions: torch.Tensor,
+    *,
+    max_order: int,
+    length_scale: float,
+    multi_index_tensor: torch.Tensor,
+    gaussian: bool,
+) -> torch.Tensor:
+    """Evaluate configured multidimensional Hermite products.
+
+    ``multi_index_tensor`` has shape ``[channels, spatial_dim]`` and is
+    prepared at basis initialization. Evaluation remains vectorized over every
+    sample and electron axis; only the short Hermite recurrence loops over
+    configured polynomial order.
+    """
+
+    xi = positions / length_scale
+    polynomials = [torch.ones_like(xi)]
+    if max_order >= 1:
+        polynomials.append(2.0 * xi)
+    for order in range(1, max_order):
+        polynomials.append(2.0 * xi * polynomials[order] - 2.0 * order * polynomials[order - 1])
+    stacked = torch.stack(polynomials, dim=-1)  # [*sample, n, spatial_dim, max_order + 1]
+
+    indices = multi_index_tensor
+    if indices.device != positions.device:
+        # Normal module ``.to(...)`` movement keeps this allocation-free. This
+        # fallback makes a stateless basis safe when callers move only a batch.
+        indices = indices.to(device=positions.device)
+    coordinate_orders = indices.transpose(0, 1)
+    gather_indices = coordinate_orders.reshape(
+        *((1,) * (stacked.ndim - 2)),
+        *coordinate_orders.shape,
+    ).expand(*stacked.shape[:-1], coordinate_orders.shape[-1])
+    features = torch.gather(stacked, dim=-1, index=gather_indices).prod(dim=-2)
+    if gaussian:
+        features = features * torch.exp(-0.5 * xi.square().sum(dim=-1, keepdim=True))
+    return features
 
 
 __all__ = [
