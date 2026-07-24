@@ -44,9 +44,9 @@ This may include data from `outputs/`, `results/`, `reports/`, `slurm/`, etc. Th
 automatically remove these data even when requested by the user. Instead, it gives the user a list of
 things to remove, after which the user does all of this manually.
 
-## TODO.md
+## `.planning/TODO.md`
 
-The repository `TODO.md` file is a dynamically-maintained by multiple agents. Agents may add items or refine 
+The repository `.planning/TODO.md` file is dynamically maintained by multiple agents. Agents may add items or refine
 items on the todo list, but they should exercise extreme caution when deleting. If you are not sure, double
 check with the user. In general, finished tasks and stale records can be discarded, but unfinished tasks 
 and currently important information should not. 
