@@ -1,0 +1,106 @@
+{
+  "schema_version": "pair-stability-v4/legacy-source/v1",
+  "study": "pair_stability_v3",
+  "files": [
+    {
+      "path": "experiments/hooke/pair_stability_v3/plan.py",
+      "sha256": "d5d714ca03c5d5ae986d7c2c0f75b9faf308d689a07b97e731d6eb1330fa1212"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/train.py",
+      "sha256": "1c3c11707ee9d295713bc06f001d44d03bb5b123a5087f11c70fea71c905e2b6"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/validate.py",
+      "sha256": "403cb6e2cf9c93cd334d1cb2850b20f36dc93d351366873e9f63e0987ca7bc64"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/collect.py",
+      "sha256": "773034d179c1e27561e5a39cb56c150648e891109c06a654f6bc9286360d23f6"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/select_champions.py",
+      "sha256": "9528951388f81cc201b80b7a0e5b6f32a6f6aed2adb76e75003dc2598aa276c5"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/final_plan.py",
+      "sha256": "acf84917809848cc3b5aef3bd2040d54f17e9ed3bfe65ca0039b16175fb99fad"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/final_train.py",
+      "sha256": "6557101a2c5d40d670cd7bb80cbac8331ffbc0f617eff2ce86defe87123d0ff8"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/final_eval.py",
+      "sha256": "b0e65d14b7c12cd000e2cfae1d641cc7bddd567d1c36ccfe008a30df07635612"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/final_collect.py",
+      "sha256": "2025135e4c9b4c677f166ade288b9fbf122eddc3d0e8971d9bda414526f40e1d"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/final_report.py",
+      "sha256": "aacb02ba2a7d56852de94b4c987dbc93cf57c08ea03b9b10158f4ddf69e5927f"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/launch.py",
+      "sha256": "916e99ff92d8171af30f38e5eae2a09c62198ea0292a97db2b440a79338a6084"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/plot.py",
+      "sha256": "ec3ec7f7d783f970272de221bf346024e06f3a8485dd9ed533e413833b4174cb"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/stats.py",
+      "sha256": "7eab1844c82365ffa0f51bb21fafb3e7a937c27fa6709a3abf78f57668c73292"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/__init__.py",
+      "sha256": "a30fba10932c684f30b71da66a91501398ca151f1d926acb0f12b684b5d07f07"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/ancestry.py",
+      "sha256": "d06bc3c98111103590f794af382dc1c06119cc379cdd619eb7bfca5e341389c6"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/config.py",
+      "sha256": "ca6f484caa201544695eccdc47fae281d18795e1e8f52cd5d761756ae7861d06"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/io.py",
+      "sha256": "ede651c44ba77a3843cd37c91c844b66d5de1a1913520221198dac2c693f5606"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/layout.py",
+      "sha256": "c6aac0ac1de640f639e93c5670950343e966c399a545a1ddaffd009df1ac8c30"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/naming.py",
+      "sha256": "a5b59ecd8b2dbfa7913099816885e3a6b70f7a84bf4f4ea77e1e906ff8c035d3"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/overrides.py",
+      "sha256": "f48677e93570a684605c26ec78a67a764266c8391c5e63b5dbd4951ac165dbe4"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/seeds.py",
+      "sha256": "cfcbc50af901e9e2e86a98e645b0a513a113b65062bfb709140dc9a32d700e34"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/utils/time.py",
+      "sha256": "4761964f1c4d05c8f591d575666589b99010efeeab381a4b7a3a3d633299c0e5"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/configs/smoke.yaml",
+      "sha256": "ce253601967785ee686a24404356643ff1f0908d616bf4a00ee99c607d15ee21"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/configs/pair_stability.yaml",
+      "sha256": "54a29b74cb2e2fc0fd93ae0ab7140f82193d59e4946e4518f4b43258aaaeeb59"
+    },
+    {
+      "path": "experiments/hooke/pair_stability_v3/configs/pair_validation.yaml",
+      "sha256": "75fd5348a97df9dea7e12d8d9c713468f5868c50be536983b61cc7cdea200499"
+    }
+  ]
+}

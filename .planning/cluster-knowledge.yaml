@@ -1,0 +1,122 @@
+schema_version: spenn/cluster-knowledge/v1
+scope: >-
+  Operational facts and constraints observed for SpENN development and smoke
+  work. This is a refreshable knowledge record, not a scheduler configuration,
+  admission guarantee, or experiment execution profile default.
+observed_at: '2026-07-24T18:57:00-04:00'
+timezone: America/New_York
+refresh:
+  trigger: >-
+    Refresh before a new canonical smoke/full-run profile decision, after a
+    Slurm admission failure, or when partition/QoS policy may have changed.
+  live_query:
+    command: scontrol show partition <partition>
+    source_kind: live_scheduler_query
+  cautions:
+    - Scheduler state and limits are mutable.
+    - A visible UP state does not guarantee admission, allocation, or capacity.
+    - Preserve Slurm output and job logs for any actual run as run provenance.
+sources:
+  - id: fasrc-live-2026-07-24
+    kind: live_scheduler_query
+    observed_at: '2026-07-24T18:57:00-04:00'
+    commands:
+      - scontrol show partition sapphire
+      - scontrol show partition gpu_test
+      - scontrol show partition kozinsky
+    freshness: point_in_time
+  - id: user-gpu-test-cap-2026-07-24
+    kind: user_authoritative
+    observed_at: '2026-07-24T18:57:00-04:00'
+    statement: >-
+      gpu_test accepts no more than two jobs, including an array with more than
+      two tasks; treat this as a hard per-submission cap for this work.
+    freshness: until_user_updates
+  - id: agents-md-partition-list
+    kind: repository_guideline
+    observed_at: '2026-07-24T18:57:00-04:00'
+    path: AGENTS.md
+    statement: >-
+      AGENTS.md lists seas_compute, kozinsky_gpu, and seas_gpu as available
+      partition names, without current scheduler state or resource limits.
+    freshness: refresh_before_use
+partitions:
+  sapphire:
+    source: fasrc-live-2026-07-24
+    state: UP
+    max_time: '3-00:00:00'
+    role: cpu_controller
+    policy_note: >-
+      V4-0 acceptance retains Sapphire as inherited matching-profile controller
+      policy from v3. This is not a claim of technical necessity or a generic
+      full-run default.
+  gpu_test:
+    source: fasrc-live-2026-07-24
+    state: UP
+    max_time: '12:00:00'
+    qos: gpu_test
+    observed_resources: 12 nodes; 96 A100 3g.20gb GRES
+    role: acceptance_gpu_fanout
+    cap:
+      source: user-gpu-test-cap-2026-07-24
+      max_jobs_or_array_tasks_per_submission: 2
+      applies_to: every submitted gpu_test job or Submitit map_array submission
+    safe_use:
+      - Keep V4-0 screen train/eval at 64 rows with chunk size 32: ceil(64/32)=2.
+      - Keep V4-0 final train/eval at 8 rows with chunk size 8: ceil(8/8)=1.
+      - Submit one serialized fan-out stage at a time; do not evade cap by splitting stages.
+      - Use gpu_test for acceptance smoke only, never as a full-science default.
+  kozinsky:
+    source: fasrc-live-2026-07-24
+    state: UP
+    max_time: '7-00:00:00'
+    access: group_restricted
+    role: possible_cpu_partition_pending_policy
+    safe_use:
+      - Do not silently fall back from Sapphire.
+      - A human profile-policy decision must approve any canonical controller change.
+  seas_compute:
+    source: agents-md-partition-list
+    availability: declared_cpu_partition
+    state: unknown_refresh_required
+    limits: unknown_refresh_required
+    role: possible_cpu_partition_pending_policy
+    safe_use:
+      - Query Slurm before selecting it for a run profile.
+      - Do not infer a V4-0 controller or full-science default from availability.
+  kozinsky_gpu:
+    source: agents-md-partition-list
+    availability: declared_gpu_partition
+    state: unknown_refresh_required
+    limits: unknown_refresh_required
+    role: possible_gpu_partition_pending_policy
+    safe_use:
+      - Query Slurm before selecting it for a run profile.
+      - Do not infer an acceptance or full-science default from availability.
+  seas_gpu:
+    source: agents-md-partition-list
+    availability: declared_gpu_partition
+    state: unknown_refresh_required
+    limits: unknown_refresh_required
+    role: possible_gpu_partition_pending_policy
+    safe_use:
+      - Query Slurm before selecting it for a run profile.
+      - Do not infer an acceptance or full-science default from availability.
+roles:
+  controller:
+    description: >-
+      CPU orchestration submits/waits/records barriers while fan-out jobs run on
+      a separate partition. Record effective partition, walltime, CPU, memory,
+      job identity, and terminal state as run provenance.
+    v4_0_acceptance: sapphire at no more than three days
+    full_runs: >-
+      Choose and record an approved effective controller profile per run; do not
+      infer Sapphire or gpu_test defaults from this V4-0 acceptance record.
+  scientific_fanout:
+    description: >-
+      Submitit/CUDA worker arrays execute scientific tasks. Record worker
+      partition/resources and preserve barrier/dependency evidence.
+    v4_0_acceptance: gpu_test subject to user cap above
+    full_runs: >-
+      Use approved non-test CPU/GPU profiles and preserve exact execution
+      provenance; this record does not authorize a full-run partition choice.
