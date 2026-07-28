@@ -64,6 +64,14 @@ ATTEMPT_KEYS = {
     "final_collect",
     "report",
 }
+CANONICAL_COMPARISON_MODE = "canonical-controller"
+FROZEN_V3_MANUAL_COMPARISON_MODE = "frozen-v3-manual"
+COMPARISON_MODES = frozenset(
+    {
+        CANONICAL_COMPARISON_MODE,
+        FROZEN_V3_MANUAL_COMPARISON_MODE,
+    }
+)
 TokenMap = Mapping[
     str,
     Mapping[str, tuple[tuple[str, str], ...]],
@@ -139,12 +147,18 @@ def compare_reference(
     *,
     candidate_attempts: Mapping[str, str],
     layout_map_path: Path = DEFAULT_LAYOUT_MAP,
+    comparison_mode: str = CANONICAL_COMPARISON_MODE,
 ) -> tuple[Difference, ...]:
-    """Compare one verified frozen V3 inventory with an audited V4 lineage."""
+    """Compare one verified frozen V3 inventory with an audited V4 lineage.
+
+    ``canonical-controller`` remains the default acceptance path. The
+    explicit manual mode is an operator-trusted, temporary restructure check.
+    """
 
     descriptor, reference_artifacts = load_reference(reference_dir)
     layout = load_layout_map(layout_map_path)
     attempts = _normalize_attempts(candidate_attempts)
+    comparison_mode = _normalize_comparison_mode(comparison_mode)
     candidate = Path(candidate_root).resolve(strict=True)
     _reject_same_source(
         descriptor,
@@ -155,32 +169,33 @@ def compare_reference(
     candidate = require_v4_root(candidate)
 
     sink = _DifferenceSink()
-    control_errors = control_audit.audit_control_closure(
-        candidate,
-        attempts=attempts,
-    )
-    for error in control_errors:
-        sink.add(
-            artifact="<control>",
-            location="/",
-            kind="control_audit",
-            message=error,
+    if comparison_mode == CANONICAL_COMPARISON_MODE:
+        control_errors = control_audit.audit_control_closure(
+            candidate,
+            attempts=attempts,
         )
-    if control_errors:
-        return tuple(sink.values)
-    control = control_audit.control_provenance(
-        candidate,
-        attempts=attempts,
-    )
-    for error in _closure_differences(descriptor, control):
-        sink.add(
-            artifact="<closure>",
-            location="/",
-            kind="closure",
-            message=error,
+        for error in control_errors:
+            sink.add(
+                artifact="<control>",
+                location="/",
+                kind="control_audit",
+                message=error,
+            )
+        if control_errors:
+            return tuple(sink.values)
+        control = control_audit.control_provenance(
+            candidate,
+            attempts=attempts,
         )
-    if sink.values:
-        return tuple(sink.values)
+        for error in _closure_differences(descriptor, control):
+            sink.add(
+                artifact="<closure>",
+                location="/",
+                kind="closure",
+                message=error,
+            )
+        if sink.values:
+            return tuple(sink.values)
     audit_errors = audit_completed_lineage(candidate, attempts=attempts)
     for error in audit_errors:
         sink.add(
@@ -297,11 +312,18 @@ def write_comparison_report(
     differences: Sequence[Difference],
     *,
     provenance: Mapping[str, object],
+    comparison_mode: str = CANONICAL_COMPARISON_MODE,
 ) -> Path:
     """Create one guarded, immutable comparison report below candidate root."""
 
     root = require_v4_root(Path(candidate_root).resolve(strict=True))
     comparison_id = validate_lineage_id(comparison_id)
+    comparison_mode = _normalize_comparison_mode(comparison_mode)
+    provenance_value = dict(provenance)
+    recorded_mode = provenance_value.get("comparison_mode", comparison_mode)
+    if recorded_mode != comparison_mode:
+        raise ValueError("comparison report mode disagrees with provenance")
+    provenance_value["comparison_mode"] = comparison_mode
     comparison_root = require_beneath_root(
         root / "_v4" / "comparison" / comparison_id,
         root,
@@ -315,9 +337,10 @@ def write_comparison_report(
     target = require_beneath_root(comparison_root / "comparison.json", root)
     payload = {
         "schema_version": COMPARATOR_SCHEMA_VERSION,
+        "comparison_mode": comparison_mode,
         "outcome": "passed" if not differences else "failed",
         "n_differences": len(differences),
-        "provenance": dict(provenance),
+        "provenance": provenance_value,
         "differences": [difference.to_dict() for difference in differences],
     }
     descriptor = json.dumps(
@@ -341,12 +364,14 @@ def comparison_provenance(
     candidate_attempts: Mapping[str, str],
     layout_map_path: Path = DEFAULT_LAYOUT_MAP,
     allow_incomplete_candidate: bool = False,
+    comparison_mode: str = CANONICAL_COMPARISON_MODE,
 ) -> dict[str, object]:
     """Return compact, digest-backed inputs for an acceptance report."""
 
     reference_root = Path(reference_dir).resolve(strict=True)
     candidate = require_v4_root(Path(candidate_root).resolve(strict=True))
     attempts = _normalize_attempts(candidate_attempts)
+    comparison_mode = _normalize_comparison_mode(comparison_mode)
     descriptor, artifacts = load_reference(reference_root)
     layout = load_layout_map(layout_map_path)
     _reject_same_source(
@@ -357,21 +382,24 @@ def comparison_provenance(
     _require_bound_layout(descriptor, layout)
 
     try:
-        control: dict[str, object] = control_audit.control_provenance(
+        control: dict[str, object] = _comparison_control_provenance(
             candidate,
             attempts=attempts,
+            comparison_mode=comparison_mode,
         )
-        closure_errors = _closure_differences(descriptor, control)
-        if closure_errors:
-            raise ValueError(
-                "candidate/reference closure mismatch: "
-                + "; ".join(closure_errors)
-            )
+        if comparison_mode == CANONICAL_COMPARISON_MODE:
+            closure_errors = _closure_differences(descriptor, control)
+            if closure_errors:
+                raise ValueError(
+                    "candidate/reference closure mismatch: "
+                    + "; ".join(closure_errors)
+                )
     except ValueError as exc:
         if not allow_incomplete_candidate:
             raise
         control = {
             "schema_version": control_audit.CONTROL_SCHEMA_VERSION,
+            "comparison_mode": comparison_mode,
             "verification_status": "unavailable",
             "error": str(exc),
         }
@@ -400,6 +428,7 @@ def comparison_provenance(
         "root": str(candidate),
         "root_metadata": root_metadata(candidate),
         "attempts": attempts,
+        "comparison_mode": comparison_mode,
         "control": control,
     }
     try:
@@ -460,6 +489,7 @@ def comparison_provenance(
         )
     return {
         "schema_version": COMPARATOR_SCHEMA_VERSION,
+        "comparison_mode": comparison_mode,
         "reference": reference_value,
         "candidate": candidate_value,
         "layout_map": {
@@ -474,6 +504,34 @@ def comparison_provenance(
             "source_path": str(Path(__file__).resolve()),
             "source_sha256": _sha256_file(Path(__file__).resolve()),
         },
+    }
+
+
+def _normalize_comparison_mode(value: object) -> str:
+    """Return one explicitly supported comparison-control contract."""
+
+    if not isinstance(value, str) or value not in COMPARISON_MODES:
+        raise ValueError(
+            "comparison mode must be one of "
+            + ", ".join(sorted(COMPARISON_MODES))
+        )
+    return value
+
+
+def _comparison_control_provenance(
+    candidate: Path,
+    *,
+    attempts: Mapping[str, str],
+    comparison_mode: str,
+) -> dict[str, object]:
+    """Return canonical evidence or honest manual-mode status."""
+
+    if comparison_mode == CANONICAL_COMPARISON_MODE:
+        return control_audit.control_provenance(candidate, attempts=attempts)
+    return {
+        "comparison_mode": FROZEN_V3_MANUAL_COMPARISON_MODE,
+        "verification_status": "operator_trusted_manual",
+        "controller_closure": "not_checked_operator_trusted_manual",
     }
 
 
@@ -1587,6 +1645,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--candidate-root", type=Path, required=True)
     parser.add_argument("--candidate-attempts", required=True)
     parser.add_argument("--layout-map", type=Path, default=DEFAULT_LAYOUT_MAP)
+    parser.add_argument(
+        "--comparison-mode",
+        choices=sorted(COMPARISON_MODES),
+        default=CANONICAL_COMPARISON_MODE,
+        help=(
+            "Candidate control-evidence contract. The default requires the "
+            "canonical Sapphire controller closure."
+        ),
+    )
     parser.add_argument("--comparison-id")
     args = parser.parse_args(argv)
     try:
@@ -1596,6 +1663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.candidate_root,
             candidate_attempts=attempts,
             layout_map_path=args.layout_map,
+            comparison_mode=args.comparison_mode,
         )
         if args.comparison_id is not None:
             provenance = comparison_provenance(
@@ -1604,12 +1672,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate_attempts=attempts,
                 layout_map_path=args.layout_map,
                 allow_incomplete_candidate=bool(differences),
+                comparison_mode=args.comparison_mode,
             )
             write_comparison_report(
                 args.candidate_root,
                 args.comparison_id,
                 differences,
                 provenance=provenance,
+                comparison_mode=args.comparison_mode,
             )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))

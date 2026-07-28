@@ -165,6 +165,74 @@ def test_content_self_compare_and_public_acceptance_guards(
         )
         == ()
     )
+    manual_candidate, manual_attempts = _completed_lineage(
+        tmp_path / "manual-candidate",
+        lineage="lineage-manual",
+    )
+    default_manual = compare.compare_reference(
+        frozen,
+        manual_candidate,
+        candidate_attempts=manual_attempts,
+        layout_map_path=map_path,
+    )
+    assert default_manual and all(
+        item.kind == "control_audit" for item in default_manual
+    )
+    assert (
+        compare.compare_reference(
+            frozen,
+            manual_candidate,
+            candidate_attempts=manual_attempts,
+            layout_map_path=map_path,
+            comparison_mode=compare.FROZEN_V3_MANUAL_COMPARISON_MODE,
+        )
+        == ()
+    )
+    manual_provenance = compare.comparison_provenance(
+        frozen,
+        manual_candidate,
+        candidate_attempts=manual_attempts,
+        layout_map_path=map_path,
+        comparison_mode=compare.FROZEN_V3_MANUAL_COMPARISON_MODE,
+    )
+    assert manual_provenance["comparison_mode"] == "frozen-v3-manual"
+    assert manual_provenance["candidate"]["control"][
+        "verification_status"
+    ] == "operator_trusted_manual"
+    assert manual_provenance["candidate"]["control"][
+        "controller_closure"
+    ] == "not_checked_operator_trusted_manual"
+    manual_report = compare.write_comparison_report(
+        manual_candidate,
+        "manual-comparison",
+        (),
+        provenance=manual_provenance,
+        comparison_mode=compare.FROZEN_V3_MANUAL_COMPARISON_MODE,
+    )
+    manual_payload = json.loads(manual_report.read_text())
+    assert manual_payload["comparison_mode"] == "frozen-v3-manual"
+    assert manual_payload["provenance"]["comparison_mode"] == (
+        "frozen-v3-manual"
+    )
+    manual_grid = (
+        manual_candidate
+        / "00_grid"
+        / manual_attempts["grid"]
+        / "manifest.json"
+    )
+    manual_grid_payload = json.loads(manual_grid.read_text())
+    manual_grid_payload["n_jobs"] = 0
+    manual_grid.write_text(json.dumps(manual_grid_payload))
+    manual_audit_differences = compare.compare_reference(
+        frozen,
+        manual_candidate,
+        candidate_attempts=manual_attempts,
+        layout_map_path=map_path,
+        comparison_mode=compare.FROZEN_V3_MANUAL_COMPARISON_MODE,
+    )
+    assert manual_audit_differences and all(
+        item.kind == "candidate_audit" for item in manual_audit_differences
+    )
     closure_candidate, closure_attempts = _completed_lineage(
         tmp_path / "closure-candidate",
         lineage="lineage-c",
@@ -722,10 +790,12 @@ def test_difference_report_is_bounded_and_records_provenance(
     )
     report = json.loads(destination.read_text())
     assert report["schema_version"] == layout.COMPARATOR_SCHEMA_VERSION
+    assert report["comparison_mode"] == compare.CANONICAL_COMPARISON_MODE
     assert report["outcome"] == "failed"
     assert report["n_differences"] == 3
     assert report["provenance"] == {
-        "layout_map_sha256": "a" * 64
+        "layout_map_sha256": "a" * 64,
+        "comparison_mode": compare.CANONICAL_COMPARISON_MODE,
     }
     with pytest.raises(FileExistsError, match="already exists"):
         compare.write_comparison_report(
@@ -740,6 +810,13 @@ def test_difference_report_is_bounded_and_records_provenance(
             "../escape",
             sink.values,
             provenance={"layout_map_sha256": "a" * 64},
+        )
+    with pytest.raises(ValueError, match="disagrees with provenance"):
+        compare.write_comparison_report(
+            candidate,
+            "comparison-manual-mismatch",
+            sink.values,
+            provenance={"comparison_mode": "frozen-v3-manual"},
         )
     escaped = candidate / "_v4" / "comparison" / "escaped"
     escaped.symlink_to(tmp_path / "outside")
@@ -770,6 +847,22 @@ def test_compare_cli_exit_codes_are_zero_one_two(
     ]
     monkeypatch.setattr(compare, "compare_reference", lambda *a, **k: ())
     assert compare.main(argv) == 0
+
+    captured: dict[str, object] = {}
+
+    def manual_success(*_args: object, **kwargs: object) -> tuple[()]:
+        captured.update(kwargs)
+        return ()
+
+    monkeypatch.setattr(compare, "compare_reference", manual_success)
+    assert compare.main(
+        [
+            *argv,
+            "--comparison-mode",
+            compare.FROZEN_V3_MANUAL_COMPARISON_MODE,
+        ]
+    ) == 0
+    assert captured["comparison_mode"] == "frozen-v3-manual"
 
     difference = compare.Difference(
         artifact="table.csv",

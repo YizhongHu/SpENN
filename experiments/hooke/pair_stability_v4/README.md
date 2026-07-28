@@ -76,6 +76,33 @@ Reference freeze is create-only and must use a clean, fresh V3 smoke lineage;
 comparison exits nonzero when any protected artifact or control evidence
 differs.
 
+### Frozen-V3/manual comparison
+
+The default comparison contract is `canonical-controller`: it requires the
+complete Sapphire controller closure described below. It is unchanged by the
+manual path.
+
+For a temporary restructure check against an operator-preserved frozen V3
+reference, select the manual mode explicitly:
+
+```bash
+uv run python experiments/hooke/pair_stability_v4/compare.py \
+  --reference experiments/hooke/pair_stability_v4/reference/v3_smoke/<id> \
+  --candidate-root /absolute/new/v4-root \
+  --candidate-attempts '{"grid":"<id>","train":"<id>","validation":"<id>","collection":"<id>","selection":"<id>","final_grid":"<id>","final_train":"<id>","final_eval":"<id>","final_collect":"<id>","report":"<id>"}' \
+  --comparison-mode frozen-v3-manual \
+  --comparison-id <new-comparison-id>
+```
+
+Manual mode skips canonical controller-closure and closure-equivalence proof.
+It still requires the guarded V4 root, ordinary completed-lineage audit,
+layout validation, inventory checks, and artifact comparison. Its report
+records `frozen-v3-manual` and
+`not_checked_operator_trusted_manual`; it is neither canonical
+controller-closed evidence nor proof of controller history or reference
+immutability. Keep the frozen reference untouched while this temporary
+restructure guard is in use.
+
 ## Cluster profile and gpu_test limit
 
 The canonical V4-0 controller profile is Sapphire, 4 CPUs, 8 GiB per CPU, and
