@@ -1,0 +1,298 @@
+{
+  "schema_version": "pair-stability-v4/legacy-routes/v1",
+  "routes": [
+    {
+      "logical_role": "screen_plan",
+      "physical_stage": "00_grid",
+      "legacy_script": "experiments/hooke/pair_stability_v3/plan.py",
+      "kind": "local",
+      "required_input_attempts": [],
+      "required_configs": [
+        "smoke",
+        "train"
+      ],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--grid",
+        "{config:smoke}",
+        "--config",
+        "{config:train}",
+        "--results-root",
+        "{results_root}",
+        "--attempt-id",
+        "{output_attempt}",
+        "--timezone",
+        "America/New_York",
+        "--blind",
+        "--blind-seed",
+        "811",
+        "--python",
+        "python"
+      ]
+    },
+    {
+      "logical_role": "screen_train",
+      "physical_stage": "01_train",
+      "legacy_script": "experiments/hooke/pair_stability_v3/train.py",
+      "kind": "fanout",
+      "required_input_attempts": [
+        "grid"
+      ],
+      "required_configs": [],
+      "output_attempt_rule": "grid_input",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--grid-attempt-id",
+        "{input:grid}",
+        "--repo-root",
+        "{repo_root}",
+        "--backend",
+        "submitit",
+        "--device",
+        "cuda",
+        "--chunk-size",
+        "32",
+        "--slurm-cpus",
+        "4",
+        "--slurm-partition",
+        "gpu_test",
+        "--slurm-mem-per-cpu-gb",
+        "8",
+        "--slurm-timeout-min",
+        "60"
+      ]
+    },
+    {
+      "logical_role": "screen_eval",
+      "physical_stage": "02_validation",
+      "legacy_script": "experiments/hooke/pair_stability_v3/validate.py",
+      "kind": "fanout",
+      "required_input_attempts": [
+        "grid",
+        "train"
+      ],
+      "required_configs": [
+        "validation"
+      ],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--grid-attempt-id",
+        "{input:grid}",
+        "--train-attempt-id",
+        "{input:train}",
+        "--attempt-id",
+        "{output_attempt}",
+        "--config",
+        "{config:validation}",
+        "--repo-root",
+        "{repo_root}",
+        "--backend",
+        "submitit",
+        "--device",
+        "cuda",
+        "--chunk-size",
+        "32",
+        "--slurm-cpus",
+        "4",
+        "--slurm-partition",
+        "gpu_test",
+        "--slurm-mem-per-cpu-gb",
+        "8",
+        "--slurm-timeout-min",
+        "120"
+      ]
+    },
+    {
+      "logical_role": "screen_collect",
+      "physical_stage": "03_collect",
+      "legacy_script": "experiments/hooke/pair_stability_v3/collect.py",
+      "kind": "local",
+      "required_input_attempts": [
+        "grid"
+      ],
+      "required_configs": [],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--grid-attempt-id",
+        "{input:grid}",
+        "--attempt-id",
+        "{output_attempt}"
+      ]
+    },
+    {
+      "logical_role": "select",
+      "physical_stage": "04_select",
+      "legacy_script": "experiments/hooke/pair_stability_v3/select_champions.py",
+      "kind": "local",
+      "required_input_attempts": [
+        "collection"
+      ],
+      "required_configs": [],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--collection-attempt-id",
+        "{input:collection}",
+        "--attempt-id",
+        "{output_attempt}"
+      ]
+    },
+    {
+      "logical_role": "confirm_plan",
+      "physical_stage": "05_final_grid",
+      "legacy_script": "experiments/hooke/pair_stability_v3/final_plan.py",
+      "kind": "local",
+      "required_input_attempts": [
+        "grid",
+        "selection"
+      ],
+      "required_configs": [
+        "train",
+        "validation"
+      ],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--selection-attempt-id",
+        "{input:selection}",
+        "--attempt-id",
+        "{output_attempt}",
+        "--train-config",
+        "{config:train}",
+        "--eval-config",
+        "{config:validation}",
+        "--replicates",
+        "1"
+      ]
+    },
+    {
+      "logical_role": "confirm_train",
+      "physical_stage": "06_final_train",
+      "legacy_script": "experiments/hooke/pair_stability_v3/final_train.py",
+      "kind": "fanout",
+      "required_input_attempts": [
+        "final_grid"
+      ],
+      "required_configs": [
+        "train"
+      ],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--final-grid-attempt-id",
+        "{input:final_grid}",
+        "--attempt-id",
+        "{output_attempt}",
+        "--config",
+        "{config:train}",
+        "--repo-root",
+        "{repo_root}",
+        "--backend",
+        "submitit",
+        "--device",
+        "cuda",
+        "--chunk-size",
+        "8",
+        "--slurm-cpus",
+        "4",
+        "--slurm-cuda-partition",
+        "gpu_test",
+        "--slurm-mem-per-cpu-gb",
+        "8",
+        "--slurm-cuda-timeout-min",
+        "60"
+      ]
+    },
+    {
+      "logical_role": "confirm_eval",
+      "physical_stage": "07_final_eval",
+      "legacy_script": "experiments/hooke/pair_stability_v3/final_eval.py",
+      "kind": "fanout",
+      "required_input_attempts": [
+        "final_grid",
+        "final_train"
+      ],
+      "required_configs": [
+        "validation"
+      ],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--final-grid-attempt-id",
+        "{input:final_grid}",
+        "--final-train-attempt-id",
+        "{input:final_train}",
+        "--attempt-id",
+        "{output_attempt}",
+        "--config",
+        "{config:validation}",
+        "--repo-root",
+        "{repo_root}",
+        "--backend",
+        "submitit",
+        "--device",
+        "cuda",
+        "--chunk-size",
+        "8",
+        "--slurm-cpus",
+        "4",
+        "--slurm-partition",
+        "gpu_test",
+        "--slurm-mem-per-cpu-gb",
+        "8",
+        "--slurm-timeout-min",
+        "120"
+      ]
+    },
+    {
+      "logical_role": "confirm_collect",
+      "physical_stage": "08_final_collect",
+      "legacy_script": "experiments/hooke/pair_stability_v3/final_collect.py",
+      "kind": "local",
+      "required_input_attempts": [
+        "final_grid",
+        "final_eval"
+      ],
+      "required_configs": [],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--final-grid-attempt-id",
+        "{input:final_grid}",
+        "--final-eval-attempt-id",
+        "{input:final_eval}",
+        "--attempt-id",
+        "{output_attempt}"
+      ]
+    },
+    {
+      "logical_role": "report",
+      "physical_stage": "09_final_report",
+      "legacy_script": "experiments/hooke/pair_stability_v3/final_report.py",
+      "kind": "local",
+      "required_input_attempts": [
+        "final_collect"
+      ],
+      "required_configs": [],
+      "output_attempt_rule": "explicit",
+      "arguments": [
+        "--results-root",
+        "{results_root}",
+        "--final-collect-attempt-id",
+        "{input:final_collect}",
+        "--attempt-id",
+        "{output_attempt}"
+      ]
+    }
+  ]
+}
