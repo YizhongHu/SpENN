@@ -432,6 +432,51 @@ def test_dispatch_cli_rejects_arbitrary_passthrough() -> None:
     assert exc_info.value.code == 2
 
 
+def test_contract_sidecar_dispatch_commands_are_typed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The controller can invoke finalization and receipt-aware verification."""
+
+    calls: list[tuple[str, Path, str, bool | None]] = []
+
+    def finalize(root: Path, *, lineage_id: str) -> Path:
+        calls.append(("finalize", root, lineage_id, None))
+        return root / "receipt.json"
+
+    def verify(root: Path, *, lineage_id: str, require_receipt: bool) -> dict[str, str]:
+        calls.append(("verify", root, lineage_id, require_receipt))
+        return {"manifest_sha256": "a" * 64}
+
+    monkeypatch.setattr(dispatch.contract_sidecars, "finalize_contract_sidecars", finalize)
+    monkeypatch.setattr(dispatch.contract_sidecars, "verify_contract_sidecars", verify)
+    root = (tmp_path / "candidate").absolute()
+
+    assert dispatch.main(
+        [
+            "contract-sidecars-finalize",
+            "--results-root",
+            str(root),
+            "--lineage-id",
+            "lineage-a",
+        ]
+    ) == 0
+    assert dispatch.main(
+        [
+            "contract-sidecars-verify",
+            "--results-root",
+            str(root),
+            "--lineage-id",
+            "lineage-a",
+            "--no-receipt",
+        ]
+    ) == 0
+    assert calls == [
+        ("finalize", root, "lineage-a", None),
+        ("verify", root, "lineage-a", False),
+    ]
+
+
 def test_smoke_controller_syntax_usage_order_waits_and_count_guards(
     tmp_path: Path,
 ) -> None:
@@ -498,6 +543,10 @@ def test_smoke_controller_syntax_usage_order_waits_and_count_guards(
     assert "chunk=8,cpus=4,mem_per_cpu_gb=8,partition=gpu_test" in text
     assert ".venv-submitit" in text
     assert "stack-inventory" in text
+    assert "contract-sidecars-finalize" in text
+    assert text.index("dispatch-manifest") < text.index("contract-sidecars-finalize")
+    assert text.index("contract-sidecars-finalize") < text.index("controller-result")
+    assert "contract_sidecars_finalize_failed" in text
     assert "--wait-job" not in text
     assert "pair_stability_v3/" not in text
     for flag in (

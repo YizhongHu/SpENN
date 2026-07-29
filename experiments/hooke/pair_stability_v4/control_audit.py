@@ -32,6 +32,7 @@ from strict_data import StrictDataError, load_json
 
 
 CONTROL_SCHEMA_VERSION = "pair-stability-v4/control-closure/v1"
+PRE_CLOSE_CONTROL_SCHEMA_VERSION = "pair-stability-v4/control-preclose/v1"
 CONTROLLER_SCHEMA_VERSION = "pair-stability-v4/controller/v1"
 LEGACY_INVENTORY_SCHEMA_VERSION = "pair-stability-v4/legacy-inventory/v2"
 DISPATCH_MANIFEST_SCHEMA_VERSION = "pair-stability-v4/dispatch-manifest/v1"
@@ -282,7 +283,11 @@ def audit_control_closure(
     except (OSError, ValueError) as exc:
         return (str(exc),)
     try:
-        projection = _collect_control_projection(root, lineage_id=lineage_id)
+        projection = _collect_control_projection(
+            root,
+            lineage_id=lineage_id,
+            require_controller_result=True,
+        )
     except (OSError, StrictDataError, ValueError) as exc:
         return (f"invalid control evidence: {exc}",)
     errors.extend(projection["errors"])
@@ -302,7 +307,11 @@ def control_provenance(
         lineage_id=lineage_id,
         purpose=PURPOSE_EXPERIMENT,
     )
-    projection = _collect_control_projection(root, lineage_id=lineage_id)
+    projection = _collect_control_projection(
+        root,
+        lineage_id=lineage_id,
+        require_controller_result=True,
+    )
     errors = tuple(dict.fromkeys(projection["errors"]))
     if errors:
         raise ValueError("control evidence failed: " + "; ".join(errors))
@@ -313,7 +322,68 @@ def control_provenance(
     }
 
 
-def _collect_control_projection(root: Path, *, lineage_id: str) -> dict[str, Any]:
+def audit_preclose_control(
+    root: Path,
+    *,
+    attempts: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Validate control evidence available before ``controller-result.json``.
+
+    This deliberately does not infer controller success.  It is the public
+    pre-close seam used by V4-only finalizers that must complete before the
+    immutable controller result records a finalization failure.
+    """
+
+    try:
+        lineage_id = _single_lineage(attempts)
+        root = require_v4_root(
+            root,
+            lineage_id=lineage_id,
+            purpose=PURPOSE_EXPERIMENT,
+        )
+    except (OSError, ValueError) as exc:
+        return (str(exc),)
+    try:
+        projection = _collect_control_projection(
+            root,
+            lineage_id=lineage_id,
+            require_controller_result=False,
+        )
+    except (OSError, StrictDataError, ValueError) as exc:
+        return (f"invalid pre-close control evidence: {exc}",)
+    return tuple(dict.fromkeys(projection["errors"]))
+
+
+def preclose_control_provenance(
+    root: Path,
+    *,
+    attempts: Mapping[str, str],
+) -> dict[str, object]:
+    """Return verified pre-close facts without fabricating terminal success."""
+
+    lineage_id = _single_lineage(attempts)
+    root = require_v4_root(
+        root,
+        lineage_id=lineage_id,
+        purpose=PURPOSE_EXPERIMENT,
+    )
+    projection = _collect_control_projection(
+        root,
+        lineage_id=lineage_id,
+        require_controller_result=False,
+    )
+    errors = tuple(dict.fromkeys(projection["errors"]))
+    if errors:
+        raise ValueError("pre-close control evidence failed: " + "; ".join(errors))
+    return {key: value for key, value in projection.items() if key != "errors"}
+
+
+def _collect_control_projection(
+    root: Path,
+    *,
+    lineage_id: str,
+    require_controller_result: bool,
+) -> dict[str, Any]:
     """Validate records and build one equality-safe closure projection."""
 
     errors: list[str] = []
@@ -321,11 +391,12 @@ def _collect_control_projection(root: Path, *, lineage_id: str) -> dict[str, Any
     required_stack = {
         "controller-request.json",
         "controller-submission.json",
-        "controller-result.json",
         "dispatch-results.json",
         "legacy-pre.json",
         "legacy-post.json",
     }
+    if require_controller_result:
+        required_stack.add("controller-result.json")
     actual_stack = {
         path.name
         for path in stack.iterdir()
@@ -340,14 +411,16 @@ def _collect_control_projection(root: Path, *, lineage_id: str) -> dict[str, Any
     manifest: dict[str, Any] = {}
     pre: dict[str, Any] = {}
     post: dict[str, Any] = {}
-    for name, sink in (
+    records_to_load = (
         ("controller-request.json", request),
         ("controller-submission.json", submission),
-        ("controller-result.json", result),
         ("dispatch-results.json", manifest),
         ("legacy-pre.json", pre),
         ("legacy-post.json", post),
-    ):
+    )
+    if require_controller_result:
+        records_to_load += (("controller-result.json", result),)
+    for name, sink in records_to_load:
         path = _stack_path(root, lineage_id, name)
         if not path.is_file() or path.is_symlink():
             continue
@@ -366,7 +439,7 @@ def _collect_control_projection(root: Path, *, lineage_id: str) -> dict[str, Any
                 request_path=_stack_path(root, lineage_id, "controller-request.json"),
             )
         )
-    if result:
+    if require_controller_result and result:
         errors.extend(
             _validate_controller_result(
                 result,
@@ -416,7 +489,11 @@ def _collect_control_projection(root: Path, *, lineage_id: str) -> dict[str, Any
     closures = dispatch_projection.get("closures", {})
     return {
         "errors": errors,
-        "schema_version": CONTROL_SCHEMA_VERSION,
+        "schema_version": (
+            CONTROL_SCHEMA_VERSION
+            if require_controller_result
+            else PRE_CLOSE_CONTROL_SCHEMA_VERSION
+        ),
         "lineage_id": lineage_id,
         "root": str(root),
         "controller": request.get("controller", {}),

@@ -164,6 +164,15 @@ finalize_stack() {
   local_dispatch dispatch-manifest \
     --results-root "$RESULTS_ROOT" \
     --lineage-id "$STACK_ID" || FINALIZATION_ERRORS+=("dispatch_manifest_failed")
+  # A successful route publishes V4-1A sidecars before, never after, the
+  # immutable controller result.  The finalizer itself performs the public
+  # pre-close control audit, completed-lineage audit, manifest-last publish,
+  # and a fresh-process source verifier.
+  if [[ "$STAGE" == "complete" && "$STAGE_RC" -eq 0 ]]; then
+    local_dispatch contract-sidecars-finalize \
+      --results-root "$RESULTS_ROOT" \
+      --lineage-id "$STACK_ID" || FINALIZATION_ERRORS+=("contract_sidecars_finalize_failed")
+  fi
   find "$RESULTS_ROOT/_v4/dispatch/$STACK_ID" \
     -type f -name result.json -print | sort \
     >"$STACK_DIR/dispatch_receipts.txt" || FINALIZATION_ERRORS+=("dispatch_receipt_list_failed")

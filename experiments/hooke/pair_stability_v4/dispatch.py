@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import audit
 import control_audit
+import contract_sidecars
 from audit_receipts import inventory_results_tree, inventory_source_tree
 from roots import (
     PURPOSE_EXPERIMENT,
@@ -146,6 +147,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             lineage_id=args.lineage_id,
         )
         print(destination)
+        return 0
+    if args.command == "contract-sidecars-finalize":
+        destination = contract_sidecars.finalize_contract_sidecars(
+            Path(args.results_root),
+            lineage_id=args.lineage_id,
+        )
+        print(destination)
+        return 0
+    if args.command == "contract-sidecars-verify":
+        result = contract_sidecars.verify_contract_sidecars(
+            Path(args.results_root),
+            lineage_id=args.lineage_id,
+            require_receipt=not args.no_receipt,
+        )
+        print(json.dumps(result, sort_keys=True))
         return 0
     if args.command == "controller-result":
         destination = control_audit.write_controller_result(
@@ -996,6 +1012,15 @@ def _build_parser() -> argparse.ArgumentParser:
     dispatch_manifest = subparsers.add_parser("dispatch-manifest")
     dispatch_manifest.add_argument("--results-root", required=True)
     dispatch_manifest.add_argument("--lineage-id", required=True)
+
+    contract_finalize = subparsers.add_parser("contract-sidecars-finalize")
+    contract_finalize.add_argument("--results-root", required=True)
+    contract_finalize.add_argument("--lineage-id", required=True)
+
+    contract_verify = subparsers.add_parser("contract-sidecars-verify")
+    contract_verify.add_argument("--results-root", required=True)
+    contract_verify.add_argument("--lineage-id", required=True)
+    contract_verify.add_argument("--no-receipt", action="store_true")
 
     controller_result = subparsers.add_parser("controller-result")
     controller_result.add_argument("--results-root", required=True)

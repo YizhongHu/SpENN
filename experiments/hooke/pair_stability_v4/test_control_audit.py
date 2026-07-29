@@ -42,6 +42,22 @@ def test_control_closure_accepts_one_local_and_one_fanout_runtime_profile(
     assert any(path.endswith("/result.json") for path in paths)
 
 
+def test_preclose_control_accepts_finalizer_inputs_without_terminal_result(
+    tmp_path: Path,
+) -> None:
+    """V4-only finalizers can validate evidence before result is written last."""
+
+    root, attempts = _completed_lineage(tmp_path)
+    _write_valid_control_evidence(root, attempts, write_terminal_result=False)
+
+    assert control_audit.audit_preclose_control(root, attempts=attempts) == ()
+    preclose = control_audit.preclose_control_provenance(root, attempts=attempts)
+    assert preclose["schema_version"] == control_audit.PRE_CLOSE_CONTROL_SCHEMA_VERSION
+    assert isinstance(preclose["verification_sha256"], str)
+    full_errors = control_audit.audit_control_closure(root, attempts=attempts)
+    assert any("controller-result.json" in error for error in full_errors)
+
+
 def test_control_closure_rejects_mixed_kind_runtime_and_malformed_inventory(
     tmp_path: Path,
 ) -> None:
@@ -111,6 +127,53 @@ def test_terminal_effective_profile_mismatch_writes_incomplete_receipt(
     assert any("memory allocation differs" in item for item in result["finalization_errors"])
     errors = control_audit.audit_control_closure(root, attempts=attempts)
     assert any("effective profile" in error for error in errors)
+
+
+def test_named_sidecar_finalization_failure_is_immutable_and_nonzero(
+    tmp_path: Path,
+) -> None:
+    """The controller records a failed sidecar before its terminal result."""
+
+    root, attempts = _completed_lineage(tmp_path)
+    _write_valid_control_evidence(root, attempts, write_terminal_result=False)
+    lineage = attempts["grid"]
+
+    destination = control_audit.write_controller_result(
+        root,
+        lineage_id=lineage,
+        stage="complete",
+        stage_exit_code=0,
+        exit_code=1,
+        finalization_errors=("contract_sidecars_finalize_failed",),
+        worker_job_id="12345",
+        worker_partition="sapphire",
+        effective_cpus_per_task="4",
+        effective_mem_per_cpu_mb="8192",
+        effective_time_limit="3-00:00:00",
+    )
+    result = json.loads(destination.read_text())
+
+    assert result["status"] == "incomplete"
+    assert result["exit_code"] == 1
+    assert result["finalization_errors"] == ["contract_sidecars_finalize_failed"]
+    with pytest.raises(FileExistsError):
+        control_audit.write_controller_result(
+            root,
+            lineage_id=lineage,
+            stage="complete",
+            stage_exit_code=0,
+            exit_code=1,
+            finalization_errors=("contract_sidecars_finalize_failed",),
+            worker_job_id="12345",
+            worker_partition="sapphire",
+            effective_cpus_per_task="4",
+            effective_mem_per_cpu_mb="8192",
+            effective_time_limit="3-00:00:00",
+        )
+    errors = control_audit.audit_control_closure(root, attempts=attempts)
+    assert "controller result is not terminal completed evidence" in errors
+    assert "controller result records nonzero stage or controller exit" in errors
+    assert "controller result records finalization failures" in errors
 
 
 def test_control_closure_rejects_boolean_exit_and_truncated_receipt(
