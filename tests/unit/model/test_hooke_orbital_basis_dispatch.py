@@ -122,7 +122,7 @@ def _product_basis(
 
 
 def test_legacy_axiswise_v1_dispatch_preserves_frozen_output_contract() -> None:
-    """Old unversioned configs remain V1 rather than silently becoming products."""
+    """Explicit ``axiswise_v1`` keeps the frozen V1 output contract (D11)."""
 
     positions = torch.tensor(
         [[[0.25, -0.75, 1.25], [-1.0, 0.5, 0.125]]], dtype=torch.float64
@@ -130,13 +130,14 @@ def test_legacy_axiswise_v1_dispatch_preserves_frozen_output_contract() -> None:
     spins = torch.tensor([[1.0, -1.0]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions, spins=spins)
 
-    implicit_legacy = HookeOrbitalBasis(omega=0.5, max_shell=2, spatial_dim=3)
-    explicit_legacy = HookeOrbitalBasis(
-        omega=0.5,
-        max_shell=2,
-        spatial_dim=3,
-        basis_semantics="axiswise_v1",
-    )
+    # Selecting the legacy contract warns (D11) but must not change numbers.
+    with pytest.warns(DeprecationWarning):
+        explicit_legacy = HookeOrbitalBasis(
+            omega=0.5,
+            max_shell=2,
+            spatial_dim=3,
+            basis_semantics="axiswise_v1",
+        )
 
     expected = torch.cat(
         [
@@ -150,14 +151,72 @@ def test_legacy_axiswise_v1_dispatch_preserves_frozen_output_contract() -> None:
         ],
         dim=-1,
     )
-    implicit_features = implicit_legacy(batch)
     explicit_features = explicit_legacy(batch)
 
-    assert implicit_legacy.out_features == 10
-    assert implicit_features.metadata["basis_semantics"] == "axiswise_v1"
-    assert implicit_features.pair is None
-    torch.testing.assert_close(implicit_features.one_body, expected)
+    assert explicit_legacy.out_features == 10
+    assert explicit_features.metadata["basis_semantics"] == "axiswise_v1"
+    assert explicit_features.pair is None
     torch.testing.assert_close(explicit_features.one_body, expected)
+
+
+def test_omitted_semantics_selects_product_v2_and_matches_explicit_output() -> None:
+    """Omitted ``basis_semantics`` means exactly explicit ``product_v2`` (D11)."""
+
+    positions = torch.tensor(
+        [[[0.25, -0.75, 1.25], [-1.0, 0.5, 0.125]]], dtype=torch.float64
+    )
+    batch = ElectronBatch(positions=positions)
+    product_kwargs = {
+        "omega": 0.5,
+        "spatial_dim": 3,
+        "truncation": "total_shell",
+        "max_total_shell": 2,
+        "include_gaussian_factor": False,
+        "include_spin": False,
+    }
+    default_basis = HookeOrbitalBasis(**product_kwargs)
+    explicit_basis = HookeOrbitalBasis(basis_semantics="product_v2", **product_kwargs)
+
+    default_features = default_basis(batch)
+
+    assert default_basis.basis_semantics == "product_v2"
+    assert default_features.metadata["basis_semantics"] == "product_v2"
+    torch.testing.assert_close(default_features.one_body, explicit_basis(batch).one_body)
+
+
+def test_explicit_axiswise_v1_warns_deprecation_and_stays_supported() -> None:
+    """The legacy mode warns loudly yet still returns the frozen V1 output."""
+
+    positions = torch.tensor(
+        [[[0.25, -0.75, 1.25], [-1.0, 0.5, 0.125]]], dtype=torch.float64
+    )
+    batch = ElectronBatch(positions=positions)
+
+    with pytest.warns(DeprecationWarning, match="axiswise_v1"):
+        legacy = HookeOrbitalBasis(
+            omega=0.5,
+            max_shell=2,
+            spatial_dim=3,
+            basis_semantics="axiswise_v1",
+            include_spin=False,
+        )
+
+    torch.testing.assert_close(
+        legacy(batch).one_body,
+        _legacy_axiswise_reference(
+            positions,
+            omega=0.5,
+            max_shell=2,
+            include_gaussian_factor=True,
+        ),
+    )
+
+
+def test_omitted_semantics_rejects_legacy_max_shell_loudly() -> None:
+    """The default flip fails legacy configs instead of changing their numbers."""
+
+    with pytest.raises(ValueError, match="does not accept legacy max_shell"):
+        HookeOrbitalBasis(omega=0.5, max_shell=2, spatial_dim=3)
 
 
 @pytest.mark.parametrize(
@@ -447,13 +506,15 @@ def test_product_v2_mixed_channel_gradient_matches_independent_oracle() -> None:
             "max_total_shell": 1,
             "include_gaussian_factor": True,
         },
+        # Omitted semantics defaults to product_v2 (D11), so legacy max_shell
+        # must fail loudly instead of silently selecting the axiswise basis.
         {
-            "truncation": "total_shell",
-            "max_total_shell": 1,
-            "include_gaussian_factor": False,
+            "max_shell": 1,
+            "include_gaussian_factor": True,
         },
     ],
 )
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
 def test_versioned_dispatcher_rejects_ambiguous_or_mixed_arguments(kwargs: dict[str, object]) -> None:
     """Old and product contracts must not silently share an unversioned shape."""
 

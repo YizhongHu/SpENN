@@ -171,12 +171,16 @@ def test_restore_rejects_model_config_hash_mismatch(tmp_path: Path) -> None:
         )
 
 
+# axiswise_v1 must be selected explicitly since the D11 default flip; the
+# deprecation warning it emits is expected and irrelevant to this contract.
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
 def test_restore_rejects_equal_width_legacy_and_product_basis_semantics(tmp_path: Path) -> None:
     """Equal parameter shapes cannot permit an axiswise/product checkpoint swap."""
 
     legacy_basis_kwargs = {
         "omega": 0.5,
         "spatial_dim": 2,
+        "basis_semantics": "axiswise_v1",
         "max_shell": 2,
         "include_gaussian_factor": True,
         "include_spin": False,
