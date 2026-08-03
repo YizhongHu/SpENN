@@ -8,8 +8,16 @@ from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.real import RealFeature
-from spenn.nn import AdditiveEnvelope, ElectronElectronCusp, Envelope, HarmonicConfinement, SpENNWaveFunction
+from spenn.nn import (
+    AdditiveEnvelope,
+    ElectronElectronCusp,
+    Envelope,
+    HarmonicConfinement,
+    HookeGaussianEnvelope,
+    SpENNWaveFunction,
+)
 from tests.helpers.equivariance import assert_equivariant_all
+from tests.helpers.hooke_models import build_tiny_spenn
 
 
 class EmptyEncoder(nn.Module):
@@ -233,3 +241,56 @@ def test_spenn_wavefunction_passes_runtime_sign_equivariance_check() -> None:
 
     assert output.validate() is output
     assert_equivariant_all(model, batch)
+
+
+def test_additive_envelope_composes_cusp_and_hooke_gaussian_exactly() -> None:
+    # T8: the composed wavefunction-level envelope stack (revised D5) must
+    # reproduce the sum of its parts exactly.
+    positions = torch.tensor(
+        [[[0.2, -0.1, 0.4], [0.7, 0.3, -0.6]], [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]]], dtype=torch.float64
+    )
+    spins = torch.tensor([[1.0, -1.0], [1.0, -1.0]], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions, spins=spins)
+    cusp = ElectronElectronCusp(range_parameter=0.5, eps=0.0)
+    confinement = HookeGaussianEnvelope(omega=0.5)
+    envelope = AdditiveEnvelope([cusp, confinement])
+
+    torch.testing.assert_close(envelope(batch), cusp(batch) + confinement(batch), rtol=0.0, atol=0.0)
+
+
+def test_composed_cusp_confinement_envelope_is_permutation_invariant() -> None:
+    # T8: the whole envelope stack must stay symmetric under particle
+    # exchange so the readout keeps sole ownership of antisymmetry.
+    positions = torch.tensor([[[0.1, -0.2, 0.3], [0.7, 0.4, -0.5], [-0.6, 0.2, 0.9]]], dtype=torch.float64)
+    spins = torch.tensor([[1.0, -1.0, 1.0]], dtype=torch.float64)
+    envelope = AdditiveEnvelope([ElectronElectronCusp(eps=0.0), HookeGaussianEnvelope(omega=0.5)])
+    batch = ElectronBatch(positions=positions, spins=spins)
+    permuted = ElectronBatch(positions=positions[:, [2, 0, 1]], spins=spins[:, [2, 0, 1]])
+
+    torch.testing.assert_close(envelope(batch), envelope(permuted))
+
+
+def test_wavefunction_logabs_decays_along_radial_rays_beyond_documented_radius() -> None:
+    # T8 decay assertion (new diagnostic): with the confinement term enabled,
+    # log|psi| of the full tiny Hooke pair model must decrease monotonically
+    # along radial rays beyond the documented radius r >= 4. Beyond it the
+    # Gaussian confinement (-0.25 * r^2 at omega = 0.5) dominates the
+    # polynomial/logarithmic growth of the network readout and the bounded
+    # cusp term, so strict monotone decay is architecture-guaranteed.
+    torch.manual_seed(0)
+    model = build_tiny_spenn()
+    generator = torch.Generator().manual_seed(7)
+    direction = torch.randn(1, 2, 3, generator=generator, dtype=torch.float64)
+    # Normalize the configuration so sum_i |r_i|^2 == 1; the ray parameter is
+    # then exactly the configuration radius sqrt(sum_i |r_i|^2).
+    direction = direction / direction.square().sum().sqrt()
+    radii = torch.tensor([4.0, 5.0, 6.0, 7.0, 8.0, 10.0], dtype=torch.float64)
+    positions = radii.reshape(-1, 1, 1) * direction
+    spins = torch.tensor([[1.0, -1.0]], dtype=torch.float64).expand(radii.shape[0], -1)
+    batch = ElectronBatch(positions=positions, spins=spins)
+
+    logabs = model(batch).logabs
+
+    assert torch.all(torch.isfinite(logabs))
+    differences = logabs[1:] - logabs[:-1]
+    assert torch.all(differences < 0), f"log|psi| must decay along the radial ray beyond r=4, got {logabs.tolist()}"
