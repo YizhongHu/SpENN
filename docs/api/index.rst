@@ -11,11 +11,9 @@ package.
    spenn
    spenn.data
    spenn.nn
-   spenn.nn.activation
    spenn.nn.mlp
    spenn.nn.readout
    spenn.nn.update
    spenn.physics
-   spenn.reps
    spenn.sampling
    spenn.training

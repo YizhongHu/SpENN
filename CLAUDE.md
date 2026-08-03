@@ -81,12 +81,8 @@ Examples:
 ```text
 Permutation logic       -> spenn/data/permutation.py
 Tuple-index logic       -> spenn/data/indices.py
-Virtual path logic      -> spenn/reps/paths.py
+Virtual path logic      -> spenn/data/paths.py
 Partition logic         -> spenn/data/partition.py
-Irrep metadata          -> spenn/reps/irreps.py
-Young tableaux          -> add a reps-level owner module only when needed
-Specht modules          -> spenn/reps/specht.py
-Fourier transforms      -> spenn/reps/fourier.py
 Trainable modules       -> spenn/nn/
 ```
 

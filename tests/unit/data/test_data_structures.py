@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-import spenn.data.irrep as irrep
 import spenn.data.real as real
 from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.data.indices import (
@@ -20,15 +19,11 @@ from spenn.data.indices import (
 from spenn.data.permutation import Permutation
 
 
-def test_real_and_irrep_submodules_define_public_tensor_state_surface() -> None:
+def test_real_submodule_defines_public_tensor_state_surface() -> None:
     assert hasattr(real, "RealFeature")
     assert hasattr(real, "RealInteraction")
     assert hasattr(real, "RealUpdate")
     assert hasattr(real, "zero_block")
-
-    assert hasattr(irrep, "IrrepFeature")
-    assert hasattr(irrep, "IrrepInteraction")
-    assert hasattr(irrep, "IrrepUpdate")
 
 
 def test_electron_batch_accepts_higher_rank_sample_shape() -> None:

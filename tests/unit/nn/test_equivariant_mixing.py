@@ -7,7 +7,7 @@ import pytest
 
 from spenn.data.real import RealFeature, zero_block
 from spenn.nn import EquivariantMixing
-from spenn.reps.paths import load_default_path_metadata
+from spenn.data.paths import load_default_path_metadata
 from tests.helpers.equivariance import assert_equivariant_all
 
 

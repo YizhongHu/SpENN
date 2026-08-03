@@ -270,7 +270,7 @@ def _filtered_entries(trace: Trace, slots: frozenset[str] | None) -> dict[str, A
 
 
 def _is_feature_entry(entry: Any) -> bool:
-    if entry.semantic_type in {"features", "irrep_features", "pair_features"}:
+    if entry.semantic_type in {"features", "pair_features"}:
         return True
     name = type(entry.value).__name__
     return "Feature" in name or entry.slot in {"feature", "features", "interaction", "output"}

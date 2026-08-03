@@ -7,10 +7,25 @@ from spenn.data.real import RealFeature
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.context import SpENNForwardContext
-from spenn.nn.scalar_gates import GaussianDecayGate
 
 torch = require_torch(feature="SpENN coordinate envelopes")
 nn = require_torch_nn(feature="SpENN coordinate envelopes")
+
+
+class GaussianDecayGate(nn.Module):
+    """Return ``exp(-x / (2 sigma**2))`` elementwise."""
+
+    def __init__(self, *, sigma: float = 1.0) -> None:
+        super().__init__()
+        if sigma <= 0.0:
+            raise ValueError(f"sigma must be positive, got {sigma}")
+        self.sigma = float(sigma)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Evaluate the Gaussian decay gate without density normalization."""
+
+        scale = 2.0 * self.sigma * self.sigma
+        return torch.exp(-x / scale)
 
 
 class CoordinateEnvelope(nn.Module):
@@ -86,4 +101,4 @@ class RealCoordinateEnvelope(EquivariantMap):
         return type(features)(blocks)
 
 
-__all__ = ["CoordinateEnvelope", "GaussianCoordinateEnvelope", "RealCoordinateEnvelope"]
+__all__ = ["CoordinateEnvelope", "GaussianCoordinateEnvelope", "GaussianDecayGate", "RealCoordinateEnvelope"]
