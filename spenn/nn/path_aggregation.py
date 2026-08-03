@@ -106,9 +106,12 @@ class PathAggregation(EquivariantMap):
         """Return the path-aggregated real-space feature update."""
 
         x.validate()
+        if not x.blocks:
+            # A valid empty interaction aggregates to a valid empty update.
+            return RealUpdate([])
         batch_size = x.batch_size
-        device = x.blocks[0].device if x.blocks else None
-        dtype = x.blocks[0].dtype if x.blocks else None
+        device = x.blocks[0].device
+        dtype = x.blocks[0].dtype
         output_blocks: list[torch.Tensor] = [
             zero_block(batch_size=batch_size, device=device, dtype=dtype)
         ]

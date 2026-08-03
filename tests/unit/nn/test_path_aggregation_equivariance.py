@@ -2,7 +2,8 @@
 
 T2/T3 analogue on the fast module (MIG-TPEN-000 §2.2, slice b1): the path
 contraction touches only inert axes, so ``F(pi x) == pi F(x)`` must hold
-exhaustively for n in {2, 3}, with identity and nonlinear ``Gamma_c`` alike.
+exhaustively for n in {2, 3, 4}, with identity and nonlinear ``Gamma_c``
+alike.
 Follows the typed ``.permute``/``.compare`` oracle pattern established in
 ``tests/unit/nn/test_tpen_reference_oracle.py``.
 
@@ -60,7 +61,7 @@ def _module(activation: torch.nn.Module | None, *, seed: int) -> PathAggregation
     ).to(dtype=_DTYPE)
 
 
-@pytest.mark.parametrize("n_particles", [2, 3])
+@pytest.mark.parametrize("n_particles", [2, 3, 4])
 @pytest.mark.parametrize("activation_name", sorted(_ACTIVATIONS))
 def test_path_aggregation_is_equivariant_for_all_permutations(
     n_particles: int, activation_name: str

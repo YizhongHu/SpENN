@@ -215,3 +215,63 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
     assert output.validate() is output
     assert output.blocks[1].shape == feature.blocks[1].shape
     assert_equivariant_all(layer, feature)
+
+
+def test_spenn_layer_matches_slow_tpen_reference_layer() -> None:
+    # T1 at layer level: the composed module (real mixing with owned Gamma,
+    # real aggregation with owned Gamma_c, residual update) must reproduce
+    # the slow reference layer exactly, with the same weights. This also pins
+    # stage/activation ordering through the composed layer numerically.
+    from tests.helpers.tpen_reference import slow_tpen_layer
+
+    generator = torch.Generator().manual_seed(13579)
+    feature = RealFeature(
+        [
+            zero_block(batch_size=2, dtype=torch.float64),
+            torch.randn(2, 2, 3, generator=generator, dtype=torch.float64),
+            torch.randn(2, 2, 3, 3, generator=generator, dtype=torch.float64),
+        ]
+    )
+    # The reference applies Gamma post-hoc to an unactivated mixing, so the
+    # module-owned Gamma must equal the same function applied afterwards.
+    plain_mixing = EquivariantMixing(
+        max_order=2,
+        implementation="slow",
+        channels=2,
+        initial_weight=0.5,
+    ).to(dtype=torch.float64)
+    owned_mixing = EquivariantMixing(
+        max_order=2,
+        implementation="slow",
+        channels=2,
+        initial_weight=0.5,
+        activation=torch.nn.SiLU(),
+    ).to(dtype=torch.float64)
+    aggregation = PathAggregation(
+        max_order=2,
+        channels=2,
+        activation=torch.nn.Tanh(),
+        initializer=TorchInitializer(seed=13579),
+    ).to(dtype=torch.float64)
+
+    layer = SpENNLayer(
+        mixing=owned_mixing,
+        path_aggregation=aggregation,
+        update=ResidualUpdate(),
+    )
+
+    # Copy the module's per-order aggregation weights into the reference list.
+    path_weights: list[torch.Tensor | None] = [None]
+    for order in (1, 2):
+        path_weights.append(aggregation.weights[f"o{order}"].detach().clone())
+
+    reference = slow_tpen_layer(
+        feature,
+        mixing=plain_mixing,
+        mixing_activation=torch.nn.functional.silu,
+        path_weights=path_weights,
+        aggregation_activation=torch.tanh,
+    )
+
+    matches, stats = layer(feature).compare(reference, atol=1e-12, rtol=1e-12)
+    assert matches, f"SpENNLayer diverged from slow_tpen_layer: {stats}"

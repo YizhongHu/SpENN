@@ -46,8 +46,7 @@ class EquivariantMixing(EquivariantMap):
     ``select_tuple(virtual_tuple, tau)`` gives the output tuple ``I``; and
     ``tau1``/``tau2`` select the two input tuples from the same virtual
     support. The path axis is deliberately preserved in :class:`RealInteraction`
-    so the later Fourier/activation/path-aggregation stages can choose how to
-    combine mechanisms.
+    so the later path-aggregation stage can choose how to combine mechanisms.
 
     The slow implementation is a literal correctness reference that loops over
     paths and ordered distinct virtual tuples exactly as written in the PR
