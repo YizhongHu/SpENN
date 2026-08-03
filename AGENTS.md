@@ -69,7 +69,7 @@ Examples:
 ```text
 Permutation logic       -> spenn/data/permutation.py
 Tuple-index logic       -> spenn/data/indices.py
-Virtual path logic      -> spenn/reps/paths.py
+Virtual path logic      -> spenn/data/paths.py
 Partition logic         -> spenn/data/partition.py
 Trainable modules       -> spenn/nn/
 ```

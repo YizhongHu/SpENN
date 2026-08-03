@@ -15,6 +15,5 @@ package.
    spenn.nn.readout
    spenn.nn.update
    spenn.physics
-   spenn.reps
    spenn.sampling
    spenn.training
