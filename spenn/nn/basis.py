@@ -21,6 +21,7 @@ construction.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
@@ -287,11 +288,13 @@ class HookeHermiteBasis(ElectronBasis):
 class HookeOrbitalBasis(ElectronBasis):
     """Versioned Hooke / harmonic-oscillator one-body basis.
 
-    ``axiswise_v1`` is the historical coordinatewise feature map. It is kept
-    only to reproduce existing configurations and checkpoints, and will be
-    removed at the next incompatible version bump. An omitted
-    ``basis_semantics`` selects this legacy contract, so old configurations
-    retain their exact output ordering and Gaussian default.
+    ``axiswise_v1`` is the historical coordinatewise feature map. It is
+    deprecated but retained as an explicit mode (decisions D10/D11 in the
+    TPEN migration): selecting it emits a :class:`DeprecationWarning` and
+    keeps the frozen output contract, so it stays available as a smoke-run
+    knob. An omitted ``basis_semantics`` selects ``product_v2`` — the flip is
+    loud, not silent, because legacy ``max_shell`` arguments fail product-v2
+    validation instead of producing different numbers.
 
     ``product_v2`` is the multidimensional orbital basis. Each spatial channel
     has a configured multi-index ``n`` and evaluates
@@ -305,7 +308,8 @@ class HookeOrbitalBasis(ElectronBasis):
     spatial_dim : int
         Coordinate dimension of each electron.
     basis_semantics : {"axiswise_v1", "product_v2"} or None, optional
-        Versioned channel contract. ``None`` selects legacy ``axiswise_v1``.
+        Versioned channel contract. ``None`` selects ``product_v2``.
+        ``"axiswise_v1"`` is deprecated (warns) but fully supported.
     max_shell : int or None, optional
         Legacy highest per-coordinate Hermite order. Valid only for
         ``axiswise_v1`` and required by that contract.
@@ -349,16 +353,23 @@ class HookeOrbitalBasis(ElectronBasis):
         self._product_max_order: int | None = None
         self._provenance: Mapping[str, JsonScalar] = {}
 
-        if basis_semantics is None or basis_semantics == "axiswise_v1":
+        if basis_semantics == "axiswise_v1":
+            # Deprecated but retained as an explicit smoke knob (D10/D11).
+            warnings.warn(
+                "HookeOrbitalBasis basis_semantics='axiswise_v1' is deprecated; "
+                "product_v2 is the default. axiswise_v1 remains fully supported "
+                "as an explicit legacy mode with no silent fallback.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             self._initialize_axiswise_v1(
-                explicit_semantics=basis_semantics is not None,
                 max_shell=max_shell,
                 truncation=truncation,
                 max_total_shell=max_total_shell,
                 box_size=box_size,
                 include_gaussian_factor=include_gaussian_factor,
             )
-        elif basis_semantics == "product_v2":
+        elif basis_semantics is None or basis_semantics == "product_v2":
             self._initialize_product_v2(
                 max_shell=max_shell,
                 truncation=truncation,
@@ -372,7 +383,6 @@ class HookeOrbitalBasis(ElectronBasis):
     def _initialize_axiswise_v1(
         self,
         *,
-        explicit_semantics: bool,
         max_shell: int | None,
         truncation: str | None,
         max_total_shell: int | None,
@@ -382,8 +392,7 @@ class HookeOrbitalBasis(ElectronBasis):
         """Initialize frozen axiswise V1 behavior for historical configs."""
 
         if truncation is not None or max_total_shell is not None or box_size is not None:
-            version = "explicit axiswise_v1" if explicit_semantics else "unversioned legacy"
-            raise ValueError(f"{version} HookeOrbitalBasis does not accept product-v2 arguments")
+            raise ValueError("axiswise_v1 HookeOrbitalBasis does not accept product-v2 arguments")
         if max_shell is None:
             raise ValueError("axiswise_v1 HookeOrbitalBasis requires max_shell")
         if max_shell < 0:
@@ -423,7 +432,11 @@ class HookeOrbitalBasis(ElectronBasis):
         """Initialize one explicit, multidimensional product-basis contract."""
 
         if max_shell is not None:
-            raise ValueError("product_v2 HookeOrbitalBasis does not accept legacy max_shell")
+            raise ValueError(
+                "product_v2 HookeOrbitalBasis does not accept legacy max_shell "
+                "(basis_semantics now defaults to product_v2; pass "
+                "basis_semantics='axiswise_v1' explicitly for the legacy per-axis basis)"
+            )
         if include_gaussian_factor is None:
             raise ValueError("product_v2 HookeOrbitalBasis requires include_gaussian_factor")
         if truncation not in {"total_shell", "cartesian_box"}:
