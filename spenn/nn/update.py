@@ -46,8 +46,8 @@ class ResidualUpdate(Update):
     Mathematical reference: ``main.typ`` section "Updates" and the final
     ``Feature update`` line in "Model Workflow". The usual SpENN update is the
     residual rule ``x^{t+1}_I = x^t_I + a u^{t+1}_I``. Here ``step`` is the
-    scalar ``a`` and ``u`` is the real-space update produced by
-    path aggregation followed by inverse Fourier projection.
+    scalar ``a`` and ``u`` is the real-space update produced by path
+    aggregation.
     """
 
     def __init__(self, step: float = 1.0, **kwargs) -> None:

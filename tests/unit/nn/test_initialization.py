@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.partition import Partition
 from spenn.nn import Embedding, MLP, PathAggregation, SeededLinear, TorchInitializer
 
 
@@ -79,28 +78,41 @@ def test_embedding_passes_initializer_to_generated_order_mlps() -> None:
 
 
 def test_path_aggregation_uses_explicit_initializer_without_global_rng_mutation() -> None:
-    partition = Partition((1,))
     torch.manual_seed(999)
     before = torch.get_rng_state()
 
     first = PathAggregation(
-        max_order=1,
+        max_order=2,
         channels=2,
-        channel_out_by_order=3,
-        path_counts_by_order={1: 2},
-        partitions=(partition,),
+        path_counts_by_order={1: 2, 2: 3},
         initializer=TorchInitializer(seed=31),
     )
 
     torch.testing.assert_close(torch.get_rng_state(), before)
     torch.manual_seed(123)
     second = PathAggregation(
-        max_order=1,
+        max_order=2,
         channels=2,
-        channel_out_by_order=3,
-        path_counts_by_order={1: 2},
-        partitions=(partition,),
+        path_counts_by_order={1: 2, 2: 3},
         initializer=TorchInitializer(seed=31),
     )
 
     _assert_state_dicts_equal(first, second)
+
+
+def test_path_aggregation_initializer_seed_changes_path_weights() -> None:
+    first = PathAggregation(
+        max_order=1,
+        channels=2,
+        path_counts_by_order={1: 2},
+        initializer=TorchInitializer(seed=31),
+    )
+    second = PathAggregation(
+        max_order=1,
+        channels=2,
+        path_counts_by_order={1: 2},
+        initializer=TorchInitializer(seed=32),
+    )
+
+    with torch.no_grad():
+        assert not torch.equal(first.weights[first.key(1)], second.weights[second.key(1)])

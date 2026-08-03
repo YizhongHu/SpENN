@@ -1,16 +1,14 @@
-"""Learned aggregation over path-resolved Specht coordinates."""
+"""Learned real-space aggregation over path-resolved interactions."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Mapping
 from operator import index
 
-from spenn.data.irrep import IrrepFeature, IrrepInteraction
-from spenn.data.partition import Partition, as_partition, integer_partitions
+from spenn.data.real import RealInteraction, RealUpdate, zero_block
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.initialization import TorchInitializer
-from spenn.reps.irreps import irrep_dimension
 from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
 
 torch = require_torch(feature="SpENN path aggregation")
@@ -18,57 +16,46 @@ nn = require_torch_nn(feature="SpENN path aggregation")
 
 
 class PathAggregation(EquivariantMap):
-    """Aggregate path-resolved irrep interactions into irrep features.
+    """Aggregate path-resolved real interactions into a feature update.
 
-    Mathematical reference: ``main.typ`` "Model Workflow", step
-    ``Obtain update with nn.PathAggregation``. After Fourier projection and
-    irrep-safe activation, the implemented map is
+    Mathematical reference: TPEN design document "Aggregation" and
+    MIG-TPEN-000 section 2.2. The implemented map is
 
-    ``u_hat^{c,lambda}_{I;alpha,beta_out}
-      = sum_p sum_{c_in,beta_in}
-        U^{lambda}_{c,beta_out <- c_in,p,beta_in}
-        w_hat^{c_in,lambda}_{I,p;alpha,beta_in}``.
+    ``u^c_I = Gamma_c( sum_p U^{(m)}[c, p] h^c_{I,p} )``
 
-    The key equivariance constraint is that ``alpha`` is the transforming
-    Specht coordinate and must pass through unchanged. The learnable map may
-    mix channels, path mechanisms, and multiplicity/beta coordinates, but it is
-    shared over particle tuple positions ``I`` and over ``alpha``.
+    per output order ``m``: the path axis is contracted per input channel
+    with a learned weight, then the owned activation ``Gamma_c`` is applied.
+    Per decision D3 the first activation form is elementwise with
+    ``C_out = C_in``; channel mixing lives in the mixing weights until the
+    MLP-activation upgrade, which changes only ``Gamma_c`` behind this same
+    signature.
 
-    The input contract is :class:`IrrepInteraction` with blocks of shape
-    ``[batch, c_in, paths, indices..., alpha, beta_in]``. The output contract is
-    :class:`IrrepFeature` with blocks of shape
-    ``[batch, c_out, indices..., alpha, beta_out]``. For each partition,
-    ``beta_out`` is the irrep dimension, matching the validation contract of
-    :class:`IrrepFeature`.
-
-    The learned weight convention is
-    ``[c_out, beta_out, c_in, paths, beta_in]``. The operation is shared over
-    batch, tuple-index, and alpha axes, so the aggregation may mix channels,
-    paths, and beta coordinates but cannot mix particles or transforming alpha
-    coordinates.
+    The input contract is :class:`RealInteraction` with blocks of shape
+    ``[batch, channels, paths, indices...]``. The output contract is
+    :class:`RealUpdate` with blocks of shape ``[batch, channels, indices...]``.
+    The weights are shared over batch and tuple positions ``I`` and never mix
+    channels or particle indices, which preserves permutation equivariance.
 
     Parameters
     ----------
     max_order : int
         Maximum tuple order to aggregate.
     channels : int or mapping
-        Input channels per tuple order.
-    channel_out_by_order : int, mapping, or None, optional
-        Output channels for each tuple order. If an integer is supplied, every
-        order uses that many channels. If a mapping is supplied, it is keyed by
-        integer order. If ``None``, each partition preserves its input channel
-        count, so all same-order input partitions must already share channels.
+        Input (= output) channels per tuple order.
     max_virtual_order : int or None, optional
         Maximum virtual support order used when deriving path counts from
         metadata. Defaults to `max_order`.
     paths : PathMetadata, tuple of VirtualPath, or None, optional
         Path metadata used to derive path counts. If ``None``, checked-in path
         metadata for `output_embedding` is loaded.
-    partitions : iterable of Partition or None, optional
-        Partitions to initialize. If ``None``, all integer partitions through
-        `max_order` are initialized.
+    output_embedding : str, optional
+        Path family used when loading default metadata.
     path_counts_by_order : mapping of int to int or None, optional
         Explicit path counts, mainly for tests or custom path families.
+    activation : torch.nn.Module, callable, or None, optional
+        Owned activation ``Gamma_c`` applied elementwise after the path
+        contraction. ``None`` keeps the identity. It never mixes channels,
+        particles, or the contracted path axis.
     initializer : TorchInitializer or None, optional
         Explicit side-effect-free initializer for learned path weights. If
         ``None``, weights use the legacy PyTorch global-RNG Xavier initializer.
@@ -81,12 +68,11 @@ class PathAggregation(EquivariantMap):
         *,
         max_order: int,
         channels: int | Mapping[int, int],
-        channel_out_by_order: int | Mapping[int, int] | None = None,
         max_virtual_order: int | None = None,
         paths: PathMetadata | tuple[VirtualPath, ...] | None = None,
         output_embedding: str = "canonical",
-        partitions: Iterable[Partition] | None = None,
         path_counts_by_order: Mapping[int, int] | None = None,
+        activation: "nn.Module | Callable[[torch.Tensor], torch.Tensor] | None" = None,
         initializer: TorchInitializer | None = None,
         **kwargs,
     ) -> None:
@@ -98,10 +84,6 @@ class PathAggregation(EquivariantMap):
         if self.max_virtual_order <= 0:
             raise ValueError(f"max_virtual_order must be positive, got {self.max_virtual_order}")
         self.channels_by_order = _normalize_positive_channels(channels, max_order=self.max_order, name="channels")
-        self.channel_out_by_order = _normalize_channel_out_by_order(
-            self.channels_by_order if channel_out_by_order is None else channel_out_by_order,
-            max_order=self.max_order,
-        )
         if path_counts_by_order is None:
             self.path_counts_by_order = _path_counts_by_order(
                 paths=paths,
@@ -115,116 +97,99 @@ class PathAggregation(EquivariantMap):
                 max_order=self.max_order,
                 name="path_counts_by_order",
             )
-        self.partitions = (
-            tuple(partitions)
-            if partitions is not None
-            else tuple(partition for order in range(1, self.max_order + 1) for partition in integer_partitions(order))
-        )
+        self.activation = activation
         self.initializer = initializer
         self.weights = nn.ParameterDict()
         self._initialize_weights()
 
-    def forward_impl(self, x: IrrepInteraction) -> IrrepFeature:
-        """Return learned path-aggregated irrep features."""
+    def forward_impl(self, x: RealInteraction) -> RealUpdate:
+        """Return the path-aggregated real-space feature update."""
 
-        return IrrepFeature({partition: self.aggregate_block(partition, tensor) for partition, tensor in x.items()})
+        x.validate()
+        if not x.blocks:
+            # A valid empty interaction aggregates to a valid empty update.
+            return RealUpdate([])
+        batch_size = x.batch_size
+        device = x.blocks[0].device
+        dtype = x.blocks[0].dtype
+        output_blocks: list[torch.Tensor] = [
+            zero_block(batch_size=batch_size, device=device, dtype=dtype)
+        ]
+        for order in range(1, len(x.blocks)):
+            output_blocks.append(self.aggregate_block(order, x.blocks[order]))
+        return RealUpdate(output_blocks)
 
-    def aggregate_block(self, partition: Partition, tensor: torch.Tensor) -> torch.Tensor:
-        """Aggregate one partition block with the learned path weights.
+    def aggregate_block(self, order: int, tensor: torch.Tensor) -> torch.Tensor:
+        """Aggregate one order block with the learned path weights.
 
         Parameters
         ----------
-        partition : Partition
-            Irrep partition labeling the block.
+        order : int
+            Output body order of the block.
         tensor : torch.Tensor
             Path-resolved block with shape
-            ``[batch, c_in, paths, indices..., alpha, beta_in]``.
+            ``[batch, channels, paths, indices...]``.
 
         Returns
         -------
         torch.Tensor
-            Path-aggregated block with shape
-            ``[batch, c_out, indices..., alpha, beta_out]``.
+            Aggregated block with shape ``[batch, channels, indices...]``.
         """
 
-        partition = as_partition(partition)
-        if tensor.ndim < 5:
-            raise ValueError(f"PathAggregation block for {partition.parts} must have at least 5 dimensions")
-        weight = self._weight_for(partition, tensor)
-        # Implements the update-aggregation formula above:
-        #   b c p I... alpha beta_in, o beta_out c p beta_in
-        #     -> b o I... alpha beta_out.
-        # There is intentionally no summation over I or alpha. Sharing the
-        # same U over I preserves particle equivariance; preserving alpha keeps
-        # the Specht irrep action intact.
-        return torch.einsum("bcp...ad,oecpd->bo...ae", tensor, weight)
+        weight = self._weight_for(order, tensor)
+        # u^c_I = sum_p U[c, p] h^c_{I,p}: the path axis is contracted per
+        # channel; batch and tuple indices pass through untouched, so the map
+        # is shared over particles and cannot break equivariance.
+        aggregated = torch.einsum("bcp...,cp->bc...", tensor, weight)
+        if self.activation is not None:
+            aggregated = self.activation(aggregated)
+        return aggregated
 
-    def key(self, partition: Partition) -> str:
-        """Return the stable parameter key for one partition."""
+    def key(self, order: int) -> str:
+        """Return the stable parameter key for one output order."""
 
-        return as_partition(partition).key
+        return f"o{int(order)}"
 
-    def _weight_for(self, partition: Partition, tensor: torch.Tensor) -> torch.Tensor:
+    def _weight_for(self, order: int, tensor: torch.Tensor) -> torch.Tensor:
+        if order < 1 or order > self.max_order:
+            raise ValueError(f"PathAggregation received order {order} outside [1, {self.max_order}]")
         in_channels = int(tensor.shape[1])
         path_count = int(tensor.shape[2])
-        beta_in = int(tensor.shape[-1])
-        expected_in = self.channels_by_order[partition.order]
-        expected_paths = self.path_counts_by_order[partition.order]
-        expected_beta = irrep_dimension(partition)
-        if in_channels != expected_in:
-            raise ValueError(f"PathAggregation input channels for {partition.parts} are {in_channels}, expected {expected_in}")
+        expected_channels = self.channels_by_order[order]
+        expected_paths = self.path_counts_by_order[order]
+        if in_channels != expected_channels:
+            raise ValueError(
+                f"PathAggregation order-{order} channels are {in_channels}, expected {expected_channels}"
+            )
         if path_count != expected_paths:
-            raise ValueError(f"PathAggregation path count for {partition.parts} is {path_count}, expected {expected_paths}")
-        if beta_in != expected_beta or int(tensor.shape[-2]) != expected_beta:
-            raise ValueError(f"PathAggregation irrep dimensions for {partition.parts} must both be {expected_beta}")
-        beta_out = expected_beta
-        out_channels = self._out_channels(partition.order)
-        shape = (out_channels, beta_out, in_channels, path_count, beta_in)
-        key = self.key(partition)
+            raise ValueError(
+                f"PathAggregation order-{order} path count is {path_count}, expected {expected_paths}"
+            )
+        key = self.key(order)
         if key not in self.weights:
-            raise RuntimeError(f"Missing eager PathAggregation weight for partition {partition.parts}")
+            raise RuntimeError(f"Missing eager PathAggregation weight for order {order}")
         weight = self.weights[key]
+        shape = (expected_channels, expected_paths)
         if tuple(weight.shape) != shape:
             raise ValueError(
-                f"PathAggregation weight for {partition.parts} has shape {tuple(weight.shape)}, "
-                f"expected {shape}"
+                f"PathAggregation order-{order} weight has shape {tuple(weight.shape)}, expected {shape}"
             )
         return weight
 
-    def _out_channels(self, order: int) -> int:
-        return self.channel_out_by_order[order]
-
     def _initialize_weights(self) -> None:
-        for partition in self.partitions:
-            partition = as_partition(partition)
-            if partition.order < 1 or partition.order > self.max_order:
-                raise ValueError(f"partition {partition.parts} is outside max_order={self.max_order}")
-            key = self.key(partition)
-            if key in self.weights:
-                continue
-            dim = irrep_dimension(partition)
+        for order in range(1, self.max_order + 1):
+            key = self.key(order)
             shape = (
-                self.channel_out_by_order[partition.order],
-                dim,
-                self.channels_by_order[partition.order],
-                self.path_counts_by_order[partition.order],
-                dim,
+                self.channels_by_order[order],
+                self.path_counts_by_order[order],
             )
             weight = torch.empty(shape)
             if weight.numel() > 0:
                 if self.initializer is None:
                     nn.init.xavier_uniform_(weight)
                 else:
-                    self.initializer.spawn(f"partition_{key}").xavier_uniform_(weight)
+                    self.initializer.spawn(f"order_{order}").xavier_uniform_(weight)
             self.weights[key] = nn.Parameter(weight)
-
-
-def _normalize_channel_out_by_order(
-    value: int | Mapping[int, int],
-    *,
-    max_order: int,
-) -> dict[int, int]:
-    return _normalize_nonnegative_channels(value, max_order=max_order, name="channel_out_by_order")
 
 
 def _normalize_positive_channels(
