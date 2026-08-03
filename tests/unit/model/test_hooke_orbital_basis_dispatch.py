@@ -514,7 +514,7 @@ def test_product_v2_mixed_channel_gradient_matches_independent_oracle() -> None:
         },
     ],
 )
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
 def test_versioned_dispatcher_rejects_ambiguous_or_mixed_arguments(kwargs: dict[str, object]) -> None:
     """Old and product contracts must not silently share an unversioned shape."""
 
