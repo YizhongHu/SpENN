@@ -1,32 +1,26 @@
 # SpENN Core Scaffold
 
-This restructuring branch makes the new SpENN pipeline the primary API:
+The TPEN pipeline is the primary API (MIG-TPEN-000): all stages operate in
+real space, and the two compute stages own their activations.
 
 ```text
 RealFeature
-  -> EquivariantMixing
+  -> EquivariantMixing (owned pointwise Gamma)
   -> RealInteraction
-  -> FourierTransform
-  -> IrrepInteraction
-  -> ActivationByType
-  -> IrrepInteraction
-  -> PathAggregation
-  -> IrrepFeature
-  -> InverseFourierTransform
+  -> PathAggregation (owned Gamma_c)
   -> RealUpdate
   -> Update
   -> RealFeature
 ```
 
 Data/state objects live in owner modules under `spenn.data`, with real tuple
-containers owned by `spenn.data.real`, irrep containers owned by
-`spenn.data.irrep`, tuple helpers owned by `spenn.data.indices`, partition
-metadata owned by `spenn.data.partition`, and permutation algebra and
-non-identity subset selection owned by `spenn.data.permutation`. The traceable
-`EquivariantMap`, passive trace recording, and runtime equivariance checkers
-live in `spenn.equivariance`. Trainable or callable neural modules live in
-`spenn.nn`. Representation metadata, virtual paths, and Fourier transforms live
-in `spenn.reps`.
+containers owned by `spenn.data.real`, tuple helpers owned by
+`spenn.data.indices`, partition metadata owned by `spenn.data.partition`, and
+permutation algebra and non-identity subset selection owned by
+`spenn.data.permutation`. The traceable `EquivariantMap`, passive trace
+recording, and runtime equivariance checkers live in `spenn.equivariance`.
+Trainable or callable neural modules live in `spenn.nn`. Virtual-path
+metadata lives in `spenn.reps`.
 
 ## Initialization RNGs
 
