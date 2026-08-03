@@ -46,19 +46,15 @@ model:
       channels: 4
       implementation: slow
       initial_weight: 0.5
-    fourier:
-      _target_: spenn.reps.FourierTransform
-    irrep_activation:
-      _target_: spenn.nn.GatedNormActivation
-      gate:
+      activation:
         _target_: torch.nn.SiLU
     path_aggregation:
       _target_: spenn.nn.PathAggregation
       max_order: 2
       max_virtual_order: 2
       channels: 4
-    inverse_fourier:
-      _target_: spenn.reps.InverseFourierTransform
+      activation:
+        _target_: torch.nn.SiLU
     update:
       _target_: spenn.nn.ResidualUpdate
   envelope:
