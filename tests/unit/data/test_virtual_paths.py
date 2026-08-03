@@ -7,7 +7,7 @@ from math import factorial
 
 import pytest
 
-from spenn.reps.paths import PathMetadata, VirtualPath, generate_virtual_paths, iter_path_blocks, validate_virtual_path
+from spenn.data.paths import PathMetadata, VirtualPath, generate_virtual_paths, iter_path_blocks, validate_virtual_path
 
 
 def _coverage_count(s: int, m1: int, m2: int) -> int:

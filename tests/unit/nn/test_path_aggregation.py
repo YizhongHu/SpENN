@@ -17,7 +17,7 @@ import torch
 
 from spenn.data.real import RealInteraction, RealUpdate, zero_block
 from spenn.nn import PathAggregation, TorchInitializer
-from spenn.reps.paths import load_default_path_metadata
+from spenn.data.paths import load_default_path_metadata
 from tests.helpers.tpen_reference import slow_tpen_aggregation
 
 _DTYPE = torch.float64

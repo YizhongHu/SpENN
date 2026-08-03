@@ -20,7 +20,7 @@ permutation algebra and non-identity subset selection owned by
 `spenn.data.permutation`. The traceable `EquivariantMap`, passive trace
 recording, and runtime equivariance checkers live in `spenn.equivariance`.
 Trainable or callable neural modules live in `spenn.nn`. Virtual-path
-metadata lives in `spenn.reps`.
+metadata lives in `spenn.data.paths`.
 
 ## Initialization RNGs
 

@@ -22,7 +22,7 @@ from spenn.data.real import (
 )
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
-from spenn.reps.paths import PathMetadata, VirtualPath, load_default_path_metadata
+from spenn.data.paths import PathMetadata, VirtualPath, load_default_path_metadata
 
 torch = require_torch(feature="SpENN equivariant mixing")
 nn = require_torch_nn(feature="SpENN equivariant mixing")
