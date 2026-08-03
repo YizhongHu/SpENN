@@ -32,17 +32,22 @@ def test_hooke_hermite_basis_is_particle_equivariant() -> None:
     assert_equivariant_all(basis, _batch())
 
 
+# The frozen axiswise_v1 contract stays testable despite its deprecation (D11).
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_hooke_orbital_basis_is_particle_equivariant() -> None:
-    basis = HookeOrbitalBasis(omega=0.5, max_shell=2, spatial_dim=3).to(dtype=torch.float64)
+    basis = HookeOrbitalBasis(
+        omega=0.5, max_shell=2, spatial_dim=3, basis_semantics="axiswise_v1"
+    ).to(dtype=torch.float64)
     assert_equivariant_all(basis, _batch())
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_basis_output_is_typed_features_not_batch() -> None:
     batch = _batch()
     for basis in (
         RawCoordinateBasis(spatial_dim=3),
         HookeHermiteBasis(omega=0.5, max_order=2, spatial_dim=3),
-        HookeOrbitalBasis(omega=0.5, max_shell=2, spatial_dim=3),
+        HookeOrbitalBasis(omega=0.5, max_shell=2, spatial_dim=3, basis_semantics="axiswise_v1"),
     ):
         features = basis(batch)
         assert isinstance(features, ElectronBasisFeatures)
@@ -66,6 +71,7 @@ def test_basis_records_features_to_trace() -> None:
     assert isinstance(trace["basis/output"].value, ElectronBasisFeatures)
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 @pytest.mark.parametrize("include_spin", [True, False])
 @pytest.mark.parametrize(
     ("max_order", "max_shell"),
@@ -89,20 +95,35 @@ def test_basis_output_shapes_match_order_or_shell(
     assert hermite(batch).one_body.shape[-1] == hermite.out_features
 
     orbital = HookeOrbitalBasis(
-        omega=0.5, max_shell=max_shell, spatial_dim=spatial_dim, include_spin=include_spin
+        omega=0.5,
+        max_shell=max_shell,
+        spatial_dim=spatial_dim,
+        include_spin=include_spin,
+        basis_semantics="axiswise_v1",
     )
     assert orbital.out_features == spatial_dim * (max_shell + 1) + spin_channels
     assert orbital(batch).one_body.shape[-1] == orbital.out_features
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_hermite_and_orbital_differ_only_by_gaussian_factor() -> None:
     batch = _batch()
     hermite = HookeHermiteBasis(omega=0.5, max_order=2, spatial_dim=3, include_spin=False)
     orbital = HookeOrbitalBasis(
-        omega=0.5, max_shell=2, spatial_dim=3, include_spin=False, include_gaussian_factor=True
+        omega=0.5,
+        max_shell=2,
+        spatial_dim=3,
+        include_spin=False,
+        include_gaussian_factor=True,
+        basis_semantics="axiswise_v1",
     )
     no_gaussian = HookeOrbitalBasis(
-        omega=0.5, max_shell=2, spatial_dim=3, include_spin=False, include_gaussian_factor=False
+        omega=0.5,
+        max_shell=2,
+        spatial_dim=3,
+        include_spin=False,
+        include_gaussian_factor=False,
+        basis_semantics="axiswise_v1",
     )
     # With the same scale and no Gaussian factor, the orbital basis reduces to
     # the Hermite polynomials; enabling the factor strictly changes the output.
