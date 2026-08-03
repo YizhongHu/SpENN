@@ -192,18 +192,6 @@ callbacks:
 GPU synchronization is opt-in with `cuda_synchronize: true` for
 benchmarking; it is disabled by default for normal training.
 
-## SageMath
-
-Regenerate checked-in Specht irrep cache files from SageMath with:
-
-```bash
-uv run python -m spenn.reps.fixture_generators.sage_specht \
-  --sage-executable /n/sw/sage-10.3/sage \
-  --max-order 3 \
-  --out-json spenn/cache/irreps.json \
-  --out-cache spenn/cache/irreps_m3.pt
-```
-
 ## Eager Model Invariant
 
 SpENN model construction owns trainable state. All trainable parameters must be
@@ -223,11 +211,8 @@ Current tensor layouts are:
 RealFeature order m:
   [batch, channels, i1, ..., im]
 
-IrrepInteraction:
-  [batch, channels, paths, indices..., alpha, beta_in]
-
-IrrepFeature:
-  [batch, channels, indices..., alpha, beta]
+RealInteraction order m:
+  [batch, channels, paths, i1, ..., im]
 ```
 
 
@@ -258,8 +243,8 @@ larger systems are checked against adjacent transpositions and reversal. Configs
 force checks with `probability: 1.0` on the `RuntimeEquivariance` callback.
 
 Runtime validation is a typed, per-object contract kept **separate** from
-equivariance. `RealFeature`, `RealInteraction`, `IrrepFeature`,
-`IrrepInteraction`, and `ElectronBatch` each expose a `validate()` method (and,
+equivariance. `RealFeature`, `RealInteraction`, and `ElectronBatch` each
+expose a `validate()` method (and,
 where useful, `validity_metrics()`) that checks their own semantic fields; the
 static contracts live in `spenn.data.validation` (`RuntimeValidatable`,
 `RuntimeValidityMetrics`). This is deliberately distinct from
@@ -292,15 +277,13 @@ Exact testing strategy:
 - Tensor shape checks:
   `RealFeature`, `RealInteraction`, and `RealUpdate` are dense order-indexed
   lists of tensors. Index 0 is reserved for zero-order data and must have zero
-  channels; use `spenn.data.real.zero_block` to construct that sentinel. Irrep
-  tensors are keyed directly by `spenn.data.partition.Partition`, whose
-  `order` defines the tuple order. Validation coverage lives in
+  channels; use `spenn.data.real.zero_block` to construct that sentinel.
+  Validation coverage lives in
   `tests/unit/data/test_tensor_validation.py`.
 - Layer-level checks:
-  `spenn.nn.Update`, `spenn.nn.Activation`, `spenn.nn.PathAggregation`, and
+  `spenn.nn.Update`, `spenn.nn.PathAggregation`, and
   `spenn.nn.SpENNLayer`, with forced runtime
   checks in `tests/unit/nn/test_update_equivariance.py`,
-  `tests/unit/nn/test_activation_equivariance.py`,
   `tests/unit/nn/test_path_aggregation_equivariance.py`, and
   `tests/unit/nn/test_spenn_layer_scaffold.py`.
 - Virtual-support combinatorics:
@@ -316,12 +299,11 @@ The new core scaffold is direct, not a compatibility layer:
 
 - `spenn.data`: common state names are exported at the package root for
   convenience, while helpers stay with their owner modules:
-  `spenn.data.batch`, `spenn.data.real`, `spenn.data.irrep`,
+  `spenn.data.batch`, `spenn.data.real`,
   `spenn.data.partition`, `spenn.data.permutation`, and `spenn.data.indices`.
   Electron-batch geometry helpers live under `spenn.data.batch`.
-- `spenn.reps`: virtual path metadata, irrep metadata, Sage-backed fixture
-  generation, and cache-backed Fourier transforms.
-- `spenn.nn`: `EquivariantMixing`, `GatedNormActivation`, `PathAggregation`,
+- `spenn.reps`: virtual path metadata.
+- `spenn.nn`: `EquivariantMixing`, `PathAggregation`,
   `ResidualUpdate`, `SpENNLayer`, `SpENNWaveFunction`, and readouts under
   `spenn.nn.readout`.
 - `spenn.equivariance`: traceable `EquivariantMap`, passive trace recording, and

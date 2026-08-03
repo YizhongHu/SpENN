@@ -6,7 +6,6 @@ import pytest
 import torch
 from typeguard import TypeCheckError
 
-from spenn.data.irrep import IrrepFeature, IrrepInteraction
 from spenn.data.partition import Partition
 from spenn.data.real import (
     RealFeature,
@@ -188,43 +187,9 @@ def test_real_tensor_common_state_helpers_are_data_owned() -> None:
         )
 
 
-def test_irrep_feature_uses_partition_keys_and_validates_tail_dimensions() -> None:
-    vector = Partition((2, 1))
-    valid = IrrepFeature({vector: torch.zeros(2, 3, 4, 4, 4, 2, 2, dtype=torch.float64)})
-
-    assert valid.validate() is valid
-    assert valid[vector].shape[-2:] == (2, 2)
-
-    with pytest.raises((TypeError, TypeCheckError), match="Partition|torch.Tensor"):
-        IrrepFeature({1: {Partition((1,)): torch.zeros(2, 3, 4, 1, 1, dtype=torch.float64)}})
-    with pytest.raises(ValueError, match="irrep dimensions"):
-        IrrepFeature({vector: torch.zeros(2, 3, 4, 4, 4, 1, 1, dtype=torch.float64)})
-
-
 def test_partition_owns_activation_classification_and_module_keys() -> None:
     assert Partition((3,)).is_symmetric()
     assert Partition((1, 1, 1)).is_antisymmetric()
     assert not Partition((2, 1)).is_symmetric()
     assert not Partition((2, 1)).is_antisymmetric()
     assert Partition((2, 1)).key == "p2_1"
-
-
-def test_irrep_feature_checks_channels_for_same_order_but_interaction_is_looser() -> None:
-    trivial = Partition((3,))
-    vector = Partition((2, 1))
-
-    with pytest.raises(ValueError, match="channel"):
-        IrrepFeature(
-            {
-                trivial: torch.zeros(2, 2, 4, 4, 4, 1, 1, dtype=torch.float64),
-                vector: torch.zeros(2, 3, 4, 4, 4, 2, 2, dtype=torch.float64),
-            }
-        )
-
-    interaction = IrrepInteraction(
-        {
-            trivial: torch.zeros(2, 2, 5, 4, 4, 4, 1, 1, dtype=torch.float64),
-            vector: torch.zeros(2, 3, 5, 4, 4, 4, 2, 2, dtype=torch.float64),
-        }
-    )
-    assert interaction.validate() is interaction
