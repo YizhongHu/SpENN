@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Literal
 
 from spenn.data.indices import (
@@ -81,6 +81,14 @@ class EquivariantMixing(EquivariantMap):
         Mixing kernel implementation. ``"slow"`` keeps the literal loop oracle;
         ``"vectorized"`` batches virtual tuples path-by-path and should match
         the slow reference exactly.
+    activation : torch.nn.Module, callable, or None, optional
+        Owned pointwise activation ``Gamma`` applied to every positive-order
+        output block after the bilinear contraction (TPEN layer contract,
+        MIG-TPEN-000 section 2.2). ``None`` keeps the identity and preserves
+        the pre-TPEN behavior exactly. The activation is applied to the full
+        block, including non-distinct tuple entries that mixing never writes,
+        so a ``Gamma(0) != 0`` choice writes an invariant constant onto those
+        entries; it never mixes channels, paths, or particle indices.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -99,9 +107,11 @@ class EquivariantMixing(EquivariantMap):
         out_channels: int | Mapping[int, int] | None = None,
         initial_weight: float = 1.0,
         implementation: MixingImplementation = "slow",
+        activation: "nn.Module | Callable[[torch.Tensor], torch.Tensor] | None" = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        self.activation = activation
         self.max_order = int(max_order)
         self.max_virtual_order = self.max_order if max_virtual_order is None else int(max_virtual_order)
         if self.max_order <= 0:
@@ -201,6 +211,10 @@ class EquivariantMixing(EquivariantMap):
                 )
             if counts is not None:
                 block = block / counts.clamp_min(1).unsqueeze(0).unsqueeze(0)
+            # Owned pointwise Gamma on the full block (TPEN contract). Applied
+            # after completion averaging so Gamma sees the final mixed values.
+            if self.activation is not None:
+                block = self.activation(block)
             output_blocks.append(block)
         return RealInteraction(output_blocks)
 
