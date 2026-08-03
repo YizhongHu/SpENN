@@ -81,6 +81,8 @@ model:
     _target_: spenn.nn.AdditiveEnvelope
     envelopes:
       # Harmonic confinement: coefficient = omega / 2 for the Hooke trap.
+      # Hydra cannot do the arithmetic, so editing system.omega requires
+      # editing this too — in BOTH train.yaml and eval.yaml.
       - _target_: spenn.nn.HarmonicConfinement
         coefficient: 0.25
       - _target_: spenn.nn.ElectronElectronCusp
