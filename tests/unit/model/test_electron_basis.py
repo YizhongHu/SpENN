@@ -33,7 +33,7 @@ def test_hooke_hermite_basis_is_particle_equivariant() -> None:
 
 
 # The frozen axiswise_v1 contract stays testable despite its deprecation (D11).
-@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:FutureWarning")
 def test_hooke_orbital_basis_is_particle_equivariant() -> None:
     basis = HookeOrbitalBasis(
         omega=0.5, max_shell=2, spatial_dim=3, basis_semantics="axiswise_v1"
@@ -41,7 +41,7 @@ def test_hooke_orbital_basis_is_particle_equivariant() -> None:
     assert_equivariant_all(basis, _batch())
 
 
-@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:FutureWarning")
 def test_basis_output_is_typed_features_not_batch() -> None:
     batch = _batch()
     for basis in (
@@ -71,7 +71,7 @@ def test_basis_records_features_to_trace() -> None:
     assert isinstance(trace["basis/output"].value, ElectronBasisFeatures)
 
 
-@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:FutureWarning")
 @pytest.mark.parametrize("include_spin", [True, False])
 @pytest.mark.parametrize(
     ("max_order", "max_shell"),
@@ -105,7 +105,7 @@ def test_basis_output_shapes_match_order_or_shell(
     assert orbital(batch).one_body.shape[-1] == orbital.out_features
 
 
-@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:FutureWarning")
 def test_hermite_and_orbital_differ_only_by_gaussian_factor() -> None:
     batch = _batch()
     hermite = HookeHermiteBasis(omega=0.5, max_order=2, spatial_dim=3, include_spin=False)

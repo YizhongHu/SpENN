@@ -290,7 +290,7 @@ class HookeOrbitalBasis(ElectronBasis):
 
     ``axiswise_v1`` is the historical coordinatewise feature map. It is
     deprecated but retained as an explicit mode (decisions D10/D11 in the
-    TPEN migration): selecting it emits a :class:`DeprecationWarning` and
+    TPEN migration): selecting it emits a :class:`FutureWarning` and
     keeps the frozen output contract, so it stays available as a smoke-run
     knob. An omitted ``basis_semantics`` selects ``product_v2`` — the flip is
     loud, not silent, because legacy ``max_shell`` arguments fail product-v2
@@ -355,11 +355,14 @@ class HookeOrbitalBasis(ElectronBasis):
 
         if basis_semantics == "axiswise_v1":
             # Deprecated but retained as an explicit smoke knob (D10/D11).
+            # FutureWarning, not DeprecationWarning (D15d): the latter is
+            # suppressed by default outside __main__/pytest, so a production
+            # smoke run selecting the legacy basis would print nothing.
             warnings.warn(
                 "HookeOrbitalBasis basis_semantics='axiswise_v1' is deprecated; "
                 "product_v2 is the default. axiswise_v1 remains fully supported "
                 "as an explicit legacy mode with no silent fallback.",
-                DeprecationWarning,
+                FutureWarning,
                 stacklevel=2,
             )
             self._initialize_axiswise_v1(
