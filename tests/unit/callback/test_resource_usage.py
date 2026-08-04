@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from spenn.callback import Event, ResourceUsage
-from spenn.callback import resource_usage as resource_usage_module
+from tpen.callback import Event, ResourceUsage
+from tpen.callback import resource_usage as resource_usage_module
 from tests.unit.callback.support import RecordingContext
 
 

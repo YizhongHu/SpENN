@@ -5,10 +5,10 @@ from __future__ import annotations
 import torch
 from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import Feature
-from spenn.equivariance import EquivariantMap
-from spenn.nn import AdditiveEnvelope, Embedding, TPENForwardContext, TPENWaveFunction
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.real import Feature
+from tpen.equivariance import EquivariantMap
+from tpen.nn import AdditiveEnvelope, Embedding, TPENForwardContext, TPENWaveFunction
 from tests.helpers.hooke_models import build_tiny_spenn, tiny_pair_batch
 
 

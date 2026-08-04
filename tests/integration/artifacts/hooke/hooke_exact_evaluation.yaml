@@ -23,11 +23,11 @@ evaluation:
   artifact_level: records
   task_failure_policy: continue
 runner:
-  _target_: spenn.runner.Evaluate
+  _target_: tpen.runner.Evaluate
   model: ${model}
   evaluator: ${evaluator}
 evaluator:
-  _target_: spenn.evaluation.Evaluator
+  _target_: tpen.evaluation.Evaluator
   namespace: ${evaluation.namespace}
   seed: ${evaluation.seed}
   artifact_level: ${evaluation.artifact_level}
@@ -44,7 +44,7 @@ evaluation_tasks:
     namespace: ${evaluation.namespace}/cusp
     output_dir: ${run.dir}/cusp
     generator:
-      _target_: spenn.evaluation.generators.CuspGridGenerator
+      _target_: tpen.evaluation.generators.CuspGridGenerator
       n_points: 16
       r12_min: 1.0e-5
       r12_max: 1.0e-1
@@ -53,23 +53,23 @@ evaluation_tasks:
       paired_directions: true
       seed: ${evaluation.seed}
     calculators:
-    - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+    - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
       hamiltonian_terms: ${hamiltonian_terms}
       return_terms: true
       chunk_size: 128
-    - _target_: spenn.evaluation.calculators.WavefunctionCalculator
-    - _target_: spenn.evaluation.calculators.RadialLogAbsDerivativeCalculator
+    - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    - _target_: tpen.evaluation.calculators.RadialLogAbsDerivativeCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
-    - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
-    - _target_: spenn.evaluation.summaries.SampledRecordWriter
+    - _target_: tpen.evaluation.summaries.LocalEnergySummary
+    - _target_: tpen.evaluation.summaries.CoalescenceDivergenceSummary
+    - _target_: tpen.evaluation.summaries.OppositeSpinCuspSummary
+    - _target_: tpen.evaluation.summaries.SampledRecordWriter
   tail:
     name: tail
     namespace: ${evaluation.namespace}/tail
     output_dir: ${run.dir}/tail
     generator:
-      _target_: spenn.evaluation.generators.TailGridGenerator
+      _target_: tpen.evaluation.generators.TailGridGenerator
       radius_min: 0.5
       radius_max: 8.0
       n_points: 32
@@ -77,23 +77,23 @@ evaluation_tasks:
       n_directions: 8
       seed: ${evaluation.seed}
     calculators:
-    - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+    - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
       hamiltonian_terms: ${hamiltonian_terms}
       return_terms: true
       chunk_size: 128
-    - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+    - _target_: tpen.evaluation.summaries.LocalEnergySummary
+    - _target_: tpen.evaluation.summaries.LocalEnergyStabilitySummary
       abs_threshold: 10.0
-    - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
-    - _target_: spenn.evaluation.summaries.SampledRecordWriter
+    - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+    - _target_: tpen.evaluation.summaries.SampledRecordWriter
   stratified_geometry:
     name: stratified_geometry
     namespace: ${evaluation.namespace}/stratified_geometry
     output_dir: ${run.dir}/stratified_geometry
     generator:
-      _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+      _target_: tpen.evaluation.generators.StratifiedGeometryGenerator
       n_samples: 256
       seed: ${evaluation.seed}
       strata:
@@ -120,92 +120,92 @@ evaluation_tasks:
           radius_min: 4.0
           radius_max: 8.0
     calculators:
-    - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+    - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
       hamiltonian_terms: ${hamiltonian_terms}
       return_terms: true
       chunk_size: 128
-    - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
-    - _target_: spenn.evaluation.summaries.SampledRecordWriter
+    - _target_: tpen.evaluation.summaries.LocalEnergySummary
+    - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+    - _target_: tpen.evaluation.summaries.SampledRecordWriter
   hooke_orbital:
     name: hooke_orbital
     namespace: ${evaluation.namespace}/hooke_orbital
     output_dir: ${run.dir}/hooke_orbital
     generator:
-      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      _target_: tpen.evaluation.generators.HookeOrbitalGenerator
       n_samples: 256
       omega: ${system.omega}
       seed: ${evaluation.seed}
     calculators:
-    - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+    - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
       hamiltonian_terms: ${hamiltonian_terms}
       return_terms: true
       chunk_size: 128
-    - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
-    - _target_: spenn.evaluation.summaries.SampledRecordWriter
+    - _target_: tpen.evaluation.summaries.LocalEnergySummary
+    - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+    - _target_: tpen.evaluation.summaries.SampledRecordWriter
   energy:
     name: energy
     namespace: ${evaluation.namespace}/energy
     output_dir: ${run.dir}/energy
     generator:
-      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      _target_: tpen.evaluation.generators.HookeOrbitalGenerator
       n_samples: 256
       omega: ${system.omega}
       seed: ${evaluation.seed}
     calculators:
-    - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+    - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
       hamiltonian_terms: ${hamiltonian_terms}
       return_terms: true
       chunk_size: 128
-    - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+    - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
-    - _target_: spenn.evaluation.summaries.LocalEnergySummary
-    - _target_: spenn.evaluation.summaries.ReferenceEnergySummary
+    - _target_: tpen.evaluation.summaries.LocalEnergySummary
+    - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
       reference_energy: ${references.exact_energy}
-    - _target_: spenn.evaluation.summaries.SampledRecordWriter
+    - _target_: tpen.evaluation.summaries.SampledRecordWriter
 model:
-  _target_: spenn.physics.hooke.HookeSingletExact
+  _target_: tpen.physics.hooke.HookeSingletExact
 hamiltonian_terms:
   kinetic:
-    _target_: spenn.physics.kinetic.KineticEnergy
+    _target_: tpen.physics.kinetic.KineticEnergy
   harmonic_trap:
-    _target_: spenn.physics.potential.HarmonicTrap
+    _target_: tpen.physics.potential.HarmonicTrap
     omega: ${system.omega}
   electron_electron:
-    _target_: spenn.physics.potential.ElectronElectronInteraction
+    _target_: tpen.physics.potential.ElectronElectronInteraction
 callbacks:
-- _target_: spenn.callback.ConfigSnapshot
+- _target_: tpen.callback.ConfigSnapshot
   triggers:
   - run_start
   output_path: ${run.dir}/config.yaml
-- _target_: spenn.callback.ResolvedConfigSnapshot
+- _target_: tpen.callback.ResolvedConfigSnapshot
   triggers:
   - run_start
   output_path: ${run.dir}/resolved_config.yaml
-- _target_: spenn.callback.Metadata
+- _target_: tpen.callback.Metadata
   triggers:
   - run_start
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
-- _target_: spenn.callback.RunTiming
-- _target_: spenn.callback.EvaluationTiming
-- _target_: spenn.callback.DiagnosticTiming
-- _target_: spenn.callback.ArtifactIndex
-- _target_: spenn.callback.FailureLog
-- _target_: spenn.callback.Status
+- _target_: tpen.callback.RunTiming
+- _target_: tpen.callback.EvaluationTiming
+- _target_: tpen.callback.DiagnosticTiming
+- _target_: tpen.callback.ArtifactIndex
+- _target_: tpen.callback.FailureLog
+- _target_: tpen.callback.Status
   triggers:
   - run_start
   - run_end
   - exception
   output_path: ${run.dir}/status.json
 loggers:
-- _target_: spenn.logging.CSV
+- _target_: tpen.logging.CSV
   path: ${run.dir}/metrics.csv
-- _target_: spenn.logging.JSONL
+- _target_: tpen.logging.JSONL
   path: ${run.dir}/metrics.jsonl

@@ -6,11 +6,11 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch
-from spenn.data.permutation import Permutation
-from spenn.data.real import Feature
-from spenn.equivariance import EquivariantMap
-from spenn.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, TPENForwardContext
+from tpen.data.batch import ElectronBatch
+from tpen.data.permutation import Permutation
+from tpen.data.real import Feature
+from tpen.equivariance import EquivariantMap
+from tpen.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, TPENForwardContext
 
 
 class SliceTupleInputs(nn.Module):

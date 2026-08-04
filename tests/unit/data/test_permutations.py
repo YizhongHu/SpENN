@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from spenn.data.equivariant_state import apply_particle_permutation
-from spenn.data.permutation import (
+from tpen.data.equivariant_state import apply_particle_permutation
+from tpen.data.permutation import (
     Permutation,
     count_nonidentity_permutations,
     select_nonidentity_permutations,

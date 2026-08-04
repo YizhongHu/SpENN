@@ -13,11 +13,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.data.permutation import Permutation
-from spenn.data.real import Feature, Interaction, Update, zero_block
-from spenn.equivariance import EquivariantMap
-from spenn.nn import (
+from tpen.data.batch import ElectronBatch
+from tpen.data.permutation import Permutation
+from tpen.data.real import Feature, Interaction, Update, zero_block
+from tpen.equivariance import EquivariantMap
+from tpen.nn import (
     EquivariantMixing,
     GaussianCoordinateEnvelope,
     PathAggregation,

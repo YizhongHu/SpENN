@@ -1,6 +1,6 @@
 """Pytest-only equivariance assertions built on typed semantic contracts.
 
-Lives under ``tests/`` (never ``spenn/``). Uses only the allowed typed
+Lives under ``tests/`` (never ``tpen/``). Uses only the allowed typed
 contracts -- ``apply_particle_permutation``, ``select_nonidentity_permutations``,
 and each value's own ``.compare(...)``. There is no generic tree walking here:
 multi-input modules pass an explicit tuple of typed args, each permuted
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from spenn.data.equivariant_state import apply_particle_permutation
-from spenn.data.permutation import Permutation, select_nonidentity_permutations
+from tpen.data.equivariant_state import apply_particle_permutation
+from tpen.data.permutation import Permutation, select_nonidentity_permutations
 
 
 def _as_args(inputs: Any) -> tuple[Any, ...]:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import torch
 import pytest
 
-from spenn.data.real import Feature, zero_block
-from spenn.nn import EquivariantMixing
-from spenn.data.paths import load_default_path_metadata
+from tpen.data.real import Feature, zero_block
+from tpen.nn import EquivariantMixing
+from tpen.data.paths import load_default_path_metadata
 from tests.helpers.equivariance import assert_equivariant_all
 
 

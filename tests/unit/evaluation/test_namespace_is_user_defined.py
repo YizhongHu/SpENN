@@ -6,9 +6,9 @@ import dataclasses
 
 import pytest
 
-from spenn.evaluation import Evaluator
-from spenn.evaluation.protocols import EvaluationContext
-from spenn.evaluation.task import EvaluationTask
+from tpen.evaluation import Evaluator
+from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.task import EvaluationTask
 
 
 def test_evaluation_context_has_no_phase_field() -> None:
@@ -34,7 +34,7 @@ def test_evaluator_has_no_phase_attribute() -> None:
 
 
 def test_reference_energy_summary_is_not_phase_gated() -> None:
-    from spenn.evaluation.summaries import ReferenceEnergySummary
+    from tpen.evaluation.summaries import ReferenceEnergySummary
     import inspect
     sig = inspect.signature(ReferenceEnergySummary.__init__)
     assert "allow_phase" not in sig.parameters

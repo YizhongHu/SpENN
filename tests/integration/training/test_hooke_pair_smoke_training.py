@@ -15,7 +15,7 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from spenn.run import run_from_config
+from tpen.run import run_from_config
 
 CONFIG = Path(__file__).resolve().parents[1] / "artifacts" / "hooke" / "pair_train.yaml"
 

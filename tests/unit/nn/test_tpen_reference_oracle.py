@@ -19,9 +19,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.permutation import all_permutations
-from spenn.data.real import Feature, Interaction, zero_block
-from spenn.nn import EquivariantMixing
+from tpen.data.permutation import all_permutations
+from tpen.data.real import Feature, Interaction, zero_block
+from tpen.nn import EquivariantMixing
 from tests.helpers.tpen_reference import (
     mixed_kernel_pfaffian_readout,
     per_channel_pfaffian_readout,

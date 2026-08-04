@@ -18,9 +18,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-import spenn.data.paths as paths_module
-from spenn.data.batch import ElectronBatch
-from spenn.data.permutation import all_permutations
+import tpen.data.paths as paths_module
+from tpen.data.batch import ElectronBatch
+from tpen.data.permutation import all_permutations
 from tests.helpers.hooke_models import build_tiny_spenn, tiny_pair_batch
 
 _DTYPE = torch.float64

@@ -13,9 +13,9 @@ import pytest
 import torch
 from typeguard import TypeCheckError, suppress_type_checks
 
-from spenn.data.batch import ElectronBatch
-from spenn.physics.potential import HarmonicTrap
-from spenn.physics.hamiltonian import (
+from tpen.data.batch import ElectronBatch
+from tpen.physics.potential import HarmonicTrap
+from tpen.physics.hamiltonian import (
     LocalEnergyResult,
     NaiveLocalEnergyContext,
     NaiveLocalEnergyEvaluator,

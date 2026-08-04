@@ -8,18 +8,18 @@ from pathlib import Path
 import pytest
 import torch
 
-import spenn.diagnostics as diagnostics
-from spenn.data.batch import ElectronBatch
-from spenn.evaluation.bundle import (
+import tpen.diagnostics as diagnostics
+from tpen.data.batch import ElectronBatch
+from tpen.evaluation.bundle import (
     DerivativeValues,
     EvaluationBundle,
     GeneratedConfigurations,
     LocalEnergyValues,
     WavefunctionValues,
 )
-from spenn.evaluation.generators import CuspGridGenerator, StratifiedGeometryGenerator, TailGridGenerator
-from spenn.evaluation.protocols import EvaluationContext
-from spenn.evaluation.summaries import (
+from tpen.evaluation.generators import CuspGridGenerator, StratifiedGeometryGenerator, TailGridGenerator
+from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.summaries import (
     CoalescenceDivergenceSummary,
     LocalEnergyPathologySummary,
     LocalEnergyStabilitySummary,

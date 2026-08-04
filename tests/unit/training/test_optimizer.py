@@ -8,7 +8,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from spenn.training.optim import make_optimizer
+from tpen.training.optim import make_optimizer
 
 
 def _model() -> torch.nn.Module:

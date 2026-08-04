@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.indices import permute_tuple_axes
-from spenn.data.permutation import Permutation, all_permutations
-from spenn.data.real import Feature, zero_block
+from tpen.data.indices import permute_tuple_axes
+from tpen.data.permutation import Permutation, all_permutations
+from tpen.data.real import Feature, zero_block
 
 
 def _feature() -> Feature:

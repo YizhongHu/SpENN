@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.nn import ElectronElectronCusp
+from tpen.data.batch import ElectronBatch
+from tpen.nn import ElectronElectronCusp
 
 _DTYPE = torch.float64
 

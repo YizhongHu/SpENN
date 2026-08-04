@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.callback import GradientStats
+from tpen.callback import GradientStats
 from tests.unit.callback.support import FakeState, RecordingContext, step_event
 
 

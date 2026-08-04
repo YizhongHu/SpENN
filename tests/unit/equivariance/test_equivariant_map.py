@@ -1,7 +1,7 @@
 """Tests for the pytest-only equivariance helpers over EquivariantMap toys.
 
 Equivariance is asserted via ``tests.helpers.equivariance`` (typed ``.compare`` /
-``apply_particle_permutation``), not the removed ``spenn.testing`` surface or any
+``apply_particle_permutation``), not the removed ``tpen.testing`` surface or any
 generic tree walker.
 """
 
@@ -10,9 +10,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.permutation import Permutation
-from spenn.data.real import Feature, zero_block
-from spenn.equivariance import EquivariantMap
+from tpen.data.permutation import Permutation
+from tpen.data.real import Feature, zero_block
+from tpen.equivariance import EquivariantMap
 from tests.helpers.equivariance import assert_equivariant, assert_equivariant_all
 
 

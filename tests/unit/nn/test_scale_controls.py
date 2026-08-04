@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.data.permutation import Permutation
-from spenn.data.real import Feature, zero_block
-from spenn.nn import (
+from tpen.data.batch import ElectronBatch
+from tpen.data.permutation import Permutation
+from tpen.data.real import Feature, zero_block
+from tpen.nn import (
     GaussianCoordinateEnvelope,
     GaussianDecayGate,
     TPENForwardContext,

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import torch
 
-from spenn.data.batch import ElectronBatch, Walkers
-from spenn.evaluation.generators import MCMCGenerator
-from spenn.evaluation.protocols import EvaluationContext
+from tpen.data.batch import ElectronBatch, Walkers
+from tpen.evaluation.generators import MCMCGenerator
+from tpen.evaluation.protocols import EvaluationContext
 
 
 class RecordingSampler:

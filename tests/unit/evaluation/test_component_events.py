@@ -9,11 +9,11 @@ from typing import Any
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch
-from spenn.evaluation import Evaluator, EvaluationTask
-from spenn.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
-from spenn.evaluation.protocols import EvaluationContext
-from spenn.evaluation.results import SummaryResult
+from tpen.data.batch import ElectronBatch
+from tpen.evaluation import Evaluator, EvaluationTask
+from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
+from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.results import SummaryResult
 
 
 class _NullGenerator:

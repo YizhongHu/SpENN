@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import spenn.nn as spenn_nn
-from spenn.nn.coordinate_envelopes import GaussianCoordinateEnvelope, GaussianDecayGate
-from spenn.nn.initialization import SeededLinear, TorchInitializer
-from spenn.nn.tpen_stack import TPENStack
-from spenn.nn.update import ResidualUpdater
+import tpen.nn as spenn_nn
+from tpen.nn.coordinate_envelopes import GaussianCoordinateEnvelope, GaussianDecayGate
+from tpen.nn.initialization import SeededLinear, TorchInitializer
+from tpen.nn.tpen_stack import TPENStack
+from tpen.nn.update import ResidualUpdater
 
 
 def test_spenn_nn_namespace_keeps_baseline_surface() -> None:

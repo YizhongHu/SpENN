@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from spenn.nn import Embedding, MLP, PathAggregation, SeededLinear, TorchInitializer
+from tpen.nn import Embedding, MLP, PathAggregation, SeededLinear, TorchInitializer
 
 
 def _state_dict(module: torch.nn.Module) -> dict[str, torch.Tensor]:

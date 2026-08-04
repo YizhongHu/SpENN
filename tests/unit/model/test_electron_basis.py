@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.nn import HookeHermiteBasis, HookeOrbitalBasis, RawCoordinateBasis
-from spenn.nn.basis import ElectronBasisFeatures
-from spenn.trace import Trace
+from tpen.data.batch import ElectronBatch
+from tpen.nn import HookeHermiteBasis, HookeOrbitalBasis, RawCoordinateBasis
+from tpen.nn.basis import ElectronBasisFeatures
+from tpen.trace import Trace
 from tests.helpers.equivariance import assert_equivariant_all
 
 

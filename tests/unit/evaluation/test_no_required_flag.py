@@ -6,8 +6,8 @@ import dataclasses
 
 import pytest
 
-from spenn.evaluation.results import TaskResult
-from spenn.evaluation.task import EvaluationTask, coerce_task
+from tpen.evaluation.results import TaskResult
+from tpen.evaluation.task import EvaluationTask, coerce_task
 
 
 def test_evaluation_task_has_no_required_field() -> None:

@@ -6,10 +6,10 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from spenn.config import basis_feature_dim
-from spenn.data.batch import ElectronBatch
-from spenn.nn import HookeOrbitalBasis
-from spenn.nn.basis import ElectronBasisFeatures
+from tpen.config import basis_feature_dim
+from tpen.data.batch import ElectronBatch
+from tpen.nn import HookeOrbitalBasis
+from tpen.nn.basis import ElectronBasisFeatures
 from tests.helpers.equivariance import assert_equivariant_all
 
 
@@ -536,7 +536,7 @@ def test_product_v2_config_resolver_uses_selected_truncation_width(
     bound_config = {"max_total_shell": bound} if truncation == "total_shell" else {"box_size": bound}
     config = OmegaConf.create(
         {
-            "_target_": "spenn.nn.HookeOrbitalBasis",
+            "_target_": "tpen.nn.HookeOrbitalBasis",
             "omega": 0.5,
             "spatial_dim": 3,
             "basis_semantics": "product_v2",

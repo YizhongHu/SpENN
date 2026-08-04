@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.nn import MLP
+from tpen.nn import MLP
 
 
 def test_mlp_preserves_leading_axes_and_sets_output_channels() -> None:

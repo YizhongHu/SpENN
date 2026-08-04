@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.physics.hamiltonian import LocalEnergyResult, local_energy
-from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
-from spenn.physics.kinetic import KineticEnergy
-from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.data.batch import ElectronBatch
+from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
+from tpen.physics.hooke import HookeSingletExact, HookeTripletExact
+from tpen.physics.kinetic import KineticEnergy
+from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
 
 DTYPE = torch.float64
 BATCH_SIZE = 64

@@ -12,9 +12,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.permutation import all_permutations
-from spenn.data.real import Feature, zero_block
-from spenn.nn import EquivariantMixing
+from tpen.data.permutation import all_permutations
+from tpen.data.real import Feature, zero_block
+from tpen.nn import EquivariantMixing
 
 _DTYPE = torch.float64
 
