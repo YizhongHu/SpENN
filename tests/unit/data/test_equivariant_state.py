@@ -7,12 +7,12 @@ import torch
 from spenn.data.batch import WavefunctionOutput
 from spenn.data.equivariant_state import EquivariantState
 from spenn.data.permutation import Permutation, all_permutations
-from spenn.data.real import Feature, RealUpdate, zero_block
+from spenn.data.real import Feature, Update, zero_block
 
 
 def test_real_states_implement_equivariant_state_protocol() -> None:
     feature = Feature([zero_block(dtype=torch.float64), torch.arange(6, dtype=torch.float64).reshape(1, 2, 3)])
-    update = RealUpdate([zero_block(dtype=torch.float64), torch.ones(1, 2, 3, dtype=torch.float64)])
+    update = Update([zero_block(dtype=torch.float64), torch.ones(1, 2, 3, dtype=torch.float64)])
 
     assert isinstance(feature, EquivariantState)
     assert isinstance(update, EquivariantState)

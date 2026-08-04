@@ -8,8 +8,8 @@ Feature
   -> EquivariantMixing (owned pointwise Gamma)
   -> Interaction
   -> PathAggregation (owned Gamma_c)
-  -> RealUpdate
   -> Update
+  -> Updater
   -> Feature
 ```
 

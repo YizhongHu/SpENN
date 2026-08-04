@@ -5,12 +5,12 @@ from __future__ import annotations
 import torch
 
 from spenn.equivariance import EquivariantMap
-from spenn.data.real import Feature, RealUpdate, zero_block
-from spenn.nn.update import ResidualUpdate, Update
+from spenn.data.real import Feature, Update, zero_block
+from spenn.nn.update import ResidualUpdater, Updater
 from tests.helpers.equivariance import assert_equivariant_all
 
 
-def _feature_and_update() -> tuple[Feature, RealUpdate]:
+def _feature_and_update() -> tuple[Feature, Update]:
     feature = Feature(
         [
             zero_block(dtype=torch.float64),
@@ -18,7 +18,7 @@ def _feature_and_update() -> tuple[Feature, RealUpdate]:
             torch.arange(1 * 2 * 3 * 3, dtype=torch.float64).reshape(1, 2, 3, 3),
         ]
     )
-    update = RealUpdate(
+    update = Update(
         [
             zero_block(dtype=torch.float64),
             torch.ones(1, 2, 3, dtype=torch.float64),
@@ -29,12 +29,12 @@ def _feature_and_update() -> tuple[Feature, RealUpdate]:
 
 
 def test_residual_update_is_baseline_update_map() -> None:
-    assert issubclass(ResidualUpdate, Update)
+    assert issubclass(ResidualUpdater, Updater)
 
 
 def test_residual_update_passes_runtime_equivariance_check() -> None:
     feature, update = _feature_and_update()
-    module = ResidualUpdate(step=0.25)
+    module = ResidualUpdater(step=0.25)
 
     output = module(feature, update)
 
@@ -47,7 +47,7 @@ def test_residual_update_passes_runtime_equivariance_check() -> None:
 def test_residual_update_keeps_real_space_shapes() -> None:
     feature, update = _feature_and_update()
 
-    output = ResidualUpdate(step=0.25)(feature, update)
+    output = ResidualUpdater(step=0.25)(feature, update)
 
     torch.testing.assert_close(output.blocks[1], feature.blocks[1] + 0.25 * update.blocks[1])
     torch.testing.assert_close(output.blocks[2], feature.blocks[2] + 0.25 * update.blocks[2])

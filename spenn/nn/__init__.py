@@ -29,7 +29,7 @@ from spenn.nn.path_aggregation import PathAggregation
 from spenn.nn.spenn_layer import TPENLayer
 from spenn.nn.spenn_wave_function import TPENWaveFunction
 from spenn.nn.tpen_stack import TPENStack
-from spenn.nn.update import ResidualUpdate, Update
+from spenn.nn.update import ResidualUpdater, Updater
 
 __all__ = [
     "AdditiveEnvelope",
@@ -50,12 +50,12 @@ __all__ = [
     "PathAggregation",
     "RawCoordinateBasis",
     "RMSNorm",
-    "ResidualUpdate",
+    "ResidualUpdater",
     "SeededLinear",
     "TPENForwardContext",
     "TPENLayer",
     "TPENWaveFunction",
     "TPENStack",
     "TorchInitializer",
-    "Update",
+    "Updater",
 ]

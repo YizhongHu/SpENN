@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.real import Feature, RealUpdate, zero_block
+from spenn.data.real import Feature, Update, zero_block
 from spenn.nn import RMSNorm
 from tests.helpers.equivariance import assert_equivariant_all
 
@@ -23,7 +23,7 @@ def test_rms_norm_is_particle_equivariant() -> None:
 
 
 def test_rms_norm_preserves_concrete_real_state_type() -> None:
-    update = RealUpdate(
+    update = Update(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.tensor([[[3.0, 4.0]], [[5.0, 12.0]]], dtype=torch.float64),
@@ -32,7 +32,7 @@ def test_rms_norm_preserves_concrete_real_state_type() -> None:
 
     normalized = RMSNorm(eps=1.0e-8)(update)
 
-    assert isinstance(normalized, RealUpdate)
+    assert isinstance(normalized, Update)
     assert normalized.blocks[1].shape == update.blocks[1].shape
 
 

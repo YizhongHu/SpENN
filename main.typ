@@ -789,7 +789,7 @@ the sum of `nn.GaussianConfinement` and `nn.Cusp`.
 This log-amplitude envelope is distinct from coordinate envelopes such as
 `nn.GaussianCoordinateEnvelope` (a `nn.CoordinateEnvelope` that owns its
 multiplication). Coordinate envelopes multiply intermediate `Feature` or
-`RealUpdate` blocks inside `nn.Embedding` or `nn.TPENLayer`; the
+`Update` blocks inside `nn.Embedding` or `nn.TPENLayer`; the
 log-amplitude `nn.Envelope` adds only to the final `log abs(psi)`.
 
 For a harmonically confined system,
@@ -928,7 +928,7 @@ Implemented in `nn.TPENWaveFunction`.
       $ by^(1, c_"in",lambda<-mu)_(sigma, I<-J) = (d_mu)/(m!) tr(bm_J^(1,c_"in" mu)) rho^lambda (sigma^(-1)) $
     + Aggregate into the update tensor $bold("u")$ with `nn.UpdateHead`:
       $ bold("u")^(1, c_"out" lambda)_(I; alpha beta) = sum_(J prec.eq I) sum_(mu tack|I|) "activation"_lambda [sum_(sigma in S_m)  sum_(c_"in") O^(1, c_"out"<-c_"in",m<-|J|)_(sigma I <- J; beta) by^(1, c_"in",lambda<-mu)_(sigma, I<-J; alpha beta)] $
-    + Update the irreps with `nn.Update`:
+    + Update the irreps with `nn.Updater`:
       $ bx^(1) = "update"(bold("u")^1, bx^0) $
   + SpechtMP layer 2 (`nn.SpechtMPLayer`)
   
@@ -966,7 +966,7 @@ Implemented in `nn.TPENWaveFunction`.
     + Optional update normalization, then optional update real-state envelope, both owned by `nn.TPENLayer`.
     + Feature update (`nn.update`)
       $ bx^1 = "Update"(bx^0, bu^1) $
-      most commonly with `nn.update.ResidualUpdate`.
+      most commonly with `nn.update.ResidualUpdater`.
     + Optional end-of-layer feature normalization, then optional feature real-state envelope, both owned by `nn.TPENLayer`.
   + SpENN layer 2
     $

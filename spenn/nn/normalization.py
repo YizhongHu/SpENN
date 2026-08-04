@@ -38,7 +38,7 @@ class RMSNorm(EquivariantMap):
         Parameters
         ----------
         features : Feature
-            Real tuple features (or a :class:`spenn.data.real.RealUpdate`).
+            Real tuple features (or a :class:`spenn.data.real.Update`).
 
         Returns
         -------
@@ -54,7 +54,7 @@ class RMSNorm(EquivariantMap):
                 continue
             mean_square = block.square().mean(dim=1, keepdim=True)
             blocks.append(block * torch.rsqrt(mean_square + self.eps))
-        # Preserve the concrete type (Feature vs RealUpdate).
+        # Preserve the concrete type (Feature vs Update).
         return type(features)(blocks)
 
 
