@@ -46,6 +46,10 @@ test config is a working example:
 uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
+The same entrypoint is installed as a `spenn` console script, so
+`uv run --extra cpu spenn --config <config>` is equivalent. `run.py` stays
+supported during the transition.
+
 Human-readable run timestamps are controlled by `run.timezone`, an IANA
 timezone name. The code default is `UTC`; the Hooke smoke config uses
 `America/New_York` so run IDs, `metadata.json`, `status.json`, and terminal
