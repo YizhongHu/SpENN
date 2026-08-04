@@ -69,35 +69,28 @@ def pfaffian(matrix: torch.Tensor) -> torch.Tensor:
     return torch.stack([_pfaffian_single(item) for item in matrix], dim=0)
 
 
-def pfaffian_logabs_sign(matrix: torch.Tensor, eps: float = 1.0e-12) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return signed-log Pfaffian values."""
-
-    value = pfaffian(matrix)
-    sign = torch.sign(value)
-    logabs = torch.where(sign == 0, torch.full_like(value, -torch.inf), 0.5 * torch.log(value.square().clamp_min(eps)))
-    return logabs, sign
-
-
 class PfaffianReadout(nn.Module):
-    """Build a skew matrix from order-2 real features and return a Pfaffian.
+    """Per-channel Pfaffian readout: ``Psi = sum_c w_c Pf[K_c]``.
 
-    Odd-electron systems are always padded with the unique order-1 ``(1)``
-    irrep. At this readout boundary that irrep is represented by the order-1
-    real feature block produced by the inverse Fourier transform.
+    Each order-2 channel is antisymmetrized into its own skew kernel
+    ``K_c = 0.5 * (x_c - x_c^T)``. Odd-electron systems pad every channel
+    kernel with that channel's order-1 ``(1)`` irrep block as border. The
+    readout is the weighted sum of per-channel Pfaffians, not one Pfaffian
+    of the channel-mixed kernel: Pf is degree-``n/2`` and nonlinear, so the
+    two forms are different function classes (MIG-TPEN-000 section 2.2,
+    decision B1, gate T6).
 
     Parameters
     ----------
     eps : float, optional
         Positive floor for signed-log conversion.
     channels, pair_channels : int
-        Number of order-2 real feature channels used by the Pfaffian. `channels`
-        is a shorthand for `pair_channels`.
-    border_channels : int or None, optional
-        Number of order-1 ``(1)`` irrep padding channels for odd-electron
-        systems. Defaults to `pair_channels`.
+        Number of order-2 real feature channels read out. `channels` is a
+        shorthand for `pair_channels`. Odd-electron padding requires the
+        order-1 block to carry the same channel count.
     trainable : bool, optional
-        Whether pair and odd-electron padding readout weights are trainable.
-        The default keeps them as fixed buffers for scaffold determinism.
+        Whether the per-channel readout weights ``w_c`` are trainable. The
+        default keeps them as fixed buffers for scaffold determinism.
     """
 
     def __init__(
@@ -106,7 +99,6 @@ class PfaffianReadout(nn.Module):
         eps: float = 1.0e-12,
         channels: int | None = None,
         pair_channels: int | None = None,
-        border_channels: int | None = None,
         trainable: bool = False,
     ) -> None:
         super().__init__()
@@ -116,23 +108,22 @@ class PfaffianReadout(nn.Module):
         if pair_channels is None:
             raise ValueError("PfaffianReadout requires pair_channels or channels for eager initialization")
         self.pair_channels = _positive_int(pair_channels, "pair_channels")
-        if border_channels is None:
-            border_channels = self.pair_channels
-        self.border_channels = _positive_int(border_channels, "border_channels")
-        self._register_readout_weight("channel_weights", "channel_weight_buffer", self.pair_channels)
-        self._register_readout_weight("border_weights", "border_weight_buffer", self.border_channels)
-
-    def _register_readout_weight(self, parameter_name: str, buffer_name: str, channels: int) -> None:
-        initial = torch.full((channels,), 1.0 / channels)
+        initial = torch.full((self.pair_channels,), 1.0 / self.pair_channels)
         if self.trainable:
-            self.register_parameter(parameter_name, nn.Parameter(initial))
-            self.register_buffer(buffer_name, None, persistent=False)
+            self.channel_weights = nn.Parameter(initial)
+            self.register_buffer("channel_weight_buffer", None, persistent=False)
         else:
-            self.register_parameter(parameter_name, None)
-            self.register_buffer(buffer_name, initial, persistent=False)
+            self.register_parameter("channel_weights", None)
+            self.register_buffer("channel_weight_buffer", initial, persistent=False)
+
+    def _weights(self) -> torch.Tensor:
+        weight = self.channel_weights if self.trainable else self.channel_weight_buffer
+        if weight is None:
+            raise RuntimeError("PfaffianReadout channel weights were not eagerly initialized")
+        return weight
 
     def build_skew_kernel(self, features: RealFeature, batch: ElectronBatch | None = None) -> torch.Tensor:
-        """Construct the skew matrix consumed by the Pfaffian.
+        """Construct the per-channel skew kernels consumed by the Pfaffians.
 
         Parameters
         ----------
@@ -145,8 +136,9 @@ class PfaffianReadout(nn.Module):
         Returns
         -------
         torch.Tensor
-            Skew matrix with shape ``[batch, n, n]`` or bordered shape
-            ``[batch, n + 1, n + 1]`` for odd electron counts.
+            Skew kernels with shape ``[batch, channels, n, n]``, or the
+            per-channel bordered shape ``[batch, channels, n + 1, n + 1]``
+            for odd electron counts.
         """
 
         if 2 not in features:
@@ -156,45 +148,34 @@ class PfaffianReadout(nn.Module):
             raise ValueError(f"Order-2 block must have shape [batch, channels, n, n], got {tuple(pair.shape)}")
         if batch is not None and pair.shape[0] != batch.batch_size:
             raise ValueError("Feature batch size disagrees with ElectronBatch")
-        weights = self._ensure_pair_weights(pair.shape[1])
-        antisymmetric = 0.5 * (pair - pair.transpose(-1, -2))
-        kernel = (antisymmetric * weights.view(1, -1, 1, 1)).sum(dim=1)
+        if pair.shape[1] != self.pair_channels:
+            raise ValueError(
+                f"Order-2 block has {pair.shape[1]} channels, expected pair_channels={self.pair_channels}"
+            )
+        kernel = 0.5 * (pair - pair.transpose(-1, -2))
         if kernel.shape[-1] % 2 == 1:
             one_body = _odd_padding_block(features, kernel)
-            border_weights = self._ensure_border_weights(one_body.shape[1])
-            border = (one_body * border_weights.view(1, -1, 1)).sum(dim=1)
-            bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1] + 1, kernel.shape[2] + 1)
-            bordered[:, :-1, :-1] = kernel
-            bordered[:, :-1, -1] = border
-            bordered[:, -1, :-1] = -border
+            bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1], kernel.shape[2] + 1, kernel.shape[3] + 1)
+            bordered[..., :-1, :-1] = kernel
+            bordered[..., :-1, -1] = one_body
+            bordered[..., -1, :-1] = -one_body
             kernel = bordered
         return kernel
 
     def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
-        """Return a signed-log Pfaffian readout."""
+        """Return the signed-log weighted sum of per-channel Pfaffians."""
 
         kernel = self.build_skew_kernel(features, batch)
-        logabs, sign = pfaffian_logabs_sign(kernel, eps=self.eps)
+        batch_size, channels = kernel.shape[0], kernel.shape[1]
+        flat = kernel.reshape(batch_size * channels, kernel.shape[-2], kernel.shape[-1])
+        channel_pfaffians = pfaffian(flat).reshape(batch_size, channels)
+        psi = (channel_pfaffians * self._weights().reshape(1, -1)).sum(dim=1)
+        sign = torch.sign(psi)
+        logabs = torch.where(sign == 0, torch.full_like(psi, -torch.inf), 0.5 * torch.log(psi.square().clamp_min(self.eps)))
         return WavefunctionOutput(
             logabs=logabs,
             sign=sign,
-            aux={"K": kernel, "pfaffian": pfaffian(kernel)},
-        )
-
-    def _ensure_pair_weights(self, channels: int) -> torch.Tensor:
-        return _ensure_readout_weights(
-            self,
-            channels,
-            parameter_name="channel_weights",
-            buffer_name="channel_weight_buffer",
-        )
-
-    def _ensure_border_weights(self, channels: int) -> torch.Tensor:
-        return _ensure_readout_weights(
-            self,
-            channels,
-            parameter_name="border_weights",
-            buffer_name="border_weight_buffer",
+            aux={"K": kernel, "channel_pfaffians": channel_pfaffians, "pfaffian": psi},
         )
 
 
@@ -206,30 +187,12 @@ def _odd_padding_block(features: RealFeature, kernel: torch.Tensor) -> torch.Ten
         raise ValueError("Odd-electron (1) padding block must match order-2 batch and particle axes")
     if one_body.shape[1] == 0:
         raise KeyError("Odd-electron Pfaffian padding requires a nonempty order-1 RealFeature block for irrep (1)")
+    if one_body.shape[1] != kernel.shape[1]:
+        raise ValueError(
+            "Per-channel odd-electron padding requires the order-1 block to match pair channels, "
+            f"got {one_body.shape[1]} order-1 channels for {kernel.shape[1]} pair channels"
+        )
     return one_body
-
-
-def _ensure_readout_weights(
-    module: "PfaffianReadout",
-    channels: int,
-    *,
-    parameter_name: str,
-    buffer_name: str,
-) -> torch.Tensor:
-    if module.trainable:
-        weight = getattr(module, parameter_name)
-        if weight is None:
-            raise RuntimeError(f"{parameter_name} was not eagerly initialized")
-        if tuple(weight.shape) != (channels,):
-            raise ValueError(f"{parameter_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
-        return weight
-
-    weight = getattr(module, buffer_name)
-    if weight is None:
-        raise RuntimeError(f"{buffer_name} was not eagerly initialized")
-    if tuple(weight.shape) != (channels,):
-        raise ValueError(f"{buffer_name} has shape {tuple(weight.shape)}, expected {(channels,)}")
-    return weight
 
 
 def _positive_int(value: int, name: str) -> int:
@@ -239,4 +202,4 @@ def _positive_int(value: int, name: str) -> int:
     return result
 
 
-__all__ = ["PfaffianReadout", "pfaffian", "pfaffian_logabs_sign"]
+__all__ = ["PfaffianReadout", "pfaffian"]

@@ -29,6 +29,7 @@ from spenn.nn.normalization import RMSNorm
 from spenn.nn.path_aggregation import PathAggregation
 from spenn.nn.spenn_layer import SpENNLayer
 from spenn.nn.spenn_wave_function import SpENNWaveFunction
+from spenn.nn.tpen_stack import TPENStack
 from spenn.nn.update import ResidualUpdate, Update
 
 __all__ = [
@@ -56,6 +57,7 @@ __all__ = [
     "SpENNForwardContext",
     "SpENNLayer",
     "SpENNWaveFunction",
+    "TPENStack",
     "TorchInitializer",
     "Update",
 ]

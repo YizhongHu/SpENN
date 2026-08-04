@@ -8,14 +8,14 @@ from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.context import SpENNForwardContext
-from spenn.nn.spenn_layer import SpENNLayer
+from spenn.nn.tpen_stack import TPENStack
 
 torch = require_torch(feature="SpENN wavefunction modules")
 nn = require_torch_nn(feature="SpENN wavefunction modules")
 
 
 class SpENNWaveFunction(EquivariantMap):
-    """Compose basis, embedding, SpENN layers, readout, and an envelope factor.
+    """Compose basis, embedding, a TPEN layer stack, readout, and an envelope.
 
     The full pipeline is::
 
@@ -23,9 +23,9 @@ class SpENNWaveFunction(EquivariantMap):
           -> ElectronBasis (optional)
           -> ElectronBasisFeatures
           -> embedding
-          -> SpENN feature layers
+          -> TPENStack (TPEN layers)
           -> readout
-          -> Gaussian envelope
+          -> + additive log-amplitude envelope
 
     The raw :class:`ElectronBatch` is still passed to the readout and envelope so
     they see true coordinates; the basis only re-represents the per-particle
@@ -36,8 +36,9 @@ class SpENNWaveFunction(EquivariantMap):
     embedding : torch.nn.Module
         Module mapping the basis output (or, when ``basis`` is ``None``, an
         :class:`ElectronBatch`) to :class:`spenn.data.real.RealFeature`.
-    layers : iterable of torch.nn.Module
-        Sequence of SpENN layers.
+    layers : iterable of torch.nn.Module or TPENStack
+        TPEN layers, or an already-constructed :class:`TPENStack`. Iterables
+        are wrapped into a stack; the layers always live in ``self.stack``.
     readout : torch.nn.Module
         Module mapping final real features to :class:`WavefunctionOutput`.
     envelope : torch.nn.Module
@@ -54,7 +55,7 @@ class SpENNWaveFunction(EquivariantMap):
         self,
         *,
         embedding: nn.Module,
-        layers: Iterable[nn.Module] = (),
+        layers: Iterable[nn.Module] | TPENStack = (),
         readout: nn.Module,
         envelope: nn.Module | None,
         basis: nn.Module | None = None,
@@ -65,7 +66,7 @@ class SpENNWaveFunction(EquivariantMap):
             raise ValueError("SpENNWaveFunction requires an envelope module")
         self.basis = basis
         self.embedding = embedding
-        self.layers = nn.ModuleList(tuple(layers))
+        self.stack = layers if isinstance(layers, TPENStack) else TPENStack(layers)
         self.readout = readout
         self.envelope = envelope
 
@@ -76,8 +77,7 @@ class SpENNWaveFunction(EquivariantMap):
         context = SpENNForwardContext(batch=batch, basis_features=basis_features)
         embedded_input = basis_features if basis_features is not None else batch
         features = self.embedding(embedded_input, context=context)
-        for layer in self.layers:
-            features = layer(features, context) if isinstance(layer, SpENNLayer) else layer(features)
+        features = self.stack(features, context)
         output = self.readout(features, batch)
         logabs = output.logabs
         logabs = logabs + _log_factor(self.envelope, batch, output.logabs.shape, name="Envelope")
