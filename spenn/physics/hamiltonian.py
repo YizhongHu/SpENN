@@ -1,14 +1,20 @@
-"""Hamiltonian terms, local-energy results, and aggregation.
+"""Hamiltonian terms, local-energy results, and typed evaluation.
 
 A Hamiltonian is a collection of `HamiltonianTerm`s, given either as a sequence
 or as a ``dict[str, HamiltonianTerm]`` that names each term explicitly. Dict
 keys are the public, authoritative term names: they must be non-empty strings,
-and the values must expose ``local_energy(wavefunction, batch)``. The
-`local_energy` helper normalizes either form (see `normalize_hamiltonian_terms`),
-evaluates every term, and sums their contributions, optionally returning the
-per-term decomposition keyed by the resolved term names. Evaluation summaries
-use canonical flat metric keys such as ``energy`` and
-``energy_term_{name}``; hierarchy belongs in the logging namespace.
+and the values must expose ``local_energy(wavefunction, batch)``.
+
+Evaluation goes through a typed evaluator seam: `NaiveLocalEnergyEvaluator`
+consumes a `NaiveLocalEnergyContext` and owns term normalization (see
+`normalize_hamiltonian_terms`), ordered per-term evaluation, validation, and
+summation, optionally returning the per-term decomposition keyed by the
+resolved term names. The `local_energy` helper is an explicit delegate to the
+naive evaluator and remains the single default path; the naive evaluator is
+the permanent numerical reference for any future optimized evaluator behind
+the `LocalEnergyEvaluator` protocol. Evaluation summaries use canonical flat
+metric keys such as ``energy`` and ``energy_term_{name}``; hierarchy belongs
+in the logging namespace.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import torch
 
@@ -116,6 +122,92 @@ class HamiltonianTerm(Protocol):
         ...
 
 
+ContextT = TypeVar("ContextT")
+
+
+@dataclass(frozen=True)
+class NaiveLocalEnergyContext:
+    """Typed input context for the naive local-energy evaluator.
+
+    Parameters
+    ----------
+    wavefunction : callable
+        Wavefunction model or exact reference returning ``WavefunctionOutput``.
+        The narrowest existing callable contract is reused deliberately; no
+        ansatz-specific base class exists solely for this interface.
+    batch : ElectronBatch
+        Electron configuration batch.
+    """
+
+    wavefunction: object
+    batch: ElectronBatch
+
+
+class LocalEnergyEvaluator(Protocol, Generic[ContextT]):
+    """Protocol for local-energy evaluators over an open set of terms.
+
+    Evaluators consume an explicit typed context, never an arbitrary mapping.
+    Each evaluator declares the narrow context type it requires; the naive
+    evaluator below is the permanent numerical reference for every future
+    optimized evaluator.
+    """
+
+    def evaluate(
+        self,
+        terms: Mapping[Any, Any] | Sequence[Any],
+        context: ContextT,
+        *,
+        return_terms: bool = False,
+    ) -> torch.Tensor | LocalEnergyResult:
+        """Evaluate the local energy for one typed context."""
+        ...
+
+
+class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
+    """Reference evaluator: ordered per-term autodiff evaluation and summation.
+
+    Owns the aggregation loop previously inlined in `local_energy`: term
+    normalization, per-term evaluation through the open ``HamiltonianTerm``
+    protocol, result validation, named decomposition, and summation — with
+    unchanged arithmetic and ordering. This path remains the independent
+    numerical reference for any later optimized evaluator.
+    """
+
+    def evaluate(
+        self,
+        terms: Mapping[Any, Any] | Sequence[Any],
+        context: NaiveLocalEnergyContext,
+        *,
+        return_terms: bool = False,
+    ) -> torch.Tensor | LocalEnergyResult:
+        """Evaluate the summed (optionally decomposed) local energy."""
+
+        if not isinstance(context, NaiveLocalEnergyContext):
+            raise TypeError(
+                "NaiveLocalEnergyEvaluator requires a NaiveLocalEnergyContext, "
+                f"got {type(context).__name__}"
+            )
+        normalized = normalize_hamiltonian_terms(terms)
+        batch = context.batch
+        batch_size = batch.flatten_samples().batch_size
+        total: torch.Tensor | None = None
+        decomposition: dict[str, torch.Tensor] = {}
+        for name, term in normalized.items():
+            result = term.local_energy(context.wavefunction, batch)
+            result = _validate_local_energy_result(name, result, batch_size=batch_size)
+            decomposition[name] = result.total
+            total = result.total if total is None else total + result.total
+        if total is None:
+            flat = batch.flatten_samples()
+            total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
+        if return_terms:
+            return LocalEnergyResult(total=total, terms=decomposition)
+        return total
+
+
+_NAIVE_EVALUATOR = NaiveLocalEnergyEvaluator()
+
+
 def local_energy(
     terms: Mapping[Any, Any] | Sequence[Any],
     wavefunction,
@@ -147,21 +239,10 @@ def local_energy(
         ``return_terms=True``.
     """
 
-    normalized = normalize_hamiltonian_terms(terms)
-    batch_size = batch.flatten_samples().batch_size
-    total: torch.Tensor | None = None
-    decomposition: dict[str, torch.Tensor] = {}
-    for name, term in normalized.items():
-        result = term.local_energy(wavefunction, batch)
-        result = _validate_local_energy_result(name, result, batch_size=batch_size)
-        decomposition[name] = result.total
-        total = result.total if total is None else total + result.total
-    if total is None:
-        flat = batch.flatten_samples()
-        total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
-    if return_terms:
-        return LocalEnergyResult(total=total, terms=decomposition)
-    return total
+    # Explicit delegate: this entry point stays the single default path used
+    # by training and evaluation; the naive evaluator owns the aggregation.
+    context = NaiveLocalEnergyContext(wavefunction=wavefunction, batch=batch)
+    return _NAIVE_EVALUATOR.evaluate(terms, context, return_terms=return_terms)
 
 
 def _validate_local_energy_result(
@@ -278,7 +359,10 @@ def _summarize_values(prefix: str, values: torch.Tensor) -> dict[str, Any]:
 
 __all__ = [
     "HamiltonianTerm",
+    "LocalEnergyEvaluator",
     "LocalEnergyResult",
+    "NaiveLocalEnergyContext",
+    "NaiveLocalEnergyEvaluator",
     "local_energy",
     "normalize_hamiltonian_terms",
     "summarize_local_energy",
