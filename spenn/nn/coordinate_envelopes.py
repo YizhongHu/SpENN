@@ -28,62 +28,31 @@ class GaussianDecayGate(nn.Module):
         return torch.exp(-x / scale)
 
 
-class CoordinateEnvelope(nn.Module):
-    """Base class for coordinate envelopes derived from ``ElectronBatch``."""
+class CoordinateEnvelope(EquivariantMap):
+    """Batch-derived multiplicative envelope that owns its application.
 
-    cache_key = "coordinate_envelope"
+    Per decision D14, an envelope is a multiplicative factor ``env(r)`` on the
+    feature/update it modifies, and the envelope object owns the
+    multiplication — there is no separate producer/applier split. Subclasses
+    implement :meth:`scalar`; this base class broadcast-multiplies the
+    invariant scalar onto every real block, which preserves permutation
+    equivariance because the gate is invariant and shared over particles.
+
+    The former per-forward context cache was dropped with the collapse: it was
+    keyed by a class-level ``cache_key`` rather than by envelope parameters,
+    so two envelopes with different widths could silently share one cached
+    gate. The scalar is cheap to recompute per call.
+    """
 
     def scalar(self, batch: ElectronBatch) -> torch.Tensor:
         """Return an invariant scalar with shape ``[batch]``."""
 
         raise NotImplementedError(f"{type(self).__name__}.scalar is not implemented")
 
-    def forward(self, context: SpENNForwardContext) -> torch.Tensor:
-        """Return a cached or newly computed coordinate gate."""
-
-        cached = context.coordinate_envelope(self.cache_key)
-        if cached is not None:
-            return cached
-        value = self.scalar(context.batch.flatten_samples())
-        context.coordinate_envelopes[self.cache_key] = value
-        return value
-
-
-class GaussianCoordinateEnvelope(CoordinateEnvelope):
-    """Gaussian coordinate envelope ``exp(-sum_i |r_i|^2 / (2 sigma**2))``."""
-
-    cache_key = "gaussian"
-
-    def __init__(self, *, sigma: float = 1.0, cache_key: str | None = None) -> None:
-        super().__init__()
-        self.gate = GaussianDecayGate(sigma=sigma)
-        if cache_key is not None:
-            self.cache_key = str(cache_key)
-
-    @property
-    def sigma(self) -> float:
-        """Return the Gaussian width."""
-
-        return self.gate.sigma
-
-    def scalar(self, batch: ElectronBatch) -> torch.Tensor:
-        """Return the batch-level Gaussian coordinate gate."""
-
-        radius_squared = batch.positions.square().sum(dim=(1, 2))
-        return self.gate(radius_squared)
-
-
-class RealCoordinateEnvelope(EquivariantMap):
-    """Apply a coordinate envelope to each real feature/update block."""
-
-    def __init__(self, envelope: CoordinateEnvelope, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.envelope = envelope
-
     def forward_impl(self, features: RealFeature, context: SpENNForwardContext) -> RealFeature:
-        """Scale real blocks by a batch-dependent invariant gate."""
+        """Scale real blocks by the batch-dependent invariant gate."""
 
-        gate = self.envelope(context)
+        gate = self.scalar(context.batch.flatten_samples())
         if gate.ndim != 1:
             raise ValueError(f"coordinate envelope must have shape [batch], got {tuple(gate.shape)}")
         blocks = []
@@ -101,4 +70,24 @@ class RealCoordinateEnvelope(EquivariantMap):
         return type(features)(blocks)
 
 
-__all__ = ["CoordinateEnvelope", "GaussianCoordinateEnvelope", "GaussianDecayGate", "RealCoordinateEnvelope"]
+class GaussianCoordinateEnvelope(CoordinateEnvelope):
+    """Gaussian coordinate envelope ``exp(-sum_i |r_i|^2 / (2 sigma**2))``."""
+
+    def __init__(self, *, sigma: float = 1.0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.gate = GaussianDecayGate(sigma=sigma)
+
+    @property
+    def sigma(self) -> float:
+        """Return the Gaussian width."""
+
+        return self.gate.sigma
+
+    def scalar(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return the batch-level Gaussian coordinate gate."""
+
+        radius_squared = batch.positions.square().sum(dim=(1, 2))
+        return self.gate(radius_squared)
+
+
+__all__ = ["CoordinateEnvelope", "GaussianCoordinateEnvelope", "GaussianDecayGate"]

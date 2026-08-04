@@ -10,7 +10,6 @@ from spenn.data.real import RealFeature, zero_block
 from spenn.nn import (
     GaussianCoordinateEnvelope,
     GaussianDecayGate,
-    RealCoordinateEnvelope,
     SpENNForwardContext,
 )
 
@@ -49,29 +48,42 @@ def test_gaussian_decay_gate_matches_formula() -> None:
     torch.testing.assert_close(GaussianDecayGate(sigma=2.0)(x), torch.exp(-x / 8.0))
 
 
-def test_coordinate_envelope_broadcasts_and_reuses_context_cache() -> None:
+def test_coordinate_envelope_broadcasts_and_is_repeatable() -> None:
+    # D14 collapse: the envelope owns its multiply; the former context cache
+    # is gone (it was keyed by class-level cache_key, not by sigma), so two
+    # calls must simply recompute the same gate.
     batch = _batch()
     feature = _feature()
     context = SpENNForwardContext(batch=batch)
-    module = RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0))
+    module = GaussianCoordinateEnvelope(sigma=2.0)
 
     first = module(feature, context)
-    cached = context.coordinate_envelopes["gaussian"]
     second = module(feature, context)
 
     radius_squared = batch.positions.square().sum(dim=(1, 2))
     expected_gate = torch.exp(-radius_squared / 8.0)
     expected = feature.blocks[1] * expected_gate.reshape(2, 1, 1)
-    torch.testing.assert_close(cached, expected_gate)
     torch.testing.assert_close(first.blocks[1], expected)
     torch.testing.assert_close(second.blocks[1], expected)
+
+
+def test_distinct_sigma_envelopes_do_not_share_state() -> None:
+    # Regression pin for the pre-D14 footgun: two envelopes with different
+    # widths must produce different gates on the same context.
+    batch = _batch()
+    feature = _feature()
+    context = SpENNForwardContext(batch=batch)
+
+    wide = GaussianCoordinateEnvelope(sigma=2.0)(feature, context)
+    narrow = GaussianCoordinateEnvelope(sigma=0.5)(feature, context)
+    assert not torch.allclose(wide.blocks[1], narrow.blocks[1])
 
 
 def test_coordinate_envelope_is_particle_equivariant() -> None:
     batch = _batch()
     feature = _feature()
     permutation = Permutation((1, 0))
-    module = RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=1.0))
+    module = GaussianCoordinateEnvelope(sigma=1.0)
 
     output = module(feature, SpENNForwardContext(batch=batch))
     lhs = module(feature.permute(permutation), SpENNForwardContext(batch=batch.permute(permutation)))

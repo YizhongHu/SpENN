@@ -12,7 +12,6 @@ from spenn.nn.coordinate_envelopes import (
     CoordinateEnvelope,
     GaussianCoordinateEnvelope,
     GaussianDecayGate,
-    RealCoordinateEnvelope,
 )
 from spenn.nn.embedding import Embedding
 from spenn.nn.envelope import (
@@ -51,7 +50,6 @@ __all__ = [
     "PathAggregation",
     "RawCoordinateBasis",
     "RMSNorm",
-    "RealCoordinateEnvelope",
     "ResidualUpdate",
     "SeededLinear",
     "SpENNForwardContext",
