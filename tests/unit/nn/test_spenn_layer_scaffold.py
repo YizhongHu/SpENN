@@ -1,4 +1,4 @@
-"""Tests for SpENNLayer composition and runtime checks (TPEN layer contract).
+"""Tests for TPENLayer composition and runtime checks (TPEN layer contract).
 
 The layer under test composes ``mixing -> path_aggregation -> update`` in
 real space with optional normalization/envelope hooks (MIG-TPEN-000 §2.2).
@@ -15,7 +15,7 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
-from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
+from spenn.data.real import Feature, Interaction, RealUpdate, zero_block
 from spenn.equivariance import EquivariantMap
 from spenn.nn import (
     EquivariantMixing,
@@ -23,8 +23,8 @@ from spenn.nn import (
     PathAggregation,
     RMSNorm,
     ResidualUpdate,
-    SpENNForwardContext,
-    SpENNLayer,
+    TPENForwardContext,
+    TPENLayer,
     TorchInitializer,
 )
 from tests.helpers.equivariance import assert_equivariant_all
@@ -33,15 +33,15 @@ from tests.helpers.equivariance import assert_equivariant_all
 class IdentityMixing(EquivariantMap):
     """Wrap each feature block as a single-path real interaction."""
 
-    def forward_impl(self, x: RealFeature) -> RealInteraction:
-        return RealInteraction([tensor.unsqueeze(2) for tensor in x.blocks])
+    def forward_impl(self, x: Feature) -> Interaction:
+        return Interaction([tensor.unsqueeze(2) for tensor in x.blocks])
 
 
 class TwoPathMixing(EquivariantMap):
     """Produce a two-path order-1 interaction ``[x, 2x]``."""
 
-    def forward_impl(self, x: RealFeature) -> RealInteraction:
-        return RealInteraction(
+    def forward_impl(self, x: Feature) -> Interaction:
+        return Interaction(
             [
                 x.blocks[0].unsqueeze(2),
                 torch.stack([x.blocks[1], 2.0 * x.blocks[1]], dim=2),
@@ -52,7 +52,7 @@ class TwoPathMixing(EquivariantMap):
 class SumPathAggregation(EquivariantMap):
     """Contract the path axis by summation; stub for the learned module."""
 
-    def forward_impl(self, x: RealInteraction) -> RealUpdate:
+    def forward_impl(self, x: Interaction) -> RealUpdate:
         return RealUpdate([tensor.sum(dim=2) for tensor in x.blocks])
 
 
@@ -62,7 +62,7 @@ class RecordingRealMap(EquivariantMap):
         self.label = label
         self.calls = calls
 
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         self.calls.append(self.label)
         return x
 
@@ -73,20 +73,20 @@ class RecordingRealEnvelope(EquivariantMap):
         self.label = label
         self.calls = calls
 
-    def forward_impl(self, x: RealFeature, context: SpENNForwardContext) -> RealFeature:
+    def forward_impl(self, x: Feature, context: TPENForwardContext) -> Feature:
         assert context.batch is not None
         self.calls.append(self.label)
         return x
 
 
 def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
         ]
     )
-    layer = SpENNLayer(
+    layer = TPENLayer(
         mixing=IdentityMixing(),
         path_aggregation=SumPathAggregation(),
         update=ResidualUpdate(),
@@ -102,14 +102,14 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
 
 def test_spenn_layer_applies_optional_real_controls_in_declared_order() -> None:
     calls: list[str] = []
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
         ]
     )
-    context = SpENNForwardContext(batch=object())  # type: ignore[arg-type]
-    layer = SpENNLayer(
+    context = TPENForwardContext(batch=object())  # type: ignore[arg-type]
+    layer = TPENLayer(
         mixing=TwoPathMixing(),
         path_aggregation=SumPathAggregation(),
         update_normalization=RecordingRealMap("update_normalization", calls),
@@ -130,13 +130,13 @@ def test_spenn_layer_applies_optional_real_controls_in_declared_order() -> None:
 
 
 def test_spenn_layer_envelopes_require_context() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
         ]
     )
-    layer = SpENNLayer(
+    layer = TPENLayer(
         mixing=TwoPathMixing(),
         path_aggregation=SumPathAggregation(),
         update_envelope=RecordingRealEnvelope("update_envelope", []),
@@ -148,7 +148,7 @@ def test_spenn_layer_envelopes_require_context() -> None:
 
 
 def test_spenn_layer_controls_are_equivariant_with_context() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
@@ -161,7 +161,7 @@ def test_spenn_layer_controls_are_equivariant_with_context() -> None:
         )
     )
     permutation = Permutation((2, 0, 1))
-    layer = SpENNLayer(
+    layer = TPENLayer(
         mixing=TwoPathMixing(),
         path_aggregation=SumPathAggregation(),
         update_normalization=RMSNorm(eps=1.0e-8),
@@ -171,9 +171,9 @@ def test_spenn_layer_controls_are_equivariant_with_context() -> None:
         update=ResidualUpdate(),
     )
 
-    output = layer(feature, SpENNForwardContext(batch=batch))
+    output = layer(feature, TPENForwardContext(batch=batch))
     permuted_batch = batch.permute(permutation)
-    lhs = layer(feature.permute(permutation), SpENNForwardContext(batch=permuted_batch))
+    lhs = layer(feature.permute(permutation), TPENForwardContext(batch=permuted_batch))
     rhs = output.permute(permutation)
 
     close, comparison = lhs.compare(rhs)
@@ -182,7 +182,7 @@ def test_spenn_layer_controls_are_equivariant_with_context() -> None:
 
 def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() -> None:
     generator = torch.Generator().manual_seed(24680)
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.randn(1, 2, 3, generator=generator, dtype=torch.float64),
@@ -190,7 +190,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
     )
     # Real TPEN stack: mixing owns Gamma, aggregation owns Gamma_c; the layer
     # itself adds no standalone activation stage.
-    layer = SpENNLayer(
+    layer = TPENLayer(
         mixing=EquivariantMixing(
             max_order=1,
             max_virtual_order=1,
@@ -224,7 +224,7 @@ def test_spenn_layer_matches_slow_tpen_reference_layer() -> None:
     from tests.helpers.tpen_reference import slow_tpen_layer
 
     generator = torch.Generator().manual_seed(13579)
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.randn(2, 2, 3, generator=generator, dtype=torch.float64),
@@ -253,7 +253,7 @@ def test_spenn_layer_matches_slow_tpen_reference_layer() -> None:
         initializer=TorchInitializer(seed=13579),
     ).to(dtype=torch.float64)
 
-    layer = SpENNLayer(
+    layer = TPENLayer(
         mixing=owned_mixing,
         path_aggregation=aggregation,
         update=ResidualUpdate(),
@@ -273,4 +273,4 @@ def test_spenn_layer_matches_slow_tpen_reference_layer() -> None:
     )
 
     matches, stats = layer(feature).compare(reference, atol=1e-12, rtol=1e-12)
-    assert matches, f"SpENNLayer diverged from slow_tpen_layer: {stats}"
+    assert matches, f"TPENLayer diverged from slow_tpen_layer: {stats}"

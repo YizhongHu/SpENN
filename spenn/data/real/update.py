@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-from spenn.data.real.feature import RealFeature
+from spenn.data.real.feature import Feature
 
 
-class RealUpdate(RealFeature):
+class RealUpdate(Feature):
     """Store real-space tuple update proposal blocks.
 
-    `RealUpdate` has the same tensor layout as :class:`RealFeature`, but its
+    `RealUpdate` has the same tensor layout as :class:`Feature`, but its
     semantic role is distinct: it is an update proposal consumed by
     :class:`spenn.nn.Update`.
     """
 
 
-def validate_matching_real_blocks(feature: RealFeature, update: RealUpdate) -> None:
+def validate_matching_real_blocks(feature: Feature, update: RealUpdate) -> None:
     """Validate that a real update can be applied blockwise to features.
 
     Parameters
     ----------
-    feature : RealFeature
+    feature : Feature
         Persistent real tuple features.
     update : RealUpdate
         Real tuple update proposal.
@@ -33,12 +33,12 @@ def validate_matching_real_blocks(feature: RealFeature, update: RealUpdate) -> N
     feature.validate_matching_update(update)
 
 
-def validate_real_update_geometry(feature: RealFeature, update: RealUpdate) -> None:
+def validate_real_update_geometry(feature: Feature, update: RealUpdate) -> None:
     """Validate real feature/update geometry while allowing channel maps.
 
     Parameters
     ----------
-    feature : RealFeature
+    feature : Feature
         Persistent real tuple features.
     update : RealUpdate
         Real tuple update proposal.

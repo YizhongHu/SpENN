@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from spenn.data.batch import ElectronBatch
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
-from spenn.nn.context import SpENNForwardContext
+from spenn.nn.context import TPENForwardContext
 
 torch = require_torch(feature="SpENN coordinate envelopes")
 nn = require_torch_nn(feature="SpENN coordinate envelopes")
@@ -49,7 +49,7 @@ class CoordinateEnvelope(EquivariantMap):
 
         raise NotImplementedError(f"{type(self).__name__}.scalar is not implemented")
 
-    def forward_impl(self, features: RealFeature, context: SpENNForwardContext) -> RealFeature:
+    def forward_impl(self, features: Feature, context: TPENForwardContext) -> Feature:
         """Scale real blocks by the batch-dependent invariant gate."""
 
         gate = self.scalar(context.batch.flatten_samples())

@@ -7,7 +7,7 @@ from spenn.nn.basis import (
     HookeOrbitalBasis,
     RawCoordinateBasis,
 )
-from spenn.nn.context import SpENNForwardContext
+from spenn.nn.context import TPENForwardContext
 from spenn.nn.coordinate_envelopes import (
     CoordinateEnvelope,
     GaussianCoordinateEnvelope,
@@ -16,18 +16,18 @@ from spenn.nn.coordinate_envelopes import (
 from spenn.nn.embedding import Embedding
 from spenn.nn.envelope import (
     AdditiveEnvelope,
-    ElectronElectronCusp,
+    Cusp,
     Envelope,
-    HarmonicConfinement,
-    HookeGaussianEnvelope,
+    GaussianConfinement,
+    HookeGaussianConfinement,
 )
 from spenn.nn.equivariant_mixing import EquivariantMixing
 from spenn.nn.initialization import SeededLinear, TorchInitializer
 from spenn.nn.mlp import MLP
 from spenn.nn.normalization import RMSNorm
 from spenn.nn.path_aggregation import PathAggregation
-from spenn.nn.spenn_layer import SpENNLayer
-from spenn.nn.spenn_wave_function import SpENNWaveFunction
+from spenn.nn.spenn_layer import TPENLayer
+from spenn.nn.spenn_wave_function import TPENWaveFunction
 from spenn.nn.tpen_stack import TPENStack
 from spenn.nn.update import ResidualUpdate, Update
 
@@ -36,14 +36,14 @@ __all__ = [
     "CoordinateEnvelope",
     "ElectronBasis",
     "ElectronBasisFeatures",
-    "ElectronElectronCusp",
+    "Cusp",
     "Embedding",
     "Envelope",
     "EquivariantMixing",
     "GaussianCoordinateEnvelope",
     "GaussianDecayGate",
-    "HarmonicConfinement",
-    "HookeGaussianEnvelope",
+    "GaussianConfinement",
+    "HookeGaussianConfinement",
     "HookeHermiteBasis",
     "HookeOrbitalBasis",
     "MLP",
@@ -52,9 +52,9 @@ __all__ = [
     "RMSNorm",
     "ResidualUpdate",
     "SeededLinear",
-    "SpENNForwardContext",
-    "SpENNLayer",
-    "SpENNWaveFunction",
+    "TPENForwardContext",
+    "TPENLayer",
+    "TPENWaveFunction",
     "TPENStack",
     "TorchInitializer",
     "Update",

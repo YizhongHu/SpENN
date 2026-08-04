@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from spenn.data.real import (
-    RealFeature,
+    Feature,
     RealUpdate,
     common_real_dtype,
     validate_matching_real_blocks,
@@ -21,7 +21,7 @@ nn = require_torch_nn(feature="SpENN update modules")
 class Update(EquivariantMap):
     """Base class for real-feature update rules.
 
-    Subclasses map a persistent :class:`RealFeature` and a proposed
+    Subclasses map a persistent :class:`Feature` and a proposed
     :class:`RealUpdate` to the next persistent feature state.
     """
 
@@ -33,11 +33,11 @@ class ReplaceUpdate(Update):
     exported from ``spenn.nn`` or this module's ``__all__``.
     """
 
-    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
         """Return the update proposal as the next real feature state."""
 
         validate_matching_real_blocks(x, u)
-        return RealFeature([tensor.clone() for tensor in u.blocks])
+        return Feature([tensor.clone() for tensor in u.blocks])
 
 
 class ResidualUpdate(Update):
@@ -54,14 +54,14 @@ class ResidualUpdate(Update):
         super().__init__(**kwargs)
         self.step = float(step)
 
-    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
         """Return ``x + step * u`` blockwise."""
 
         validate_matching_real_blocks(x, u)
         # Same residual formula for every body order m and tuple I; no tuple
         # positions are mixed here, so the equivariance established upstream is
         # preserved by construction.
-        return RealFeature([left + self.step * right for left, right in zip(x.blocks, u.blocks)])
+        return Feature([left + self.step * right for left, right in zip(x.blocks, u.blocks)])
 
 
 class NormGatedUpdate(Update):
@@ -76,7 +76,7 @@ class NormGatedUpdate(Update):
         self.step = float(step)
         self.eps = float(eps)
 
-    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
         """Return a norm-gated residual update."""
 
         validate_matching_real_blocks(x, u)
@@ -88,7 +88,7 @@ class NormGatedUpdate(Update):
             norm = update.square().mean(dim=1, keepdim=True).clamp_min(self.eps).sqrt()
             gate = torch.sigmoid(norm)
             output.append(feature + self.step * gate * update)
-        return RealFeature(output)
+        return Feature(output)
 
 
 class ChannelMappedUpdate(Update):
@@ -146,7 +146,7 @@ class ChannelMappedUpdate(Update):
         self.channel_maps = nn.ParameterDict()
         self._initialize_channel_maps()
 
-    def forward_impl(self, x: RealFeature, u: RealUpdate) -> RealFeature:
+    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
         """Return ``x + step * W_m u_m`` for every body order ``m``."""
 
         validate_real_update_geometry(x, u)
@@ -163,7 +163,7 @@ class ChannelMappedUpdate(Update):
             )
             mapped = torch.einsum("oc,bc...->bo...", weight, update)
             output.append(feature + self.step * mapped)
-        return RealFeature(output)
+        return Feature(output)
 
     def _weight_for_order(
         self,

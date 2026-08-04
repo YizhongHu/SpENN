@@ -6,16 +6,16 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
-from spenn.data.real import RealFeature, zero_block
+from spenn.data.real import Feature, zero_block
 from spenn.nn import (
     GaussianCoordinateEnvelope,
     GaussianDecayGate,
-    SpENNForwardContext,
+    TPENForwardContext,
 )
 
 
-def _feature() -> RealFeature:
-    return RealFeature(
+def _feature() -> Feature:
+    return Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.tensor(
@@ -54,7 +54,7 @@ def test_coordinate_envelope_broadcasts_and_is_repeatable() -> None:
     # calls must simply recompute the same gate.
     batch = _batch()
     feature = _feature()
-    context = SpENNForwardContext(batch=batch)
+    context = TPENForwardContext(batch=batch)
     module = GaussianCoordinateEnvelope(sigma=2.0)
 
     first = module(feature, context)
@@ -72,7 +72,7 @@ def test_distinct_sigma_envelopes_do_not_share_state() -> None:
     # widths must produce different gates on the same context.
     batch = _batch()
     feature = _feature()
-    context = SpENNForwardContext(batch=batch)
+    context = TPENForwardContext(batch=batch)
 
     wide = GaussianCoordinateEnvelope(sigma=2.0)(feature, context)
     narrow = GaussianCoordinateEnvelope(sigma=0.5)(feature, context)
@@ -85,8 +85,8 @@ def test_coordinate_envelope_is_particle_equivariant() -> None:
     permutation = Permutation((1, 0))
     module = GaussianCoordinateEnvelope(sigma=1.0)
 
-    output = module(feature, SpENNForwardContext(batch=batch))
-    lhs = module(feature.permute(permutation), SpENNForwardContext(batch=batch.permute(permutation)))
+    output = module(feature, TPENForwardContext(batch=batch))
+    lhs = module(feature.permute(permutation), TPENForwardContext(batch=batch.permute(permutation)))
     rhs = output.permute(permutation)
     close, comparison = lhs.compare(rhs)
     assert close, dict(comparison)

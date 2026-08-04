@@ -781,15 +781,15 @@ $
 
 This keeps smooth long-range factors and short-range cusp enforcement independent from the determinant/Pfaffian/Specht readout and preserves the antisymmetry of $psi_theta$.
 
-`nn.SpENNWaveFunction` takes one required log-amplitude `nn.Envelope`.
+`nn.TPENWaveFunction` takes one required log-amplitude `nn.Envelope`.
 Composite envelopes use `nn.AdditiveEnvelope`, which adds the scalar outputs of
 its component envelopes. For the Hooke pair config, the composite envelope is
-the sum of `nn.HarmonicConfinement` and `nn.ElectronElectronCusp`.
+the sum of `nn.GaussianConfinement` and `nn.Cusp`.
 
 This log-amplitude envelope is distinct from coordinate envelopes such as
 `nn.GaussianCoordinateEnvelope` (a `nn.CoordinateEnvelope` that owns its
-multiplication). Coordinate envelopes multiply intermediate `RealFeature` or
-`RealUpdate` blocks inside `nn.Embedding` or `nn.SpENNLayer`; the
+multiplication). Coordinate envelopes multiply intermediate `Feature` or
+`RealUpdate` blocks inside `nn.Embedding` or `nn.TPENLayer`; the
 log-amplitude `nn.Envelope` adds only to the final `log abs(psi)`.
 
 For a harmonically confined system,
@@ -910,7 +910,7 @@ per configuration and should be added directly to the model log-amplitude. It sh
 
 = Model Workflow
 /*
-Implemented in `nn.SpENNWaveFunction`.
+Implemented in `nn.TPENWaveFunction`.
 + Input: $br_i = (x_i, y_i, z_i, s_i)$
 + Encoder (`nn.Encoder`)
   + Learnable encoder $phi^({m}): br_I stretch(->) bq^{m}_I $. Packs tuples into $bq$ bundles
@@ -940,13 +940,13 @@ Implemented in `nn.SpENNWaveFunction`.
   $ psi(br) = exp(J_"env" (br))Psi(br) $
 + Output: $psi(br)$*/
 
-Implemented in `nn.SpENNWaveFunction`.
+Implemented in `nn.TPENWaveFunction`.
 
 + Input: particle positions $bv_i = (br_i, s_i)$ 
 + Embedding (`nn.Embedding`), learnable: $phi^(m): bv_I mapsto bx_I^(0, c, m)$
   + Optional embedding normalization, then optional embedding real-state envelope, both owned by `nn.Embedding`.
 + SpENN Stack (`nn.SpeNNStack`)
-  + SpENN layer 1 (`nn.SpENNLayer`)
+  + SpENN layer 1 (`nn.TPENLayer`)
     + mixing in real space (`nn.EquivariantMixing`)
       $ bh^c_(I, p) = sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2)
       bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2 $
@@ -963,21 +963,21 @@ Implemented in `nn.SpENNWaveFunction`.
     + Project back into real space with `reps.InverseFourierTransform`:
       $ bu^(1, c)_(I)
       = sum_(lambda tack m) P^(-1) hat(bu)^(1, c, lambda)_(I) $
-    + Optional update normalization, then optional update real-state envelope, both owned by `nn.SpENNLayer`.
+    + Optional update normalization, then optional update real-state envelope, both owned by `nn.TPENLayer`.
     + Feature update (`nn.update`)
       $ bx^1 = "Update"(bx^0, bu^1) $
       most commonly with `nn.update.ResidualUpdate`.
-    + Optional end-of-layer feature normalization, then optional feature real-state envelope, both owned by `nn.SpENNLayer`.
+    + Optional end-of-layer feature normalization, then optional feature real-state envelope, both owned by `nn.TPENLayer`.
   + SpENN layer 2
     $
-    bx^2 = "SpENNLayer"(bx^1).
+    bx^2 = "TPENLayer"(bx^1).
     $
 
   + $dots$
 
   + SpechtMP layer $T$
     $
-    bx^T = "SpENNLayer"(bx^(T-1)).
+    bx^T = "TPENLayer"(bx^(T-1)).
     $
 + Readout with `nn.RealPfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c)_(i j) - bx^(T c)_(j i)] $

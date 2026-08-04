@@ -5,13 +5,13 @@ from __future__ import annotations
 import torch
 
 from spenn.equivariance import EquivariantMap
-from spenn.data.real import RealFeature, RealUpdate, zero_block
+from spenn.data.real import Feature, RealUpdate, zero_block
 from spenn.nn.update import ResidualUpdate, Update
 from tests.helpers.equivariance import assert_equivariant_all
 
 
-def _feature_and_update() -> tuple[RealFeature, RealUpdate]:
-    feature = RealFeature(
+def _feature_and_update() -> tuple[Feature, RealUpdate]:
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
@@ -39,7 +39,7 @@ def test_residual_update_passes_runtime_equivariance_check() -> None:
     output = module(feature, update)
 
     assert isinstance(module, EquivariantMap)
-    assert isinstance(output, RealFeature)
+    assert isinstance(output, Feature)
     assert [tuple(block.shape) for block in output.blocks] == [tuple(block.shape) for block in feature.blocks]
     assert_equivariant_all(module, (feature, update))
 

@@ -71,7 +71,7 @@ evaluator:
     - ${evaluation_tasks.trace_equivariance}
 
 model:
-  _target_: spenn.nn.SpENNWaveFunction
+  _target_: spenn.nn.TPENWaveFunction
   trace_name: spenn
   embedding:
     _target_: spenn.nn.Embedding
@@ -82,7 +82,7 @@ model:
     num_hidden_layers: 1
     include_spins: true
   layers:
-    - _target_: spenn.nn.SpENNLayer
+    - _target_: spenn.nn.TPENLayer
       mixing:
         _target_: spenn.nn.EquivariantMixing
         max_order: 2
@@ -107,9 +107,9 @@ model:
       # Harmonic confinement: coefficient = omega / 2. Hydra cannot do the
       # arithmetic, so editing system.omega requires editing this too — in
       # BOTH train.yaml and eval.yaml (model blocks must stay identical).
-      - _target_: spenn.nn.HarmonicConfinement
+      - _target_: spenn.nn.GaussianConfinement
         coefficient: 0.25
-      - _target_: spenn.nn.ElectronElectronCusp
+      - _target_: spenn.nn.Cusp
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     channels: 4

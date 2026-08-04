@@ -8,8 +8,8 @@ from typeguard import TypeCheckError
 
 from spenn.data.partition import Partition
 from spenn.data.real import (
-    RealFeature,
-    RealInteraction,
+    Feature,
+    Interaction,
     RealUpdate,
     common_real_batch_size,
     common_real_dtype,
@@ -21,7 +21,7 @@ from spenn.data.real import (
 
 
 def test_real_feature_requires_order_indexed_blocks_and_zero_channels() -> None:
-    valid = RealFeature(
+    valid = Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.zeros(2, 3, 4, dtype=torch.float64),
@@ -31,9 +31,9 @@ def test_real_feature_requires_order_indexed_blocks_and_zero_channels() -> None:
     assert valid.validate() is valid
 
     with pytest.raises((TypeError, TypeCheckError), match="sequence"):
-        RealFeature({1: torch.zeros(2, 3, 4, dtype=torch.float64)})
+        Feature({1: torch.zeros(2, 3, 4, dtype=torch.float64)})
     with pytest.raises(ValueError, match="zero channels"):
-        RealFeature([torch.zeros(2, 1, dtype=torch.float64)])
+        Feature([torch.zeros(2, 1, dtype=torch.float64)])
 
 
 def test_zero_block_helper_centralizes_reserved_order_zero_layout() -> None:
@@ -60,14 +60,14 @@ def test_real_tensor_validation_checks_batch_rank_and_particle_counts() -> None:
             ]
         )
     with pytest.raises(ValueError, match="dimensions"):
-        RealFeature(
+        Feature(
             [
                 zero_block(batch_size=2, dtype=torch.float64),
                 torch.zeros(2, 3, 4, 4, dtype=torch.float64),
             ]
         )
     with pytest.raises(ValueError, match="particle count"):
-        RealInteraction(
+        Interaction(
             [
                 zero_block(batch_size=2, paths=1, dtype=torch.float64),
                 torch.zeros(2, 3, 1, 4, dtype=torch.float64),
@@ -77,7 +77,7 @@ def test_real_tensor_validation_checks_batch_rank_and_particle_counts() -> None:
 
 
 def test_real_update_matching_validator_is_data_owned() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.zeros(2, 3, 4, dtype=torch.float64),
@@ -110,7 +110,7 @@ def test_real_update_matching_validator_is_data_owned() -> None:
 
 
 def test_real_update_geometry_validator_allows_channel_maps() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.zeros(2, 3, 4, dtype=torch.float64),
@@ -138,7 +138,7 @@ def test_real_update_geometry_validator_allows_channel_maps() -> None:
 
 
 def test_real_tensor_common_state_helpers_are_data_owned() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.zeros(2, 3, 4, dtype=torch.float64),

@@ -1,6 +1,6 @@
 """Differentiable Pfaffian readout for real tuple features.
 
-All readouts in the new SpENN core consume :class:`spenn.data.real.RealFeature`.
+All readouts in the new SpENN core consume :class:`spenn.data.real.Feature`.
 Readout-specific Fourier transforms should happen inside a component readout
 before it contributes to the final wavefunction.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.data.partition import Partition
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.dependencies import require_torch, require_torch_nn
 
 torch = require_torch(feature="Pfaffian readout")
@@ -122,12 +122,12 @@ class PfaffianReadout(nn.Module):
             raise RuntimeError("PfaffianReadout channel weights were not eagerly initialized")
         return weight
 
-    def build_skew_kernel(self, features: RealFeature, batch: ElectronBatch | None = None) -> torch.Tensor:
+    def build_skew_kernel(self, features: Feature, batch: ElectronBatch | None = None) -> torch.Tensor:
         """Construct the per-channel skew kernels consumed by the Pfaffians.
 
         Parameters
         ----------
-        features : RealFeature
+        features : Feature
             Real feature state containing an order-2 block with shape
             ``[batch, channels, n, n]``.
         batch : ElectronBatch or None, optional
@@ -142,7 +142,7 @@ class PfaffianReadout(nn.Module):
         """
 
         if 2 not in features:
-            raise KeyError("PfaffianReadout requires an order-2 RealFeature block")
+            raise KeyError("PfaffianReadout requires an order-2 Feature block")
         pair = features.blocks[2]
         if pair.ndim != 4:
             raise ValueError(f"Order-2 block must have shape [batch, channels, n, n], got {tuple(pair.shape)}")
@@ -162,7 +162,7 @@ class PfaffianReadout(nn.Module):
             kernel = bordered
         return kernel
 
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         """Return the signed-log weighted sum of per-channel Pfaffians."""
 
         kernel = self.build_skew_kernel(features, batch)
@@ -179,14 +179,14 @@ class PfaffianReadout(nn.Module):
         )
 
 
-def _odd_padding_block(features: RealFeature, kernel: torch.Tensor) -> torch.Tensor:
+def _odd_padding_block(features: Feature, kernel: torch.Tensor) -> torch.Tensor:
     if _ODD_PADDING_IRREP.order not in features:
-        raise KeyError("Odd-electron Pfaffian padding requires the order-1 RealFeature block for irrep (1)")
+        raise KeyError("Odd-electron Pfaffian padding requires the order-1 Feature block for irrep (1)")
     one_body = features.blocks[_ODD_PADDING_IRREP.order]
     if one_body.shape[0] != kernel.shape[0] or one_body.shape[-1] != kernel.shape[-1]:
         raise ValueError("Odd-electron (1) padding block must match order-2 batch and particle axes")
     if one_body.shape[1] == 0:
-        raise KeyError("Odd-electron Pfaffian padding requires a nonempty order-1 RealFeature block for irrep (1)")
+        raise KeyError("Odd-electron Pfaffian padding requires a nonempty order-1 Feature block for irrep (1)")
     if one_body.shape[1] != kernel.shape[1]:
         raise ValueError(
             "Per-channel odd-electron padding requires the order-1 block to match pair channels, "

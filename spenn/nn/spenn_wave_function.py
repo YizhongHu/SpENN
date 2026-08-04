@@ -7,14 +7,14 @@ from collections.abc import Iterable
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
-from spenn.nn.context import SpENNForwardContext
+from spenn.nn.context import TPENForwardContext
 from spenn.nn.tpen_stack import TPENStack
 
 torch = require_torch(feature="SpENN wavefunction modules")
 nn = require_torch_nn(feature="SpENN wavefunction modules")
 
 
-class SpENNWaveFunction(EquivariantMap):
+class TPENWaveFunction(EquivariantMap):
     """Compose basis, embedding, a TPEN layer stack, readout, and an envelope.
 
     The full pipeline is::
@@ -35,7 +35,7 @@ class SpENNWaveFunction(EquivariantMap):
     ----------
     embedding : torch.nn.Module
         Module mapping the basis output (or, when ``basis`` is ``None``, an
-        :class:`ElectronBatch`) to :class:`spenn.data.real.RealFeature`.
+        :class:`ElectronBatch`) to :class:`spenn.data.real.Feature`.
     layers : iterable of torch.nn.Module or TPENStack
         TPEN layers, or an already-constructed :class:`TPENStack`. Iterables
         are wrapped into a stack; the layers always live in ``self.stack``.
@@ -63,7 +63,7 @@ class SpENNWaveFunction(EquivariantMap):
     ) -> None:
         super().__init__(**kwargs)
         if envelope is None:
-            raise ValueError("SpENNWaveFunction requires an envelope module")
+            raise ValueError("TPENWaveFunction requires an envelope module")
         self.basis = basis
         self.embedding = embedding
         self.stack = layers if isinstance(layers, TPENStack) else TPENStack(layers)
@@ -74,7 +74,7 @@ class SpENNWaveFunction(EquivariantMap):
         """Evaluate the signed-log wavefunction for an electron batch."""
 
         basis_features = self.basis(batch) if self.basis is not None else None
-        context = SpENNForwardContext(batch=batch, basis_features=basis_features)
+        context = TPENForwardContext(batch=batch, basis_features=basis_features)
         embedded_input = basis_features if basis_features is not None else batch
         features = self.embedding(embedded_input, context=context)
         features = self.stack(features, context)
@@ -98,4 +98,4 @@ def _log_factor(module: nn.Module, batch: ElectronBatch, shape: torch.Size, *, n
     return value
 
 
-__all__ = ["SpENNWaveFunction"]
+__all__ = ["TPENWaveFunction"]

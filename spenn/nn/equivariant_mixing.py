@@ -13,8 +13,8 @@ from spenn.data.indices import (
     select_tuple_tensor,
 )
 from spenn.data.real import (
-    RealFeature,
-    RealInteraction,
+    Feature,
+    Interaction,
     common_real_batch_size,
     common_real_dtype,
     common_real_particle_count,
@@ -45,7 +45,7 @@ class EquivariantMixing(EquivariantMap):
     ``p = (s, m, m1, m2, tau, tau1, tau2)``. A ``virtual_tuple`` is ``J``;
     ``select_tuple(virtual_tuple, tau)`` gives the output tuple ``I``; and
     ``tau1``/``tau2`` select the two input tuples from the same virtual
-    support. The path axis is deliberately preserved in :class:`RealInteraction`
+    support. The path axis is deliberately preserved in :class:`Interaction`
     so the later path-aggregation stage can choose how to combine mechanisms.
 
     The slow implementation is a literal correctness reference that loops over
@@ -156,7 +156,7 @@ class EquivariantMixing(EquivariantMap):
         self.weights = nn.ParameterDict()
         self._initialize_weights()
 
-    def forward_impl(self, x1: RealFeature, x2: RealFeature | None = None) -> RealInteraction:
+    def forward_impl(self, x1: Feature, x2: Feature | None = None) -> Interaction:
         """Mix one or two real feature states into path-resolved interactions."""
 
         x2 = x1 if x2 is None else x2
@@ -215,7 +215,7 @@ class EquivariantMixing(EquivariantMap):
             if self.activation is not None:
                 block = self.activation(block)
             output_blocks.append(block)
-        return RealInteraction(output_blocks)
+        return Interaction(output_blocks)
 
     def _mix_order_slow(
         self,
@@ -223,8 +223,8 @@ class EquivariantMixing(EquivariantMap):
         counts: torch.Tensor | None,
         active_paths: list[VirtualPath],
         *,
-        x1: RealFeature,
-        x2: RealFeature,
+        x1: Feature,
+        x2: Feature,
         n_particles: int,
         out_channels: int,
     ) -> None:
@@ -260,8 +260,8 @@ class EquivariantMixing(EquivariantMap):
         counts: torch.Tensor | None,
         active_paths: list[VirtualPath],
         *,
-        x1: RealFeature,
-        x2: RealFeature,
+        x1: Feature,
+        x2: Feature,
         n_particles: int,
         out_channels: int,
     ) -> None:
@@ -295,7 +295,7 @@ class EquivariantMixing(EquivariantMap):
                     torch.ones_like(flat_output_indices, dtype=counts.dtype),
                 )
 
-    def _paths_for_order(self, order: int, *, x1: RealFeature, x2: RealFeature) -> list[VirtualPath]:
+    def _paths_for_order(self, order: int, *, x1: Feature, x2: Feature) -> list[VirtualPath]:
         return [
             path
             for path in self.paths
@@ -331,8 +331,8 @@ class EquivariantMixing(EquivariantMap):
         self,
         path: VirtualPath,
         *,
-        x1: RealFeature,
-        x2: RealFeature,
+        x1: Feature,
+        x2: Feature,
         out_channels: int,
     ) -> torch.Tensor:
         left_channels = self.left_channels[path.m1]
@@ -366,7 +366,7 @@ def _normalize_channels(value: int | Mapping[int, int], *, max_order: int, name:
     return dict(sorted(channels.items()))
 
 
-def _validate_feature_channels(feature: RealFeature, order: int, expected: int, *, name: str) -> None:
+def _validate_feature_channels(feature: Feature, order: int, expected: int, *, name: str) -> None:
     if order >= len(feature.blocks):
         raise ValueError(f"{name} has no order-{order} block")
     actual = int(feature.blocks[order].shape[1])

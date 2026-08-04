@@ -20,7 +20,7 @@ from spenn.data.real.base import (
 
 
 @dataclass(frozen=True)
-class RealFeature:
+class Feature:
     """Store persistent real-space tuple feature blocks.
 
     Parameters
@@ -39,12 +39,12 @@ class RealFeature:
         object.__setattr__(self, "blocks", blocks)
         self.validate()
 
-    def validate(self) -> "RealFeature":
+    def validate(self) -> "Feature":
         """Validate tensor types, ranks, tuple axes, and batch consistency.
 
         Returns
         -------
-        RealFeature
+        Feature
             The validated state, returned for fluent runtime checks.
         """
 
@@ -117,17 +117,17 @@ class RealFeature:
 
         return enumerate(self.blocks)
 
-    def clone(self) -> "RealFeature":
+    def clone(self) -> "Feature":
         """Clone every tensor block."""
 
         return type(self)([tensor.clone() for tensor in self.blocks])
 
-    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> "RealFeature":
+    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> "Feature":
         """Move every block to a new device or dtype."""
 
         return type(self)([tensor.to(device=device, dtype=dtype) for tensor in self.blocks])
 
-    def permute(self, permutation: Permutation) -> "RealFeature":
+    def permute(self, permutation: Permutation) -> "Feature":
         """Return a copy transformed by an active particle permutation."""
 
         return type(self)(
@@ -137,24 +137,24 @@ class RealFeature:
             ]
         )
 
-    def add(self, update: "RealFeature") -> "RealFeature":
+    def add(self, update: "Feature") -> "Feature":
         """Return the blockwise sum with another real tuple state."""
 
         if len(self.blocks) != len(update.blocks):
-            raise ValueError("RealFeature.add requires matching body-order blocks")
+            raise ValueError("Feature.add requires matching body-order blocks")
         return type(self)([left + right for left, right in zip(self.blocks, update.blocks)])
 
-    def compare(self, other: "RealFeature", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
+    def compare(self, other: "Feature", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
         """Compare block-by-block; return ``(is_close, max_abs_error)``."""
 
         if type(self) is not type(other):
             return False, {"max_abs_error": float("inf")}
         return compare_tensor_blocks(self.blocks, other.blocks, atol=atol, rtol=rtol)
 
-    def __add__(self, update: "RealFeature") -> "RealFeature":
+    def __add__(self, update: "Feature") -> "Feature":
         """Return the blockwise sum with another real tuple state."""
 
         return self.add(update)
 
 
-__all__ = ["RealFeature"]
+__all__ = ["Feature"]

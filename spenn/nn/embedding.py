@@ -6,9 +6,9 @@ from collections.abc import Mapping
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.indices import no_repeated_particle_mask, tuple_particle_inputs
-from spenn.data.real import RealFeature, zero_block
+from spenn.data.real import Feature, zero_block
 from spenn.nn.basis import ElectronBasisFeatures
-from spenn.nn.context import SpENNForwardContext
+from spenn.nn.context import TPENForwardContext
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.initialization import TorchInitializer
@@ -26,7 +26,7 @@ class Embedding(EquivariantMap):
     indices. By default ``v_i`` contains the electron coordinate and, when
     present, its spin. Extra per-particle vectors can be appended from
     ``ElectronBatch.aux``. Repeated tuple positions are stored as zeros in the
-    dense :class:`RealFeature` output. No handcrafted geometry channels such as
+    dense :class:`Feature` output. No handcrafted geometry channels such as
     distances, radii, or inverse distances are constructed here.
 
     Parameters
@@ -64,7 +64,7 @@ class Embedding(EquivariantMap):
         Explicit side-effect-free initializer for generated order MLPs. Supplied
         custom ``mlps`` are already constructed and are not modified.
     embedding_normalization : torch.nn.Module or None, optional
-        Optional normalization applied to the embedded :class:`RealFeature`.
+        Optional normalization applied to the embedded :class:`Feature`.
     embedding_envelope : torch.nn.Module or None, optional
         Optional context-dependent real-state envelope applied after
         ``embedding_normalization``.
@@ -141,8 +141,8 @@ class Embedding(EquivariantMap):
     def forward_impl(
         self,
         inputs: ElectronBatch | ElectronBasisFeatures,
-        context: SpENNForwardContext | None = None,
-    ) -> RealFeature:
+        context: TPENForwardContext | None = None,
+    ) -> Feature:
         """Embed electron inputs as persistent real tuple features.
 
         Accepts either a raw :class:`ElectronBatch` (the per-particle vector is
@@ -182,12 +182,12 @@ class Embedding(EquivariantMap):
                 *((n_electrons,) * order),
             ).to(dtype=block.dtype)
             blocks.append(block)
-        features = RealFeature(blocks)
+        features = Feature(blocks)
         if self.embedding_normalization is not None:
             features = self.embedding_normalization(features)
         if self.embedding_envelope is not None:
             if context is None:
-                raise ValueError("embedding_envelope requires a SpENNForwardContext")
+                raise ValueError("embedding_envelope requires a TPENForwardContext")
             features = self.embedding_envelope(features, context)
         return features
 

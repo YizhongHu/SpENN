@@ -17,7 +17,7 @@ from __future__ import annotations
 import torch
 
 from spenn.data.batch import ElectronBatch
-from spenn.nn import ElectronElectronCusp
+from spenn.nn import Cusp
 
 _DTYPE = torch.float64
 
@@ -34,7 +34,7 @@ def _slope_at_coalescence(spins: tuple[int, int] | None) -> float:
     # u(r) = a*r / (1 + b*r), so u(r)/r -> a as r -> 0. A small separation
     # recovers the analytic slope to first order.
     separation = 1.0e-9
-    cusp = ElectronElectronCusp().to(dtype=_DTYPE)
+    cusp = Cusp().to(dtype=_DTYPE)
     value = cusp(_pair_batch(separation, spins))
     return float(value.item() / separation)
 
@@ -60,7 +60,7 @@ def test_spinless_default_is_documented_same_spin_quarter() -> None:
 def test_cusp_value_is_permutation_invariant() -> None:
     # The envelope stack must be symmetric under particle exchange so the
     # readout keeps ownership of antisymmetry (MIG-TPEN-000 §2.5).
-    cusp = ElectronElectronCusp().to(dtype=_DTYPE)
+    cusp = Cusp().to(dtype=_DTYPE)
     positions = torch.tensor(
         [[[0.1, -0.2, 0.3], [0.7, 0.4, -0.5]]], dtype=_DTYPE
     )

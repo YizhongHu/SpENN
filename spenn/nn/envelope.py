@@ -122,7 +122,7 @@ class AdditiveEnvelope(Envelope):
         return total
 
 
-class HarmonicConfinement(Envelope):
+class GaussianConfinement(Envelope):
     """Smooth Gaussian envelope for harmonically trapped systems.
 
     This contributes
@@ -179,10 +179,10 @@ class HarmonicConfinement(Envelope):
         return output
 
 
-class HookeGaussianEnvelope(HarmonicConfinement):
+class HookeGaussianConfinement(GaussianConfinement):
     """Gaussian ground-state envelope for the Hooke / harmonic oscillator.
 
-    This is :class:`HarmonicConfinement` parametrized by the oscillator
+    This is :class:`GaussianConfinement` parametrized by the oscillator
     frequency ``omega`` instead of a raw coefficient. The fixed ground-state
     Gaussian uses ``coefficient = omega / 2``, contributing
 
@@ -208,7 +208,7 @@ class HookeGaussianEnvelope(HarmonicConfinement):
         self.omega = float(omega)
 
 
-class ElectronElectronCusp(Envelope):
+class Cusp(Envelope):
     """Spin-aware analytic electron-electron cusp envelope.
 
     Parameters
@@ -323,9 +323,9 @@ def _inverse_softplus(value: float) -> torch.Tensor:
 
 __all__ = [
     "AdditiveEnvelope",
-    "ElectronElectronCusp",
+    "Cusp",
     "Envelope",
-    "HarmonicConfinement",
-    "HookeGaussianEnvelope",
+    "GaussianConfinement",
+    "HookeGaussianConfinement",
     "rational_pair_cusp",
 ]

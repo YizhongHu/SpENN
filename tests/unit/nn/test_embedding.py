@@ -8,9 +8,9 @@ from torch import nn
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.equivariance import EquivariantMap
-from spenn.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, SpENNForwardContext
+from spenn.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, TPENForwardContext
 
 
 class SliceTupleInputs(nn.Module):
@@ -28,7 +28,7 @@ class RecordingRealMap(EquivariantMap):
         self.label = label
         self.calls = calls
 
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         self.calls.append(self.label)
         return x
 
@@ -39,7 +39,7 @@ class RecordingRealEnvelope(EquivariantMap):
         self.label = label
         self.calls = calls
 
-    def forward_impl(self, x: RealFeature, context: SpENNForwardContext) -> RealFeature:
+    def forward_impl(self, x: Feature, context: TPENForwardContext) -> Feature:
         assert context.batch is not None
         self.calls.append(self.label)
         return x
@@ -97,7 +97,7 @@ def test_embedding_default_controls_are_noop() -> None:
     )
 
     baseline = base(batch)
-    controlled = explicit_none(batch, context=SpENNForwardContext(batch=batch))
+    controlled = explicit_none(batch, context=TPENForwardContext(batch=batch))
 
     for left, right in zip(baseline.blocks, controlled.blocks):
         torch.testing.assert_close(left, right)
@@ -115,7 +115,7 @@ def test_embedding_applies_normalization_before_envelope() -> None:
         embedding_envelope=RecordingRealEnvelope("embedding_envelope", calls),
     )
 
-    embedding(batch, context=SpENNForwardContext(batch=batch))
+    embedding(batch, context=TPENForwardContext(batch=batch))
 
     assert calls == ["embedding_normalization", "embedding_envelope"]
 
@@ -153,9 +153,9 @@ def test_embedding_controls_are_equivariant_with_context() -> None:
         embedding_envelope=GaussianCoordinateEnvelope(sigma=2.0),
     ).to(dtype=torch.float64)
 
-    output = embedding(batch, context=SpENNForwardContext(batch=batch))
+    output = embedding(batch, context=TPENForwardContext(batch=batch))
     permuted_batch = batch.permute(permutation)
-    lhs = embedding(permuted_batch, context=SpENNForwardContext(batch=permuted_batch))
+    lhs = embedding(permuted_batch, context=TPENForwardContext(batch=permuted_batch))
     rhs = output.permute(permutation)
 
     close, comparison = lhs.compare(rhs)

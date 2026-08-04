@@ -7,33 +7,33 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.nn import (
     AdditiveEnvelope,
-    ElectronElectronCusp,
+    Cusp,
     Envelope,
-    HarmonicConfinement,
-    HookeGaussianEnvelope,
-    SpENNWaveFunction,
+    GaussianConfinement,
+    HookeGaussianConfinement,
+    TPENWaveFunction,
 )
 from tests.helpers.equivariance import assert_equivariant_all
 from tests.helpers.hooke_models import build_tiny_spenn
 
 
 class EmptyEncoder(nn.Module):
-    def forward(self, batch: ElectronBatch, *, context=None) -> RealFeature:
-        return RealFeature()
+    def forward(self, batch: ElectronBatch, *, context=None) -> Feature:
+        return Feature()
 
 
 class ConstantReadout(nn.Module):
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
         sign = torch.tensor([-1.0, 1.0], device=batch.device, dtype=batch.dtype)[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=sign)
 
 
 class AntisymmetricReadout(nn.Module):
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         sign = torch.sign(batch.positions[:, 0, 0] - batch.positions[:, 1, 0])
         return WavefunctionOutput(logabs=torch.zeros_like(sign), sign=sign)
 
@@ -52,7 +52,7 @@ class FullOutputEnvelope(nn.Module):
 def test_harmonic_confinement_matches_gaussian_tail_formula() -> None:
     positions = torch.tensor([[[1.0], [2.0]], [[3.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    envelope = HarmonicConfinement(coefficient=0.25)
+    envelope = GaussianConfinement(coefficient=0.25)
 
     values = envelope(batch)
 
@@ -64,7 +64,7 @@ def test_harmonic_confinement_is_permutation_invariant() -> None:
     positions = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
     permuted = ElectronBatch(positions=positions[:, [2, 0, 1]])
-    envelope = HarmonicConfinement(coefficient=0.25)
+    envelope = GaussianConfinement(coefficient=0.25)
 
     torch.testing.assert_close(envelope(batch), envelope(permuted))
 
@@ -72,7 +72,7 @@ def test_harmonic_confinement_is_permutation_invariant() -> None:
 def test_harmonic_confinement_trainable_coefficient_is_nonnegative_and_differentiable() -> None:
     positions = torch.tensor([[[1.0], [2.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    envelope = HarmonicConfinement(coefficient=0.25, trainable=True)
+    envelope = GaussianConfinement(coefficient=0.25, trainable=True)
 
     output = envelope(batch).sum()
     output.backward()
@@ -84,7 +84,7 @@ def test_harmonic_confinement_trainable_coefficient_is_nonnegative_and_different
 def test_spinless_electron_electron_cusp_matches_rational_option_a_formula() -> None:
     positions = torch.tensor([[[0.0], [2.0]], [[1.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    envelope = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
+    envelope = Cusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
 
     values = envelope(batch)
 
@@ -96,7 +96,7 @@ def test_spinless_electron_electron_cusp_matches_rational_option_a_formula() -> 
 def test_electron_electron_cusp_is_permutation_invariant_and_has_short_range_slope() -> None:
     positions = torch.tensor([[[0.0], [1.0], [3.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    envelope = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.75, eps=0.0)
+    envelope = Cusp(spinless_coefficient=0.25, range_parameter=0.75, eps=0.0)
     permuted = ElectronBatch(positions=positions[:, [2, 0, 1]])
 
     torch.testing.assert_close(envelope(batch), envelope(permuted))
@@ -112,7 +112,7 @@ def test_electron_electron_cusp_uses_spin_resolved_slopes() -> None:
     positions = torch.stack([torch.zeros_like(tiny_r), tiny_r]).view(1, 2, 1)
     same_spin = ElectronBatch(positions=positions, spins=torch.tensor([[1.0, 1.0]], dtype=torch.float64))
     opposite_spin = ElectronBatch(positions=positions, spins=torch.tensor([[1.0, -1.0]], dtype=torch.float64))
-    envelope = ElectronElectronCusp(range_parameter=0.5, eps=0.0)
+    envelope = Cusp(range_parameter=0.5, eps=0.0)
 
     same_slope = envelope(same_spin) / tiny_r
     opposite_slope = envelope(opposite_spin) / tiny_r
@@ -125,7 +125,7 @@ def test_electron_electron_trainable_ranges_are_positive_and_differentiable() ->
     positions = torch.tensor([[[0.0], [1.0], [2.0]]], dtype=torch.float64)
     spins = torch.tensor([[1.0, 1.0, -1.0]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions, spins=spins)
-    envelope = ElectronElectronCusp(range_parameter=0.5, trainable_range=True, eps=1.0e-12)
+    envelope = Cusp(range_parameter=0.5, trainable_range=True, eps=1.0e-12)
 
     output = envelope(batch).sum()
     output.backward()
@@ -139,7 +139,7 @@ def test_electron_electron_trainable_ranges_are_positive_and_differentiable() ->
 def test_disabled_envelope_returns_zero_batch_vector() -> None:
     batch = ElectronBatch(positions=torch.ones(4, 2, 3, dtype=torch.float64))
 
-    values = HarmonicConfinement(enabled=False, coefficient=0.25)(batch)
+    values = GaussianConfinement(enabled=False, coefficient=0.25)(batch)
 
     torch.testing.assert_close(values, torch.zeros(4, dtype=torch.float64))
 
@@ -147,8 +147,8 @@ def test_disabled_envelope_returns_zero_batch_vector() -> None:
 def test_additive_envelope_sums_component_outputs() -> None:
     positions = torch.tensor([[[0.0], [2.0]], [[1.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    harmonic = HarmonicConfinement(coefficient=0.25)
-    cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
+    harmonic = GaussianConfinement(coefficient=0.25)
+    cusp = Cusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
     envelope = AdditiveEnvelope([harmonic, cusp])
 
     torch.testing.assert_close(envelope(batch), harmonic(batch) + cusp(batch))
@@ -164,7 +164,7 @@ def test_empty_additive_envelope_returns_zero_batch_vector() -> None:
 
 def test_wavefunction_requires_envelope() -> None:
     with pytest.raises(ValueError, match="envelope"):
-        SpENNWaveFunction(
+        TPENWaveFunction(
             embedding=EmptyEncoder(),
             layers=[nn.Identity()],
             readout=ConstantReadout(),
@@ -177,11 +177,11 @@ def test_wavefunction_envelope_adds_only_to_logabs_and_preserves_sign() -> None:
     batch = ElectronBatch(positions=positions)
     envelope = AdditiveEnvelope(
         [
-            HarmonicConfinement(coefficient=0.25),
-            ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0),
+            GaussianConfinement(coefficient=0.25),
+            Cusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0),
         ]
     )
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
@@ -196,7 +196,7 @@ def test_wavefunction_envelope_adds_only_to_logabs_and_preserves_sign() -> None:
 
 def test_wavefunction_envelope_shape_must_match_readout_logabs() -> None:
     batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
@@ -209,7 +209,7 @@ def test_wavefunction_envelope_shape_must_match_readout_logabs() -> None:
 
 def test_wavefunction_envelope_must_return_additive_tensor_not_full_output() -> None:
     batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
@@ -230,11 +230,11 @@ def test_additive_envelope_rejects_malformed_component_output() -> None:
 
 def test_spenn_wavefunction_passes_runtime_sign_equivariance_check() -> None:
     batch = ElectronBatch(positions=torch.tensor([[[0.0], [1.0]], [[2.0], [4.0]]], dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=AntisymmetricReadout(),
-        envelope=AdditiveEnvelope([HarmonicConfinement(coefficient=0.0)]),
+        envelope=AdditiveEnvelope([GaussianConfinement(coefficient=0.0)]),
     )
 
     output = model(batch)
@@ -251,8 +251,8 @@ def test_additive_envelope_composes_cusp_and_hooke_gaussian_exactly() -> None:
     )
     spins = torch.tensor([[1.0, -1.0], [1.0, -1.0]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions, spins=spins)
-    cusp = ElectronElectronCusp(range_parameter=0.5, eps=0.0)
-    confinement = HookeGaussianEnvelope(omega=0.5)
+    cusp = Cusp(range_parameter=0.5, eps=0.0)
+    confinement = HookeGaussianConfinement(omega=0.5)
     envelope = AdditiveEnvelope([cusp, confinement])
 
     torch.testing.assert_close(envelope(batch), cusp(batch) + confinement(batch), rtol=0.0, atol=0.0)
@@ -263,7 +263,7 @@ def test_composed_cusp_confinement_envelope_is_permutation_invariant() -> None:
     # exchange so the readout keeps sole ownership of antisymmetry.
     positions = torch.tensor([[[0.1, -0.2, 0.3], [0.7, 0.4, -0.5], [-0.6, 0.2, 0.9]]], dtype=torch.float64)
     spins = torch.tensor([[1.0, -1.0, 1.0]], dtype=torch.float64)
-    envelope = AdditiveEnvelope([ElectronElectronCusp(eps=0.0), HookeGaussianEnvelope(omega=0.5)])
+    envelope = AdditiveEnvelope([Cusp(eps=0.0), HookeGaussianConfinement(omega=0.5)])
     batch = ElectronBatch(positions=positions, spins=spins)
     permuted = ElectronBatch(positions=positions[:, [2, 0, 1]], spins=spins[:, [2, 0, 1]])
 

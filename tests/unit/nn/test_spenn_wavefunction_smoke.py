@@ -1,4 +1,4 @@
-"""Smoke test: a tiny real SpENNWaveFunction maps a pair batch to an output."""
+"""Smoke test: a tiny real TPENWaveFunction maps a pair batch to an output."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import torch
 from torch.nn.parameter import UninitializedBuffer, UninitializedParameter
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.equivariance import EquivariantMap
-from spenn.nn import AdditiveEnvelope, Embedding, SpENNForwardContext, SpENNWaveFunction
+from spenn.nn import AdditiveEnvelope, Embedding, TPENForwardContext, TPENWaveFunction
 from tests.helpers.hooke_models import build_tiny_spenn, tiny_pair_batch
 
 
@@ -33,9 +33,9 @@ class FillOneBody(EquivariantMap):
         self.calls = calls
         self.label = label
 
-    def forward_impl(self, features: RealFeature) -> RealFeature:
+    def forward_impl(self, features: Feature) -> Feature:
         self.calls.append(self.label)
-        return RealFeature(
+        return Feature(
             [
                 features.blocks[0].clone(),
                 torch.full_like(features.blocks[1], self.value),
@@ -48,7 +48,7 @@ class RecordingEnvelope(EquivariantMap):
         super().__init__()
         self.calls = calls
 
-    def forward_impl(self, features: RealFeature, context: SpENNForwardContext) -> RealFeature:
+    def forward_impl(self, features: Feature, context: TPENForwardContext) -> Feature:
         assert context.batch is not None
         self.calls.append("embedding_envelope")
         return features
@@ -59,10 +59,10 @@ class RecordingLayer(torch.nn.Module):
         super().__init__()
         self.calls = calls
 
-    def forward(self, features: RealFeature) -> RealFeature:
+    def forward(self, features: Feature) -> Feature:
         self.calls.append("layer")
         torch.testing.assert_close(features.blocks[1], torch.full_like(features.blocks[1], 3.0))
-        return RealFeature(
+        return Feature(
             [
                 features.blocks[0].clone(),
                 torch.full_like(features.blocks[1], 5.0),
@@ -75,7 +75,7 @@ class RecordingReadout(torch.nn.Module):
         super().__init__()
         self.calls = calls
 
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         self.calls.append("readout")
         torch.testing.assert_close(features.blocks[1], torch.full_like(features.blocks[1], 5.0))
         logabs = features.blocks[1].sum(dim=(1, 2))
@@ -123,7 +123,7 @@ def test_tiny_spenn_initializes_stock_parameters_before_first_forward() -> None:
 def test_wavefunction_passes_context_to_embedding_and_readout_sees_layer_output() -> None:
     calls: list[str] = []
     batch = ElectronBatch(positions=torch.tensor([[[1.0], [2.0]]], dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=Embedding(
             max_order=1,
             spatial_dim=1,

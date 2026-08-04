@@ -15,7 +15,7 @@ from collections.abc import Mapping
 import pytest
 import torch
 
-from spenn.data.real import RealInteraction, RealUpdate, zero_block
+from spenn.data.real import Interaction, RealUpdate, zero_block
 from spenn.nn import PathAggregation, TorchInitializer
 from spenn.data.paths import load_default_path_metadata
 from tests.helpers.tpen_reference import slow_tpen_aggregation
@@ -30,7 +30,7 @@ def _random_interaction(
     *,
     seed: int,
     batch: int = 2,
-) -> RealInteraction:
+) -> Interaction:
     # Same construction as the oracle suite: fixed torch.Generator seed,
     # float64 blocks [batch, channels, paths, indices...].
     generator = torch.Generator().manual_seed(seed)
@@ -39,7 +39,7 @@ def _random_interaction(
     for order, paths in sorted(paths_by_order.items()):
         shape = (batch, channels, paths, *((n_particles,) * order))
         blocks.append(torch.randn(shape, generator=generator, dtype=_DTYPE))
-    return RealInteraction(blocks)
+    return Interaction(blocks)
 
 
 def _module(
@@ -76,7 +76,7 @@ def test_path_aggregation_removes_path_axis_and_selects_learned_path() -> None:
     # One-hot path weights must select exactly one path slice: the contraction
     # is u[c, I] = sum_p U[c, p] h[c, p, I] with no channel or index mixing.
     tensor = torch.tensor([1.0, 2.0, 3.0, 10.0, 20.0, 30.0], dtype=_DTYPE).reshape(1, 1, 2, 3)
-    interaction = RealInteraction([zero_block(batch_size=1, paths=2, dtype=_DTYPE), tensor])
+    interaction = Interaction([zero_block(batch_size=1, paths=2, dtype=_DTYPE), tensor])
     module = _module(1, {1: 2})
 
     with torch.no_grad():
@@ -97,7 +97,7 @@ def test_path_aggregation_removes_path_axis_and_selects_learned_path() -> None:
 
 
 def test_path_aggregation_returns_real_update_with_channels_preserved() -> None:
-    # Contract: RealInteraction [batch, channels, paths, indices...] in,
+    # Contract: Interaction [batch, channels, paths, indices...] in,
     # RealUpdate [batch, channels, indices...] out, with C_out == C_in.
     paths_by_order = {1: 3, 2: 4}
     interaction = _random_interaction(3, channels=2, paths_by_order=paths_by_order, seed=3)
@@ -169,7 +169,7 @@ def test_path_aggregation_zero_path_orders_yield_zero_updates() -> None:
     # block instead of failing lazily at forward time.
     module = _module(2, {1: 0})
     tensor = torch.empty(1, 2, 0, 3, dtype=_DTYPE)
-    interaction = RealInteraction([zero_block(batch_size=1, paths=0, dtype=_DTYPE), tensor])
+    interaction = Interaction([zero_block(batch_size=1, paths=0, dtype=_DTYPE), tensor])
 
     output = module(interaction)
 

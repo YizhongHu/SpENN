@@ -20,7 +20,7 @@ import pytest
 import torch
 
 from spenn.data.permutation import all_permutations
-from spenn.data.real import RealFeature, RealInteraction, zero_block
+from spenn.data.real import Feature, Interaction, zero_block
 from spenn.nn import EquivariantMixing
 from tests.helpers.tpen_reference import (
     mixed_kernel_pfaffian_readout,
@@ -32,25 +32,25 @@ from tests.helpers.tpen_reference import (
 _DTYPE = torch.float64
 
 
-def _random_feature(n_particles: int, channels: int, max_order: int, *, seed: int, batch: int = 2) -> RealFeature:
+def _random_feature(n_particles: int, channels: int, max_order: int, *, seed: int, batch: int = 2) -> Feature:
     generator = torch.Generator().manual_seed(seed)
     blocks: list[torch.Tensor] = [zero_block(batch_size=batch, dtype=_DTYPE)]
     for order in range(1, max_order + 1):
         shape = (batch, channels, *((n_particles,) * order))
         blocks.append(torch.randn(shape, generator=generator, dtype=_DTYPE))
-    return RealFeature(blocks)
+    return Feature(blocks)
 
 
 def _random_interaction(
     n_particles: int, channels: int, paths_by_order: dict[int, int], *, seed: int, batch: int = 2
-) -> RealInteraction:
+) -> Interaction:
     generator = torch.Generator().manual_seed(seed)
     max_paths = max(paths_by_order.values())
     blocks: list[torch.Tensor] = [zero_block(batch_size=batch, paths=max_paths, dtype=_DTYPE)]
     for order, paths in sorted(paths_by_order.items()):
         shape = (batch, channels, paths, *((n_particles,) * order))
         blocks.append(torch.randn(shape, generator=generator, dtype=_DTYPE))
-    return RealInteraction(blocks)
+    return Interaction(blocks)
 
 
 def _random_path_weights(channels: int, paths_by_order: dict[int, int], *, seed: int) -> list[torch.Tensor | None]:
@@ -100,7 +100,7 @@ def test_reference_layer_is_equivariant_for_all_permutations(activation_name: st
     }
     weights = _random_path_weights(channels, paths_by_order, seed=19)
 
-    def layer(x: RealFeature) -> RealFeature:
+    def layer(x: Feature) -> Feature:
         return slow_tpen_layer(
             x,
             mixing=mixing,
@@ -152,7 +152,7 @@ def test_per_channel_pfaffian_matches_hand_computed_case_and_differs_from_mixed_
     # The reference consumes raw (not yet skew) order-2 blocks; feeding the
     # skew kernels directly is fine because skew(skew(A)) == skew(A).
     pair = torch.stack([kernel_a, kernel_b]).unsqueeze(0)
-    features = RealFeature(
+    features = Feature(
         [
             zero_block(batch_size=1, dtype=_DTYPE),
             torch.zeros((1, 2, 4), dtype=_DTYPE),

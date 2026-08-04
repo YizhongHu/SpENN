@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.dependencies import require_torch_nn
 from spenn.equivariance import EquivariantMap
-from spenn.nn.context import SpENNForwardContext
-from spenn.nn.spenn_layer import SpENNLayer
+from spenn.nn.context import TPENForwardContext
+from spenn.nn.spenn_layer import TPENLayer
 
 nn = require_torch_nn(feature="TPEN stack modules")
 
@@ -22,7 +22,7 @@ nn = require_torch_nn(feature="TPEN stack modules")
 class TPENStack(EquivariantMap):
     """Apply a sequence of TPEN layers to a real feature state.
 
-    Each layer maps ``RealFeature -> RealFeature``. :class:`SpENNLayer`
+    Each layer maps ``Feature -> Feature``. :class:`TPENLayer`
     members receive the forward context so their optional per-layer feature
     and update envelopes can consume batch-derived coordinate scalars; plain
     feature-to-feature modules are called without it.
@@ -41,14 +41,14 @@ class TPENStack(EquivariantMap):
 
     def forward_impl(
         self,
-        x: RealFeature,
-        context: SpENNForwardContext | None = None,
-    ) -> RealFeature:
+        x: Feature,
+        context: TPENForwardContext | None = None,
+    ) -> Feature:
         """Apply every layer in declaration order."""
 
         features = x
         for layer in self.layers:
-            features = layer(features, context) if isinstance(layer, SpENNLayer) else layer(features)
+            features = layer(features, context) if isinstance(layer, TPENLayer) else layer(features)
         return features
 
 
