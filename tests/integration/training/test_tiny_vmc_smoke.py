@@ -49,7 +49,13 @@ def _records(run_dir: Path) -> list[dict]:
 
 
 def _namespace_metrics(records: list[dict], namespace: str) -> dict[tuple[int, str], object]:
-    """Return {(step, key): value} for every metric in `namespace`."""
+    """Return {(step, key): value} for every metric in `namespace`.
+
+    A ``(step, key)`` is logged at most once per run for these namespaces, so a
+    duplicate is a regression (e.g. a stage emitting a metric twice per step);
+    this helper rejects duplicates rather than silently overwriting, which keeps
+    the per-step record-count and rerun-equality assertions honest.
+    """
 
     table: dict[tuple[int, str], object] = {}
     for record in records:
@@ -57,6 +63,7 @@ def _namespace_metrics(records: list[dict], namespace: str) -> dict[tuple[int, s
             continue
         step = int(record["step"])
         for key, value in record["metrics"].items():
+            assert (step, key) not in table, f"duplicate metric {namespace}/{key} at step {step}"
             table[(step, key)] = value
     return table
 
