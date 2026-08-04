@@ -786,10 +786,11 @@ Composite envelopes use `nn.AdditiveEnvelope`, which adds the scalar outputs of
 its component envelopes. For the Hooke pair config, the composite envelope is
 the sum of `nn.HarmonicConfinement` and `nn.ElectronElectronCusp`.
 
-This log-amplitude envelope is distinct from real-state envelopes such as
-`nn.RealCoordinateEnvelope`. Real-state envelopes multiply intermediate
-`RealFeature` or `RealUpdate` blocks inside `nn.Embedding` or `nn.SpENNLayer`;
-the log-amplitude `nn.Envelope` adds only to the final `log abs(psi)`.
+This log-amplitude envelope is distinct from coordinate envelopes such as
+`nn.GaussianCoordinateEnvelope` (a `nn.CoordinateEnvelope` that owns its
+multiplication). Coordinate envelopes multiply intermediate `RealFeature` or
+`RealUpdate` blocks inside `nn.Embedding` or `nn.SpENNLayer`; the
+log-amplitude `nn.Envelope` adds only to the final `log abs(psi)`.
 
 For a harmonically confined system,
 
