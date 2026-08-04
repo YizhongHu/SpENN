@@ -5,17 +5,16 @@ an explicit delegate to `NaiveLocalEnergyEvaluator`; the evaluator statically
 and dynamically consumes a `NaiveLocalEnergyContext` (never an arbitrary
 mapping); term outputs, names, and validation behavior are unchanged; and a
 protocol-only custom term unknown to SpENN core evaluates successfully.
-
-Logged times in this suite use UTC per repository convention.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
-from typeguard import TypeCheckError
+from typeguard import TypeCheckError, suppress_type_checks
 
 from spenn.data.batch import ElectronBatch
+from spenn.physics.potential import HarmonicTrap
 from spenn.physics.hamiltonian import (
     LocalEnergyResult,
     NaiveLocalEnergyContext,
@@ -53,8 +52,10 @@ class BrokenShapeTerm:
 
 
 def test_local_energy_delegates_to_naive_evaluator() -> None:
+    # A position-dependent physics term (HarmonicTrap) makes the equality a
+    # real pin rather than a constant-term tautology.
     batch = _batch()
-    terms = {"a": ConstantTerm(1.5), "b": ConstantTerm(-0.25)}
+    terms = {"trap": HarmonicTrap(omega=0.5), "shift": ConstantTerm(-0.25)}
 
     via_entry_point = local_energy(terms, None, batch, return_terms=True)
     via_evaluator = NaiveLocalEnergyEvaluator().evaluate(
@@ -62,8 +63,10 @@ def test_local_energy_delegates_to_naive_evaluator() -> None:
     )
 
     torch.testing.assert_close(via_entry_point.total, via_evaluator.total)
-    assert list(via_entry_point.terms) == list(via_evaluator.terms) == ["a", "b"]
-    torch.testing.assert_close(via_entry_point.total, torch.full((3,), 1.25, dtype=_DTYPE))
+    torch.testing.assert_close(via_entry_point.terms["trap"], via_evaluator.terms["trap"])
+    assert list(via_entry_point.terms) == list(via_evaluator.terms) == ["trap", "shift"]
+    expected_trap = 0.5 * 0.5**2 * batch.positions.square().sum(dim=(1, 2))
+    torch.testing.assert_close(via_entry_point.terms["trap"], expected_trap)
 
 
 def test_naive_evaluator_rejects_untyped_context() -> None:
@@ -76,6 +79,14 @@ def test_naive_evaluator_rejects_untyped_context() -> None:
             {"a": ConstantTerm(1.0)},
             {"wavefunction": None, "batch": _batch()},
         )
+    # Pin the evaluator's own guard too — production runs are uninstrumented,
+    # so the TypeError branch must stay live without typeguard.
+    with suppress_type_checks():
+        with pytest.raises(TypeError, match="NaiveLocalEnergyContext"):
+            NaiveLocalEnergyEvaluator().evaluate(
+                {"a": ConstantTerm(1.0)},
+                {"wavefunction": None, "batch": _batch()},
+            )
 
 
 def test_empty_hamiltonian_returns_zero_energy() -> None:

@@ -1,14 +1,20 @@
-"""Hamiltonian terms, local-energy results, and aggregation.
+"""Hamiltonian terms, local-energy results, and typed evaluation.
 
 A Hamiltonian is a collection of `HamiltonianTerm`s, given either as a sequence
 or as a ``dict[str, HamiltonianTerm]`` that names each term explicitly. Dict
 keys are the public, authoritative term names: they must be non-empty strings,
-and the values must expose ``local_energy(wavefunction, batch)``. The
-`local_energy` helper normalizes either form (see `normalize_hamiltonian_terms`),
-evaluates every term, and sums their contributions, optionally returning the
-per-term decomposition keyed by the resolved term names. Evaluation summaries
-use canonical flat metric keys such as ``energy`` and
-``energy_term_{name}``; hierarchy belongs in the logging namespace.
+and the values must expose ``local_energy(wavefunction, batch)``.
+
+Evaluation goes through a typed evaluator seam: `NaiveLocalEnergyEvaluator`
+consumes a `NaiveLocalEnergyContext` and owns term normalization (see
+`normalize_hamiltonian_terms`), ordered per-term evaluation, validation, and
+summation, optionally returning the per-term decomposition keyed by the
+resolved term names. The `local_energy` helper is an explicit delegate to the
+naive evaluator and remains the single default path; the naive evaluator is
+the permanent numerical reference for any future optimized evaluator behind
+the `LocalEnergyEvaluator` protocol. Evaluation summaries use canonical flat
+metric keys such as ``energy`` and ``energy_term_{name}``; hierarchy belongs
+in the logging namespace.
 """
 
 from __future__ import annotations
@@ -157,7 +163,7 @@ class LocalEnergyEvaluator(Protocol, Generic[ContextT]):
         ...
 
 
-class NaiveLocalEnergyEvaluator:
+class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
     """Reference evaluator: ordered per-term autodiff evaluation and summation.
 
     Owns the aggregation loop previously inlined in `local_energy`: term
