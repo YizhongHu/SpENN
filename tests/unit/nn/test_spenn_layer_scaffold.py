@@ -22,7 +22,6 @@ from spenn.nn import (
     GaussianCoordinateEnvelope,
     PathAggregation,
     RMSNorm,
-    RealCoordinateEnvelope,
     ResidualUpdate,
     SpENNForwardContext,
     SpENNLayer,
@@ -166,9 +165,9 @@ def test_spenn_layer_controls_are_equivariant_with_context() -> None:
         mixing=TwoPathMixing(),
         path_aggregation=SumPathAggregation(),
         update_normalization=RMSNorm(eps=1.0e-8),
-        update_envelope=RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0)),
+        update_envelope=GaussianCoordinateEnvelope(sigma=2.0),
         feature_normalization=RMSNorm(eps=1.0e-8),
-        feature_envelope=RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0)),
+        feature_envelope=GaussianCoordinateEnvelope(sigma=2.0),
         update=ResidualUpdate(),
     )
 

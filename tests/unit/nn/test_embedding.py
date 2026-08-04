@@ -10,7 +10,7 @@ from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
 from spenn.data.real import RealFeature
 from spenn.equivariance import EquivariantMap
-from spenn.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, RealCoordinateEnvelope, SpENNForwardContext
+from spenn.nn import Embedding, GaussianCoordinateEnvelope, RMSNorm, SpENNForwardContext
 
 
 class SliceTupleInputs(nn.Module):
@@ -150,7 +150,7 @@ def test_embedding_controls_are_equivariant_with_context() -> None:
         num_hidden_layers=1,
         include_spins=False,
         embedding_normalization=RMSNorm(eps=1.0e-8),
-        embedding_envelope=RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0)),
+        embedding_envelope=GaussianCoordinateEnvelope(sigma=2.0),
     ).to(dtype=torch.float64)
 
     output = embedding(batch, context=SpENNForwardContext(batch=batch))
