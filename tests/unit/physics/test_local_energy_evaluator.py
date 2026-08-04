@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from typeguard import TypeCheckError
 
 from spenn.data.batch import ElectronBatch
 from spenn.physics.hamiltonian import (
@@ -67,8 +68,10 @@ def test_local_energy_delegates_to_naive_evaluator() -> None:
 
 def test_naive_evaluator_rejects_untyped_context() -> None:
     # Acceptance pin: the evaluator does not accept arbitrary mappings or
-    # positional (wavefunction, batch) shims — only the typed context.
-    with pytest.raises(TypeError, match="NaiveLocalEnergyContext"):
+    # positional (wavefunction, batch) shims — only the typed context. Under
+    # the instrumented suite typeguard raises first (TypeCheckError); the
+    # evaluator's own TypeError guard covers uninstrumented production runs.
+    with pytest.raises((TypeError, TypeCheckError), match="NaiveLocalEnergyContext"):
         NaiveLocalEnergyEvaluator().evaluate(
             {"a": ConstantTerm(1.0)},
             {"wavefunction": None, "batch": _batch()},
