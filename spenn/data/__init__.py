@@ -4,7 +4,7 @@ from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from spenn.data.equivariant_state import EquivariantState
 from spenn.data.partition import Partition
 from spenn.data.permutation import Permutation
-from spenn.data.real import Feature, Interaction, RealUpdate
+from spenn.data.real import Feature, Interaction, Update
 
 __all__ = [
     "ElectronBatch",
@@ -13,7 +13,7 @@ __all__ = [
     "Permutation",
     "Feature",
     "Interaction",
-    "RealUpdate",
+    "Update",
     "Walkers",
     "WavefunctionOutput",
 ]

@@ -56,7 +56,7 @@ model:
       activation:
         _target_: torch.nn.SiLU
     update:
-      _target_: spenn.nn.ResidualUpdate
+      _target_: spenn.nn.ResidualUpdater
   envelope:
     _target_: spenn.nn.AdditiveEnvelope
     envelopes:

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 from spenn.data.real import (
     Feature,
-    RealUpdate,
+    Update,
     common_real_dtype,
     validate_matching_real_blocks,
     validate_real_update_geometry,
@@ -18,29 +18,29 @@ torch = require_torch(feature="SpENN update modules")
 nn = require_torch_nn(feature="SpENN update modules")
 
 
-class Update(EquivariantMap):
+class Updater(EquivariantMap):
     """Base class for real-feature update rules.
 
     Subclasses map a persistent :class:`Feature` and a proposed
-    :class:`RealUpdate` to the next persistent feature state.
+    :class:`Update` to the next persistent feature state.
     """
 
 
-class ReplaceUpdate(Update):
+class ReplaceUpdater(Updater):
     """Experimental strategy replacing persistent features with update proposals.
 
     This class is not part of the baseline SpENN API and is intentionally not
     exported from ``spenn.nn`` or this module's ``__all__``.
     """
 
-    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
+    def forward_impl(self, x: Feature, u: Update) -> Feature:
         """Return the update proposal as the next real feature state."""
 
         validate_matching_real_blocks(x, u)
         return Feature([tensor.clone() for tensor in u.blocks])
 
 
-class ResidualUpdate(Update):
+class ResidualUpdater(Updater):
     """Add a scaled real update proposal to persistent features.
 
     Mathematical reference: ``main.typ`` section "Updates" and the final
@@ -54,7 +54,7 @@ class ResidualUpdate(Update):
         super().__init__(**kwargs)
         self.step = float(step)
 
-    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
+    def forward_impl(self, x: Feature, u: Update) -> Feature:
         """Return ``x + step * u`` blockwise."""
 
         validate_matching_real_blocks(x, u)
@@ -64,7 +64,7 @@ class ResidualUpdate(Update):
         return Feature([left + self.step * right for left, right in zip(x.blocks, u.blocks)])
 
 
-class NormGatedUpdate(Update):
+class NormGatedUpdater(Updater):
     """Experimental residual update gated by an equivariant update norm.
 
     This class is not part of the baseline SpENN API and is intentionally not
@@ -76,7 +76,7 @@ class NormGatedUpdate(Update):
         self.step = float(step)
         self.eps = float(eps)
 
-    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
+    def forward_impl(self, x: Feature, u: Update) -> Feature:
         """Return a norm-gated residual update."""
 
         validate_matching_real_blocks(x, u)
@@ -91,7 +91,7 @@ class NormGatedUpdate(Update):
         return Feature(output)
 
 
-class ChannelMappedUpdate(Update):
+class ChannelMappedUpdater(Updater):
     """Experimental channel-mapped real update proposal.
 
     This class is not part of the baseline SpENN API and is intentionally not
@@ -146,7 +146,7 @@ class ChannelMappedUpdate(Update):
         self.channel_maps = nn.ParameterDict()
         self._initialize_channel_maps()
 
-    def forward_impl(self, x: Feature, u: RealUpdate) -> Feature:
+    def forward_impl(self, x: Feature, u: Update) -> Feature:
         """Return ``x + step * W_m u_m`` for every body order ``m``."""
 
         validate_real_update_geometry(x, u)
@@ -175,7 +175,7 @@ class ChannelMappedUpdate(Update):
         key = str(order)
         shape = (out_channels, in_channels)
         if key not in self.channel_maps:
-            raise RuntimeError(f"Missing eager ChannelMappedUpdate map for order {order}")
+            raise RuntimeError(f"Missing eager ChannelMappedUpdater map for order {order}")
         weight = self.channel_maps[key]
         if tuple(weight.shape) != shape:
             raise ValueError(f"Order-{order} channel map shape {tuple(weight.shape)} does not match {shape}")
@@ -212,4 +212,4 @@ def _normalize_positive_channels(
     return dict(sorted(channels.items()))
 
 
-__all__ = ["ResidualUpdate", "Update"]
+__all__ = ["ResidualUpdater", "Updater"]

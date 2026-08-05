@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from operator import index
 
-from spenn.data.real import Interaction, RealUpdate, zero_block
+from spenn.data.real import Interaction, Update, zero_block
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.initialization import TorchInitializer
@@ -32,7 +32,7 @@ class PathAggregation(EquivariantMap):
 
     The input contract is :class:`Interaction` with blocks of shape
     ``[batch, channels, paths, indices...]``. The output contract is
-    :class:`RealUpdate` with blocks of shape ``[batch, channels, indices...]``.
+    :class:`Update` with blocks of shape ``[batch, channels, indices...]``.
     The weights are shared over batch and tuple positions ``I`` and never mix
     channels or particle indices, which preserves permutation equivariance.
 
@@ -102,13 +102,13 @@ class PathAggregation(EquivariantMap):
         self.weights = nn.ParameterDict()
         self._initialize_weights()
 
-    def forward_impl(self, x: Interaction) -> RealUpdate:
+    def forward_impl(self, x: Interaction) -> Update:
         """Return the path-aggregated real-space feature update."""
 
         x.validate()
         if not x.blocks:
             # A valid empty interaction aggregates to a valid empty update.
-            return RealUpdate([])
+            return Update([])
         batch_size = x.batch_size
         device = x.blocks[0].device
         dtype = x.blocks[0].dtype
@@ -117,7 +117,7 @@ class PathAggregation(EquivariantMap):
         ]
         for order in range(1, len(x.blocks)):
             output_blocks.append(self.aggregate_block(order, x.blocks[order]))
-        return RealUpdate(output_blocks)
+        return Update(output_blocks)
 
     def aggregate_block(self, order: int, tensor: torch.Tensor) -> torch.Tensor:
         """Aggregate one order block with the learned path weights.

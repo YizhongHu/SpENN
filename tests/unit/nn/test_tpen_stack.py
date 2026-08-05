@@ -14,13 +14,13 @@ import pytest
 import torch
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import Feature, Interaction, RealUpdate, zero_block
+from spenn.data.real import Feature, Interaction, Update, zero_block
 from spenn.equivariance import EquivariantMap
 from spenn.nn import (
     AdditiveEnvelope,
     EquivariantMixing,
     PathAggregation,
-    ResidualUpdate,
+    ResidualUpdater,
     TPENForwardContext,
     TPENLayer,
     TPENWaveFunction,
@@ -41,8 +41,8 @@ class IdentityMixing(EquivariantMap):
 class SumPathAggregation(EquivariantMap):
     """Contract the path axis by summation; stub for the learned module."""
 
-    def forward_impl(self, x: Interaction) -> RealUpdate:
-        return RealUpdate([tensor.sum(dim=2) for tensor in x.blocks])
+    def forward_impl(self, x: Interaction) -> Update:
+        return Update([tensor.sum(dim=2) for tensor in x.blocks])
 
 
 class RecordingScale(EquivariantMap):
@@ -117,7 +117,7 @@ def test_stack_dispatches_context_to_spenn_layers_only() -> None:
             TPENLayer(
                 mixing=IdentityMixing(),
                 path_aggregation=SumPathAggregation(),
-                update=ResidualUpdate(),
+                update=ResidualUpdater(),
                 feature_envelope=RecordingContextEnvelope(calls),
             ),
         ]
@@ -160,7 +160,7 @@ def test_stack_of_real_layers_passes_forced_runtime_equivariance_check(n_particl
                 activation=torch.nn.SiLU(),
                 initializer=TorchInitializer(seed=seed),
             ),
-            update=ResidualUpdate(),
+            update=ResidualUpdater(),
         )
 
     stack = TPENStack([real_layer(24680), real_layer(13579)]).to(dtype=torch.float64)

@@ -15,7 +15,7 @@ from collections.abc import Mapping
 import pytest
 import torch
 
-from spenn.data.real import Interaction, RealUpdate, zero_block
+from spenn.data.real import Interaction, Update, zero_block
 from spenn.nn import PathAggregation, TorchInitializer
 from spenn.data.paths import load_default_path_metadata
 from tests.helpers.tpen_reference import slow_tpen_aggregation
@@ -98,14 +98,14 @@ def test_path_aggregation_removes_path_axis_and_selects_learned_path() -> None:
 
 def test_path_aggregation_returns_real_update_with_channels_preserved() -> None:
     # Contract: Interaction [batch, channels, paths, indices...] in,
-    # RealUpdate [batch, channels, indices...] out, with C_out == C_in.
+    # Update [batch, channels, indices...] out, with C_out == C_in.
     paths_by_order = {1: 3, 2: 4}
     interaction = _random_interaction(3, channels=2, paths_by_order=paths_by_order, seed=3)
     module = _module(2, paths_by_order)
 
     output = module(interaction)
 
-    assert isinstance(output, RealUpdate)
+    assert isinstance(output, Update)
     assert output.validate() is output
     assert output[1].shape == (2, 2, 3)
     assert output[2].shape == (2, 2, 3, 3)
@@ -216,6 +216,6 @@ def test_path_aggregation_matches_slow_tpen_reference(activation_name: str) -> N
     fast = module(interaction)
     slow = slow_tpen_aggregation(interaction, weights, reference_activation)
 
-    expected = RealUpdate(list(slow.blocks))
+    expected = Update(list(slow.blocks))
     matches, stats = fast.compare(expected, atol=1e-12, rtol=1e-12)
     assert matches, f"fast PathAggregation disagrees with slow_tpen_aggregation: {stats}"

@@ -15,14 +15,14 @@ import torch
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import Permutation
-from spenn.data.real import Feature, Interaction, RealUpdate, zero_block
+from spenn.data.real import Feature, Interaction, Update, zero_block
 from spenn.equivariance import EquivariantMap
 from spenn.nn import (
     EquivariantMixing,
     GaussianCoordinateEnvelope,
     PathAggregation,
     RMSNorm,
-    ResidualUpdate,
+    ResidualUpdater,
     TPENForwardContext,
     TPENLayer,
     TorchInitializer,
@@ -52,8 +52,8 @@ class TwoPathMixing(EquivariantMap):
 class SumPathAggregation(EquivariantMap):
     """Contract the path axis by summation; stub for the learned module."""
 
-    def forward_impl(self, x: Interaction) -> RealUpdate:
-        return RealUpdate([tensor.sum(dim=2) for tensor in x.blocks])
+    def forward_impl(self, x: Interaction) -> Update:
+        return Update([tensor.sum(dim=2) for tensor in x.blocks])
 
 
 class RecordingRealMap(EquivariantMap):
@@ -89,7 +89,7 @@ def test_spenn_layer_scaffold_passes_runtime_equivariance_check() -> None:
     layer = TPENLayer(
         mixing=IdentityMixing(),
         path_aggregation=SumPathAggregation(),
-        update=ResidualUpdate(),
+        update=ResidualUpdater(),
     ).to(dtype=torch.float64)
 
     output = layer(feature)
@@ -116,7 +116,7 @@ def test_spenn_layer_applies_optional_real_controls_in_declared_order() -> None:
         update_envelope=RecordingRealEnvelope("update_envelope", calls),
         feature_normalization=RecordingRealMap("feature_normalization", calls),
         feature_envelope=RecordingRealEnvelope("feature_envelope", calls),
-        update=ResidualUpdate(),
+        update=ResidualUpdater(),
     )
 
     layer(feature, context)
@@ -140,7 +140,7 @@ def test_spenn_layer_envelopes_require_context() -> None:
         mixing=TwoPathMixing(),
         path_aggregation=SumPathAggregation(),
         update_envelope=RecordingRealEnvelope("update_envelope", []),
-        update=ResidualUpdate(),
+        update=ResidualUpdater(),
     )
 
     with pytest.raises(ValueError, match="update_envelope"):
@@ -168,7 +168,7 @@ def test_spenn_layer_controls_are_equivariant_with_context() -> None:
         update_envelope=GaussianCoordinateEnvelope(sigma=2.0),
         feature_normalization=RMSNorm(eps=1.0e-8),
         feature_envelope=GaussianCoordinateEnvelope(sigma=2.0),
-        update=ResidualUpdate(),
+        update=ResidualUpdater(),
     )
 
     output = layer(feature, TPENForwardContext(batch=batch))
@@ -206,7 +206,7 @@ def test_spenn_layer_real_components_pass_forced_runtime_equivariance_check() ->
             activation=torch.nn.SiLU(),
             initializer=TorchInitializer(seed=24680),
         ),
-        update=ResidualUpdate(),
+        update=ResidualUpdater(),
     ).to(dtype=torch.float64)
 
     output = layer(feature)
@@ -256,7 +256,7 @@ def test_spenn_layer_matches_slow_tpen_reference_layer() -> None:
     layer = TPENLayer(
         mixing=owned_mixing,
         path_aggregation=aggregation,
-        update=ResidualUpdate(),
+        update=ResidualUpdater(),
     )
 
     # Copy the module's per-order aggregation weights into the reference list.
