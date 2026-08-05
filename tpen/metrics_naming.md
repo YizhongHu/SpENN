@@ -593,9 +593,10 @@ runtime/cuda_max_memory_reserved_mb
 runtime/cuda_device_count
 ```
 
-Recommended training timing (`step_time_sec` from `TrainStepTiming`; the
-phase keys from `TrainPhaseTiming`, driven by the trainer's
-`train_phase_start`/`train_phase_end` events):
+Recommended training timing (`step_time_sec` from `TrainStepTiming`;
+`sampling_time_sec` from `TrainPhaseTiming` observing the typed
+`CollectSamples` scope; the remaining phase keys from `TrainPhaseTiming`,
+driven by the trainer's legacy `train_phase_start`/`train_phase_end` events):
 
 ```text
 train/perf/step_time_sec
@@ -611,6 +612,8 @@ train/perf/post_step_metrics_time_sec
 
 Phase times approximately sum to at most `step_time_sec`; the difference is
 unclassified loop overhead (gradient clipping, event dispatch, logging).
+During A1, `TrainPhaseTiming` still uses the legacy `step_end` trigger for
+reporting cadence. Typed callback subscription and cadence belong to A2.
 
 Recommended evaluation timing:
 

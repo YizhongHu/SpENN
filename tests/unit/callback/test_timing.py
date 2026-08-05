@@ -112,15 +112,15 @@ def test_train_phase_timing_logs_one_record_per_step_at_step_end() -> None:
     context = RecordingContext()
     callback = TrainPhaseTiming(clock=FakeClock([1.0, 1.25, 2.0, 2.75]))
 
-    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 3, "phase": "sampling"}))
-    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 3, "phase": "sampling"}))
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 3, "phase": "batch_build"}))
+    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 3, "phase": "batch_build"}))
     callback.handle(Event(name="train_phase_start", context=context, payload={"step": 3, "phase": "backward"}))
     callback.handle(Event(name="train_phase_end", context=context, payload={"step": 3, "phase": "backward"}))
     callback.handle(Event(name="step_end", context=context, payload={"step": 3}))
 
     assert context.by_namespace("train/perf") == [
         {
-            "metrics": {"sampling_time_sec": 0.25, "backward_time_sec": 0.75},
+            "metrics": {"batch_build_time_sec": 0.25, "backward_time_sec": 0.75},
             "step": 3,
             "namespace": "train/perf",
             "event": None,
@@ -149,15 +149,15 @@ def test_train_phase_timing_drops_unmatched_phase_starts_at_step_end() -> None:
     callback = TrainPhaseTiming(clock=FakeClock([1.0, 5.0, 5.5]))
 
     # A phase started in step 1 but never finished must not leak into step 2.
-    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 1, "phase": "sampling"}))
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 1, "phase": "batch_build"}))
     callback.handle(Event(name="step_end", context=context, payload={"step": 1}))
-    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 2, "phase": "sampling"}))
-    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 2, "phase": "sampling"}))
+    callback.handle(Event(name="train_phase_start", context=context, payload={"step": 2, "phase": "batch_build"}))
+    callback.handle(Event(name="train_phase_end", context=context, payload={"step": 2, "phase": "batch_build"}))
     callback.handle(Event(name="step_end", context=context, payload={"step": 2}))
 
     assert context.by_namespace("train/perf") == [
         {
-            "metrics": {"sampling_time_sec": 0.5},
+            "metrics": {"batch_build_time_sec": 0.5},
             "step": 2,
             "namespace": "train/perf",
             "event": None,

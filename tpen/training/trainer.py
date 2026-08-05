@@ -8,6 +8,7 @@ from typing import Any, Callable
 from tpen.artifacts import RunContext
 from tpen.dependencies import require_torch
 from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
+from tpen.training.events import CollectSamples
 from tpen.training.state import TrainerState
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
 
@@ -28,11 +29,10 @@ def _parameter_norm(model) -> float:
 
 @contextmanager
 def _timed_phase(emit: Callable[..., None], step: int, phase: str):
-    """Bracket one training-loop phase with timing events.
+    """Bracket one not-yet-migrated training phase with timing events.
 
-    The trainer owns the phase boundaries but no timing policy: it only emits
-    ``train_phase_start``/``train_phase_end`` events, and timing callbacks
-    such as ``TrainPhaseTiming`` decide whether and how to measure them.
+    Sample collection uses the typed `CollectSamples` scope. The remaining
+    phase boundaries retain their legacy events until their own migration.
     """
 
     emit("train_phase_start", payload={"step": step, "phase": phase})
@@ -119,7 +119,7 @@ class VMCTrainer:
         for step in range(self.global_step, self.max_steps):
             emit("step_start", payload={"step": step})
 
-            with _timed_phase(emit, step, "sampling"):
+            with context.scope(CollectSamples(step=step)):
                 walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)
             with _timed_phase(emit, step, "batch_build"):
                 batch = walkers.make_batch()
