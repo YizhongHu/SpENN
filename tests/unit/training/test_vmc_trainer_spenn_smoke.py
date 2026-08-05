@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import Any
 
 import torch
 
 from tpen.artifacts import RunContext
+from tpen.events import Ended, Occurrence, Started
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.training.events import CollectSamples
 from tpen.training.trainer import VMCTrainer
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
@@ -18,12 +21,18 @@ class _StubContext(RunContext):
     """Minimal RunContext subclass: satisfies typing, logs to a list."""
 
     def __init__(self) -> None:
+        self.callbacks = []
         self.loggers = []
         self.metadata = SimpleNamespace(device="cpu", dtype="float64")
         self.records: list[tuple[str, dict]] = []
+        self.occurrences: list[Occurrence[Any]] = []
+        self._occurrence_counts = {}
 
     def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
         self.records.append((namespace, dict(metrics)))
+
+    def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
+        self.occurrences.append(occurrence)
 
 
 _FORBIDDEN_METRICS = {
@@ -109,13 +118,14 @@ def test_vmc_trainer_logs_term_metrics_when_return_terms_enabled() -> None:
         assert f"{prefix}_variance" in state.metrics
 
 
-def test_vmc_trainer_emits_paired_phase_timing_events() -> None:
+def test_vmc_trainer_uses_typed_sampling_and_keeps_other_phase_events() -> None:
     model = build_tiny_spenn()
     sampler = build_tiny_sampler()
     terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
     phase_events: list[tuple[str, str]] = []
+    context = _StubContext()
 
     def emit(name: str, *, state=None, payload=None) -> None:
         if name in {"train_phase_start", "train_phase_end"}:
@@ -127,14 +137,13 @@ def test_vmc_trainer_emits_paired_phase_timing_events() -> None:
         sampler=sampler,
         hamiltonian_terms=terms,
         optimizer=optimizer,
-        context=_StubContext(),
+        context=context,
         emit=emit,
     )
 
     started = [phase for name, phase in phase_events if name == "train_phase_start"]
     ended = [phase for name, phase in phase_events if name == "train_phase_end"]
     assert started == [
-        "sampling",
         "batch_build",
         "local_energy",
         "forward",
@@ -145,3 +154,12 @@ def test_vmc_trainer_emits_paired_phase_timing_events() -> None:
     ]
     # Phases are sequential and non-nested, so end order matches start order.
     assert ended == started
+    assert len(context.occurrences) == 2
+    assert isinstance(context.occurrences[0].event, Started)
+    assert isinstance(context.occurrences[1].event, Ended)
+    assert all(
+        isinstance(occurrence.event.operation, CollectSamples)
+        for occurrence in context.occurrences
+    )
+    assert [occurrence.event.operation.step for occurrence in context.occurrences] == [0, 0]
+    assert [occurrence.count for occurrence in context.occurrences] == [1, 1]

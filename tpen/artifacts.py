@@ -10,15 +10,21 @@ import re
 import socket
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
+from dataclasses import is_dataclass
 from datetime import UTC, datetime, tzinfo
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeVar
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from omegaconf import DictConfig, OmegaConf
+
+from tpen.events import Ended, Event as TypedEvent, Occurrence, Operation, Started
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
@@ -30,6 +36,9 @@ RUN_START_ENV_ALLOWLIST = (
     "SLURM_JOB_PARTITION",
     "CUDA_VISIBLE_DEVICES",
 )
+
+_EventT = TypeVar("_EventT", bound=TypedEvent)
+_OperationT = TypeVar("_OperationT", bound=Operation)
 
 
 class ArtifactManager:
@@ -158,6 +167,9 @@ class RunContext:
     callbacks: list[Any] = field(default_factory=list)
     loggers: list[Any] = field(default_factory=list)
     _run_start_emitted: bool = field(default=False, init=False, repr=False)
+    _occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     @property
     def run_dir(self) -> Path:
@@ -195,6 +207,57 @@ class RunContext:
         record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
         for logger in self.loggers:
             logger.log(record)
+
+    def emit(self, event: _EventT) -> Occurrence[_EventT]:
+        """Record and dispatch the next occurrence of a typed event.
+
+        Counts are one-based and local to this context. Each concrete event
+        type advances independently.
+        """
+
+        if not isinstance(event, TypedEvent):
+            raise TypeError(f"event must be an Event, got {type(event).__name__}")
+        if isinstance(event, (Started, Ended)):
+            raise TypeError("Started and Ended are emitted only by scope(operation)")
+        occurrence = Occurrence(event=event, count=self._next_occurrence_count(type(event)))
+        self._dispatch_occurrence(occurrence)
+        return occurrence
+
+    @contextmanager
+    def scope(
+        self, operation: _OperationT
+    ) -> Iterator[Occurrence[Started[_OperationT]]]:
+        """Emit paired lifecycle records around one typed operation.
+
+        The operation's concrete type advances its counter once on entry. The
+        resulting ``Started`` and ``Ended`` records share that count. After a
+        successful start dispatch, the end record is dispatched even when the
+        body raises.
+        """
+
+        if not isinstance(operation, Operation):
+            raise TypeError(f"operation must be an Operation, got {type(operation).__name__}")
+        count = self._next_occurrence_count(type(operation))
+        started = Occurrence(event=Started(operation), count=count)
+        self._dispatch_occurrence(started)
+        try:
+            yield started
+        finally:
+            self._dispatch_occurrence(Occurrence(event=Ended(operation), count=count))
+
+    def _next_occurrence_count(self, event_type: type[TypedEvent] | type[Operation]) -> int:
+        count = self._occurrence_counts.get(event_type, 0) + 1
+        self._occurrence_counts[event_type] = count
+        return count
+
+    def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
+        """Record and dispatch one typed occurrence in callback order."""
+
+        write_occurrence_artifact(self, occurrence)
+        for callback in self.callbacks:
+            handle_occurrence = getattr(callback, "handle_occurrence", None)
+            if callable(handle_occurrence):
+                handle_occurrence(occurrence, self)
 
     def emit_event(
         self,
@@ -374,6 +437,26 @@ def write_event_artifact(context: RunContext, event: Any) -> None:
     )
 
 
+def write_occurrence_artifact(context: RunContext, occurrence: Occurrence[Any]) -> None:
+    """Append one typed occurrence to the separate typed JSONL edge."""
+
+    event = occurrence.event
+    subject: object = event
+    record: dict[str, Any] = {
+        "count": occurrence.count,
+        "event": _qualified_type_name(event),
+        "run_id": context.metadata.run_id,
+        "time": context.now_iso(),
+    }
+    if isinstance(event, (Started, Ended)):
+        subject = event.operation
+        record["operation"] = _qualified_type_name(subject)
+    # Mappings exist only in this serialization adapter; core event values
+    # remain typed objects.
+    record["fields"] = _typed_event_fields(subject)
+    append_jsonl(context.path("occurrences.jsonl"), record)
+
+
 def write_error_artifact(
     target: RunContext | Path,
     exception: BaseException,
@@ -487,6 +570,45 @@ def _event_jsonable(value: Any) -> Any:
             "type": f"{type(value).__module__}.{type(value).__name__}",
         }
     return {"type": f"{type(value).__module__}.{type(value).__name__}"}
+
+
+def _typed_event_fields(value: object) -> dict[str, Any]:
+    """Encode public dataclass fields at the event artifact boundary."""
+
+    if is_dataclass(value):
+        return {
+            item.name: _event_jsonable(getattr(value, item.name))
+            for item in dataclass_fields(value)
+            if not item.name.startswith("_")
+        }
+    if _has_instance_state(value):
+        raise TypeError(
+            f"stateful typed value {_qualified_type_name(value)} must be a dataclass to serialize"
+        )
+    return {}
+
+
+def _has_instance_state(value: object) -> bool:
+    """Return whether a non-dataclass value carries instance-owned state."""
+
+    instance_dict = getattr(value, "__dict__", None)
+    if instance_dict:
+        return True
+    for value_type in type(value).__mro__:
+        slots = value_type.__dict__.get("__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for slot in slots:
+            if slot in {"__dict__", "__weakref__"}:
+                continue
+            if hasattr(value, slot):
+                return True
+    return False
+
+
+def _qualified_type_name(value: object) -> str:
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}"
 
 
 def _slugify(value: str) -> str:
@@ -603,5 +725,6 @@ __all__ = [
     "write_json",
     "write_error_artifact",
     "write_event_artifact",
+    "write_occurrence_artifact",
     "write_run_start_artifact",
 ]

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tpen.artifacts import RunContext
+from tpen.events import Event as TypedEvent
+from tpen.events import Occurrence
 
 
 @dataclass
@@ -105,6 +107,19 @@ class Callback:
         if method is not None:
             method(event)
         self.num_calls += 1
+
+    def handle_occurrence(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext
+    ) -> None:
+        """Handle a typed occurrence during the incremental event migration.
+
+        Built-in callbacks ignore typed occurrences until their owning domain
+        migrates them. `RunContext` invokes this hook in configured callback
+        order and passes itself explicitly for callbacks that need run
+        services.
+        """
+
+        del occurrence, context
 
 
 def _attach_event_metrics(event: Event, namespace: str, metrics: Mapping[str, object]) -> None:
