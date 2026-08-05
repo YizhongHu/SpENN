@@ -109,7 +109,7 @@ model:
       # BOTH train.yaml and eval.yaml (model blocks must stay identical).
       - _target_: spenn.nn.GaussianConfinement
         coefficient: 0.25
-      - _target_: spenn.nn.Cusp
+      - _target_: spenn.nn.ElectronElectronCusp
   readout:
     _target_: spenn.nn.readout.PfaffianReadout
     channels: 4

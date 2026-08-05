@@ -5,11 +5,11 @@ from __future__ import annotations
 import torch
 
 from spenn.data.batch import ElectronBatch
-from spenn.nn import Cusp
+from spenn.nn import ElectronElectronCusp
 
 
 def test_cusp_shape_asserts_preserve_batch_shape() -> None:
     positions = torch.zeros(4, 3, 2, dtype=torch.float64)
-    output = Cusp()(ElectronBatch(positions))
+    output = ElectronElectronCusp()(ElectronBatch(positions))
 
     assert output.shape == (4,)

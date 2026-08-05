@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.nn import Cusp
+from spenn.nn import ElectronElectronCusp
 from spenn.physics.hamiltonian import (
     LocalEnergyResult,
     local_energy,
@@ -49,7 +49,7 @@ class CuspGaussianOutputModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.alpha = nn.Parameter(torch.tensor(0.1, dtype=torch.float64))
-        self.cusp = Cusp(
+        self.cusp = ElectronElectronCusp(
             same_spin_coefficient=0.25,
             opposite_spin_coefficient=0.5,
             range_parameter=0.5,

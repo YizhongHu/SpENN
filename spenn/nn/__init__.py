@@ -16,7 +16,7 @@ from spenn.nn.coordinate_envelopes import (
 from spenn.nn.embedding import Embedding
 from spenn.nn.envelope import (
     AdditiveEnvelope,
-    Cusp,
+    ElectronElectronCusp,
     Envelope,
     GaussianConfinement,
     HookeGaussianConfinement,
@@ -36,7 +36,7 @@ __all__ = [
     "CoordinateEnvelope",
     "ElectronBasis",
     "ElectronBasisFeatures",
-    "Cusp",
+    "ElectronElectronCusp",
     "Embedding",
     "Envelope",
     "EquivariantMixing",

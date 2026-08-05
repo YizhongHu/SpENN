@@ -208,7 +208,7 @@ class HookeGaussianConfinement(GaussianConfinement):
         self.omega = float(omega)
 
 
-class Cusp(Envelope):
+class ElectronElectronCusp(Envelope):
     """Spin-aware analytic electron-electron cusp envelope.
 
     Parameters
@@ -323,7 +323,7 @@ def _inverse_softplus(value: float) -> torch.Tensor:
 
 __all__ = [
     "AdditiveEnvelope",
-    "Cusp",
+    "ElectronElectronCusp",
     "Envelope",
     "GaussianConfinement",
     "HookeGaussianConfinement",

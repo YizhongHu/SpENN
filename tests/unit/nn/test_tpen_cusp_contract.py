@@ -1,6 +1,6 @@
 """T7 cusp-contract pins for the TPEN migration (MIG-TPEN-000 §5).
 
-Pins the spin handling of the electron-electron cusp so the future ``Cusp``
+Pins the spin handling of the electron-electron cusp so the future ``ElectronElectronCusp``
 module cannot silently change slopes:
 
 - opposite-spin pair slope 1/2 and same-spin pair slope 1/4 at coalescence;
@@ -17,7 +17,7 @@ from __future__ import annotations
 import torch
 
 from spenn.data.batch import ElectronBatch
-from spenn.nn import Cusp
+from spenn.nn import ElectronElectronCusp
 
 _DTYPE = torch.float64
 
@@ -34,7 +34,7 @@ def _slope_at_coalescence(spins: tuple[int, int] | None) -> float:
     # u(r) = a*r / (1 + b*r), so u(r)/r -> a as r -> 0. A small separation
     # recovers the analytic slope to first order.
     separation = 1.0e-9
-    cusp = Cusp().to(dtype=_DTYPE)
+    cusp = ElectronElectronCusp().to(dtype=_DTYPE)
     value = cusp(_pair_batch(separation, spins))
     return float(value.item() / separation)
 
@@ -60,7 +60,7 @@ def test_spinless_default_is_documented_same_spin_quarter() -> None:
 def test_cusp_value_is_permutation_invariant() -> None:
     # The envelope stack must be symmetric under particle exchange so the
     # readout keeps ownership of antisymmetry (MIG-TPEN-000 §2.5).
-    cusp = Cusp().to(dtype=_DTYPE)
+    cusp = ElectronElectronCusp().to(dtype=_DTYPE)
     positions = torch.tensor(
         [[[0.1, -0.2, 0.3], [0.7, 0.4, -0.5]]], dtype=_DTYPE
     )
