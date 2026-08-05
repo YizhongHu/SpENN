@@ -1,6 +1,6 @@
 # Metrics Naming and Logging Conventions
 
-This document defines the canonical metric naming scheme for SpENN logs.
+This document defines the canonical metric naming scheme for TPEN logs.
 
 The same logical metric identity should be preserved across CSV, JSONL, and optional W&B logging.
 

@@ -24,8 +24,8 @@ from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.data.paths import PathMetadata, VirtualPath, load_default_path_metadata
 
-torch = require_torch(feature="SpENN equivariant mixing")
-nn = require_torch_nn(feature="SpENN equivariant mixing")
+torch = require_torch(feature="TPEN equivariant mixing")
+nn = require_torch_nn(feature="TPEN equivariant mixing")
 
 
 Aggregation = Literal["sum", "completion_mean"]
@@ -36,7 +36,7 @@ class EquivariantMixing(EquivariantMap):
     """Bilinear virtual-support real-space mixing module.
 
     Mathematical reference: ``main.typ`` section "Equivariant Mixing" and the
-    "Model Workflow" SpENN layer block. The implemented contraction is
+    "Model Workflow" TPEN layer block. The implemented contraction is
 
     ``h^c_{I,p} = sum_{J_[s]\\im(tau)} W_p^{c<-c1 c2}
     x^{c1}_{J o tau1} x^{c2}_{J o tau2}``.

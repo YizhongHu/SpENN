@@ -6,7 +6,7 @@ from tpen.data.real import Feature
 from tpen.dependencies import require_torch
 from tpen.equivariance import EquivariantMap
 
-torch = require_torch(feature="SpENN normalization modules")
+torch = require_torch(feature="TPEN normalization modules")
 
 
 class RMSNorm(EquivariantMap):

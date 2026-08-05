@@ -1,4 +1,4 @@
-# SpENN experiments
+# TPEN experiments
 
 This tree is deliberately separate from the `tpen/` package. Treat it as if it
 were its own repository:

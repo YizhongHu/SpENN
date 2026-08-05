@@ -7,9 +7,9 @@ from collections.abc import Iterable
 from tpen.data.batch import ElectronBatch, pairwise_distances
 from tpen.dependencies import require_torch, require_torch_functional, require_torch_nn
 
-torch = require_torch(feature="SpENN envelope modules")
-nn = require_torch_nn(feature="SpENN envelope modules")
-F = require_torch_functional(feature="SpENN envelope modules")
+torch = require_torch(feature="TPEN envelope modules")
+nn = require_torch_nn(feature="TPEN envelope modules")
+F = require_torch_functional(feature="TPEN envelope modules")
 
 
 def rational_pair_cusp(

@@ -1,4 +1,4 @@
-"""One SpENN layer scaffold."""
+"""One TPEN layer scaffold."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from tpen.dependencies import require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
 
-nn = require_torch_nn(feature="SpENN layer modules")
+nn = require_torch_nn(feature="TPEN layer modules")
 
 
 class TPENLayer(EquivariantMap):

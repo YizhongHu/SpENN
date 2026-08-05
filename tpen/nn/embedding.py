@@ -14,8 +14,8 @@ from tpen.equivariance import EquivariantMap
 from tpen.nn.initialization import TorchInitializer
 from tpen.nn.mlp import MLP
 
-torch = require_torch(feature="SpENN embedding modules")
-nn = require_torch_nn(feature="SpENN embedding modules")
+torch = require_torch(feature="TPEN embedding modules")
+nn = require_torch_nn(feature="TPEN embedding modules")
 
 
 class Embedding(EquivariantMap):

@@ -22,7 +22,7 @@ def read_manifest(path: str | Path) -> CheckpointManifest:
 
 
 def validate_manifest_schema(manifest: CheckpointManifest, *, path: Path | None = None) -> None:
-    """Fail if `manifest` is not a supported SpENN checkpoint schema."""
+    """Fail if `manifest` is not a supported TPEN checkpoint schema."""
 
     label = "" if path is None else f"{path}: "
     if manifest.kind != CHECKPOINT_KIND:

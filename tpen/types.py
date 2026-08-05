@@ -1,4 +1,4 @@
-"""Shared type aliases and lightweight protocols for SpENN."""
+"""Shared type aliases and lightweight protocols for TPEN."""
 
 from __future__ import annotations
 

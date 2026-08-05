@@ -1,4 +1,4 @@
-"""Neural-network component namespace for SpENN."""
+"""Neural-network component namespace for TPEN."""
 
 from tpen.nn.basis import (
     ElectronBasis,

@@ -1,6 +1,6 @@
-# Specht-module Equivariant Neural Network (SpENN)
+# Tensor-product Permutation Equivariant Network (TPEN)
 
-The active SpENN core scaffold is documented in the PR brief and the package
+The active TPEN core scaffold is documented in the PR brief and the package
 docstrings under `tpen/data`, `tpen/reps`, `tpen/nn`, and `tpen/equivariance`.
 
 ## Quick Start
@@ -63,7 +63,7 @@ uv run --extra cpu python -m compileall tpen run.py typechecked.py
 
 ## Optional W&B Tracking
 
-SpENN can optionally mirror scalar run metrics to Weights & Biases for
+TPEN can optionally mirror scalar run metrics to Weights & Biases for
 dashboarding and monitoring. W&B is an observability backend only; the local run
 directory remains the authoritative experiment record.
 
@@ -111,14 +111,14 @@ uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_t
 wandb sync --sync-all
 ```
 
-By default, SpENN does not upload checkpoints, traces, raw batches, per-sample
+By default, TPEN does not upload checkpoints, traces, raw batches, per-sample
 arrays, or full run directories to W&B. W&B receives scalar metrics and compact
 config/provenance metadata; CSV/JSONL logs and local artifacts remain canonical.
 
 
 ## Config section types
 
-SpENN configs use two main kinds of sections:
+TPEN configs use two main kinds of sections:
 
 ```text
 component specs
@@ -198,7 +198,7 @@ benchmarking; it is disabled by default for normal training.
 
 ## Eager Model Invariant
 
-SpENN model construction owns trainable state. All trainable parameters must be
+TPEN model construction owns trainable state. All trainable parameters must be
 registered during ``__init__`` from explicit architecture metadata such as
 channel counts and maximum order. A forward pass may allocate activations whose
 tuple axes depend on the runtime particle count, including zero-sized axes, but

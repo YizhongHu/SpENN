@@ -1,4 +1,4 @@
-"""Custom OmegaConf resolvers for SpENN configs.
+"""Custom OmegaConf resolvers for TPEN configs.
 
 These resolvers let scalar run parameters and structured choice libraries drive
 model construction without hand-writing one YAML file per variant. They are
@@ -53,7 +53,7 @@ def basis_feature_dim(basis_config: Any) -> int:
 
 
 def register_resolvers() -> None:
-    """Register SpENN OmegaConf resolvers (idempotent)."""
+    """Register TPEN OmegaConf resolvers (idempotent)."""
 
     global _REGISTERED
     if _REGISTERED:

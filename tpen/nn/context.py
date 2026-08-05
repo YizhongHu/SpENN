@@ -1,4 +1,4 @@
-"""Typed forward context shared by SpENN model components."""
+"""Typed forward context shared by TPEN model components."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from tpen.data.batch import ElectronBatch
 from tpen.dependencies import require_torch
 from tpen.nn.basis import ElectronBasisFeatures
 
-torch = require_torch(feature="SpENN forward context")
+torch = require_torch(feature="TPEN forward context")
 
 
 @dataclass(frozen=True)

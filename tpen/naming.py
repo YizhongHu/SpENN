@@ -1,4 +1,4 @@
-"""Small naming helpers shared across SpENN."""
+"""Small naming helpers shared across TPEN."""
 
 from __future__ import annotations
 

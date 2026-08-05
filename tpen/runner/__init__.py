@@ -1,4 +1,4 @@
-"""Public runner targets for configured SpENN executions."""
+"""Public runner targets for configured TPEN executions."""
 
 from __future__ import annotations
 

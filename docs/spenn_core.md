@@ -1,4 +1,4 @@
-# SpENN Core Scaffold
+# TPEN Core Scaffold
 
 The TPEN pipeline is the primary API (MIG-TPEN-000): all stages operate in
 real space, and the two compute stages own their activations.
@@ -24,7 +24,7 @@ metadata lives in `tpen.data.paths`.
 
 ## Initialization RNGs
 
-SpENN-owned randomized modules should use explicit initializer objects rather
+TPEN-owned randomized modules should use explicit initializer objects rather
 than process-global RNG seeding. New configs should wire
 `tpen.nn.TorchInitializer` into randomized model components, for example into
 generated `Embedding` MLPs and `PathAggregation` weights. These initializers

@@ -1,4 +1,4 @@
-"""Equivariant-state contracts for SpENN data objects.
+"""Equivariant-state contracts for TPEN data objects.
 
 This module is intentionally narrow. ``EquivariantState`` is the typed contract
 used as input/output of an equivariant map: semantic particle permutation

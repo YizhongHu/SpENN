@@ -1,4 +1,4 @@
-"""Composed SpENN wavefunction scaffold."""
+"""Composed TPEN wavefunction scaffold."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
 from tpen.nn.tpen_stack import TPENStack
 
-torch = require_torch(feature="SpENN wavefunction modules")
-nn = require_torch_nn(feature="SpENN wavefunction modules")
+torch = require_torch(feature="TPEN wavefunction modules")
+nn = require_torch_nn(feature="TPEN wavefunction modules")
 
 
 class TPENWaveFunction(EquivariantMap):

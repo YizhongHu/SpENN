@@ -1,7 +1,7 @@
 # Optional Dependencies
 
 PyTorch is optional in package metadata so downstream installs, config parsing,
-documentation, and non-execution tooling can import SpENN without a full Torch
+documentation, and non-execution tooling can import TPEN without a full Torch
 install.
 
 Training, sampling, neural-network modules, physics evaluation, diagnostics, and
@@ -36,7 +36,7 @@ requires PyTorch and the active environment only has the lightweight optional
 dependency set, it fails before Hydra instantiation with an actionable message:
 
 ```text
-configured SpENN run requires a complete `torch` installation. Install it with `uv sync --extra cpu` or run with `uv run --extra cpu ...`.
+configured TPEN run requires a complete `torch` installation. Install it with `uv sync --extra cpu` or run with `uv run --extra cpu ...`.
 ```
 
 Code that needs PyTorch should import it through `tpen.dependencies`:
@@ -44,8 +44,8 @@ Code that needs PyTorch should import it through `tpen.dependencies`:
 ```python
 from tpen.dependencies import require_torch, require_torch_nn
 
-torch = require_torch(feature="my SpENN feature")
-nn = require_torch_nn(feature="my SpENN feature")
+torch = require_torch(feature="my TPEN feature")
+nn = require_torch_nn(feature="my TPEN feature")
 ```
 
 Use `require_torch_functional(...)` for `torch.nn.functional`. This keeps the

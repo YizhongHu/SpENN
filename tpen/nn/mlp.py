@@ -7,8 +7,8 @@ from copy import deepcopy
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.nn.initialization import SeededLinear, TorchInitializer
 
-torch = require_torch(feature="SpENN MLP modules")
-nn = require_torch_nn(feature="SpENN MLP modules")
+torch = require_torch(feature="TPEN MLP modules")
+nn = require_torch_nn(feature="TPEN MLP modules")
 
 
 class MLP(nn.Module):
