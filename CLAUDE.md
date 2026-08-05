@@ -20,9 +20,10 @@ The available gpu nodes are: kozinsky_gpu, and seas_gpu
 ## Design Document
 
 A design document that contains the mathematical background of
-SpENN can be found in `main.typ`. Key components of the model:
-`Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
-should closely follow the design document for correctness.
+TPEN can be found in `main.typ`. Key components of the model:
+`Embedding`, `EquivariantMixing`, `PathAggregation`, `Readout`/`PfaffianReadout`,
+and the additive log-amplitude envelopes (`ElectronElectronCusp`,
+`GaussianConfinement`) should closely follow the design document for correctness.
 
 ## Environment
 

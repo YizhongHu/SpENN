@@ -1,3 +1,6 @@
+// TPEN Design Document (Typst). Source of truth for the TPEN architecture;
+// replaces the retired SpENN (Specht-module / irrep / Fourier) design doc
+// per decision O2 / D15a.
 //#import "@preview/noteworthy:0.2.0": * // Need to make TOC breakable
 #import "lib.typ": *
 #import "@preview/showybox:2.0.4": showybox
@@ -11,9 +14,9 @@
   paper-size: "a4",
   font: "New Computer Modern",
   language: "EN",
-  title: "SpENN Design Document",
+  title: "TPEN Design Document",
   author: "Richard Hu",
-  contact-details: "SpENN",
+  contact-details: "TPEN-QMC",
   toc-title: none,
   watermark: "DRAFT", // Optional: Watermark for the document
 )
@@ -25,6 +28,12 @@
 
 #set heading(numbering: "1.")
 
+#let appendix(body) = {
+  set heading(numbering: "A.a.i", supplement: [Appendix])
+  counter(heading).update(0)
+  body
+}
+
 #show heading.where(level:1): it => {
   counter(math.equation).update(0)
   it
@@ -33,12 +42,12 @@
 
 #set math.equation(numbering: it => {
   // Get the chapter number (first element of the heading counter)
-  let chapter_num = counter(heading).get().first() 
+  let chapter_num = counter(heading).get().first()
   // Format the number as (chapter.equation_number)
-  numbering("(1.1)", chapter_num, it) 
+  numbering("(1.1)", chapter_num, it)
 })
 // #set math.mat(delim: "[")
-#set enum(numbering: "I.1.a.i)")
+#set enum(numbering: "1.a.i.")
 
 
 // Write here
@@ -106,9 +115,10 @@
 
 = Introduction
 
-Specht-module Equivariant Neural Network, or SpENN /ʃpɛn/, is a general neural network
-structure based on equivariant features of the symmetric groups $S_n$. The design
+Tensor-product Permutation Equivariant Network is a neural network
+structure based on permutation-equivariant many-body features. The design
 philosophies of this architecture can extend to other forms of permutation in/equi-variance,
+and possibly become another generalization of GNN,
 but we will focus on using it as an antisymmetric Quantum Monte Carlo ansatz.
 
 = Background
@@ -119,12 +129,12 @@ but we will focus on using it as an antisymmetric Quantum Monte Carlo ansatz.
 For a positive integer $n$, define $[n] = (1, dots, n)$, the tuple of elements from $1$ to $n$.
 Depending on the situation, this can also be interpreted as a set ${1, dots, n}$.
 
-Permutations are injective (and thus bijective) maps $sigma: [n] mapsto [n]$. We denote 
+Permutations are injective (and thus bijective) maps $sigma: [n] mapsto [n]$. We denote
 injective maps with a hooked arrow: $sigma: [n] arrow.hook [m]$. The set of permutations
 of order $n$ is denoted $S_n$. This forms a group under composition.
 
 For a generic tuple of positive integers $I = (i_1, i_2, dots, i_ell: i_k in [n])$, the order
-or cardinality of the tuple $|I| = n$. 
+or cardinality of the tuple $|I| = n$.
 
 === Tuple Maps
 The tuple $I = (i_1, i_2, dots, i_ell: i_k in [n])$ contains the same information as a map
@@ -132,8 +142,8 @@ $
 tau_I: [ell] & mapsto [n]\
         k & mapsto i_k
 $
-Thus a tuple can also be used inter-changeably with a map. 
-For a tuple $I:[ell] mapsto [n]$ and $J:[m] mapsto [ell]$, 
+Thus a tuple can also be used inter-changeably with a map.
+For a tuple $I:[ell] mapsto [n]$ and $J:[m] mapsto [ell]$,
 we can define $I_J = (i_j_k: k in [m])$ as the composition of the two tuples.
 
 For a map $tau: [m]mapsto[n]$, its image is defined as
@@ -164,92 +174,8 @@ where $E_"loc"$ the *local energy* is defined as
 $ E_"loc" (br) = (H psi(br))/(psi(br)) $
 Hence we can use a MCMC sampler on $|psi(br)|^2$ to estimate $E$
 $ E = 1/N sum_(a=1)^N E_"loc" (br^a) $
-Using SpENN as an ansatz for $psi$, we estimate the energy $E$ and train the parameters
+Using TPEN as an ansatz for $psi$, we estimate the energy $E$ and train the parameters
 of the neural network to minimize it.
-
-== Representations of Symmetric Groups
-
-=== Partitions and Specht modules
-
-To guarantee that $psi$ is antisymmetric, we use an equivariant neural network that operates
-on the irreps of $S_n$ instead of allowing arbitrary interactions. The irreps of $S_n$
-are related to partitions of $n$.
-
-#definition(title: [Partition])[
-  A partition $lambda$ of $n$, denoted as $lambda tack n$, is a weakly decreasing
-  tuple of positive integers
-  $ lambda = (lambda^1, lambda^2, dots, lambda^ell) $
-  where $n = sum_(k=1)^ell lambda^k$ and $lambda^1 gt.eq lambda^2 gt.eq dots gt.eq lambda^ell$.
-]
-
-For example, the partitions of $1$ is only $(1)$; the partitions of 
-$2$ are $(2)$ and $(1, 1)$; the partitions of $3$ are $(3), (2, 1), "and", (1, 1, 1)$, etc.
-
-#definition(title: [Irreducible Representations of $S_n$])[
-  For $lambda tack n$, the associated irreducible representation (or irrep) is
-  $rho^lambda: S_n mapsto CC^(d_lambda)$, where $d_lambda$ is known as the dimension
-  of the irreducible representation.
-]
-
-The space that the irreps of $S_n$ acts on is called *Specht modules*
-/ʃpɛçt  ˈmɑː.dʒuːlz/, which inspires the name and pronunciation of SpENN.
-Subspaces corresponding to the irrep $lambda$ is notated as $S^lambda$.
-Vectors in $S^lambda$ are equivariant with $rho^lambda$.
-They should be referred to as *irrep vectors*
-or *irrep features*, but sometimes they are called irreps as well, which causes
-confusion. We will try to avoid this confusion.
-
-=== Young's tableau and construction of irreps
-
-A combinatorics object called *Young's tableau* is used to construct irreps of 
-$S_n$. 
-
-The irrep of $S_1$ is
-$ rho^((1)) (sigma) = 1 $
-The irreps of $S_2$ are
-$ rho^((2)) (sigma) & = 1 quad rho^((1, 1)) (sigma) & = sgn(sigma) $
-The irreps of $S_3$ are
-$ rho^((3)) (sigma) & = 1 quad rho^((1, 1, 1)) (sigma) & = sgn(sigma) $
-The $(2,1)$ irrep is two dimensional. It can differ based on the basis we choose.
-For now, we use the $e_1-e_2$, $e_2 - e_3$ basis:
-$
-rho^((2,1)) (e) = mat(1, 0; 0, 1) quad 
-rho^((2,1)) ((1, 2, 3)) = mat(0, -1; 1, -1) quad 
-rho^((2,1)) ((1, 3, 2)) = mat(-1, 1; -1, 0) quad \
-rho^((2, 1))((1, 2)) = mat(-1, 1; 0, 1) quad
-rho^((2, 1))((2, 3)) = mat(1, 0; 1, -1) quad
-rho^((2, 1))((1, 3)) = mat(0, 1; -1, 0)
-$
-
-=== Subgroup representations of $S_n$
-
-The group function $sigma mapsto phi(sigma(br))$ can be considered a vector
-indexed by $S_n$. Under permutation, this transforms as the regular 
-representation of $S_n$, we notate as $rho^"reg"$. In irrep basis, this
-vector has $n!$ components. Any operation on it will cost
-at least $O(n^n)$ time. This is inefficient, so we investigate
-irreps of subgroups of $S_n$ instead.
-
-An assumption can be made about electrons, that their correlation is dominated
-by *lower body order interactions*: pair interactions, triple interactions, etc.
-So we only need to operate on lower body-order. Through message passing, 
-irreps with lower order should be able to obtain information about higher body 
-order interactions, but our system descriptors will have capped body order.
-
-Let's try and make this concrete. Say that the system only needs information
-about 2-body interactions to completely describe the wave function. This means
-that for any pair of particles $br_i$ and $br_j$, only the irreps that describe
-their order matters. It should transform trivially for the rest of the particles
-#footnote[This is not the only way to do this but rather a design choice, see
-#ref(<as-irreps>)].
-
-In other words, we operate on $S_2 times S_(n-2) subset S_n$, and use the induced 
-representation $"Ind"^(S_n)_(S_2 times S_(n-2)) (rho^lambda times.square bold(1))$.
-In practice, this means that for every pair of particles $i$ and $j$, we can 
-associate with it irrep vectors in $bx^lambda_ij in S^lambda$ where $lambda tack 2$. They
-transform as the irrep $rho^lambda$, and contain information about the subgroup 
-$S_2 times S_(n-2)$ where the changes in the rest of the particles do not affect
-this irrep vector.
 
 = Design
 
@@ -266,9 +192,9 @@ Here $I$ is a tuple of non-repeating indices $(i_1, i_2, dots, i_m : i_k in [n])
 Since the body order $m = |I|$, we will suppress $m$ unless otherwise stated, since it
 can be directly derived from $I$.
 
-This embedding scheme means that we are not restricted to sending $RR^3$ 
+This embedding scheme means that we are not restricted to sending $RR^3$
 coordinates into the encoder. In fact, this can be an arbitrary vector that describes
-as much about the particle as possible. We gain a more extensible model for free. 
+as much about the particle as possible. We gain a more extensible model for free.
 
 In the QMC case, we can easily encode spin in this way:
 $ bv_i = (br_i, s_i) = (x_i, y_i, z_i, s_i) $
@@ -283,31 +209,31 @@ To preserve more information from the input, we can stack multiple channels:
 $ bx^(0, c, m)_I = phi^(c m) (br_i_1, dots.c, br_i_m) $
 where $c$ is the channel index.
 
-== Specht Layers <spechtmp>
-#block[
-There are two steps in a Specht layer: mixing and activation.
+== TPEN Layers Overview <tpen-layers>
+#block(width: 100%)[
+There are two steps in a TPEN layer: mixing and aggregation.
   #set math.equation(numbering: none)
-  $ 
-  bx^m_I stretch(->)^"mixing"_(W) bh^m_I
-  markrect(
-    stretch(->)^"projection"_P hat(bh)^lambda_I
-    stretch(->)^"activation"_Gamma hat(bu)^lambda_I
-    stretch(->)^("projection"^(-1))_(P^(-1))
-  ) bu^m_I stretch(->)^("update") bx_I^m 
   $
-  The boxed parts indicate activation in irrep space. We call this Specht activation.
-  It will be introduced later.
+  bx^m_I stretch(->)^"mixing"_(W) by^m_(I, p)
+  stretch(->)^"activation"_Gamma bh^m_(I,p)
+  stretch(->)^"aggregation"_U bw^m_I
+  stretch(->)^"activation"_(Gamma_c) bu_I
+  stretch(->)^("update") bx_I^m
+  $
+  All operations happen in real space. The path axis $p$ is opened by mixing and
+  contracted by aggregation, so the post-aggregation update $bu_I$ carries no path
+  axis.
 ]
 
-=== Equivariant Mixing
+== Equivariant Mixing
 
 The mixing process takes features $x^(t c)_I$ does an equivariant tensor product
 and outputs hidden states $bh^((t+1)c)_(I, p)$. This information may be passed on to
 features of equal or lower body-order than the interaction
 
 Mixing has the general form:
-$ bh^c_(I, p) = sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2) bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2 $
-where the path index $p = (s, m, m_1, m_2, tau, tau_1, tau_2)$ describes the different equivariant paths indices 
+$ bh^c_(I, p) = Gamma(sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2) bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2) $
+where the path index $p = (s, m, m_1, m_2, tau, tau_1, tau_2)$ describes the different equivariant paths indices
 through which $bx$ can interact and produce features on index $I$.
 - $s$: interaction order--total number of particles involved in this interaction.
 - $m$: output order--the order of the output feature, the feature that accepts the information from the interaction.
@@ -321,354 +247,94 @@ and activation has the general form
   are positioned in the virtual interaction.
 - $tau_2$: $[m_2] arrow.hook[s]$, right input injection--an injective function that describes where the indices of $I_2$
   are positioned in the virtual interaction.
-$sum_(J_([s]\\"im"(tau)))$ means summing over all the indices
-in the virtual interactions that is not already in the image of $tau$, i.e. the indices in $I$ that are corresponding to.
+- $sum_(J_([s]\\"im"(tau)))$ means summing over all the indices
+  in the virtual interactions that is not already in the image of $tau$, i.e. the indices in $I$ that are corresponding to.
+- $Gamma$ is a point-wise activation function.
 
-== Specht Activation
-#block[
-  After mixing, we need to add non-linear activation functions to the features, 
-  but a simple $Gamma(bx)$ will break the permutation equivariance that we carefully crafted. 
-  To keep the messages equivariant, we need to do activation in irrep vector space. This is
-  where Specht modules come into play.
-]
+=== Decoherent Paths
 
-/*
-=== Index Taxonomy
-
-During the process, we have to deal with a lot of indices, 
-some of them we decided to sum over, some of them we decided to apply weights
-to, and some of them are activated. The decision over it is a balancing act.
-We shall discuss this in detail.
-
-#table(
-  columns: (auto, 1.3fr, 1.5fr, 1.4fr),
-  inset: 6pt,
-  align: (horizon, horizon, left, left),
-  table.header[
-    *Class*
-  ][
-    *Examples*
-  ][
-    *Operation*
-  ][
-    *Learnable?*
-  ],
-
-  [Output indices],
-  [
-    $I, lambda, c_"out", alpha, beta$
-  ],
-  [
-    Survive the operation and label the output block $bm_I^(c_"out", lambda)$ or $bx_I^(c_"out", lambda)$.
-  ],
-  [
-    Sometimes. Everything except $alpha$ can mix.
-  ],
-
-  
-  [Path / mechanism indices],
-  [
-    $lambda_1$, $lambda_2$, $mu$, $I_1$, $I_2$, $J$
-  ],
-  [
-    Label distinct equivariant mechanisms.
-    Summed between activation and output.
-  ],
-  [
-    Yes, and they mix trivially without activation.
-  ],
-
-  [Activation-domain indices],
-  [
-    $c_1$, $c_2$, $c_"in"$
-  ],
-  [
-    Aggregated after applying weights but before activation
-  ],
-  [
-    Yes, and they mix non-trivially even without activation.
-  ],
-
-  [Fixed contraction indices],
-  [ 
-    $sigma$
-  ],
-  [
-    Not influenced by weights and are thus summed before weights apply.
-  ],
-  [
-    No. These indices do not mix.
-  ],
-)
-
-More detailedly, fixed contraction indices do not mix
-and do not appear in the output, so they are summed first to reduce dimensions.
-Activation-domain indices do mix, and they can mix non-trivially 
-even when they are only passed though a linear layer. For maximum efficiency,
-they are summed before activation.
-Path/mechanism indices are indices that would mix trivially if no activation is 
-applied, i.e. having multiple weights is equivalent to having a single weight, 
-so they have to be passed through non-linear activation to be meaningful.
-Of course, we can still choose to do linear activation on all 
-learned indices, or non-linear activation on all the non-trivially-mixed
-indices, just note that in the first case, there will be redundant weights,
-and in the second case, the dimensionality may explode.
-
-My choices on which learned indices to activate is essentially my
-attempt at a reasonable accuracy-dimensionality tradeoff. Among many things we can
-tweak about the model, this is also one of them.
-*/
-
-
-=== Fourier Transform and its Inverse
-
-To get the irreps from inputs, we can use the Peter-Weyl theorem. Irrep tensors $bx$ 
-can be calculated with the following Fourier transform:
-$ hat(bx)^lambda_I = (P^lambda bq)_I = 1/m! sum_(sigma in S_n) bx_(sigma I)^m rho^lambda (sigma^(-1)) $
-where $sigma$ can be considered as the coordinates in real space, and
-$lambda$ can be considered the coordinates in irrep/frequency/reciprocal space.
-As long as we have the representation matrices, we will be able to read the irreps off.
-
-Inverse projection maps the irrep vectors $hat(bx)$ back into feature space $bx$.
-$ (P^(-1) hat(bx))_I = sum_(lambda tack|I|) d_lambda tr(hat(bx)^lambda_I) $
-It satisfies
-$ sum_(lambda tack m) P^(-1)  P^lambda = I_(m!) $
-/*
-=== Activation
-
-We need to project into irrep spaces with the Fourier transform before activation
-to preserve equivariance:
-$ sum_lambda P^(-1) Gamma_lambda P^lambda $
-where $Gamma_(lambda)$ is the activation function on the irrep $lambda$.
-
-Activation should not mix components of the same irrep. This includes every 
-permutation of the irrep: ${bx^lambda_(I; alpha) : sigma in S_(|I|)}$
-Note that since $beta$ is the multiplicity index, we can activate irreps with
-different $beta$ values separately. This limitation does not apply to
-irreps with different sets of indices: $bx^lambda_I $ and $bx^lambda_(J)$ 
-can be activated separately as long as $I neq J$. It also does not apply to
-different irreps: $bx^lambda_I$ can be activated separately to 
-$bx^mu_I$ as long as $mu neq lambda$.
-
-$(1)$ can have any smooth activation.
-
-Antisymmetric scalar irreps $(1^m)$ can have smooth *odd* activation functions.
-
-Tensor irreps such as $(2, 1)$ can have *normed* activation:
-$ tilde(bv) = sigma(||bv||)/(||bv||) bv $
-where $sigma$ is an arbitrary function.
-
-The $(1)$ irrep can also act as a gate:
-$ tilde(bv) = sigma(bx^((1))_i) bv $
-where $sigma$ is an arbitrary smooth function.
-For unitary representations, norms of every irrep transform as $(1)$:
-$ tilde(bv) = sigma(||bv'||) bv $*/
-
-=== Activation
-
-Nonlinear activations should be applied in local irrep space. For a real ordered-tuple
-feature block, the activation has the form
-
+When $"im"(tau) subset.eq "im"(tau_1) union "im"(tau_2)$, the set of indices in the output
+feature is a subset of the set of indices in the input. This is known as *coherent*. But
+not a lot is stopping us from creating *decoherent* paths, for example:
+$ i <- j, j\
+  ij <- i k, k i
 $
-sum_(lambda tack m) P^(-1) Gamma_lambda P^lambda,
-$
-
-where $P^lambda$ projects the ordered tuple orbit into the local Specht irrep
-$lambda$, and $Gamma_lambda$ is an equivariant activation on that irrep block.
-
-For each support orbit $"Ord"(I)$, all orderings of $I$ must be gathered and
-activated together. Equivalently, the activation is applied to
-
-$
-(bx_(sigma I) : sigma in S_m),
-$
-
-after projection into irreps. It is not correct to activate each ordered tuple
-coordinate $bx_(sigma I)$ independently when using representation-aware
-activation.
-
-After projection, an irrep block should be viewed schematically as
-
-$
-hat(bx)_(alpha r)^lambda,
-$
-
-where $alpha$ is the transforming irrep coordinate and $r$ bundles all
-multiplicity-like axes. In this architecture, $r$ may include channel indices,
-path indices such as $tau$ or $(tau_1, tau_2)$, and the regular-representation
-multiplicity index $beta$.
-
-The activation must not apply arbitrary elementwise nonlinearities to the
-transforming coordinate $alpha$ for non-scalar irreps. However, it may mix
-multiplicity axes:
-
-$
-hat(bx)_(alpha r_"out")^lambda
-=
-sum_(r_"in")
-U_(r_"out" <- r_"in")^lambda
-hat(bx)_(alpha r_"in")^lambda.
-$
-
-This mixing is equivariant because it does not act on the transforming irrep
-coordinate $alpha$. The weights over multiplicity axes do not need to be
-normalized for equivariance. Normalization may still be useful as an optimization
-choice, but it is not a symmetry requirement.
-
-Different orbits may be activated separately. Thus $hat(bx)_I^lambda$
-and $hat(bx)_J^lambda$ can be activated separately when $"im"(I) != "im"(J)$.
-Different irreps may also be activated separately: $hat(bx)_I^lambda$ and
-$hat(bx)_I^mu$ should usually have separate activation functions when
-$lambda != mu$.
-
-The general form of Specht activation is:
-$ hat(bu)^(c lambda)_(I; alpha, b_"out") = sum_p sum_beta_"in" U^(c lambda)_("im"(I), p; beta_"out"<-beta_"in") 
-Gamma_lambda (hat(bh)^(c lambda)_("Ord"(I), p; alpha beta_"in")) $
-close attention needs to paid so that irrep dimensions do not mix. There should not 
-be extra weights and activations for
-+ different $alpha$ values,
-+ and different permutations of $I$.
-
-=== Scalar irreps
-
-The trivial scalar irrep $(m)$ may use any smooth scalar activation:
-
-$
-tilde(x) = phi(x).
-$
-
-The antisymmetric scalar irrep $(1^m)$ transforms by sign. Therefore its
-activation must be odd:
-
-$
-phi(-x) = - phi(x).
-$
-
-Examples include
-
-$
-phi(x) = tanh(x)
-$
-
-or more generally
-
-$
-phi(x) = x g(x^2).
-$
-
-=== Tensor irreps
-
-For higher-dimensional irreps, use norm or gated activations. If the irrep basis
-is orthonormal or unitary, the invariant norm of
-
-$
-hat(bx)_(alpha r)^lambda
-$
-
-over the transforming coordinate is
-
-$
-x_r
-=
-(norm(hat(bx)_(alpha r)^lambda)^2 + epsilon)^(1/2)
-=
-(
-  sum_alpha abs(hat(bx)_(alpha r)^lambda)^2
-  + epsilon
-)^(1/2).
-$
-
-A simple gate-only activation is
-
-$
-tilde(bx)_(alpha r)^lambda
-=
-g_lambda (x_r)
-hat(bx)_(alpha r)^lambda.
-$
-
-A normalized-direction activation is
-
-$
-tilde(bx)_(alpha r)^lambda
-=
-(a_lambda (x_r))/(x_r)
-hat(bx)_(alpha r)^lambda.
-$
-
-In this second form, the irrep vector is normalized on every forward pass. This
-is only necessary if the activation is intended to separate direction from
-magnitude. If the activation only gates the vector by an invariant scalar, then
-explicit normalization is not required.
-
-If the representation basis is not orthonormal, the Euclidean norm above is not
-invariant. In that case, one must either use an orthonormal/seminormal Young
-basis or replace the Euclidean norm by the correct Gram-matrix norm.
-
-=== Invariant gates from other irreps
-
-Invariant scalar quantities may be used to gate any irrep. For example, the
-trivial irrep can gate another irrep:
-
-$
-tilde(bv)
-=
-sigma(hat(bx)^((m))) bv.
-$
-
-Likewise, the norm of any irrep transforms as a scalar invariant, so it can be
-used as a gate:
-
-$
-tilde(bv)
-=
-sigma(norm(bv')) bv.
-$
-
-These gates are equivariant because the gate value is invariant and the output
-keeps the same transforming irrep direction as $bv$.
+Although they are not physically sound, I don't see them breaking equivariance, so
+they can very-well be included.
 
 
+== Aggregation
 
+Aggregation contracts the path axis per input channel and then applies an owned
+activation $Gamma_c$ across the channel axis:
 
-=== Updates
+$ bu^(c)_(I) = Gamma_c (sum_p U^(1)_(p) bh^1_(I, p), dots, sum_p U^(C_"in")_(p) bh^(C_"in")_(I, p)), quad c in [C_"out"] $
+
+where each per-input-channel weight $U^(c)_(p)$ contracts only the (inert) path
+axis $p$, and $Gamma_c: RR^(C_"in") mapsto RR^(C_"out")$ acts identically on
+every tuple $I$. Since it touches only the inert path and channel axes, this
+operation is permutation-equivariant.
+
+The current implementation uses an elementwise $Gamma_c$ with
+$C_"out" = C_"in"$, so channel mixing lives entirely in the mixing weights $W$.
+An MLP-valued $Gamma_c$ (one MLP per tensor order, mixing $C_"in" -> C_"out"$
+with every non-channel axis folded into the batch dimension) is a documented
+future upgrade behind the same $Gamma_c$ signature; it is not yet shipped.
+
+== Activation and Updates
+
+Arbitrary point-wise activation on tensors preserve equivariance:
+$ bh_I = Gamma(by_I) $
 
 For an update $bu^(t+1)$, we can directly apply the update:
 $ bx^(t+1) = bold("u")^(t+1) $
 For $u^(t+1) ~ bx$, we can use a residual update:
 $ bx^(t+1) = bx^t + bold("u")^(t+1) $
 
-For $hat(bu)^(t+1, (1)) ~ 1$, we may also consider a gated update:
-$ bx^(t+1) = hat(bu)^(t+1, (1)) bx^t $
-or even gated *and* residual update:
-$ bx^(t+1) = hat(bu)^(t+1, (1)) bx^t + bold("u")^(t+1) $
-In unitary representations, we can also use the norm of some irrep tensor like $(2,1)$.
+== Normalization and Envelopes
 
-We can also consider soft update:
-$ bx^(t+1) = (1-a)bx^t + a bu^(t+1) $
-where $a in (0, 1]$ is a hyper-parameter.
+Normalization is a function on the feature/update itself:
+$ "Normalize"(bx) $
+An envelope is a *multiplicative* re-scaling of the feature by a function of the
+input coordinates:
+$ "Envelope"(br)bx $
+They can also happen at the same time (though it is usually not a good idea)
+$ "Envelope"(br)"Normalize"(bx) $
+They are ways we can keep the scale of the outputs in check
+in case polynomial growth causes problems.
+
+These multiplicative coordinate envelopes are `tpen.nn.CoordinateEnvelope` and
+its descendant `tpen.nn.GaussianCoordinateEnvelope`. Each is a single
+`EquivariantMap` that owns its own multiplication --- there is no producer/applier
+split --- multiplying intermediate `Feature` or `Update` blocks inside
+`tpen.nn.Embedding` or `tpen.nn.TPENLayer`. They are distinct from the additive
+log-amplitude factors (cusps and confinements) of the Cusps and Confinement
+section, which add to $log abs(psi)$ rather than multiplying features.
 
 == Antisymmetric Readout
 
 === Readout vs. Encoder Anti-symmetrization tradeoff <as-irreps>
 
-The irreps features that are passed between the layers are in fact representations
-of a subgroup of $S_n$. Say that we have irrep feature with order $m$. It is working
-with the $S_m times S_(n-m)$ subgroup of $S_n$, specifically, an element in $S_m$ describes
-an *orbit* in $S_n$, subgroup of elements such that the indices in some tuple $I$ stays invariant. 
+TPEN passes real-space tuple features between its layers; there is no irrep or
+Fourier round-trip carrying data from one layer to the next. Nonetheless, the
+*choice of where to antisymmetrize* is most naturally analyzed through the
+representation theory of $S_n$. Consider an order-$m$ feature. It is acted on by
+the $S_m times S_(n-m)$ subgroup of $S_n$: an element of $S_m$ describes an
+*orbit* in $S_n$, the subgroup of elements under which the indices of some tuple
+$I$ stay invariant.
 
 The irreps that we are using is
 $ "Ind"^(S_n)_(S_m times S_(n-m)) (S^lambda times.square bold("1")) $
 where we assume that all the variation happens within $S_m$ and the irrep is *permutation-invariant*
-to $S_(n-m)$. The advantage of this is that it is very easy to encode the irreps at the start, 
-but we need to anti-symmetrize at the end. 
+to $S_(n-m)$. The advantage of this is that it is very easy to encode the irreps at the start,
+but we need to anti-symmetrize at the end.
 
 The alternative is to instead work with antisymmetrized irreps
 $ "Ind"^(S_n)_(S_m times S_(n-m)) (S^lambda times.square S^((1^(n-m)))) $
 This assumes that the irreps are *anti-symmetric* to the indices not recorded, but encoding
-these irreps faithfully is challenging. The correct way of doing this is 
+these irreps faithfully is challenging. The correct way of doing this is
 $ hat(bx)^lambda_I = sum_(sigma in S_(n-m)) sgn(sigma)rho^lambda (sigma)phi^({|I|})_"AS" (br_I, br_(sigma^(-1) ([n] backslash I))) $
-This has no trivial simplification and is factorial time with respect to the number of particles. 
+This has no trivial simplification and is factorial time with respect to the number of particles.
 We will need to craft the features meticulously to loose as little important information as possible.
 But this benefit of this construction is that the final irreps are readily anti-symmetric and we
 can just take a linear combination of them.
@@ -681,15 +347,15 @@ to many of the existing methods, but I think that there is a lot of room to expl
 
 The most obvious readout method is using pfaffians on the (1,1) irrep.
 $ psi(br) = sum_(c=1)^C b_c "Pf"[(hat(bx)^(c, (1,1)))_ij] $
-For the cases where $n$ is odd, we can instead do 
+For the cases where $n$ is odd, we can instead do
 $ psi(br) = sum_(c=1)^C b_c "Pf" mat(
-  hat(bx)^(c"," (1","1)), hat(bx)^(c"," (1));
-  (hat(bx)^(c"," (1)))^T, 0 
+  hat(bx)^(c"," (1","1)), -hat(bx)^(c"," (1));
+  (hat(bx)^(c"," (1)))^T, 0
 ) $
-This is because the tensor product of $n\/2$ $(1,1)$ irreps contain a copy of the $(1^n)$ irrep. 
+This is because the tensor product of $n\/2$ $(1,1)$ irreps contain a copy of the $(1^n)$ irrep.
 
-Assuming that channels are sufficiently mixed in the SpechtMP layers, this is the only 
-irrep with order $n$ that we can read-out from a network of maximum interaction order $M=2$. 
+Assuming that channels are sufficiently mixed in the TPEN layers, this is the only
+irrep with order $n$ that we can read-out from a network of maximum interaction order $M=2$.
 
 === Generalized Pfaffian readout
 
@@ -703,7 +369,7 @@ cases(
 )
 $
 A similar form exists for the Pfaffian, just with three-body interactions, but the catch is that while
-the Pfaffian can be calculated in $O(n^3)$ time, the generalized Pfaffian of order 3 cannot. In fact, 
+the Pfaffian can be calculated in $O(n^3)$ time, the generalized Pfaffian of order 3 cannot. In fact,
 it is exponential in terms of $n$. Because of this, we have to abandon calculating the exact generalized
 pfaffian for order-3 and above.
 
@@ -712,9 +378,9 @@ pfaffian for order-3 and above.
 Given that the maximum order $M=3$, the only channel-wise order-n read-outs are the pfaffian and the generalized
 pfaffian, but we can increase the order to include other irreps, i.e., the polynomial order of the irreps in the
 read-out phase $r$ has been correlated with $n$ in the two cases we presented ($r=n/2$ for pfaffians and $r = n/3$
-for order-3 pfaffians), but taking higher order tensor products of irreps can result in more copies of $(1^n)$. 
+for order-3 pfaffians), but taking higher order tensor products of irreps can result in more copies of $(1^n)$.
 
-The generalized pfaffian for polynomial order $r$ is 
+The generalized pfaffian for polynomial order $r$ is
 $
   Psi_(m,r)(X)
   =
@@ -754,76 +420,56 @@ E_phi(i_(1,1), dots.c, i_(r,m))
 product_(p=1)^r
 a^c_(i_(p,1) dots.c i_(p,m))
 $
-Note that the dimensions of $b_(phi,c)$ grows exponentially with $r$ and $n$. 
+Note that the dimensions of $b_(phi,c)$ grows exponentially with $r$ and $n$.
 
 === Channel-mixing
 
-Since channels already mixes in SpechtMP, we consider it rather redundant to mix channels
+Since channels already mixes in aggregation, we consider it rather redundant to mix channels
 again in the readout phase, but we must highlight a very common method of channel-mixing readout:
 determinants.
 $ Psi = det [hat(bx)^(c, T, (1))_i] $
-We form a matrix with axis 0 being the channels and axis 1 being the particle index. 
+We form a matrix with axis 0 being the channels and axis 1 being the particle index.
 This type of readout has been used extensively in mainstream NN-QMC methods.
 
-== Envelopes
+== Cusps and Confinement
 
-We apply scalar envelope factors outside the antisymmetric SpechtMP/readout stack:
+The wavefunction carries a *required* additive log-amplitude factor applied
+outside the antisymmetric TPEN/readout stack:
 
 $
-psi(br) = exp(J_"env" (br)) psi_theta (br),
+psi(br) = exp(J (br)) psi_theta (br),
 $
 
 or equivalently,
 
 $
-log abs(psi(br))) = J_"env" (br) + log abs(psi_theta (br)).
+log abs(psi(br)) = J (br) + log abs(psi_theta (br)).
 $
 
-This keeps smooth long-range factors and short-range cusp enforcement independent from the determinant/Pfaffian/Specht readout and preserves the antisymmetry of $psi_theta$.
+This keeps short-range coalescence and long-range confinement independent from
+the determinant/Pfaffian readout and preserves the antisymmetry of $psi_theta$.
 
-`nn.TPENWaveFunction` takes one required log-amplitude `nn.Envelope`.
-Composite envelopes use `nn.AdditiveEnvelope`, which adds the scalar outputs of
-its component envelopes. For the Hooke pair config, the composite envelope is
-the sum of `nn.GaussianConfinement` and `nn.Cusp`.
-
-This log-amplitude envelope is distinct from coordinate envelopes such as
-`nn.GaussianCoordinateEnvelope` (a `nn.CoordinateEnvelope` that owns its
-multiplication). Coordinate envelopes multiply intermediate `Feature` or
-`Update` blocks inside `nn.Embedding` or `nn.TPENLayer`; the
-log-amplitude `nn.Envelope` adds only to the final `log abs(psi)`.
-
-For a harmonically confined system,
+The factor $J$ is *additive* in $log abs(psi)$. We reserve the word *envelope*
+for the *multiplicative* coordinate factors of the Normalization and Envelopes
+section and name the additive-to-$log abs(psi)$ factors by body order: two-body
+terms are *cusps*, one-body terms are *confinements*. In code these components
+compose through `tpen.nn.AdditiveEnvelope`, which the wavefunction takes as a
+required argument:
 
 $
-J_"conf"(br)
+J (br)
 =
-- alpha sum_i |r_i|^2,
-quad alpha >= 0.
+J_"ee" (br) + J_"conf" (br).
 $
 
-For Hooke or oscillator frequency $omega$, the fixed Gaussian ground-state tail uses
-
-$
-alpha = omega / 2.
-$
-
-This factor is smooth rather than cusp-like, but it is still additive in $log abs(psi)$ and should be applied through the envelope interface, not inside the antisymmetric readout.
-
-The current cusp envelope implementation contains only the electron-electron term:
-
-$
-J_"cusp" (br)
-=
-J_"ee" (br).
-$
-
-Future nuclear and periodic long-range factors should be added as separate envelope modules.
+Here $J_"ee"$ is the two-body electron-electron cusp and $J_"conf"$ is a one-body
+confinement. The shipped Hooke stack is
+`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`.
 
 === Electron-electron cusp
 
-==== Option A: fixed analytic electron-electron cusp
-
-Use an explicit pairwise electron-electron cusp term
+The two-body electron-electron cusp (`tpen.nn.ElectronElectronCusp`) is the
+shipped cusp module. It is an explicit pairwise term
 
 $
 J_"ee"(R)
@@ -859,131 +505,678 @@ $
 b = "softplus"(tilde(b)) + epsilon.
 $
 
-This is the recommended MVP for electron-electron cusps. It is simple, stable, and enforces the short-range condition exactly by construction.
+=== Gaussian confinement
 
-==== Option B: analytic electron-electron cusp plus smooth residual
-
-Use the same fixed analytic cusp, but add a smooth residual term:
+Because the Pfaffian readout is polynomial in the features, a trapped system
+needs a guaranteed-by-construction decay factor for $|psi|^2$ normalizability.
+The one-body Gaussian confinement (`tpen.nn.GaussianConfinement`) supplies it:
 
 $
-u_(sigma_i sigma_j)(r)
+J_"conf"(br)
 =
-frac(a_(sigma_i sigma_j) r, 1 + b_(sigma_i sigma_j) r)
-+
-r^2 g_theta (r).
+- alpha sum_i |r_i|^2,
+quad alpha >= 0.
 $
 
-The $r^2$ factor enforces
+For a Hooke or oscillator frequency $omega$, the fixed Gaussian ground-state tail
+uses
 
 $
-frac(d, d r) [r^2 g_theta(r)]_(r=0) = 0,
+alpha = omega / 2,
 $
 
-so the residual does not alter the cusp slope.
+exposed by the $omega$-parametrized convenience subclass
+`tpen.nn.HookeGaussianConfinement`. This factor is smooth rather than cusp-like,
+but it is still additive in $log abs(psi)$ and is applied through the additive
+log-amplitude interface, not inside the antisymmetric readout.
 
-This option gives more flexibility for electron-electron correlation while preserving exact short-range behavior.
+=== Electron-nucleus confinement (deferred)
 
-=== Design decision
+For all-electron Hamiltonians, electron-nucleus coalescence also needs explicit
+handling. Because it is a *one-body* factor it is a *confinement*, not a cusp:
+`NuclearConfinement`. It is *deferred to a future all-electron milestone* --- the
+Hooke systems studied here contain no nuclei, so this term would be permanently
+inactive and is not shipped. The math is recorded here for that milestone.
 
-Implement Option A first for electron-electron cusps:
+Use
 
 $
-J_"ee"(R)
+J_"en"(R)
 =
-sum_(i < j)
-frac(a_(sigma_i sigma_j) r_ij, 1 + b_(sigma_i sigma_j) r_ij),
+sum_i sum_A v_A (r_(i A)),
+quad
+r_(i A) = norm(r_i - R_A).
 $
 
-Expose Option B as an optional extension:
+The required short-range slope is
 
 $
-"ee_residual": "none" | "smooth-r2".
+v_A'(0) = -Z_A,
 $
 
-Each envelope module should return a scalar
+and the simplest analytic form that enforces it exactly is
 
 $
-J(R)
+v_A (r)
+=
+frac(-Z_A r, 1 + b_A r).
 $
 
-per configuration and should be added directly to the model log-amplitude. It should not modify SpechtMP features or antisymmetric readout internals.
+The electron-nucleus term is spin-independent: $v_A (r_(i A))$ does not depend on
+$sigma_i$. The range parameter $b_A$ may be fixed globally, shared by nuclear
+charge, or learned per nucleus:
+
+$
+b_A = b
+quad "global",
+quad
+b_A = b_(Z_A)
+quad "shared by nuclear charge",
+quad
+b_A
+quad "one per nucleus",
+$
+
+constrained positive by $b_A = "softplus"(tilde(b)_A) + epsilon$. A global $b$ or
+one $b_(Z)$ per nuclear charge is the recommended starting point.
+
+== Loss function
+
+The loss function that we will be using is the following:
+$ cal(L)(theta) = 2 EE_(br ~ |psi|^2)[(E_"loc" (br) - E)_"detach" log psi_theta (br)] $
+It will be approximated by the LLN estimator
+$ cal(L)(theta) = 2/N sum_(a=1)^N [(E_"loc" (br^a) - E)_"detach" log psi_theta (br^a)] $
+where $br^a$ are iid samples of $|psi|^2$.
+
+The gradient of this loss function $nabla_theta cal(L)$ is equivalent to $nabla_theta E$.
 
 = Model Workflow
-/*
-Implemented in `nn.TPENWaveFunction`.
-+ Input: $br_i = (x_i, y_i, z_i, s_i)$
-+ Encoder (`nn.Encoder`)
-  + Learnable encoder $phi^({m}): br_I stretch(->) bq^{m}_I $. Packs tuples into $bq$ bundles
-  + Unlearnable Projection into irrep space $bx^(0, lambda)_I = P^lambda bq_I$
-+ Specht Message-Passing layers (`nn.SpechtMP`)
-  + Specht MP layer 1 (`nn.SpechtMPLayer`) 
-    + Project into real space with `reps.FusionMap`:
-      $ bz^(1, c_1c_2, lambda<-lambda_1 lambda_2)_(sigma, I<-I_1I_2) =
-      (d_lambda_1 d_lambda_2)/(m!)
-        tr(bx^(0, c_1lambda_1)_I_1 times.o^"kr" bx^(0, c_2lambda_2)_I_2) rho^lambda (sigma^(-1)) $
-    + Aggregate into message with `nn.MessageHead`
-      $ bm^(1, c_"out"lambda)_(I; alpha beta) = sum_(I_1 or.curly I_2 = I) sum_(lambda_1 tack|I_1| \ lambda_2 tack|I_2|) & "activation"_lambda [ sum_(sigma in S_m)  sum_(c_1, c_2)
-      & M^(1, c_"out"<-c_1 c_2 m<-m_1m_2)_(I<-I_1, I_2; beta) bz^(1, c_1c_2, lambda<-lambda_1 lambda_2)_(sigma, I<-I_1I_2; alpha beta)] $
-    + Project into Branching space with `reps.BranchMap`:
-      $ by^(1, c_"in",lambda<-mu)_(sigma, I<-J) = (d_mu)/(m!) tr(bm_J^(1,c_"in" mu)) rho^lambda (sigma^(-1)) $
-    + Aggregate into the update tensor $bold("u")$ with `nn.UpdateHead`:
-      $ bold("u")^(1, c_"out" lambda)_(I; alpha beta) = sum_(J prec.eq I) sum_(mu tack|I|) "activation"_lambda [sum_(sigma in S_m)  sum_(c_"in") O^(1, c_"out"<-c_"in",m<-|J|)_(sigma I <- J; beta) by^(1, c_"in",lambda<-mu)_(sigma, I<-J; alpha beta)] $
-    + Update the irreps with `nn.Updater`:
-      $ bx^(1) = "update"(bold("u")^1, bx^0) $
-  + SpechtMP layer 2 (`nn.SpechtMPLayer`)
-  
-    $dots$
-  + SpechtMP layer T (`nn.SpechtMPLayer`)
-+ Readout with `nn.PfaffianReadout`
-  $ Psi = sum_(c) w^(c) "Pf"[bx^(T c (1,1))_(i j)] $
-+ Applied envelope with `nn.Envelope`
-  $ psi(br) = exp(J_"env" (br))Psi(br) $
-+ Output: $psi(br)$*/
 
-Implemented in `nn.TPENWaveFunction`.
+Implemented in `tpen.nn.TPENWaveFunction`.
 
-+ Input: particle positions $bv_i = (br_i, s_i)$ 
-+ Embedding (`nn.Embedding`), learnable: $phi^(m): bv_I mapsto bx_I^(0, c, m)$
-  + Optional embedding normalization, then optional embedding real-state envelope, both owned by `nn.Embedding`.
-+ SpENN Stack (`nn.SpeNNStack`)
-  + SpENN layer 1 (`nn.TPENLayer`)
-    + mixing in real space (`nn.EquivariantMixing`)
-      $ bh^c_(I, p) = sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2)
-      bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2 $
-    + Project into irrep space with `reps.FourierTransform`
-      $ hat(bh)^(c lambda) = P^lambda bh^c $
-    + Activate in irrep space with `nn.activation.ActivatebyType`
-      $ hat(bw)^(c lambda)_("Ord"(I), p; [d_lambda] beta) = Gamma_lambda (hat(bh)^(c lambda)_("Ord"(I), p; [d_lambda] beta)) $
-      important note: all permutations of $I$ are activated together as one irrep. $alpha$ are considered components 
-      of the same irrep so are also activated together.
-    + Obtain update with `nn.PathAggregation`
-      $ hat(bu)^(c lambda)_(I; alpha, b_"out") = sum_p sum_beta_"in"
-      U^(c lambda)_("im"(I), p; beta_"out"<-beta_"in") hat(bw)^(c lambda)_("Ord"(I), p; alpha beta_"in")
-       $
-    + Project back into real space with `reps.InverseFourierTransform`:
-      $ bu^(1, c)_(I)
-      = sum_(lambda tack m) P^(-1) hat(bu)^(1, c, lambda)_(I) $
-    + Optional update normalization, then optional update real-state envelope, both owned by `nn.TPENLayer`.
-    + Feature update (`nn.update`)
++ Input: particle positions $bv_i = (br_i, s_i)$ (Optional particle-wise basis)
++ Embedding (`tpen.nn.Embedding`), learnable: $phi^(m): bv_I mapsto bx_I^(0, c, m)$ (Optional embedding normalization/envelope)
++ TPEN Stack (`tpen.nn.TPENStack`)
+  + TPEN layer 1 (`tpen.nn.TPENLayer`)
+    + mixing in real space (`tpen.nn.EquivariantMixing`)
+      $ bh^c_(I, p) = Gamma(sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2)
+      bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2) $
+    + Obtain update with `tpen.nn.PathAggregation`
+      $ bu^(c)_(I) = Gamma_c (sum_p U^(1)_(p) bh^1_(I, p), dots, sum_p U^(C_"in")_(p) bh^(C_"in")_(I, p)) $
+      followed by optional update normalization/envelope
+    + Feature update (`tpen.nn.update`)
       $ bx^1 = "Update"(bx^0, bu^1) $
-      most commonly with `nn.update.ResidualUpdater`.
-    + Optional end-of-layer feature normalization, then optional feature real-state envelope, both owned by `nn.TPENLayer`.
-  + SpENN layer 2
+      most commonly with `tpen.nn.update.ResidualUpdater`.
+      Followed by optional feature normalization/envelope
+  + TPEN layer 2
     $
     bx^2 = "TPENLayer"(bx^1).
     $
 
   + $dots$
 
-  + SpechtMP layer $T$
+  + TPEN layer $T$
     $
     bx^T = "TPENLayer"(bx^(T-1)).
     $
-+ Readout with `nn.RealPfaffianReadout`
++ Readout with `tpen.nn.PfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c)_(i j) - bx^(T c)_(j i)] $
-+ Applied envelope with `nn.Envelope`
-  $ psi(bv) = exp(J_"env" (br))Psi(bv) $
++ Applied additive log-amplitude envelope with `tpen.nn.AdditiveEnvelope`,
+  required as `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`
+  $ psi(bv) = exp(J (br))Psi(bv), quad J (br) = J_"ee" (br) + J_"conf" (br) $
 + Output: $psi(bv)$
 
-
 #pagebreak()
+
+#show: appendix
+= Derivation of QMC Loss
+
+Define
+
+$
+  Z_theta
+  =
+  integral
+  psi_theta (br)^2 dif br
+$
+
+and the normalized Born distribution
+
+$
+  p_theta (br)
+  =
+  (|psi_theta (br)|^2) / Z_theta.
+$
+
+Then the variational energy can also be written as
+
+$
+  E (theta)
+  =
+  integral
+  p_theta (br)
+  E_"loc" ^ theta (br) dif br.
+$
+
+At first sight, differentiating this expectation appears to require
+differentiating both $p_theta$ and $E_"loc" ^ theta$. However, Hermiticity of
+$H$ allows the derivative to be written entirely in score-function form.
+
+Define
+
+$
+  N_theta
+  =
+  integral
+  psi_theta (br)
+  H psi_theta (br)dif br.
+$
+
+Then
+
+$
+  E (theta)
+  =
+  N_theta / Z_theta,
+$
+
+and hence
+
+$
+  nabla_theta E (theta)
+  =
+  (
+    nabla_theta N_theta
+  ) / Z_theta
+  -
+  E (theta)
+  (
+    nabla_theta Z_theta
+  ) / Z_theta.
+$
+
+For a real wavefunction and a Hermitian Hamiltonian,
+
+$
+  nabla_theta N_theta
+  =
+  2
+  integral
+  (
+    nabla_theta psi_theta (br)
+  )
+  H psi_theta (br) dif br,
+$
+
+while
+
+$
+  nabla_theta Z_theta
+  =
+  2
+  integral
+  (
+    nabla_theta psi_theta (br)
+  )
+  psi_theta (br) dif br.
+$
+
+Therefore,
+
+$
+  nabla_theta E (theta)
+  =
+  2 / Z_theta
+  integral
+  (
+    nabla_theta psi_theta (br)
+  )
+  (
+    H psi_theta (br)
+    -
+    E (theta) psi_theta (br)
+  )br.
+$
+
+Using
+
+$
+  nabla_theta psi_theta (br)
+  =
+  psi_theta (br)
+  nabla_theta log |psi_theta (br)|
+$
+
+and
+
+$
+  H psi_theta (R)
+  =
+  E_"loc" ^ theta (R)
+  psi_theta (R),
+$
+
+we obtain
+
+$
+  nabla_theta E (theta)
+  =
+  2
+  integral
+  p_theta (br)
+  (
+    E_"loc" ^ theta (br)
+    -
+    E (theta)
+  )
+  nabla_theta log |psi_theta (br)|dif br.
+$
+
+Equivalently,
+
+$
+  nabla_theta E (theta)
+  =
+  2
+  E_(br tilde p_theta)
+  [
+    (
+      E_"loc" ^ theta (br)
+      -
+      E (theta)
+    )
+    nabla_theta log |psi_theta (br)|
+  ].
+$
+
+This is the VMC score-gradient formula.
+
+The implementation uses a scalar surrogate loss whose gradient is the
+expression above. Let $"sg"(x)$ denote a stop-gradient operation. For samples
+
+$
+  br^a tilde p_theta,
+  a = 1, dots, N,
+$
+
+define the batch energy
+
+$
+  E_"batch"
+  =
+  1 / N
+  sum_(a = 1)^N
+  E_"loc" ^ theta (br^a).
+$
+
+The QMC surrogate loss is
+
+$
+  L_"QMC" (theta)
+  =
+  2 / N
+  sum_(a = 1)^N
+  "sg"(
+    E_"loc" ^ theta (br^a)
+    -
+    E_"batch"
+  )
+  log |psi_theta (br^a)|.
+$
+
+Because the centered local energies are detached,
+
+$
+  nabla_theta L_"QMC" (theta)
+  =
+  2 / N
+  sum_(a = 1)^N
+  (
+    E_"loc" ^ theta (br^a)
+    -
+    E_"batch"
+  )
+  nabla_theta log |psi_theta (br^a)|.
+$
+
+Thus the value of $L_"QMC"$ is not itself the physical energy. Its gradient is
+a Monte Carlo estimator of the variational-energy gradient.
+
+A parameter-decoupled formulation makes the stop-gradient operation explicit.
+Introduce a frozen parameter copy $alpha$ and a live parameter copy $theta$.
+The frozen copy defines
+
+$
+  p_alpha (R)
+  =
+  (psi_alpha (R)^2) / Z_alpha,
+$
+
+$
+  E_"loc" ^ alpha (R)
+  =
+  (H psi_alpha (R)) / (psi_alpha (R)),
+$
+
+and the centered local-energy signal
+
+$
+  A_alpha (R)
+  =
+  E_"loc" ^ alpha (R)
+  -
+  E (alpha).
+$
+
+Define
+
+$
+  L (theta; alpha)
+  =
+  2
+  E_(br tilde p_alpha)
+  [
+    A_alpha (br)
+    log |psi_theta (br)|
+  ].
+$
+
+Differentiating only with respect to the live parameters gives
+
+$
+  nabla_theta L (theta; alpha)
+  =
+  2
+  E_(br tilde p_alpha)
+  [
+    A_alpha (br)
+    nabla_theta log |psi_theta (br)|
+  ].
+$
+
+After differentiation, setting $theta = alpha$ gives
+
+$
+  nabla_theta L (theta; alpha)
+  =
+  nabla_alpha E (alpha)
+$
+
+at $theta = alpha$.
+
+Thus VMC training can be viewed as follows:
+
+- Freeze the current wavefunction.
+- Sample configurations from its Born distribution.
+- Compute detached centered local energies.
+- Increase the log-amplitude of below-average-local-energy configurations.
+- Decrease the log-amplitude of above-average-local-energy configurations.
+
+
+= Connecting QMC Sampling and RL
+
+== Bellman Expectation
+The standard discounted Bellman equation for a fixed policy $pi$ is
+
+$
+  V^pi (s)
+  =
+  EE_(
+    a tilde pi (dot | s),
+    s' tilde P (dot | s, a)
+  )
+  [
+    r (s, a)
+    +
+    gamma V^pi (s')
+  ].
+$
+
+It decomposes the value of a state into an immediate reward and the discounted
+value of the next state.
+
+For VMC, the closer analogy is the average-cost Bellman equation. Consider a
+Markov process with state $s$, transition kernel $P (s' | s)$, per-state cost
+$c (s)$, and stationary average cost $rho$. Its relative value function $h$
+satisfies the Poisson equation
+
+$
+  h (s)
+  =
+  c (s)
+  -
+  rho
+  +
+  EE_(s' tilde P (. | s))
+  [
+    h (s')
+  ].
+$
+
+The corresponding one-step Bellman residual is
+
+$
+  delta (s, s')
+  =
+  c (s)
+  -
+  rho
+  +
+  h (s')
+  -
+  h (s).
+$
+
+In VMC, the MCMC sampler may be viewed as an artificial pseudo-dynamical
+system. Its state is an electron configuration $R_t$, and its transition
+kernel is
+
+$
+  br^(t + 1)
+  tilde
+  T_theta ( dot |br^t).
+$
+
+The transition kernel is constructed so that its stationary distribution is
+
+$
+  p_theta (br)
+  prop
+  |psi_theta (br)|^2.
+$
+
+The analogue of the instantaneous cost is the local energy,
+
+$
+  c_theta (br)
+  =
+  E_"loc" ^ theta (br),
+$
+
+and the stationary average cost is the variational energy,
+
+$
+  rho_theta
+  =
+  EE_(R tilde p_theta)
+  [
+    E_"loc" ^ theta (br)
+  ]
+  =
+  E (theta).
+$
+
+The average-cost Bellman equation for the sampler pseudo-dynamics is therefore
+
+$
+  h_theta (br)
+  =
+  E_"loc" ^ theta (br)
+  -
+  E (theta)
+  +
+  E_(R' tilde T_theta (dot | br))
+  [
+    h_theta (br')
+  ].
+$
+
+Its one-step Bellman residual is
+
+$
+  delta_theta (br, br')
+  =
+  E_"loc" ^ theta (br)
+  -
+  E (theta)
+  +
+  h_theta (br')
+  -
+  h_theta (br).
+$
+
+The centered local energy used by VMC is
+
+$
+  A_"QMC" (br)
+  =
+  E_"loc" ^ theta (br)
+  -
+  E (theta).
+$
+
+It can therefore be interpreted as the average-cost Bellman residual under
+the approximation
+
+$
+  h_theta (br)
+  approx
+  0.
+$
+
+Under this approximation,
+
+$
+  delta_theta (br, br')
+  approx
+  E_"loc" ^ theta (br)
+  -
+  E (theta).
+$
+
+The QMC surrogate loss consequently has the same score-weighted form as a
+policy-gradient loss:
+
+$
+  L_"QMC" (theta)
+  =
+  2
+  E_(br tilde p_theta)
+  [
+    "sg" (
+      A_"QMC" (br)
+    )
+    log |psi_theta (br)|
+  ].
+$
+
+For comparison, a policy-gradient estimator has the form
+
+$
+  nabla_theta J (theta)
+  =
+  E
+  [
+    A^pi (s, a)
+    nabla_theta log pi_theta (a | s)
+  ],
+$
+
+whereas the VMC energy gradient is
+
+$
+  nabla_theta E (theta)
+  =
+  2
+  E_(R tilde p_theta)
+  [
+    (
+      E_"loc" ^ theta (R)
+      -
+      E (theta)
+    )
+    nabla_theta log |psi_theta (R)|
+  ].
+$
+
+The correspondence is:
+
+- The policy distribution $pi_theta (a | s)$ corresponds to the Born
+  distribution $p_theta (br)$.
+- An action corresponds to a full electron configuration $br$.
+- The reward advantage corresponds to the negative centered local energy.
+- The policy log-probability corresponds to
+  $2 log |psi_theta (br)|$.
+- Reward maximization corresponds to energy minimization.
+
+The factor of two follows from
+
+$
+  log p_theta (br)
+  =
+  2 log |psi_theta (br)|
+  -
+  log Z_theta.
+$
+
+The normalization term does not contribute after centering because
+
+$
+  EE_(br tilde p_theta)
+  [
+    E_"loc" ^ theta (br)
+    -
+    E (theta)
+  ]
+  =
+  0.
+$
+
+There is nevertheless an important distinction between ordinary RL and VMC.
+In ordinary RL, the environment transition kernel is usually external and
+independent of the policy parameters. In VMC, the sampler transition kernel
+$T_theta$ is artificial and generally depends on $theta$, because its
+acceptance probabilities depend on $|psi_theta|^2$.
+
+Standard VMC does not differentiate through these sampler transitions.
+Instead, the sampler is treated as an on-policy data generator for the
+stationary Born distribution. The optimization target remains the stationary
+Rayleigh quotient, not the energy obtained after a finite number of MCMC
+steps.
+
+The most precise interpretation is therefore:
+
+$
+  "VMC is stationary policy gradient on the Born distribution."
+$
+
+The MCMC sampler supplies correlated on-policy samples, while
+
+$
+  E_"loc" ^ theta (br)
+  -
+  E (theta)
+$
+
+acts as the cost advantage. The omitted Bellman term
+
+$
+  h_theta (br')
+  -
+  h_theta (br)
+$
+
+belongs to the pseudo-dynamics of the sampler. It describes finite-chain
+transients and autocorrelation rather than the underlying quantum dynamics.
+Such a term may be useful as a sampler-dependent control variate, but it is
+not part of the standard VMC loss.
