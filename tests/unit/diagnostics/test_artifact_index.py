@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 
-from spenn.diagnostics.artifacts import update_diagnostic_index
+from tpen.diagnostics.artifacts import update_diagnostic_index
 
 
 def test_diagnostic_index_preserves_unknown_entries_and_counts_rows(tmp_path: Path) -> None:

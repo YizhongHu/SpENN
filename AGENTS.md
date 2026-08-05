@@ -1,4 +1,4 @@
-# SpENN project specific guidelines
+# TPEN project specific guidelines
 
 ## Orientation
 
@@ -7,7 +7,7 @@
 ## Design Document
 
 A design document that contains the mathematical background of
-SpENN can be found in `main.typ`. Key components of the model:
+TPEN can be found in `main.typ`. Key components of the model:
 `Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
 should closely follow the design document for correctness.
 
@@ -58,7 +58,7 @@ and currently important information should not.
 - If a config or file or function or class is no longer used, remove it.
 
 Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
-These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
+These helpers erase representation semantics and are not allowed in TPEN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
 
 ### Prefer explicit ownership over local convenience
 
@@ -67,21 +67,17 @@ Do not place helper functions wherever they are first needed. Put each helper in
 Examples:
 
 ```text
-Permutation logic       -> spenn/data/permutation.py
-Tuple-index logic       -> spenn/data/indices.py
-Virtual path logic      -> spenn/reps/paths.py
-Partition logic         -> spenn/data/partition.py
-Irrep metadata          -> spenn/reps/irreps.py
-Young tableaux          -> add a reps-level owner module only when needed
-Specht modules          -> spenn/reps/specht.py
-Fourier transforms      -> spenn/reps/fourier.py
-Trainable modules       -> spenn/nn/
+Permutation logic       -> tpen/data/permutation.py
+Tuple-index logic       -> tpen/data/indices.py
+Virtual path logic      -> tpen/data/paths.py
+Partition logic         -> tpen/data/partition.py
+Trainable modules       -> tpen/nn/
 ```
 
 Bad:
 
 ```python
-# spenn/nn/equivariant_mixing.py
+# tpen/nn/equivariant_mixing.py
 def ordered_tuples(...):
     ...
 ```
@@ -89,7 +85,7 @@ def ordered_tuples(...):
 Good:
 
 ```python
-from spenn.data.indices import ordered_tuples
+from tpen.data.indices import ordered_tuples
 ```
 
 ### Keep equivariance contracts executable
@@ -116,7 +112,7 @@ class MyMap(EquivariantMap):
         ...
 ```
 
-`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `spenn.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
+`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `tpen.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
 
 ### Separate metadata generation from model execution
 
@@ -125,7 +121,7 @@ Path and irrep metadata should be deterministic and cached. Model code should re
 Good:
 
 ```python
-paths = PathMetadata.load("spenn/cache/paths_canonical.json")
+paths = PathMetadata.load("tpen/cache/paths_canonical.json")
 ```
 
 Avoid:
@@ -140,7 +136,7 @@ Generation and saving should be explicit developer actions.
 
 ### Keep path axes explicit until correctness is established
 
-`RealInteraction` should keep a visible path axis:
+`Interaction` should keep a visible path axis:
 
 ```text
 [batch, channels, paths, indices...]
@@ -217,7 +213,7 @@ declares `callbacks` or `loggers` is rejected by `run_from_config`:
 
 ```yaml
 runner:
-  _target_: spenn.runner.Train
+  _target_: tpen.runner.Train
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}

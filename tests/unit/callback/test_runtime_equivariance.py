@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from spenn.callback import RuntimeEquivariance
-from spenn.equivariance.checks import EquivarianceCheckResult
+from tpen.callback import RuntimeEquivariance
+from tpen.equivariance.checks import EquivarianceCheckResult
 from tests.unit.callback.support import FakeState, RecordingContext, step_event
 
 

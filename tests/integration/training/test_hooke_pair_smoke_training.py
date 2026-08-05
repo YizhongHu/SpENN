@@ -1,6 +1,6 @@
 """Integration smoke test: the real Hooke pair config runs end-to-end.
 
-Drives ``run_from_config`` through the real Train runner -> SpENNWaveFunction ->
+Drives ``run_from_config`` through the real Train runner -> TPENWaveFunction ->
 MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with DataIntegrity,
 GradientStats, SamplerHealth, RuntimeEquivariance (full_model + trace),
 Checkpoint, and CSV/JSONL logging. Train-end validation has been removed;
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from spenn.run import run_from_config
+from tpen.run import run_from_config
 
 CONFIG = Path(__file__).resolve().parents[1] / "artifacts" / "hooke" / "pair_train.yaml"
 

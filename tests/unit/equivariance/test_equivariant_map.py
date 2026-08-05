@@ -1,7 +1,7 @@
 """Tests for the pytest-only equivariance helpers over EquivariantMap toys.
 
 Equivariance is asserted via ``tests.helpers.equivariance`` (typed ``.compare`` /
-``apply_particle_permutation``), not the removed ``spenn.testing`` surface or any
+``apply_particle_permutation``), not the removed ``tpen.testing`` surface or any
 generic tree walker.
 """
 
@@ -10,15 +10,15 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.permutation import Permutation
-from spenn.data.real import RealFeature, zero_block
-from spenn.equivariance import EquivariantMap
+from tpen.data.permutation import Permutation
+from tpen.data.real import Feature, zero_block
+from tpen.equivariance import EquivariantMap
 from tests.helpers.equivariance import assert_equivariant, assert_equivariant_all
 
 
-def _feature() -> RealFeature:
+def _feature() -> Feature:
     # Last axis is the particle index (3 particles); channels = 2.
-    return RealFeature(
+    return Feature(
         [
             zero_block(dtype=torch.float64),
             torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
@@ -28,14 +28,14 @@ def _feature() -> RealFeature:
 
 
 class IdentityMap(EquivariantMap):
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         return x.clone()
 
 
 class LabelWeightedMap(EquivariantMap):
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         weights = torch.tensor([1.0, 2.0, 4.0], dtype=x.blocks[1].dtype).reshape(1, 1, 3)
-        return RealFeature([x.blocks[0].clone(), x.blocks[1] * weights, x.blocks[2].clone()])
+        return Feature([x.blocks[0].clone(), x.blocks[1] * weights, x.blocks[2].clone()])
 
 
 def test_helper_passes_for_equivariant_map() -> None:

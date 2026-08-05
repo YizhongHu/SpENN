@@ -1,7 +1,7 @@
-SpENN Documentation
+TPEN Documentation
 ===================
 
-SpENN is a Specht-module equivariant neural-network scaffold for fermionic
+TPEN is a tensor-product permutation-equivariant neural-network scaffold for fermionic
 wavefunctions. These pages collect the development notes and generated API
 reference for the Python package.
 

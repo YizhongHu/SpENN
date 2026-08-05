@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import spenn.data.equivariant_state as equivariant_state
+import tpen.data.equivariant_state as equivariant_state
 
 _FORBIDDEN = ("permute_tree", "validate_tree")
 
@@ -20,11 +20,11 @@ def test_validate_tree_is_gone() -> None:
 
 
 def test_no_forbidden_tree_helpers_in_spenn_source() -> None:
-    root = Path(__file__).resolve().parents[2] / "spenn"
+    root = Path(__file__).resolve().parents[2] / "tpen"
     offenders = [
         (path, symbol)
         for path in root.rglob("*.py")
         for symbol in _FORBIDDEN
         if symbol in path.read_text()
     ]
-    assert offenders == [], f"forbidden tree helpers found in spenn source: {offenders}"
+    assert offenders == [], f"forbidden tree helpers found in tpen source: {offenders}"

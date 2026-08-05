@@ -13,9 +13,9 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from spenn.data.batch import ElectronBatch
-from spenn.nn import SpENNWaveFunction
-from spenn.sampling.metropolis import MetropolisSampler
+from tpen.data.batch import ElectronBatch
+from tpen.nn import TPENWaveFunction
+from tpen.sampling.metropolis import MetropolisSampler
 
 PAIR_TRAIN_CONFIG = Path(__file__).resolve().parents[1] / "integration" / "artifacts" / "hooke" / "pair_train.yaml"
 
@@ -24,8 +24,8 @@ def _config() -> OmegaConf:
     return OmegaConf.load(PAIR_TRAIN_CONFIG)
 
 
-def build_tiny_spenn() -> SpENNWaveFunction:
-    """Instantiate the tiny `SpENNWaveFunction` from the smoke fixture config."""
+def build_tiny_spenn() -> TPENWaveFunction:
+    """Instantiate the tiny `TPENWaveFunction` from the smoke fixture config."""
 
     cfg = _config()
     model = instantiate(cfg.model)

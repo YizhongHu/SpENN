@@ -7,8 +7,8 @@ import math
 import pytest
 import torch
 
-from spenn.data.batch import Walkers
-from spenn.sampling import summarize_walker_geometry
+from tpen.data.batch import Walkers
+from tpen.sampling import summarize_walker_geometry
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 GEOMETRY_KEYS = (

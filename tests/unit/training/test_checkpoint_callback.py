@@ -9,10 +9,10 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-import spenn
-from spenn.callback import Checkpoint, Event
-from spenn.checkpoint import checkpoint_hashes
-from spenn.training.state import TrainerState
+import tpen
+from tpen.callback import Checkpoint, Event
+from tpen.checkpoint import checkpoint_hashes
+from tpen.training.state import TrainerState
 
 
 def _state(step: int, *, completed_steps: int | None = None) -> TrainerState:
@@ -180,7 +180,7 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
     assert manifest["provenance"]["config_id"] == "lr=0.001_channels=4"
     assert manifest["provenance"]["study_name"] == "test_study"
     assert manifest["provenance"]["git_sha"] == "deadbeef"
-    assert manifest["provenance"]["spenn_version"] == spenn.__version__
+    assert manifest["provenance"]["spenn_version"] == tpen.__version__
 
 
 def test_checkpoint_fails_loudly_when_required_state_is_missing(tmp_path) -> None:

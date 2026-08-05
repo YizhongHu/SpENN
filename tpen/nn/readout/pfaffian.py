@@ -1,0 +1,205 @@
+"""Differentiable Pfaffian readout for real tuple features.
+
+All readouts in the new TPEN core consume :class:`tpen.data.real.Feature`.
+Readout-specific Fourier transforms should happen inside a component readout
+before it contributes to the final wavefunction.
+"""
+
+from __future__ import annotations
+
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.partition import Partition
+from tpen.data.real import Feature
+from tpen.dependencies import require_torch, require_torch_nn
+
+torch = require_torch(feature="Pfaffian readout")
+nn = require_torch_nn(feature="Pfaffian readout")
+
+_ODD_PADDING_IRREP = Partition((1,))
+
+
+def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:
+    """Compute one Pfaffian by recursive expansion.
+
+    This path is intentionally simple and suited to small scaffold tests. A
+    production implementation should replace it with a stable batched routine.
+    """
+
+    n = matrix.shape[-1]
+    if n == 0:
+        return matrix.new_tensor(1.0)
+    if n == 2:
+        return matrix[0, 1]
+    if n % 2 == 1:
+        return matrix.new_tensor(0.0)
+    total = matrix.new_tensor(0.0)
+    remaining = torch.arange(n, device=matrix.device)
+    for col in range(1, n):
+        sign = 1.0 if col % 2 == 1 else -1.0
+        idx = remaining[(remaining != 0) & (remaining != col)]
+        submatrix = matrix.index_select(0, idx).index_select(1, idx)
+        total = total + sign * matrix[0, col] * _pfaffian_single(submatrix)
+    return total
+
+
+def pfaffian(matrix: torch.Tensor) -> torch.Tensor:
+    """Compute Pfaffians for skew-symmetric matrices.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Matrix with shape ``[n, n]`` or batched matrices with shape
+        ``[batch, n, n]``.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar Pfaffian for an unbatched input or shape ``[batch]`` for a
+        batched input.
+    """
+
+    if matrix.ndim == 2:
+        if matrix.shape[-1] != matrix.shape[-2]:
+            raise ValueError("Pfaffian matrix must be square")
+        return _pfaffian_single(matrix)
+    if matrix.ndim != 3:
+        raise ValueError(f"Expected matrix rank 2 or 3, got shape {tuple(matrix.shape)}")
+    if matrix.shape[-1] != matrix.shape[-2]:
+        raise ValueError("Pfaffian matrices must be square")
+    return torch.stack([_pfaffian_single(item) for item in matrix], dim=0)
+
+
+class PfaffianReadout(nn.Module):
+    """Per-channel Pfaffian readout: ``Psi = sum_c w_c Pf[K_c]``.
+
+    Each order-2 channel is antisymmetrized into its own skew kernel
+    ``K_c = 0.5 * (x_c - x_c^T)``. Odd-electron systems pad every channel
+    kernel with that channel's order-1 ``(1)`` irrep block as border. The
+    readout is the weighted sum of per-channel Pfaffians, not one Pfaffian
+    of the channel-mixed kernel: Pf is degree-``n/2`` and nonlinear, so the
+    two forms are different function classes (MIG-TPEN-000 section 2.2,
+    decision B1, gate T6).
+
+    Parameters
+    ----------
+    eps : float, optional
+        Positive floor for signed-log conversion.
+    channels, pair_channels : int
+        Number of order-2 real feature channels read out. `channels` is a
+        shorthand for `pair_channels`. Odd-electron padding requires the
+        order-1 block to carry the same channel count.
+    trainable : bool, optional
+        Whether the per-channel readout weights ``w_c`` are trainable. The
+        default keeps them as fixed buffers for scaffold determinism.
+    """
+
+    def __init__(
+        self,
+        *,
+        eps: float = 1.0e-12,
+        channels: int | None = None,
+        pair_channels: int | None = None,
+        trainable: bool = False,
+    ) -> None:
+        super().__init__()
+        self.eps = float(eps)
+        self.trainable = bool(trainable)
+        pair_channels = channels if pair_channels is None else pair_channels
+        if pair_channels is None:
+            raise ValueError("PfaffianReadout requires pair_channels or channels for eager initialization")
+        self.pair_channels = _positive_int(pair_channels, "pair_channels")
+        initial = torch.full((self.pair_channels,), 1.0 / self.pair_channels)
+        if self.trainable:
+            self.channel_weights = nn.Parameter(initial)
+            self.register_buffer("channel_weight_buffer", None, persistent=False)
+        else:
+            self.register_parameter("channel_weights", None)
+            self.register_buffer("channel_weight_buffer", initial, persistent=False)
+
+    def _weights(self) -> torch.Tensor:
+        weight = self.channel_weights if self.trainable else self.channel_weight_buffer
+        if weight is None:
+            raise RuntimeError("PfaffianReadout channel weights were not eagerly initialized")
+        return weight
+
+    def build_skew_kernel(self, features: Feature, batch: ElectronBatch | None = None) -> torch.Tensor:
+        """Construct the per-channel skew kernels consumed by the Pfaffians.
+
+        Parameters
+        ----------
+        features : Feature
+            Real feature state containing an order-2 block with shape
+            ``[batch, channels, n, n]``.
+        batch : ElectronBatch or None, optional
+            Optional batch used only for shape checks.
+
+        Returns
+        -------
+        torch.Tensor
+            Skew kernels with shape ``[batch, channels, n, n]``, or the
+            per-channel bordered shape ``[batch, channels, n + 1, n + 1]``
+            for odd electron counts.
+        """
+
+        if 2 not in features:
+            raise KeyError("PfaffianReadout requires an order-2 Feature block")
+        pair = features.blocks[2]
+        if pair.ndim != 4:
+            raise ValueError(f"Order-2 block must have shape [batch, channels, n, n], got {tuple(pair.shape)}")
+        if batch is not None and pair.shape[0] != batch.batch_size:
+            raise ValueError("Feature batch size disagrees with ElectronBatch")
+        if pair.shape[1] != self.pair_channels:
+            raise ValueError(
+                f"Order-2 block has {pair.shape[1]} channels, expected pair_channels={self.pair_channels}"
+            )
+        kernel = 0.5 * (pair - pair.transpose(-1, -2))
+        if kernel.shape[-1] % 2 == 1:
+            one_body = _odd_padding_block(features, kernel)
+            bordered = kernel.new_zeros(kernel.shape[0], kernel.shape[1], kernel.shape[2] + 1, kernel.shape[3] + 1)
+            bordered[..., :-1, :-1] = kernel
+            bordered[..., :-1, -1] = one_body
+            bordered[..., -1, :-1] = -one_body
+            kernel = bordered
+        return kernel
+
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
+        """Return the signed-log weighted sum of per-channel Pfaffians."""
+
+        kernel = self.build_skew_kernel(features, batch)
+        batch_size, channels = kernel.shape[0], kernel.shape[1]
+        flat = kernel.reshape(batch_size * channels, kernel.shape[-2], kernel.shape[-1])
+        channel_pfaffians = pfaffian(flat).reshape(batch_size, channels)
+        psi = (channel_pfaffians * self._weights().reshape(1, -1)).sum(dim=1)
+        sign = torch.sign(psi)
+        logabs = torch.where(sign == 0, torch.full_like(psi, -torch.inf), 0.5 * torch.log(psi.square().clamp_min(self.eps)))
+        return WavefunctionOutput(
+            logabs=logabs,
+            sign=sign,
+            aux={"K": kernel, "channel_pfaffians": channel_pfaffians, "pfaffian": psi},
+        )
+
+
+def _odd_padding_block(features: Feature, kernel: torch.Tensor) -> torch.Tensor:
+    if _ODD_PADDING_IRREP.order not in features:
+        raise KeyError("Odd-electron Pfaffian padding requires the order-1 Feature block for irrep (1)")
+    one_body = features.blocks[_ODD_PADDING_IRREP.order]
+    if one_body.shape[0] != kernel.shape[0] or one_body.shape[-1] != kernel.shape[-1]:
+        raise ValueError("Odd-electron (1) padding block must match order-2 batch and particle axes")
+    if one_body.shape[1] == 0:
+        raise KeyError("Odd-electron Pfaffian padding requires a nonempty order-1 Feature block for irrep (1)")
+    if one_body.shape[1] != kernel.shape[1]:
+        raise ValueError(
+            "Per-channel odd-electron padding requires the order-1 block to match pair channels, "
+            f"got {one_body.shape[1]} order-1 channels for {kernel.shape[1]} pair channels"
+        )
+    return one_body
+
+
+def _positive_int(value: int, name: str) -> int:
+    result = int(value)
+    if result <= 0:
+        raise ValueError(f"{name} must be positive, got {result}")
+    return result
+
+
+__all__ = ["PfaffianReadout", "pfaffian"]

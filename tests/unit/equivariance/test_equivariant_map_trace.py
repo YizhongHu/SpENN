@@ -8,8 +8,8 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.equivariance import EquivariantMap
-from spenn.trace import Trace, TraceWarning
+from tpen.equivariance import EquivariantMap
+from tpen.trace import Trace, TraceWarning
 
 
 class ToyMap(EquivariantMap):

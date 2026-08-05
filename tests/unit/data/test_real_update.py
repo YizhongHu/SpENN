@@ -1,16 +1,16 @@
-"""Tests for RealUpdate permutation actions."""
+"""Tests for Update permutation actions."""
 
 from __future__ import annotations
 
 import torch
 
-from spenn.data.indices import permute_tuple_axes
-from spenn.data.permutation import Permutation, all_permutations
-from spenn.data.real import RealUpdate, zero_block
+from tpen.data.indices import permute_tuple_axes
+from tpen.data.permutation import Permutation, all_permutations
+from tpen.data.real import Update, zero_block
 
 
-def _update() -> RealUpdate:
-    return RealUpdate(
+def _update() -> Update:
+    return Update(
         [
             zero_block(dtype=torch.float64),
             torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
@@ -34,7 +34,7 @@ def test_real_update_identity_and_composition() -> None:
 
 def test_real_update_all_small_permutations_and_orders() -> None:
     for n_particles in range(1, 6):
-        update = RealUpdate(
+        update = Update(
             [
                 zero_block(dtype=torch.float64),
                 torch.arange(2 * n_particles, dtype=torch.float64).reshape(1, 2, n_particles),
@@ -67,7 +67,7 @@ def test_real_update_all_small_permutations_and_orders() -> None:
 def test_real_update_random_larger_permutations() -> None:
     generator = torch.Generator().manual_seed(91011)
     n_particles = 9
-    update = RealUpdate(
+    update = Update(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.randn(2, 3, n_particles, generator=generator, dtype=torch.float64),

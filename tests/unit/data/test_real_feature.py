@@ -1,16 +1,16 @@
-"""Tests for RealFeature permutation actions."""
+"""Tests for Feature permutation actions."""
 
 from __future__ import annotations
 
 import torch
 
-from spenn.data.indices import permute_tuple_axes
-from spenn.data.permutation import Permutation, all_permutations
-from spenn.data.real import RealFeature, zero_block
+from tpen.data.indices import permute_tuple_axes
+from tpen.data.permutation import Permutation, all_permutations
+from tpen.data.real import Feature, zero_block
 
 
-def _feature() -> RealFeature:
-    return RealFeature(
+def _feature() -> Feature:
+    return Feature(
         [
             zero_block(dtype=torch.float64),
             torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
@@ -50,7 +50,7 @@ def test_real_feature_permute_matches_active_axis_indexing() -> None:
 
 def test_real_feature_permute_all_small_permutations_and_orders() -> None:
     for n_particles in range(1, 6):
-        feature = RealFeature(
+        feature = Feature(
             [
                 zero_block(dtype=torch.float64),
                 torch.arange(2 * n_particles, dtype=torch.float64).reshape(1, 2, n_particles),
@@ -83,7 +83,7 @@ def test_real_feature_permute_all_small_permutations_and_orders() -> None:
 
 def test_real_feature_group_action_all_small_permutations() -> None:
     for n_particles in range(1, 6):
-        feature = RealFeature(
+        feature = Feature(
             [
                 zero_block(batch_size=2, dtype=torch.float64),
                 torch.randn(2, 3, n_particles, dtype=torch.float64),
@@ -101,7 +101,7 @@ def test_real_feature_group_action_all_small_permutations() -> None:
 def test_real_feature_random_larger_permutations() -> None:
     generator = torch.Generator().manual_seed(5678)
     n_particles = 8
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.randn(2, 3, n_particles, generator=generator, dtype=torch.float64),

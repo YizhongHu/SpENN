@@ -6,26 +6,34 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import RealFeature
-from spenn.nn import AdditiveEnvelope, ElectronElectronCusp, Envelope, HarmonicConfinement, SpENNWaveFunction
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.real import Feature
+from tpen.nn import (
+    AdditiveEnvelope,
+    ElectronElectronCusp,
+    Envelope,
+    GaussianConfinement,
+    HookeGaussianConfinement,
+    TPENWaveFunction,
+)
 from tests.helpers.equivariance import assert_equivariant_all
+from tests.helpers.hooke_models import build_tiny_spenn
 
 
 class EmptyEncoder(nn.Module):
-    def forward(self, batch: ElectronBatch, *, context=None) -> RealFeature:
-        return RealFeature()
+    def forward(self, batch: ElectronBatch, *, context=None) -> Feature:
+        return Feature()
 
 
 class ConstantReadout(nn.Module):
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
         sign = torch.tensor([-1.0, 1.0], device=batch.device, dtype=batch.dtype)[: batch.batch_size]
         return WavefunctionOutput(logabs=logabs, sign=sign)
 
 
 class AntisymmetricReadout(nn.Module):
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         sign = torch.sign(batch.positions[:, 0, 0] - batch.positions[:, 1, 0])
         return WavefunctionOutput(logabs=torch.zeros_like(sign), sign=sign)
 
@@ -44,7 +52,7 @@ class FullOutputEnvelope(nn.Module):
 def test_harmonic_confinement_matches_gaussian_tail_formula() -> None:
     positions = torch.tensor([[[1.0], [2.0]], [[3.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    envelope = HarmonicConfinement(coefficient=0.25)
+    envelope = GaussianConfinement(coefficient=0.25)
 
     values = envelope(batch)
 
@@ -56,7 +64,7 @@ def test_harmonic_confinement_is_permutation_invariant() -> None:
     positions = torch.tensor([[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
     permuted = ElectronBatch(positions=positions[:, [2, 0, 1]])
-    envelope = HarmonicConfinement(coefficient=0.25)
+    envelope = GaussianConfinement(coefficient=0.25)
 
     torch.testing.assert_close(envelope(batch), envelope(permuted))
 
@@ -64,7 +72,7 @@ def test_harmonic_confinement_is_permutation_invariant() -> None:
 def test_harmonic_confinement_trainable_coefficient_is_nonnegative_and_differentiable() -> None:
     positions = torch.tensor([[[1.0], [2.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    envelope = HarmonicConfinement(coefficient=0.25, trainable=True)
+    envelope = GaussianConfinement(coefficient=0.25, trainable=True)
 
     output = envelope(batch).sum()
     output.backward()
@@ -131,7 +139,7 @@ def test_electron_electron_trainable_ranges_are_positive_and_differentiable() ->
 def test_disabled_envelope_returns_zero_batch_vector() -> None:
     batch = ElectronBatch(positions=torch.ones(4, 2, 3, dtype=torch.float64))
 
-    values = HarmonicConfinement(enabled=False, coefficient=0.25)(batch)
+    values = GaussianConfinement(enabled=False, coefficient=0.25)(batch)
 
     torch.testing.assert_close(values, torch.zeros(4, dtype=torch.float64))
 
@@ -139,7 +147,7 @@ def test_disabled_envelope_returns_zero_batch_vector() -> None:
 def test_additive_envelope_sums_component_outputs() -> None:
     positions = torch.tensor([[[0.0], [2.0]], [[1.0], [4.0]]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions)
-    harmonic = HarmonicConfinement(coefficient=0.25)
+    harmonic = GaussianConfinement(coefficient=0.25)
     cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
     envelope = AdditiveEnvelope([harmonic, cusp])
 
@@ -156,7 +164,7 @@ def test_empty_additive_envelope_returns_zero_batch_vector() -> None:
 
 def test_wavefunction_requires_envelope() -> None:
     with pytest.raises(ValueError, match="envelope"):
-        SpENNWaveFunction(
+        TPENWaveFunction(
             embedding=EmptyEncoder(),
             layers=[nn.Identity()],
             readout=ConstantReadout(),
@@ -169,11 +177,11 @@ def test_wavefunction_envelope_adds_only_to_logabs_and_preserves_sign() -> None:
     batch = ElectronBatch(positions=positions)
     envelope = AdditiveEnvelope(
         [
-            HarmonicConfinement(coefficient=0.25),
+            GaussianConfinement(coefficient=0.25),
             ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0),
         ]
     )
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
@@ -188,7 +196,7 @@ def test_wavefunction_envelope_adds_only_to_logabs_and_preserves_sign() -> None:
 
 def test_wavefunction_envelope_shape_must_match_readout_logabs() -> None:
     batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
@@ -201,7 +209,7 @@ def test_wavefunction_envelope_shape_must_match_readout_logabs() -> None:
 
 def test_wavefunction_envelope_must_return_additive_tensor_not_full_output() -> None:
     batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
@@ -222,14 +230,67 @@ def test_additive_envelope_rejects_malformed_component_output() -> None:
 
 def test_spenn_wavefunction_passes_runtime_sign_equivariance_check() -> None:
     batch = ElectronBatch(positions=torch.tensor([[[0.0], [1.0]], [[2.0], [4.0]]], dtype=torch.float64))
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=AntisymmetricReadout(),
-        envelope=AdditiveEnvelope([HarmonicConfinement(coefficient=0.0)]),
+        envelope=AdditiveEnvelope([GaussianConfinement(coefficient=0.0)]),
     )
 
     output = model(batch)
 
     assert output.validate() is output
     assert_equivariant_all(model, batch)
+
+
+def test_additive_envelope_composes_cusp_and_hooke_gaussian_exactly() -> None:
+    # T8: the composed wavefunction-level envelope stack (revised D5) must
+    # reproduce the sum of its parts exactly.
+    positions = torch.tensor(
+        [[[0.2, -0.1, 0.4], [0.7, 0.3, -0.6]], [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]]], dtype=torch.float64
+    )
+    spins = torch.tensor([[1.0, -1.0], [1.0, -1.0]], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions, spins=spins)
+    cusp = ElectronElectronCusp(range_parameter=0.5, eps=0.0)
+    confinement = HookeGaussianConfinement(omega=0.5)
+    envelope = AdditiveEnvelope([cusp, confinement])
+
+    torch.testing.assert_close(envelope(batch), cusp(batch) + confinement(batch), rtol=0.0, atol=0.0)
+
+
+def test_composed_cusp_confinement_envelope_is_permutation_invariant() -> None:
+    # T8: the whole envelope stack must stay symmetric under particle
+    # exchange so the readout keeps sole ownership of antisymmetry.
+    positions = torch.tensor([[[0.1, -0.2, 0.3], [0.7, 0.4, -0.5], [-0.6, 0.2, 0.9]]], dtype=torch.float64)
+    spins = torch.tensor([[1.0, -1.0, 1.0]], dtype=torch.float64)
+    envelope = AdditiveEnvelope([ElectronElectronCusp(eps=0.0), HookeGaussianConfinement(omega=0.5)])
+    batch = ElectronBatch(positions=positions, spins=spins)
+    permuted = ElectronBatch(positions=positions[:, [2, 0, 1]], spins=spins[:, [2, 0, 1]])
+
+    torch.testing.assert_close(envelope(batch), envelope(permuted))
+
+
+def test_wavefunction_logabs_decays_along_radial_rays_beyond_documented_radius() -> None:
+    # T8 decay assertion (new diagnostic): with the confinement term enabled,
+    # log|psi| of the full tiny Hooke pair model must decrease monotonically
+    # along radial rays beyond the documented radius r >= 4. Beyond it the
+    # Gaussian confinement (-0.25 * r^2 at omega = 0.5) dominates the
+    # polynomial/logarithmic growth of the network readout and the bounded
+    # cusp term, so strict monotone decay is architecture-guaranteed.
+    torch.manual_seed(0)
+    model = build_tiny_spenn()
+    generator = torch.Generator().manual_seed(7)
+    direction = torch.randn(1, 2, 3, generator=generator, dtype=torch.float64)
+    # Normalize the configuration so sum_i |r_i|^2 == 1; the ray parameter is
+    # then exactly the configuration radius sqrt(sum_i |r_i|^2).
+    direction = direction / direction.square().sum().sqrt()
+    radii = torch.tensor([4.0, 5.0, 6.0, 7.0, 8.0, 10.0], dtype=torch.float64)
+    positions = radii.reshape(-1, 1, 1) * direction
+    spins = torch.tensor([[1.0, -1.0]], dtype=torch.float64).expand(radii.shape[0], -1)
+    batch = ElectronBatch(positions=positions, spins=spins)
+
+    logabs = model(batch).logabs
+
+    assert torch.all(torch.isfinite(logabs))
+    differences = logabs[1:] - logabs[:-1]
+    assert torch.all(differences < 0), f"log|psi| must decay along the radial ray beyond r=4, got {logabs.tolist()}"

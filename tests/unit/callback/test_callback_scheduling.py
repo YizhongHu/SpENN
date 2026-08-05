@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from spenn.callback import Callback, Event
+from tpen.callback import Callback, Event
 
 
 class Recorder(Callback):

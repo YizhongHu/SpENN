@@ -1,7 +1,7 @@
 # Experiment Planning / Execution Split
 
 This note records the proposed direction for separating experiment design from
-execution orchestration in SpENN experiments. It is both a design note and a
+execution orchestration in TPEN experiments. It is both a design note and a
 roadmap for the `hooke/pair_stability_v3` restructuring path.
 
 `hooke/pair_stability_v2` remains the behavioral reference. Do not refactor its
@@ -27,7 +27,7 @@ They should communicate through an explicit, durable task table rather than
 through stage-specific Python functions that both generate commands and submit
 jobs.
 
-This split matters because we want a reusable experiment toolkit for SpENN, not
+This split matters because we want a reusable experiment toolkit for TPEN, not
 a growing collection of bespoke launch scripts for each study.
 
 ## Current V3 Baseline
@@ -399,7 +399,7 @@ The execution layer should never delete partial checkpoints. Partial data is
 scientific/debugging state and must be preserved.
 
 Snakemake-specific note: if Snakemake is used, it should target small sentinel
-files such as `completed.done`, not checkpoint directories. SpENN's Python code
+files such as `completed.done`, not checkpoint directories. TPEN's Python code
 should own checkpoint and metrics files. This avoids Snakemake cleanup behavior
 interfering with partial QMC data.
 
@@ -506,7 +506,7 @@ rule confirm_eval:
   output: 07_final_eval/{run_id}/{attempt}/completed.done
 ```
 
-The rule commands should call Python wrappers that understand SpENN task plans
+The rule commands should call Python wrappers that understand TPEN task plans
 and resume semantics. Snakemake should not construct long OmegaConf override
 commands itself.
 
@@ -565,7 +565,7 @@ Recommendation:
   workflow.
 - Optionally add an Optuna-backed adaptive refinement phase later.
 - Treat Optuna trials as producers of task rows, not as direct Slurm jobs.
-- Mirror completed SpENN tasks into Optuna user attrs/values only after the
+- Mirror completed TPEN tasks into Optuna user attrs/values only after the
   fixed-grid workflow is stable.
 
 For now, avoid making the active study depend on Optuna. The reproducibility
@@ -629,7 +629,7 @@ experiments/hooke/pair_stability_v2/
 ```
 
 Long-term, common pieces should move out of a single study and become reusable
-for SpENN experiments.
+for TPEN experiments.
 
 ### task_plan.py
 
@@ -1032,7 +1032,7 @@ the initial design.
 
 - Optuna belongs behind a search/controller interface that appends task rows and
   receives completed metric values.
-- Optuna trials should mirror SpENN task results; they should not be direct
+- Optuna trials should mirror TPEN task results; they should not be direct
   Slurm jobs.
 - TaskVine/Parsl-style workers require durable leases, heartbeats, stale-lease
   reclaim, and a stronger central task-state store.
@@ -1049,7 +1049,7 @@ Acceptance:
 ## Sentinels
 
 A sentinel file is a small file whose existence means a task completed according
-to SpENN semantics.
+to TPEN semantics.
 
 Examples:
 
@@ -1117,7 +1117,7 @@ metrics collector
 analysis/reporting
 ```
 
-SpENN can follow this pattern without adopting a full MLOps stack.
+TPEN can follow this pattern without adopting a full MLOps stack.
 
 Suggested mapping:
 
@@ -1225,7 +1225,7 @@ run:
   one concrete config, checkpoints, metrics
 ```
 
-This lets SpENN keep the current transparent file-based experiment layout while
+This lets TPEN keep the current transparent file-based experiment layout while
 making orchestration less brittle. It also keeps future choices open:
 
 - fixed grids,

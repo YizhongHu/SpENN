@@ -1,16 +1,16 @@
-"""Tests for RealInteraction permutation actions."""
+"""Tests for Interaction permutation actions."""
 
 from __future__ import annotations
 
 import torch
 
-from spenn.data.indices import permute_tuple_axes
-from spenn.data.permutation import Permutation
-from spenn.data.real import RealInteraction, zero_block
+from tpen.data.indices import permute_tuple_axes
+from tpen.data.permutation import Permutation
+from tpen.data.real import Interaction, zero_block
 
 
-def _interaction() -> RealInteraction:
-    return RealInteraction(
+def _interaction() -> Interaction:
+    return Interaction(
         [
             zero_block(paths=4, dtype=torch.float64),
             torch.arange(1 * 2 * 4 * 3, dtype=torch.float64).reshape(1, 2, 4, 3),

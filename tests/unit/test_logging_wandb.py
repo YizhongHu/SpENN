@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-import spenn.logging as logging_module
-from spenn.logging import LogRecord, WandB, project_record_to_wandb
+import tpen.logging as logging_module
+from tpen.logging import LogRecord, WandB, project_record_to_wandb
 
 
 class FakeRun:

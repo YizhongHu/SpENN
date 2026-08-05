@@ -1,4 +1,4 @@
-"""Sphinx configuration for the SpENN documentation."""
+"""Sphinx configuration for the TPEN documentation."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from spenn import __version__  # noqa: E402
+from tpen import __version__  # noqa: E402
 
-project = "SpENN"
-author = "SpENN contributors"
-copyright = "2026, SpENN contributors"
+project = "TPEN"
+author = "TPEN contributors"
+copyright = "2026, TPEN contributors"
 version = __version__
 release = __version__
 
@@ -56,4 +56,4 @@ intersphinx_mapping = (
 
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "alabaster"
-html_title = "SpENN"
+html_title = "TPEN"

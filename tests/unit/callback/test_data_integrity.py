@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.callback import DataIntegrity
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.callback import DataIntegrity
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tests.unit.callback.support import FakeState, RecordingContext, step_event
 
 
@@ -81,7 +81,7 @@ def test_counts_disambiguate_empty_from_all_nonfinite() -> None:
 
 
 def test_valid_batch_logs_typed_validity_metrics() -> None:
-    from spenn.data.batch import ElectronBatch
+    from tpen.data.batch import ElectronBatch
 
     state = _finite_state()
     state.batch = ElectronBatch(

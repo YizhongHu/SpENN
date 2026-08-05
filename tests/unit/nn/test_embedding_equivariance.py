@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.nn import Embedding
+from tpen.data.batch import ElectronBatch
+from tpen.nn import Embedding
 from tests.helpers.equivariance import assert_equivariant_all
 
 

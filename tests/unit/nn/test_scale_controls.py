@@ -4,25 +4,18 @@ from __future__ import annotations
 
 import torch
 
-from spenn.data.batch import ElectronBatch
-from spenn.data.permutation import Permutation
-from spenn.data.real import RealFeature, RealUpdate, zero_block
-from spenn.nn import (
+from tpen.data.batch import ElectronBatch
+from tpen.data.permutation import Permutation
+from tpen.data.real import Feature, zero_block
+from tpen.nn import (
     GaussianCoordinateEnvelope,
     GaussianDecayGate,
-    RMSInverseGate,
-    RealCoordinateEnvelope,
-    RealGaussianNormGate,
-    RealRMSGate,
-    SigmoidGate,
-    SpENNForwardContext,
-    TanhGate,
+    TPENForwardContext,
 )
-from tests.helpers.equivariance import assert_equivariant_all
 
 
-def _feature(cls=RealFeature) -> RealFeature:
-    return cls(
+def _feature() -> Feature:
+    return Feature(
         [
             zero_block(batch_size=2, dtype=torch.float64),
             torch.tensor(
@@ -49,68 +42,51 @@ def _batch() -> ElectronBatch:
     )
 
 
-def test_scalar_gates_match_formulas() -> None:
+def test_gaussian_decay_gate_matches_formula() -> None:
     x = torch.tensor([0.0, 1.0, 4.0], dtype=torch.float64)
 
-    torch.testing.assert_close(RMSInverseGate(eps=0.25)(x), torch.rsqrt(x + 0.25))
     torch.testing.assert_close(GaussianDecayGate(sigma=2.0)(x), torch.exp(-x / 8.0))
-    torch.testing.assert_close(SigmoidGate()(x), torch.sigmoid(x))
-    torch.testing.assert_close(TanhGate()(x), torch.tanh(x))
 
 
-def test_real_rms_gate_preserves_type_and_uses_channel_mean_square() -> None:
-    update = _feature(RealUpdate)
-    gate = RealRMSGate(eps=0.25)
-
-    output = gate(update)
-
-    statistic = update.blocks[1].square().mean(dim=1, keepdim=True)
-    assert isinstance(output, RealUpdate)
-    torch.testing.assert_close(output.blocks[1], update.blocks[1] * torch.rsqrt(statistic + 0.25))
-
-
-def test_real_gaussian_gate_preserves_type_and_uses_negative_exponent() -> None:
-    feature = _feature()
-    gate = RealGaussianNormGate(sigma=2.0)
-
-    output = gate(feature)
-
-    statistic = feature.blocks[1].square().mean(dim=1, keepdim=True)
-    assert isinstance(output, RealFeature)
-    torch.testing.assert_close(output.blocks[1], feature.blocks[1] * torch.exp(-statistic / 8.0))
-
-
-def test_real_norm_gates_are_particle_equivariant() -> None:
-    assert_equivariant_all(RealRMSGate(eps=1.0e-8), _feature())
-    assert_equivariant_all(RealGaussianNormGate(sigma=1.0), _feature())
-
-
-def test_coordinate_envelope_broadcasts_and_reuses_context_cache() -> None:
+def test_coordinate_envelope_broadcasts_and_is_repeatable() -> None:
+    # D14 collapse: the envelope owns its multiply; the former context cache
+    # is gone (it was keyed by class-level cache_key, not by sigma), so two
+    # calls must simply recompute the same gate.
     batch = _batch()
     feature = _feature()
-    context = SpENNForwardContext(batch=batch)
-    module = RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=2.0))
+    context = TPENForwardContext(batch=batch)
+    module = GaussianCoordinateEnvelope(sigma=2.0)
 
     first = module(feature, context)
-    cached = context.coordinate_envelopes["gaussian"]
     second = module(feature, context)
 
     radius_squared = batch.positions.square().sum(dim=(1, 2))
     expected_gate = torch.exp(-radius_squared / 8.0)
     expected = feature.blocks[1] * expected_gate.reshape(2, 1, 1)
-    torch.testing.assert_close(cached, expected_gate)
     torch.testing.assert_close(first.blocks[1], expected)
     torch.testing.assert_close(second.blocks[1], expected)
+
+
+def test_distinct_sigma_envelopes_do_not_share_state() -> None:
+    # Regression pin for the pre-D14 footgun: two envelopes with different
+    # widths must produce different gates on the same context.
+    batch = _batch()
+    feature = _feature()
+    context = TPENForwardContext(batch=batch)
+
+    wide = GaussianCoordinateEnvelope(sigma=2.0)(feature, context)
+    narrow = GaussianCoordinateEnvelope(sigma=0.5)(feature, context)
+    assert not torch.allclose(wide.blocks[1], narrow.blocks[1])
 
 
 def test_coordinate_envelope_is_particle_equivariant() -> None:
     batch = _batch()
     feature = _feature()
     permutation = Permutation((1, 0))
-    module = RealCoordinateEnvelope(GaussianCoordinateEnvelope(sigma=1.0))
+    module = GaussianCoordinateEnvelope(sigma=1.0)
 
-    output = module(feature, SpENNForwardContext(batch=batch))
-    lhs = module(feature.permute(permutation), SpENNForwardContext(batch=batch.permute(permutation)))
+    output = module(feature, TPENForwardContext(batch=batch))
+    lhs = module(feature.permute(permutation), TPENForwardContext(batch=batch.permute(permutation)))
     rhs = output.permute(permutation)
     close, comparison = lhs.compare(rhs)
     assert close, dict(comparison)

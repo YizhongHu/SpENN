@@ -1,6 +1,6 @@
 """Tests for FullModelEquivarianceChecker and TraceEquivarianceChecker.
 
-Toy typed models live here (pytest-only), not in spenn.testing. The checkers
+Toy typed models live here (pytest-only), not in tpen.testing. The checkers
 call the normal model ``forward`` and act on semantic typed values.
 """
 
@@ -9,14 +9,14 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.real import RealFeature, zero_block
-from spenn.equivariance import EquivariantMap
-from spenn.equivariance.checks import FullModelEquivarianceChecker, TraceEquivarianceChecker
+from tpen.data.real import Feature, zero_block
+from tpen.equivariance import EquivariantMap
+from tpen.equivariance.checks import FullModelEquivarianceChecker, TraceEquivarianceChecker
 
 
-def _feature() -> RealFeature:
+def _feature() -> Feature:
     # Last axis is the particle index (3 particles); channels = 2.
-    return RealFeature(
+    return Feature(
         [
             zero_block(dtype=torch.float64),
             torch.arange(1 * 2 * 3, dtype=torch.float64).reshape(1, 2, 3),
@@ -36,34 +36,34 @@ class _State:
 
 
 class IdentityModule(nn.Module):
-    def forward(self, x: RealFeature) -> RealFeature:
+    def forward(self, x: Feature) -> Feature:
         return x.clone()
 
 
 class LabelBiasModule(nn.Module):
-    def forward(self, x: RealFeature) -> RealFeature:
+    def forward(self, x: Feature) -> Feature:
         n = x.blocks[1].shape[-1]
         bias = torch.arange(n, dtype=x.blocks[1].dtype).reshape(1, 1, n)
-        return RealFeature([x.blocks[0].clone(), x.blocks[1] + bias, x.blocks[2].clone()])
+        return Feature([x.blocks[0].clone(), x.blocks[1] + bias, x.blocks[2].clone()])
 
 
 # --- EquivariantMap toys whose forward records a trace ---
 
 
 class TracedIdentity(EquivariantMap):
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         return x.clone()
 
 
 class TracedLabelBias(EquivariantMap):
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         n = x.blocks[1].shape[-1]
         bias = torch.arange(n, dtype=x.blocks[1].dtype).reshape(1, 1, n)
-        return RealFeature([x.blocks[0].clone(), x.blocks[1] + bias, x.blocks[2].clone()])
+        return Feature([x.blocks[0].clone(), x.blocks[1] + bias, x.blocks[2].clone()])
 
 
 class KeyVaryingMap(EquivariantMap):
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         # Trace a semantic value under a key that depends on particle order, so
         # the recorded *key set* differs between x and sigma.x.
         peak = int(x.blocks[1][0, 0].argmax().item())
@@ -76,7 +76,7 @@ class TraceModel(nn.Module):
         super().__init__()
         self.layer = layer
 
-    def forward(self, x: RealFeature) -> RealFeature:
+    def forward(self, x: Feature) -> Feature:
         return self.layer(x)
 
 

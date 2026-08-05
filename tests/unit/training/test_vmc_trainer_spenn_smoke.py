@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import torch
 
-from spenn.artifacts import RunContext
-from spenn.physics.kinetic import KineticEnergy
-from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
-from spenn.training.trainer import VMCTrainer
+from tpen.artifacts import RunContext
+from tpen.physics.kinetic import KineticEnergy
+from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.training.trainer import VMCTrainer
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 

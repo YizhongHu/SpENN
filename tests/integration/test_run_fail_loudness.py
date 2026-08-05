@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
-from spenn.run import run_from_config
+from tpen.run import run_from_config
 
 
 def _cfg(tmp_path: Path, **extra) -> OmegaConf:
@@ -17,7 +17,7 @@ def _cfg(tmp_path: Path, **extra) -> OmegaConf:
         "run": {"root": str(tmp_path), "run_id": None, "dir": None},
         "runtime": {"seed": 0},
         "runner": {
-            "_target_": "spenn.runner.Evaluate",
+            "_target_": "tpen.runner.Evaluate",
             "model": None,
         },
     }
@@ -65,18 +65,18 @@ def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(
         },
         loggers=[
             {
-                "_target_": "spenn.logging.JSONL",
+                "_target_": "tpen.logging.JSONL",
                 "path": "${run.dir}/metrics.jsonl",
             }
         ],
         runner={
-            "_target_": "spenn.runner.Evaluate",
+            "_target_": "tpen.runner.Evaluate",
             "model": None,
             "load": "${load}",
             "evaluator": "${evaluator}",
         },
         evaluator={
-            "_target_": "spenn.evaluation.Evaluator",
+            "_target_": "tpen.evaluation.Evaluator",
             "namespace": "eval",
             "tasks": [],
         },

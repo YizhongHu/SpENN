@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from spenn.callback import SamplerHealth
+from tpen.callback import SamplerHealth
 from tests.unit.callback.support import FakeState, RecordingContext, step_event
 
 

@@ -5,15 +5,15 @@ from __future__ import annotations
 import torch
 import pytest
 
-from spenn.data.real import RealFeature, zero_block
-from spenn.nn import EquivariantMixing
-from spenn.reps.paths import load_default_path_metadata
+from tpen.data.real import Feature, zero_block
+from tpen.nn import EquivariantMixing
+from tpen.data.paths import load_default_path_metadata
 from tests.helpers.equivariance import assert_equivariant_all
 
 
-def _one_channel_feature(values: torch.Tensor) -> RealFeature:
+def _one_channel_feature(values: torch.Tensor) -> Feature:
     batch, n_particles = values.shape
-    return RealFeature(
+    return Feature(
         [
             zero_block(batch_size=batch, device=values.device, dtype=values.dtype),
             values.unsqueeze(1),
@@ -53,7 +53,7 @@ def test_completion_mean_averages_compatible_virtual_tuples() -> None:
 
 @pytest.mark.parametrize("implementation", ["slow", "vectorized"])
 def test_mixing_handles_zero_particles_without_nan(implementation: str) -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=1, dtype=torch.float64),
             torch.empty(1, 1, 0, dtype=torch.float64),
@@ -78,7 +78,7 @@ def test_mixing_handles_zero_particles_without_nan(implementation: str) -> None:
 
 @pytest.mark.parametrize("implementation", ["slow", "vectorized"])
 def test_mixing_zeroes_orders_without_distinct_virtual_tuples(implementation: str) -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=1, dtype=torch.float64),
             torch.ones(1, 1, 1, dtype=torch.float64),
@@ -112,7 +112,7 @@ def test_mixing_default_paths_come_from_saved_metadata() -> None:
 
 def test_slow_mixing_passes_forced_runtime_equivariance_check() -> None:
     generator = torch.Generator().manual_seed(4321)
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.randn(1, 2, 3, generator=generator, dtype=torch.float64),
@@ -133,14 +133,14 @@ def test_slow_mixing_passes_forced_runtime_equivariance_check() -> None:
 
 def test_vectorized_mixing_matches_slow_reference_for_all_aggregations() -> None:
     generator = torch.Generator().manual_seed(2026)
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.randn(1, 2, 4, generator=generator, dtype=torch.float64),
             torch.randn(1, 2, 4, 4, generator=generator, dtype=torch.float64),
         ]
     )
-    other = RealFeature(
+    other = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.randn(1, 3, 4, generator=generator, dtype=torch.float64),
@@ -182,7 +182,7 @@ def test_vectorized_mixing_matches_slow_reference_for_all_aggregations() -> None
 
 def test_vectorized_mixing_passes_forced_runtime_equivariance_check() -> None:
     generator = torch.Generator().manual_seed(31415)
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.randn(1, 2, 3, generator=generator, dtype=torch.float64),

@@ -12,15 +12,15 @@ import torch
 from omegaconf import OmegaConf
 from torch import nn
 
-import spenn.run as run_module
-import spenn.runner as runner_module
-import spenn.runner.evaluate as evaluate_runner_module
-import spenn.runner.train as train_runner_module
-from spenn.artifacts import RunContext
-from spenn.callback import Callback, Event
-from spenn.checkpoint import RestoreReport
-from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
-from spenn.evaluation import (
+import tpen.run as run_module
+import tpen.runner as runner_module
+import tpen.runner.evaluate as evaluate_runner_module
+import tpen.runner.train as train_runner_module
+from tpen.artifacts import RunContext
+from tpen.callback import Callback, Event
+from tpen.checkpoint import RestoreReport
+from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from tpen.evaluation import (
     EvaluationTask,
     Evaluator,
     HamiltonianTermSummary,
@@ -31,12 +31,12 @@ from spenn.evaluation import (
     SamplerStatsSummary,
     WavefunctionCalculator,
 )
-from spenn.physics.hamiltonian import LocalEnergyResult
-from spenn.physics.kinetic import KineticEnergy
-from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
-from spenn.run import run_from_config
-from spenn.runner import Evaluate, Train
-from spenn.training.state import TrainerState
+from tpen.physics.hamiltonian import LocalEnergyResult
+from tpen.physics.kinetic import KineticEnergy
+from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.run import run_from_config
+from tpen.runner import Evaluate, Train
+from tpen.training.state import TrainerState
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
@@ -65,8 +65,8 @@ def test_evaluate_config_is_root_owned_and_uses_evaluator(fixture: str) -> None:
     assert raw["runner"]["evaluator"] == "${evaluator}"
     assert raw["evaluator"]["namespace"] == "${evaluation.namespace}"
     assert raw["evaluator"]["tasks"] == ["${evaluation_tasks.energy}"]
-    assert raw["evaluation_tasks"]["energy"]["generator"]["_target_"] == "spenn.evaluation.generators.MCMCGenerator"
-    assert raw["evaluation_tasks"]["energy"]["summaries"][-1]["_target_"] == "spenn.evaluation.summaries.ReferenceEnergySummary"
+    assert raw["evaluation_tasks"]["energy"]["generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"
+    assert raw["evaluation_tasks"]["energy"]["summaries"][-1]["_target_"] == "tpen.evaluation.summaries.ReferenceEnergySummary"
 
 
 def test_instantiate_runner_uses_normal_hydra_recursion_for_evaluator(monkeypatch) -> None:
@@ -77,10 +77,10 @@ def test_instantiate_runner_uses_normal_hydra_recursion_for_evaluator(monkeypatc
     cfg = OmegaConf.create(
         {
             "runner": {
-                "_target_": "spenn.runner.Evaluate",
+                "_target_": "tpen.runner.Evaluate",
                 "model": None,
                 "evaluator": {
-                    "_target_": "spenn.evaluation.Evaluator",
+                    "_target_": "tpen.evaluation.Evaluator",
                     "namespace": "eval",
                     "tasks": [],
                 },
@@ -98,14 +98,14 @@ def test_train_config_with_evaluator_fails_as_normal_constructor_error() -> None
     cfg = OmegaConf.create(
         {
             "runner": {
-                "_target_": "spenn.runner.Train",
+                "_target_": "tpen.runner.Train",
                 "model": None,
                 "sampler": None,
                 "hamiltonian_terms": [],
                 "optimizer": None,
                 "trainer": None,
                 "evaluator": {
-                    "_target_": "spenn.evaluation.Evaluator",
+                    "_target_": "tpen.evaluation.Evaluator",
                     "namespace": "eval",
                     "tasks": [],
                 },

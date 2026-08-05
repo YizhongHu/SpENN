@@ -16,7 +16,7 @@ system:
   spatial_dim: 3
   omega: 0.5
 runner:
-  _target_: spenn.runner.Train
+  _target_: tpen.runner.Train
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}
@@ -26,14 +26,14 @@ model:
   _target_: tests.helpers.trainable_wavefunctions.TrainableHookeSingletAnsatz
 hamiltonian_terms:
   kinetic:
-    _target_: spenn.physics.kinetic.KineticEnergy
+    _target_: tpen.physics.kinetic.KineticEnergy
   harmonic_trap:
-    _target_: spenn.physics.potential.HarmonicTrap
+    _target_: tpen.physics.potential.HarmonicTrap
     omega: ${system.omega}
   electron_electron:
-    _target_: spenn.physics.potential.ElectronElectronInteraction
+    _target_: tpen.physics.potential.ElectronElectronInteraction
 sampler:
-  _target_: spenn.sampling.metropolis.MetropolisSampler
+  _target_: tpen.sampling.metropolis.MetropolisSampler
   n_walkers: 256
   burn_in: 20
   n_steps: 10
@@ -47,46 +47,46 @@ optimizer:
   _partial_: true
   lr: 0.01
 trainer:
-  _target_: spenn.training.trainer.VMCTrainer
+  _target_: tpen.training.trainer.VMCTrainer
   max_steps: 3
   log_every_n_steps: 1
   return_terms: true
 callbacks:
-- _target_: spenn.callback.ConfigSnapshot
+- _target_: tpen.callback.ConfigSnapshot
   triggers:
   - run_start
   output_path: ${run.dir}/config.yaml
-- _target_: spenn.callback.ResolvedConfigSnapshot
+- _target_: tpen.callback.ResolvedConfigSnapshot
   triggers:
   - run_start
   output_path: ${run.dir}/resolved_config.yaml
-- _target_: spenn.callback.Metadata
+- _target_: tpen.callback.Metadata
   triggers:
   - run_start
   - run_end
   - exception
   output_path: ${run.dir}/metadata.json
-- _target_: spenn.callback.RunTiming
-- _target_: spenn.callback.TrainStepTiming
+- _target_: tpen.callback.RunTiming
+- _target_: tpen.callback.TrainStepTiming
   every_n_steps: 1
   rolling_window: 2
-- _target_: spenn.callback.Status
+- _target_: tpen.callback.Status
   triggers:
   - run_start
   - run_end
   - exception
   output_path: ${run.dir}/status.json
-- _target_: spenn.callback.Checkpoint
+- _target_: tpen.callback.Checkpoint
   triggers:
   - step_end
   every_n_steps: 2
   output_dir: ${run.dir}/checkpoints
-- _target_: spenn.callback.Checkpoint
+- _target_: tpen.callback.Checkpoint
   triggers:
   - train_end
   output_dir: ${run.dir}/checkpoints
 loggers:
-- _target_: spenn.logging.CSV
+- _target_: tpen.logging.CSV
   path: ${run.dir}/metrics.csv
-- _target_: spenn.logging.JSONL
+- _target_: tpen.logging.JSONL
   path: ${run.dir}/metrics.jsonl

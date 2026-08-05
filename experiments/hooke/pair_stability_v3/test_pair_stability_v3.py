@@ -2177,6 +2177,35 @@ def test_v3_final_collect_writes_report_contract_and_explicit_plot_axis(
     assert report["report_axes"] == {"row": "basis_update", "column": "feature_normalization"}
 
 
+def test_v3_report_markdown_lists_every_architecture_summary_row() -> None:
+    architecture = [
+        {
+            "basis_update": f"B{basis:02d}+U{update:02d}",
+            "feature_normalization": f"F{feature:02d}",
+            "winner_kind": "energy",
+            "n_success": "9",
+            "n_expected": "9",
+            "energy_error_median": "0.01",
+            "local_energy_var_median": "0.02",
+        }
+        for basis in range(2)
+        for update in range(3)
+        for feature in range(4)
+    ]
+    report = {
+        "study": "pair_stability_v3",
+        "final_collect_attempt_id": "FC0",
+        "report_axes": {"row": "basis_update", "column": "feature_normalization"},
+        "tables": {},
+        "figures": [],
+        "caveats": [],
+    }
+
+    markdown = final_report._report_markdown(report, {"architecture_summary.csv": architecture})
+
+    assert markdown.count("| B01+U02 |") == 4
+    assert sum(markdown.count(f"| B{basis:02d}+U{update:02d} | F{feature:02d} |") for basis in range(2) for update in range(3) for feature in range(4)) == 24
+
 def test_v2_final_eval_defaults_to_single_latest_final_train_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
     final_run_id = "final-run-0"

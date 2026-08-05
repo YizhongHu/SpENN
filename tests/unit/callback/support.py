@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from spenn.callback import Event
+from tpen.callback import Event
 
 
 class RecordingContext:
