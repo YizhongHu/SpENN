@@ -212,10 +212,10 @@ evaluates the already-constructed model.
 Current tensor layouts are:
 
 ```text
-RealFeature order m:
+Feature order m:
   [batch, channels, i1, ..., im]
 
-RealInteraction order m:
+Interaction order m:
   [batch, channels, paths, i1, ..., im]
 ```
 
@@ -247,7 +247,7 @@ larger systems are checked against adjacent transpositions and reversal. Configs
 force checks with `probability: 1.0` on the `RuntimeEquivariance` callback.
 
 Runtime validation is a typed, per-object contract kept **separate** from
-equivariance. `RealFeature`, `RealInteraction`, and `ElectronBatch` each
+equivariance. `Feature`, `Interaction`, and `ElectronBatch` each
 expose a `validate()` method (and,
 where useful, `validity_metrics()`) that checks their own semantic fields; the
 static contracts live in `spenn.data.validation` (`RuntimeValidatable`,
@@ -266,7 +266,7 @@ Exact testing strategy:
   `tests/unit/data/test_permutation.py`.
 - State actions:
   `spenn.data.equivariant_state.EquivariantState`,
-  `spenn.data.real.RealFeature`, `RealInteraction`, `RealUpdate`,
+  `spenn.data.real.Feature`, `Interaction`, `RealUpdate`,
   `spenn.data.batch.WavefunctionOutput`, and tests in
   `tests/unit/data/test_equivariant_state.py`,
   `tests/unit/data/test_real_feature.py`,
@@ -279,14 +279,14 @@ Exact testing strategy:
   assertion helpers live under `tests/helpers/equivariance.py`, with coverage in
   `tests/unit/equivariance/test_equivariant_map.py`.
 - Tensor shape checks:
-  `RealFeature`, `RealInteraction`, and `RealUpdate` are dense order-indexed
+  `Feature`, `Interaction`, and `RealUpdate` are dense order-indexed
   lists of tensors. Index 0 is reserved for zero-order data and must have zero
   channels; use `spenn.data.real.zero_block` to construct that sentinel.
   Validation coverage lives in
   `tests/unit/data/test_tensor_validation.py`.
 - Layer-level checks:
   `spenn.nn.Update`, `spenn.nn.PathAggregation`, and
-  `spenn.nn.SpENNLayer`, with forced runtime
+  `spenn.nn.TPENLayer`, with forced runtime
   checks in `tests/unit/nn/test_update_equivariance.py`,
   `tests/unit/nn/test_path_aggregation_equivariance.py`, and
   `tests/unit/nn/test_spenn_layer_scaffold.py`.
@@ -308,7 +308,7 @@ The new core scaffold is direct, not a compatibility layer:
   Electron-batch geometry helpers live under `spenn.data.batch`.
 - `spenn.reps`: virtual path metadata.
 - `spenn.nn`: `EquivariantMixing`, `PathAggregation`,
-  `ResidualUpdate`, `SpENNLayer`, `SpENNWaveFunction`, and readouts under
+  `ResidualUpdate`, `TPENLayer`, `TPENWaveFunction`, and readouts under
   `spenn.nn.readout`.
 - `spenn.equivariance`: traceable `EquivariantMap`, passive trace recording, and
   runtime equivariance checkers (`spenn.equivariance.checks`).

@@ -12,7 +12,7 @@ torch = require_torch(feature="SpENN forward context")
 
 
 @dataclass(frozen=True)
-class SpENNForwardContext:
+class TPENForwardContext:
     """Per-forward typed context for batch-derived model-side quantities.
 
     Parameters
@@ -27,4 +27,4 @@ class SpENNForwardContext:
     basis_features: ElectronBasisFeatures | None = None
 
 
-__all__ = ["SpENNForwardContext"]
+__all__ = ["TPENForwardContext"]

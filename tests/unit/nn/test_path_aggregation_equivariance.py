@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from spenn.data.permutation import all_permutations
-from spenn.data.real import RealInteraction, zero_block
+from spenn.data.real import Interaction, zero_block
 from spenn.nn import PathAggregation, TorchInitializer
 from tests.helpers.equivariance import assert_equivariant_all
 
@@ -41,14 +41,14 @@ def _random_interaction(
     *,
     seed: int,
     batch: int = 2,
-) -> RealInteraction:
+) -> Interaction:
     generator = torch.Generator().manual_seed(seed)
     max_paths = max(paths_by_order.values())
     blocks: list[torch.Tensor] = [zero_block(batch_size=batch, paths=max_paths, dtype=_DTYPE)]
     for order, paths in sorted(paths_by_order.items()):
         shape = (batch, channels, paths, *((n_particles,) * order))
         blocks.append(torch.randn(shape, generator=generator, dtype=_DTYPE))
-    return RealInteraction(blocks)
+    return Interaction(blocks)
 
 
 def _module(activation: torch.nn.Module | None, *, seed: int) -> PathAggregation:

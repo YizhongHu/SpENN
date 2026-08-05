@@ -131,7 +131,7 @@ def test_legacy_axiswise_v1_dispatch_preserves_frozen_output_contract() -> None:
     batch = ElectronBatch(positions=positions, spins=spins)
 
     # Selecting the legacy contract warns (D11) but must not change numbers.
-    with pytest.warns(DeprecationWarning):
+    with pytest.warns(FutureWarning):
         explicit_legacy = HookeOrbitalBasis(
             omega=0.5,
             max_shell=2,
@@ -192,7 +192,7 @@ def test_explicit_axiswise_v1_warns_deprecation_and_stays_supported() -> None:
     )
     batch = ElectronBatch(positions=positions)
 
-    with pytest.warns(DeprecationWarning, match="axiswise_v1"):
+    with pytest.warns(FutureWarning, match="axiswise_v1"):
         legacy = HookeOrbitalBasis(
             omega=0.5,
             max_shell=2,
@@ -514,7 +514,7 @@ def test_product_v2_mixed_channel_gradient_matches_independent_oracle() -> None:
         },
     ],
 )
-@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:HookeOrbitalBasis basis_semantics:FutureWarning")
 def test_versioned_dispatcher_rejects_ambiguous_or_mixed_arguments(kwargs: dict[str, object]) -> None:
     """Old and product contracts must not silently share an unversioned shape."""
 

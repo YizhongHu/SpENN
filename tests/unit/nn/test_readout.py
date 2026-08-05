@@ -8,7 +8,7 @@ from typeguard import TypeCheckError
 
 from spenn.data.batch import ElectronBatch
 from spenn.data.permutation import all_permutations
-from spenn.data.real import RealFeature, zero_block
+from spenn.data.real import Feature, zero_block
 from spenn.nn.readout import PfaffianReadout
 from spenn.nn.readout.pfaffian import _ODD_PADDING_IRREP, pfaffian
 
@@ -25,12 +25,12 @@ def _batch(n_electrons: int = 2) -> ElectronBatch:
     return ElectronBatch(positions=torch.zeros(1, n_electrons, 1, dtype=torch.float64))
 
 
-def _pfaffian_features(n_electrons: int = 2) -> RealFeature:
+def _pfaffian_features(n_electrons: int = 2) -> Feature:
     pair = torch.zeros(1, 2, n_electrons, n_electrons, dtype=torch.float64)
     pair[:, :, 0, 1] = torch.tensor([2.0, 4.0], dtype=torch.float64)
     pair[:, :, 1, 0] = -pair[:, :, 0, 1]
     one_body = torch.zeros(1, 1, n_electrons, dtype=torch.float64)
-    return RealFeature([zero_block(dtype=torch.float64), one_body, pair])
+    return Feature([zero_block(dtype=torch.float64), one_body, pair])
 
 
 def test_pfaffian_matches_known_four_by_four_formula() -> None:
@@ -85,7 +85,7 @@ def test_pfaffian_readout_is_antisymmetric_under_even_particle_permutations() ->
         ],
         dtype=torch.float64,
     )
-    features = RealFeature([zero_block(dtype=torch.float64), torch.empty(1, 0, 4, dtype=torch.float64), pair])
+    features = Feature([zero_block(dtype=torch.float64), torch.empty(1, 0, 4, dtype=torch.float64), pair])
     batch = _batch(n_electrons=4)
     readout = PfaffianReadout(channels=1)
 
@@ -104,7 +104,7 @@ def test_pfaffian_readout_uses_one_irrep_padding_block_for_odd_electrons() -> No
     pair[:, :, 0, 2] = 3.0
     pair[:, :, 1, 2] = 5.0
     pair = pair - pair.transpose(-1, -2)
-    features = RealFeature([zero_block(dtype=torch.float64), one_body, pair])
+    features = Feature([zero_block(dtype=torch.float64), one_body, pair])
 
     assert _ODD_PADDING_IRREP.parts == (1,)
     output = PfaffianReadout(channels=1)(features, _batch(n_electrons=3))
@@ -123,7 +123,7 @@ def test_pfaffian_readout_is_antisymmetric_under_odd_particle_permutations() -> 
     pair[:, :, 0, 2] = 3.0
     pair[:, :, 1, 2] = 5.0
     pair = pair - pair.transpose(-1, -2)
-    features = RealFeature([zero_block(dtype=torch.float64), one_body, pair])
+    features = Feature([zero_block(dtype=torch.float64), one_body, pair])
     batch = _batch(n_electrons=3)
     readout = PfaffianReadout(channels=1)
 
@@ -148,7 +148,7 @@ def test_pfaffian_readout_builds_per_channel_bordered_kernels() -> None:
     pair[:, 1, 0, 2] = 9.0
     pair[:, 1, 1, 2] = 11.0
     pair = pair - pair.transpose(-1, -2)
-    features = RealFeature([zero_block(dtype=torch.float64), one_body, pair])
+    features = Feature([zero_block(dtype=torch.float64), one_body, pair])
 
     kernel = PfaffianReadout(channels=2).build_skew_kernel(features, _batch(n_electrons=3))
 
@@ -164,7 +164,7 @@ def test_pfaffian_readout_rejects_per_channel_padding_channel_mismatch() -> None
     # carries one border per pair channel.
     one_body = torch.tensor([[[2.0, 4.0, 6.0]]], dtype=torch.float64)
     pair = torch.zeros(1, 2, 3, 3, dtype=torch.float64)
-    features = RealFeature([zero_block(dtype=torch.float64), one_body, pair])
+    features = Feature([zero_block(dtype=torch.float64), one_body, pair])
 
     with pytest.raises(ValueError, match="match pair channels"):
         PfaffianReadout(channels=2)(features, _batch(n_electrons=3))
@@ -172,7 +172,7 @@ def test_pfaffian_readout_rejects_per_channel_padding_channel_mismatch() -> None
 
 def test_pfaffian_readout_requires_one_irrep_padding_for_odd_electron_systems() -> None:
     pair = torch.zeros(1, 1, 3, 3, dtype=torch.float64)
-    features_without_border = RealFeature([zero_block(dtype=torch.float64), torch.empty(1, 0, 3, dtype=torch.float64), pair])
+    features_without_border = Feature([zero_block(dtype=torch.float64), torch.empty(1, 0, 3, dtype=torch.float64), pair])
 
     with pytest.raises(KeyError, match=r"irrep \(1\)"):
         PfaffianReadout(channels=1)(features_without_border, _batch(n_electrons=3))
@@ -200,16 +200,16 @@ def test_pfaffian_readout_rejects_malformed_kernel_inputs() -> None:
         ]
     )
 
-    with pytest.raises(TypeCheckError, match="RealFeature"):
+    with pytest.raises(TypeCheckError, match="Feature"):
         readout.build_skew_kernel(malformed_pair)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Feature batch size"):
         readout.build_skew_kernel(feature, ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64)))
-    with pytest.raises(TypeCheckError, match="RealFeature"):
+    with pytest.raises(TypeCheckError, match="Feature"):
         readout.build_skew_kernel(border_mismatch)  # type: ignore[arg-type]
 
 
 def test_pfaffian_readout_returns_empty_pfaffian_for_zero_electrons() -> None:
-    features = RealFeature(
+    features = Feature(
         [
             zero_block(batch_size=1, dtype=torch.float64),
             torch.empty(1, 1, 0, dtype=torch.float64),
@@ -225,7 +225,7 @@ def test_pfaffian_readout_returns_empty_pfaffian_for_zero_electrons() -> None:
     torch.testing.assert_close(output.aux["pfaffian"], torch.ones(1, dtype=torch.float64))
 
 
-def _two_channel_distinguishing_features() -> tuple[RealFeature, torch.Tensor, torch.Tensor]:
+def _two_channel_distinguishing_features() -> tuple[Feature, torch.Tensor, torch.Tensor]:
     """T6 (B1) two-channel 4x4 case: per-channel Pfaffians with hand values."""
 
     def skew_from_upper(a12, a13, a14, a23, a24, a34):
@@ -240,7 +240,7 @@ def _two_channel_distinguishing_features() -> tuple[RealFeature, torch.Tensor, t
     pf_a = torch.tensor(2.0 * 13.0 - 3.0 * 11.0 + 7.0 * 5.0, dtype=torch.float64)
     pf_b = torch.tensor(1.0 * -5.0 - -4.0 * 3.0 + 2.0 * 6.0, dtype=torch.float64)
     pair = torch.stack([kernel_a, kernel_b]).unsqueeze(0)
-    features = RealFeature([zero_block(dtype=torch.float64), torch.empty(1, 0, 4, dtype=torch.float64), pair])
+    features = Feature([zero_block(dtype=torch.float64), torch.empty(1, 0, 4, dtype=torch.float64), pair])
     return features, pf_a, pf_b
 
 

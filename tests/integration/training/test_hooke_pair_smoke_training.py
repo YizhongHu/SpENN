@@ -1,6 +1,6 @@
 """Integration smoke test: the real Hooke pair config runs end-to-end.
 
-Drives ``run_from_config`` through the real Train runner -> SpENNWaveFunction ->
+Drives ``run_from_config`` through the real Train runner -> TPENWaveFunction ->
 MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with DataIntegrity,
 GradientStats, SamplerHealth, RuntimeEquivariance (full_model + trace),
 Checkpoint, and CSV/JSONL logging. Train-end validation has been removed;

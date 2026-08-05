@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.dependencies import require_torch_nn
 from spenn.equivariance import EquivariantMap
-from spenn.nn.context import SpENNForwardContext
+from spenn.nn.context import TPENForwardContext
 
 nn = require_torch_nn(feature="SpENN layer modules")
 
 
-class SpENNLayer(EquivariantMap):
+class TPENLayer(EquivariantMap):
     """Compose mixing, path aggregation, and update maps in real space.
 
     TPEN layer contract (MIG-TPEN-000 section 2.2):
@@ -65,9 +65,9 @@ class SpENNLayer(EquivariantMap):
 
     def forward_impl(
         self,
-        x: RealFeature,
-        context: SpENNForwardContext | None = None,
-    ) -> RealFeature:
+        x: Feature,
+        context: TPENForwardContext | None = None,
+    ) -> Feature:
         """Apply one TPEN layer to a real feature state."""
 
         interaction = self.mixing(x, x) if self.bilinear_mixing else self.mixing(x)
@@ -76,16 +76,16 @@ class SpENNLayer(EquivariantMap):
             real_update = self.update_normalization(real_update)
         if self.update_envelope is not None:
             if context is None:
-                raise ValueError("update_envelope requires a SpENNForwardContext")
+                raise ValueError("update_envelope requires a TPENForwardContext")
             real_update = self.update_envelope(real_update, context)
         features = self.update(x, real_update)
         if self.feature_normalization is not None:
             features = self.feature_normalization(features)
         if self.feature_envelope is not None:
             if context is None:
-                raise ValueError("feature_envelope requires a SpENNForwardContext")
+                raise ValueError("feature_envelope requires a TPENForwardContext")
             features = self.feature_envelope(features, context)
         return features
 
 
-__all__ = ["SpENNLayer"]
+__all__ = ["TPENLayer"]

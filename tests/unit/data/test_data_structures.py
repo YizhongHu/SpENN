@@ -20,8 +20,8 @@ from spenn.data.permutation import Permutation
 
 
 def test_real_submodule_defines_public_tensor_state_surface() -> None:
-    assert hasattr(real, "RealFeature")
-    assert hasattr(real, "RealInteraction")
+    assert hasattr(real, "Feature")
+    assert hasattr(real, "Interaction")
     assert hasattr(real, "RealUpdate")
     assert hasattr(real, "zero_block")
 
