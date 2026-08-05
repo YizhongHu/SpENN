@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from omegaconf import OmegaConf
 
-import spenn.run as run_module
-from spenn.dependencies import require_torch
+import tpen.run as run_module
+from tpen.dependencies import require_torch
 
 
 def test_runtime_seed_seeds_torch_rng_for_torch_runner() -> None:
@@ -15,7 +15,7 @@ def test_runtime_seed_seeds_torch_rng_for_torch_runner() -> None:
     cfg = OmegaConf.create(
         {
             "runtime": {"seed": 1234},
-            "runner": {"_target_": "spenn.runner.Train"},
+            "runner": {"_target_": "tpen.runner.Train"},
         }
     )
 

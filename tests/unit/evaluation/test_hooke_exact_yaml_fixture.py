@@ -14,24 +14,24 @@ import torch
 from omegaconf import OmegaConf
 from torch import nn
 
-from spenn.evaluation import Evaluator, EvaluationTask
-from spenn.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
-from spenn.evaluation.calculators import (
+from tpen.evaluation import Evaluator, EvaluationTask
+from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
+from tpen.evaluation.calculators import (
     LocalEnergyCalculator,
     RadialLogAbsDerivativeCalculator,
     WavefunctionCalculator,
 )
-from spenn.evaluation.generators import CuspGridGenerator
-from spenn.evaluation.protocols import EvaluationContext
-from spenn.evaluation.results import SummaryResult
-from spenn.evaluation.summaries import (
+from tpen.evaluation.generators import CuspGridGenerator
+from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.results import SummaryResult
+from tpen.evaluation.summaries import (
     CoalescenceDivergenceSummary,
     LocalEnergySummary,
     OppositeSpinCuspSummary,
 )
-from spenn.physics.hooke import HookeSingletExact
-from spenn.physics.kinetic import KineticEnergy
-from spenn.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.physics.hooke import HookeSingletExact
+from tpen.physics.kinetic import KineticEnergy
+from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
 
 FIXTURES = Path(__file__).resolve().parents[2] / "integration" / "artifacts" / "hooke"
 SINGLET_FIXTURE = FIXTURES / "exact_singlet_eval.yaml"
@@ -179,7 +179,7 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
         name = "null"
 
         def generate(self, *, model, context: EvaluationContext) -> GeneratedConfigurations:
-            from spenn.data.batch import ElectronBatch
+            from tpen.data.batch import ElectronBatch
 
             batch = ElectronBatch(
                 positions=torch.zeros(1, 2, 3, dtype=torch.float64),

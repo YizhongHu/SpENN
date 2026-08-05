@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - "docs/**"
-      - "spenn/**"
+      - "tpen/**"
       - "pyproject.toml"
       - ".github/workflows/docs.yml"
   push:
@@ -12,7 +12,7 @@ on:
       - "**"
     paths:
       - "docs/**"
-      - "spenn/**"
+      - "tpen/**"
       - "pyproject.toml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:

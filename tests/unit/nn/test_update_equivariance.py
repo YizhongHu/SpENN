@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from spenn.equivariance import EquivariantMap
-from spenn.data.real import Feature, Update, zero_block
-from spenn.nn.update import ResidualUpdater, Updater
+from tpen.equivariance import EquivariantMap
+from tpen.data.real import Feature, Update, zero_block
+from tpen.nn.update import ResidualUpdater, Updater
 from tests.helpers.equivariance import assert_equivariant_all
 
 

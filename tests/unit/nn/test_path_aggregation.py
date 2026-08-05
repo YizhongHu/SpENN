@@ -15,9 +15,9 @@ from collections.abc import Mapping
 import pytest
 import torch
 
-from spenn.data.real import Interaction, Update, zero_block
-from spenn.nn import PathAggregation, TorchInitializer
-from spenn.data.paths import load_default_path_metadata
+from tpen.data.real import Interaction, Update, zero_block
+from tpen.nn import PathAggregation, TorchInitializer
+from tpen.data.paths import load_default_path_metadata
 from tests.helpers.tpen_reference import slow_tpen_aggregation
 
 _DTYPE = torch.float64

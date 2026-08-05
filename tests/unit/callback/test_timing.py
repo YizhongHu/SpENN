@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from spenn.callback import (
+from tpen.callback import (
     DiagnosticTiming,
     EvaluationComponentTiming,
     EvaluationTiming,
@@ -16,7 +16,7 @@ from spenn.callback import (
     TrainPhaseTiming,
     TrainStepTiming,
 )
-from spenn.callback.timing import base as timing_base
+from tpen.callback.timing import base as timing_base
 from tests.unit.callback.support import FakeState, RecordingContext
 
 

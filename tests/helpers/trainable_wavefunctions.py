@@ -6,13 +6,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
 
 
 class TrainableHookeSingletAnsatz(nn.Module):
     """Two-electron Hooke singlet ansatz with learnable width and Jastrow.
 
-    Mirrors `spenn.physics.hooke.HookeSingletExact` with trainable parameters::
+    Mirrors `tpen.physics.hooke.HookeSingletExact` with trainable parameters::
 
         psi(r1, r2) = (1 + beta * r12) * exp(-alpha * (r1^2 + r2^2))
 

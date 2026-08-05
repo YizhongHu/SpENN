@@ -8,9 +8,9 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.evaluation.bundle import GeneratedConfigurations
-from spenn.evaluation.calculators import (
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.evaluation.bundle import GeneratedConfigurations
+from tpen.evaluation.calculators import (
     FeatureTraceCalculator,
     FullModelAntisymmetryCalculator,
     ReadoutTraceCalculator,
@@ -18,19 +18,19 @@ from spenn.evaluation.calculators import (
     SpatialExchangeSymmetryCalculator,
     TraceEquivarianceCalculator,
 )
-from spenn.evaluation.generators import (
+from tpen.evaluation.generators import (
     ExchangeOrbitGenerator,
     PermutationOrbitGenerator,
     RotationOrbitGenerator,
 )
-from spenn.evaluation.protocols import EvaluationContext
-from spenn.evaluation.summaries import (
+from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.summaries import (
     FeatureTraceSummary,
     ReadoutTraceSummary,
     TraceEquivarianceSummary,
     TransformConsistencySummary,
 )
-from spenn.trace import ParticleTensor, trace_value
+from tpen.trace import ParticleTensor, trace_value
 
 
 def _context(tmp_path: Path) -> EvaluationContext:
@@ -220,6 +220,6 @@ def test_feature_and_readout_trace_summaries(tmp_path: Path) -> None:
 
 
 def _bundle(generated: GeneratedConfigurations):
-    from spenn.evaluation.bundle import EvaluationBundle
+    from tpen.evaluation.bundle import EvaluationBundle
 
     return EvaluationBundle(generated=generated)

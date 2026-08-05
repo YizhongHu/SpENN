@@ -13,9 +13,9 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from spenn.data.batch import ElectronBatch
-from spenn.nn import TPENWaveFunction
-from spenn.sampling.metropolis import MetropolisSampler
+from tpen.data.batch import ElectronBatch
+from tpen.nn import TPENWaveFunction
+from tpen.sampling.metropolis import MetropolisSampler
 
 PAIR_TRAIN_CONFIG = Path(__file__).resolve().parents[1] / "integration" / "artifacts" / "hooke" / "pair_train.yaml"
 

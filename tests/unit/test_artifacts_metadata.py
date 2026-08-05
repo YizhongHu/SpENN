@@ -11,8 +11,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-import spenn.artifacts as artifacts
-from spenn.run import prepare_run_context
+import tpen.artifacts as artifacts
+from tpen.run import prepare_run_context
 
 
 class FakeCuda:

@@ -79,17 +79,17 @@ Do not place helper functions wherever they are first needed. Put each helper in
 Examples:
 
 ```text
-Permutation logic       -> spenn/data/permutation.py
-Tuple-index logic       -> spenn/data/indices.py
-Virtual path logic      -> spenn/data/paths.py
-Partition logic         -> spenn/data/partition.py
-Trainable modules       -> spenn/nn/
+Permutation logic       -> tpen/data/permutation.py
+Tuple-index logic       -> tpen/data/indices.py
+Virtual path logic      -> tpen/data/paths.py
+Partition logic         -> tpen/data/partition.py
+Trainable modules       -> tpen/nn/
 ```
 
 Bad:
 
 ```python
-# spenn/nn/equivariant_mixing.py
+# tpen/nn/equivariant_mixing.py
 def ordered_tuples(...):
     ...
 ```
@@ -97,7 +97,7 @@ def ordered_tuples(...):
 Good:
 
 ```python
-from spenn.data.indices import ordered_tuples
+from tpen.data.indices import ordered_tuples
 ```
 
 ### Keep equivariance contracts executable
@@ -124,7 +124,7 @@ class MyMap(EquivariantMap):
         ...
 ```
 
-`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `spenn.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
+`EquivariantMap.forward` owns passive trace recording and delegates to `forward_impl`; it does **not** check equivariance. Runtime equivariance checking is separate: the checkers in `tpen.equivariance.checks` (driven by the `RuntimeEquivariance` callback) plus pytest-only helpers under `tests/`. Do not override `forward` or wrap it with equivariance-check decorators, because that obscures control flow and can cause recursion.
 
 ### Separate metadata generation from model execution
 
@@ -133,7 +133,7 @@ Path and irrep metadata should be deterministic and cached. Model code should re
 Good:
 
 ```python
-paths = PathMetadata.load("spenn/cache/paths_canonical.json")
+paths = PathMetadata.load("tpen/cache/paths_canonical.json")
 ```
 
 Avoid:
@@ -225,7 +225,7 @@ declares `callbacks` or `loggers` is rejected by `run_from_config`:
 
 ```yaml
 runner:
-  _target_: spenn.runner.Train
+  _target_: tpen.runner.Train
   model: ${model}
   sampler: ${sampler}
   hamiltonian_terms: ${hamiltonian_terms}

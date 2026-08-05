@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spenn.run import main
+from tpen.run import main
 
 
 if __name__ == "__main__":

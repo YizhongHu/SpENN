@@ -6,7 +6,7 @@ contract in literal loops:
 
 ``x -> mixing(W, Gamma) -> h -> aggregation(U, Gamma_c) -> u -> update``
 
-Mixing reuse: :class:`spenn.nn.EquivariantMixing` already owns a slow literal
+Mixing reuse: :class:`tpen.nn.EquivariantMixing` already owns a slow literal
 loop implementation; the reference layer composes it with the pinned owned
 activations. Aggregation and the per-channel Pfaffian readout are implemented
 here from scratch because the future fast modules do not exist yet.
@@ -18,8 +18,8 @@ from collections.abc import Callable, Sequence
 
 import torch
 
-from spenn.data.real import Feature, Interaction, zero_block
-from spenn.nn.readout.pfaffian import pfaffian
+from tpen.data.real import Feature, Interaction, zero_block
+from tpen.nn.readout.pfaffian import pfaffian
 
 Activation = Callable[[torch.Tensor], torch.Tensor]
 

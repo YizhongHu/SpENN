@@ -1,7 +1,7 @@
 # Specht-module Equivariant Neural Network (SpENN)
 
 The active SpENN core scaffold is documented in the PR brief and the package
-docstrings under `spenn/data`, `spenn/reps`, `spenn/nn`, and `spenn/equivariance`.
+docstrings under `tpen/data`, `tpen/reps`, `tpen/nn`, and `tpen/equivariance`.
 
 ## Quick Start
 
@@ -39,15 +39,15 @@ uv run --extra cpu pytest -q
 ```
 
 Configured runs go through the single `run.py` entrypoint, which launches one
-`spenn.runner.Runner` from a YAML config. The legacy Hooke pair smoke training
+`tpen.runner.Runner` from a YAML config. The legacy Hooke pair smoke training
 test config is a working example:
 
 ```bash
 uv run --extra cpu python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
 ```
 
-The same entrypoint is installed as a `spenn` console script, so
-`uv run --extra cpu spenn --config <config>` is equivalent. `run.py` stays
+The same entrypoint is installed as a `tpen` console script, so
+`uv run --extra cpu tpen --config <config>` is equivalent. `run.py` stays
 supported during the transition.
 
 Human-readable run timestamps are controlled by `run.timezone`, an IANA
@@ -58,7 +58,7 @@ status boxes share the same cluster-log convention.
 For a syntax-only check:
 
 ```bash
-uv run --extra cpu python -m compileall spenn run.py typechecked.py
+uv run --extra cpu python -m compileall tpen run.py typechecked.py
 ```
 
 ## Optional W&B Tracking
@@ -89,11 +89,11 @@ Add W&B as another root-level logger:
 
 ```yaml
 loggers:
-  - _target_: spenn.logging.CSV
+  - _target_: tpen.logging.CSV
     path: ${run.dir}/metrics.csv
-  - _target_: spenn.logging.JSONL
+  - _target_: tpen.logging.JSONL
     path: ${run.dir}/metrics.jsonl
-  - _target_: spenn.logging.WandB
+  - _target_: tpen.logging.WandB
     project: spenn-qmc
     entity: null
     mode: online
@@ -135,7 +135,7 @@ Examples:
 
 ```yaml
 sampler:
-  _target_: spenn.sampling.MetropolisSampler
+  _target_: tpen.sampling.MetropolisSampler
   n_walkers: 16
   n_electrons: 2
   spatial_dim: 3
@@ -180,17 +180,17 @@ logger path as other metrics:
 
 ```yaml
 callbacks:
-  - _target_: spenn.callback.RunTiming
+  - _target_: tpen.callback.RunTiming
 
-  - _target_: spenn.callback.TrainStepTiming
+  - _target_: tpen.callback.TrainStepTiming
     every_n_steps: 1
     rolling_window: 20
     cuda_synchronize: false
 
-  - _target_: spenn.callback.EvaluationTiming
+  - _target_: tpen.callback.EvaluationTiming
     cuda_synchronize: false
 
-  - _target_: spenn.callback.DiagnosticTiming
+  - _target_: tpen.callback.DiagnosticTiming
     cuda_synchronize: false
 ```
 GPU synchronization is opt-in with `cuda_synchronize: true` for
@@ -225,15 +225,15 @@ Interaction order m:
 After code changes, run the fast syntax and test checks:
 
 ```bash
-uv run python -m compileall spenn run.py typechecked.py
+uv run python -m compileall tpen run.py typechecked.py
 uv run pytest -q
 ```
 
 ## Runtime Type Checking
 
-Pytest installs Typeguard instrumentation for `spenn` by default.
+Pytest installs Typeguard instrumentation for `tpen` by default.
 
-Run tests with Typeguard instrumentation for `spenn`:
+Run tests with Typeguard instrumentation for `tpen`:
 
 ```bash
 uv run pytest -q
@@ -241,7 +241,7 @@ uv run pytest -q
 
 ## Equivariance Checking
 
-Equivariance checks are runtime checks on `spenn.equivariance.EquivariantMap`.
+Equivariance checks are runtime checks on `tpen.equivariance.EquivariantMap`.
 When enabled, small systems are checked against every particle permutation;
 larger systems are checked against adjacent transpositions and reversal. Configs
 force checks with `probability: 1.0` on the `RuntimeEquivariance` callback.
@@ -250,9 +250,9 @@ Runtime validation is a typed, per-object contract kept **separate** from
 equivariance. `Feature`, `Interaction`, and `ElectronBatch` each
 expose a `validate()` method (and,
 where useful, `validity_metrics()`) that checks their own semantic fields; the
-static contracts live in `spenn.data.validation` (`RuntimeValidatable`,
+static contracts live in `tpen.data.validation` (`RuntimeValidatable`,
 `RuntimeValidityMetrics`). This is deliberately distinct from
-`spenn.data.equivariant_state.EquivariantState`, which declares only particle
+`tpen.data.equivariant_state.EquivariantState`, which declares only particle
 permutation (`permute`) and comparison (`compare`). There is no generic
 tree-validation, tree-permutation, or particle-count-inference helper:
 validation, permutation, and comparison are declared by typed data objects,
@@ -261,37 +261,37 @@ never inferred by recursively probing arbitrary containers.
 Exact testing strategy:
 
 - Permutation convention and algebra:
-  `spenn.data.permutation.Permutation`,
-  `spenn.data.indices.permute_tuple_slots`, and
+  `tpen.data.permutation.Permutation`,
+  `tpen.data.indices.permute_tuple_slots`, and
   `tests/unit/data/test_permutation.py`.
 - State actions:
-  `spenn.data.equivariant_state.EquivariantState`,
-  `spenn.data.real.Feature`, `Interaction`, `Update`,
-  `spenn.data.batch.WavefunctionOutput`, and tests in
+  `tpen.data.equivariant_state.EquivariantState`,
+  `tpen.data.real.Feature`, `Interaction`, `Update`,
+  `tpen.data.batch.WavefunctionOutput`, and tests in
   `tests/unit/data/test_equivariant_state.py`,
   `tests/unit/data/test_real_feature.py`,
   `tests/unit/data/test_real_interaction.py`, and
   `tests/unit/data/test_real_update.py`.
 - Runtime equivariance checks:
-  `spenn.equivariance.checks.FullModelEquivarianceChecker` and
-  `TraceEquivarianceChecker` (driven by `spenn.callback.RuntimeEquivariance`),
+  `tpen.equivariance.checks.FullModelEquivarianceChecker` and
+  `TraceEquivarianceChecker` (driven by `tpen.callback.RuntimeEquivariance`),
   using `apply_particle_permutation` and typed `.compare(...)`. Pytest-only
   assertion helpers live under `tests/helpers/equivariance.py`, with coverage in
   `tests/unit/equivariance/test_equivariant_map.py`.
 - Tensor shape checks:
   `Feature`, `Interaction`, and `Update` are dense order-indexed
   lists of tensors. Index 0 is reserved for zero-order data and must have zero
-  channels; use `spenn.data.real.zero_block` to construct that sentinel.
+  channels; use `tpen.data.real.zero_block` to construct that sentinel.
   Validation coverage lives in
   `tests/unit/data/test_tensor_validation.py`.
 - Layer-level checks:
-  `spenn.nn.Updater`, `spenn.nn.PathAggregation`, and
-  `spenn.nn.TPENLayer`, with forced runtime
+  `tpen.nn.Updater`, `tpen.nn.PathAggregation`, and
+  `tpen.nn.TPENLayer`, with forced runtime
   checks in `tests/unit/nn/test_update_equivariance.py`,
   `tests/unit/nn/test_path_aggregation_equivariance.py`, and
   `tests/unit/nn/test_spenn_layer_scaffold.py`.
 - Virtual-support combinatorics:
-  `spenn.reps.paths.PathMetadata`, `generate_virtual_paths`, and
+  `tpen.reps.paths.PathMetadata`, `generate_virtual_paths`, and
   `validate_virtual_path`, with coverage in
   `tests/unit/reps/test_virtual_paths.py`.
 
@@ -301,17 +301,17 @@ permutations in addition to the runtime generator schedule.
 
 The new core scaffold is direct, not a compatibility layer:
 
-- `spenn.data`: common state names are exported at the package root for
+- `tpen.data`: common state names are exported at the package root for
   convenience, while helpers stay with their owner modules:
-  `spenn.data.batch`, `spenn.data.real`,
-  `spenn.data.partition`, `spenn.data.permutation`, and `spenn.data.indices`.
-  Electron-batch geometry helpers live under `spenn.data.batch`.
-- `spenn.reps`: virtual path metadata.
-- `spenn.nn`: `EquivariantMixing`, `PathAggregation`,
+  `tpen.data.batch`, `tpen.data.real`,
+  `tpen.data.partition`, `tpen.data.permutation`, and `tpen.data.indices`.
+  Electron-batch geometry helpers live under `tpen.data.batch`.
+- `tpen.reps`: virtual path metadata.
+- `tpen.nn`: `EquivariantMixing`, `PathAggregation`,
   `ResidualUpdater`, `TPENLayer`, `TPENWaveFunction`, and readouts under
-  `spenn.nn.readout`.
-- `spenn.equivariance`: traceable `EquivariantMap`, passive trace recording, and
-  runtime equivariance checkers (`spenn.equivariance.checks`).
+  `tpen.nn.readout`.
+- `tpen.equivariance`: traceable `EquivariantMap`, passive trace recording, and
+  runtime equivariance checkers (`tpen.equivariance.checks`).
 
 ## Documentation
 
@@ -346,4 +346,4 @@ compatible with each other.
 ### Metrics Naming Scheme
 
 Metric naming and logger conventions are documented in
-[`spenn/metrics_naming.md`](spenn/metrics_naming.md).
+[`tpen/metrics_naming.md`](tpen/metrics_naming.md).

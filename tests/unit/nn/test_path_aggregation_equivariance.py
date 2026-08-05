@@ -17,9 +17,9 @@ from collections.abc import Mapping
 import pytest
 import torch
 
-from spenn.data.permutation import all_permutations
-from spenn.data.real import Interaction, zero_block
-from spenn.nn import PathAggregation, TorchInitializer
+from tpen.data.permutation import all_permutations
+from tpen.data.real import Interaction, zero_block
+from tpen.nn import PathAggregation, TorchInitializer
 from tests.helpers.equivariance import assert_equivariant_all
 
 _DTYPE = torch.float64

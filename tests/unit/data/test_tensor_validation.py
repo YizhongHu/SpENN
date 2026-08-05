@@ -6,8 +6,8 @@ import pytest
 import torch
 from typeguard import TypeCheckError
 
-from spenn.data.partition import Partition
-from spenn.data.real import (
+from tpen.data.partition import Partition
+from tpen.data.real import (
     Feature,
     Interaction,
     Update,

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from spenn.dependencies import OptionalDependencyError, require_torch
+from tpen.dependencies import OptionalDependencyError, require_torch
 
 
 def test_require_torch_rejects_partial_namespace_torch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,7 +23,7 @@ def test_require_torch_rejects_partial_namespace_torch(monkeypatch: pytest.Monke
             raise ImportError(name)
         raise AssertionError(f"unexpected import: {name}")
 
-    monkeypatch.setattr("spenn.dependencies.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("tpen.dependencies.importlib.import_module", fake_import_module)
 
     with pytest.raises(OptionalDependencyError, match="uv sync --extra cpu"):
         require_torch(feature="configured SpENN run")
@@ -43,7 +43,7 @@ run:
 runtime:
   seed: 0
 runner:
-  _target_: spenn.runner.Train
+  _target_: tpen.runner.Train
 """,
         encoding="utf-8",
     )

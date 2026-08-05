@@ -1,4 +1,4 @@
-"""Run a Python script with Typeguard instrumentation for the `spenn` package."""
+"""Run a Python script with Typeguard instrumentation for the `tpen` package."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def main() -> None:
 
     root = Path(__file__).resolve().parent
     policy = OmegaConf.load(root / "configs" / "typecheck.yaml")
-    package = str(policy.get("package", "spenn"))
+    package = str(policy.get("package", "tpen"))
     args = sys.argv[1:]
     if not args:
         raise SystemExit("Usage: python typechecked.py <script.py> [-- script-args...]")

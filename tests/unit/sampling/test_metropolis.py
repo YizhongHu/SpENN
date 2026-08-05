@@ -5,10 +5,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, Walkers, WavefunctionOutput
-from spenn.sampling import MALASampler
-from spenn.sampling.metropolis import MetropolisSampler
-from spenn.sampling.moves import GaussianMove
+from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from tpen.sampling import MALASampler
+from tpen.sampling.metropolis import MetropolisSampler
+from tpen.sampling.moves import GaussianMove
 
 
 class ShiftMove(nn.Module):

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.real import Feature, Update, zero_block
-from spenn.nn import RMSNorm
+from tpen.data.real import Feature, Update, zero_block
+from tpen.nn import RMSNorm
 from tests.helpers.equivariance import assert_equivariant_all
 
 

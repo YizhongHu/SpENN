@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from spenn.evaluation.bundle import EvaluationBundle
-from spenn.evaluation.results import ArtifactRecord
+from tpen.evaluation.bundle import EvaluationBundle
+from tpen.evaluation.results import ArtifactRecord
 
 
 def test_evaluation_bundle_fields_are_intentional() -> None:

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from spenn.callback import Event, Status, configure_terminal_logging
-from spenn.callback.status import _format_status_box
+from tpen.callback import Event, Status, configure_terminal_logging
+from tpen.callback.status import _format_status_box
 from tests.unit.callback.support import FakeState
 
 

@@ -6,7 +6,7 @@ import warnings
 
 import pytest
 
-from spenn.trace import Trace, TraceWarning, trace_value
+from tpen.trace import Trace, TraceWarning, trace_value
 
 
 class _NamedProducer:

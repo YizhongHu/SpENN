@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from spenn.training.vmc import (
+from tpen.training.vmc import (
     VMCObjectiveResult,
     compute_vmc_objective,
     hamiltonian_term_metric_prefix,
@@ -154,7 +154,7 @@ def test_hamiltonian_term_metric_prefix_uses_resolved_name() -> None:
 
 
 def test_spenn_losses_vmc_loss_is_not_public_api() -> None:
-    assert importlib.util.find_spec("spenn.losses") is None
+    assert importlib.util.find_spec("tpen.losses") is None
 
 
 # --- summarize_logabs ---

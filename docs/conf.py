@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from spenn import __version__  # noqa: E402
+from tpen import __version__  # noqa: E402
 
 project = "SpENN"
 author = "SpENN contributors"

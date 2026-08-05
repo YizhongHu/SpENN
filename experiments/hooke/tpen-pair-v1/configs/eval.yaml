@@ -52,13 +52,13 @@ load:
   allow_protocol_mismatch: false
 
 runner:
-  _target_: spenn.runner.Evaluate
+  _target_: tpen.runner.Evaluate
   model: ${model}
   load: ${load}
   evaluator: ${evaluator}
 
 evaluator:
-  _target_: spenn.evaluation.Evaluator
+  _target_: tpen.evaluation.Evaluator
   namespace: ${evaluation.namespace}
   seed: ${evaluation.seed}
   artifact_level: ${evaluation.artifact_level}
@@ -71,10 +71,10 @@ evaluator:
     - ${evaluation_tasks.trace_equivariance}
 
 model:
-  _target_: spenn.nn.TPENWaveFunction
+  _target_: tpen.nn.TPENWaveFunction
   trace_name: spenn
   embedding:
-    _target_: spenn.nn.Embedding
+    _target_: tpen.nn.Embedding
     max_order: 2
     spatial_dim: ${system.spatial_dim}
     out_channels: 4
@@ -82,9 +82,9 @@ model:
     num_hidden_layers: 1
     include_spins: true
   layers:
-    - _target_: spenn.nn.TPENLayer
+    - _target_: tpen.nn.TPENLayer
       mixing:
-        _target_: spenn.nn.EquivariantMixing
+        _target_: tpen.nn.EquivariantMixing
         max_order: 2
         max_virtual_order: 2
         channels: 4
@@ -93,35 +93,35 @@ model:
         activation:
           _target_: torch.nn.SiLU
       path_aggregation:
-        _target_: spenn.nn.PathAggregation
+        _target_: tpen.nn.PathAggregation
         max_order: 2
         max_virtual_order: 2
         channels: 4
         activation:
           _target_: torch.nn.SiLU
       update:
-        _target_: spenn.nn.ResidualUpdater
+        _target_: tpen.nn.ResidualUpdater
   envelope:
-    _target_: spenn.nn.AdditiveEnvelope
+    _target_: tpen.nn.AdditiveEnvelope
     envelopes:
       # Harmonic confinement: coefficient = omega / 2. Hydra cannot do the
       # arithmetic, so editing system.omega requires editing this too — in
       # BOTH train.yaml and eval.yaml (model blocks must stay identical).
-      - _target_: spenn.nn.GaussianConfinement
+      - _target_: tpen.nn.GaussianConfinement
         coefficient: 0.25
-      - _target_: spenn.nn.ElectronElectronCusp
+      - _target_: tpen.nn.ElectronElectronCusp
   readout:
-    _target_: spenn.nn.readout.PfaffianReadout
+    _target_: tpen.nn.readout.PfaffianReadout
     channels: 4
 
 hamiltonian_terms:
   kinetic:
-    _target_: spenn.physics.kinetic.KineticEnergy
+    _target_: tpen.physics.kinetic.KineticEnergy
   harmonic_trap:
-    _target_: spenn.physics.potential.HarmonicTrap
+    _target_: tpen.physics.potential.HarmonicTrap
     omega: ${system.omega}
   electron_electron:
-    _target_: spenn.physics.potential.ElectronElectronInteraction
+    _target_: tpen.physics.potential.ElectronElectronInteraction
 
 evaluation_tasks:
   cusp:
@@ -129,7 +129,7 @@ evaluation_tasks:
     namespace: ${evaluation.namespace}/cusp
     output_dir: ${run.dir}/cusp
     generator:
-      _target_: spenn.evaluation.generators.CuspGridGenerator
+      _target_: tpen.evaluation.generators.CuspGridGenerator
       n_points: 16
       r12_min: 1.0e-4
       r12_max: 1.0e-1
@@ -138,23 +138,23 @@ evaluation_tasks:
       paired_directions: true
       seed: ${evaluation.seed}
     calculators:
-      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
         hamiltonian_terms: ${hamiltonian_terms}
         return_terms: ${evaluation.return_terms}
         chunk_size: 256
-      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
-      - _target_: spenn.evaluation.calculators.RadialLogAbsDerivativeCalculator
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+      - _target_: tpen.evaluation.calculators.RadialLogAbsDerivativeCalculator
     summaries:
-      - _target_: spenn.evaluation.summaries.LocalEnergySummary
-      - _target_: spenn.evaluation.summaries.CoalescenceDivergenceSummary
-      - _target_: spenn.evaluation.summaries.OppositeSpinCuspSummary
-      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.CoalescenceDivergenceSummary
+      - _target_: tpen.evaluation.summaries.OppositeSpinCuspSummary
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
   tail:
     name: tail
     namespace: ${evaluation.namespace}/tail
     output_dir: ${run.dir}/tail
     generator:
-      _target_: spenn.evaluation.generators.TailGridGenerator
+      _target_: tpen.evaluation.generators.TailGridGenerator
       radius_min: 0.5
       radius_max: 8.0
       n_points: 16
@@ -162,48 +162,48 @@ evaluation_tasks:
       n_directions: 4
       seed: ${evaluation.seed}
     calculators:
-      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
         hamiltonian_terms: ${hamiltonian_terms}
         return_terms: ${evaluation.return_terms}
         chunk_size: 256
-      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
-      - _target_: spenn.evaluation.summaries.LocalEnergySummary
-      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergyStabilitySummary
         abs_threshold: 10.0
-      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
-      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+      - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
   hooke_orbital:
     name: hooke_orbital
     namespace: ${evaluation.namespace}/hooke_orbital
     output_dir: ${run.dir}/hooke_orbital
     generator:
-      _target_: spenn.evaluation.generators.HookeOrbitalGenerator
+      _target_: tpen.evaluation.generators.HookeOrbitalGenerator
       n_samples: 16
       omega: ${system.omega}
       seed: ${evaluation.seed}
     calculators:
-      - _target_: spenn.evaluation.calculators.LocalEnergyCalculator
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
         hamiltonian_terms: ${hamiltonian_terms}
         return_terms: ${evaluation.return_terms}
         chunk_size: 256
-      - _target_: spenn.evaluation.calculators.WavefunctionCalculator
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
-      - _target_: spenn.evaluation.summaries.LocalEnergySummary
-      - _target_: spenn.evaluation.summaries.LocalEnergyStabilitySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergyStabilitySummary
         abs_threshold: 10.0
-      - _target_: spenn.evaluation.summaries.LocalEnergyPathologySummary
-      - _target_: spenn.evaluation.summaries.SampledRecordWriter
+      - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
   full_model_antisymmetry:
     name: full_model_antisymmetry
     namespace: ${evaluation.namespace}/full_model_antisymmetry
     output_dir: ${run.dir}/full_model_antisymmetry
     generator:
-      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      _target_: tpen.evaluation.generators.PermutationOrbitGenerator
       n_permutations: 1
       seed: ${evaluation.seed}
       base_generator:
-        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        _target_: tpen.evaluation.generators.StratifiedGeometryGenerator
         n_samples: 8
         seed: ${evaluation.seed}
         strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
@@ -213,19 +213,19 @@ evaluation_tasks:
           bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
           tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
     calculators:
-      - _target_: spenn.evaluation.calculators.FullModelAntisymmetryCalculator
+      - _target_: tpen.evaluation.calculators.FullModelAntisymmetryCalculator
     summaries:
-      - _target_: spenn.evaluation.summaries.TransformConsistencySummary
+      - _target_: tpen.evaluation.summaries.TransformConsistencySummary
   trace_equivariance:
     name: trace_equivariance
     namespace: ${evaluation.namespace}/trace_equivariance
     output_dir: ${run.dir}/trace_equivariance
     generator:
-      _target_: spenn.evaluation.generators.PermutationOrbitGenerator
+      _target_: tpen.evaluation.generators.PermutationOrbitGenerator
       n_permutations: 1
       seed: ${evaluation.seed}
       base_generator:
-        _target_: spenn.evaluation.generators.StratifiedGeometryGenerator
+        _target_: tpen.evaluation.generators.StratifiedGeometryGenerator
         n_samples: 4
         seed: ${evaluation.seed}
         strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
@@ -235,26 +235,26 @@ evaluation_tasks:
           bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
           tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
     calculators:
-      - _target_: spenn.evaluation.calculators.TraceEquivarianceCalculator
+      - _target_: tpen.evaluation.calculators.TraceEquivarianceCalculator
     summaries:
-      - _target_: spenn.evaluation.summaries.TraceEquivarianceSummary
+      - _target_: tpen.evaluation.summaries.TraceEquivarianceSummary
 
 callbacks:
-  - _target_: spenn.callback.ConfigSnapshot
+  - _target_: tpen.callback.ConfigSnapshot
     triggers: [run_start]
     output_path: ${run.dir}/config.yaml
-  - _target_: spenn.callback.ResolvedConfigSnapshot
+  - _target_: tpen.callback.ResolvedConfigSnapshot
     triggers: [run_start]
     output_path: ${run.dir}/resolved_config.yaml
-  - _target_: spenn.callback.Metadata
+  - _target_: tpen.callback.Metadata
     triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/metadata.json
-  - _target_: spenn.callback.Status
+  - _target_: tpen.callback.Status
     triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/status.json
 
 loggers:
-  - _target_: spenn.logging.CSV
+  - _target_: tpen.logging.CSV
     path: ${run.dir}/metrics.csv
-  - _target_: spenn.logging.JSONL
+  - _target_: tpen.logging.JSONL
     path: ${run.dir}/metrics.jsonl

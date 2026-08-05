@@ -14,8 +14,8 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from spenn.checkpoint import resolve_checkpoint_dir
-from spenn.run import run_from_config
+from tpen.checkpoint import resolve_checkpoint_dir
+from tpen.run import run_from_config
 
 FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_smoke.yaml"
 

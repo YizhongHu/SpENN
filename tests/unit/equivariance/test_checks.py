@@ -1,6 +1,6 @@
 """Tests for FullModelEquivarianceChecker and TraceEquivarianceChecker.
 
-Toy typed models live here (pytest-only), not in spenn.testing. The checkers
+Toy typed models live here (pytest-only), not in tpen.testing. The checkers
 call the normal model ``forward`` and act on semantic typed values.
 """
 
@@ -9,9 +9,9 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spenn.data.real import Feature, zero_block
-from spenn.equivariance import EquivariantMap
-from spenn.equivariance.checks import FullModelEquivarianceChecker, TraceEquivarianceChecker
+from tpen.data.real import Feature, zero_block
+from tpen.equivariance import EquivariantMap
+from tpen.equivariance.checks import FullModelEquivarianceChecker, TraceEquivarianceChecker
 
 
 def _feature() -> Feature:

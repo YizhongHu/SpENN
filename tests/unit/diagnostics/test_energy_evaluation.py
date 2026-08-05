@@ -8,8 +8,8 @@ import csv
 import pytest
 import torch
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.diagnostics import EnergyEvaluation, EvaluationContext
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.diagnostics import EnergyEvaluation, EvaluationContext
 
 
 def _context(

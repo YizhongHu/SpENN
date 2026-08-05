@@ -10,11 +10,11 @@ import torch
 import pytest
 from torch import nn
 
-from spenn.evaluation import Evaluator, EvaluationTask
-from spenn.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
-from spenn.data.batch import ElectronBatch
-from spenn.evaluation.protocols import EvaluationContext
-from spenn.evaluation.results import SummaryResult
+from tpen.evaluation import Evaluator, EvaluationTask
+from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
+from tpen.data.batch import ElectronBatch
+from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.results import SummaryResult
 
 
 class _NullGenerator:

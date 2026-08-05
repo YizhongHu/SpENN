@@ -16,11 +16,11 @@ import sys
 import pytest
 from omegaconf import OmegaConf
 
-from spenn.run import run_from_config
+from tpen.run import run_from_config
 
 
 def test_scaffold_and_load_are_not_public_runners() -> None:
-    import spenn.runner as runner
+    import tpen.runner as runner
 
     assert "Scaffold" not in runner.__all__
     assert "Load" not in runner.__all__
@@ -29,35 +29,35 @@ def test_scaffold_and_load_are_not_public_runners() -> None:
 
 
 def test_reference_energy_callback_is_removed() -> None:
-    import spenn.callback as callback
+    import tpen.callback as callback
 
     assert "ReferenceEnergy" not in callback.__all__
     assert not hasattr(callback, "ReferenceEnergy")
 
 
 def test_report_skeleton_callback_is_removed() -> None:
-    import spenn.callback as callback
+    import tpen.callback as callback
 
     assert "ReportSkeleton" not in callback.__all__
     assert not hasattr(callback, "ReportSkeleton")
 
 
 def test_concatenated_state_is_removed() -> None:
-    import spenn.data.equivariant_state as module
+    import tpen.data.equivariant_state as module
 
     assert "ConcatenatedState" not in module.__all__
     assert not hasattr(module, "ConcatenatedState")
 
 
 def test_equivariant_state_has_no_validate_contract() -> None:
-    import spenn.data.equivariant_state as module
+    import tpen.data.equivariant_state as module
 
     assert "validate_tree" not in module.__all__
     assert not hasattr(module.EquivariantState, "validate")
 
 
 def test_data_integrity_has_no_recursive_tensor_probe() -> None:
-    import spenn.callback as callback
+    import tpen.callback as callback
 
     assert not hasattr(callback, "_iter_tensors")
     assert not hasattr(callback, "_nonfinite_tensor_count")
@@ -67,30 +67,30 @@ def test_runtime_qol_modules_are_split_packages() -> None:
     """Keep callback, logging, and runner implementations in owner modules."""
 
     importable_modules = (
-        "spenn.callback.base",
-        "spenn.callback.status",
-        "spenn.callback.snapshot",
-        "spenn.callback.metadata",
-        "spenn.callback.checkpoint",
-        "spenn.callback.equivariance",
-        "spenn.callback.health.data_integrity",
-        "spenn.callback.health.sampler_health",
-        "spenn.callback.health.gradient_stats",
-        "spenn.callback.timing.base",
-        "spenn.callback.timing.run_timing",
-        "spenn.callback.timing.train_step_timing",
-        "spenn.callback.timing.evaluation_timing",
-        "spenn.callback.timing.diagnostic_timing",
-        "spenn.logging.base",
-        "spenn.logging.csv",
-        "spenn.logging.jsonl",
-        "spenn.logging.wandb",
-        "spenn.runner.base",
+        "tpen.callback.base",
+        "tpen.callback.status",
+        "tpen.callback.snapshot",
+        "tpen.callback.metadata",
+        "tpen.callback.checkpoint",
+        "tpen.callback.equivariance",
+        "tpen.callback.health.data_integrity",
+        "tpen.callback.health.sampler_health",
+        "tpen.callback.health.gradient_stats",
+        "tpen.callback.timing.base",
+        "tpen.callback.timing.run_timing",
+        "tpen.callback.timing.train_step_timing",
+        "tpen.callback.timing.evaluation_timing",
+        "tpen.callback.timing.diagnostic_timing",
+        "tpen.logging.base",
+        "tpen.logging.csv",
+        "tpen.logging.jsonl",
+        "tpen.logging.wandb",
+        "tpen.runner.base",
     )
     owner_modules = (
-        "spenn.callback.timing",
-        "spenn.runner.train",
-        "spenn.runner.evaluate",
+        "tpen.callback.timing",
+        "tpen.runner.train",
+        "tpen.runner.evaluate",
     )
 
     for module in importable_modules:
@@ -98,15 +98,15 @@ def test_runtime_qol_modules_are_split_packages() -> None:
     for module in owner_modules:
         assert importlib.util.find_spec(module) is not None
 
-    from spenn.callback import DataIntegrity
-    from spenn.callback.health.data_integrity import DataIntegrity as OwnedDataIntegrity
-    from spenn.callback import DiagnosticTiming, EvaluationTiming, RunTiming, TrainStepTiming
-    from spenn.callback.timing.diagnostic_timing import DiagnosticTiming as OwnedDiagnosticTiming
-    from spenn.callback.timing.evaluation_timing import EvaluationTiming as OwnedEvaluationTiming
-    from spenn.callback.timing.run_timing import RunTiming as OwnedRunTiming
-    from spenn.callback.timing.train_step_timing import TrainStepTiming as OwnedTrainStepTiming
-    from spenn.logging import WandB
-    from spenn.logging.wandb import WandB as OwnedWandB
+    from tpen.callback import DataIntegrity
+    from tpen.callback.health.data_integrity import DataIntegrity as OwnedDataIntegrity
+    from tpen.callback import DiagnosticTiming, EvaluationTiming, RunTiming, TrainStepTiming
+    from tpen.callback.timing.diagnostic_timing import DiagnosticTiming as OwnedDiagnosticTiming
+    from tpen.callback.timing.evaluation_timing import EvaluationTiming as OwnedEvaluationTiming
+    from tpen.callback.timing.run_timing import RunTiming as OwnedRunTiming
+    from tpen.callback.timing.train_step_timing import TrainStepTiming as OwnedTrainStepTiming
+    from tpen.logging import WandB
+    from tpen.logging.wandb import WandB as OwnedWandB
 
     assert DataIntegrity is OwnedDataIntegrity
     assert DiagnosticTiming is OwnedDiagnosticTiming
@@ -130,7 +130,7 @@ def test_runner_import_does_not_require_torch_nn(tmp_path: Path) -> None:
         [
             sys.executable,
             "-c",
-            "from spenn.run import main; from spenn.runner import Runner; print(Runner.__name__)",
+            "from tpen.run import main; from tpen.runner import Runner; print(Runner.__name__)",
         ],
         cwd=repo,
         env=env,
@@ -144,13 +144,13 @@ def test_runner_import_does_not_require_torch_nn(tmp_path: Path) -> None:
 
 
 def test_required_run_dirs_are_checks_diagnostics_and_checkpoints() -> None:
-    from spenn.artifacts import REQUIRED_RUN_DIRS
+    from tpen.artifacts import REQUIRED_RUN_DIRS
 
     assert REQUIRED_RUN_DIRS == ("checkpoints", "checks", "diagnostics")
 
 
 def test_permutable_lives_in_data_permutation() -> None:
-    import spenn.data.permutation as permutation
+    import tpen.data.permutation as permutation
 
     assert "Permutable" in permutation.__all__
     assert hasattr(permutation, "Permutable")
@@ -164,7 +164,7 @@ def test_runner_owned_callbacks_or_loggers_are_rejected(tmp_path: Path, forbidde
             "run": {"root": str(tmp_path), "run_id": None, "dir": None},
             "runtime": {"seed": 0},
             "runner": {
-                "_target_": "spenn.runner.Evaluate",
+                "_target_": "tpen.runner.Evaluate",
                 "model": None,
                 "sampler": None,
                 "hamiltonian_terms": [],

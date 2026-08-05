@@ -8,17 +8,17 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.nn import ElectronElectronCusp
-from spenn.physics.hamiltonian import (
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.nn import ElectronElectronCusp
+from tpen.physics.hamiltonian import (
     LocalEnergyResult,
     local_energy,
     normalize_hamiltonian_terms,
     summarize_local_energy,
 )
-from spenn.physics.hooke import HookeSingletExact, HookeTripletExact
-from spenn.physics.kinetic import KineticEnergy, kinetic_energy_from_logabs
-from spenn.physics.potential import (
+from tpen.physics.hooke import HookeSingletExact, HookeTripletExact
+from tpen.physics.kinetic import KineticEnergy, kinetic_energy_from_logabs
+from tpen.physics.potential import (
     ElectronElectronInteraction,
     ElectronNucleusInteraction,
     HarmonicTrap,

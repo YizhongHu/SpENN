@@ -6,11 +6,11 @@ import pytest
 import torch
 from typeguard import TypeCheckError
 
-from spenn.data.batch import ElectronBatch
-from spenn.data.permutation import all_permutations
-from spenn.data.real import Feature, zero_block
-from spenn.nn.readout import PfaffianReadout
-from spenn.nn.readout.pfaffian import _ODD_PADDING_IRREP, pfaffian
+from tpen.data.batch import ElectronBatch
+from tpen.data.permutation import all_permutations
+from tpen.data.real import Feature, zero_block
+from tpen.nn.readout import PfaffianReadout
+from tpen.nn.readout.pfaffian import _ODD_PADDING_IRREP, pfaffian
 
 
 class BlockContainer:

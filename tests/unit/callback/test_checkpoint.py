@@ -9,8 +9,8 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-import spenn.checkpoint.restore as restore_module
-from spenn.checkpoint import (
+import tpen.checkpoint.restore as restore_module
+from tpen.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
     checkpoint_hashes,
     restore_checkpoint,
@@ -18,7 +18,7 @@ from spenn.checkpoint import (
     save_checkpoint,
     stable_config_hash,
 )
-from spenn.nn import HookeOrbitalBasis
+from tpen.nn import HookeOrbitalBasis
 
 
 def _cfg(*, model_out: int = 2):
@@ -194,8 +194,8 @@ def test_restore_rejects_equal_width_legacy_and_product_basis_semantics(tmp_path
         "include_gaussian_factor": True,
         "include_spin": False,
     }
-    legacy_basis_config = {"_target_": "spenn.nn.HookeOrbitalBasis", **legacy_basis_kwargs}
-    product_basis_config = {"_target_": "spenn.nn.HookeOrbitalBasis", **product_basis_kwargs}
+    legacy_basis_config = {"_target_": "tpen.nn.HookeOrbitalBasis", **legacy_basis_kwargs}
+    product_basis_config = {"_target_": "tpen.nn.HookeOrbitalBasis", **product_basis_kwargs}
     legacy_basis = HookeOrbitalBasis(**legacy_basis_kwargs)
     product_basis = HookeOrbitalBasis(**product_basis_kwargs)
 

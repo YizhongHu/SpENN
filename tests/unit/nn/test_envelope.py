@@ -6,9 +6,9 @@ import pytest
 import torch
 from torch import nn
 
-from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import Feature
-from spenn.nn import (
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.real import Feature
+from tpen.nn import (
     AdditiveEnvelope,
     ElectronElectronCusp,
     Envelope,
