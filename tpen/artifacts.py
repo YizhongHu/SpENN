@@ -1,4 +1,4 @@
-"""Generic run artifact helpers for configured SpENN executions."""
+"""Generic run artifact helpers for configured TPEN executions."""
 
 from __future__ import annotations
 

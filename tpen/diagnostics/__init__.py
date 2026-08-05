@@ -1,4 +1,4 @@
-"""Evaluation diagnostics for configured SpENN runs."""
+"""Evaluation diagnostics for configured TPEN runs."""
 
 from tpen.diagnostics.base import (
     Diagnostic,

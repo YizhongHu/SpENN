@@ -1,4 +1,4 @@
-# SpENN Docs
+# TPEN Docs
 
 The documentation source lives in this directory and is built with Sphinx plus
 Numpydoc. The generated HTML is not committed; it is written to

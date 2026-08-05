@@ -1,4 +1,4 @@
-"""Tuple-index helpers for SpENN data states.
+"""Tuple-index helpers for TPEN data states.
 
 This module owns generic ordered-tuple bookkeeping. State containers and neural
 modules should use these helpers instead of defining local copies of tuple-grid,

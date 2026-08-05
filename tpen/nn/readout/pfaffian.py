@@ -1,6 +1,6 @@
 """Differentiable Pfaffian readout for real tuple features.
 
-All readouts in the new SpENN core consume :class:`tpen.data.real.Feature`.
+All readouts in the new TPEN core consume :class:`tpen.data.real.Feature`.
 Readout-specific Fourier transforms should happen inside a component readout
 before it contributes to the final wavefunction.
 """

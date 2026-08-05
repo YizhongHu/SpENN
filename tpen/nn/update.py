@@ -14,8 +14,8 @@ from tpen.data.real import (
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 
-torch = require_torch(feature="SpENN update modules")
-nn = require_torch_nn(feature="SpENN update modules")
+torch = require_torch(feature="TPEN update modules")
+nn = require_torch_nn(feature="TPEN update modules")
 
 
 class Updater(EquivariantMap):
@@ -29,7 +29,7 @@ class Updater(EquivariantMap):
 class ReplaceUpdater(Updater):
     """Experimental strategy replacing persistent features with update proposals.
 
-    This class is not part of the baseline SpENN API and is intentionally not
+    This class is not part of the baseline TPEN API and is intentionally not
     exported from ``tpen.nn`` or this module's ``__all__``.
     """
 
@@ -44,7 +44,7 @@ class ResidualUpdater(Updater):
     """Add a scaled real update proposal to persistent features.
 
     Mathematical reference: ``main.typ`` section "Updates" and the final
-    ``Feature update`` line in "Model Workflow". The usual SpENN update is the
+    ``Feature update`` line in "Model Workflow". The usual TPEN update is the
     residual rule ``x^{t+1}_I = x^t_I + a u^{t+1}_I``. Here ``step`` is the
     scalar ``a`` and ``u`` is the real-space update produced by path
     aggregation.
@@ -67,7 +67,7 @@ class ResidualUpdater(Updater):
 class NormGatedUpdater(Updater):
     """Experimental residual update gated by an equivariant update norm.
 
-    This class is not part of the baseline SpENN API and is intentionally not
+    This class is not part of the baseline TPEN API and is intentionally not
     exported from ``tpen.nn`` or this module's ``__all__``.
     """
 
@@ -94,7 +94,7 @@ class NormGatedUpdater(Updater):
 class ChannelMappedUpdater(Updater):
     """Experimental channel-mapped real update proposal.
 
-    This class is not part of the baseline SpENN API and is intentionally not
+    This class is not part of the baseline TPEN API and is intentionally not
     exported from ``tpen.nn`` or this module's ``__all__``.
 
     The learned map is shared across all tuple positions within each body

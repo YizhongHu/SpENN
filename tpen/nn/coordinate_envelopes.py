@@ -8,8 +8,8 @@ from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
 
-torch = require_torch(feature="SpENN coordinate envelopes")
-nn = require_torch_nn(feature="SpENN coordinate envelopes")
+torch = require_torch(feature="TPEN coordinate envelopes")
+nn = require_torch_nn(feature="TPEN coordinate envelopes")
 
 
 class GaussianDecayGate(nn.Module):

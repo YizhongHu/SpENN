@@ -35,7 +35,7 @@ register_resolvers()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run one configured SpENN runner from the command line."""
+    """Run one configured TPEN runner from the command line."""
 
     _install_bootstrap_stderr_logger()
     args = parse_args(argv)
@@ -283,7 +283,7 @@ def _seed_runtime_rngs(cfg: DictConfig) -> None:
     if np is not None:
         np.random.seed(seed_int % (2**32 - 1))
     if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
-        torch = require_torch(feature="seeded configured SpENN run")
+        torch = require_torch(feature="seeded configured TPEN run")
         torch.manual_seed(seed_int)
         if hasattr(torch, "cuda"):
             torch.cuda.manual_seed_all(seed_int)
@@ -416,7 +416,7 @@ def _preflight_optional_dependencies(cfg: DictConfig) -> None:
     """Fail early with actionable optional-dependency errors for configured targets."""
 
     if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
-        require_torch(feature="configured SpENN run")
+        require_torch(feature="configured TPEN run")
 
 
 def _config_requires_torch(value: object) -> bool:

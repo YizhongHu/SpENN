@@ -1,4 +1,4 @@
-"""Side-effect-free initializers for SpENN-owned neural modules."""
+"""Side-effect-free initializers for TPEN-owned neural modules."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Any
 
 from tpen.dependencies import require_torch, require_torch_nn
 
-torch = require_torch(feature="SpENN neural initializers")
-nn = require_torch_nn(feature="SpENN neural initializers")
+torch = require_torch(feature="TPEN neural initializers")
+nn = require_torch_nn(feature="TPEN neural initializers")
 
 _MAX_TORCH_SEED = 2**63 - 1
 

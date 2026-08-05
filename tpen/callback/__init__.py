@@ -1,4 +1,4 @@
-"""Callback primitives for configured SpENN runs."""
+"""Callback primitives for configured TPEN runs."""
 
 from __future__ import annotations
 

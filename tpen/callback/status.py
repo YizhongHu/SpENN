@@ -295,7 +295,7 @@ def _format_run_start_lines(event: Event, *, max_line_width: int = _STATUS_BOX_M
             if key in slurm:
                 hardware_rows.append((label, slurm[key]))
     return [
-        *_format_status_box("SpENN Run Status", status_rows, max_line_width=max_line_width),
+        *_format_status_box("TPEN Run Status", status_rows, max_line_width=max_line_width),
         *_format_status_box("Hardware Environment", hardware_rows, max_line_width=max_line_width),
     ]
 

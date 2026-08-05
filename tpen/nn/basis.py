@@ -1,6 +1,6 @@
 """Model-side equivariant input bases for electron configurations.
 
-An :class:`ElectronBasis` is the first equivariant map in the SpENN model
+An :class:`ElectronBasis` is the first equivariant map in the TPEN model
 pipeline. It featurizes a raw :class:`ElectronBatch` into a typed
 :class:`ElectronBasisFeatures` object consumed by the embedding::
 
@@ -33,7 +33,7 @@ from tpen.data.permutation import Permutation
 from tpen.dependencies import require_torch
 from tpen.equivariance import EquivariantMap
 
-torch = require_torch(feature="SpENN basis modules")
+torch = require_torch(feature="TPEN basis modules")
 
 
 HookeBasisSemantics = Literal["axiswise_v1", "product_v2"]

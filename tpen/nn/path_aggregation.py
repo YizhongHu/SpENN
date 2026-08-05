@@ -11,8 +11,8 @@ from tpen.equivariance import EquivariantMap
 from tpen.nn.initialization import TorchInitializer
 from tpen.data.paths import PathMetadata, VirtualPath, load_default_path_metadata
 
-torch = require_torch(feature="SpENN path aggregation")
-nn = require_torch_nn(feature="SpENN path aggregation")
+torch = require_torch(feature="TPEN path aggregation")
+nn = require_torch_nn(feature="TPEN path aggregation")
 
 
 class PathAggregation(EquivariantMap):

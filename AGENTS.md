@@ -1,4 +1,4 @@
-# SpENN project specific guidelines
+# TPEN project specific guidelines
 
 ## Orientation
 
@@ -7,7 +7,7 @@
 ## Design Document
 
 A design document that contains the mathematical background of
-SpENN can be found in `main.typ`. Key components of the model:
+TPEN can be found in `main.typ`. Key components of the model:
 `Embedding`, `EquivariantMixing`, `Fourier`, `Readout`, etc
 should closely follow the design document for correctness.
 
@@ -58,7 +58,7 @@ and currently important information should not.
 - If a config or file or function or class is no longer used, remove it.
 
 Any reintroduction of `permute_tree`, `validate_tree`, `infer_particle_count`, or equivalent recursive container-probing helpers is a blocker.
-These helpers erase representation semantics and are not allowed in SpENN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
+These helpers erase representation semantics and are not allowed in TPEN. Particle count, permutation, comparison, and validation must come from explicit typed-object contracts (`.permute(...)`, `.compare(...)`, `.validate(...)`, explicit `n_particles`/`n_electrons` metadata), never from recursively inspecting arbitrary containers.
 
 ### Prefer explicit ownership over local convenience
 

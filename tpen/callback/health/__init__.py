@@ -1,4 +1,4 @@
-"""Health callbacks for configured SpENN runs."""
+"""Health callbacks for configured TPEN runs."""
 
 from .data_integrity import DataIntegrity
 from .gradient_stats import GradientStats
