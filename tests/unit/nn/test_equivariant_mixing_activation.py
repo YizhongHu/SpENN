@@ -13,19 +13,19 @@ import pytest
 import torch
 
 from spenn.data.permutation import all_permutations
-from spenn.data.real import RealFeature, zero_block
+from spenn.data.real import Feature, zero_block
 from spenn.nn import EquivariantMixing
 
 _DTYPE = torch.float64
 
 
-def _random_feature(n_particles: int, channels: int, max_order: int, *, seed: int, batch: int = 2) -> RealFeature:
+def _random_feature(n_particles: int, channels: int, max_order: int, *, seed: int, batch: int = 2) -> Feature:
     generator = torch.Generator().manual_seed(seed)
     blocks: list[torch.Tensor] = [zero_block(batch_size=batch, dtype=_DTYPE)]
     for order in range(1, max_order + 1):
         shape = (batch, channels, *((n_particles,) * order))
         blocks.append(torch.randn(shape, generator=generator, dtype=_DTYPE))
-    return RealFeature(blocks)
+    return Feature(blocks)
 
 
 def _mixing(activation=None, implementation: str = "slow") -> EquivariantMixing:

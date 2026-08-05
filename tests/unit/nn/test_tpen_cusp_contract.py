@@ -1,6 +1,6 @@
 """T7 cusp-contract pins for the TPEN migration (MIG-TPEN-000 §5).
 
-Pins the spin handling of the electron-electron cusp so the future ``Cusp``
+Pins the spin handling of the electron-electron cusp so the future ``ElectronElectronCusp``
 module cannot silently change slopes:
 
 - opposite-spin pair slope 1/2 and same-spin pair slope 1/4 at coalescence;

@@ -1,7 +1,7 @@
 """T10 deterministic tiny-VMC smoke (MIG-TPEN-000 §5, slice d).
 
 Runs the same real stack as the pair smoke fixture — ``run_from_config``
-through the Train runner -> SpENNWaveFunction (TPENStack) ->
+through the Train runner -> TPENWaveFunction (TPENStack) ->
 MetropolisSampler -> Hooke Hamiltonian -> VMCTrainer with the full callback
 battery — on CPU/float64 with fixed seeds; the scale is already reduced
 (16 walkers, 2 trainer steps), not the stage stack. The T10 contract is

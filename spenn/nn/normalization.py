@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from spenn.data.real import RealFeature
+from spenn.data.real import Feature
 from spenn.dependencies import require_torch
 from spenn.equivariance import EquivariantMap
 
@@ -32,17 +32,17 @@ class RMSNorm(EquivariantMap):
             raise ValueError(f"eps must be positive, got {eps}")
         self.eps = float(eps)
 
-    def forward_impl(self, features: RealFeature) -> RealFeature:
+    def forward_impl(self, features: Feature) -> Feature:
         """Return a per-position channel RMS normalization of every block.
 
         Parameters
         ----------
-        features : RealFeature
+        features : Feature
             Real tuple features (or a :class:`spenn.data.real.RealUpdate`).
 
         Returns
         -------
-        RealFeature
+        Feature
             A new state of the same concrete type with normalized blocks.
         """
 
@@ -54,7 +54,7 @@ class RMSNorm(EquivariantMap):
                 continue
             mean_square = block.square().mean(dim=1, keepdim=True)
             blocks.append(block * torch.rsqrt(mean_square + self.eps))
-        # Preserve the concrete type (RealFeature vs RealUpdate).
+        # Preserve the concrete type (Feature vs RealUpdate).
         return type(features)(blocks)
 
 

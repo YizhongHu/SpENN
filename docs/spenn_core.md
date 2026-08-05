@@ -4,13 +4,13 @@ The TPEN pipeline is the primary API (MIG-TPEN-000): all stages operate in
 real space, and the two compute stages own their activations.
 
 ```text
-RealFeature
+Feature
   -> EquivariantMixing (owned pointwise Gamma)
-  -> RealInteraction
+  -> Interaction
   -> PathAggregation (owned Gamma_c)
   -> RealUpdate
   -> Update
-  -> RealFeature
+  -> Feature
 ```
 
 Data/state objects live in owner modules under `spenn.data`, with real tuple
@@ -33,7 +33,7 @@ materialize local `torch.Generator` instances and do not call
 
 `model.seed` is a legacy OmegaConf interpolation shim only. It may remain in old
 configs so values like `${model.seed}` resolve into explicit initializer specs,
-but `SpENNWaveFunction(seed=...)` does not seed or initialize anything. New
+but `TPENWaveFunction(seed=...)` does not seed or initialize anything. New
 configs should prefer a separate initialization seed field plus explicit
 initializer wiring.
 

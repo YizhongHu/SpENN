@@ -18,13 +18,13 @@ from collections.abc import Callable, Sequence
 
 import torch
 
-from spenn.data.real import RealFeature, RealInteraction, zero_block
+from spenn.data.real import Feature, Interaction, zero_block
 from spenn.nn.readout.pfaffian import pfaffian
 
 Activation = Callable[[torch.Tensor], torch.Tensor]
 
 
-def apply_pointwise_activation(interaction: RealInteraction, activation: Activation) -> RealInteraction:
+def apply_pointwise_activation(interaction: Interaction, activation: Activation) -> Interaction:
     """Apply the mixing-owned pointwise activation to every interaction block.
 
     Pinned contract (MIG-TPEN-000 §2.2): Gamma is applied to the full block,
@@ -33,28 +33,28 @@ def apply_pointwise_activation(interaction: RealInteraction, activation: Activat
 
     Parameters
     ----------
-    interaction : RealInteraction
+    interaction : Interaction
         Path-resolved mixing output ``[batch, channels, paths, indices...]``.
     activation : callable
         Elementwise activation Gamma.
 
     Returns
     -------
-    RealInteraction
+    Interaction
         Activated interaction with unchanged shapes.
     """
 
     blocks = [interaction.blocks[0]]
     for order in range(1, len(interaction.blocks)):
         blocks.append(activation(interaction.blocks[order]))
-    return RealInteraction(blocks)
+    return Interaction(blocks)
 
 
 def slow_tpen_aggregation(
-    interaction: RealInteraction,
+    interaction: Interaction,
     path_weights: Sequence[torch.Tensor | None],
     activation: Activation,
-) -> RealFeature:
+) -> Feature:
     """Aggregate path-resolved interactions into features, literal-loop form.
 
     Implements the TPEN aggregation contract (MIG-TPEN-000 §2.2, decision D3):
@@ -67,7 +67,7 @@ def slow_tpen_aggregation(
 
     Parameters
     ----------
-    interaction : RealInteraction
+    interaction : Interaction
         Blocks ``[batch, channels, paths, indices...]`` indexed by order.
     path_weights : sequence of torch.Tensor or None
         Entry ``m`` holds the order-``m`` weight ``U[c, p]`` with shape
@@ -77,7 +77,7 @@ def slow_tpen_aggregation(
 
     Returns
     -------
-    RealFeature
+    Feature
         Aggregated feature blocks ``[batch, channels, indices...]``.
 
     Raises
@@ -110,27 +110,27 @@ def slow_tpen_aggregation(
             for path in range(paths):
                 contracted[:, channel] = contracted[:, channel] + weight[channel, path] * block[:, channel, path]
         blocks.append(activation(contracted))
-    return RealFeature(blocks)
+    return Feature(blocks)
 
 
 def slow_tpen_layer(
-    x: RealFeature,
+    x: Feature,
     *,
-    mixing: Callable[[RealFeature], RealInteraction],
+    mixing: Callable[[Feature], Interaction],
     mixing_activation: Activation,
     path_weights: Sequence[torch.Tensor | None],
     aggregation_activation: Activation,
-) -> RealFeature:
+) -> Feature:
     """One TPEN layer in reference form with a residual update.
 
     ``x -> mixing -> Gamma -> aggregation(U, Gamma_c) -> x + u``
 
     Parameters
     ----------
-    x : RealFeature
+    x : Feature
         Input feature state.
     mixing : callable
-        Module or function producing a path-resolved :class:`RealInteraction`
+        Module or function producing a path-resolved :class:`Interaction`
         (e.g. ``EquivariantMixing`` with the slow implementation).
     mixing_activation, aggregation_activation : callable
         The op-owned activations Gamma and Gamma_c.
@@ -139,7 +139,7 @@ def slow_tpen_layer(
 
     Returns
     -------
-    RealFeature
+    Feature
         Residually updated feature state.
     """
 
@@ -149,7 +149,7 @@ def slow_tpen_layer(
     return x.add(update)
 
 
-def per_channel_pfaffian_readout(features: RealFeature, weights: torch.Tensor) -> torch.Tensor:
+def per_channel_pfaffian_readout(features: Feature, weights: torch.Tensor) -> torch.Tensor:
     """B1 reference readout: weighted sum of per-channel Pfaffians.
 
     ``Psi = sum_c w_c * Pf[ 0.5 * (x[c] - x[c]^T) ]`` (MIG-TPEN-000 §2.2,
@@ -158,7 +158,7 @@ def per_channel_pfaffian_readout(features: RealFeature, weights: torch.Tensor) -
 
     Parameters
     ----------
-    features : RealFeature
+    features : Feature
         Feature state with an order-2 block ``[batch, channels, n, n]``.
     weights : torch.Tensor
         Per-channel readout weights ``[channels]``.
@@ -182,7 +182,7 @@ def per_channel_pfaffian_readout(features: RealFeature, weights: torch.Tensor) -
     return psi
 
 
-def mixed_kernel_pfaffian_readout(features: RealFeature, weights: torch.Tensor) -> torch.Tensor:
+def mixed_kernel_pfaffian_readout(features: Feature, weights: torch.Tensor) -> torch.Tensor:
     """Rejected pre-B1 readout: one Pfaffian of the channel-mixed kernel.
 
     ``Psi = Pf[ sum_c w_c * 0.5 * (x[c] - x[c]^T) ]`` — kept only so T6 can

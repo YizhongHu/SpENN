@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from spenn.data.real import RealFeature, RealUpdate, zero_block
+from spenn.data.real import Feature, RealUpdate, zero_block
 from spenn.nn import RMSNorm
 from tests.helpers.equivariance import assert_equivariant_all
 
 
 def test_rms_norm_is_particle_equivariant() -> None:
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(batch_size=3, dtype=torch.float64),
             torch.randn(3, 4, 4, dtype=torch.float64),

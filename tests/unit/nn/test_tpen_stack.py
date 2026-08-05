@@ -1,7 +1,7 @@
 """Tests for the TPENStack container (MIG-TPEN-000 section 2.2, slice c).
 
 The stack owns the ordered TPEN layers of a wavefunction and dispatches the
-forward context to :class:`SpENNLayer` members only; plain feature-to-feature
+forward context to :class:`TPENLayer` members only; plain feature-to-feature
 modules are called without it. Equivariance of a stack of real layers is
 checked exhaustively over small-n permutations (gate T2).
 
@@ -14,16 +14,16 @@ import pytest
 import torch
 
 from spenn.data.batch import ElectronBatch, WavefunctionOutput
-from spenn.data.real import RealFeature, RealInteraction, RealUpdate, zero_block
+from spenn.data.real import Feature, Interaction, RealUpdate, zero_block
 from spenn.equivariance import EquivariantMap
 from spenn.nn import (
     AdditiveEnvelope,
     EquivariantMixing,
     PathAggregation,
     ResidualUpdate,
-    SpENNForwardContext,
-    SpENNLayer,
-    SpENNWaveFunction,
+    TPENForwardContext,
+    TPENLayer,
+    TPENWaveFunction,
     TPENStack,
     TorchInitializer,
 )
@@ -34,14 +34,14 @@ from tests.helpers.hooke_models import build_tiny_spenn
 class IdentityMixing(EquivariantMap):
     """Wrap each feature block as a single-path real interaction."""
 
-    def forward_impl(self, x: RealFeature) -> RealInteraction:
-        return RealInteraction([tensor.unsqueeze(2) for tensor in x.blocks])
+    def forward_impl(self, x: Feature) -> Interaction:
+        return Interaction([tensor.unsqueeze(2) for tensor in x.blocks])
 
 
 class SumPathAggregation(EquivariantMap):
     """Contract the path axis by summation; stub for the learned module."""
 
-    def forward_impl(self, x: RealInteraction) -> RealUpdate:
+    def forward_impl(self, x: Interaction) -> RealUpdate:
         return RealUpdate([tensor.sum(dim=2) for tensor in x.blocks])
 
 
@@ -54,9 +54,9 @@ class RecordingScale(EquivariantMap):
         self.factor = float(factor)
         self.calls = calls
 
-    def forward_impl(self, x: RealFeature) -> RealFeature:
+    def forward_impl(self, x: Feature) -> Feature:
         self.calls.append(self.label)
-        return RealFeature([x.blocks[0].clone(), self.factor * x.blocks[1]])
+        return Feature([x.blocks[0].clone(), self.factor * x.blocks[1]])
 
 
 class RecordingContextEnvelope(EquivariantMap):
@@ -66,25 +66,25 @@ class RecordingContextEnvelope(EquivariantMap):
         super().__init__()
         self.calls = calls
 
-    def forward_impl(self, x: RealFeature, context: SpENNForwardContext) -> RealFeature:
+    def forward_impl(self, x: Feature, context: TPENForwardContext) -> Feature:
         assert context.batch is not None
         self.calls.append("layer_envelope")
         return x
 
 
 class EmptyEncoder(torch.nn.Module):
-    def forward(self, batch: ElectronBatch, *, context=None) -> RealFeature:
-        return RealFeature()
+    def forward(self, batch: ElectronBatch, *, context=None) -> Feature:
+        return Feature()
 
 
 class ConstantReadout(torch.nn.Module):
-    def forward(self, features: RealFeature, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         logabs = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
 
 
-def _feature() -> RealFeature:
-    return RealFeature(
+def _feature() -> Feature:
+    return Feature(
         [
             zero_block(dtype=torch.float64),
             torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float64),
@@ -110,11 +110,11 @@ def test_stack_applies_layers_in_declaration_order() -> None:
 def test_stack_dispatches_context_to_spenn_layers_only() -> None:
     calls: list[str] = []
     batch = ElectronBatch(positions=torch.tensor([[[0.0], [1.0], [2.0]]], dtype=torch.float64))
-    context = SpENNForwardContext(batch=batch)
+    context = TPENForwardContext(batch=batch)
     stack = TPENStack(
         [
             RecordingScale("plain", 1.0, calls),
-            SpENNLayer(
+            TPENLayer(
                 mixing=IdentityMixing(),
                 path_aggregation=SumPathAggregation(),
                 update=ResidualUpdate(),
@@ -135,7 +135,7 @@ def test_stack_of_real_layers_passes_forced_runtime_equivariance_check(n_particl
     # residual update) with an explicit order-2 path axis, composed by the
     # stack. Exhaustive over every permutation for each particle count.
     generator = torch.Generator().manual_seed(24680 + n_particles)
-    feature = RealFeature(
+    feature = Feature(
         [
             zero_block(dtype=torch.float64),
             torch.randn(1, 2, n_particles, generator=generator, dtype=torch.float64),
@@ -143,8 +143,8 @@ def test_stack_of_real_layers_passes_forced_runtime_equivariance_check(n_particl
         ]
     )
 
-    def real_layer(seed: int) -> SpENNLayer:
-        return SpENNLayer(
+    def real_layer(seed: int) -> TPENLayer:
+        return TPENLayer(
             mixing=EquivariantMixing(
                 max_order=2,
                 max_virtual_order=2,
@@ -183,7 +183,7 @@ def test_wavefunction_wraps_layers_into_stack() -> None:
 
 def test_wavefunction_accepts_prebuilt_stack_without_rewrapping() -> None:
     stack = TPENStack([torch.nn.Identity()])
-    model = SpENNWaveFunction(
+    model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=stack,
         readout=ConstantReadout(),

@@ -136,7 +136,7 @@ Generation and saving should be explicit developer actions.
 
 ### Keep path axes explicit until correctness is established
 
-`RealInteraction` should keep a visible path axis:
+`Interaction` should keep a visible path axis:
 
 ```text
 [batch, channels, paths, indices...]

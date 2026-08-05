@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from operator import index
 
-from spenn.data.real import RealInteraction, RealUpdate, zero_block
+from spenn.data.real import Interaction, RealUpdate, zero_block
 from spenn.dependencies import require_torch, require_torch_nn
 from spenn.equivariance import EquivariantMap
 from spenn.nn.initialization import TorchInitializer
@@ -30,7 +30,7 @@ class PathAggregation(EquivariantMap):
     MLP-activation upgrade, which changes only ``Gamma_c`` behind this same
     signature.
 
-    The input contract is :class:`RealInteraction` with blocks of shape
+    The input contract is :class:`Interaction` with blocks of shape
     ``[batch, channels, paths, indices...]``. The output contract is
     :class:`RealUpdate` with blocks of shape ``[batch, channels, indices...]``.
     The weights are shared over batch and tuple positions ``I`` and never mix
@@ -102,7 +102,7 @@ class PathAggregation(EquivariantMap):
         self.weights = nn.ParameterDict()
         self._initialize_weights()
 
-    def forward_impl(self, x: RealInteraction) -> RealUpdate:
+    def forward_impl(self, x: Interaction) -> RealUpdate:
         """Return the path-aggregated real-space feature update."""
 
         x.validate()

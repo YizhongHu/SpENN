@@ -14,7 +14,7 @@ from spenn.data.real.base import _normalize_real_blocks, _validate_real_blocks
 
 
 @dataclass(frozen=True)
-class RealInteraction:
+class Interaction:
     """Store path-resolved real-space interaction blocks.
 
     Parameters
@@ -40,7 +40,7 @@ class RealInteraction:
         object.__setattr__(self, "blocks", normalized)
         self.validate()
 
-    def validate(self) -> "RealInteraction":
+    def validate(self) -> "Interaction":
         """Validate tensor types, ranks, tuple axes, and batch consistency."""
 
         _validate_real_blocks(self.blocks, prefix_ndim=3, name=type(self).__name__, strict_zero_channels=True)
@@ -73,17 +73,17 @@ class RealInteraction:
 
         return enumerate(self.blocks)
 
-    def clone(self) -> "RealInteraction":
+    def clone(self) -> "Interaction":
         """Clone every tensor block."""
 
         return type(self)([tensor.clone() for tensor in self.blocks])
 
-    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> "RealInteraction":
+    def to(self, device: torch.device | str | None = None, dtype: torch.dtype | None = None) -> "Interaction":
         """Move every block to a new device or dtype."""
 
         return type(self)([tensor.to(device=device, dtype=dtype) for tensor in self.blocks])
 
-    def permute(self, permutation: Permutation) -> "RealInteraction":
+    def permute(self, permutation: Permutation) -> "Interaction":
         """Return a copy transformed by an active particle permutation."""
 
         return type(self)(
@@ -93,7 +93,7 @@ class RealInteraction:
             ]
         )
 
-    def compare(self, other: "RealInteraction", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
+    def compare(self, other: "Interaction", *, atol: float = 1.0e-6, rtol: float = 1.0e-6) -> tuple[bool, dict[str, float]]:
         """Compare block-by-block; return ``(is_close, max_abs_error)``."""
 
         if type(self) is not type(other):
@@ -101,4 +101,4 @@ class RealInteraction:
         return compare_tensor_blocks(self.blocks, other.blocks, atol=atol, rtol=rtol)
 
 
-__all__ = ["RealInteraction"]
+__all__ = ["Interaction"]
