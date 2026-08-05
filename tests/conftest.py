@@ -1,4 +1,4 @@
-"""Shared pytest configuration and fixtures for the SpENN test suite."""
+"""Shared pytest configuration and fixtures for the TPEN test suite."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _drop_terminal_handlers(logger: logging.Logger) -> None:
 
 @pytest.fixture(autouse=True)
 def _restore_spenn_logger_state():
-    """Give each test a clean SpENN logger tree and restore it afterwards."""
+    """Give each test a clean TPEN logger tree and restore it afterwards."""
 
     saved = {}
     for name in _ISOLATED_LOGGERS:

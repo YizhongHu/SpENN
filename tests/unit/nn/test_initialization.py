@@ -1,4 +1,4 @@
-"""Tests for explicit SpENN neural initializers."""
+"""Tests for explicit TPEN neural initializers."""
 
 from __future__ import annotations
 

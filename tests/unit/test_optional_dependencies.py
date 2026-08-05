@@ -26,7 +26,7 @@ def test_require_torch_rejects_partial_namespace_torch(monkeypatch: pytest.Monke
     monkeypatch.setattr("tpen.dependencies.importlib.import_module", fake_import_module)
 
     with pytest.raises(OptionalDependencyError, match="uv sync --extra cpu"):
-        require_torch(feature="configured SpENN run")
+        require_torch(feature="configured TPEN run")
 
 
 def test_run_cli_preflight_reports_missing_torch_without_hydra_traceback(tmp_path: Path) -> None:
@@ -64,5 +64,5 @@ runner:
     )
 
     assert result.returncode == 1
-    assert "configured SpENN run requires a complete `torch` installation" in result.stderr
+    assert "configured TPEN run requires a complete `torch` installation" in result.stderr
     assert "hydra.errors.InstantiationException" not in result.stderr

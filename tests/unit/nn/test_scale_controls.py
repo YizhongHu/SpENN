@@ -1,4 +1,4 @@
-"""Tests for modular SpENN scale-control gates and envelopes."""
+"""Tests for modular TPEN scale-control gates and envelopes."""
 
 from __future__ import annotations
 
