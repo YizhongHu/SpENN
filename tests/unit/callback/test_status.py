@@ -116,7 +116,15 @@ def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pyte
     )
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(Event(name="step_end", context=_context(tmp_path), state=state, payload={"step": 10}))
+        callback.handle(
+            Event(
+                name="step_end",
+                context=_context(tmp_path),
+                state=state,
+                payload={"step": 10},
+                step=10,
+            )
+        )
 
     assert caplog.records[-1].getMessage() == (
         "[train] step=10 loss=0.421 energy=2.104 acc=0.61 grad=0.012 finite=1"

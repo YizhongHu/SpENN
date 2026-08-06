@@ -255,9 +255,7 @@ class RunContext:
 
         write_occurrence_artifact(self, occurrence)
         for callback in self.callbacks:
-            handle_occurrence = getattr(callback, "handle_occurrence", None)
-            if callable(handle_occurrence):
-                handle_occurrence(occurrence, self)
+            callback.handle_occurrence(occurrence, self)
 
     def emit_event(
         self,
@@ -265,17 +263,24 @@ class RunContext:
         *,
         state: object | None = None,
         payload: dict[str, Any] | None = None,
+        step: int | None = None,
     ) -> None:
         """Durably record and dispatch one lifecycle event."""
 
+        from tpen.callback.base import _legacy_event
+
+        event = _legacy_event(
+            name=name,
+            context=self,
+            state=state,
+            payload=payload,
+            step=step,
+        )
         if name == "run_start":
             if self._run_start_emitted:
                 return
             self._run_start_emitted = True
 
-        from tpen.callback.base import Event
-
-        event = Event(name=name, context=self, state=state, payload={} if payload is None else payload)
         write_event_artifact(self, event)
         for callback in self.callbacks:
             callback.handle(event)
@@ -425,11 +430,21 @@ def append_jsonl(path: Path, data: Mapping[str, Any]) -> None:
 def write_event_artifact(context: RunContext, event: Any) -> None:
     """Append one lifecycle event to the run's durable event stream."""
 
+    payload = dict(event.payload)
+    if event.step is not None:
+        if "step" in payload:
+            payload_step = None if payload["step"] is None else int(payload["step"])
+            if payload_step != event.step:
+                raise ValueError(
+                    "legacy event step mismatch while writing artifact: "
+                    f"event step {event.step} != payload step {payload_step}"
+                )
+        payload.setdefault("step", event.step)
     append_jsonl(
         context.path("events.jsonl"),
         {
             "event": event.name,
-            "payload": _event_jsonable(event.payload),
+            "payload": _event_jsonable(payload),
             "run_id": context.metadata.run_id,
             "step": event.step,
             "time": context.now_iso(),
@@ -576,16 +591,30 @@ def _typed_event_fields(value: object) -> dict[str, Any]:
     """Encode public dataclass fields at the event artifact boundary."""
 
     if is_dataclass(value):
-        return {
-            item.name: _event_jsonable(getattr(value, item.name))
-            for item in dataclass_fields(value)
-            if not item.name.startswith("_")
-        }
+        return _typed_dataclass_fields(value)
     if _has_instance_state(value):
         raise TypeError(
             f"stateful typed value {_qualified_type_name(value)} must be a dataclass to serialize"
         )
     return {}
+
+
+def _typed_dataclass_fields(value: object) -> dict[str, Any]:
+    """Encode explicit public fields of one typed dataclass value."""
+
+    return {
+        item.name: _typed_event_field_value(getattr(value, item.name))
+        for item in dataclass_fields(value)
+        if not item.name.startswith("_")
+    }
+
+
+def _typed_event_field_value(value: object) -> Any:
+    """Preserve nested typed dataclass fields without probing containers."""
+
+    if isinstance(value, (TypedEvent, Operation)) and is_dataclass(value):
+        return _typed_dataclass_fields(value)
+    return _event_jsonable(value)
 
 
 def _has_instance_state(value: object) -> bool:

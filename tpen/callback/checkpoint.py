@@ -96,24 +96,10 @@ class Checkpoint(Callback):
             keep_last=self.keep_last,
         )
 
-    def should_run(self, event: Event) -> bool:
-        """Return whether this checkpoint should handle `event`.
+    def _legacy_cadence_step(self, event: Event) -> int | None:
+        """Use completed-update numbering for inherited legacy cadence."""
 
-        Checkpoint cadence is based on completed updates, not the trainer's
-        0-based loop index.
-        """
-
-        if event.name not in self.triggers:
-            return False
-        if self.max_calls is not None and self.num_calls >= self.max_calls:
-            return False
-        if self.every_n_steps is not None:
-            step = _checkpoint_step(event)
-            if step is None or step < self.start_step:
-                return False
-            if (step - self.start_step) % self.every_n_steps != 0:
-                return False
-        return self._draw_probability()
+        return _checkpoint_step(event)
 
 
 def _event_value(event: Event, name: str) -> Any:
@@ -136,6 +122,12 @@ def _checkpoint_step(event: Event) -> int | None:
         return completed_step
 
     step = event.step
+    payload_has_step = "step" in event.payload
+    if step is None and payload_has_step:
+        payload_step = event.payload["step"]
+        step = None if payload_step is None else int(payload_step)
+    if step is None and not payload_has_step and state is not None:
+        step = getattr(state, "global_step", None)
     if step is None and state is not None:
         step = getattr(state, "step", None)
     if step is None:

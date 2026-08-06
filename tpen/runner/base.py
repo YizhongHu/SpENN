@@ -6,7 +6,7 @@ import importlib
 from typing import Any
 
 from tpen.artifacts import RunContext, RunResult
-from tpen.callback.base import Event
+from tpen.callback.base import _legacy_event
 
 
 class Runner:
@@ -24,20 +24,27 @@ class Runner:
         *,
         state: object | None = None,
         payload: dict[str, Any] | None = None,
+        step: int | None = None,
     ) -> None:
         """Emit one lifecycle event to the context's callbacks."""
 
         emit_event = getattr(context, "emit_event", None)
         if callable(emit_event) and hasattr(context, "artifact_manager") and hasattr(context, "clock"):
-            emit_event(name, state=state, payload=payload)
+            emit_event(name, state=state, payload=payload, step=step)
             return
 
+        event = _legacy_event(
+            name=name,
+            context=context,
+            state=state,
+            payload=payload,
+            step=step,
+        )
         if name == "run_start":
             if getattr(context, "_run_start_emitted", False):
                 return
             setattr(context, "_run_start_emitted", True)
 
-        event = Event(name=name, context=context, state=state, payload={} if payload is None else payload)
         for callback in context.callbacks:
             callback.handle(event)
 

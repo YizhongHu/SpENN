@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tpen.events import Operation
+from tpen.events import Event, Operation
 
 
 @dataclass(frozen=True)
@@ -21,4 +21,30 @@ class CollectSamples(Operation):
     step: int
 
 
-__all__ = ["CollectSamples"]
+@dataclass(frozen=True)
+class TrainingIteration(Operation):
+    """One attempted trainer iteration at a durable zero-based step.
+
+    Parameters
+    ----------
+    step : int
+        Durable zero-based trainer step attempted by this scope.
+    """
+
+    step: int
+
+
+@dataclass(frozen=True)
+class TrainingIterationCompleted(Event):
+    """Signal successful completion of one training iteration.
+
+    Parameters
+    ----------
+    iteration : TrainingIteration
+        Successfully completed iteration identity.
+    """
+
+    iteration: TrainingIteration
+
+
+__all__ = ["CollectSamples", "TrainingIteration", "TrainingIterationCompleted"]

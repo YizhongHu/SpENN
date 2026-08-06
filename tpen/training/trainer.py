@@ -8,7 +8,11 @@ from typing import Any, Callable
 from tpen.artifacts import RunContext
 from tpen.dependencies import require_torch
 from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
-from tpen.training.events import CollectSamples
+from tpen.training.events import (
+    CollectSamples,
+    TrainingIteration,
+    TrainingIterationCompleted,
+)
 from tpen.training.state import TrainerState
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
 
@@ -35,11 +39,11 @@ def _timed_phase(emit: Callable[..., None], step: int, phase: str):
     phase boundaries retain their legacy events until their own migration.
     """
 
-    emit("train_phase_start", payload={"step": step, "phase": phase})
+    emit("train_phase_start", step=step, payload={"phase": phase})
     try:
         yield
     finally:
-        emit("train_phase_end", payload={"step": step, "phase": phase})
+        emit("train_phase_end", step=step, payload={"phase": phase})
 
 
 def _gradient_norm(model) -> float:
@@ -117,88 +121,107 @@ class VMCTrainer:
         # Training-loop steps are 0-indexed for metrics and most callbacks.
         # Checkpoint callbacks convert them to completed-update counts.
         for step in range(self.global_step, self.max_steps):
-            emit("step_start", payload={"step": step})
+            iteration = TrainingIteration(step=step)
+            with context.scope(iteration):
+                emit("step_start", step=step)
 
-            with context.scope(CollectSamples(step=step)):
-                walkers, sampler_stats = sampler.collect_samples(model, device=context.metadata.device)
-            with _timed_phase(emit, step, "batch_build"):
-                batch = walkers.make_batch()
-            with _timed_phase(emit, step, "local_energy"):
-                result = local_energy(hamiltonian_terms, model, batch, return_terms=self.return_terms)
-            if isinstance(result, LocalEnergyResult):
-                total_local_energy = result.total
-                term_energies = result.terms
-            else:
-                total_local_energy = result
-                term_energies = None
+                with context.scope(CollectSamples(step=step)):
+                    walkers, sampler_stats = sampler.collect_samples(
+                        model, device=context.metadata.device
+                    )
+                with _timed_phase(emit, step, "batch_build"):
+                    batch = walkers.make_batch()
+                with _timed_phase(emit, step, "local_energy"):
+                    result = local_energy(
+                        hamiltonian_terms,
+                        model,
+                        batch,
+                        return_terms=self.return_terms,
+                    )
+                if isinstance(result, LocalEnergyResult):
+                    total_local_energy = result.total
+                    term_energies = result.terms
+                else:
+                    total_local_energy = result
+                    term_energies = None
 
-            with _timed_phase(emit, step, "forward"):
-                output = model(batch)
-            with _timed_phase(emit, step, "objective"):
-                objective = compute_vmc_objective(output.logabs, total_local_energy)
-            loss = objective.loss
+                with _timed_phase(emit, step, "forward"):
+                    output = model(batch)
+                with _timed_phase(emit, step, "objective"):
+                    objective = compute_vmc_objective(output.logabs, total_local_energy)
+                loss = objective.loss
 
-            optimizer.zero_grad(set_to_none=True)
-            optimizer_step = False
-            if loss.requires_grad:
-                with _timed_phase(emit, step, "backward"):
-                    loss.backward()
-                if self.gradient_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip_norm)
-                grad_norm = _gradient_norm(model)
-                with _timed_phase(emit, step, "optimizer_step"):
-                    optimizer.step()
-                optimizer_step = True
-            elif batch.n_electrons == 0:
-                # The zero-electron vacuum has no sampled coordinate degrees of
-                # freedom, so the current Pfaffian readout yields a constant
-                # wavefunction and a no-op optimizer step is the correct loop
-                # behavior. Nonzero disconnected losses still fail below.
-                grad_norm = 0.0
-            else:
-                raise RuntimeError(
-                    "VMC loss is disconnected from model parameters for a nonzero-electron batch"
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_step = False
+                if loss.requires_grad:
+                    with _timed_phase(emit, step, "backward"):
+                        loss.backward()
+                    if self.gradient_clip_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), self.gradient_clip_norm
+                        )
+                    grad_norm = _gradient_norm(model)
+                    with _timed_phase(emit, step, "optimizer_step"):
+                        optimizer.step()
+                    optimizer_step = True
+                elif batch.n_electrons == 0:
+                    # The zero-electron vacuum has no sampled coordinate degrees
+                    # of freedom, so the current Pfaffian readout yields a
+                    # constant wavefunction and a no-op optimizer step is the
+                    # correct loop behavior. Nonzero disconnected losses still
+                    # fail below.
+                    grad_norm = 0.0
+                else:
+                    raise RuntimeError(
+                        "VMC loss is disconnected from model parameters for a "
+                        "nonzero-electron batch"
+                    )
+
+                # Canonical VMC-native metrics come from the objective helper;
+                # the trainer only adds trainer-owned mechanics and optional
+                # per-term local-energy metrics (metrics only, never part of the
+                # objective).
+                with _timed_phase(emit, step, "post_step_metrics"):
+                    metrics: dict[str, Any] = dict(objective.metrics)
+                    metrics.update(summarize_logabs(output.logabs))
+                    if term_energies is not None:
+                        metrics.update(summarize_local_energy_terms(term_energies))
+                    metrics["grad_norm"] = grad_norm
+                    metrics["param_norm"] = _parameter_norm(model)
+                    metrics["loss_has_grad"] = bool(loss.requires_grad)
+                    metrics["optimizer_step"] = optimizer_step
+
+                state.step = step
+                state.metrics = metrics
+                state.samples = walkers
+                state.batch = batch
+                state.local_energy = total_local_energy.detach()
+                state.loss = loss.detach()
+                state.wavefunction_output = output
+                state.sampler_stats = dict(sampler_stats)
+
+                if self.log_every_n_steps and step % self.log_every_n_steps == 0:
+                    context.log(metrics, step=step, namespace="train")
+                    if sampler_stats:
+                        context.log(
+                            dict(sampler_stats),
+                            step=step,
+                            namespace="train/sampler",
+                        )
+
+                self.global_step = step + 1
+                emit(
+                    "step_end",
+                    state=state,
+                    step=step,
+                    payload={
+                        "model": model,
+                        "optimizer": optimizer,
+                        "trainer": self,
+                        "sampler": sampler,
+                    },
                 )
-
-            # Canonical VMC-native metrics come from the objective helper; the
-            # trainer only adds trainer-owned mechanics and optional per-term
-            # local-energy metrics (metrics only, never part of the objective).
-            with _timed_phase(emit, step, "post_step_metrics"):
-                metrics: dict[str, Any] = dict(objective.metrics)
-                metrics.update(summarize_logabs(output.logabs))
-                if term_energies is not None:
-                    metrics.update(summarize_local_energy_terms(term_energies))
-                metrics["grad_norm"] = grad_norm
-                metrics["param_norm"] = _parameter_norm(model)
-                metrics["loss_has_grad"] = bool(loss.requires_grad)
-                metrics["optimizer_step"] = optimizer_step
-
-            state.step = step
-            state.metrics = metrics
-            state.samples = walkers
-            state.batch = batch
-            state.local_energy = total_local_energy.detach()
-            state.loss = loss.detach()
-            state.wavefunction_output = output
-            state.sampler_stats = dict(sampler_stats)
-
-            if self.log_every_n_steps and step % self.log_every_n_steps == 0:
-                context.log(metrics, step=step, namespace="train")
-                if sampler_stats:
-                    context.log(dict(sampler_stats), step=step, namespace="train/sampler")
-
-            self.global_step = step + 1
-            emit(
-                "step_end",
-                state=state,
-                payload={
-                    "step": step,
-                    "model": model,
-                    "optimizer": optimizer,
-                    "trainer": self,
-                    "sampler": sampler,
-                },
-            )
+                context.emit(TrainingIterationCompleted(iteration=iteration))
 
         return state
 

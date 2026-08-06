@@ -11,6 +11,11 @@ from omegaconf import OmegaConf
 from tpen.run import run_from_config
 
 
+class _HandleOnlyCallback:
+    def handle(self, event: object) -> None:
+        del event
+
+
 def _cfg(tmp_path: Path, **extra) -> OmegaConf:
     base = {
         "experiment": {"name": "f", "sector": "f", "run_name": "f"},
@@ -39,6 +44,16 @@ def test_prepare_run_context_rejects_callback_without_handle(tmp_path: Path) -> 
     cfg = _cfg(tmp_path)
     cfg.callbacks = [{"_target_": "builtins.object"}]
     with pytest.raises(TypeError, match="handle"):
+        run_from_config(cfg, config_path="x", command="t", raise_exceptions=True)
+
+
+def test_prepare_run_context_rejects_handle_only_callback(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.callbacks = [
+        {"_target_": "tests.integration.test_run_fail_loudness._HandleOnlyCallback"}
+    ]
+
+    with pytest.raises(TypeError, match="handle_occurrence"):
         run_from_config(cfg, config_path="x", command="t", raise_exceptions=True)
 
 

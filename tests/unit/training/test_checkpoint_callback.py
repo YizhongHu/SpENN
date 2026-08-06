@@ -48,6 +48,7 @@ def _event(state: TrainerState, *, context=None, name: str = "step_end") -> Even
         context=_context() if context is None else context,
         state=state,
         payload={"step": state.step},
+        step=state.step,
     )
 
 
@@ -167,7 +168,15 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
     context = _context()
     state = _state(1)
 
-    callback.handle(Event(name="step_end", context=context, state=state, payload={"step": 1}))
+    callback.handle(
+        Event(
+            name="step_end",
+            context=context,
+            state=state,
+            payload={"step": 1},
+            step=1,
+        )
+    )
 
     manifest = json.loads((tmp_path / "step_000002" / "manifest.json").read_text())
     assert manifest["schema_version"] == 1
@@ -190,3 +199,71 @@ def test_checkpoint_fails_loudly_when_required_state_is_missing(tmp_path) -> Non
 
     with pytest.raises(ValueError, match="trainer"):
         callback.handle(_event(state))
+
+
+def test_checkpoint_uses_inherited_should_run_with_owned_step_hook(tmp_path) -> None:
+    assert "should_run" not in Checkpoint.__dict__
+    assert "_legacy_cadence_step" in Checkpoint.__dict__
+    callback = Checkpoint(
+        triggers=["step_end"],
+        output_dir=tmp_path,
+        every_n_steps=2,
+    )
+    state = SimpleNamespace(step=None, trainer=None)
+
+    # Direct legacy callers may still supply only payload step; checkpoint
+    # cadence converts the zero-based step to completed-update numbering.
+    event = Event(
+        name="step_end",
+        context=_context(),
+        state=state,
+        payload={"step": 1},
+    )
+
+    assert callback.should_run(event)
+
+
+def test_checkpoint_cadence_preserves_state_step_fallback(tmp_path) -> None:
+    callback = Checkpoint(
+        triggers=["step_end"],
+        output_dir=tmp_path,
+        every_n_steps=2,
+    )
+    event = Event(
+        name="step_end",
+        context=_context(),
+        state=SimpleNamespace(step=1, trainer=None),
+    )
+
+    assert callback.should_run(event)
+
+
+def test_checkpoint_cadence_preserves_state_global_step_fallback(tmp_path) -> None:
+    callback = Checkpoint(
+        triggers=["train_end"],
+        output_dir=tmp_path,
+        every_n_steps=2,
+    )
+    event = Event(
+        name="train_end",
+        context=_context(),
+        state=SimpleNamespace(global_step=2, step=1, trainer=None),
+    )
+
+    assert callback.should_run(event)
+
+
+def test_checkpoint_payload_none_skips_state_global_step_fallback(tmp_path) -> None:
+    callback = Checkpoint(
+        triggers=["train_end"],
+        output_dir=tmp_path,
+        every_n_steps=2,
+    )
+    event = Event(
+        name="train_end",
+        context=_context(),
+        state=SimpleNamespace(global_step=2, step=1, trainer=None),
+        payload={"step": None},
+    )
+
+    assert not callback.should_run(event)

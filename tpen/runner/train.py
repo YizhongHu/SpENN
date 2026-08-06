@@ -87,7 +87,13 @@ class Train(Runner):
             hamiltonian_terms=self.hamiltonian_terms,
             optimizer=optimizer,
             context=context,
-            emit=lambda name, *, state=None, payload=None: self.emit(name, context, state=state, payload=payload),
+            emit=lambda name, *, state=None, payload=None, step=None: self.emit(
+                name,
+                context,
+                state=state,
+                payload=payload,
+                step=step,
+            ),
         )
         # train_end carries the trained model and completed update count so
         # lifecycle callbacks can label terminal artifacts consistently.
@@ -96,7 +102,8 @@ class Train(Runner):
             "train_end",
             context,
             state=final_state,
-            payload={"model": self.model, "step": int(completed_steps)},
+            step=int(completed_steps),
+            payload={"model": self.model},
         )
         self.emit("run_end", context)
         return RunResult(status="completed")

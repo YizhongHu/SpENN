@@ -612,8 +612,19 @@ train/perf/post_step_metrics_time_sec
 
 Phase times approximately sum to at most `step_time_sec`; the difference is
 unclassified loop overhead (gradient clipping, event dispatch, logging).
-During A1, `TrainPhaseTiming` still uses the legacy `step_end` trigger for
-reporting cadence. Typed callback subscription and cadence belong to A2.
+`TrainPhaseTiming` collects sample timing from the typed `CollectSamples`
+scope, retains legacy phase-boundary collection for the not-yet-migrated
+phases, and reports only on a successful typed `TrainingIterationCompleted`
+event. Its scalar `every_n_steps`, `start_step`, `max_calls`, `probability`,
+and `seed` options configure a callback-local occurrence cadence for those
+successful completions; `start_step=0` maps to one-based occurrence `1`, and
+`every_n_steps=None` reports every successful occurrence. Unconditional
+`Ended[TrainingIteration]` observation clears measurements for failed and
+cadence-skipped iterations.
+
+Occurrence cadence is local to one `RunContext` and restarts for a new run or
+context. Durable cadence continuation across checkpoint resume remains
+deferred; A2 does not migrate other scientific cadence-bearing callbacks.
 
 Recommended evaluation timing:
 
