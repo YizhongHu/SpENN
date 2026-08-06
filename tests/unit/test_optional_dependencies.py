@@ -64,5 +64,5 @@ runner:
     )
 
     assert result.returncode == 1
-    assert "configured SpENN run requires a complete `torch` installation" in result.stderr
+    assert "configured TPEN run requires a complete `torch` installation" in result.stderr
     assert "hydra.errors.InstantiationException" not in result.stderr

@@ -73,7 +73,7 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
         callback.handle(Event(name="run_end", context=context))
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("SpENN Run Status" in message for message in messages)
+    assert any("TPEN Run Status" in message for message in messages)
     assert any("Hardware Environment" in message for message in messages)
     assert any("Run ID" in message and "run-1" in message for message in messages)
     assert any("Timezone" in message and "America/New_York" in message for message in messages)
