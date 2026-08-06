@@ -18,7 +18,19 @@ from tpen.callback import (
 )
 from tpen.callback.timing import base as timing_base
 from tpen.events import Ended, Occurrence, Started
-from tpen.training.events import TrainingIteration, TrainingIterationCompleted
+from tpen.training.events import (
+    Backward,
+    BuildBatch,
+    CollectSamples,
+    Forward,
+    LocalEnergy,
+    Metrics,
+    Objective,
+    OptimizerUpdate,
+    TrainingIteration,
+    TrainingIterationCompleted,
+    TrainingPhase,
+)
 from tests.unit.callback.support import FakeState, RecordingContext
 
 
@@ -47,6 +59,31 @@ def _dispatch_iteration_start(
         context,
     )
     return iteration
+
+
+def _dispatch_phase_start(
+    callback: TrainPhaseTiming,
+    context: RecordingContext,
+    phase: TrainingPhase,
+    *,
+    count: int,
+) -> None:
+    """Dispatch only the ``Started`` boundary of one typed phase scope."""
+
+    callback.handle_occurrence(Occurrence(event=Started(phase), count=count), context)
+
+
+def _dispatch_phase(
+    callback: TrainPhaseTiming,
+    context: RecordingContext,
+    phase: TrainingPhase,
+    *,
+    count: int,
+) -> None:
+    """Dispatch one complete typed phase scope, Started then Ended."""
+
+    _dispatch_phase_start(callback, context, phase, count=count)
+    callback.handle_occurrence(Occurrence(event=Ended(phase), count=count), context)
 
 
 def _dispatch_iteration_success(
@@ -151,38 +188,8 @@ def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:
     callback = TrainPhaseTiming(clock=FakeClock([1.0, 1.25, 2.0, 2.75]))
     iteration = _dispatch_iteration_start(callback, context, step=3, count=1)
 
-    callback.handle(
-        Event(
-            name="train_phase_start",
-            context=context,
-            payload={"step": 3, "phase": "batch_build"},
-            step=3,
-        )
-    )
-    callback.handle(
-        Event(
-            name="train_phase_end",
-            context=context,
-            payload={"step": 3, "phase": "batch_build"},
-            step=3,
-        )
-    )
-    callback.handle(
-        Event(
-            name="train_phase_start",
-            context=context,
-            payload={"step": 3, "phase": "backward"},
-            step=3,
-        )
-    )
-    callback.handle(
-        Event(
-            name="train_phase_end",
-            context=context,
-            payload={"step": 3, "phase": "backward"},
-            step=3,
-        )
-    )
+    _dispatch_phase(callback, context, BuildBatch(step=3), count=1)
+    _dispatch_phase(callback, context, Backward(step=3), count=1)
     _dispatch_iteration_success(
         callback,
         context,
@@ -200,16 +207,51 @@ def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:
     ]
 
 
-def test_train_phase_timing_requires_phase_name() -> None:
-    with pytest.raises(ValueError, match="phase"):
-        TrainPhaseTiming(clock=FakeClock([1.0])).handle(
-            Event(
-                name="train_phase_start",
-                context=RecordingContext(),
-                payload={"step": 1},
-                step=1,
-            )
+def test_train_phase_timing_derives_every_metric_key_from_phase_name() -> None:
+    """Each concrete phase type owns exactly one durable timing metric key."""
+
+    context = RecordingContext()
+    phases = (
+        CollectSamples(step=0),
+        BuildBatch(step=0),
+        LocalEnergy(step=0),
+        Forward(step=0),
+        Objective(step=0),
+        Backward(step=0),
+        OptimizerUpdate(step=0),
+        Metrics(step=0),
+    )
+    # Two exactly representable clock reads per phase, so every duration is 0.5.
+    callback = TrainPhaseTiming(
+        clock=FakeClock(
+            [value for index in range(len(phases)) for value in (float(index), index + 0.5)]
         )
+    )
+    iteration = _dispatch_iteration_start(callback, context, step=0, count=1)
+
+    for phase in phases:
+        # Occurrence counts are per concrete operation type, so each phase
+        # scope in one iteration is its own first occurrence.
+        _dispatch_phase(callback, context, phase, count=1)
+    _dispatch_iteration_success(callback, context, iteration=iteration, count=1)
+
+    assert context.by_namespace("train/perf") == [
+        {
+            "metrics": {
+                "sampling_time_sec": 0.5,
+                "batch_build_time_sec": 0.5,
+                "local_energy_time_sec": 0.5,
+                "forward_time_sec": 0.5,
+                "objective_time_sec": 0.5,
+                "backward_time_sec": 0.5,
+                "optimizer_step_time_sec": 0.5,
+                "post_step_metrics_time_sec": 0.5,
+            },
+            "step": 0,
+            "namespace": "train/perf",
+            "event": None,
+        }
+    ]
 
 
 def test_train_phase_timing_completion_without_phases_logs_nothing() -> None:
@@ -233,37 +275,20 @@ def test_train_phase_timing_drops_unmatched_phase_starts_at_iteration_end() -> N
 
     # A phase started in step 1 but never finished must not leak into step 2.
     first = _dispatch_iteration_start(callback, context, step=1, count=1)
-    callback.handle(
-        Event(
-            name="train_phase_start",
-            context=context,
-            payload={"step": 1, "phase": "batch_build"},
-            step=1,
-        )
-    )
+    _dispatch_phase_start(callback, context, BuildBatch(step=1), count=1)
     _dispatch_iteration_success(
         callback,
         context,
         iteration=first,
         count=1,
     )
+    # Phase starts are keyed by ``(phase type, occurrence count)``, so a leaked
+    # entry can never collide with a later phase and the reported records alone
+    # cannot observe the leak. Assert the cleanup directly.
+    assert callback._phase_starts == {}
+
     second = _dispatch_iteration_start(callback, context, step=2, count=2)
-    callback.handle(
-        Event(
-            name="train_phase_start",
-            context=context,
-            payload={"step": 2, "phase": "batch_build"},
-            step=2,
-        )
-    )
-    callback.handle(
-        Event(
-            name="train_phase_end",
-            context=context,
-            payload={"step": 2, "phase": "batch_build"},
-            step=2,
-        )
-    )
+    _dispatch_phase(callback, context, BuildBatch(step=2), count=2)
     _dispatch_iteration_success(
         callback,
         context,
@@ -279,6 +304,7 @@ def test_train_phase_timing_drops_unmatched_phase_starts_at_iteration_end() -> N
             "event": None,
         }
     ]
+    assert callback._phase_starts == {}
 
 
 def test_evaluation_timing_logs_eval_perf_wall_time() -> None:

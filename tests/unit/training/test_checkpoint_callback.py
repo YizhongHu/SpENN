@@ -15,10 +15,10 @@ from tpen.checkpoint import checkpoint_hashes
 from tpen.training.state import TrainerState
 
 
-def _state(step: int, *, completed_steps: int | None = None) -> TrainerState:
+def _state(step: int, *, next_iteration: int | None = None) -> TrainerState:
     model = torch.nn.Linear(2, 1)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    trainer = _Trainer(completed_steps=step + 1 if completed_steps is None else completed_steps)
+    trainer = _Trainer(next_iteration=step + 1 if next_iteration is None else next_iteration)
     return TrainerState(
         step=step,
         metrics={"loss": 0.5, "energy": 1.25},
@@ -30,11 +30,12 @@ def _state(step: int, *, completed_steps: int | None = None) -> TrainerState:
 
 
 class _Trainer:
-    def __init__(self, *, completed_steps: int) -> None:
-        self.completed_steps = int(completed_steps)
+    def __init__(self, *, next_iteration: int) -> None:
+        self.next_iteration = int(next_iteration)
 
     def state_dict(self) -> dict[str, int]:
-        return {"global_step": self.completed_steps}
+        # Checkpoint numbering follows the durable resume cursor only.
+        return {"next_iteration": self.next_iteration, "completed_updates": 0}
 
 
 class _SamplerWithMCMCState:
@@ -94,17 +95,17 @@ def test_checkpoint_respects_every_n_steps_filter(tmp_path) -> None:
     assert (tmp_path / "step_000002").exists()
 
 
-def test_checkpoint_cadence_counts_completed_updates(tmp_path) -> None:
+def test_checkpoint_cadence_counts_the_resume_cursor(tmp_path) -> None:
     callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=5)
 
-    callback.handle(_event(_state(4, completed_steps=5)))
+    callback.handle(_event(_state(4, next_iteration=5)))
 
     assert (tmp_path / "step_000005").exists()
 
 
 def test_checkpoint_writes_train_end_checkpoint_without_step_cadence(tmp_path) -> None:
     callback = Checkpoint(triggers=["train_end"], output_dir=tmp_path)
-    state = _state(3, completed_steps=4)
+    state = _state(3, next_iteration=4)
 
     callback.handle(_event(state, name="train_end"))
 
@@ -114,7 +115,7 @@ def test_checkpoint_writes_train_end_checkpoint_without_step_cadence(tmp_path) -
 
 def test_checkpoint_train_end_skips_existing_complete_checkpoint(tmp_path) -> None:
     callback = Checkpoint(triggers=["step_end", "train_end"], output_dir=tmp_path, every_n_steps=1)
-    state = _state(1, completed_steps=2)
+    state = _state(1, next_iteration=2)
 
     callback.handle(_event(state))
     callback.handle(_event(state, name="train_end"))
@@ -126,8 +127,8 @@ def test_train_end_updates_latest_when_cadence_misses_terminal_step(tmp_path) ->
     periodic = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=2)
     terminal = Checkpoint(triggers=["train_end"], output_dir=tmp_path)
 
-    periodic.handle(_event(_state(1, completed_steps=2)))
-    final_state = _state(2, completed_steps=3)
+    periodic.handle(_event(_state(1, next_iteration=2)))
+    final_state = _state(2, next_iteration=3)
     periodic.handle(_event(final_state))
     terminal.handle(_event(final_state, name="train_end"))
 

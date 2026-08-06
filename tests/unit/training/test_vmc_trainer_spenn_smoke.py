@@ -10,13 +10,23 @@ import pytest
 import torch
 
 from tpen.artifacts import RunContext
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.events import Ended, Occurrence, Started
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from tpen.training.events import (
+    Backward,
+    BuildBatch,
     CollectSamples,
+    Forward,
+    LocalEnergy,
+    Metrics,
+    Objective,
+    OptimizerUpdate,
     TrainingIteration,
     TrainingIterationCompleted,
+    UpdateCompleted,
+    UpdateSkipped,
 )
 from tpen.training.trainer import VMCTrainer
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
@@ -40,6 +50,108 @@ class _StubContext(RunContext):
     def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
         self.occurrences.append(occurrence)
         self.trace.append(("typed", occurrence.event))
+
+
+class _VacuumWalkers:
+    """Zero-electron walkers: the vacuum has no coordinate degrees of freedom."""
+
+    def __init__(self, n_walkers: int = 2) -> None:
+        self.n_walkers = int(n_walkers)
+
+    def make_batch(self) -> ElectronBatch:
+        return ElectronBatch(
+            positions=torch.zeros(self.n_walkers, 0, 3, dtype=torch.float64),
+            spins=torch.zeros(self.n_walkers, 0, dtype=torch.float64),
+        )
+
+
+class _VacuumSampler:
+    """Sampler stand-in returning one fixed zero-electron walker set."""
+
+    def collect_samples(self, model, *, device=None):
+        del model, device
+        return _VacuumWalkers(), {}
+
+
+class _ConstantWavefunction(torch.nn.Module):
+    """Constant wavefunction whose trainable parameter cannot reach ``logabs``.
+
+    This reproduces the condition the trainer's vacuum branch guards: the loss
+    is disconnected from the parameters, so ``loss.requires_grad`` is ``False``
+    and no optimizer update is possible.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unused = torch.nn.Parameter(torch.zeros(1, dtype=torch.float64))
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        shape = batch.sample_shape
+        return WavefunctionOutput(
+            logabs=torch.zeros(shape, dtype=torch.float64),
+            sign=torch.ones(shape, dtype=torch.float64),
+        )
+
+
+def _occurrence_labels(occurrences: list[Occurrence[Any]]) -> list[tuple[str, type]]:
+    """Return one ``(boundary, concrete type)`` label per typed occurrence."""
+
+    labels: list[tuple[str, type]] = []
+    for occurrence in occurrences:
+        event = occurrence.event
+        if isinstance(event, Started):
+            labels.append(("started", type(event.operation)))
+        elif isinstance(event, Ended):
+            labels.append(("ended", type(event.operation)))
+        else:
+            labels.append(("event", type(event)))
+    return labels
+
+
+def _record_legacy(context: _StubContext):
+    """Return an ``emit`` callable that only records legacy event names."""
+
+    def emit(name: str, *, state=None, payload=None, step=None) -> None:
+        del state, payload, step
+        context.trace.append(("legacy", name))
+
+    return emit
+
+
+def _fit_one_typed_step(context: _StubContext, *, emit=None) -> VMCTrainer:
+    """Drive one real tiny-TPEN training iteration through ``context``."""
+
+    model = build_tiny_spenn()
+    sampler = build_tiny_sampler()
+    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
+    trainer.fit(
+        model=model,
+        sampler=sampler,
+        hamiltonian_terms=terms,
+        optimizer=optimizer,
+        context=context,
+        emit=_record_legacy(context) if emit is None else emit,
+    )
+    return trainer
+
+
+def _fit_vacuum_steps(context: _StubContext, *, max_steps: int = 1) -> VMCTrainer:
+    """Drive ``max_steps`` zero-electron iterations that must skip their update."""
+
+    model = _ConstantWavefunction()
+    trainer = VMCTrainer(max_steps=max_steps, log_every_n_steps=1)
+    trainer.fit(
+        model=model,
+        sampler=_VacuumSampler(),
+        # The vacuum has no kinetic or interaction contribution to sum.
+        hamiltonian_terms=[],
+        optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+        context=context,
+        emit=_record_legacy(context),
+    )
+    return trainer
 
 
 _FORBIDDEN_METRICS = {
@@ -125,63 +237,46 @@ def test_vmc_trainer_logs_term_metrics_when_return_terms_enabled() -> None:
         assert f"{prefix}_variance" in state.metrics
 
 
-def test_vmc_trainer_uses_typed_sampling_and_keeps_other_phase_events() -> None:
-    model = build_tiny_spenn()
-    sampler = build_tiny_sampler()
-    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
-    phase_events: list[tuple[str, str]] = []
+def test_vmc_trainer_scopes_every_training_phase() -> None:
+    legacy_events: list[tuple[str, int | None]] = []
     context = _StubContext()
 
     def emit(name: str, *, state=None, payload=None, step=None) -> None:
         del state
         context.trace.append(("legacy", name))
-        if name in {
-            "step_start",
-            "step_end",
-            "train_phase_start",
-            "train_phase_end",
-        }:
-            assert step == 0
-            assert payload is None or "step" not in payload
-        if name in {"train_phase_start", "train_phase_end"}:
-            assert payload is not None
-            phase_events.append((name, payload["phase"]))
+        legacy_events.append((name, step))
+        # The legacy step is explicit; it is never duplicated in the payload.
+        assert payload is None or "step" not in payload
 
-    trainer.fit(
-        model=model,
-        sampler=sampler,
-        hamiltonian_terms=terms,
-        optimizer=optimizer,
-        context=context,
-        emit=emit,
-    )
+    _fit_one_typed_step(context, emit=emit)
 
-    started = [phase for name, phase in phase_events if name == "train_phase_start"]
-    ended = [phase for name, phase in phase_events if name == "train_phase_end"]
-    assert started == [
-        "batch_build",
-        "local_energy",
-        "forward",
-        "objective",
-        "backward",
-        "optimizer_step",
-        "post_step_metrics",
+    # Only the two step-lifecycle events survive as legacy emissions.
+    assert legacy_events == [("step_start", 0), ("step_end", 0)]
+    # Phases are sequential and non-nested inside one iteration scope.
+    assert _occurrence_labels(context.occurrences) == [
+        ("started", TrainingIteration),
+        ("started", CollectSamples),
+        ("ended", CollectSamples),
+        ("started", BuildBatch),
+        ("ended", BuildBatch),
+        ("started", LocalEnergy),
+        ("ended", LocalEnergy),
+        ("started", Forward),
+        ("ended", Forward),
+        ("started", Objective),
+        ("ended", Objective),
+        ("started", Backward),
+        ("ended", Backward),
+        ("started", OptimizerUpdate),
+        ("ended", OptimizerUpdate),
+        ("event", UpdateCompleted),
+        ("started", Metrics),
+        ("ended", Metrics),
+        ("event", TrainingIterationCompleted),
+        ("ended", TrainingIteration),
     ]
-    # Phases are sequential and non-nested, so end order matches start order.
-    assert ended == started
-    assert len(context.occurrences) == 5
-    assert isinstance(context.occurrences[0].event, Started)
-    assert isinstance(context.occurrences[0].event.operation, TrainingIteration)
-    assert isinstance(context.occurrences[1].event, Started)
-    assert isinstance(context.occurrences[1].event.operation, CollectSamples)
-    assert isinstance(context.occurrences[2].event, Ended)
-    assert isinstance(context.occurrences[2].event.operation, CollectSamples)
-    assert isinstance(context.occurrences[3].event, TrainingIterationCompleted)
-    assert isinstance(context.occurrences[4].event, Ended)
-    assert isinstance(context.occurrences[4].event.operation, TrainingIteration)
-    assert [occurrence.count for occurrence in context.occurrences] == [1, 1, 1, 1, 1]
+    # One iteration means every concrete type is at its first occurrence.
+    assert [occurrence.count for occurrence in context.occurrences] == [1] * 20
     step_end_index = context.trace.index(("legacy", "step_end"))
     completion_index = next(
         index
@@ -228,3 +323,76 @@ def test_vmc_trainer_step_end_failure_skips_completion_but_ends_iteration() -> N
     )
     assert isinstance(context.occurrences[-1].event, Ended)
     assert isinstance(context.occurrences[-1].event.operation, TrainingIteration)
+
+
+def test_update_completed_is_emitted_after_the_optimizer_update_scope() -> None:
+    context = _StubContext()
+    trainer = _fit_one_typed_step(context)
+    labels = _occurrence_labels(context.occurrences)
+
+    # The update is only complete once its scope has closed.
+    assert labels.index(("event", UpdateCompleted)) == (
+        labels.index(("ended", OptimizerUpdate)) + 1
+    )
+    assert ("event", UpdateSkipped) not in labels
+    # A completed update advances both counters together.
+    assert (trainer.next_iteration, trainer.completed_updates) == (1, 1)
+
+
+def test_skipped_update_advances_next_iteration_but_not_completed_updates() -> None:
+    trainer = _fit_vacuum_steps(_StubContext(), max_steps=2)
+
+    assert trainer.next_iteration == 2
+    assert trainer.completed_updates == 0
+    assert trainer.state_dict() == {"next_iteration": 2, "completed_updates": 0}
+
+
+def test_skipped_update_emits_update_skipped_without_an_optimizer_scope() -> None:
+    context = _StubContext()
+
+    _fit_vacuum_steps(context)
+    labels = _occurrence_labels(context.occurrences)
+
+    assert ("event", UpdateSkipped) in labels
+    assert ("event", UpdateCompleted) not in labels
+    # The skip path never opens an OptimizerUpdate scope at all.
+    assert not any(operation is OptimizerUpdate for _, operation in labels)
+    # Backward is likewise unreachable without a differentiable loss.
+    assert not any(operation is Backward for _, operation in labels)
+
+
+def test_load_state_dict_round_trips_both_progress_counters() -> None:
+    trainer = VMCTrainer(max_steps=5)
+
+    trainer.load_state_dict({"next_iteration": 4, "completed_updates": 3})
+
+    assert trainer.next_iteration == 4
+    assert trainer.completed_updates == 3
+    assert trainer.state_dict() == {"next_iteration": 4, "completed_updates": 3}
+
+
+def test_load_state_dict_rejects_legacy_trainer_state() -> None:
+    """Pre-rename checkpoints must fail loudly, never resume from step 0."""
+
+    trainer = VMCTrainer(max_steps=5)
+
+    with pytest.raises(KeyError, match="next_iteration"):
+        trainer.load_state_dict({"global_step": 3, "completed_steps": 3})
+    with pytest.raises(KeyError, match="completed_updates"):
+        trainer.load_state_dict({"next_iteration": 3})
+
+    assert trainer.state_dict() == {"next_iteration": 0, "completed_updates": 0}
+
+
+def test_load_state_dict_leaves_trainer_unmutated_on_a_non_integer_value() -> None:
+    """A rejected value must not half-restore the resume cursor."""
+
+    trainer = VMCTrainer(max_steps=5)
+    trainer.load_state_dict({"next_iteration": 4, "completed_updates": 3})
+
+    # `next_iteration` is coerced first, so a bad `completed_updates` is the
+    # case that would leave a partially mutated trainer behind.
+    with pytest.raises(ValueError):
+        trainer.load_state_dict({"next_iteration": 5, "completed_updates": "x"})
+
+    assert trainer.state_dict() == {"next_iteration": 4, "completed_updates": 3}

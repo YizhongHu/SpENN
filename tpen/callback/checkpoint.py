@@ -35,10 +35,11 @@ class Checkpoint(Callback):
 
     Notes
     -----
-    Checkpoint step numbers count completed optimizer updates. A training run
-    with ``max_steps=500`` writes its terminal checkpoint as
-    ``step_000500``, while training metrics and other step callbacks keep
-    their existing 0-based loop step indices.
+    Checkpoint step numbers follow the trainer's durable resume cursor
+    ``next_iteration``, not the 0-based loop step. A training run with
+    ``max_steps=500`` writes its terminal checkpoint as ``step_000500``, while
+    training metrics and other step callbacks keep their existing 0-based loop
+    step indices.
     """
 
     def __init__(
@@ -97,7 +98,7 @@ class Checkpoint(Callback):
         )
 
     def _legacy_cadence_step(self, event: Event) -> int | None:
-        """Use completed-update numbering for inherited legacy cadence."""
+        """Use resume-cursor numbering for inherited legacy cadence."""
 
         return _checkpoint_step(event)
 
@@ -117,9 +118,9 @@ def _checkpoint_step(event: Event) -> int | None:
     trainer = event.payload.get("trainer")
     if trainer is None and state is not None:
         trainer = getattr(state, "trainer", None)
-    completed_step = _completed_step_from_trainer(trainer)
-    if completed_step is not None:
-        return completed_step
+    resume_cursor = _resume_cursor_from_trainer(trainer)
+    if resume_cursor is not None:
+        return resume_cursor
 
     step = event.step
     payload_has_step = "step" in event.payload
@@ -137,14 +138,18 @@ def _checkpoint_step(event: Event) -> int | None:
     return int(step)
 
 
-def _completed_step_from_trainer(trainer: Any) -> int | None:
+def _resume_cursor_from_trainer(trainer: Any) -> int | None:
     state_dict = getattr(trainer, "state_dict", None)
     if not callable(state_dict):
         return None
     state = state_dict()
     if not isinstance(state, Mapping):
         return None
-    value = state.get("global_step", state.get("completed_steps"))
+    # Checkpoint directory numbering follows the durable resume cursor, so a
+    # restored run continues from exactly the iteration the name encodes. This
+    # is `next_iteration`, which diverges from `completed_updates` whenever a
+    # completed iteration skipped its optimizer update.
+    value = state.get("next_iteration")
     return None if value is None else int(value)
 
 
