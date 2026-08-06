@@ -1,4 +1,4 @@
-"""Smoke test: one VMC trainer step over the real tiny SpENN stack."""
+"""Smoke test: one VMC trainer step over the real tiny TPEN stack."""
 
 from __future__ import annotations
 

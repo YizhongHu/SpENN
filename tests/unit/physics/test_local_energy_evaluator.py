@@ -4,7 +4,7 @@ Pins the acceptance criteria of the typed-interface slice: `local_energy` is
 an explicit delegate to `NaiveLocalEnergyEvaluator`; the evaluator statically
 and dynamically consumes a `NaiveLocalEnergyContext` (never an arbitrary
 mapping); term outputs, names, and validation behavior are unchanged; and a
-protocol-only custom term unknown to SpENN core evaluates successfully.
+protocol-only custom term unknown to TPEN core evaluates successfully.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def _batch(n_walkers: int = 3) -> ElectronBatch:
 
 
 class ConstantTerm:
-    """Protocol-only term unknown to SpENN core."""
+    """Protocol-only term unknown to TPEN core."""
 
     name = "constant"
 

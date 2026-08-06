@@ -73,7 +73,7 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
         callback.handle(Event(name="run_end", context=context))
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("SpENN Run Status" in message for message in messages)
+    assert any("TPEN Run Status" in message for message in messages)
     assert any("Hardware Environment" in message for message in messages)
     assert any("Run ID" in message and "run-1" in message for message in messages)
     assert any("Timezone" in message and "America/New_York" in message for message in messages)
@@ -158,13 +158,13 @@ def test_status_terminal_false_suppresses_terminal_output(
 
 def test_status_box_wraps_long_values_to_log_width() -> None:
     long_path = (
-        "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/SpENN/outputs/"
+        "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/TPEN/outputs/"
         "hooke_pair_smoke/pair/2026-06-11_142841_hooke_pair_smoke_train_7e9715/"
         "resolved_config.yaml"
     )
 
     lines = _format_status_box(
-        "SpENN Run Status",
+        "TPEN Run Status",
         [
             ("Run ID", "2026-06-11_142841_hooke_pair_smoke_train_7e9715"),
             ("Run Dir", long_path),
@@ -184,7 +184,7 @@ def test_status_max_line_width_option_controls_start_boxes(
     callback = Status(["run_start"], color="never", max_line_width=72)
     context = _context(tmp_path)
     context.metadata.run_dir = (
-        "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/SpENN/outputs/"
+        "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/TPEN/outputs/"
         "hooke_pair_smoke/pair/run-1"
     )
 
