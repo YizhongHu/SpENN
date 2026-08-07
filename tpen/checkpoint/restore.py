@@ -20,12 +20,33 @@ RESTORE_MODES = ("none", "model_only", "train_resume")
 
 @dataclass(frozen=True)
 class RestoreReport:
-    """Summary of the state restored from a checkpoint."""
+    """Summary of the state restored from a checkpoint.
+
+    Parameters
+    ----------
+    mode : str
+        Restore mode that produced this report.
+    checkpoint_dir : str or None, optional
+        Resolved checkpoint step directory, or ``None`` for ``mode="none"``.
+    schema_version : int or None, optional
+        Manifest schema version that was read.
+    next_iteration : int or None, optional
+        Resume cursor recorded by the manifest: the iteration a resumed run
+        continues from. ``None`` for ``mode="none"``.
+    completed_updates : int or None, optional
+        Applied optimizer updates recorded by the manifest. ``None`` for
+        ``mode="none"`` and for a v1 manifest under ``model_only``, which never
+        recorded the counter. Always populated under ``train_resume``, which
+        only admits v2.
+    loaded_model, loaded_optimizer, loaded_trainer, loaded_sampler, loaded_rng : bool, optional
+        Which components were restored.
+    """
 
     mode: str
     checkpoint_dir: str | None = None
     schema_version: int | None = None
-    step: int | None = None
+    next_iteration: int | None = None
+    completed_updates: int | None = None
     loaded_model: bool = False
     loaded_optimizer: bool = False
     loaded_trainer: bool = False
@@ -39,7 +60,8 @@ class RestoreReport:
             "mode": self.mode,
             "checkpoint_dir": self.checkpoint_dir,
             "schema_version": self.schema_version,
-            "step": self.step,
+            "next_iteration": self.next_iteration,
+            "completed_updates": self.completed_updates,
             "loaded_model": self.loaded_model,
             "loaded_optimizer": self.loaded_optimizer,
             "loaded_trainer": self.loaded_trainer,
@@ -80,7 +102,9 @@ def restore_checkpoint(
     )
 
     checkpoint_dir = resolve_checkpoint_dir(path)
-    manifest = read_manifest(checkpoint_dir / "manifest.json")
+    # Schema acceptance is mode-dependent, so the mode is decided before the
+    # manifest is read: a v1 artifact is refused for `train_resume` at the gate.
+    manifest = read_manifest(checkpoint_dir / "manifest.json", mode=mode)
     current_hashes = checkpoint_hashes(getattr(context, "cfg", {}))
 
     _verify_hash(manifest.hashes, current_hashes, "model_config", checkpoint_dir)
@@ -97,7 +121,9 @@ def restore_checkpoint(
             mode=mode,
             checkpoint_dir=str(checkpoint_dir),
             schema_version=manifest.schema_version,
-            step=manifest.step,
+            next_iteration=manifest.next_iteration,
+            # `None` for a v1 manifest, which never recorded the counter.
+            completed_updates=manifest.completed_updates,
             loaded_model=True,
         )
 
@@ -124,7 +150,9 @@ def restore_checkpoint(
         mode=mode,
         checkpoint_dir=str(checkpoint_dir),
         schema_version=manifest.schema_version,
-        step=manifest.step,
+        next_iteration=manifest.next_iteration,
+        # The schema gate admits only v2 here, so both counters are real.
+        completed_updates=manifest.completed_updates,
         loaded_model=True,
         loaded_optimizer=True,
         loaded_trainer=True,
@@ -192,7 +220,8 @@ def restore_checkpoint_with_events(
             "path": path,
             "resolved_checkpoint_dir": report.checkpoint_dir,
             "schema_version": report.schema_version,
-            "step": report.step,
+            "next_iteration": report.next_iteration,
+            "completed_updates": report.completed_updates,
             "loaded_model": report.loaded_model,
             "loaded_optimizer": report.loaded_optimizer,
             "loaded_trainer": report.loaded_trainer,

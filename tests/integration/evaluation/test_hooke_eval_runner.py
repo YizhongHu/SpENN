@@ -192,7 +192,9 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
 
     def fake_restore_checkpoint_with_events(**kwargs):
         calls.append(kwargs)
-        return RestoreReport(mode="train_resume", checkpoint_dir="ckpt", step=4)
+        return RestoreReport(
+            mode="train_resume", checkpoint_dir="ckpt", next_iteration=4, completed_updates=4
+        )
 
     monkeypatch.setattr(train_runner_module, "restore_checkpoint_with_events", fake_restore_checkpoint_with_events)
     runner = Train(
@@ -218,7 +220,9 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
 
     def fake_restore_checkpoint_with_events(**kwargs):
         calls.append(kwargs)
-        return RestoreReport(mode="model_only", checkpoint_dir="ckpt", step=4)
+        return RestoreReport(
+            mode="model_only", checkpoint_dir="ckpt", next_iteration=4, completed_updates=4
+        )
 
     monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint_with_events", fake_restore_checkpoint_with_events)
     runner = Evaluate(
@@ -392,6 +396,11 @@ class _StaticSampler:
 
 
 class _NoopTrainer:
+    # `Train` requires the durable resume cursor rather than guessing it from
+    # the final state, so even a no-op trainer has to report one. Completing
+    # step 0 leaves the cursor at 1.
+    next_iteration = 1
+
     def fit(self, *, model, sampler, hamiltonian_terms, optimizer, context, emit):
         return TrainerState(step=0, model=model, optimizer=optimizer, trainer=self, sampler=sampler)
 

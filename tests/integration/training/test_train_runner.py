@@ -82,6 +82,17 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
     trainer_state = json.loads((run_dir / "checkpoints/step_000003/trainer.json").read_text())
     assert trainer_state == {"next_iteration": 3, "completed_updates": 3}
 
+    # The v2 manifest names both counters instead of one ambiguous `step`, and
+    # the directory the run wrote is the one `next_iteration` names.
+    manifest = json.loads((run_dir / "checkpoints/step_000003/manifest.json").read_text())
+    assert manifest["schema_version"] == 2
+    assert manifest["kind"] == "tpen.checkpoint"
+    assert "step" not in manifest
+    assert manifest["next_iteration"] == 3
+    assert manifest["completed_updates"] == 3
+    assert "spenn_version" not in manifest["provenance"]
+    assert manifest["provenance"]["tpen_version"]
+
     latest = json.loads((run_dir / "checkpoints/latest.json").read_text())
     assert latest["checkpoint_dir"] == "step_000003"
     assert latest["step"] == 3

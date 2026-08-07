@@ -13,7 +13,7 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
-from tpen import __version__ as spenn_version
+from tpen import __version__ as tpen_version
 
 from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_latest
 from .hashing import checkpoint_hashes
@@ -23,7 +23,8 @@ from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointMani
 def save_checkpoint(
     *,
     output_dir: str | Path,
-    step: int,
+    next_iteration: int,
+    completed_updates: int,
     model: Any,
     context: Any,
     optimizer: Any | None = None,
@@ -35,7 +36,35 @@ def save_checkpoint(
     save_rng: bool = True,
     keep_last: int | None = None,
 ) -> Path:
-    """Write one complete directory checkpoint and update ``latest.json``."""
+    """Write one complete directory checkpoint and update ``latest.json``.
+
+    Parameters
+    ----------
+    output_dir : str or pathlib.Path
+        Checkpoint root the step directory is written under.
+    next_iteration : int
+        Trainer resume cursor. Names the checkpoint directory and is recorded
+        in the manifest as the checkpoint's identity.
+    completed_updates : int
+        Applied optimizer updates at write time. Required independently of
+        ``save_trainer``: the v2 manifest always records both counters, so the
+        count must not depend on whether ``trainer.json`` is written.
+    model : Any
+        Module whose ``state_dict()`` is written as ``model.pt``.
+    context : Any
+        Run context supplying ``cfg``, ``metadata``, and ``run_dir``.
+    optimizer, trainer, sampler : Any or None, optional
+        Train-resume components, required when their ``save_*`` flag is set.
+    save_optimizer, save_trainer, save_sampler, save_rng : bool, optional
+        Which train-resume components to include.
+    keep_last : int or None, optional
+        Prune to the newest ``keep_last`` complete checkpoints after writing.
+
+    Returns
+    -------
+    pathlib.Path
+        The completed checkpoint step directory.
+    """
 
     import torch
 
@@ -43,7 +72,7 @@ def save_checkpoint(
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     created_at = time.time()
-    final_dir = root / checkpoint_step_dir_name(step)
+    final_dir = root / checkpoint_step_dir_name(next_iteration)
     tmp_dir = root / f"{final_dir.name}.tmp"
     if final_dir.exists():
         raise FileExistsError(f"checkpoint already exists: {final_dir}")
@@ -82,7 +111,8 @@ def save_checkpoint(
         manifest = CheckpointManifest(
             schema_version=CHECKPOINT_SCHEMA_VERSION,
             kind=CHECKPOINT_KIND,
-            step=int(step),
+            next_iteration=int(next_iteration),
+            completed_updates=int(completed_updates),
             created_at_unix=created_at,
             files=files,
             hashes=checkpoint_hashes(cfg),
@@ -92,7 +122,9 @@ def save_checkpoint(
         manifest.write(tmp_dir / "manifest.json")
         (tmp_dir / "COMPLETE").write_text("complete\n", encoding="utf-8")
         tmp_dir.rename(final_dir)
-        write_latest(root, final_dir, step=int(step), created_at_unix=created_at)
+        # `latest.json` stays minimal: a pointer plus the directory's own step
+        # number. The manifest is the place that carries both counters.
+        write_latest(root, final_dir, step=int(next_iteration), created_at_unix=created_at)
         prune_old_checkpoints(root, keep_last=keep_last)
     except Exception:
         if tmp_dir.exists():
@@ -200,6 +232,6 @@ def _provenance_metadata(context: Any) -> dict[str, Any]:
         "hostname": socket.gethostname(),
         "python": sys.version.split()[0],
         "python_executable": sys.executable,
-        "spenn_version": spenn_version,
+        "tpen_version": tpen_version,
         "slurm": extra.get("slurm", {}),
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,11 +14,14 @@ import tpen.checkpoint.restore as restore_module
 from tpen.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
     checkpoint_hashes,
+    resolve_checkpoint_dir,
     restore_checkpoint,
     restore_checkpoint_with_events,
     save_checkpoint,
     stable_config_hash,
 )
+from tpen.checkpoint.artifact import prune_old_checkpoints, write_latest
+from tpen.checkpoint.manifest import LEGACY_CHECKPOINT_KIND, LEGACY_CHECKPOINT_SCHEMA_VERSION
 from tpen.nn import HookeOrbitalBasis
 
 
@@ -79,7 +83,8 @@ def _write_checkpoint(tmp_path: Path, model: torch.nn.Module | None = None, **kw
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     return save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=3,
+        next_iteration=3,
+        completed_updates=3,
         model=model,
         optimizer=optimizer,
         trainer=_Trainer(),
@@ -87,6 +92,25 @@ def _write_checkpoint(tmp_path: Path, model: torch.nn.Module | None = None, **kw
         context=_context(),
         **kwargs,
     )
+
+
+def _rewrite_manifest_as_v1(checkpoint_dir: Path) -> None:
+    """Rewrite a written manifest into the retired v1 shape.
+
+    v1 recorded one ambiguous ``step`` -- which was in fact the resume cursor
+    -- under the pre-rename kind, and never recorded ``completed_updates``.
+    Nothing writes that shape any more, so tests synthesize it to pin read-side
+    acceptance for archived artifacts.
+    """
+
+    manifest_path = checkpoint_dir / "manifest.json"
+    data = json.loads(manifest_path.read_text())
+    data["schema_version"] = LEGACY_CHECKPOINT_SCHEMA_VERSION
+    data["kind"] = LEGACY_CHECKPOINT_KIND
+    data["step"] = data.pop("next_iteration")
+    data.pop("completed_updates")
+    data["provenance"]["spenn_version"] = data["provenance"].pop("tpen_version")
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) -> None:
@@ -139,7 +163,8 @@ def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:
         "path": str(root),
         "resolved_checkpoint_dir": str(root / "step_000003"),
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
-        "step": 3,
+        "next_iteration": 3,
+        "completed_updates": 3,
         "loaded_model": True,
         "loaded_optimizer": False,
         "loaded_trainer": False,
@@ -213,7 +238,8 @@ def test_restore_rejects_equal_width_legacy_and_product_basis_semantics(tmp_path
     trained = torch.nn.Linear(legacy_basis.out_features, 2).double()
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=1,
+        next_iteration=1,
+        completed_updates=1,
         model=trained,
         context=_context(legacy_config),
         save_optimizer=False,
@@ -251,7 +277,8 @@ def test_model_only_does_not_require_train_resume_files(tmp_path: Path) -> None:
     trained = torch.nn.Linear(3, 2).double()
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=1,
+        next_iteration=1,
+        completed_updates=1,
         model=trained,
         context=_context(),
         save_optimizer=False,
@@ -301,7 +328,8 @@ def test_train_resume_restores_all_train_state(tmp_path: Path) -> None:
 def test_train_resume_fails_when_required_file_is_missing(tmp_path: Path) -> None:
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=1,
+        next_iteration=1,
+        completed_updates=1,
         model=torch.nn.Linear(3, 2).double(),
         optimizer=torch.optim.Adam(torch.nn.Linear(3, 2).double().parameters(), lr=0.01),
         trainer=_Trainer(),
@@ -333,6 +361,187 @@ def test_restore_strict_load_fails_on_unexpected_keys(tmp_path: Path) -> None:
             model=torch.nn.Linear(3, 2).double(),
             context=_context(),
         )
+
+
+def test_v1_manifest_restores_model_only_without_a_completed_update_count(tmp_path: Path) -> None:
+    """An archived v1 artifact still restores weights; it just cannot resume."""
+
+    trained = torch.nn.Linear(3, 2).double()
+    checkpoint_dir = _write_checkpoint(tmp_path, model=trained)
+    _rewrite_manifest_as_v1(checkpoint_dir)
+    fresh = torch.nn.Linear(3, 2).double()
+
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "model_only"},
+        model=fresh,
+        context=_context(),
+    )
+
+    assert torch.equal(fresh.weight, trained.weight)
+    assert report.schema_version == LEGACY_CHECKPOINT_SCHEMA_VERSION
+    # v1's lone `step` was the resume cursor, so it maps onto `next_iteration`.
+    assert report.next_iteration == 3
+    # v1 never recorded the update count, and there is no upgrade path.
+    assert report.completed_updates is None
+    assert report.to_dict()["completed_updates"] is None
+
+
+def test_v1_manifest_is_refused_for_train_resume_at_the_schema_gate(tmp_path: Path) -> None:
+    """Rejection names version and mode, and precedes any trainer load.
+
+    Note what this pins and what it does not. The refusal is *not* because the
+    restore path needs `manifest.completed_updates` -- ``train_resume`` reads
+    trainer state from ``trainer.json``, never from the manifest. It is because
+    `schema_version 1` spans two incompatible ``trainer.json`` key sets (B1
+    renamed the trainer keys without bumping the manifest schema), so the
+    version cannot prove the artifact is resumable. Hence this checkpoint --
+    synthesized from a v2 write and therefore carrying *post*-B1 trainer keys
+    that would in fact load -- is still refused.
+    """
+
+    checkpoint_dir = _write_checkpoint(tmp_path)
+    _rewrite_manifest_as_v1(checkpoint_dir)
+    trainer = _Trainer()
+
+    with pytest.raises(
+        ValueError,
+        match=r"schema_version 1 is not supported for restore mode 'train_resume'",
+    ):
+        restore_checkpoint(
+            load={"path": str(checkpoint_dir), "mode": "train_resume"},
+            model=torch.nn.Linear(3, 2).double(),
+            optimizer=torch.optim.Adam(torch.nn.Linear(3, 2).double().parameters(), lr=0.01),
+            trainer=trainer,
+            sampler=_Sampler(),
+            context=_context(),
+        )
+
+    # The gate refuses before any component is touched. `load_state_dict`'s own
+    # KeyError remains a backstop for a genuinely pre-B1 artifact, but it is
+    # never the first failure for a v1 manifest.
+    assert trainer.loaded is None
+
+
+def test_restore_report_counters_for_mode_none() -> None:
+    report = restore_checkpoint(
+        load={"mode": "none"},
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+    )
+
+    assert (report.next_iteration, report.completed_updates) == (None, None)
+    assert report.to_dict()["next_iteration"] is None
+    assert report.to_dict()["completed_updates"] is None
+
+
+def test_restore_report_counters_for_model_only(tmp_path: Path) -> None:
+    """Both counters come from the manifest and are reported separately."""
+
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        # Diverged on purpose: one iteration skipped its optimizer update, so a
+        # report that conflated the two counters could not pass this.
+        next_iteration=4,
+        completed_updates=3,
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+        save_optimizer=False,
+        save_trainer=False,
+        save_sampler=False,
+        save_rng=False,
+    )
+
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "model_only"},
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+    )
+
+    assert report.schema_version == CHECKPOINT_SCHEMA_VERSION
+    assert (report.next_iteration, report.completed_updates) == (4, 3)
+
+
+def test_restore_report_counters_for_train_resume(tmp_path: Path) -> None:
+    model = torch.nn.Linear(3, 2).double()
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=4,
+        completed_updates=3,
+        model=model,
+        optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+        trainer=_Trainer(),
+        sampler=_Sampler(),
+        context=_context(),
+    )
+
+    fresh = torch.nn.Linear(3, 2).double()
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "train_resume"},
+        model=fresh,
+        optimizer=torch.optim.Adam(fresh.parameters(), lr=0.01),
+        trainer=_Trainer(),
+        sampler=_Sampler(),
+        context=_context(),
+    )
+
+    # `train_resume` admits only v2, so neither counter can be `None` here.
+    assert (report.next_iteration, report.completed_updates) == (4, 3)
+    assert report.to_dict()["next_iteration"] == 4
+    assert report.to_dict()["completed_updates"] == 3
+
+
+def test_prune_never_deletes_the_latest_pointer_target(tmp_path: Path) -> None:
+    """Pruning spares `latest.json`'s target even outside the keep window."""
+
+    root = tmp_path / "checkpoints"
+    for step in (1, 2, 3):
+        model = torch.nn.Linear(3, 2).double()
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=step,
+            completed_updates=step,
+            model=model,
+            optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+            trainer=_Trainer(),
+            sampler=_Sampler(),
+            context=_context(),
+        )
+    # Point `latest.json` back at the oldest checkpoint, the state a run reaches
+    # when its newest directories were written after the pointer it resumes from.
+    write_latest(root, root / "step_000001", step=1, created_at_unix=0.0)
+
+    prune_old_checkpoints(root, keep_last=1)
+
+    # The pointer target survives *in addition* to the newest `keep_last`.
+    assert sorted(path.name for path in root.glob("step_*")) == [
+        "step_000001",
+        "step_000003",
+    ]
+    assert resolve_checkpoint_dir(root) == root / "step_000001"
+
+
+def test_prune_without_a_latest_pointer_still_trims(tmp_path: Path) -> None:
+    """A missing pointer spares nothing extra and must not raise."""
+
+    root = tmp_path / "checkpoints"
+    for step in (1, 2):
+        model = torch.nn.Linear(3, 2).double()
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=step,
+            completed_updates=step,
+            model=model,
+            context=_context(),
+            save_optimizer=False,
+            save_trainer=False,
+            save_sampler=False,
+            save_rng=False,
+        )
+    (root / "latest.json").unlink()
+
+    prune_old_checkpoints(root, keep_last=1)
+
+    assert sorted(path.name for path in root.glob("step_*")) == ["step_000002"]
 
 
 def test_stable_config_hash_is_canonical_and_strict() -> None:

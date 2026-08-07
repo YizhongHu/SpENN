@@ -33,7 +33,8 @@ class Train(Runner):
         constructor) applied to ``model.parameters()`` by `make_optimizer`.
     trainer : object
         Trainer exposing ``fit(*, model, sampler, hamiltonian_terms, optimizer,
-        context, emit) -> TrainerState``.
+        context, emit) -> TrainerState`` and a ``next_iteration`` resume
+        cursor, which labels the terminal ``train_end`` artifacts.
     """
 
     def __init__(
@@ -96,8 +97,11 @@ class Train(Runner):
             ),
         )
         # train_end carries the trained model and the durable resume cursor so
-        # lifecycle callbacks can label terminal artifacts consistently.
-        next_iteration = getattr(self.trainer, "next_iteration", int(final_state.step) + 1)
+        # lifecycle callbacks can label terminal artifacts consistently. The
+        # cursor is a hard requirement on the trainer: guessing it from
+        # `final_state.step + 1` silently produces a different terminal
+        # checkpoint identity whenever the two disagree.
+        next_iteration = int(self.trainer.next_iteration)
         self.emit(
             "train_end",
             context,
