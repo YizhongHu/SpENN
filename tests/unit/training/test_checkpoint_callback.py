@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,11 +11,47 @@ import torch
 from omegaconf import OmegaConf
 
 import tpen
+from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint, Event
 from tpen.checkpoint import checkpoint_hashes
 from tpen.events import Occurrence
 from tpen.training.events import TrainingIteration, UpdateCompleted
 from tpen.training.state import TrainerState
+
+
+class _CheckpointContext(RunContext):
+    """Minimal `RunContext` carrying only what `save_checkpoint` reads.
+
+    This subclasses `RunContext` rather than duck-typing a `SimpleNamespace`
+    because `tpen.callback.Callback.handle_occurrence` annotates its context
+    parameter and the suite runs typeguard over the ``tpen`` package, so the
+    typed dispatch path rejects a stand-in that is not really a `RunContext`.
+    The legacy ``handle`` path is unannotated and accepted either way, which is
+    why a plain namespace sufficed before these tests began driving typed
+    occurrences.
+
+    The dataclass ``__init__`` is bypassed on purpose -- an artifact manager,
+    clock, and logger list are irrelevant to checkpoint writing -- and
+    ``run_dir`` is overridden because the base class resolves it through the
+    artifact manager this stub never builds. Mirrors the established
+    ``tests/unit/callback/support.py::RecordingContext`` pattern.
+    """
+
+    def __init__(self, cfg, metadata, run_dir: str) -> None:
+        self.cfg = cfg
+        self.metadata = metadata
+        self._run_dir = Path(run_dir)
+
+    @property
+    def run_dir(self) -> Path:
+        """Return the stubbed run directory."""
+
+        return self._run_dir
+
+    def __repr__(self) -> str:
+        # The inherited dataclass repr reads fields this stub never sets, so it
+        # would raise while pytest renders a failure. Keep failures readable.
+        return f"_CheckpointContext(run_dir={self._run_dir!r})"
 
 
 def _state(
@@ -331,8 +368,8 @@ def test_train_end_updates_latest_when_cadence_misses_terminal_step(tmp_path) ->
     assert latest["step"] == 3
 
 
-def _context() -> SimpleNamespace:
-    """Minimal RunContext stand-in carrying resolved config and metadata."""
+def _context() -> _CheckpointContext:
+    """Build a real `RunContext` carrying resolved config and metadata."""
 
     cfg = OmegaConf.create(
         {
@@ -351,7 +388,11 @@ def _context() -> SimpleNamespace:
         command="pytest",
         extra={"python_version": "3.12.0", "torch_version": torch.__version__},
     )
-    return SimpleNamespace(cfg=cfg, metadata=metadata, run_dir="/tmp/run")
+    # `metadata` stays a namespace: it is only ever read attribute-wise by
+    # `save_checkpoint`, which annotates its context as `Any`. Only the context
+    # itself has to be a real `RunContext`, because it crosses the annotated
+    # typed-occurrence dispatch boundary.
+    return _CheckpointContext(cfg=cfg, metadata=metadata, run_dir="/tmp/run")
 
 
 def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
