@@ -499,10 +499,23 @@ step = trainer step
 namespace = checks/...
 ```
 
-Checkpoint directory names use completed optimizer updates, not the 0-indexed
-training step. A run with `max_steps = N` writes its terminal checkpoint as
-the zero-padded `N` directory; for example, `max_steps = 500` writes
-`checkpoints/step_000500`.
+Checkpoint directory names use the trainer's durable resume cursor
+`next_iteration`, not the 0-indexed training step. The cursor is assigned near
+the end of the loop body, so it advances once per iteration that *ran to
+completion*: an iteration that crashes part-way through never advances it and is
+retried on resume, and the directory name is therefore exactly the step a
+`train_resume` run continues from. The cursor advances whether or not that
+iteration applied an optimizer update, which is what distinguishes it from
+`completed_updates`, which counts optimizer updates that actually ran; the two
+diverge whenever a completed iteration skips its update. A run with
+`max_steps = N` writes its terminal checkpoint as the zero-padded `N` directory;
+for example, `max_steps = 500` writes `checkpoints/step_000500`.
+
+The `trainer.json` component of a checkpoint carries both counters:
+
+```json
+{"next_iteration": 500, "completed_updates": 500}
+```
 
 Evaluation metrics use an evaluation step or `0` if there is only one evaluation event:
 
@@ -593,10 +606,8 @@ runtime/cuda_max_memory_reserved_mb
 runtime/cuda_device_count
 ```
 
-Recommended training timing (`step_time_sec` from `TrainStepTiming`;
-`sampling_time_sec` from `TrainPhaseTiming` observing the typed
-`CollectSamples` scope; the remaining phase keys from `TrainPhaseTiming`,
-driven by the trainer's legacy `train_phase_start`/`train_phase_end` events):
+Recommended training timing (`step_time_sec` from `TrainStepTiming`; every
+phase key from `TrainPhaseTiming` observing typed `TrainingPhase` scopes):
 
 ```text
 train/perf/step_time_sec
@@ -610,17 +621,37 @@ train/perf/optimizer_step_time_sec
 train/perf/post_step_metrics_time_sec
 ```
 
+Each phase key is `f"{phase_name}_time_sec"`, where `phase_name` is a
+`ClassVar` declared on the concrete `tpen.training.events.TrainingPhase`
+subclass that the trainer scopes. The phase type is the single source of the
+metric fragment, so the names above cannot drift from the loop:
+
+| Phase type        | `phase_name`        | Metric key                     |
+| ----------------- | ------------------- | ------------------------------ |
+| `CollectSamples`  | `sampling`          | `sampling_time_sec`            |
+| `BuildBatch`      | `batch_build`       | `batch_build_time_sec`         |
+| `LocalEnergy`     | `local_energy`      | `local_energy_time_sec`        |
+| `Forward`         | `forward`           | `forward_time_sec`             |
+| `Objective`       | `objective`         | `objective_time_sec`           |
+| `Backward`        | `backward`          | `backward_time_sec`            |
+| `OptimizerUpdate` | `optimizer_step`    | `optimizer_step_time_sec`      |
+| `Metrics`         | `post_step_metrics` | `post_step_metrics_time_sec`   |
+
 Phase times approximately sum to at most `step_time_sec`; the difference is
 unclassified loop overhead (gradient clipping, event dispatch, logging).
-`TrainPhaseTiming` collects sample timing from the typed `CollectSamples`
-scope, retains legacy phase-boundary collection for the not-yet-migrated
-phases, and reports only on a successful typed `TrainingIterationCompleted`
-event. Its scalar `every_n_steps`, `start_step`, `max_calls`, `probability`,
-and `seed` options configure a callback-local occurrence cadence for those
-successful completions; `start_step=0` maps to one-based occurrence `1`, and
-`every_n_steps=None` reports every successful occurrence. Unconditional
-`Ended[TrainingIteration]` observation clears measurements for failed and
-cadence-skipped iterations.
+`TrainPhaseTiming` is trigger-free: it observes `Started`/`Ended` boundaries of
+`TrainingPhase` scopes and reports only on a successful typed
+`TrainingIterationCompleted` event. Its scalar `every_n_steps`, `start_step`,
+`max_calls`, `probability`, and `seed` options configure a callback-local
+occurrence cadence for those successful completions; `start_step=0` maps to
+one-based occurrence `1`, and `every_n_steps=None` reports every successful
+occurrence. Unconditional `Ended[TrainingIteration]` observation clears
+measurements for failed and cadence-skipped iterations.
+
+An iteration that applied its optimizer update emits `UpdateCompleted` after
+the `OptimizerUpdate` scope closes; an iteration that deliberately skipped the
+update (the zero-electron vacuum) opens no `OptimizerUpdate` scope, emits
+`UpdateSkipped`, and therefore logs no `optimizer_step_time_sec`.
 
 Occurrence cadence is local to one `RunContext` and restarts for a new run or
 context. Durable cadence continuation across checkpoint resume remains

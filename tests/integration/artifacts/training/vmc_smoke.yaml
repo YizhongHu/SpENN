@@ -70,6 +70,7 @@ callbacks:
 - _target_: tpen.callback.TrainStepTiming
   every_n_steps: 1
   rolling_window: 2
+- _target_: tpen.callback.TrainPhaseTiming
 - _target_: tpen.callback.Status
   triggers:
   - run_start

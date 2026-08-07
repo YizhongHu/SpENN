@@ -95,14 +95,14 @@ class Train(Runner):
                 step=step,
             ),
         )
-        # train_end carries the trained model and completed update count so
+        # train_end carries the trained model and the durable resume cursor so
         # lifecycle callbacks can label terminal artifacts consistently.
-        completed_steps = getattr(self.trainer, "global_step", int(final_state.step) + 1)
+        next_iteration = getattr(self.trainer, "next_iteration", int(final_state.step) + 1)
         self.emit(
             "train_end",
             context,
             state=final_state,
-            step=int(completed_steps),
+            step=int(next_iteration),
             payload={"model": self.model},
         )
         self.emit("run_end", context)

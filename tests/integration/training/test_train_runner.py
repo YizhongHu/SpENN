@@ -21,6 +21,20 @@ FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_
 
 ALLOWED_NONFINITE_KEYS = {"energy_stderr"}
 
+# Every durable phase key the wired `TrainPhaseTiming` reports for one completed
+# training iteration. Each name is owned by a concrete `TrainingPhase` type, so
+# this tuple pins the public spelling of the whole `train/perf` phase surface.
+PHASE_TIMING_KEYS = (
+    "sampling_time_sec",
+    "batch_build_time_sec",
+    "local_energy_time_sec",
+    "forward_time_sec",
+    "objective_time_sec",
+    "backward_time_sec",
+    "optimizer_step_time_sec",
+    "post_step_metrics_time_sec",
+)
+
 
 def _run(tmp_path: Path):
     cfg = OmegaConf.load(FIXTURE)
@@ -46,7 +60,7 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
         "checkpoints/latest.json",
         # Cadence 2 writes step 2; train_end still writes terminal step 3.
         "checkpoints/step_000002/COMPLETE",
-        # Checkpoint steps count completed updates, so a 3-step run ends at step 3.
+        # Checkpoint steps use the resume cursor, so a 3-step run ends at step 3.
         "checkpoints/step_000003/manifest.json",
         "checkpoints/step_000003/model.pt",
         "checkpoints/step_000003/COMPLETE",
@@ -64,9 +78,9 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
     assert "python_version" in metadata["runtime"]
     assert "slurm" in metadata
 
+    # Three attempted iterations, each of which applied its optimizer update.
     trainer_state = json.loads((run_dir / "checkpoints/step_000003/trainer.json").read_text())
-    assert trainer_state["global_step"] == 3
-    assert trainer_state["completed_steps"] == 3
+    assert trainer_state == {"next_iteration": 3, "completed_updates": 3}
 
     latest = json.loads((run_dir / "checkpoints/latest.json").read_text())
     assert latest["checkpoint_dir"] == "step_000003"
@@ -84,7 +98,13 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     runtime_records = [record["metrics"] for record in records if record.get("namespace") == "runtime"]
     assert len(train_records) == 3, "expected one train record per step"
     assert len(sampler_records) == 3, "expected one train/sampler record per step"
-    assert len(perf_records) == 3, "expected one train/perf record per step"
+    # Two callbacks write `train/perf`: TrainStepTiming reports whole-step wall
+    # time at `step_end`, TrainPhaseTiming the typed phase breakdown at
+    # `TrainingIterationCompleted`. Split them by key rather than by position.
+    step_timing_records = [record for record in perf_records if "step_time_sec" in record]
+    phase_timing_records = [record for record in perf_records if "step_time_sec" not in record]
+    assert len(step_timing_records) == 3, "expected one step-timing record per step"
+    assert len(phase_timing_records) == 3, "expected one phase-timing record per step"
     assert any("wall_time_sec" in record for record in runtime_records)
 
     last = train_records[-1]
@@ -102,8 +122,18 @@ def test_train_runner_logs_finite_train_metrics(tmp_path) -> None:
     assert not any(key.startswith("sampler.") for key in last)
     assert "acceptance_rate" in sampler_records[-1]
     assert "n_walkers" in sampler_records[-1]
-    assert "step_time_sec" in perf_records[-1]
-    assert "step_time_sec_rolling_mean" in perf_records[-1]
+    assert "step_time_sec" in step_timing_records[-1]
+    assert "step_time_sec_rolling_mean" in step_timing_records[-1]
+
+    # This is the only test that drives several phase types through the real
+    # RunContext -> _dispatch_occurrence -> Callback.handle_occurrence path, so
+    # pin the exact key set and require finite durations, not mere presence.
+    for record in phase_timing_records:
+        assert set(record) == set(PHASE_TIMING_KEYS), f"unexpected phase keys: {sorted(record)}"
+        for key in PHASE_TIMING_KEYS:
+            value = record[key]
+            assert isinstance(value, (int, float)), f"non-numeric phase metric {key}={value!r}"
+            assert math.isfinite(value), f"non-finite phase metric {key}={value}"
 
     # JSONL serialization with allow_nan=False would already have failed the run
     # on any non-finite value; assert finiteness directly for good measure.

@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from tpen.artifacts import RunContext
 from tpen.dependencies import require_torch
 from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
 from tpen.training.events import (
+    Backward,
+    BuildBatch,
     CollectSamples,
+    Forward,
+    LocalEnergy,
+    Metrics,
+    Objective,
+    OptimizerUpdate,
     TrainingIteration,
     TrainingIterationCompleted,
+    UpdateCompleted,
+    UpdateSkipped,
 )
 from tpen.training.state import TrainerState
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
@@ -29,21 +38,6 @@ def _parameter_norm(model) -> float:
         value = param.detach().pow(2).sum()
         total = value if total is None else total + value
     return float(torch.sqrt(total).item()) if total is not None else 0.0
-
-
-@contextmanager
-def _timed_phase(emit: Callable[..., None], step: int, phase: str):
-    """Bracket one not-yet-migrated training phase with timing events.
-
-    Sample collection uses the typed `CollectSamples` scope. The remaining
-    phase boundaries retain their legacy events until their own migration.
-    """
-
-    emit("train_phase_start", step=step, payload={"phase": phase})
-    try:
-        yield
-    finally:
-        emit("train_phase_end", step=step, payload={"phase": phase})
 
 
 def _gradient_norm(model) -> float:
@@ -76,6 +70,18 @@ class VMCTrainer:
         Whether to request and summarize the per-term local-energy decomposition.
     gradient_clip_norm : float or None, optional
         Maximum gradient norm. When ``None``, gradients are not clipped.
+
+    Notes
+    -----
+    Progress uses two independent counters. ``next_iteration`` is the durable
+    resume cursor and is assigned near the end of the loop body, so it advances
+    once per iteration that *ran to completion*: an iteration that raises
+    part-way through (say inside ``local_energy`` or ``optimizer.step()``) never
+    advances it and is retried from the same cursor on resume. It advances
+    whether or not that iteration applied an optimizer update.
+    ``completed_updates`` counts optimizer updates that actually returned, so the
+    two diverge whenever a completed iteration skips its update (the
+    zero-electron vacuum).
     """
 
     def __init__(
@@ -89,21 +95,60 @@ class VMCTrainer:
         self.log_every_n_steps = int(log_every_n_steps)
         self.return_terms = bool(return_terms)
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
-        self.global_step = 0
+        # Durable resume cursor: the next iteration this trainer will attempt.
+        self.next_iteration = 0
+        # Optimizer updates that actually returned; skipped updates never count.
+        self.completed_updates = 0
 
     def state_dict(self) -> dict[str, int]:
-        """Return checkpointable trainer progress state."""
+        """Return checkpointable trainer progress state.
+
+        Returns
+        -------
+        dict
+            ``next_iteration`` (durable resume cursor) and
+            ``completed_updates`` (applied optimizer updates). The two diverge
+            whenever a completed iteration skipped its optimizer update.
+        """
 
         return {
-            "global_step": int(self.global_step),
-            "completed_steps": int(self.global_step),
+            "next_iteration": int(self.next_iteration),
+            "completed_updates": int(self.completed_updates),
         }
 
-    def load_state_dict(self, state: dict[str, Any]) -> None:
-        """Restore trainer progress state for ``train_resume``."""
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore trainer progress state for ``train_resume``.
 
-        global_step = state.get("global_step", state.get("completed_steps", 0))
-        self.global_step = int(global_step)
+        Parameters
+        ----------
+        state : Mapping
+            Trainer state read from a checkpoint's ``trainer.json``. Both
+            ``next_iteration`` and ``completed_updates`` are required.
+
+        Raises
+        ------
+        KeyError
+            If either required key is missing. Checkpoints written before the
+            rename (``global_step``/``completed_steps``) are unsupported and
+            fail here rather than silently resuming from step 0.
+        ValueError or TypeError
+            If either value cannot be coerced to ``int``. Both coercions run
+            before either assignment, so a rejected state leaves the trainer's
+            progress counters unmutated.
+        """
+
+        for key in ("next_iteration", "completed_updates"):
+            if key not in state:
+                raise KeyError(
+                    f"trainer state is missing required key {key!r}; checkpoints "
+                    "written with 'global_step'/'completed_steps' are unsupported"
+                )
+        # Coerce both counters before assigning either one, so a malformed value
+        # cannot leave the trainer half-restored at a bogus resume cursor.
+        next_iteration = int(state["next_iteration"])
+        completed_updates = int(state["completed_updates"])
+        self.next_iteration = next_iteration
+        self.completed_updates = completed_updates
 
     def fit(
         self,
@@ -119,8 +164,8 @@ class VMCTrainer:
 
         state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
         # Training-loop steps are 0-indexed for metrics and most callbacks.
-        # Checkpoint callbacks convert them to completed-update counts.
-        for step in range(self.global_step, self.max_steps):
+        # Checkpoint callbacks reuse the resume cursor `next_iteration`.
+        for step in range(self.next_iteration, self.max_steps):
             iteration = TrainingIteration(step=step)
             with context.scope(iteration):
                 emit("step_start", step=step)
@@ -129,9 +174,9 @@ class VMCTrainer:
                     walkers, sampler_stats = sampler.collect_samples(
                         model, device=context.metadata.device
                     )
-                with _timed_phase(emit, step, "batch_build"):
+                with context.scope(BuildBatch(step=step)):
                     batch = walkers.make_batch()
-                with _timed_phase(emit, step, "local_energy"):
+                with context.scope(LocalEnergy(step=step)):
                     result = local_energy(
                         hamiltonian_terms,
                         model,
@@ -145,32 +190,37 @@ class VMCTrainer:
                     total_local_energy = result
                     term_energies = None
 
-                with _timed_phase(emit, step, "forward"):
+                with context.scope(Forward(step=step)):
                     output = model(batch)
-                with _timed_phase(emit, step, "objective"):
+                with context.scope(Objective(step=step)):
                     objective = compute_vmc_objective(output.logabs, total_local_energy)
                 loss = objective.loss
 
                 optimizer.zero_grad(set_to_none=True)
                 optimizer_step = False
                 if loss.requires_grad:
-                    with _timed_phase(emit, step, "backward"):
+                    with context.scope(Backward(step=step)):
                         loss.backward()
                     if self.gradient_clip_norm is not None:
                         torch.nn.utils.clip_grad_norm_(
                             model.parameters(), self.gradient_clip_norm
                         )
                     grad_norm = _gradient_norm(model)
-                    with _timed_phase(emit, step, "optimizer_step"):
+                    with context.scope(OptimizerUpdate(step=step)):
                         optimizer.step()
+                    # The update counts only once `optimizer.step()` has
+                    # returned, so this always follows Ended[OptimizerUpdate].
+                    self.completed_updates += 1
+                    context.emit(UpdateCompleted(iteration=iteration))
                     optimizer_step = True
                 elif batch.n_electrons == 0:
                     # The zero-electron vacuum has no sampled coordinate degrees
                     # of freedom, so the current Pfaffian readout yields a
                     # constant wavefunction and a no-op optimizer step is the
-                    # correct loop behavior. Nonzero disconnected losses still
-                    # fail below.
+                    # correct loop behavior. No OptimizerUpdate scope opens on
+                    # this path. Nonzero disconnected losses still fail below.
                     grad_norm = 0.0
+                    context.emit(UpdateSkipped(iteration=iteration))
                 else:
                     raise RuntimeError(
                         "VMC loss is disconnected from model parameters for a "
@@ -181,7 +231,7 @@ class VMCTrainer:
                 # the trainer only adds trainer-owned mechanics and optional
                 # per-term local-energy metrics (metrics only, never part of the
                 # objective).
-                with _timed_phase(emit, step, "post_step_metrics"):
+                with context.scope(Metrics(step=step)):
                     metrics: dict[str, Any] = dict(objective.metrics)
                     metrics.update(summarize_logabs(output.logabs))
                     if term_energies is not None:
@@ -209,7 +259,11 @@ class VMCTrainer:
                             namespace="train/sampler",
                         )
 
-                self.global_step = step + 1
+                # Assigned here, near the end of the body, so only an iteration
+                # that ran to completion advances the resume cursor: a crash
+                # above retries this same step on resume. An iteration that
+                # applied no optimizer update still advances it.
+                self.next_iteration = step + 1
                 emit(
                     "step_end",
                     state=state,

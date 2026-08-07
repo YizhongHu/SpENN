@@ -57,7 +57,7 @@ class _Trainer:
         self.loaded = None
 
     def state_dict(self) -> dict[str, int]:
-        return {"global_step": 3}
+        return {"next_iteration": 3, "completed_updates": 3}
 
     def load_state_dict(self, state) -> None:
         self.loaded = dict(state)
@@ -290,7 +290,7 @@ def test_train_resume_restores_all_train_state(tmp_path: Path) -> None:
     )
 
     assert torch.equal(fresh.weight, trained.weight)
-    assert trainer.loaded == {"global_step": 3}
+    assert trainer.loaded == {"next_iteration": 3, "completed_updates": 3}
     assert sampler.loaded["has_burned_in"] is True
     assert report.loaded_optimizer is True
     assert report.loaded_trainer is True

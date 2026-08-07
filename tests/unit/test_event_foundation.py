@@ -26,9 +26,13 @@ from tpen.events import Ended, Event, Occurrence, Operation, Started, Subscripti
 from tpen.events import ended, started
 from tpen.runner.base import Runner
 from tpen.training.events import (
+    Backward,
     CollectSamples,
     TrainingIteration,
     TrainingIterationCompleted,
+    TrainingPhase,
+    UpdateCompleted,
+    UpdateSkipped,
 )
 
 
@@ -445,11 +449,6 @@ def test_migrated_and_compatibility_event_names_keep_legacy_payload_schema(
 ) -> None:
     context = _context(tmp_path)
 
-    context.emit_event(
-        "train_phase_start",
-        payload={"phase": "forward"},
-        step=0,
-    )
     context.emit_event("step_start", step=0)
     context.emit_event("step_end", step=0)
     context.emit_event("train_end", step=1)
@@ -468,10 +467,6 @@ def test_migrated_and_compatibility_event_names_keep_legacy_payload_schema(
         for line in context.path("events.jsonl").read_text().splitlines()
     ]
     by_name = {record["event"]: record for record in records}
-    assert by_name["train_phase_start"]["payload"] == {
-        "phase": "forward",
-        "step": 0,
-    }
     assert by_name["step_start"]["payload"] == {"step": 0}
     assert by_name["step_end"]["payload"] == {"step": 0}
     assert by_name["train_end"]["payload"] == {"step": 1}
@@ -507,13 +502,50 @@ def test_typed_serialization_encodes_markers_and_public_dataclass_fields(
 
 def test_typed_completion_serializes_nested_iteration_fields(tmp_path: Path) -> None:
     context = _context(tmp_path)
+    iteration = TrainingIteration(step=7)
 
-    context.emit(TrainingIterationCompleted(iteration=TrainingIteration(step=7)))
+    context.emit(TrainingIterationCompleted(iteration=iteration))
+    context.emit(UpdateCompleted(iteration=iteration))
+    context.emit(UpdateSkipped(iteration=iteration))
 
-    record = json.loads(context.path("occurrences.jsonl").read_text().strip())
-    assert record["event"] == "tpen.training.events.TrainingIterationCompleted"
-    assert record["count"] == 1
-    assert record["fields"] == {"iteration": {"step": 7}}
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert [record["event"] for record in records] == [
+        "tpen.training.events.TrainingIterationCompleted",
+        "tpen.training.events.UpdateCompleted",
+        "tpen.training.events.UpdateSkipped",
+    ]
+    # Each concrete event type counts independently from one.
+    assert [record["count"] for record in records] == [1, 1, 1]
+    assert all(record["fields"] == {"iteration": {"step": 7}} for record in records)
+
+
+def test_training_phase_base_is_abstract() -> None:
+    """A phase carrying no durable metric fragment cannot be constructed."""
+
+    with pytest.raises(TypeError, match="phase_name"):
+        TrainingPhase(step=0)
+
+
+def test_typed_phase_serializes_only_its_step_field(tmp_path: Path) -> None:
+    """``phase_name`` is a ClassVar, so it never reaches the occurrence edge."""
+
+    context = _context(tmp_path)
+
+    with context.scope(Backward(step=5)):
+        pass
+
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert [record["operation"] for record in records] == [
+        "tpen.training.events.Backward",
+        "tpen.training.events.Backward",
+    ]
+    assert all(record["fields"] == {"step": 5} for record in records)
 
 
 @pytest.mark.parametrize(
@@ -554,8 +586,7 @@ def test_train_phase_timing_reports_successful_typed_iteration(tmp_path: Path) -
     assert logger.records[0].namespace == "train/perf"
     assert logger.records[0].step == 3
     assert logger.records[0].metrics == {"sampling_time_sec": 0.25}
-    assert callback._starts == {}
-    assert callback._collect_samples_starts == {}
+    assert callback._phase_starts == {}
     assert callback._durations == {}
 
 
@@ -577,7 +608,7 @@ def test_train_phase_timing_converts_zero_based_start_to_occurrence_cadence(
     assert [record.step for record in logger.records] == [0, 2]
     assert logger.records[0].metrics == {"sampling_time_sec": pytest.approx(0.1)}
     assert logger.records[1].metrics == {"sampling_time_sec": pytest.approx(0.2)}
-    assert callback._collect_samples_starts == {}
+    assert callback._phase_starts == {}
     assert callback._durations == {}
 
 
@@ -601,7 +632,7 @@ def test_train_phase_timing_failed_body_cleans_up_without_reporting(
     tmp_path: Path,
 ) -> None:
     logger = _Logger()
-    callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0]))
+    callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0, 2.5]))
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
     iteration = TrainingIteration(step=3)
 
@@ -609,16 +640,11 @@ def test_train_phase_timing_failed_body_cleans_up_without_reporting(
         with context.scope(iteration):
             with context.scope(CollectSamples(step=3)):
                 pass
-            context.emit_event(
-                "train_phase_start",
-                payload={"step": 3, "phase": "backward"},
-                step=3,
-            )
-            raise RuntimeError("training failed")
+            with context.scope(Backward(step=3)):
+                raise RuntimeError("training failed")
 
     assert logger.records == []
-    assert callback._starts == {}
-    assert callback._collect_samples_starts == {}
+    assert callback._phase_starts == {}
     assert callback._durations == {}
 
 
@@ -635,29 +661,25 @@ def test_train_phase_timing_cleanup_does_not_mask_reporting_error(
                 pass
             context.emit(TrainingIterationCompleted(iteration=iteration))
 
-    assert callback._starts == {}
-    assert callback._collect_samples_starts == {}
+    assert callback._phase_starts == {}
     assert callback._durations == {}
 
 
 def test_train_phase_timing_context_identity_change_clears_all_caches(
     tmp_path: Path,
 ) -> None:
-    callback = TrainPhaseTiming(clock=_Clock([1.0]))
+    callback = TrainPhaseTiming(clock=_Clock([1.0, 2.0]))
     first = _context(tmp_path / "first", callbacks=[callback])
     second = _context(tmp_path / "second", callbacks=[callback])
 
-    first.emit_event(
-        "train_phase_start",
-        payload={"step": 8, "phase": "backward"},
-        step=8,
-    )
-    assert callback._starts
+    # Measure a phase in the first context without ever ending its iteration.
+    with first.scope(Backward(step=8)):
+        pass
+    assert callback._durations
     with second.scope(TrainingIteration(step=0)):
         pass
 
-    assert callback._starts == {}
-    assert callback._collect_samples_starts == {}
+    assert callback._phase_starts == {}
     assert callback._durations == {}
 
 
@@ -674,7 +696,7 @@ def test_train_phase_timing_rejects_duplicate_sampling_duration(tmp_path: Path) 
                 pass
 
     assert callback._durations == {}
-    assert callback._collect_samples_starts == {}
+    assert callback._phase_starts == {}
 
 
 def _context(
