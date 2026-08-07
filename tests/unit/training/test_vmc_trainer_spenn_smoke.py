@@ -6,13 +6,18 @@ import math
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import torch
 
 from tpen.artifacts import RunContext
 from tpen.events import Ended, Occurrence, Started
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
-from tpen.training.events import CollectSamples
+from tpen.training.events import (
+    CollectSamples,
+    TrainingIteration,
+    TrainingIterationCompleted,
+)
 from tpen.training.trainer import VMCTrainer
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
@@ -26,6 +31,7 @@ class _StubContext(RunContext):
         self.metadata = SimpleNamespace(device="cpu", dtype="float64")
         self.records: list[tuple[str, dict]] = []
         self.occurrences: list[Occurrence[Any]] = []
+        self.trace: list[tuple[str, object]] = []
         self._occurrence_counts = {}
 
     def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
@@ -33,6 +39,7 @@ class _StubContext(RunContext):
 
     def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
         self.occurrences.append(occurrence)
+        self.trace.append(("typed", occurrence.event))
 
 
 _FORBIDDEN_METRICS = {
@@ -58,7 +65,7 @@ def test_one_vmc_step_is_finite_and_vmc_native() -> None:
         hamiltonian_terms=terms,
         optimizer=optimizer,
         context=_StubContext(),
-        emit=lambda name, *, state=None, payload=None: None,
+        emit=lambda name, *, state=None, payload=None, step=None: None,
     )
 
     assert math.isfinite(float(state.loss))
@@ -80,7 +87,7 @@ def _fit_one_step(*, return_terms: bool, terms) -> object:
         hamiltonian_terms=terms,
         optimizer=optimizer,
         context=_StubContext(),
-        emit=lambda name, *, state=None, payload=None: None,
+        emit=lambda name, *, state=None, payload=None, step=None: None,
     )
 
 
@@ -127,9 +134,19 @@ def test_vmc_trainer_uses_typed_sampling_and_keeps_other_phase_events() -> None:
     phase_events: list[tuple[str, str]] = []
     context = _StubContext()
 
-    def emit(name: str, *, state=None, payload=None) -> None:
+    def emit(name: str, *, state=None, payload=None, step=None) -> None:
+        del state
+        context.trace.append(("legacy", name))
+        if name in {
+            "step_start",
+            "step_end",
+            "train_phase_start",
+            "train_phase_end",
+        }:
+            assert step == 0
+            assert payload is None or "step" not in payload
         if name in {"train_phase_start", "train_phase_end"}:
-            assert payload is not None and payload["step"] == 0
+            assert payload is not None
             phase_events.append((name, payload["phase"]))
 
     trainer.fit(
@@ -154,12 +171,60 @@ def test_vmc_trainer_uses_typed_sampling_and_keeps_other_phase_events() -> None:
     ]
     # Phases are sequential and non-nested, so end order matches start order.
     assert ended == started
-    assert len(context.occurrences) == 2
+    assert len(context.occurrences) == 5
     assert isinstance(context.occurrences[0].event, Started)
-    assert isinstance(context.occurrences[1].event, Ended)
-    assert all(
-        isinstance(occurrence.event.operation, CollectSamples)
+    assert isinstance(context.occurrences[0].event.operation, TrainingIteration)
+    assert isinstance(context.occurrences[1].event, Started)
+    assert isinstance(context.occurrences[1].event.operation, CollectSamples)
+    assert isinstance(context.occurrences[2].event, Ended)
+    assert isinstance(context.occurrences[2].event.operation, CollectSamples)
+    assert isinstance(context.occurrences[3].event, TrainingIterationCompleted)
+    assert isinstance(context.occurrences[4].event, Ended)
+    assert isinstance(context.occurrences[4].event.operation, TrainingIteration)
+    assert [occurrence.count for occurrence in context.occurrences] == [1, 1, 1, 1, 1]
+    step_end_index = context.trace.index(("legacy", "step_end"))
+    completion_index = next(
+        index
+        for index, (kind, event) in enumerate(context.trace)
+        if kind == "typed" and isinstance(event, TrainingIterationCompleted)
+    )
+    iteration_end_index = next(
+        index
+        for index, (kind, event) in enumerate(context.trace)
+        if kind == "typed"
+        and isinstance(event, Ended)
+        and isinstance(event.operation, TrainingIteration)
+    )
+    assert step_end_index < completion_index < iteration_end_index
+
+
+def test_vmc_trainer_step_end_failure_skips_completion_but_ends_iteration() -> None:
+    model = build_tiny_spenn()
+    sampler = build_tiny_sampler()
+    terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
+    context = _StubContext()
+
+    def emit(name: str, *, state=None, payload=None, step=None) -> None:
+        del state, payload, step
+        context.trace.append(("legacy", name))
+        if name == "step_end":
+            raise RuntimeError("legacy step_end failed")
+
+    with pytest.raises(RuntimeError, match="legacy step_end failed"):
+        trainer.fit(
+            model=model,
+            sampler=sampler,
+            hamiltonian_terms=terms,
+            optimizer=optimizer,
+            context=context,
+            emit=emit,
+        )
+
+    assert not any(
+        isinstance(occurrence.event, TrainingIterationCompleted)
         for occurrence in context.occurrences
     )
-    assert [occurrence.event.operation.step for occurrence in context.occurrences] == [0, 0]
-    assert [occurrence.count for occurrence in context.occurrences] == [1, 1]
+    assert isinstance(context.occurrences[-1].event, Ended)
+    assert isinstance(context.occurrences[-1].event.operation, TrainingIteration)

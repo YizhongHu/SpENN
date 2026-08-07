@@ -6,16 +6,30 @@ import json
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from omegaconf import OmegaConf
 from typeguard import suppress_type_checks
 
-from tpen.artifacts import ArtifactManager, RunClock, RunContext, RunMetadata
+from tpen.artifacts import (
+    ArtifactManager,
+    RunClock,
+    RunContext,
+    RunMetadata,
+    write_event_artifact,
+)
+from tpen.callback import Event as LegacyEvent
 from tpen.callback import TrainPhaseTiming
-from tpen.events import Ended, Event, Occurrence, Operation, Started
-from tpen.training.events import CollectSamples
+from tpen.events import Ended, Event, Occurrence, Operation, Started, Subscription
+from tpen.events import ended, started
+from tpen.runner.base import Runner
+from tpen.training.events import (
+    CollectSamples,
+    TrainingIteration,
+    TrainingIterationCompleted,
+)
 
 
 @dataclass(frozen=True)
@@ -69,9 +83,10 @@ class _Recorder:
         self.name = name
         self.order = order
         self.occurrences: list[Occurrence[Any]] = []
+        self.legacy_events: list[object] = []
 
     def handle(self, event: object) -> None:
-        del event
+        self.legacy_events.append(event)
 
     def handle_occurrence(self, occurrence: Occurrence[Any], context: RunContext) -> None:
         del context
@@ -101,12 +116,54 @@ class _Logger:
         self.records.append(record)
 
 
+class _RaisingLogger:
+    def log(self, record: Any) -> None:
+        del record
+        raise RuntimeError("timing report failed")
+
+
 class _Clock:
     def __init__(self, values: list[float]) -> None:
         self.values = list(values)
 
     def __call__(self) -> float:
         return self.values.pop(0)
+
+
+def test_subscription_factories_match_typed_subjects_by_isinstance() -> None:
+    class _BaseWork(Operation):
+        pass
+
+    class _ChildWork(_BaseWork):
+        pass
+
+    operation = _ChildWork()
+
+    assert Subscription.of(Event).matches(_Pulse("plain"))
+    assert not Subscription.of(Event).matches(Started(operation))
+    assert Subscription.started(_BaseWork).matches(Started(operation))
+    assert Subscription.ended(_BaseWork).matches(Ended(operation))
+    assert started(_BaseWork) == Subscription.started(_BaseWork)
+    assert ended(_BaseWork) == Subscription.ended(_BaseWork)
+    assert not started(_BaseWork).matches(Ended(operation))
+
+
+def test_subscription_validation_rejects_invalid_runtime_shapes() -> None:
+    with suppress_type_checks():
+        with pytest.raises(TypeError, match="subject"):
+            Subscription.of("event")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="Started"):
+            Subscription.of(Started)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="lifecycle=None"):
+            Subscription(subject=_Pulse, lifecycle=Started)
+        with pytest.raises(ValueError, match="require bare"):
+            Subscription(subject=_Work)
+        with pytest.raises(ValueError, match="require bare"):
+            Subscription(subject=_Work, lifecycle=_Pulse)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="require bare"):
+            Subscription(subject=_Work, lifecycle=Started[_Work])  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="subject"):
+            Subscription.of(Started[_Work])  # type: ignore[arg-type]
 
 
 def test_emit_counts_by_concrete_type_and_dispatches_in_callback_order(tmp_path: Path) -> None:
@@ -269,6 +326,163 @@ def test_legacy_and_typed_records_use_separate_jsonl_edges(tmp_path: Path) -> No
     assert "count" not in legacy_records[0]
 
 
+def test_direct_legacy_event_payload_does_not_populate_explicit_step() -> None:
+    event = LegacyEvent(
+        name="direct",
+        context=None,  # type: ignore[arg-type]
+        state=SimpleNamespace(global_step=99),
+        payload={"step": 4},
+    )
+
+    assert event.step is None
+
+
+def test_legacy_ingress_normalizes_steps_and_preserves_jsonl_shapes(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder("legacy", [])
+    context = _context(tmp_path, callbacks=[recorder])
+
+    context.emit_event("payload_only", payload={"step": 1, "value": "legacy"})
+    explicit_payload: dict[str, Any] = {"value": "explicit"}
+    context.emit_event(
+        "explicit_only",
+        state=SimpleNamespace(global_step=99),
+        payload=explicit_payload,
+        step=2,
+    )
+    context.emit_event("matching_dual", payload={"step": "3"}, step=3)
+    context.emit_event(
+        "stepless",
+        state=SimpleNamespace(global_step=123),
+        payload={},
+    )
+
+    delivered = recorder.legacy_events
+    assert [event.step for event in delivered] == [1, 2, 3, None]
+    assert explicit_payload == {"value": "explicit"}
+    records = [
+        json.loads(line)
+        for line in context.path("events.jsonl").read_text().splitlines()
+    ]
+    without_time = [
+        {key: value for key, value in record.items() if key != "time"}
+        for record in records
+    ]
+    assert without_time == [
+        {
+            "event": "payload_only",
+            "payload": {"step": 1, "value": "legacy"},
+            "run_id": "typed-events-unit",
+            "step": 1,
+        },
+        {
+            "event": "explicit_only",
+            "payload": {"step": 2, "value": "explicit"},
+            "run_id": "typed-events-unit",
+            "step": 2,
+        },
+        {
+            "event": "matching_dual",
+            "payload": {"step": "3"},
+            "run_id": "typed-events-unit",
+            "step": 3,
+        },
+        {
+            "event": "stepless",
+            "payload": {},
+            "run_id": "typed-events-unit",
+            "step": None,
+        },
+    ]
+
+
+def test_legacy_ingress_step_mismatch_writes_and_dispatches_nothing(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder("legacy", [])
+    context = _context(tmp_path, callbacks=[recorder])
+
+    with pytest.raises(ValueError, match="step mismatch"):
+        context.emit_event("mismatch", payload={"step": 2}, step=1)
+
+    assert recorder.legacy_events == []
+    assert not context.path("events.jsonl").exists()
+
+
+def test_event_artifact_rejects_direct_step_mismatch_before_append(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    event = LegacyEvent(
+        name="mismatch",
+        context=context,
+        payload={"step": 2},
+        step=1,
+    )
+
+    with pytest.raises(ValueError, match="step mismatch"):
+        write_event_artifact(context, event)
+
+    assert not context.path("events.jsonl").exists()
+
+
+def test_runner_fallback_uses_the_same_legacy_step_adapter() -> None:
+    recorder = _Recorder("legacy", [])
+    context = object.__new__(RunContext)
+    context.callbacks = [recorder]
+    runner = Runner()
+
+    runner.emit("step_end", context, payload={"step": 5}, step=5)
+    with pytest.raises(ValueError, match="step mismatch"):
+        runner.emit("step_end", context, payload={"step": 6}, step=5)
+
+    assert [event.step for event in recorder.legacy_events] == [5]
+
+
+def test_migrated_and_compatibility_event_names_keep_legacy_payload_schema(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+
+    context.emit_event(
+        "train_phase_start",
+        payload={"phase": "forward"},
+        step=0,
+    )
+    context.emit_event("step_start", step=0)
+    context.emit_event("step_end", step=0)
+    context.emit_event("train_end", step=1)
+    context.emit_event(
+        "diagnostic_start",
+        payload={"step": 4, "diagnostic_name": "energy"},
+    )
+    context.emit_event(
+        "load_start",
+        payload={"mode": "train_resume", "path": "checkpoint"},
+    )
+    context.emit_event("run_failed", payload={"phase": "run"})
+
+    records = [
+        json.loads(line)
+        for line in context.path("events.jsonl").read_text().splitlines()
+    ]
+    by_name = {record["event"]: record for record in records}
+    assert by_name["train_phase_start"]["payload"] == {
+        "phase": "forward",
+        "step": 0,
+    }
+    assert by_name["step_start"]["payload"] == {"step": 0}
+    assert by_name["step_end"]["payload"] == {"step": 0}
+    assert by_name["train_end"]["payload"] == {"step": 1}
+    assert by_name["diagnostic_start"]["step"] == 4
+    assert by_name["diagnostic_start"]["payload"]["step"] == 4
+    assert by_name["load_start"]["step"] is None
+    assert "step" not in by_name["load_start"]["payload"]
+    assert by_name["run_failed"]["step"] is None
+    assert "step" not in by_name["run_failed"]["payload"]
+
+
 def test_typed_serialization_encodes_markers_and_public_dataclass_fields(
     tmp_path: Path,
 ) -> None:
@@ -291,6 +505,17 @@ def test_typed_serialization_encodes_markers_and_public_dataclass_fields(
     ]
 
 
+def test_typed_completion_serializes_nested_iteration_fields(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+
+    context.emit(TrainingIterationCompleted(iteration=TrainingIteration(step=7)))
+
+    record = json.loads(context.path("occurrences.jsonl").read_text().strip())
+    assert record["event"] == "tpen.training.events.TrainingIterationCompleted"
+    assert record["count"] == 1
+    assert record["fields"] == {"iteration": {"step": 7}}
+
+
 @pytest.mark.parametrize(
     "value",
     [_StatefulEvent(), _StatefulOperation(), _SlottedStatefulEvent()],
@@ -310,43 +535,44 @@ def test_typed_serialization_rejects_stateful_non_dataclass_values(
     assert not context.path("occurrences.jsonl").exists()
 
 
-def test_train_phase_timing_consumes_typed_collect_samples_scope(tmp_path: Path) -> None:
+def _complete_timed_iteration(context: RunContext, step: int) -> None:
+    iteration = TrainingIteration(step=step)
+    with context.scope(iteration):
+        with context.scope(CollectSamples(step=step)):
+            pass
+        context.emit(TrainingIterationCompleted(iteration=iteration))
+
+
+def test_train_phase_timing_reports_successful_typed_iteration(tmp_path: Path) -> None:
     logger = _Logger()
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25]))
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
 
-    with context.scope(CollectSamples(step=3)):
-        pass
-    context.emit_event("step_end", payload={"step": 3})
+    _complete_timed_iteration(context, 3)
 
     assert len(logger.records) == 1
     assert logger.records[0].namespace == "train/perf"
     assert logger.records[0].step == 3
     assert logger.records[0].metrics == {"sampling_time_sec": 0.25}
+    assert callback._starts == {}
+    assert callback._collect_samples_starts == {}
+    assert callback._durations == {}
 
 
-def test_train_phase_timing_prunes_steps_skipped_by_legacy_cadence(tmp_path: Path) -> None:
+def test_train_phase_timing_converts_zero_based_start_to_occurrence_cadence(
+    tmp_path: Path,
+) -> None:
     logger = _Logger()
     callback = TrainPhaseTiming(
         every_n_steps=2,
+        start_step=0,
         clock=_Clock([0.0, 0.1, 1.0, 1.1, 2.0, 2.2]),
     )
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
 
-    with context.scope(CollectSamples(step=0)):
-        pass
-    context.emit_event("step_end", payload={"step": 0})
-    with context.scope(CollectSamples(step=1)):
-        pass
-    context.emit_event("step_end", payload={"step": 1})
-    assert callback._durations[1]["sampling_time_sec"] == pytest.approx(0.1)
-    callback._collect_samples_starts[99] = (1, -1.0)
-
-    with context.scope(CollectSamples(step=2)):
-        assert 1 not in callback._durations
-        assert 99 not in callback._collect_samples_starts
-        assert len(callback._collect_samples_starts) == 1
-    context.emit_event("step_end", payload={"step": 2})
+    _complete_timed_iteration(context, 0)
+    _complete_timed_iteration(context, 1)
+    _complete_timed_iteration(context, 2)
 
     assert [record.step for record in logger.records] == [0, 2]
     assert logger.records[0].metrics == {"sampling_time_sec": pytest.approx(0.1)}
@@ -355,17 +581,99 @@ def test_train_phase_timing_prunes_steps_skipped_by_legacy_cadence(tmp_path: Pat
     assert callback._durations == {}
 
 
+def test_train_phase_timing_none_interval_reports_every_success(
+    tmp_path: Path,
+) -> None:
+    logger = _Logger()
+    callback = TrainPhaseTiming(
+        every_n_steps=None,
+        clock=_Clock([0.0, 0.1, 1.0, 1.2]),
+    )
+    context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+
+    _complete_timed_iteration(context, 0)
+    _complete_timed_iteration(context, 1)
+
+    assert [record.step for record in logger.records] == [0, 1]
+
+
+def test_train_phase_timing_failed_body_cleans_up_without_reporting(
+    tmp_path: Path,
+) -> None:
+    logger = _Logger()
+    callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0]))
+    context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    iteration = TrainingIteration(step=3)
+
+    with pytest.raises(RuntimeError, match="training failed"):
+        with context.scope(iteration):
+            with context.scope(CollectSamples(step=3)):
+                pass
+            context.emit_event(
+                "train_phase_start",
+                payload={"step": 3, "phase": "backward"},
+                step=3,
+            )
+            raise RuntimeError("training failed")
+
+    assert logger.records == []
+    assert callback._starts == {}
+    assert callback._collect_samples_starts == {}
+    assert callback._durations == {}
+
+
+def test_train_phase_timing_cleanup_does_not_mask_reporting_error(
+    tmp_path: Path,
+) -> None:
+    callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25]))
+    context = _context(tmp_path, callbacks=[callback], loggers=[_RaisingLogger()])
+    iteration = TrainingIteration(step=4)
+
+    with pytest.raises(RuntimeError, match="timing report failed"):
+        with context.scope(iteration):
+            with context.scope(CollectSamples(step=4)):
+                pass
+            context.emit(TrainingIterationCompleted(iteration=iteration))
+
+    assert callback._starts == {}
+    assert callback._collect_samples_starts == {}
+    assert callback._durations == {}
+
+
+def test_train_phase_timing_context_identity_change_clears_all_caches(
+    tmp_path: Path,
+) -> None:
+    callback = TrainPhaseTiming(clock=_Clock([1.0]))
+    first = _context(tmp_path / "first", callbacks=[callback])
+    second = _context(tmp_path / "second", callbacks=[callback])
+
+    first.emit_event(
+        "train_phase_start",
+        payload={"step": 8, "phase": "backward"},
+        step=8,
+    )
+    assert callback._starts
+    with second.scope(TrainingIteration(step=0)):
+        pass
+
+    assert callback._starts == {}
+    assert callback._collect_samples_starts == {}
+    assert callback._durations == {}
+
+
 def test_train_phase_timing_rejects_duplicate_sampling_duration(tmp_path: Path) -> None:
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0, 2.5]))
     context = _context(tmp_path, callbacks=[callback])
+    iteration = TrainingIteration(step=3)
 
-    with context.scope(CollectSamples(step=3)):
-        pass
     with pytest.raises(RuntimeError, match="duplicate sampling_time_sec"):
-        with context.scope(CollectSamples(step=3)):
-            pass
+        with context.scope(iteration):
+            with context.scope(CollectSamples(step=3)):
+                pass
+            with context.scope(CollectSamples(step=3)):
+                pass
 
-    assert callback._durations[3] == {"sampling_time_sec": 0.25}
+    assert callback._durations == {}
     assert callback._collect_samples_starts == {}
 
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from tpen.artifacts import RunContext
 from tpen.callback import Event
 
 
-class RecordingContext:
+class RecordingContext(RunContext):
     """Minimal RunContext stand-in that captures ``log`` calls."""
 
     def __init__(self) -> None:
@@ -54,4 +55,10 @@ def step_event(context: Any, state: Any, step: int | None = None) -> Event:
     """Build a ``step_end`` event for `state`."""
 
     resolved = state.step if step is None else step
-    return Event(name="step_end", context=context, state=state, payload={"step": resolved})
+    return Event(
+        name="step_end",
+        context=context,
+        state=state,
+        payload={"step": resolved},
+        step=resolved,
+    )

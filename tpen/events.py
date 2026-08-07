@@ -49,6 +49,78 @@ class Ended(Event, Generic[OperationT]):
     operation: OperationT
 
 
+@dataclass(frozen=True)
+class Subscription:
+    """Select one typed event or one boundary of a typed operation.
+
+    Parameters
+    ----------
+    subject : type[Event] or type[Operation]
+        Base event or operation type to select. Matching uses ``isinstance``,
+        so a base subject includes its subclasses.
+    lifecycle : type[Started], type[Ended], or None, optional
+        Bare lifecycle class for operation subscriptions. Instantaneous event
+        subscriptions must use ``None``.
+    """
+
+    subject: type[Event] | type[Operation]
+    lifecycle: type[Started] | type[Ended] | None = None
+
+    def __post_init__(self) -> None:
+        subject = self.subject
+        if not isinstance(subject, type):
+            raise TypeError("subscription subject must be an Event or Operation type")
+        is_event = issubclass(subject, Event)
+        is_operation = issubclass(subject, Operation)
+        if not is_event and not is_operation:
+            raise TypeError("subscription subject must be an Event or Operation subclass")
+        if issubclass(subject, (Started, Ended)):
+            raise TypeError("Started and Ended cannot be subscription subjects")
+        if is_event and is_operation:
+            raise TypeError("subscription subject cannot be both an Event and an Operation")
+        if is_event and self.lifecycle is not None:
+            raise ValueError("Event subscriptions require lifecycle=None")
+        if is_operation and self.lifecycle is not Started and self.lifecycle is not Ended:
+            raise ValueError("Operation subscriptions require bare Started or Ended lifecycle")
+
+    @classmethod
+    def of(cls, subject: type[Event]) -> Subscription:
+        """Return an instantaneous event subscription."""
+
+        return cls(subject=subject)
+
+    @classmethod
+    def started(cls, subject: type[Operation]) -> Subscription:
+        """Return a subscription to starts of ``subject`` operations."""
+
+        return cls(subject=subject, lifecycle=Started)
+
+    @classmethod
+    def ended(cls, subject: type[Operation]) -> Subscription:
+        """Return a subscription to ends of ``subject`` operations."""
+
+        return cls(subject=subject, lifecycle=Ended)
+
+    def matches(self, event: Event) -> bool:
+        """Return whether ``event`` is a delivered boundary for this selector."""
+
+        if self.lifecycle is None:
+            return not isinstance(event, (Started, Ended)) and isinstance(event, self.subject)
+        return isinstance(event, self.lifecycle) and isinstance(event.operation, self.subject)
+
+
+def started(subject: type[Operation]) -> Subscription:
+    """Return a subscription to starts of ``subject`` operations."""
+
+    return Subscription.started(subject)
+
+
+def ended(subject: type[Operation]) -> Subscription:
+    """Return a subscription to ends of ``subject`` operations."""
+
+    return Subscription.ended(subject)
+
+
 class EventEmitter(Protocol):
     """Protocol for run-local typed event emission."""
 
@@ -65,4 +137,14 @@ class EventEmitter(Protocol):
         ...
 
 
-__all__ = ["Ended", "Event", "EventEmitter", "Occurrence", "Operation", "Started"]
+__all__ = [
+    "Ended",
+    "Event",
+    "EventEmitter",
+    "Occurrence",
+    "Operation",
+    "Started",
+    "Subscription",
+    "ended",
+    "started",
+]

@@ -442,7 +442,7 @@ callbacks:
     rolling_window: ${timing.rolling_window}
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.TrainPhaseTiming
-    triggers: [train_phase_start, train_phase_end, step_end]
+    triggers: [train_phase_start, train_phase_end]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.ResourceUsage
     triggers: [run_start, run_end, exception, run_failed]

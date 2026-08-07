@@ -8,8 +8,10 @@ from typing import Any, Callable
 
 from tpen.artifacts import RunContext
 from tpen.events import Ended, Event as TypedEvent, Occurrence, Started
+from tpen.events import Subscription, ended, started
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from ..cadence import Cadence, SubscriptionGroup
+from .base import Callback, Event, _sync_cuda
 
 
 class TrainPhaseTiming(Callback):
@@ -17,15 +19,29 @@ class TrainPhaseTiming(Callback):
 
     Sample collection uses typed ``Started[CollectSamples]`` and
     ``Ended[CollectSamples]`` occurrences. The remaining trainer phases still
-    use the legacy ``train_phase_start``/``train_phase_end`` events during the
-    incremental migration. Durations accumulate per step and are logged as a
-    single ``train/perf`` record at ``step_end``. Reporting cadence remains
-    controlled by the legacy ``step_end`` trigger until A2.
+    use legacy ``train_phase_start``/``train_phase_end`` events. Successful
+    ``TrainingIterationCompleted`` events report one ``train/perf`` record;
+    unconditional ``Ended[TrainingIteration]`` observation clears all partial
+    state, including failed or cadence-skipped iterations.
+    Scheduling scalar options gate only typed completion reporting; legacy
+    phase-boundary collection and iteration cleanup remain ungated.
 
     Parameters
     ----------
     triggers : iterable of str, optional
-        Event names that should trigger this callback.
+        Legacy phase-boundary event names that should trigger collection.
+    every_n_steps : int or None, optional
+        Interval between successful typed completion reports. ``None`` reports
+        every successful completion occurrence.
+    start_step : int, optional
+        Legacy zero-based first report coordinate. It maps to the one-based
+        typed occurrence start ``start_step + 1``.
+    max_calls : int or None, optional
+        Maximum admitted successful typed completion occurrences.
+    probability : float, optional
+        Admission probability for an otherwise eligible typed completion.
+    seed : int or None, optional
+        Seed for the typed reporting group's independent RNG stream.
     cuda_synchronize : bool, optional
         Synchronize CUDA at phase boundaries for accurate device timing.
     clock : callable, optional
@@ -34,65 +50,98 @@ class TrainPhaseTiming(Callback):
 
     def __init__(
         self,
-        triggers: Iterable[str] = ("train_phase_start", "train_phase_end", "step_end"),
+        triggers: Iterable[str] = ("train_phase_start", "train_phase_end"),
         *,
         cuda_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(triggers, **kwargs)
+        # Importing ``tpen.callback.timing`` must stay torch-free. Resolve the
+        # training-owned event types only when this callback is constructed.
+        from tpen.training.events import (
+            CollectSamples,
+            TrainingIteration,
+            TrainingIterationCompleted,
+        )
+
+        every_n_steps = kwargs.pop("every_n_steps", None)
+        start_step = int(kwargs.pop("start_step", 0))
+        max_calls = kwargs.pop("max_calls", None)
+        probability = kwargs.pop("probability", 1.0)
+        seed = kwargs.pop("seed", None)
+        report_cadence = Cadence(
+            every_n=1 if every_n_steps is None else int(every_n_steps),
+            # Legacy step 0 is the first one-based occurrence coordinate.
+            start=start_step + 1,
+            max_calls=max_calls,
+            probability=probability,
+            seed=seed,
+        )
+        typed_groups = (
+            SubscriptionGroup(
+                selectors=(
+                    started(CollectSamples),
+                    ended(CollectSamples),
+                    ended(TrainingIteration),
+                )
+            ),
+            SubscriptionGroup(
+                selectors=(Subscription.of(TrainingIterationCompleted),),
+                cadence=report_cadence,
+            ),
+        )
+        super().__init__(triggers, typed_groups=typed_groups, **kwargs)
         self.cuda_synchronize = bool(cuda_synchronize)
         self.clock = time.perf_counter if clock is None else clock
+        self._collect_samples_type = CollectSamples
+        self._training_iteration_type = TrainingIteration
+        self._completion_type = TrainingIterationCompleted
         self._starts: dict[tuple[int, str], float] = {}
-        self._collect_samples_starts: dict[int, tuple[int, float]] = {}
+        self._collect_samples_starts: dict[
+            tuple[type[object], int], tuple[int, float]
+        ] = {}
         self._durations: dict[int, dict[str, float]] = {}
 
-    def handle_occurrence(
+    def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
     ) -> None:
-        """Measure the typed sample-collection pilot operation."""
+        """Measure, report, or clean up one admitted training occurrence."""
 
-        del context
         event = occurrence.event
-        if not isinstance(event, (Started, Ended)):
-            return
-        # Keep callback import from loading the full training graph before a
-        # typed training occurrence is actually dispatched.
-        from tpen.training.events import CollectSamples
-
-        operation = event.operation
-        if not isinstance(operation, CollectSamples):
-            return
-        step = int(operation.step)
-        if isinstance(event, Started):
-            self._prune_typed_cache(step)
+        if isinstance(event, Started) and isinstance(
+            event.operation, self._collect_samples_type
+        ):
+            step = int(event.operation.step)
+            key = (type(event.operation), occurrence.count)
             _sync_cuda(self.cuda_synchronize)
-            self._collect_samples_starts[occurrence.count] = (step, self.clock())
+            self._collect_samples_starts[key] = (step, self.clock())
             return
-
-        start_record = self._collect_samples_starts.pop(occurrence.count, None)
-        if start_record is None:
+        if isinstance(event, Ended) and isinstance(
+            event.operation, self._collect_samples_type
+        ):
+            key = (type(event.operation), occurrence.count)
+            start_record = self._collect_samples_starts.pop(key, None)
+            if start_record is None:
+                return
+            _sync_cuda(self.cuda_synchronize)
+            step, start = start_record
+            metrics = self._durations.setdefault(step, {})
+            if "sampling_time_sec" in metrics:
+                raise RuntimeError(
+                    f"duplicate sampling_time_sec for training step {step}"
+                )
+            metrics["sampling_time_sec"] = self.clock() - start
             return
-        _sync_cuda(self.cuda_synchronize)
-        step, start = start_record
-        metrics = self._durations.setdefault(step, {})
-        if "sampling_time_sec" in metrics:
-            raise RuntimeError(f"duplicate sampling_time_sec for training step {step}")
-        metrics["sampling_time_sec"] = self.clock() - start
-
-    def _prune_typed_cache(self, step: int) -> None:
-        """Discard typed timing state that a skipped legacy trigger cannot report."""
-
-        # CollectSamples is a sequential trainer phase in A1, so any unmatched
-        # prior start is stale, including a failed retry of the same step.
-        self._collect_samples_starts.clear()
-        for cached_step in tuple(self._durations):
-            if cached_step == step:
-                continue
-            metrics = self._durations[cached_step]
-            metrics.pop("sampling_time_sec", None)
-            if not metrics:
-                del self._durations[cached_step]
+        if isinstance(event, self._completion_type):
+            self._report_completed_iteration(
+                int(event.iteration.step),
+                context,
+            )
+            return
+        if isinstance(event, Ended) and isinstance(
+            event.operation, self._training_iteration_type
+        ):
+            self._cleanup_iteration(int(event.operation.step))
 
     def on_train_phase_start(self, event: Event) -> None:
         """Record one phase start time."""
@@ -112,25 +161,30 @@ class TrainPhaseTiming(Callback):
         step, phase = key
         self._durations.setdefault(step, {})[f"{phase}_time_sec"] = self.clock() - start
 
-    def on_step_end(self, event: Event) -> None:
-        """Log all phase durations recorded for the finished step."""
+    def _report_completed_iteration(self, step: int, context: RunContext) -> None:
+        """Log measurements for one admitted successful iteration."""
 
-        step = event.step
-        if step is None:
-            return
-        step = int(step)
-        # Unmatched starts from an aborted phase must not leak across steps.
+        metrics = self._durations.pop(step, None)
+        if metrics:
+            context.log(metrics, step=step, namespace="train/perf")
+
+    def _cleanup_iteration(self, step: int) -> None:
+        """Discard all measurements for an ended iteration without side effects."""
+
         self._starts = {key: value for key, value in self._starts.items() if key[0] != step}
         self._collect_samples_starts = {
-            count: value
-            for count, value in self._collect_samples_starts.items()
+            key: value
+            for key, value in self._collect_samples_starts.items()
             if value[0] != step
         }
-        metrics = self._durations.pop(step, None)
-        if not metrics:
-            return
-        event.context.log(metrics, step=step, namespace="train/perf")
-        _attach_event_metrics(event, "train/perf", metrics)
+        self._durations.pop(step, None)
+
+    def _reset_typed_state(self) -> None:
+        """Clear timing caches when the owning RunContext identity changes."""
+
+        self._starts.clear()
+        self._collect_samples_starts.clear()
+        self._durations.clear()
 
     @staticmethod
     def _event_key(event: Event) -> tuple[int, str]:

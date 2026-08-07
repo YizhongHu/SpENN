@@ -227,7 +227,7 @@ def run_from_config(
 
 
 def _validate_callbacks(callbacks: list[object]) -> None:
-    """Fail loudly if a configured callback lacks a callable ``handle(event)``.
+    """Fail loudly if a configured callback lacks either dispatch method.
 
     This checks the interface shape only; callback behavior is invoked lazily
     through normal lifecycle events, never during setup.
@@ -237,6 +237,11 @@ def _validate_callbacks(callbacks: list[object]) -> None:
         if not callable(getattr(callback, "handle", None)):
             raise TypeError(
                 f"callbacks[{index}]={type(callback).__name__} must expose callable handle(event)"
+            )
+        if not callable(getattr(callback, "handle_occurrence", None)):
+            raise TypeError(
+                f"callbacks[{index}]={type(callback).__name__} must expose callable "
+                "handle_occurrence(occurrence, context)"
             )
 
 

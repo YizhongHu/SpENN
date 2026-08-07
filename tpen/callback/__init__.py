@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import Callback, Event
+from .cadence import Cadence, CadenceGate, SubscriptionGroup
 from .checkpoint import Checkpoint
 from .equivariance import RuntimeEquivariance
 from .evaluation import ArtifactIndex, FailureLog
@@ -58,6 +59,8 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "ArtifactIndex",
+    "Cadence",
+    "CadenceGate",
     "Callback",
     "Checkpoint",
     "ConfigSnapshot",
@@ -75,6 +78,7 @@ __all__ = [
     "RuntimeEquivariance",
     "SamplerHealth",
     "Status",
+    "SubscriptionGroup",
     "TrainPhaseTiming",
     "TrainStepTiming",
     "configure_terminal_logging",
