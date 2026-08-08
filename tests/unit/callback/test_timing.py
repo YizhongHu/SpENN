@@ -459,23 +459,16 @@ def test_diagnostic_timing_requires_name() -> None:
         )
 
 
-def test_cuda_synchronize_flag_controls_cuda_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The public option keeps its `cuda_synchronize` name, but the work is now
+    # delegated to the backend-agnostic accelerator helper, so the seam under
+    # test is that helper rather than torch.cuda.
     calls: list[str] = []
-    fake_torch = type(
-        "FakeTorch",
-        (),
-        {
-            "cuda": type(
-                "FakeCuda",
-                (),
-                {
-                    "is_available": staticmethod(lambda: True),
-                    "synchronize": staticmethod(lambda: calls.append("sync")),
-                },
-            )(),
-        },
-    )()
-    monkeypatch.setattr(timing_base, "require_torch", lambda *, feature: fake_torch)
+    monkeypatch.setattr(
+        timing_base,
+        "_synchronize_accelerator",
+        lambda **kwargs: calls.append("sync"),
+    )
 
     no_sync = TrainStepTiming(cuda_synchronize=False, clock=FakeClock([1.0, 2.0]))
     no_sync.handle(

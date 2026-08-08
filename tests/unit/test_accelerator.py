@@ -62,6 +62,15 @@ def test_canonical_device_is_idempotent() -> None:
     assert canonical_device(once) == once
 
 
+def test_canonical_device_passes_through_a_device_without_an_accelerator_module() -> None:
+    # `meta` is a valid device type with no registered module, so there is no
+    # current device to resolve. It must pass through rather than raising, or
+    # MetropolisSampler's fail-loud device-mismatch check would surface a torch
+    # internal error instead of its own message.
+    assert canonical_device("meta") == torch.device("meta")
+    assert canonical_device(torch.device("meta")) == torch.device("meta")
+
+
 def test_canonical_device_of_unavailable_accelerator_stays_index_free() -> None:
     # Guards the CPU-only/CI path: an index must never be invented for a device
     # that is not present, because that would fabricate a comparison mismatch.

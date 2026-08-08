@@ -32,6 +32,19 @@ def _torch(feature: str) -> Any:
     return torch
 
 
+def _optional_device_module(torch: Any, device_type: str) -> Any | None:
+    """Return the device module for ``device_type``, or ``None`` when none exists.
+
+    Device types such as ``meta`` are valid to construct but have no registered
+    accelerator module, and therefore no current device to resolve.
+    """
+
+    try:
+        return torch.get_device_module(device_type)
+    except (AttributeError, RuntimeError):
+        return None
+
+
 def current_accelerator_type(*, feature: str = "accelerator detection") -> str:
     """Return the active accelerator device type, or ``"cpu"`` when there is none.
 
@@ -84,7 +97,8 @@ def canonical_device(device: Any, *, feature: str = "device comparison") -> Any:
     Tensors report an indexed accelerator device (``cuda:0``, ``xpu:0``) while
     configs and callers usually pass the index-less form, and ``torch.device``
     treats those as unequal. CPU devices are reported index-less by tensors and
-    pass through unchanged, as do devices that already carry an index and
+    pass through unchanged, as do devices that already carry an index, device
+    types with no registered accelerator module (such as ``meta``), and
     accelerators that are not currently available.
 
     Parameters
@@ -104,7 +118,9 @@ def canonical_device(device: Any, *, feature: str = "device comparison") -> Any:
     resolved = torch.device(device)
     if resolved.type == "cpu" or resolved.index is not None:
         return resolved
-    module = torch.get_device_module(resolved.type)
+    module = _optional_device_module(torch, resolved.type)
+    if module is None:
+        return resolved
     is_available = getattr(module, "is_available", None)
     if not callable(is_available) or not is_available():
         return resolved
