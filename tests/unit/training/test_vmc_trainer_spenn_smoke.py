@@ -14,6 +14,7 @@ from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.events import Ended, Occurrence, Started
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.sampling import SamplerStats
 from tpen.training.events import (
     Backward,
     BuildBatch,
@@ -70,7 +71,15 @@ class _VacuumSampler:
 
     def collect_samples(self, model, *, device=None):
         del model, device
-        return _VacuumWalkers(), {}
+        walkers = _VacuumWalkers()
+        stats = SamplerStats(
+            acceptance_rate=1.0,
+            n_walkers=walkers.n_walkers,
+            burn_in=0,
+            n_steps=0,
+            proposal_scale=0.0,
+        )
+        return walkers, stats
 
 
 class _ConstantWavefunction(torch.nn.Module):

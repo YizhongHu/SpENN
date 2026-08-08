@@ -358,8 +358,12 @@ def _training_metric_values(state: object) -> dict[str, object]:
     values: dict[str, object] = {}
     for key, value in dict(getattr(state, "metrics", {}) or {}).items():
         values[f"train/{key}"] = value
-    for key, value in dict(getattr(state, "sampler_stats", {}) or {}).items():
-        values[f"train/sampler/{key}"] = value
+    # ``sampler_stats`` is a typed SamplerStats record that composes its own
+    # metric names; status never re-spells or re-flattens them.
+    sampler_stats = getattr(state, "sampler_stats", None)
+    if sampler_stats is not None:
+        for key, value in sampler_stats.as_metrics().items():
+            values[f"train/sampler/{key}"] = value
     return values
 
 

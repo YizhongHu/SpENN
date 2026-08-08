@@ -5,11 +5,13 @@ from tpen.sampling.equilibrate import equilibrate, warmup
 from tpen.sampling.mala import MALASampler
 from tpen.sampling.metropolis import MetropolisSampler
 from tpen.sampling.moves import GaussianMove, gaussian_proposal
+from tpen.sampling.stats import SamplerStats
 
 __all__ = [
     "GaussianMove",
     "MALASampler",
     "MetropolisSampler",
+    "SamplerStats",
     "equilibrate",
     "gaussian_proposal",
     "summarize_walker_geometry",

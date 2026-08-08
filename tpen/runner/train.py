@@ -22,7 +22,8 @@ class Train(Runner):
     model : torch.nn.Module
         Wavefunction model to optimize.
     sampler : object
-        Sampler exposing ``collect_samples(model, device=...) -> (walkers, stats)``.
+        Sampler exposing
+        ``collect_samples(model, device=...) -> (walkers, SamplerStats)``.
     hamiltonian_terms : sequence or mapping
         Hamiltonian terms summed by `local_energy`. A
         ``dict[str, HamiltonianTerm]`` uses its non-empty string keys as the

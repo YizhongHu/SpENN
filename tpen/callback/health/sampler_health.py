@@ -11,9 +11,11 @@ from ..base import Callback, Event
 class SamplerHealth(Callback):
     """Expose sampler statistics under ``checks/sampler`` with optional bounds.
 
-    Reads ``state.sampler_stats`` and logs only the stats actually available. When
-    acceptance-rate bounds are configured and violated, ``passed`` is ``False``;
-    it raises only if ``fail_fast`` is set.
+    Reads the typed `tpen.sampling.SamplerStats` record on ``state.sampler_stats``
+    and lets that record compose the check key set, so ``checks/sampler`` names
+    are spelled in exactly one place. A state carrying no diagnostics still
+    reports ``passed``. When acceptance-rate bounds are configured and violated,
+    ``passed`` is ``False``; it raises only if ``fail_fast`` is set.
     """
 
     def __init__(
@@ -34,29 +36,27 @@ class SamplerHealth(Callback):
         """Log available sampler diagnostics and check crude bounds."""
 
         state = event.state
-        stats = dict(getattr(state, "sampler_stats", None) or {})
+        # ``Event.state`` is untyped at the legacy ingress, so the state itself
+        # is probed with a default; the record it yields is then read typed.
+        stats = getattr(state, "sampler_stats", None)
 
-        metrics: dict[str, Any] = {
-            key: stats[key] for key in ("acceptance_rate", "n_walkers", "n_steps", "burn_in") if key in stats
-        }
+        metrics: dict[str, Any] = {} if stats is None else stats.as_check_metrics()
 
-        failure: str | None = None
-        acceptance_rate = stats.get("acceptance_rate")
-        if acceptance_rate is not None:
-            if self.min_acceptance_rate is not None and acceptance_rate < self.min_acceptance_rate:
-                failure = (
-                    f"acceptance_rate={acceptance_rate} below min_acceptance_rate={self.min_acceptance_rate}"
-                )
-            elif self.max_acceptance_rate is not None and acceptance_rate > self.max_acceptance_rate:
-                failure = (
-                    f"acceptance_rate={acceptance_rate} above max_acceptance_rate={self.max_acceptance_rate}"
-                )
+        failure = None if stats is None else self._acceptance_failure(stats.acceptance_rate)
 
         metrics["passed"] = failure is None
         event.context.log(metrics, step=state.step, namespace="checks/sampler")
         if self.fail_fast and failure is not None:
             raise RuntimeError(f"SamplerHealth failed at step {state.step}: {failure}")
 
+    def _acceptance_failure(self, acceptance_rate: float) -> str | None:
+        """Return a bound-violation description, or ``None`` when in bounds."""
+
+        if self.min_acceptance_rate is not None and acceptance_rate < self.min_acceptance_rate:
+            return f"acceptance_rate={acceptance_rate} below min_acceptance_rate={self.min_acceptance_rate}"
+        if self.max_acceptance_rate is not None and acceptance_rate > self.max_acceptance_rate:
+            return f"acceptance_rate={acceptance_rate} above max_acceptance_rate={self.max_acceptance_rate}"
+        return None
 
 
 __all__ = ["SamplerHealth"]
