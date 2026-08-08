@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from .base import Callback, Event, _attach_event_metrics, _sync_device
 
 
 class TrainStepTiming(Callback):
@@ -37,7 +37,7 @@ class TrainStepTiming(Callback):
         step = event.step
         if step is None:
             return
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         self._starts[int(step)] = self.clock()
 
     def on_step_end(self, event: Event) -> None:
@@ -46,7 +46,7 @@ class TrainStepTiming(Callback):
         step = event.step
         if step is None or int(step) not in self._starts:
             return
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         duration = self.clock() - self._starts.pop(int(step))
         self._durations.append(duration)
         metrics = {

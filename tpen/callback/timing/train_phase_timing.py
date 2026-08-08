@@ -10,7 +10,7 @@ from tpen.events import Ended, Event as TypedEvent, Occurrence, Started
 from tpen.events import Subscription, ended, started
 
 from ..cadence import Cadence, SubscriptionGroup
-from .base import Callback, _sync_cuda
+from .base import Callback, _sync_device
 
 
 class TrainPhaseTiming(Callback):
@@ -108,7 +108,7 @@ class TrainPhaseTiming(Callback):
         event = occurrence.event
         if isinstance(event, Started) and isinstance(event.operation, self._phase_type):
             key = (type(event.operation), occurrence.count)
-            _sync_cuda(self.cuda_synchronize)
+            _sync_device(self.cuda_synchronize)
             self._phase_starts[key] = (int(event.operation.step), self.clock())
             return
         if isinstance(event, Ended) and isinstance(event.operation, self._phase_type):
@@ -116,7 +116,7 @@ class TrainPhaseTiming(Callback):
             start_record = self._phase_starts.pop(key, None)
             if start_record is None:
                 return
-            _sync_cuda(self.cuda_synchronize)
+            _sync_device(self.cuda_synchronize)
             step, start = start_record
             # The metric fragment is owned by the phase type, never re-spelled
             # here, so timing keys cannot drift away from the phase contract.
