@@ -524,6 +524,104 @@ The `trainer.json` component of a checkpoint carries both counters:
 {"next_iteration": 500, "completed_updates": 500}
 ```
 
+### Checkpoint manifest schema v2 names the cursor
+
+`manifest.json` schema version 2 records both counters under their own names:
+
+```json
+{"schema_version": 2, "kind": "tpen.checkpoint", "next_iteration": 500, "completed_updates": 500}
+```
+
+This replaces schema v1's single `step` field, which was ambiguous by name and
+in fact always held `next_iteration`. Recording the name explicitly resolves a
+standing disagreement with `experiments/checkpoint-selection-options.md`, which
+keys checkpoint identity on `step`: the two agree on the *value*, because
+`step` there is `next_iteration`, but v1 never said so. Anything selecting
+checkpoints by identity should read `next_iteration`.
+
+Version acceptance is per restore mode, and there is no v1 -> v2 upgrade path:
+
+| Restore mode   | Accepted `schema_version` | Accepted `kind`                       |
+| -------------- | ------------------------- | ------------------------------------- |
+| `model_only`   | 1, 2                      | `spenn.checkpoint` (v1), `tpen.checkpoint` (v2) |
+| `train_resume` | 2                         | `tpen.checkpoint`                     |
+
+A v1 artifact still restores weights, because `model_only` needs only
+`model.pt` and the config hashes.
+
+It cannot be resumed from — but not because the restore path needs
+`manifest.completed_updates`. It does not: `train_resume` takes trainer state
+from `trainer.json`, and the manifest counters only reach `RestoreReport`. The
+real reason is that **a v1 manifest cannot prove which `trainer.json` key set it
+carries.** B1 renamed the trainer keys from `global_step`/`completed_steps` to
+`next_iteration`/`completed_updates` *without* bumping the manifest schema, so
+`schema_version 1` spans both populations: written before B1 it is genuinely
+unresumable, written after B1 it would resume fine. The version cannot
+distinguish them, so `train_resume` refuses all v1 at the schema gate rather
+than guessing, naming both the version and the mode.
+
+Provenance in v2 records `tpen_version` (v1 recorded `spenn_version`).
+
+**Operational note.** Any checkpoint written between the B1 merge and the C1
+merge carries a v1 manifest with post-B1 trainer keys. It is materially
+resumable, but `train_resume` refuses it anyway, for the reason above. Re-train,
+or restore it with `model_only`. There is deliberately no migration path.
+
+`latest.json` is deliberately minimal and unchanged: a `checkpoint_dir`
+pointer, its `step` number, and a timestamp. Pruning (`keep_last`) never
+deletes the directory `latest.json` points at — a defence-in-depth guarantee
+rather than a live one, since `write_latest` runs before `prune_old_checkpoints`
+and so the pointer always targets the newest directory in practice.
+
+### Checkpoint cadence counts completed updates
+
+On the periodic `step_end` path, the `Checkpoint` callback's `every_n_steps`
+counts `completed_updates`, not the resume cursor and not the 0-based loop step:
+periodic checkpoints are spaced by optimizer updates that actually ran.
+
+Periodic checkpointing is driven by the typed `UpdateCompleted` event, which the
+trainer emits in the one place `completed_updates` is incremented — immediately
+after `optimizer.step()` returns. That yields exactly one candidate firing per
+completed update by construction. A vacuum iteration emits `UpdateSkipped`
+instead, which `Checkpoint` does not subscribe to, so no periodic checkpoint
+fires for it: a run of vacuum iterations writes no periodic checkpoints at all,
+rather than one per iteration. This selection is unconditional — with no
+`every_n_steps` configured, `step_end` writes on every *completed update*, not
+on every iteration.
+
+Trigger and coordinate are separate, and the distinction matters across resume:
+
+| Role               | Value                                               |
+| ------------------ | --------------------------------------------------- |
+| Periodic trigger   | `UpdateCompleted` occurrence                         |
+| Cadence coordinate | durable `trainer.state_dict()["completed_updates"]` |
+| Directory identity | durable `trainer.state_dict()["next_iteration"]`    |
+
+The run-local `Occurrence.count` is deliberately *not* the cadence coordinate.
+Occurrence counts restart at 1 for a new `RunContext`, so a resumed run gating
+on them would shift its checkpoint phase relative to an uninterrupted run.
+Gating on the durable counter means a run restored at `completed_updates = N`
+checkpoints at exactly the points an uninterrupted run that reached `N` would.
+This is a checkpoint-local guarantee; durable cadence continuation for
+occurrence-gated callbacks generally remains deferred.
+
+The write happens at the `step_end` trigger rather than at the `UpdateCompleted`
+occurrence, because `next_iteration` is assigned at the end of the loop body and
+the typed occurrence carries no model, optimizer, or sampler. `UpdateCompleted`
+selects which `step_end` may write.
+
+`train_end` is a **terminal** trigger, not a periodic one. Update selection
+deliberately does not apply to it, because a terminal checkpoint must land even
+when the final iteration skipped its update, and even when the loop body never
+executed at all (`max_steps = 0`, or a fully-resumed run, where
+`TrainerState.step` is still `-1`). When a `train_end` `Checkpoint` is given an
+`every_n_steps`, that window keeps the resume-cursor coordinate it has always
+used, not `completed_updates`.
+
+Directory identity is unaffected by cadence: a checkpoint written at
+`completed_updates = 40` still lands in the directory named by its
+`next_iteration`, which may be larger.
+
 Evaluation metrics use an evaluation step or `0` if there is only one evaluation event:
 
 ```text

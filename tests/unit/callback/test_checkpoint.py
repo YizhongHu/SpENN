@@ -2,21 +2,38 @@
 
 from __future__ import annotations
 
+import json
+import random
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from omegaconf import OmegaConf
 
 import tpen.checkpoint.restore as restore_module
+from tpen.accelerator import device_module
 from tpen.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
     checkpoint_hashes,
+    resolve_checkpoint_dir,
     restore_checkpoint,
     restore_checkpoint_with_events,
     save_checkpoint,
     stable_config_hash,
+)
+from tpen.checkpoint.artifact import prune_old_checkpoints, write_latest
+from tpen.checkpoint.manifest import LEGACY_CHECKPOINT_KIND, LEGACY_CHECKPOINT_SCHEMA_VERSION
+from tpen.checkpoint.rng import (
+    ACCELERATOR_STATE_KEY,
+    BACKEND_KEY,
+    DEVICE_KEY,
+    DEVICES_KEY,
+    apply_rng_state,
+    draws_from_accelerator,
+    require_restorable_rng_state,
+    rng_state_dict,
 )
 from tpen.nn import HookeOrbitalBasis
 
@@ -79,7 +96,8 @@ def _write_checkpoint(tmp_path: Path, model: torch.nn.Module | None = None, **kw
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     return save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=3,
+        next_iteration=3,
+        completed_updates=3,
         model=model,
         optimizer=optimizer,
         trainer=_Trainer(),
@@ -87,6 +105,25 @@ def _write_checkpoint(tmp_path: Path, model: torch.nn.Module | None = None, **kw
         context=_context(),
         **kwargs,
     )
+
+
+def _rewrite_manifest_as_v1(checkpoint_dir: Path) -> None:
+    """Rewrite a written manifest into the retired v1 shape.
+
+    v1 recorded one ambiguous ``step`` -- which was in fact the resume cursor
+    -- under the pre-rename kind, and never recorded ``completed_updates``.
+    Nothing writes that shape any more, so tests synthesize it to pin read-side
+    acceptance for archived artifacts.
+    """
+
+    manifest_path = checkpoint_dir / "manifest.json"
+    data = json.loads(manifest_path.read_text())
+    data["schema_version"] = LEGACY_CHECKPOINT_SCHEMA_VERSION
+    data["kind"] = LEGACY_CHECKPOINT_KIND
+    data["step"] = data.pop("next_iteration")
+    data.pop("completed_updates")
+    data["provenance"]["spenn_version"] = data["provenance"].pop("tpen_version")
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) -> None:
@@ -139,7 +176,8 @@ def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:
         "path": str(root),
         "resolved_checkpoint_dir": str(root / "step_000003"),
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
-        "step": 3,
+        "next_iteration": 3,
+        "completed_updates": 3,
         "loaded_model": True,
         "loaded_optimizer": False,
         "loaded_trainer": False,
@@ -213,7 +251,8 @@ def test_restore_rejects_equal_width_legacy_and_product_basis_semantics(tmp_path
     trained = torch.nn.Linear(legacy_basis.out_features, 2).double()
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=1,
+        next_iteration=1,
+        completed_updates=1,
         model=trained,
         context=_context(legacy_config),
         save_optimizer=False,
@@ -251,7 +290,8 @@ def test_model_only_does_not_require_train_resume_files(tmp_path: Path) -> None:
     trained = torch.nn.Linear(3, 2).double()
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=1,
+        next_iteration=1,
+        completed_updates=1,
         model=trained,
         context=_context(),
         save_optimizer=False,
@@ -301,7 +341,8 @@ def test_train_resume_restores_all_train_state(tmp_path: Path) -> None:
 def test_train_resume_fails_when_required_file_is_missing(tmp_path: Path) -> None:
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
-        step=1,
+        next_iteration=1,
+        completed_updates=1,
         model=torch.nn.Linear(3, 2).double(),
         optimizer=torch.optim.Adam(torch.nn.Linear(3, 2).double().parameters(), lr=0.01),
         trainer=_Trainer(),
@@ -321,6 +362,266 @@ def test_train_resume_fails_when_required_file_is_missing(tmp_path: Path) -> Non
         )
 
 
+# --- accelerator RNG device contract -----------------------------------------
+#
+# `train_resume` must refuse rather than silently continue on a different random
+# stream. These drive `tpen.checkpoint.rng` directly with fabricated device
+# provenance, so every case runs on a CPU-only host: `canonical_device` preserves
+# an explicit index without consulting the backend, and the payload's recorded
+# device is plain data.
+
+
+def _accelerator_rng_state(device: str, devices: list[str]) -> dict[str, object]:
+    """Return a CPU-written RNG payload relabelled as an accelerator write."""
+
+    state = dict(rng_state_dict("cpu"))
+    recorded = torch.device(device)
+    state[BACKEND_KEY] = recorded.type
+    state[DEVICE_KEY] = str(recorded)
+    state[DEVICES_KEY] = list(devices)
+    if devices:
+        # `get_rng_state_all()` returns one state per visible device, in order.
+        state[ACCELERATOR_STATE_KEY] = [torch.zeros(16, dtype=torch.uint8) for _ in devices]
+    return state
+
+
+def _numpy_states_equal(left, right) -> bool:
+    """Compare two `numpy.random.get_state()` tuples elementwise."""
+
+    kind, keys, position, has_gauss, cached_gauss = left
+    other_kind, other_keys, other_position, other_has_gauss, other_cached_gauss = right
+    return bool(
+        kind == other_kind
+        and np.array_equal(keys, other_keys)
+        and position == other_position
+        and has_gauss == other_has_gauss
+        and cached_gauss == other_cached_gauss
+    )
+
+
+def test_cpu_rng_state_round_trips_unchanged(tmp_path: Path) -> None:
+    """The common path: a CPU run resuming a CPU checkpoint reproduces every stream.
+
+    Fidelity is asserted per stream, not just "restore did not raise". Dropping
+    any single ``set_*`` call in `tpen.checkpoint.rng.apply_rng_state` has to
+    fail here, because nothing else in the suite compares restored RNG state
+    against saved RNG state.
+    """
+
+    torch.manual_seed(1234)
+    random.seed(1234)
+    np.random.seed(1234)
+    saved_torch = torch.get_rng_state().clone()
+    saved_python = random.getstate()
+    saved_numpy = np.random.get_state()
+
+    state = rng_state_dict("cpu")
+
+    assert state[BACKEND_KEY] == "cpu"
+    assert state[DEVICE_KEY] == "cpu"
+    assert state[DEVICES_KEY] == []
+    # CPU RNG lives in `torch_cpu`; no accelerator state exists to persist.
+    assert ACCELERATOR_STATE_KEY not in state
+
+    # Advance every stream so an unrestored one cannot coincidentally match.
+    torch.rand(8)
+    random.random()
+    np.random.random(8)
+    assert not torch.equal(torch.get_rng_state(), saved_torch)
+    assert random.getstate() != saved_python
+    assert not _numpy_states_equal(np.random.get_state(), saved_numpy)
+
+    require_restorable_rng_state(state, "cpu", tmp_path)
+    apply_rng_state(state, "cpu")
+
+    assert torch.equal(torch.get_rng_state(), saved_torch)
+    assert random.getstate() == saved_python
+    assert _numpy_states_equal(np.random.get_state(), saved_numpy)
+
+
+def test_rng_restore_refuses_when_accelerator_state_is_absent(tmp_path: Path) -> None:
+    """A live non-CUDA accelerator persists nothing, so resume must refuse."""
+
+    # What Aurora's XPU produces today: the device is recorded, the state is not.
+    state = _accelerator_rng_state("xpu:0", devices=[])
+
+    with pytest.raises(ValueError, match=r"carries no accelerator RNG state") as refusal:
+        require_restorable_rng_state(state, "xpu:0", tmp_path)
+
+    # Absence is reported as absence. Both mismatch messages contrast the two
+    # devices with "but this run is on"; the absence message must not, or the
+    # two failures would be indistinguishable to whoever reads the traceback.
+    assert "but this run is on" not in str(refusal.value)
+    assert "xpu:0" in str(refusal.value)
+
+
+def test_rng_restore_refuses_an_empty_accelerator_state_list(tmp_path: Path) -> None:
+    """An empty per-device list restores nothing, so it must not count as present.
+
+    ``set_rng_state_all([])`` is a silent no-op, which would turn a claimed
+    successful resume into no accelerator restore at all.
+    """
+
+    state = _accelerator_rng_state("cuda:0", devices=["cuda:0"])
+    state[ACCELERATOR_STATE_KEY] = []
+
+    with pytest.raises(ValueError, match=r"carries no accelerator RNG state"):
+        require_restorable_rng_state(state, "cuda:0", tmp_path)
+
+
+def test_rng_restore_refuses_a_payload_without_device_provenance(tmp_path: Path) -> None:
+    """A pre-guard payload cannot prove its device, so it cannot be resumed.
+
+    Refused on every device, not just accelerators: the exemption would
+    otherwise apply precisely to the artifacts written before the guard existed.
+    Mirrors C1's refusal of a v1 manifest for ``train_resume`` -- unprovable
+    provenance is rejected rather than guessed. ``model_only`` is unaffected,
+    since it restores no RNG at all.
+    """
+
+    legacy = dict(rng_state_dict("cpu"))
+    for key in (BACKEND_KEY, DEVICE_KEY, DEVICES_KEY):
+        legacy.pop(key)
+
+    with pytest.raises(ValueError, match=r"records no RNG device provenance"):
+        require_restorable_rng_state(legacy, "cpu", tmp_path)
+
+    # Same refusal on an accelerator, where a legacy CUDA payload could
+    # otherwise have restored `cuda:1`'s streams onto `cuda:0` silently.
+    legacy_cuda = dict(legacy)
+    legacy_cuda[ACCELERATOR_STATE_KEY] = [torch.zeros(16, dtype=torch.uint8)]
+    with pytest.raises(ValueError, match=r"records no RNG device provenance"):
+        require_restorable_rng_state(legacy_cuda, "cuda:0", tmp_path)
+
+
+def test_rng_restore_refuses_a_different_accelerator_backend(tmp_path: Path) -> None:
+    state = _accelerator_rng_state("cuda:0", devices=["cuda:0"])
+
+    with pytest.raises(ValueError, match=r"backend 'cuda'.*backend 'xpu'"):
+        require_restorable_rng_state(state, "xpu:0", tmp_path)
+
+
+def test_rng_restore_refuses_a_different_device_index(tmp_path: Path) -> None:
+    """Same backend is not enough: the guard is same-device.
+
+    `set_rng_state_all` assigns positionally, so moving from `cuda:0` to
+    `cuda:1` does not by itself rebind streams -- that is the visible-device-set
+    case. It is refused because reproducibility requires the resumed run to draw
+    from the device that wrote the state, and nothing in torch raises otherwise.
+    This mirrors `MetropolisSampler._require_device`, which has always rejected
+    an index mismatch after canonicalization.
+    """
+
+    state = _accelerator_rng_state("cuda:0", devices=["cuda:0", "cuda:1"])
+
+    with pytest.raises(ValueError, match=r"device cuda:0.*device cuda:1"):
+        require_restorable_rng_state(state, "cuda:1", tmp_path)
+
+
+def test_rng_restore_refuses_a_changed_visible_device_set(tmp_path: Path) -> None:
+    """The per-device state list is positional, so its length is part of the contract."""
+
+    # One more device than this host exposes, whatever host this is.
+    visible = device_module("cuda").device_count()
+    recorded = [f"cuda:{index}" for index in range(visible + 1)]
+    state = _accelerator_rng_state("cuda:0", devices=recorded)
+
+    with pytest.raises(ValueError, match=r"visible device set"):
+        require_restorable_rng_state(state, "cuda:0", tmp_path)
+
+
+def test_rng_contract_passes_through_a_device_without_a_backend_module(tmp_path: Path) -> None:
+    """`meta` must never reach an unconditional `get_device_module` lookup.
+
+    A device type with no accelerator module is valid to construct. Resolving a
+    backend module for it raises a torch-internal ``RuntimeError``, which would
+    replace a caller's own clear error -- exactly what
+    `tests/unit/sampling/test_metropolis.py`'s ``device="meta"`` case exists to
+    prevent on the sampler side. `canonical_device` leaves such a device
+    index-free, and an index is what this module treats as the
+    live-accelerator signal, so no lookup happens here either.
+    """
+
+    assert draws_from_accelerator(torch.device("meta")) is False
+
+    state = rng_state_dict("meta")
+    assert state[DEVICE_KEY] == "meta"
+    assert state[DEVICES_KEY] == []
+    assert ACCELERATOR_STATE_KEY not in state
+
+    # A regression that looked up the backend module would surface in either
+    # entry point as a torch RuntimeError rather than a checkpoint-level message.
+    require_restorable_rng_state(state, "meta", tmp_path)
+    apply_rng_state(state, "meta")
+
+
+def _rewrite_rng_as_foreign_device(checkpoint_dir: Path) -> None:
+    """Relabel a written ``rng.pt`` as an XPU write carrying no accelerator state."""
+
+    rng_path = checkpoint_dir / "rng.pt"
+    state = torch.load(rng_path, weights_only=False)
+    state[BACKEND_KEY] = "xpu"
+    state[DEVICE_KEY] = "xpu:0"
+    state[DEVICES_KEY] = []
+    state.pop(ACCELERATOR_STATE_KEY, None)
+    torch.save(state, rng_path)
+
+
+def test_train_resume_refuses_a_checkpoint_written_on_another_device(tmp_path: Path) -> None:
+    """End to end: the refusal reaches `restore_checkpoint`, it is not a silent skip.
+
+    The refusal must also arrive before anything is mutated. `_load_sampler`
+    recreates `MetropolisSampler`'s generator on a device mismatch -- reseeding
+    it, or leaving it unseeded when no seed is configured -- so a guard that ran
+    after the component loads would refuse the lesser hazard having already
+    reset the run's dominant RNG source.
+    """
+
+    trained = torch.nn.Linear(3, 2).double()
+    checkpoint_dir = _write_checkpoint(tmp_path, model=trained)
+    _rewrite_rng_as_foreign_device(checkpoint_dir)
+
+    fresh = torch.nn.Linear(3, 2).double()
+    before_restore = {name: value.detach().clone() for name, value in fresh.state_dict().items()}
+    trainer = _Trainer()
+    sampler = _Sampler()
+
+    with pytest.raises(ValueError, match=r"backend 'xpu'.*backend 'cpu'"):
+        restore_checkpoint(
+            load={"path": str(checkpoint_dir), "mode": "train_resume"},
+            model=fresh,
+            optimizer=torch.optim.Adam(fresh.parameters(), lr=0.01),
+            trainer=trainer,
+            sampler=sampler,
+            context=_context(),
+        )
+
+    # Nothing was restored: not the sampler chain, not the trainer counters, not
+    # the weights.
+    assert sampler.loaded is None
+    assert trainer.loaded is None
+    for name, value in fresh.state_dict().items():
+        assert torch.equal(value, before_restore[name])
+
+
+def test_model_only_restores_a_checkpoint_that_cannot_be_resumed(tmp_path: Path) -> None:
+    """`model_only` restores no RNG, so the device guard must not reach it."""
+
+    trained = torch.nn.Linear(3, 2).double()
+    checkpoint_dir = _write_checkpoint(tmp_path, model=trained)
+    _rewrite_rng_as_foreign_device(checkpoint_dir)
+    fresh = torch.nn.Linear(3, 2).double()
+
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "model_only", "strict": True},
+        model=fresh,
+        context=_context(),
+    )
+
+    assert torch.equal(fresh.weight, trained.weight)
+    assert report.loaded_rng is False
+
+
 def test_restore_strict_load_fails_on_unexpected_keys(tmp_path: Path) -> None:
     checkpoint_dir = _write_checkpoint(tmp_path)
     state = torch.load(checkpoint_dir / "model.pt", weights_only=False)
@@ -333,6 +634,187 @@ def test_restore_strict_load_fails_on_unexpected_keys(tmp_path: Path) -> None:
             model=torch.nn.Linear(3, 2).double(),
             context=_context(),
         )
+
+
+def test_v1_manifest_restores_model_only_without_a_completed_update_count(tmp_path: Path) -> None:
+    """An archived v1 artifact still restores weights; it just cannot resume."""
+
+    trained = torch.nn.Linear(3, 2).double()
+    checkpoint_dir = _write_checkpoint(tmp_path, model=trained)
+    _rewrite_manifest_as_v1(checkpoint_dir)
+    fresh = torch.nn.Linear(3, 2).double()
+
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "model_only"},
+        model=fresh,
+        context=_context(),
+    )
+
+    assert torch.equal(fresh.weight, trained.weight)
+    assert report.schema_version == LEGACY_CHECKPOINT_SCHEMA_VERSION
+    # v1's lone `step` was the resume cursor, so it maps onto `next_iteration`.
+    assert report.next_iteration == 3
+    # v1 never recorded the update count, and there is no upgrade path.
+    assert report.completed_updates is None
+    assert report.to_dict()["completed_updates"] is None
+
+
+def test_v1_manifest_is_refused_for_train_resume_at_the_schema_gate(tmp_path: Path) -> None:
+    """Rejection names version and mode, and precedes any trainer load.
+
+    Note what this pins and what it does not. The refusal is *not* because the
+    restore path needs `manifest.completed_updates` -- ``train_resume`` reads
+    trainer state from ``trainer.json``, never from the manifest. It is because
+    `schema_version 1` spans two incompatible ``trainer.json`` key sets (B1
+    renamed the trainer keys without bumping the manifest schema), so the
+    version cannot prove the artifact is resumable. Hence this checkpoint --
+    synthesized from a v2 write and therefore carrying *post*-B1 trainer keys
+    that would in fact load -- is still refused.
+    """
+
+    checkpoint_dir = _write_checkpoint(tmp_path)
+    _rewrite_manifest_as_v1(checkpoint_dir)
+    trainer = _Trainer()
+
+    with pytest.raises(
+        ValueError,
+        match=r"schema_version 1 is not supported for restore mode 'train_resume'",
+    ):
+        restore_checkpoint(
+            load={"path": str(checkpoint_dir), "mode": "train_resume"},
+            model=torch.nn.Linear(3, 2).double(),
+            optimizer=torch.optim.Adam(torch.nn.Linear(3, 2).double().parameters(), lr=0.01),
+            trainer=trainer,
+            sampler=_Sampler(),
+            context=_context(),
+        )
+
+    # The gate refuses before any component is touched. `load_state_dict`'s own
+    # KeyError remains a backstop for a genuinely pre-B1 artifact, but it is
+    # never the first failure for a v1 manifest.
+    assert trainer.loaded is None
+
+
+def test_restore_report_counters_for_mode_none() -> None:
+    report = restore_checkpoint(
+        load={"mode": "none"},
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+    )
+
+    assert (report.next_iteration, report.completed_updates) == (None, None)
+    assert report.to_dict()["next_iteration"] is None
+    assert report.to_dict()["completed_updates"] is None
+
+
+def test_restore_report_counters_for_model_only(tmp_path: Path) -> None:
+    """Both counters come from the manifest and are reported separately."""
+
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        # Diverged on purpose: one iteration skipped its optimizer update, so a
+        # report that conflated the two counters could not pass this.
+        next_iteration=4,
+        completed_updates=3,
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+        save_optimizer=False,
+        save_trainer=False,
+        save_sampler=False,
+        save_rng=False,
+    )
+
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "model_only"},
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+    )
+
+    assert report.schema_version == CHECKPOINT_SCHEMA_VERSION
+    assert (report.next_iteration, report.completed_updates) == (4, 3)
+
+
+def test_restore_report_counters_for_train_resume(tmp_path: Path) -> None:
+    model = torch.nn.Linear(3, 2).double()
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=4,
+        completed_updates=3,
+        model=model,
+        optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+        trainer=_Trainer(),
+        sampler=_Sampler(),
+        context=_context(),
+    )
+
+    fresh = torch.nn.Linear(3, 2).double()
+    report = restore_checkpoint(
+        load={"path": str(checkpoint_dir), "mode": "train_resume"},
+        model=fresh,
+        optimizer=torch.optim.Adam(fresh.parameters(), lr=0.01),
+        trainer=_Trainer(),
+        sampler=_Sampler(),
+        context=_context(),
+    )
+
+    # `train_resume` admits only v2, so neither counter can be `None` here.
+    assert (report.next_iteration, report.completed_updates) == (4, 3)
+    assert report.to_dict()["next_iteration"] == 4
+    assert report.to_dict()["completed_updates"] == 3
+
+
+def test_prune_never_deletes_the_latest_pointer_target(tmp_path: Path) -> None:
+    """Pruning spares `latest.json`'s target even outside the keep window."""
+
+    root = tmp_path / "checkpoints"
+    for step in (1, 2, 3):
+        model = torch.nn.Linear(3, 2).double()
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=step,
+            completed_updates=step,
+            model=model,
+            optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+            trainer=_Trainer(),
+            sampler=_Sampler(),
+            context=_context(),
+        )
+    # Point `latest.json` back at the oldest checkpoint, the state a run reaches
+    # when its newest directories were written after the pointer it resumes from.
+    write_latest(root, root / "step_000001", step=1, created_at_unix=0.0)
+
+    prune_old_checkpoints(root, keep_last=1)
+
+    # The pointer target survives *in addition* to the newest `keep_last`.
+    assert sorted(path.name for path in root.glob("step_*")) == [
+        "step_000001",
+        "step_000003",
+    ]
+    assert resolve_checkpoint_dir(root) == root / "step_000001"
+
+
+def test_prune_without_a_latest_pointer_still_trims(tmp_path: Path) -> None:
+    """A missing pointer spares nothing extra and must not raise."""
+
+    root = tmp_path / "checkpoints"
+    for step in (1, 2):
+        model = torch.nn.Linear(3, 2).double()
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=step,
+            completed_updates=step,
+            model=model,
+            context=_context(),
+            save_optimizer=False,
+            save_trainer=False,
+            save_sampler=False,
+            save_rng=False,
+        )
+    (root / "latest.json").unlink()
+
+    prune_old_checkpoints(root, keep_last=1)
+
+    assert sorted(path.name for path in root.glob("step_*")) == ["step_000002"]
 
 
 def test_stable_config_hash_is_canonical_and_strict() -> None:

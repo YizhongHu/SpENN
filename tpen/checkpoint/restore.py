@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ from omegaconf import OmegaConf
 
 from .artifact import resolve_checkpoint_dir
 from .hashing import checkpoint_hashes
+from .rng import apply_rng_state, require_restorable_rng_state, runtime_device
 from .schema import read_manifest
 
 RESTORE_MODES = ("none", "model_only", "train_resume")
@@ -20,12 +20,33 @@ RESTORE_MODES = ("none", "model_only", "train_resume")
 
 @dataclass(frozen=True)
 class RestoreReport:
-    """Summary of the state restored from a checkpoint."""
+    """Summary of the state restored from a checkpoint.
+
+    Parameters
+    ----------
+    mode : str
+        Restore mode that produced this report.
+    checkpoint_dir : str or None, optional
+        Resolved checkpoint step directory, or ``None`` for ``mode="none"``.
+    schema_version : int or None, optional
+        Manifest schema version that was read.
+    next_iteration : int or None, optional
+        Resume cursor recorded by the manifest: the iteration a resumed run
+        continues from. ``None`` for ``mode="none"``.
+    completed_updates : int or None, optional
+        Applied optimizer updates recorded by the manifest. ``None`` for
+        ``mode="none"`` and for a v1 manifest under ``model_only``, which never
+        recorded the counter. Always populated under ``train_resume``, which
+        only admits v2.
+    loaded_model, loaded_optimizer, loaded_trainer, loaded_sampler, loaded_rng : bool, optional
+        Which components were restored.
+    """
 
     mode: str
     checkpoint_dir: str | None = None
     schema_version: int | None = None
-    step: int | None = None
+    next_iteration: int | None = None
+    completed_updates: int | None = None
     loaded_model: bool = False
     loaded_optimizer: bool = False
     loaded_trainer: bool = False
@@ -39,7 +60,8 @@ class RestoreReport:
             "mode": self.mode,
             "checkpoint_dir": self.checkpoint_dir,
             "schema_version": self.schema_version,
-            "step": self.step,
+            "next_iteration": self.next_iteration,
+            "completed_updates": self.completed_updates,
             "loaded_model": self.loaded_model,
             "loaded_optimizer": self.loaded_optimizer,
             "loaded_trainer": self.loaded_trainer,
@@ -80,7 +102,9 @@ def restore_checkpoint(
     )
 
     checkpoint_dir = resolve_checkpoint_dir(path)
-    manifest = read_manifest(checkpoint_dir / "manifest.json")
+    # Schema acceptance is mode-dependent, so the mode is decided before the
+    # manifest is read: a v1 artifact is refused for `train_resume` at the gate.
+    manifest = read_manifest(checkpoint_dir / "manifest.json", mode=mode)
     current_hashes = checkpoint_hashes(getattr(context, "cfg", {}))
 
     _verify_hash(manifest.hashes, current_hashes, "model_config", checkpoint_dir)
@@ -97,7 +121,9 @@ def restore_checkpoint(
             mode=mode,
             checkpoint_dir=str(checkpoint_dir),
             schema_version=manifest.schema_version,
-            step=manifest.step,
+            next_iteration=manifest.next_iteration,
+            # `None` for a v1 manifest, which never recorded the counter.
+            completed_updates=manifest.completed_updates,
             loaded_model=True,
         )
 
@@ -115,16 +141,28 @@ def restore_checkpoint(
             allow_mismatch=(hash_name == "hamiltonian_config" and allow_mismatch),
         )
 
+    # The RNG payload is read and validated before anything is restored. A
+    # refused resume must leave the process unmutated, and `_load_sampler` is
+    # itself destructive: `MetropolisSampler.load_mcmc_state_dict` recreates its
+    # generator on a device mismatch -- reseeding it, or leaving it unseeded when
+    # no seed is configured -- so a refusal raised after that point would already
+    # have reset the run's dominant RNG source.
+    device = runtime_device(context)
+    rng_state = _read_rng_state(checkpoint_dir, manifest.files)
+    require_restorable_rng_state(rng_state, device, checkpoint_dir)
+
     _load_model(checkpoint_dir, manifest.files, model, strict=strict_load, context=context)
     _load_optimizer(checkpoint_dir, manifest.files, optimizer)
     _load_trainer(checkpoint_dir, manifest.files, trainer)
     _load_sampler(checkpoint_dir, manifest.files, sampler, context)
-    _load_rng(checkpoint_dir, manifest.files)
+    apply_rng_state(rng_state, device)
     return RestoreReport(
         mode=mode,
         checkpoint_dir=str(checkpoint_dir),
         schema_version=manifest.schema_version,
-        step=manifest.step,
+        next_iteration=manifest.next_iteration,
+        # The schema gate admits only v2 here, so both counters are real.
+        completed_updates=manifest.completed_updates,
         loaded_model=True,
         loaded_optimizer=True,
         loaded_trainer=True,
@@ -192,7 +230,8 @@ def restore_checkpoint_with_events(
             "path": path,
             "resolved_checkpoint_dir": report.checkpoint_dir,
             "schema_version": report.schema_version,
-            "step": report.step,
+            "next_iteration": report.next_iteration,
+            "completed_updates": report.completed_updates,
             "loaded_model": report.loaded_model,
             "loaded_optimizer": report.loaded_optimizer,
             "loaded_trainer": report.loaded_trainer,
@@ -290,26 +329,13 @@ def _load_sampler(checkpoint_dir: Path, files: dict[str, str], sampler: Any, con
         load_state(state)
 
 
-def _load_rng(checkpoint_dir: Path, files: dict[str, str]) -> None:
+def _read_rng_state(checkpoint_dir: Path, files: dict[str, str]) -> dict[str, Any]:
+    """Read ``rng.pt`` without applying it, so provenance can be checked first."""
+
     import torch
 
     path = _required_file(checkpoint_dir, files, "rng")
-    state = torch.load(path, map_location="cpu", weights_only=False)
-    if "torch_cpu" in state:
-        torch.set_rng_state(state["torch_cpu"])
-    cuda_states = state.get("torch_cuda")
-    cuda = getattr(torch, "cuda", None)
-    if cuda_states is not None and cuda is not None and callable(getattr(cuda, "is_available", None)):
-        if cuda.is_available():
-            cuda.set_rng_state_all(cuda_states)
-    if state.get("python") is not None:
-        random.setstate(state["python"])
-    if state.get("numpy") is not None:
-        try:
-            import numpy as np
-        except ImportError:
-            return
-        np.random.set_state(state["numpy"])
+    return torch.load(path, map_location="cpu", weights_only=False)
 
 
 def _required_file(checkpoint_dir: Path, files: dict[str, str], key: str) -> Path:
