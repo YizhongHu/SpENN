@@ -59,12 +59,20 @@ uv-managed download:
 ```bash
 module load rocm craype-accel-amd-gfx90a
 module load miniforge3
-export UV_PYTHON_PREFERENCE=only-system   # overrides python-preference in pyproject.toml
-export UV_NO_MANAGED_PYTHON=1
+export UV_NO_MANAGED_PYTHON=1   # overrides python-preference in pyproject.toml
 export UV_PYTHON_DOWNLOADS=never
 export UV_PROJECT_ENVIRONMENT=.venv-rocm
 uv sync --extra rocm71
 ```
+
+Do not add `UV_PYTHON_PREFERENCE=only-system` alongside these. uv rejects the
+combination outright, so the recipe would not run at all:
+
+```text
+error: the argument `UV_NO_MANAGED_PYTHON` (environment variable) cannot be used with `--python-preference`
+```
+
+`UV_NO_MANAGED_PYTHON=1` already overrides the committed `python-preference`.
 
 Core tests are the active validation target:
 
