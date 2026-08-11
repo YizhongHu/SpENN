@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from .base import Callback, Event, _attach_event_metrics, _sync_device
 
 
 class EvaluationTiming(Callback):
@@ -41,13 +41,13 @@ class EvaluationTiming(Callback):
         self._log_end(event, failed=True)
 
     def _start_timing(self) -> None:
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         self._start = self.clock()
 
     def _log_end(self, event: Event, *, failed: bool) -> None:
         if self._start is None:
             return
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         metrics: dict[str, float | bool] = {"wall_time_sec": self.clock() - self._start}
         if failed:
             metrics["failed"] = True

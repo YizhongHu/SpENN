@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from .base import Callback, Event, _attach_event_metrics, _sync_device
 
 
 class EvaluationComponentTiming(Callback):
@@ -96,7 +96,7 @@ class EvaluationComponentTiming(Callback):
     def _record_start(self, key: tuple[str, str]) -> None:
         """Record one component start time under its ``(task, metric)`` key."""
 
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         self._starts[key] = self.clock()
 
     def _record_end(self, key: tuple[str, str]) -> None:
@@ -105,7 +105,7 @@ class EvaluationComponentTiming(Callback):
         start = self._starts.pop(key, None)
         if start is None:
             return
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         task_name, metric_key = key
         durations = self._durations.setdefault(task_name, {})
         durations[metric_key] = durations.get(metric_key, 0.0) + (self.clock() - start)

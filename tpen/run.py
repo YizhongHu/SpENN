@@ -14,6 +14,7 @@ from typing import Sequence
 from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from tpen.accelerator import seed_all as accelerator_seed_all
 from tpen.artifacts import (
     ArtifactManager,
     RunContext,
@@ -290,8 +291,7 @@ def _seed_runtime_rngs(cfg: DictConfig) -> None:
     if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
         torch = require_torch(feature="seeded configured TPEN run")
         torch.manual_seed(seed_int)
-        if hasattr(torch, "cuda"):
-            torch.cuda.manual_seed_all(seed_int)
+        accelerator_seed_all(seed_int, feature="seeded configured TPEN run")
 
 
 def _instantiate_runner(context: RunContext) -> Runner:

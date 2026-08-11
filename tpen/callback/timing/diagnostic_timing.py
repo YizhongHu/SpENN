@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from .base import Callback, Event, _attach_event_metrics, _sync_device
 
 
 class DiagnosticTiming(Callback):
@@ -36,7 +36,7 @@ class DiagnosticTiming(Callback):
         """Record one diagnostic start time."""
 
         key = self._event_key(event)
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         self._starts[key] = self.clock()
 
     def on_diagnostic_end(self, event: Event) -> None:
@@ -53,7 +53,7 @@ class DiagnosticTiming(Callback):
         """Record one evaluation task start time."""
 
         key = self._event_key(event)
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         self._starts[key] = self.clock()
 
     def on_task_end(self, event: Event) -> None:
@@ -70,7 +70,7 @@ class DiagnosticTiming(Callback):
         key = self._event_key(event)
         if key not in self._starts:
             return
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         duration = self.clock() - self._starts.pop(key)
         metrics: dict[str, float | bool] = {"time_sec": duration}
         if failed:
