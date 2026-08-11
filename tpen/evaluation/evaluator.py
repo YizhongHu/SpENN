@@ -12,9 +12,21 @@ from typing import Any
 import torch
 
 from tpen.evaluation.bundle import EvaluationBundle
-from tpen.evaluation.events import component_failure_payload, component_payload, task_payload, task_result_payload
+from tpen.evaluation.events import (
+    CalculatorRun,
+    ComponentFailed,
+    ComponentRun,
+    EvaluationTaskRun,
+    GeneratorRun,
+    SummaryRun,
+    component_failure_payload,
+    component_payload,
+    task_payload,
+    task_result_payload,
+)
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import ArtifactRecord, EvaluationFailure, EvaluationResult, MetricScalar, TaskResult
+from tpen.evaluation.state import EvaluationRunState
 from tpen.evaluation.task import ArtifactLevel, EvaluationTask, FailurePolicy, coerce_task
 
 
@@ -24,8 +36,11 @@ def _component_span(
     *,
     task: EvaluationTask,
     component_type: str,
+    component_class: type[ComponentRun],
     component_name: str | None,
     output_dir: Path,
+    run_context: Any,
+    state: EvaluationRunState,
 ):
     """Bracket one evaluation component with lifecycle events.
 
@@ -35,6 +50,12 @@ def _component_span(
     how to measure them. The ``_end`` event fires on success and failure
     alike; failures additionally emit the existing ``<component_type>_failed``
     events.
+
+    The typed `ComponentRun` scope is nested strictly inside the legacy string
+    pair, so the legacy sequence is unchanged and no callback has to move yet.
+    ``component_class`` is passed as a type rather than derived from
+    ``component_type``: resolving a type from a string would be the routing
+    bridge ADR-E002 forecloses.
     """
 
     emit(
@@ -42,7 +63,8 @@ def _component_span(
         payload=component_payload(task=task, component_name=component_name, output_dir=output_dir),
     )
     try:
-        yield
+        with run_context.scope(component_class(name=component_name), state=state):
+            yield
     finally:
         emit(
             f"{component_type}_end",
@@ -83,7 +105,15 @@ class Evaluator:
     ) -> EvaluationResult:
         """Run all configured tasks and return aggregate metrics."""
 
+        # Two unrelated context types meet here: `context` is the run-level
+        # `tpen.artifacts.RunContext` that owns typed emission, while
+        # `base_context`/`task_context` are `EvaluationContext` values. The
+        # alias keeps the two visually distinct wherever both are passed on.
+        run_context = context
         base_context = self._context_from_run_context(context)
+        # One state object for the whole suite, updated in place: `scope`
+        # captures this reference at entry, so its identity must stay stable.
+        state = EvaluationRunState()
         task_results: list[TaskResult] = []
         full_metrics: dict[str, MetricScalar] = {}
         failures: list[EvaluationFailure] = []
@@ -100,7 +130,23 @@ class Evaluator:
                 artifact_level=task.artifact_level or base_context.artifact_level,
                 task_output_dir=task_output_dir,
             )
-            result = self._evaluate_task(model=model, task=task, context=task_context, emit=emit)
+            # Clear the previous task's result before this task's scope opens, so
+            # a handler at the `Started` boundary cannot read a stale one.
+            state.task_result = None
+            task_run = EvaluationTaskRun(
+                name=task.name, namespace=task.namespace, output_dir=task_output_dir
+            )
+            with run_context.scope(task_run, state=state):
+                result = self._evaluate_task(
+                    model=model,
+                    task=task,
+                    context=task_context,
+                    emit=emit,
+                    run_context=run_context,
+                    state=state,
+                )
+                # Written inside the scope so the `Ended` boundary observes it.
+                state.task_result = result
             task_results.append(result)
             failures.extend(result.failures)
             artifacts.extend(result.artifacts)
@@ -141,6 +187,8 @@ class Evaluator:
         task: EvaluationTask,
         context: EvaluationContext,
         emit: Callable[..., None],
+        run_context: Any,
+        state: EvaluationRunState,
     ) -> TaskResult:
         output_dir = context.task_output_dir
         emit("task_start", payload=task_payload(task, output_dir=output_dir))
@@ -156,8 +204,11 @@ class Evaluator:
                 emit,
                 task=task,
                 component_type="generator",
+                component_class=GeneratorRun,
                 component_name=_component_name(task.generator),
                 output_dir=output_dir,
+                run_context=run_context,
+                state=state,
             ):
                 generated = task.generator.generate(model=model, context=context)
             bundle = EvaluationBundle(generated=generated)
@@ -165,6 +216,9 @@ class Evaluator:
             failure = _failure(context, task=task, component=task.generator, component_type="generator", exc=exc)
             failures.append(failure)
             result = _task_result(task, output_dir, "failed", metrics, artifacts, failures)
+            # Deliberately inverted relative to the calculator and summary paths:
+            # this path builds the task result first and only then reports the
+            # component. `test_generator_failure_emits_task_failed_first` pins it.
             emit("task_failed", payload=task_result_payload(result))
             emit(
                 "generator_failed",
@@ -175,6 +229,7 @@ class Evaluator:
                     output_dir=output_dir,
                 ),
             )
+            run_context.emit(ComponentFailed(failure=failure), state=state)
             return result
 
         for calculator in task.calculators:
@@ -183,8 +238,11 @@ class Evaluator:
                     emit,
                     task=task,
                     component_type="calculator",
+                    component_class=CalculatorRun,
                     component_name=_component_name(calculator),
                     output_dir=output_dir,
+                    run_context=run_context,
+                    state=state,
                 ):
                     bundle = calculator.calculate(model=model, bundle=bundle, context=context)
             except Exception as exc:
@@ -200,6 +258,7 @@ class Evaluator:
                         output_dir=output_dir,
                     ),
                 )
+                run_context.emit(ComponentFailed(failure=failure), state=state)
                 if context.task_failure_policy == "fail_fast":
                     break
 
@@ -220,14 +279,18 @@ class Evaluator:
                             output_dir=output_dir,
                         ),
                     )
+                    run_context.emit(ComponentFailed(failure=failure), state=state)
                     continue
                 try:
                     with _component_span(
                         emit,
                         task=task,
                         component_type="summary",
+                        component_class=SummaryRun,
                         component_name=_component_name(summary),
                         output_dir=output_dir,
+                        run_context=run_context,
+                        state=state,
                     ):
                         result = summary.summarize(bundle=bundle, context=context, namespace=task.namespace)
                     _merge_metrics(metrics, result.metrics, component_name=_component_name(summary))
@@ -244,6 +307,7 @@ class Evaluator:
                             output_dir=output_dir,
                         ),
                     )
+                    run_context.emit(ComponentFailed(failure=failure), state=state)
                     continue
                 artifacts.extend(result.artifacts)
 

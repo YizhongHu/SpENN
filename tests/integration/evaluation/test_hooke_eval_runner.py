@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -17,7 +16,7 @@ import tpen.runner as runner_module
 import tpen.runner.evaluate as evaluate_runner_module
 import tpen.runner.train as train_runner_module
 from tpen.artifacts import RunContext
-from tpen.callback import Callback, Event
+from tpen.callback import Callback, Event, SubscriptionGroup
 from tpen.checkpoint import RestoreReport
 from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from tpen.evaluation import (
@@ -31,6 +30,8 @@ from tpen.evaluation import (
     SamplerStatsSummary,
     WavefunctionCalculator,
 )
+from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
+from tpen.events import Subscription
 from tpen.physics.hamiltonian import LocalEnergyResult
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
@@ -39,6 +40,7 @@ from tpen.runner import Evaluate, Train
 from tpen.sampling import SamplerStats
 from tpen.training.state import TrainerState
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
+from tests.helpers.run_context import RecordingLogger, make_run_context
 
 FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
 
@@ -123,7 +125,7 @@ def test_runtime_dtype_rejects_non_floating_dtype() -> None:
         runner_module._runtime_dtype("int64")
 
 
-def test_train_asserts_eager_initialization_before_optimizer_construction() -> None:
+def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_path: Path) -> None:
     class _OptimizerFactory:
         called = False
 
@@ -133,7 +135,7 @@ def test_train_asserts_eager_initialization_before_optimizer_construction() -> N
 
     optimizer = _OptimizerFactory()
     recorder = _EventRecorder()
-    context = _RecordingContext([recorder])
+    context, _ = _recording_context(tmp_path, [recorder])
     runner = Train(
         model=nn.LazyLinear(1),
         sampler=object(),
@@ -149,9 +151,9 @@ def test_train_asserts_eager_initialization_before_optimizer_construction() -> N
     assert recorder.events == ["run_start"]
 
 
-def test_evaluate_start_is_emitted_after_model_ready() -> None:
+def test_evaluate_start_is_emitted_after_model_ready(tmp_path: Path) -> None:
     recorder = _EventRecorder()
-    context = _RecordingContext([recorder])
+    context, _ = _recording_context(tmp_path, [recorder])
     runner = Evaluate(
         model=nn.LazyLinear(1),
         evaluator=_energy_evaluator(_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)), []),
@@ -163,7 +165,7 @@ def test_evaluate_start_is_emitted_after_model_ready() -> None:
     assert recorder.events == ["run_start"]
 
 
-def test_train_rejects_model_only_load_mode() -> None:
+def test_train_rejects_model_only_load_mode(tmp_path: Path) -> None:
     runner = Train(
         model=nn.Linear(1, 1).double(),
         sampler=object(),
@@ -174,10 +176,10 @@ def test_train_rejects_model_only_load_mode() -> None:
     )
 
     with pytest.raises(ValueError, match="load.mode.*model_only"):
-        runner.run(_RecordingContext([]))
+        runner.run(_recording_context(tmp_path, [])[0])
 
 
-def test_evaluate_rejects_train_resume_load_mode() -> None:
+def test_evaluate_rejects_train_resume_load_mode(tmp_path: Path) -> None:
     runner = Evaluate(
         model=_QuadraticModel(),
         evaluator=_energy_evaluator(_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)), []),
@@ -185,10 +187,10 @@ def test_evaluate_rejects_train_resume_load_mode() -> None:
     )
 
     with pytest.raises(ValueError, match="load.mode.*train_resume"):
-        runner.run(_RecordingContext([]))
+        runner.run(_recording_context(tmp_path, [])[0])
 
 
-def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
+def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:
     calls = []
 
     def fake_restore_checkpoint_with_events(**kwargs):
@@ -207,7 +209,7 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
         load={"mode": "train_resume", "path": "ckpt"},
     )
 
-    result = runner.run(_RecordingContext([]))
+    result = runner.run(_recording_context(tmp_path, [])[0])
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
@@ -216,7 +218,7 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
     assert calls[0]["emit"] == runner.emit
 
 
-def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
+def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:
     calls = []
 
     def fake_restore_checkpoint_with_events(**kwargs):
@@ -235,7 +237,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
         load={"mode": "model_only", "path": "ckpt"},
     )
 
-    result = runner.run(_RecordingContext([]))
+    result = runner.run(_recording_context(tmp_path, [])[0])
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
@@ -243,7 +245,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
     assert calls[0]["emit"] == runner.emit
 
 
-def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
+def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: Path) -> None:
     def fail_restore(**kwargs):
         raise AssertionError("restore_checkpoint should not be called")
 
@@ -258,7 +260,7 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
         trainer=_NoopTrainer(),
         load={"mode": "none"},
     )
-    assert train.run(_RecordingContext([])).status == "completed"
+    assert train.run(_recording_context(tmp_path, [])[0]).status == "completed"
 
     evaluate = Evaluate(
         model=_QuadraticModel(),
@@ -268,12 +270,12 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
         ),
         load={"mode": "none"},
     )
-    assert evaluate.run(_RecordingContext([])).status == "completed"
+    assert evaluate.run(_recording_context(tmp_path / "evaluate", [])[0]).status == "completed"
 
 
-def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
+def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> None:
     recorder = _EventRecorder()
-    context = _RecordingContext([recorder])
+    context, logger = _recording_context(tmp_path, [recorder])
     runner = Evaluate(
         model=build_tiny_spenn(),
         evaluator=_energy_evaluator(
@@ -306,14 +308,42 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
         "evaluate_end",
         "run_end",
     ]
-    energy_records = [m for ns, m in context.records if ns == "eval/energy"]
+    energy_records = [record.metrics for record in logger.by_namespace("eval/energy")]
     assert energy_records
     assert "local_energy_mean" in energy_records[-1]
     assert "reference_energy" not in energy_records[-1]
 
 
-def test_evaluate_logs_reference_and_term_metrics_from_task() -> None:
-    context = _RecordingContext([])
+def test_evaluate_emits_the_typed_suite_boundaries_beside_the_strings(tmp_path: Path) -> None:
+    """The typed vocabulary is emitted alongside the legacy strings, not instead.
+
+    `EvaluationStarted` and `EvaluationCompleted` are point events rather than a
+    scope, so nothing fires them on the failure path and the run-level
+    ``exception`` event keeps producing ``eval/perf {failed: True}``.
+    """
+
+    recorder = _TypedOccurrenceRecorder()
+    context, _ = _recording_context(tmp_path, [recorder])
+    runner = Evaluate(
+        model=build_tiny_spenn(),
+        evaluator=_energy_evaluator(
+            build_tiny_sampler(),
+            [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()],
+            return_terms=True,
+        ),
+    )
+
+    result = runner.run(context)
+
+    assert result.status == "completed"
+    assert [type(event).__name__ for event in recorder.seen] == [
+        "EvaluationStarted",
+        "EvaluationCompleted",
+    ]
+
+
+def test_evaluate_logs_reference_and_term_metrics_from_task(tmp_path: Path) -> None:
+    context, logger = _recording_context(tmp_path, [])
     sampler = _StaticSampler(
         torch.tensor(
             [
@@ -341,7 +371,7 @@ def test_evaluate_logs_reference_and_term_metrics_from_task() -> None:
 
     assert result.status == "completed"
     assert sampler.calls == 1
-    metrics = [m for ns, m in context.records if ns == "eval/energy"][0]
+    metrics = logger.by_namespace("eval/energy")[0].metrics
     assert metrics["local_energy_mean"] == pytest.approx(7.0)
     assert metrics["energy_error"] == pytest.approx(0.0)
     assert metrics["energy_abs_error"] == pytest.approx(0.0)
@@ -367,15 +397,40 @@ class _EventRecorder(Callback):
         self.events.append(event.name)
 
 
-class _RecordingContext(RunContext):
-    def __init__(self, callbacks) -> None:
-        self.callbacks = list(callbacks)
-        self.loggers = []
-        self.metadata = SimpleNamespace(device="cpu", dtype="float64")
-        self.records: list[tuple[str, dict]] = []
+class _TypedOccurrenceRecorder(Callback):
+    """Capture only the evaluation domain's suite-level typed point events."""
 
-    def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
-        self.records.append((namespace, dict(metrics)))
+    def __init__(self) -> None:
+        super().__init__(
+            typed_groups=(
+                SubscriptionGroup(
+                    selectors=(
+                        Subscription.of(EvaluationStarted),
+                        Subscription.of(EvaluationCompleted),
+                    ),
+                ),
+            )
+        )
+        self.seen: list[object] = []
+
+    def handle_occurrence_impl(self, occurrence, context) -> None:
+        self.seen.append(occurrence.event)
+
+
+def _recording_context(tmp_path: Path, callbacks) -> tuple[RunContext, RecordingLogger]:
+    """Return a real `RunContext` and the logger capturing its metric records.
+
+    This replaced a `RunContext` subclass that skipped ``super().__init__`` and
+    worked only because `Runner.emit` falls back when ``artifact_manager`` is
+    missing. `Evaluate` now emits typed occurrences through the context itself,
+    which needs the occurrence counters, the artifact manager, and the run
+    clock, so the genuine article is the only usable option. Metric records are
+    read off a logger rather than an overridden ``log``, which also keeps
+    `RunContext.log` on its production path.
+    """
+
+    logger = RecordingLogger()
+    return make_run_context(tmp_path, callbacks=list(callbacks), loggers=[logger]), logger
 
 
 class _QuadraticModel(nn.Module):

@@ -906,10 +906,16 @@ adding an identity now would be speculative construction. `RestoreReport`
 already carries the restored checkpoint's counters, and when a real consumer
 appears, attaching that identity is one local change.
 
-Evaluation's typed lifecycle — replacing the legacy `evaluate_start` /
-`evaluate_end` / `task_*` / `checkpoint_restored` strings with typed events
-that can carry the restored-checkpoint identity — is separate work and is not
-described here yet.
+Evaluation's typed lifecycle now exists *alongside* those legacy strings:
+`EvaluationStarted` / `EvaluationCompleted`, the `EvaluationTaskRun` and
+`ComponentRun` operations, `ComponentFailed`, and `CheckpointRestored`, whose
+`RestoreReport` reaches `occurrences.jsonl` field-wise and is where the restored
+checkpoint's identity is durably recorded. No callback subscribes to any of them
+yet and the legacy `evaluate_start` / `evaluate_end` / `task_*` /
+`checkpoint_restored` strings are still emitted, so nothing in this document
+changes: no metric key moved, and evaluation metric records still carry no
+checkpoint identity. Deleting the strings and migrating the five evaluation
+callbacks is separate work.
 
 Run-level metadata may use `step = 0`:
 

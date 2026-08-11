@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 
 import torch
 import pytest
 from torch import nn
 
+from tpen.artifacts import RunContext
 from tpen.evaluation import Evaluator, EvaluationTask
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
 from tpen.data.batch import ElectronBatch
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import SummaryResult
+from tests.helpers.run_context import make_run_context
 
 
 class _NullGenerator:
@@ -64,12 +64,18 @@ class _MetricSummary:
         return SummaryResult(metrics={self.key: self.value})
 
 
-def _run_context(run_dir: Path) -> Any:
-    ctx = SimpleNamespace()
-    ctx.run_dir = run_dir
-    ctx.metadata = SimpleNamespace(device=None, dtype=None)
-    ctx.log = lambda *a, **kw: None
-    return ctx
+def _run_context(tmp_path: Path) -> RunContext:
+    """Return a real `RunContext` rooted at ``tmp_path``.
+
+    The evaluator now emits typed occurrences through the context itself, so a
+    `types.SimpleNamespace` stand-in no longer suffices: `RunContext.scope` needs
+    the occurrence counters and `write_occurrence_artifact` needs the artifact
+    manager and the run clock. Its ``run_dir`` is a real run directory *under*
+    ``tmp_path`` rather than ``tmp_path`` itself, which is what a relative task
+    output dir resolves against.
+    """
+
+    return make_run_context(tmp_path)
 
 
 def test_evaluator_requires_explicit_task_output_dir() -> None:
@@ -144,10 +150,14 @@ def test_relative_task_output_dir_is_resolved_against_run_dir(tmp_path: Path) ->
         ],
     )
 
-    result = evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=lambda *a, **kw: None)
+    context = _run_context(tmp_path)
 
-    assert recorder.recorded_task_output_dir == tmp_path / "energy"
-    assert result.task_results[0].output_dir == tmp_path / "energy"
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=lambda *a, **kw: None)
+
+    # Resolved against the context's real run directory, which is what the
+    # evaluator reads; ``tmp_path`` is only the root that directory sits under.
+    assert recorder.recorded_task_output_dir == context.run_dir / "energy"
+    assert result.task_results[0].output_dir == context.run_dir / "energy"
 
 
 def test_duplicate_summary_metrics_are_structured_task_failures(tmp_path: Path) -> None:
