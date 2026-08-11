@@ -58,13 +58,30 @@ class Status(StatefulCallback[TrainerState]):
     delivery at `tpen.training.events.TrainingIterationCompleted`.
 
     Three legacy string triggers survive: ``run_start``, ``run_end``, and
-    ``exception`` are RUN-level events emitted by `tpen.run` and
-    `tpen.runner.Runner`, they have no typed equivalent and no owning domain,
-    and that gap is item ``39eacd99`` rather than this migration. They are the
-    only thing that writes ``status.json`` at all, so dropping them would delete
-    the run's status artifact outright. Same shape, and the same reason, as the
-    residual ``exception`` trigger on
-    `tpen.callback.timing.EvaluationTiming`. Ugly, and correct.
+    ``exception``. They are the only thing that writes ``status.json`` at all,
+    so dropping them would delete the run's status artifact outright.
+
+    THE REASON THEY SURVIVE HAS CHANGED, and the new one is a harder blocker
+    than the old. Until item ``39eacd99`` these three had no typed equivalent;
+    they now do (`tpen.run_events`). They are still here because this class is a
+    `StatefulCallback`. `tpen.artifacts.RunContext._dispatch_occurrence` decides
+    delivery by ``isinstance(state, callback.state_type)``, and the run lifecycle
+    carries no domain state, so a run-level occurrence is SKIPPED for this
+    callback -- silently, exactly as
+    ``test_a_boundary_emitted_without_state_delivers_nothing`` pins. Subscribing
+    them here would not half-migrate the callback; it would stop ``status.json``
+    being written, with no error anywhere.
+
+    A callback declares ONE ``state_type``, so this is not fixable inside the
+    class. It needs either a way for a subscription group to declare that it
+    needs no state, or this class split into a run-lifecycle `Callback` and a
+    training-line `StatefulCallback` (the shape ADR-E002 names for divergent
+    policy modes). The first changes the ADR-E008 mechanism, the second changes a
+    config-facing ``_target_`` contract, so both belong to the mechanism owner
+    (``62593af4``) rather than to the run-lifecycle slice. The identical
+    situation, for the identical reason, holds for the residual ``run_end`` on
+    `tpen.callback.ArtifactIndex`; those two are now the whole remaining blocker
+    for the residual string deletion (``85870732``).
 
     They are hardcoded rather than configured because every shipped config
     listed exactly these three, and because ADR-E002 forbids a config from

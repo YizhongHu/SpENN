@@ -30,6 +30,7 @@ from tpen.evaluation.events import (
 from tpen.evaluation.results import TaskResult
 from tpen.evaluation.state import EvaluationRunState
 from tpen.events import Ended, Occurrence, Started
+from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.training.events import (
     Backward,
     BuildBatch,
@@ -122,12 +123,18 @@ def _dispatch_iteration_success(
     )
 
 
+def _deliver_run_event(callback: object, context: RecordingContext, event: object) -> None:
+    """Hand one `tpen.run_events` occurrence to a migrated run-level callback."""
+
+    callback.handle_occurrence(Occurrence(event=event, count=1), context)
+
+
 def test_run_timing_logs_start_end_and_wall_time() -> None:
     context = RecordingContext()
     callback = RunTiming(clock=FakeClock([10.0, 12.5]), wall_clock=FakeClock([100.0, 103.0]))
 
-    callback.handle(Event(name="run_start", context=context))
-    callback.handle(Event(name="run_end", context=context))
+    _deliver_run_event(callback, context, RunStarted())
+    _deliver_run_event(callback, context, RunCompleted())
 
     assert context.records == [
         {"metrics": {"start_time_unix": 100.0}, "step": 0, "namespace": "runtime", "event": None},
@@ -140,13 +147,22 @@ def test_run_timing_logs_start_end_and_wall_time() -> None:
     ]
 
 
-def test_run_timing_logs_failure_without_swallowing_exception() -> None:
+def test_run_timing_logs_one_failed_record_per_failed_run() -> None:
+    """`RunFailed` replaces the ``run_failed``/``exception`` pair this answered.
+
+    Both strings carried the same payload, so a failed run logged ``runtime``
+    twice -- with a later ``end_time_unix`` the second time, so not even
+    identically. The clock holds exactly two values, which makes a regression to
+    two firings raise rather than merely compare unequal.
+    """
+
     context = RecordingContext()
     callback = RunTiming(clock=FakeClock([1.0, 4.0]), wall_clock=FakeClock([10.0, 13.0]))
 
-    callback.handle(Event(name="run_start", context=context))
-    callback.handle(Event(name="exception", context=context, payload={"exception": RuntimeError("boom")}))
+    _deliver_run_event(callback, context, RunStarted())
+    _deliver_run_event(callback, context, RunFailed(exception_type="RuntimeError", exception_message="boom"))
 
+    assert len(context.by_namespace("runtime")) == 2
     assert context.records[-1]["metrics"] == {
         "end_time_unix": 13.0,
         "wall_time_sec": 3.0,
@@ -393,19 +409,21 @@ def test_evaluation_timing_logs_eval_perf_wall_time() -> None:
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
 
 
-def test_evaluation_timing_reports_failed_through_its_residual_exception_trigger() -> None:
-    """``exception`` is run-level and has no typed equivalent (item 39eacd99).
+def test_evaluation_timing_reports_failed_off_the_typed_run_failure() -> None:
+    """The only writer of ``eval/perf {failed: True}``, now fully typed.
 
-    It is also the only writer of ``eval/perf {failed: True}``: the evaluation
-    domain has no suite-level failure moment to hang a typed event on, so
-    dropping this trigger would delete a published metric series.
+    The evaluation domain has no suite-level failure moment to hang an event on,
+    so this metric has always come from the RUN's failure boundary. That used to
+    be the ``exception`` string, the last legacy run-level trigger in the
+    codebase; it is now `tpen.run_events.RunFailed`, and the metric is unchanged
+    (ADR-E006).
     """
 
     context = RecordingContext()
     callback = EvaluationTiming(clock=FakeClock([2.0, 6.0]))
 
     callback.handle_occurrence(Occurrence(event=EvaluationStarted(), count=1), context)
-    callback.handle(Event(name="exception", context=context))
+    _deliver_run_event(callback, context, RunFailed(exception_type="E", exception_message="m"))
 
     assert context.latest("eval/perf") == {"wall_time_sec": 4.0, "failed": True}
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
@@ -415,7 +433,7 @@ def test_evaluation_timing_reports_nothing_if_evaluation_never_started() -> None
     context = RecordingContext()
     callback = EvaluationTiming(clock=FakeClock([]))
 
-    callback.handle(Event(name="exception", context=context))
+    _deliver_run_event(callback, context, RunFailed(exception_type="E", exception_message="m"))
 
     assert context.records == []
 

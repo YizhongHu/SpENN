@@ -50,14 +50,22 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            # ``run_end`` is a RUN-level string emitted by `tpen.run`. It has no
-            # typed equivalent and no owning domain -- that is item ``39eacd99``,
-            # not this migration -- so it is retained rather than dropped. The
-            # retention is deliberate and load-bearing exactly once: `_write`
-            # already runs after every task, so on any run with at least one task
-            # dropping this trigger would be byte-identical, but on an EMPTY
-            # suite it is the only thing that writes the ``{"tasks": []}`` index
-            # at all. Deleting a durable artifact is not a refactor (ADR-E006).
+            # ``run_end`` is a RUN-level string emitted by the runners. It is
+            # load-bearing exactly once: `_write` already runs after every task,
+            # so on any run with at least one task dropping this trigger would be
+            # byte-identical, but on an EMPTY suite it is the only thing that
+            # writes the ``{"tasks": []}`` index at all. Deleting a durable
+            # artifact is not a refactor (ADR-E006).
+            #
+            # Item ``39eacd99`` minted the typed equivalent
+            # (`tpen.run_events.RunCompleted`), and this trigger STILL cannot be
+            # replaced by it. `RunContext._dispatch_occurrence` decides delivery
+            # by ``isinstance(state, callback.state_type)``, the run lifecycle
+            # carries no state, and this class is a `StatefulCallback`, so the
+            # occurrence would be skipped SILENTLY and the empty index would stop
+            # being written. See the note on `tpen.callback.Status`, blocked
+            # identically; the two of them are the remaining blocker for
+            # ``85870732``.
             triggers=("run_end",),
             typed_groups=(
                 SubscriptionGroup(selectors=(ended(EvaluationTaskRun),)),

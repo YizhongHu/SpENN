@@ -8,9 +8,10 @@ from typing import Any, Callable
 from tpen.artifacts import RunContext
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription
+from tpen.run_events import RunFailed
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, Event, _sync_device
+from .base import Callback, _sync_device
 
 
 class EvaluationTiming(Callback):
@@ -18,19 +19,27 @@ class EvaluationTiming(Callback):
 
     Completely data-free: it reads nothing from any event, any payload, and any
     state, only the moment each boundary happened. That is why it is a plain
-    `tpen.callback.Callback` rather than a `tpen.callback.StatefulCallback`.
+    `tpen.callback.Callback` rather than a `tpen.callback.StatefulCallback`, and
+    it is now fully trigger-free.
 
     Notes
     -----
-    One legacy string trigger survives, deliberately. ``exception`` is a
-    RUN-level event emitted by `tpen.run` when the runner raises; it has no
-    typed equivalent and no owning domain, which is item ``39eacd99`` and not
-    this migration. It is also the only thing that ever writes
-    ``eval/perf {failed: True}``, because the evaluation domain has no
-    suite-level failure moment to attach a typed event to -- a failed suite is a
-    status field, and minting an event to carry it is what ADR-E007 forbids.
-    Dropping the trigger would therefore silently delete a published metric
-    series (ADR-E006). Ugly, and correct.
+    This callback observes TWO domains' moments, which is what made it the last
+    holder of a legacy run-level trigger. Two boundaries belong to the evaluation
+    suite; the third, `tpen.run_events.RunFailed`, belongs to the run, and it is
+    the only writer of ``eval/perf {failed: True}`` -- the evaluation domain has
+    no suite-level failure moment to hang a typed event on, because a failed
+    suite is a status field and minting an event to carry it is what ADR-E007
+    forbids. Dropping it would delete a published metric series (ADR-E006).
+
+    Being a plain `Callback` is exactly why the migration works here and not on
+    `tpen.callback.Status`: `tpen.artifacts.RunContext._dispatch_occurrence`
+    skips a `tpen.callback.StatefulCallback` at every boundary carrying no state,
+    and the run lifecycle carries none.
+
+    All three selectors sit in ONE group. They share a single ungated decision,
+    and `tpen.callback.cadence.validate_subscription_groups` rejects overlapping
+    deliveries across groups.
 
     Parameters
     ----------
@@ -55,12 +64,13 @@ class EvaluationTiming(Callback):
         from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
 
         super().__init__(
-            triggers=("exception",),
+            triggers=(),
             typed_groups=(
                 SubscriptionGroup(
                     selectors=(
                         Subscription.of(EvaluationStarted),
                         Subscription.of(EvaluationCompleted),
+                        Subscription.of(RunFailed),
                     )
                 ),
             ),
@@ -75,7 +85,7 @@ class EvaluationTiming(Callback):
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
     ) -> None:
-        """Start the clock at the suite's start and report at its completion."""
+        """Start the clock at the suite's start and report at either outcome."""
 
         event = occurrence.event
         if isinstance(event, self._started_type):
@@ -83,11 +93,12 @@ class EvaluationTiming(Callback):
             return
         if isinstance(event, self._completed_type):
             self._log_end(context, failed=False)
-
-    def on_exception(self, event: Event) -> None:
-        """Log elapsed evaluation time on failure when evaluation had started."""
-
-        self._log_end(event.context, failed=True)
+            return
+        # A run that failed before or without evaluating never started the clock,
+        # and `_log_end` returns early for it, so this reports only a suite that
+        # was genuinely in flight.
+        if isinstance(event, RunFailed):
+            self._log_end(context, failed=True)
 
     def _start_timing(self) -> None:
         _sync_device(self.cuda_synchronize)

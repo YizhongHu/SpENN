@@ -404,10 +404,13 @@ def _runner_context(cfg) -> RunContext:
 class _EventRecorder(Callback):
     """Capture the run-level string events the runner still emits.
 
-    Only four legacy strings survive anywhere: ``run_start``, ``run_end``,
-    ``exception``, and ``run_failed``. They are run-level, have no typed
-    equivalent, and have no owning domain -- that is item ``39eacd99``. The
-    evaluation-domain strings this recorder used to also list are gone.
+    Four legacy strings still EXIST -- ``run_start``, ``run_end``, ``exception``,
+    ``run_failed`` -- but item ``39eacd99`` typed all three run-lifecycle moments
+    in `tpen.run_events`, so only two callbacks still SUBSCRIBE any of them:
+    `tpen.callback.Status` and `tpen.callback.ArtifactIndex`, both
+    `StatefulCallback`s that the state-free typed lifecycle cannot reach. The
+    emits themselves stay until item ``85870732``, which is why this recorder
+    still observes them here.
     """
 
     def __init__(self) -> None:

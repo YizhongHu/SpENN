@@ -373,10 +373,14 @@ def test_the_artifact_index_covers_every_task_in_a_multi_task_suite(tmp_path: Pa
 def test_an_empty_suite_still_writes_an_index(tmp_path: Path) -> None:
     """The one thing `ArtifactIndex`'s retained ``run_end`` trigger still buys.
 
-    ``run_end`` is a run-level string with no typed equivalent (item
-    ``39eacd99``). Every other run writes the index from the task boundary, so
-    dropping the trigger would be byte-identical -- except here, where there is
-    no task boundary at all and the empty index would silently stop existing.
+    Every other run writes the index from the task boundary, so dropping the
+    trigger would be byte-identical -- except here, where there is no task
+    boundary at all and the empty index would silently stop existing.
+
+    Item ``39eacd99`` minted `tpen.run_events.RunCompleted` and this trigger
+    still cannot become it: `ArtifactIndex` is a `StatefulCallback`, the run
+    lifecycle carries no state, and the dispatcher would skip the occurrence
+    without a word.
     """
 
     from tpen.callback import Event
@@ -405,8 +409,8 @@ _MIGRATED: list[tuple[str, Any, tuple[str, ...], tuple[str, ...]]] = [
     (
         "EvaluationTiming",
         lambda: EvaluationTiming(clock=FakeClock([])),
-        ("exception",),
-        ("on_evaluate_start", "on_evaluate_end"),
+        (),
+        ("on_evaluate_start", "on_evaluate_end", "on_exception"),
     ),
     (
         "EvaluationComponentTiming",
@@ -451,8 +455,13 @@ def test_no_migrated_callback_still_answers_a_deleted_trigger(
 
     Each class dropped its ``on_<name>`` methods, so the legacy dispatch in
     `tpen.callback.base._CallbackCore.handle` finds nothing to call even if a
-    config still carries the key. The two residual triggers are asserted
-    exactly, so neither can be widened back by accident.
+    config still carries the key. The residual triggers are asserted exactly, so
+    they cannot be widened back by accident.
+
+    `EvaluationTiming` lost its last one to item ``39eacd99``: ``exception`` is
+    now `tpen.run_events.RunFailed`. `ArtifactIndex` keeps ``run_end`` because it
+    is a `StatefulCallback`, which the typed run lifecycle cannot reach -- see
+    ``test_typed_run_lifecycle.py``.
     """
 
     callback = build()

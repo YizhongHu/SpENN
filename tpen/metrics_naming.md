@@ -933,12 +933,22 @@ All five evaluation callbacks read those occurrences, and the legacy
 evaluation record is still logged at `step = 0`, and evaluation metric records
 still carry no checkpoint identity.
 
-Two run-level legacy strings still reach an evaluation callback, and both are
-deliberate. `EvaluationTiming` keeps `exception`, which is the only writer of
-`eval/perf {failed: True}`; `ArtifactIndex` keeps `run_end`, which is the only
-thing that writes `diagnostics/index.json` for a suite with no tasks. Neither
-has a typed equivalent or an owning domain, and typing the run lifecycle is
-separate work.
+The run's own lifecycle is typed too: `RunStarted`, `RunCompleted`, and
+`RunFailed` in `tpen.run_events`, emitted only by `tpen.run.run_from_config`.
+`EvaluationTiming` now writes the sole `eval/perf {failed: True}` record off
+`RunFailed` rather than off the `exception` string. `ArtifactIndex` still keeps
+`run_end`, the only thing that writes `diagnostics/index.json` for a suite with
+no tasks, because it is a `StatefulCallback` and the run lifecycle carries no
+domain state, so the dispatcher would skip a typed run-level occurrence for it.
+`Status` keeps `run_start` / `run_end` / `exception` for the same reason.
+
+**One durable change, and it is a removal of duplication rather than of a
+series.** `tpen.run` emitted `run_failed` and `exception` back to back with the
+same payload, and `RunTiming` and `ResourceUsage` answered both, so a FAILED run
+wrote its `runtime` record twice -- with a later `end_time_unix` and a longer
+`wall_time_sec` the second time. One `RunFailed` replaces both, so a failed run
+now writes one `runtime` record. No metric name changes and no series
+disappears.
 
 Run-level metadata may use `step = 0`:
 

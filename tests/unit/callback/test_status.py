@@ -255,12 +255,17 @@ def test_status_rejects_too_small_max_line_width() -> None:
 def test_status_keeps_only_the_three_run_level_legacy_triggers() -> None:
     """The residual legacy surface, pinned so it can only shrink deliberately.
 
-    ``run_start``, ``run_end``, and ``exception`` are run-level events with no
-    typed equivalent (item ``39eacd99``) and no owning domain, and they are the
-    only thing that writes ``status.json``. They are hardcoded rather than
-    configured because ADR-E002 forbids a config from naming events, and the
-    training line that ``step_end`` used to select is now the ``train_lines``
-    option.
+    ``run_start``, ``run_end``, and ``exception`` are the only thing that writes
+    ``status.json``. They are hardcoded rather than configured because ADR-E002
+    forbids a config from naming events, and the training line that ``step_end``
+    used to select is now the ``train_lines`` option.
+
+    THE REASON THEY SURVIVE CHANGED with item ``39eacd99``, which minted the
+    typed equivalents in `tpen.run_events`. They are still here because `Status`
+    is a `StatefulCallback` and the run lifecycle carries no domain state, so
+    `RunContext._dispatch_occurrence` would skip every run-level occurrence for
+    it -- silently, stopping ``status.json`` being written. See
+    ``test_typed_run_lifecycle.test_a_state_free_run_event_reaches_no_stateful_callback``.
     """
 
     callback = Status()
