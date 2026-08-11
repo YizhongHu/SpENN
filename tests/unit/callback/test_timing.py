@@ -43,7 +43,11 @@ from tpen.training.events import (
     TrainingIterationCompleted,
     TrainingPhase,
 )
-from tests.unit.callback.support import FakeState, RecordingContext
+from tests.unit.callback.support import (
+    RecordingContext,
+    deliver_completed_iteration,
+    training_state,
+)
 
 
 class FakeClock:
@@ -175,24 +179,34 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     ]
 
 
-def test_status_can_render_train_step_timing_metric(caplog: pytest.LogCaptureFixture) -> None:
+def test_train_step_timing_no_longer_feeds_the_status_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``train/perf`` reaches the loggers, and no longer reaches `Status`.
+
+    It used to travel between these two callbacks on the shared legacy
+    ``step_end`` payload, which one mutated in place and the other re-parsed --
+    the untyped inter-callback side channel ADR-E007 rejects. `Status` now
+    receives a typed occurrence, which has no payload, so the two ``train/perf``
+    identities in its default include list cannot render. The METRIC itself is
+    unaffected: `TrainStepTiming` still logs it to every configured logger,
+    which is what the first assertion pins.
+
+    Recorded as a test rather than left as an absence, so restoring the line is
+    a deliberate, findable change instead of a gap nobody notices.
+    """
+
     context = RecordingContext()
     timing = TrainStepTiming(clock=FakeClock([1.0, 1.25]))
-    status = Status(["step_end"], include=["train/perf/step_time_sec"], color="never")
-    end_event = Event(
-        name="step_end",
-        context=context,
-        state=FakeState(step=1),
-        payload={"step": 1},
-        step=1,
-    )
+    status = Status(include=["train/perf/step_time_sec"], color="never", train_lines=True)
 
     timing.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    timing.handle(end_event)
+    timing.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        status.handle(end_event)
+        deliver_completed_iteration(status, context, training_state(step=1), step=1)
 
-    assert caplog.records[-1].getMessage() == "[train] step=1 step_time=0.25"
+    assert context.latest("train/perf")["step_time_sec"] == 0.25
+    assert not caplog.records
 
 
 def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:

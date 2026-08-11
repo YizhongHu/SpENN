@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from .base import Callback, Event, StatefulCallback
 from .cadence import Cadence, CadenceGate, StepCadence, StepCadenceGate, SubscriptionGroup
-from .checkpoint import Checkpoint
 from .metadata import Metadata
 from .snapshot import ConfigSnapshot, ResolvedConfigSnapshot
-from .status import Status, configure_terminal_logging
+from .terminal_logging import configure_terminal_logging
 
 
 def __getattr__(name: str) -> object:
@@ -25,6 +24,14 @@ def __getattr__(name: str) -> object:
         from .evaluation import ArtifactIndex
 
         return ArtifactIndex
+    if name == "Checkpoint":
+        from .checkpoint import Checkpoint
+
+        return Checkpoint
+    if name == "Status":
+        from .status import Status
+
+        return Status
     if name == "FailureLog":
         from .evaluation import FailureLog
 

@@ -110,6 +110,20 @@ class Train(Runner):
             step=int(next_iteration),
             payload={"model": self.model},
         )
+        # Typed counterpart of the legacy ``train_end`` above, emitted at the
+        # same point in the same order the trainer pairs its own two channels
+        # (legacy ``step_end`` first, then `TrainingIterationCompleted`). It
+        # carries the loop's state so `tpen.callback.Checkpoint` can write the
+        # terminal checkpoint through typed delivery.
+        #
+        # Emitting it HERE rather than inside `fit` is what makes it fire when
+        # the loop body never ran: `max_steps=0` and a fully-resumed run both
+        # return from `fit` without executing an iteration, and both still owe a
+        # terminal checkpoint. Deferred import because importing `tpen.training`
+        # pulls in torch, and `tpen.runner` must stay importable without it.
+        from tpen.training.events import TrainingCompleted
+
+        context.emit(TrainingCompleted(), state=final_state)
         self.emit("run_end", context)
         return RunResult(status="completed")
 

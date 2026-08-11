@@ -837,27 +837,29 @@ and so the pointer always targets the newest directory in practice.
 
 ### Checkpoint cadence counts completed updates
 
-On the periodic `step_end` path, the `Checkpoint` callback's `every_n_steps`
-counts `completed_updates`, not the resume cursor and not the 0-based loop step:
+On the periodic path, the `Checkpoint` callback's `every_n_steps` counts
+`completed_updates`, not the resume cursor and not the 0-based loop step:
 periodic checkpoints are spaced by optimizer updates that actually ran.
 
-Periodic checkpointing is driven by the typed `UpdateCompleted` event, which the
-trainer emits in the one place `completed_updates` is incremented — immediately
-after `optimizer.step()` returns. That yields exactly one candidate firing per
-completed update by construction. A vacuum iteration emits `UpdateSkipped`
+Which iterations are *eligible* is decided by the typed `UpdateCompleted` event,
+which the trainer emits in the one place `completed_updates` is incremented —
+immediately after `optimizer.step()` returns. That yields exactly one candidate
+per completed update by construction. A vacuum iteration emits `UpdateSkipped`
 instead, which `Checkpoint` does not subscribe to, so no periodic checkpoint
 fires for it: a run of vacuum iterations writes no periodic checkpoints at all,
 rather than one per iteration. This selection is unconditional — with no
-`every_n_steps` configured, `step_end` writes on every *completed update*, not
-on every iteration.
+`every_n_steps` configured, the periodic path writes on every *completed
+update*, not on every iteration.
 
-Trigger and coordinate are separate, and the distinction matters across resume:
+Boundary and coordinate are separate, and the distinction matters across resume:
 
-| Role               | Value                                               |
-| ------------------ | --------------------------------------------------- |
-| Periodic trigger   | `UpdateCompleted` occurrence                         |
-| Cadence coordinate | durable `trainer.state_dict()["completed_updates"]` |
-| Directory identity | durable `trainer.state_dict()["next_iteration"]`    |
+| Role                 | Value                                               |
+| -------------------- | --------------------------------------------------- |
+| Periodic write       | `TrainingIterationCompleted` occurrence             |
+| Periodic eligibility | `UpdateCompleted` occurrence                        |
+| Terminal write       | `TrainingCompleted` occurrence                      |
+| Cadence coordinate   | durable `trainer.state_dict()["completed_updates"]` |
+| Directory identity   | durable `trainer.state_dict()["next_iteration"]`    |
 
 The run-local `Occurrence.count` is deliberately *not* the cadence coordinate.
 Occurrence counts restart at 1 for a new `RunContext`, so a resumed run gating
@@ -867,18 +869,32 @@ checkpoints at exactly the points an uninterrupted run that reached `N` would.
 This is a checkpoint-local guarantee; durable cadence continuation for
 occurrence-gated callbacks generally remains deferred.
 
-The write happens at the `step_end` trigger rather than at the `UpdateCompleted`
-occurrence, because `next_iteration` is assigned at the end of the loop body and
-the typed occurrence carries no model, optimizer, or sampler. `UpdateCompleted`
-selects which `step_end` may write.
+The write happens at `TrainingIterationCompleted` rather than at the
+`UpdateCompleted` occurrence that selects it. `UpdateCompleted` fires
+immediately after `optimizer.step()` returns, which is **before** any health
+check runs, so writing there would persist a model version no check has yet
+accepted and would make a `fail_fast` abort leave the rejected model as the
+default resume target (item `195c3ff3`). Sharing the checks' boundary means a
+failed check raises out of the callback-list dispatch loop before `Checkpoint`
+runs. That property is pinned by
+`tests/unit/training/test_health_checkpoint_order.py`, which reads the
+production callback order from
+`experiments/hooke/tpen-pair-v1/configs/train.yaml` rather than restating it.
 
-`train_end` is a **terminal** trigger, not a periodic one. Update selection
-deliberately does not apply to it, because a terminal checkpoint must land even
-when the final iteration skipped its update, and even when the loop body never
-executed at all (`max_steps = 0`, or a fully-resumed run, where
-`TrainerState.step` is still `-1`). When a `train_end` `Checkpoint` is given an
-`every_n_steps`, that window keeps the resume-cursor coordinate it has always
-used, not `completed_updates`.
+The **terminal** write is not periodic. It fires at `TrainingCompleted`, which
+the runner emits once `VMCTrainer.fit` returns, and update selection
+deliberately does not apply to it: a terminal checkpoint must land even when the
+final iteration skipped its update, and even when the loop body never executed
+at all (`max_steps = 0`, or a fully-resumed run, where `TrainerState.step` is
+still `-1`) — which is exactly why the terminal moment needs its own event
+rather than being read off the last iteration. When a terminal `Checkpoint` is
+given an `every_n_steps`, that window keeps the resume-cursor coordinate it has
+always used, not `completed_updates`.
+
+Which of the two writes an instance performs is a semantic option — `periodic`
+and `terminal`, both defaulting to true — replacing the `triggers: [step_end]`
+and `triggers: [train_end]` selection configs used to spell. Under ADR-E002 a
+config never names an event.
 
 Directory identity is unaffected by cadence: a checkpoint written at
 `completed_updates = 40` still lands in the directory named by its
