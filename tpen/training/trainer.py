@@ -82,6 +82,13 @@ class VMCTrainer:
     ``completed_updates`` counts optimizer updates that actually returned, so the
     two diverge whenever a completed iteration skips its update (the
     zero-electron vacuum).
+
+    Every key in the ``train`` record logged at loop step ``k`` describes the
+    *pre-update* model -- the one that produced step ``k``'s samples. That
+    includes ``param_norm``, which is therefore read before ``optimizer.step()``
+    rather than after it. Keeping the record single-version is a contract: a new
+    trainer-owned metric must be computed before the update, or it does not
+    belong in this record.
     """
 
     def __init__(
@@ -196,6 +203,15 @@ class VMCTrainer:
                     objective = compute_vmc_objective(output.logabs, total_local_energy)
                 loss = objective.loss
 
+                # Read the parameter norm here, before any update, so the whole
+                # `train` record describes exactly one model version: the model
+                # that produced these samples, this loss, and this gradient.
+                # Reading it after `optimizer.step()` would make `param_norm`
+                # the sole post-update key in an otherwise pre-update record.
+                # Both branches below reach the metrics block, so the skip path
+                # reports this same pre-update value.
+                param_norm = _parameter_norm(model)
+
                 optimizer.zero_grad(set_to_none=True)
                 optimizer_step = False
                 if loss.requires_grad:
@@ -237,7 +253,7 @@ class VMCTrainer:
                     if term_energies is not None:
                         metrics.update(summarize_local_energy_terms(term_energies))
                     metrics["grad_norm"] = grad_norm
-                    metrics["param_norm"] = _parameter_norm(model)
+                    metrics["param_norm"] = param_norm
                     metrics["loss_has_grad"] = bool(loss.requires_grad)
                     metrics["optimizer_step"] = optimizer_step
 

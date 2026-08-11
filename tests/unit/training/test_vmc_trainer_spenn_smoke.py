@@ -29,7 +29,7 @@ from tpen.training.events import (
     UpdateCompleted,
     UpdateSkipped,
 )
-from tpen.training.trainer import VMCTrainer
+from tpen.training.trainer import VMCTrainer, _parameter_norm
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 
@@ -100,6 +100,35 @@ class _ConstantWavefunction(torch.nn.Module):
             logabs=torch.zeros(shape, dtype=torch.float64),
             sign=torch.ones(shape, dtype=torch.float64),
         )
+
+
+class _NormSpyAdam(torch.optim.Adam):
+    """Adam that records the model's parameter norm on both sides of ``step``.
+
+    Subclassing the real optimizer is deliberate: ``VMCTrainer.fit`` annotates
+    ``optimizer`` as ``torch.optim.Optimizer`` and the suite runs typeguard over
+    ``tpen``, so a duck-typed wrapper would be rejected at call time.
+    """
+
+    def __init__(self, model: torch.nn.Module, **kwargs: Any) -> None:
+        super().__init__(model.parameters(), **kwargs)
+        self._model = model
+        self.norm_before_step: float | None = None
+        self.norm_after_step: float | None = None
+
+    def step(self, closure=None):
+        self.norm_before_step = _parameter_norm(self._model)
+        result = super().step(closure)
+        self.norm_after_step = _parameter_norm(self._model)
+        return result
+
+
+def _train_metrics(context: _StubContext) -> dict:
+    """Return the single ``train`` record logged into ``context``."""
+
+    records = [metrics for namespace, metrics in context.records if namespace == "train"]
+    assert len(records) == 1, f"expected exactly one train record, got {len(records)}"
+    return records[0]
 
 
 def _occurrence_labels(occurrences: list[Occurrence[Any]]) -> list[tuple[str, type]]:
@@ -368,6 +397,61 @@ def test_skipped_update_emits_update_skipped_without_an_optimizer_scope() -> Non
     assert not any(operation is OptimizerUpdate for _, operation in labels)
     # Backward is likewise unreachable without a differentiable loss.
     assert not any(operation is Backward for _, operation in labels)
+
+
+def test_param_norm_describes_the_pre_update_model() -> None:
+    """One `train` record must describe exactly one model version."""
+
+    context = _StubContext()
+    model = build_tiny_spenn()
+    optimizer = _NormSpyAdam(model, lr=0.01)
+    trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
+
+    trainer.fit(
+        model=model,
+        sampler=build_tiny_sampler(),
+        hamiltonian_terms=[
+            KineticEnergy(),
+            HarmonicTrap(omega=0.5),
+            ElectronElectronInteraction(),
+        ],
+        optimizer=optimizer,
+        context=context,
+        emit=lambda name, *, state=None, payload=None, step=None: None,
+    )
+
+    # Precondition: the update actually moved the parameters. Without this the
+    # equality below would also hold for a post-update reading and pin nothing.
+    assert optimizer.norm_before_step != optimizer.norm_after_step
+
+    metrics = _train_metrics(context)
+    assert metrics["param_norm"] == optimizer.norm_before_step
+    assert metrics["param_norm"] != optimizer.norm_after_step
+    # Moving the computation earlier must not move the key: CSV/JSONL readers
+    # and anyone diffing records see the same column order as before.
+    assert list(metrics)[-4:] == ["grad_norm", "param_norm", "loss_has_grad", "optimizer_step"]
+
+
+def test_skipped_update_logs_the_same_train_record_shape() -> None:
+    """A vacuum skip emits the normal record; `optimizer_step` is the discriminator."""
+
+    completed_context = _StubContext()
+    _fit_one_typed_step(completed_context)
+    skipped_context = _StubContext()
+    _fit_vacuum_steps(skipped_context)
+
+    completed = _train_metrics(completed_context)
+    skipped = _train_metrics(skipped_context)
+
+    # Same keys in the same order, so no consumer has to branch on whether an
+    # iteration happened to apply an update.
+    assert list(skipped) == list(completed)
+    assert completed["optimizer_step"] is True
+    assert skipped["optimizer_step"] is False
+    # The skip path opens no optimizer scope, yet still reports a parameter
+    # norm -- and on that path pre-update and post-update coincide anyway.
+    assert skipped["param_norm"] == pytest.approx(0.0)
+    assert skipped["grad_norm"] == 0.0
 
 
 def test_load_state_dict_round_trips_both_progress_counters() -> None:
