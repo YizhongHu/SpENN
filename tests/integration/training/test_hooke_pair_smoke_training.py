@@ -73,6 +73,37 @@ def test_pair_smoke_training_logs_expected_namespaces(tmp_path) -> None:
     assert not any(str(ns).startswith("validation") for ns in namespaces)
 
 
+def test_pair_smoke_training_equivariance_checks_actually_compared_something(tmp_path) -> None:
+    # A present namespace is not the same as a performed check: every verdict
+    # under `checks/equivariance/*` is well defined over an empty comparison
+    # set, so `passed` alone cannot distinguish "equivariant" from "nothing was
+    # compared". `n_comparisons` is the key that can, and this asserts the
+    # configured run reaches it with a real number rather than a vacuous zero.
+    run_dir = _run(tmp_path)
+
+    records = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+
+    full_model = [r["metrics"] for r in records if r.get("namespace") == "checks/equivariance/full_model"]
+    assert full_model, "no full-model equivariance records"
+    for metrics in full_model:
+        # n_particles = 2 admits exactly one non-identity permutation, and the
+        # checker compares once per permutation.
+        assert metrics["n_comparisons"] == 1
+        assert metrics["passed"] is True
+
+    trace = [r["metrics"] for r in records if r.get("namespace") == "checks/equivariance/trace"]
+    assert trace, "no trace equivariance records"
+    for metrics in trace:
+        # The fixture sets compare_output: false, so the count is exactly one
+        # comparison per shared trace key per permutation.
+        assert metrics["n_comparisons"] == metrics["n_permutations_tested"] * metrics["n_trace_entries"]
+        assert metrics["passed"] is True
+
+
 def test_pair_smoke_training_geometry_metrics(tmp_path) -> None:
     run_dir = _run(tmp_path)
 
