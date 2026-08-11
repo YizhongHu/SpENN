@@ -61,27 +61,24 @@ class Status(StatefulCallback[TrainerState]):
     ``exception``. They are the only thing that writes ``status.json`` at all,
     so dropping them would delete the run's status artifact outright.
 
-    THE REASON THEY SURVIVE HAS CHANGED, and the new one is a harder blocker
-    than the old. Until item ``39eacd99`` these three had no typed equivalent;
-    they now do (`tpen.run_events`). They are still here because this class is a
-    `StatefulCallback`. `tpen.artifacts.RunContext._dispatch_occurrence` decides
-    delivery by ``isinstance(state, callback.state_type)``, and the run lifecycle
-    carries no domain state, so a run-level occurrence is SKIPPED for this
-    callback -- silently, exactly as
-    ``test_a_boundary_emitted_without_state_delivers_nothing`` pins. Subscribing
-    them here would not half-migrate the callback; it would stop ``status.json``
-    being written, with no error anywhere.
+    THE REASON THEY SURVIVE HAS CHANGED TWICE. Until item ``39eacd99`` these
+    three had no typed equivalent; they now do (`tpen.run_events`). They then
+    survived because this class is a `StatefulCallback`:
+    `tpen.artifacts.RunContext._dispatch_occurrence` decided delivery once per
+    CALLBACK on ``isinstance(state, callback.state_type)``, the run lifecycle
+    carries no domain state, and a run-level occurrence was therefore SKIPPED
+    here -- silently, which would have stopped ``status.json`` being written with
+    no error anywhere.
 
-    A callback declares ONE ``state_type``, so this is not fixable inside the
-    class. It needs either a way for a subscription group to declare that it
-    needs no state, or this class split into a run-lifecycle `Callback` and a
-    training-line `StatefulCallback` (the shape ADR-E002 names for divergent
-    policy modes). The first changes the ADR-E008 mechanism, the second changes a
-    config-facing ``_target_`` contract, so both belong to the mechanism owner
-    (``62593af4``) rather than to the run-lifecycle slice. The identical
-    situation, for the identical reason, holds for the residual ``run_end`` on
-    `tpen.callback.ArtifactIndex`; those two are now the whole remaining blocker
-    for the residual string deletion (``85870732``).
+    THAT BLOCKER IS GONE. Item ``24f91145`` moved the gate to the subscription
+    group, so a group may declare
+    `tpen.callback.cadence.SubscriptionGroup.stateless` and be delivered through
+    the two-argument hook while this class's training-line group keeps receiving
+    `tpen.training.state.TrainerState`. These three survive only because that
+    mechanism landed with ZERO consumers -- the shape PR #174 used for ADR-E008
+    itself -- so replacing them is a separate, now mechanical, slice. The
+    identical situation holds for the residual ``run_end`` on
+    `tpen.callback.ArtifactIndex`.
 
     They are hardcoded rather than configured because every shipped config
     listed exactly these three, and because ADR-E002 forbids a config from

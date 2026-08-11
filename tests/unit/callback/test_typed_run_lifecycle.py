@@ -16,11 +16,16 @@ the only thing standing between that mistake and a run that quietly stops
 recording itself.
 
 Also pinned here: `tpen.callback.Status` and `tpen.callback.ArtifactIndex` keep
-their residual legacy triggers, and the MEASURED reason they must
-(``test_a_state_free_run_event_reaches_no_stateful_callback``). Both are
-`StatefulCallback`s, the run lifecycle carries no domain state, and the
-dispatcher's ``isinstance(state, callback.state_type)`` branch therefore skips
-them at every run-level boundary.
+their residual legacy triggers. The MEASURED reason they had to, when this slice
+landed, was that both are `StatefulCallback`s, the run lifecycle carries no
+domain state, and the dispatcher's ``isinstance(state, callback.state_type)``
+branch therefore skipped them at every run-level boundary -- silently.
+
+Item ``24f91145`` removed that constraint by moving the gate from per-callback to
+per-GROUP, so ``test_a_state_free_run_event_now_reaches_a_stateful_callback``
+records the same scenario with the opposite outcome. The two triggers survive
+only because the mechanism landed with zero consumers; their migration is a
+separate slice.
 """
 
 from __future__ import annotations
@@ -429,7 +434,7 @@ class _ExplodingOnFailure(Metadata):
 
 
 # --------------------------------------------------------------------------
-# The measured blocker: a state-free event reaches no `StatefulCallback`
+# The blocker this slice measured, and its removal in ``24f91145``
 # --------------------------------------------------------------------------
 
 
@@ -438,7 +443,15 @@ class _ForeignState(DomainState):
 
 
 class _RunLevelStateful(StatefulCallback[_ForeignState]):
-    """A stateful callback that TRIES to subscribe the run lifecycle."""
+    """A stateful callback subscribing the run lifecycle, as it once could not.
+
+    Its group declares ``stateless``, which is exactly the capability
+    ``24f91145`` added and this slice measured to be missing. Before it, a
+    `StatefulCallback` subscribing a run-level event observed nothing at all,
+    because `RunContext._dispatch_occurrence` decided delivery once per callback
+    on ``isinstance(state, callback.state_type)`` and the run lifecycle carries
+    no domain state.
+    """
 
     state_type: ClassVar[type[DomainState]] = _ForeignState
 
@@ -446,50 +459,65 @@ class _RunLevelStateful(StatefulCallback[_ForeignState]):
         super().__init__(
             triggers=(),
             typed_groups=(
-                SubscriptionGroup(selectors=(Subscription.of(RunStarted),)),
+                SubscriptionGroup(selectors=(Subscription.of(EvaluationStarted),)),
+                SubscriptionGroup(
+                    selectors=(Subscription.of(RunStarted),), stateless=True
+                ),
             ),
         )
         self.seen: list[Any] = []
+        self.domain_seen: list[Any] = []
 
     def handle_occurrence_impl(
         self, occurrence: Occurrence[Any], context: RunContext, state: _ForeignState
     ) -> None:
         del context, state
+        self.domain_seen.append(occurrence.event)
+
+    def handle_stateless_occurrence_impl(
+        self, occurrence: Occurrence[Any], context: RunContext
+    ) -> None:
+        del context
         self.seen.append(occurrence.event)
 
 
-def test_a_state_free_run_event_reaches_no_stateful_callback(tmp_path: Path) -> None:
-    """Why `Status` and `ArtifactIndex` could NOT migrate in this slice.
+def test_a_state_free_run_event_now_reaches_a_stateful_callback(tmp_path: Path) -> None:
+    """The constraint this slice recorded, and its removal.
 
-    `RunContext._dispatch_occurrence` decides delivery by
-    ``isinstance(state, callback.state_type)``, and the run lifecycle carries no
-    domain state, so the branch that skips a foreign domain also skips every
-    stateful callback here -- silently, with no error. A callback declares ONE
-    ``state_type``, so a callback that observes both a domain and the run
-    lifecycle cannot be expressed at all today. Fixing that means either a
-    stateless subscription group or splitting those two classes, both of which
-    change the ADR-E008 mechanism or a config-facing contract.
+    This test asserted the opposite when #182 landed: a `StatefulCallback`
+    subscribing a run-level event observed NOTHING, silently, because a callback
+    declares one ``state_type`` and "observes a domain AND the run lifecycle" was
+    inexpressible. That was the whole remaining blocker for ``85870732``.
+
+    ``24f91145`` moved the state gate from per-callback to per-GROUP, so the same
+    class can now declare one group that wants its domain's state and another
+    that wants a state-free boundary. Kept here rather than deleted so the record
+    shows the constraint and its removal in one place; the mechanism's own tests
+    are in ``test_stateless_subscription_group.py``.
     """
 
     callback = _RunLevelStateful()
     context = make_run_context(tmp_path, callbacks=[callback])
 
     context.emit(RunStarted())
-    assert callback.seen == []
+    assert callback.seen == [RunStarted()]
 
-    # The identical subscription fires the moment its own domain state arrives,
-    # which is what proves the silence above is the state filter and not a
-    # mismatched selector.
-    context.emit(RunStarted(), state=_ForeignState())
-    assert len(callback.seen) == 1
+    # And the domain group on the SAME callback still receives its state, which
+    # is what makes this a capability rather than a relaxed filter.
+    state = _ForeignState()
+    context.emit(EvaluationStarted(), state=state)
+    assert callback.domain_seen == [EvaluationStarted()]
 
 
 def test_status_and_artifact_index_keep_exactly_their_residual_triggers() -> None:
     """The residual legacy surface, pinned so it can only shrink deliberately.
 
-    Both are `StatefulCallback`s blocked by the filter above, and between them
-    they are the whole remaining blocker for item ``85870732``. ``status.json``
-    and the empty-suite ``diagnostics/index.json`` are the artifacts at stake.
+    These two are no longer BLOCKED from migrating -- ``24f91145`` delivered the
+    mechanism they need. They are simply not migrated yet: that mechanism landed
+    with zero consumers, the shape PR #174 used for ADR-E008 itself, so the
+    migration is its own reviewable slice. This pin stays until then, because
+    ``status.json`` and the empty-suite ``diagnostics/index.json`` are the
+    artifacts at stake and dropping a trigger early would delete them silently.
     """
 
     assert Status().triggers == ("run_start", "run_end", "exception")

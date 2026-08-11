@@ -58,14 +58,18 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
             # artifact is not a refactor (ADR-E006).
             #
             # Item ``39eacd99`` minted the typed equivalent
-            # (`tpen.run_events.RunCompleted`), and this trigger STILL cannot be
-            # replaced by it. `RunContext._dispatch_occurrence` decides delivery
-            # by ``isinstance(state, callback.state_type)``, the run lifecycle
+            # (`tpen.run_events.RunCompleted`), and this trigger could not then
+            # be replaced by it: `RunContext._dispatch_occurrence` decided
+            # delivery once per CALLBACK on
+            # ``isinstance(state, callback.state_type)``, the run lifecycle
             # carries no state, and this class is a `StatefulCallback`, so the
-            # occurrence would be skipped SILENTLY and the empty index would stop
-            # being written. See the note on `tpen.callback.Status`, blocked
-            # identically; the two of them are the remaining blocker for
-            # ``85870732``.
+            # occurrence was skipped SILENTLY and the empty index would have
+            # stopped being written. Item ``24f91145`` removed that blocker by
+            # moving the gate to the subscription group: a group may now declare
+            # `SubscriptionGroup.stateless` and be delivered through the
+            # two-argument hook while the task group above keeps its state. That
+            # mechanism landed with zero consumers, so replacing this trigger is
+            # a separate slice. Same story on `tpen.callback.Status`.
             triggers=("run_end",),
             typed_groups=(
                 SubscriptionGroup(selectors=(ended(EvaluationTaskRun),)),

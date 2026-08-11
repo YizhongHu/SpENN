@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -13,6 +14,10 @@ from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence
 
 from .cadence import CadenceGate, SubscriptionGroup, validate_subscription_groups
+
+# Named for the same reason `spenn.status` and `spenn.bootstrap` are: a run's
+# logging configuration can silence or route this channel on its own.
+_LOGGER = logging.getLogger("spenn.callback")
 
 
 @dataclass
@@ -31,6 +36,12 @@ class _TypedGroupState:
     group: SubscriptionGroup
     gate: CadenceGate | None = field(init=False)
     open_pairs: dict[tuple[type[object], int], bool] = field(default_factory=dict)
+    # Event shapes already reported as arriving with no state at all, so the
+    # diagnostic in `StatefulCallback.handle_occurrence` fires once per shape
+    # instead of once per training step.
+    reported_missing_state: set[tuple[type[object], type[object] | None]] = field(
+        default_factory=set
+    )
 
     def __post_init__(self) -> None:
         self.gate = None if self.group.cadence is None else CadenceGate(self.group.cadence)
@@ -39,6 +50,7 @@ class _TypedGroupState:
         if self.gate is not None:
             self.gate.reset()
         self.open_pairs.clear()
+        self.reported_missing_state.clear()
 
 
 _UNSET_CONTEXT = object()
@@ -100,8 +112,19 @@ class _CallbackCore:
         if not all(isinstance(group, SubscriptionGroup) for group in groups):
             raise TypeError("typed_groups must contain only SubscriptionGroup values")
         validate_subscription_groups(groups)
+        self._validate_typed_groups(groups)
         self._typed_group_states = tuple(_TypedGroupState(group) for group in groups)
         self._typed_context: object = _UNSET_CONTEXT
+
+    def _validate_typed_groups(self, groups: tuple[SubscriptionGroup, ...]) -> None:
+        """Reject a group plan this delivery shape cannot honour.
+
+        Overridden by both public bases. It exists because ``stateless`` is a
+        declaration about DELIVERY, and only the base that owns a delivery
+        signature can say whether a given declaration is satisfiable there.
+        """
+
+        del groups
 
     def should_run(self, event: Event) -> bool:
         """Return whether this callback should handle `event`."""
@@ -155,6 +178,22 @@ class _CallbackCore:
         """Reset subclass caches when typed state moves to a new context."""
 
     @staticmethod
+    def _typed_group_selects(
+        group_state: _TypedGroupState, occurrence: Occurrence[TypedEvent]
+    ) -> bool:
+        """Return whether a selector names this occurrence, gating nothing.
+
+        Kept separate from `_typed_group_delivers`, which advances the group's
+        cadence gate and its open-pair table as a side effect of asking. A
+        diagnostic that wants only "was this occurrence addressed to this
+        group?" must not perturb the schedule by asking.
+        """
+
+        return any(
+            selector.matches(occurrence.event) for selector in group_state.group.selectors
+        )
+
+    @staticmethod
     def _typed_group_delivers(
         group_state: _TypedGroupState, occurrence: Occurrence[TypedEvent]
     ) -> bool:
@@ -198,6 +237,24 @@ class Callback(_CallbackCore):
     Constructor parameters are documented on `_CallbackCore`.
     """
 
+    def _validate_typed_groups(self, groups: tuple[SubscriptionGroup, ...]) -> None:
+        """Reject a ``stateless`` declaration, which is vacuous on this base.
+
+        Every group here is already delivered without state, so the flag adds
+        nothing -- but it would imply, to a reader, that some sibling group on
+        the same class IS stateful, which this base cannot express. Refused at
+        construction rather than ignored, so the disagreement between what the
+        group declares and what the class can do surfaces as an error message
+        instead of as a subtly wrong reading.
+        """
+
+        if any(group.stateless for group in groups):
+            raise TypeError(
+                f"{type(self).__name__} is a Callback, whose groups are all "
+                "delivered without state; stateless=True is meaningful only on a "
+                "StatefulCallback"
+            )
+
     @final
     def handle_occurrence(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
@@ -220,12 +277,28 @@ class Callback(_CallbackCore):
 class StatefulCallback(_CallbackCore, Generic[StateT]):
     """Callback that observes typed occurrences together with domain state.
 
-    Delivery is three-argument: ``(occurrence, context, state)``. The emitting
-    domain passes its own `tpen.events.DomainState` beside each occurrence, and
-    the dispatcher delivers it only to callbacks that declare a matching
-    ``state_type``. A callback whose domain does not match is skipped, not
-    failed: one run may emit several domains' states, and a callback simply has
-    nothing to observe outside its own.
+    Delivery is decided PER GROUP, not per callback. A group that did not
+    declare `tpen.callback.cadence.SubscriptionGroup.stateless` receives the
+    emitting domain's own `tpen.events.DomainState` through the three-argument
+    ``handle_occurrence_impl``, and only when that state is an instance of this
+    callback's ``state_type``; a callback whose domain does not match is
+    skipped, not failed, because one run may emit several domains' states and a
+    callback simply has nothing to observe outside its own. A group that DID
+    declare ``stateless`` receives the two-argument
+    ``handle_stateless_occurrence_impl`` instead, and no state filter applies to
+    it at all.
+
+    That is a deliberate weakening, recorded as an amendment to ADR-E008. The
+    invariant used to be "my handler always receives my domain's state"; it is
+    now "each group receives state or not, as declared". It buys the one thing
+    the old invariant made inexpressible: a callback that observes both its own
+    domain and a boundary belonging to no domain, such as the run lifecycle,
+    which carries no state and never will. The alternative was splitting such a
+    class in two and changing its config-facing ``_target_``.
+
+    Because `tpen.callback.cadence.validate_subscription_groups` rejects
+    overlapping deliveries, at most one group matches any occurrence, so the
+    two hooks can never both fire for a single delivery.
 
     This is NOT a subclass of `Callback`. The two delivery arities differ, so an
     inheritance edge would be a substitutability violation, and it would also
@@ -286,24 +359,134 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
             )
         super().__init__(*args, **kwargs)
 
+    def _validate_typed_groups(self, groups: tuple[SubscriptionGroup, ...]) -> None:
+        """Reject a stateless declaration this class could only swallow.
+
+        Two shapes are refused, both of which would otherwise reintroduce the
+        silence this capability exists to remove:
+
+        - a stateless group on a class that never overrode
+          ``handle_stateless_occurrence_impl``, whose deliveries would land in
+          the inherited no-op and disappear;
+        - a plan whose groups are ALL stateless, which declares a ``state_type``
+          that can never route anything and should be a `Callback` instead.
+
+        A class with no groups at all is untouched: `tpen.callback.Status`
+        subscribes nothing when its training line is off, and that is not the
+        same claim.
+        """
+
+        stateless = tuple(group for group in groups if group.stateless)
+        if not stateless:
+            return
+        if len(stateless) == len(groups):
+            raise TypeError(
+                f"every subscription group on {type(self).__name__} is stateless, so "
+                "its state_type can never route a delivery; make it a Callback"
+            )
+        if (
+            type(self).handle_stateless_occurrence_impl
+            is StatefulCallback.handle_stateless_occurrence_impl
+        ):
+            raise TypeError(
+                f"{type(self).__name__} declares a stateless subscription group but "
+                "does not override handle_stateless_occurrence_impl, so those "
+                "deliveries would be silently discarded"
+            )
+
     @final
     def handle_occurrence(
         self,
         occurrence: Occurrence[TypedEvent],
         context: RunContext,
-        state: StateT,
+        state: DomainState | None,
     ) -> None:
-        """Match, gate, and deliver one typed occurrence with its domain state.
+        """Match, gate, and route one typed occurrence group by group.
 
-        The caller is responsible for confirming that ``state`` is an instance
-        of this callback's ``state_type``; `tpen.artifacts.RunContext` does that
-        before it ever reaches this method.
+        ``state`` is whatever the emitting domain passed -- this callback's own
+        domain state, some other domain's, or nothing at all. The discrimination
+        happens HERE rather than in `tpen.artifacts.RunContext`, because the
+        dispatcher cannot know which group a given occurrence will match and the
+        answer differs between them. The narrow ``StateT`` annotation therefore
+        lives on ``handle_occurrence_impl``, which is reached only after the
+        instance check below.
+
+        The state check runs BEFORE `_typed_group_delivers` for a stateful
+        group, which is not incidental: asking that question advances the
+        group's cadence gate, so checking it first is what keeps a foreign
+        domain's occurrences from consuming schedule the way they never did when
+        the dispatcher filtered whole callbacks.
         """
 
         self._ensure_typed_context(context)
-        for group_state in self._typed_group_states:
+        for index, group_state in enumerate(self._typed_group_states):
+            if group_state.group.stateless:
+                if self._typed_group_delivers(group_state, occurrence):
+                    self.handle_stateless_occurrence_impl(occurrence, context)
+                continue
+            if not isinstance(state, self.state_type):
+                self._report_missing_state(index, group_state, occurrence, state)
+                continue
             if self._typed_group_delivers(group_state, occurrence):
                 self.handle_occurrence_impl(occurrence, context, state)
+
+    def _report_missing_state(
+        self,
+        index: int,
+        group_state: _TypedGroupState,
+        occurrence: Occurrence[TypedEvent],
+        state: DomainState | None,
+    ) -> None:
+        """Log the one skip shape that is a wiring error rather than routine.
+
+        The two skips are told apart by whether ANY state arrived, and the
+        distinction is not cosmetic:
+
+        - some other domain's state arrived. Routine, and silent. A run emits
+          several domains' boundaries and this callback is not their audience;
+          it happens on most occurrences of a mixed run, so a diagnostic here
+          would be pure noise.
+        - nothing arrived, on a boundary this group actually selected. Nobody
+          could have been the audience, so either the emitter omitted its
+          ``state=`` or the group should have declared ``stateless=True``. That
+          is a mistake every time, and it is precisely the silence that trapped
+          `tpen.callback.Status` and `tpen.callback.ArtifactIndex`.
+
+        Reported at WARNING rather than raised, because raising would break the
+        pinned behaviour that a boundary emitted without state delivers nothing
+        rather than killing the run -- a callback misconfiguration must not take
+        down training. Reported once per event shape per group, because the
+        selected boundary may be a per-step one.
+        """
+
+        if state is not None or not self._typed_group_selects(group_state, occurrence):
+            return
+        event = occurrence.event
+        # Typed discrimination rather than attribute probing: a lifecycle event
+        # is keyed by its operation type too, so Started[A] and Started[B] are
+        # reported separately.
+        if isinstance(event, (Started, Ended)):
+            key: tuple[type[object], type[object] | None] = (
+                type(event),
+                type(event.operation),
+            )
+            shape = f"{type(event).__name__}[{type(event.operation).__name__}]"
+        else:
+            key = (type(event), None)
+            shape = type(event).__name__
+        if key in group_state.reported_missing_state:
+            return
+        group_state.reported_missing_state.add(key)
+        _LOGGER.warning(
+            "%s subscription group %d requires %s, but %s was emitted with no domain "
+            "state at all, so nothing was delivered. Either the emitter omitted "
+            "state=, or the group should declare stateless=True. Reported once per "
+            "event shape per group.",
+            type(self).__name__,
+            index,
+            self.state_type.__name__,
+            shape,
+        )
 
     def handle_occurrence_impl(
         self,
@@ -314,6 +497,21 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
         """Handle one occurrence admitted by a configured typed group."""
 
         del occurrence, context, state
+
+    def handle_stateless_occurrence_impl(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext
+    ) -> None:
+        """Handle one occurrence admitted by a group that declared no state.
+
+        Deliberately NOT named ``handle_occurrence_impl``: the two hooks differ
+        in arity, and one name carrying two signatures on one class would make
+        it impossible to tell, at an override site, which route the author meant
+        -- and a wrong guess would be silent. `_validate_typed_groups` refuses a
+        stateless group unless this is overridden, so the inherited no-op is
+        reachable only by a class that declared no stateless group.
+        """
+
+        del occurrence, context
 
 
 def _legacy_event(

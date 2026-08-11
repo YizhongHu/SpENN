@@ -297,14 +297,19 @@ class RunContext:
 
         for callback in self.callbacks:
             if isinstance(callback, StatefulCallback):
-                # A callback observing a different domain has nothing to see at
-                # this boundary, so it is skipped rather than failed: one run
-                # emits several domains' occurrences, and only some carry state.
-                # Both boundaries of a scope share one state, so a skipped
-                # `Started` is always matched by a skipped `Ended` and no
-                # lifecycle pair is left half-open.
-                if not isinstance(state, callback.state_type):
-                    continue
+                # The ``isinstance(state, callback.state_type)`` filter used to
+                # live here, and moving it inside is the whole point of the
+                # ADR-E008 amendment. A callback may now declare one subscription
+                # group that wants its domain's state and another that wants a
+                # state-free boundary such as the run lifecycle, and the
+                # dispatcher cannot tell which of them an occurrence will match.
+                # Only the callback can, because only it holds the groups.
+                #
+                # A callback observing a different domain is still skipped rather
+                # than failed -- one run emits several domains' occurrences, and
+                # only some carry state -- and because both boundaries of a scope
+                # share one state, a skipped `Started` is still always matched by
+                # a skipped `Ended`, so no lifecycle pair is left half-open.
                 callback.handle_occurrence(occurrence, self, state)
             else:
                 callback.handle_occurrence(occurrence, self)
