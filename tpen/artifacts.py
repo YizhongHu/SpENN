@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from omegaconf import DictConfig, OmegaConf
 
-from tpen.events import Ended, Event as TypedEvent, Occurrence, Operation, Started
+from tpen.events import DomainState, Ended, Event as TypedEvent, Occurrence, Operation, Started
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
@@ -208,24 +208,37 @@ class RunContext:
         for logger in self.loggers:
             logger.log(record)
 
-    def emit(self, event: _EventT) -> Occurrence[_EventT]:
+    def emit(
+        self, event: _EventT, *, state: DomainState | None = None
+    ) -> Occurrence[_EventT]:
         """Record and dispatch the next occurrence of a typed event.
 
         Counts are one-based and local to this context. Each concrete event
         type advances independently.
+
+        Parameters
+        ----------
+        event : Event
+            Typed instantaneous event to emit.
+        state : DomainState or None, optional
+            The emitting domain's state object, delivered to typed handlers
+            that declare this domain. ``None`` means this boundary offers no
+            domain state, which is how every state-free emitter behaves.
         """
 
         if not isinstance(event, TypedEvent):
             raise TypeError(f"event must be an Event, got {type(event).__name__}")
         if isinstance(event, (Started, Ended)):
             raise TypeError("Started and Ended are emitted only by scope(operation)")
+        if state is not None and not isinstance(state, DomainState):
+            raise TypeError(f"state must be a DomainState, got {type(state).__name__}")
         occurrence = Occurrence(event=event, count=self._next_occurrence_count(type(event)))
-        self._dispatch_occurrence(occurrence)
+        self._dispatch_occurrence(occurrence, state=state)
         return occurrence
 
     @contextmanager
     def scope(
-        self, operation: _OperationT
+        self, operation: _OperationT, *, state: DomainState | None = None
     ) -> Iterator[Occurrence[Started[_OperationT]]]:
         """Emit paired lifecycle records around one typed operation.
 
@@ -233,29 +246,68 @@ class RunContext:
         resulting ``Started`` and ``Ended`` records share that count. After a
         successful start dispatch, the end record is dispatched even when the
         body raises.
+
+        Parameters
+        ----------
+        operation : Operation
+            Typed operation to bracket.
+        state : DomainState or None, optional
+            The emitting domain's state object. Both boundaries carry the same
+            reference, so a handler at the ended boundary observes whatever the
+            scope body mutated in place. That is intended: the event says only
+            when the boundary happened, and the state is read at read time.
         """
 
         if not isinstance(operation, Operation):
             raise TypeError(f"operation must be an Operation, got {type(operation).__name__}")
+        if state is not None and not isinstance(state, DomainState):
+            raise TypeError(f"state must be a DomainState, got {type(state).__name__}")
         count = self._next_occurrence_count(type(operation))
         started = Occurrence(event=Started(operation), count=count)
-        self._dispatch_occurrence(started)
+        self._dispatch_occurrence(started, state=state)
         try:
             yield started
         finally:
-            self._dispatch_occurrence(Occurrence(event=Ended(operation), count=count))
+            self._dispatch_occurrence(
+                Occurrence(event=Ended(operation), count=count), state=state
+            )
 
     def _next_occurrence_count(self, event_type: type[TypedEvent] | type[Operation]) -> int:
         count = self._occurrence_counts.get(event_type, 0) + 1
         self._occurrence_counts[event_type] = count
         return count
 
-    def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
-        """Record and dispatch one typed occurrence in callback order."""
+    def _dispatch_occurrence(
+        self, occurrence: Occurrence[Any], *, state: DomainState | None = None
+    ) -> None:
+        """Record and dispatch one typed occurrence in callback order.
+
+        ``state`` never reaches the durable occurrence record: that edge says
+        only when something happened, and domain data travels beside it, to
+        handlers that declared the domain.
+        """
 
         write_occurrence_artifact(self, occurrence)
+        if not self.callbacks:
+            return
+        # Deferred for the same reason as `_legacy_event` in `emit_event`:
+        # `tpen.callback.base` imports `RunContext` from this module, so a
+        # module-level import here would be circular.
+        from tpen.callback.base import StatefulCallback
+
         for callback in self.callbacks:
-            callback.handle_occurrence(occurrence, self)
+            if isinstance(callback, StatefulCallback):
+                # A callback observing a different domain has nothing to see at
+                # this boundary, so it is skipped rather than failed: one run
+                # emits several domains' occurrences, and only some carry state.
+                # Both boundaries of a scope share one state, so a skipped
+                # `Started` is always matched by a skipped `Ended` and no
+                # lifecycle pair is left half-open.
+                if not isinstance(state, callback.state_type):
+                    continue
+                callback.handle_occurrence(occurrence, self, state)
+            else:
+                callback.handle_occurrence(occurrence, self)
 
     def emit_event(
         self,

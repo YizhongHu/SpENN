@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Callback, Event
+from .base import Callback, Event, StatefulCallback
 from .cadence import Cadence, CadenceGate, SubscriptionGroup
 from .checkpoint import Checkpoint
 from .equivariance import RuntimeEquivariance
@@ -77,6 +77,7 @@ __all__ = [
     "RunTiming",
     "RuntimeEquivariance",
     "SamplerHealth",
+    "StatefulCallback",
     "Status",
     "SubscriptionGroup",
     "TrainPhaseTiming",

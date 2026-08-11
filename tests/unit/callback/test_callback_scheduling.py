@@ -15,7 +15,7 @@ from tpen.callback import (
     Event,
     SubscriptionGroup,
 )
-from tpen.events import Ended, Event as TypedEvent, Occurrence, Operation, Started
+from tpen.events import DomainState, Ended, Event as TypedEvent, Occurrence, Operation, Started
 from tpen.events import Subscription, ended, started
 
 
@@ -94,7 +94,12 @@ class _DispatchContext(RunContext):
         self.callbacks = list(callbacks)
         self._occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = {}
 
-    def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
+    def _dispatch_occurrence(
+        self, occurrence: Occurrence[Any], *, state: DomainState | None = None
+    ) -> None:
+        # These groups are all state-free `Callback` subclasses, so this double
+        # accepts the widened dispatch signature and drops the state.
+        del state
         for callback in self.callbacks:
             callback.handle_occurrence(occurrence, self)
 
