@@ -8,12 +8,18 @@ from typing import Any
 import torch
 
 from tpen.data.batch import WavefunctionOutput
+from tpen.events import DomainState
 from tpen.sampling.stats import SamplerStats
 
 
 @dataclass
-class TrainerState:
+class TrainerState(DomainState):
     """Snapshot of the VMC training loop at one step.
+
+    This is the training domain's `DomainState`: the trainer passes it beside
+    every typed occurrence it emits, and a `tpen.callback.StatefulCallback`
+    declaring ``state_type = TrainerState`` receives it as a typed handler
+    argument.
 
     The state is updated in place each step and handed to callbacks (notably
     `tpen.callback.Checkpoint`) through ``Event.state``. Fields beyond

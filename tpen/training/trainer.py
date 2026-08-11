@@ -170,20 +170,27 @@ class VMCTrainer:
         """Run the training loop and return the final `TrainerState`."""
 
         state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
+        # One `TrainerState` instance is passed beside every typed occurrence
+        # this loop emits, so a typed handler reads it at the moment it is
+        # delivered. Its reference fields (`model`, `optimizer`, `trainer`,
+        # `sampler`) are live everywhere; its value fields are assigned near the
+        # end of the body, so a handler at a boundary *above* that assignment
+        # reads the previous iteration's values -- and the constructor defaults,
+        # including `step == -1`, on the first iteration.
         # Training-loop steps are 0-indexed for metrics and most callbacks.
         # Checkpoint callbacks reuse the resume cursor `next_iteration`.
         for step in range(self.next_iteration, self.max_steps):
             iteration = TrainingIteration(step=step)
-            with context.scope(iteration):
+            with context.scope(iteration, state=state):
                 emit("step_start", step=step)
 
-                with context.scope(CollectSamples(step=step)):
+                with context.scope(CollectSamples(step=step), state=state):
                     walkers, sampler_stats = sampler.collect_samples(
                         model, device=context.metadata.device
                     )
-                with context.scope(BuildBatch(step=step)):
+                with context.scope(BuildBatch(step=step), state=state):
                     batch = walkers.make_batch()
-                with context.scope(LocalEnergy(step=step)):
+                with context.scope(LocalEnergy(step=step), state=state):
                     result = local_energy(
                         hamiltonian_terms,
                         model,
@@ -197,9 +204,9 @@ class VMCTrainer:
                     total_local_energy = result
                     term_energies = None
 
-                with context.scope(Forward(step=step)):
+                with context.scope(Forward(step=step), state=state):
                     output = model(batch)
-                with context.scope(Objective(step=step)):
+                with context.scope(Objective(step=step), state=state):
                     objective = compute_vmc_objective(output.logabs, total_local_energy)
                 loss = objective.loss
 
@@ -215,19 +222,19 @@ class VMCTrainer:
                 optimizer.zero_grad(set_to_none=True)
                 optimizer_step = False
                 if loss.requires_grad:
-                    with context.scope(Backward(step=step)):
+                    with context.scope(Backward(step=step), state=state):
                         loss.backward()
                     if self.gradient_clip_norm is not None:
                         torch.nn.utils.clip_grad_norm_(
                             model.parameters(), self.gradient_clip_norm
                         )
                     grad_norm = _gradient_norm(model)
-                    with context.scope(OptimizerUpdate(step=step)):
+                    with context.scope(OptimizerUpdate(step=step), state=state):
                         optimizer.step()
                     # The update counts only once `optimizer.step()` has
                     # returned, so this always follows Ended[OptimizerUpdate].
                     self.completed_updates += 1
-                    context.emit(UpdateCompleted(iteration=iteration))
+                    context.emit(UpdateCompleted(iteration=iteration), state=state)
                     optimizer_step = True
                 elif batch.n_electrons == 0:
                     # The zero-electron vacuum has no sampled coordinate degrees
@@ -236,7 +243,7 @@ class VMCTrainer:
                     # correct loop behavior. No OptimizerUpdate scope opens on
                     # this path. Nonzero disconnected losses still fail below.
                     grad_norm = 0.0
-                    context.emit(UpdateSkipped(iteration=iteration))
+                    context.emit(UpdateSkipped(iteration=iteration), state=state)
                 else:
                     raise RuntimeError(
                         "VMC loss is disconnected from model parameters for a "
@@ -247,7 +254,7 @@ class VMCTrainer:
                 # the trainer only adds trainer-owned mechanics and optional
                 # per-term local-energy metrics (metrics only, never part of the
                 # objective).
-                with context.scope(Metrics(step=step)):
+                with context.scope(Metrics(step=step), state=state):
                     metrics: dict[str, Any] = dict(objective.metrics)
                     metrics.update(summarize_logabs(output.logabs))
                     if term_energies is not None:
@@ -296,7 +303,7 @@ class VMCTrainer:
                         "sampler": sampler,
                     },
                 )
-                context.emit(TrainingIterationCompleted(iteration=iteration))
+                context.emit(TrainingIterationCompleted(iteration=iteration), state=state)
 
         return state
 

@@ -11,7 +11,7 @@ import torch
 
 from tpen.artifacts import RunContext
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
-from tpen.events import Ended, Occurrence, Started
+from tpen.events import DomainState, Ended, Occurrence, Started
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from tpen.sampling import SamplerStats
@@ -42,14 +42,21 @@ class _StubContext(RunContext):
         self.metadata = SimpleNamespace(device="cpu", dtype="float64")
         self.records: list[tuple[str, dict]] = []
         self.occurrences: list[Occurrence[Any]] = []
+        self.states: list[DomainState | None] = []
         self.trace: list[tuple[str, object]] = []
         self._occurrence_counts = {}
 
     def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
         self.records.append((namespace, dict(metrics)))
 
-    def _dispatch_occurrence(self, occurrence: Occurrence[Any]) -> None:
+    def _dispatch_occurrence(
+        self, occurrence: Occurrence[Any], *, state: DomainState | None = None
+    ) -> None:
+        # ``state`` is accepted and recorded but never asserted on here: this
+        # double stands in for the dispatch sink, and the trainer now hands its
+        # `TrainerState` to every typed boundary.
         self.occurrences.append(occurrence)
+        self.states.append(state)
         self.trace.append(("typed", occurrence.event))
 
 

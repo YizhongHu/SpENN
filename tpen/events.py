@@ -14,8 +14,28 @@ class Operation:
     """Base type for a scoped run operation."""
 
 
+class DomainState:
+    """Marker base for the mutable run-state object one domain owns.
+
+    This base is deliberately EMPTY, and that is a design constraint rather
+    than an unfinished class. The domains agree on nothing: training is
+    coordinated by an integer step, while evaluation is coordinated by a task
+    namespace *string*, and neither has a meaningful value for the other's
+    coordinate. Hoisting ``step``, ``metrics``, or ``model`` here would invent
+    a shared vocabulary that no second domain can honour, and every domain's
+    handler would then have to defend against fields that are structurally
+    absent for it.
+
+    Its whole job is to mark "I am some domain's state object", so that
+    `EventEmitter.emit` and `EventEmitter.scope` can accept one typed optional
+    argument and a typed handler can declare which domain it observes. Named,
+    typed field access lives on the concrete subclass.
+    """
+
+
 EventT = TypeVar("EventT", bound=Event)
 OperationT = TypeVar("OperationT", bound=Operation)
+StateT = TypeVar("StateT", bound=DomainState)
 
 
 @dataclass(frozen=True)
@@ -122,22 +142,36 @@ def ended(subject: type[Operation]) -> Subscription:
 
 
 class EventEmitter(Protocol):
-    """Protocol for run-local typed event emission."""
+    """Protocol for run-local typed event emission.
 
-    def emit(self, event: EventT) -> Occurrence[EventT]:
+    ``state`` is the emitting domain's state object. It is optional and
+    defaults to ``None``, so a boundary with no domain state to offer emits
+    exactly as before. The state travels beside the occurrence and never
+    inside it: an event says WHEN something happened, and no data is attached
+    to the event value or to its durable record.
+    """
+
+    def emit(
+        self, event: EventT, *, state: DomainState | None = None
+    ) -> Occurrence[EventT]:
         """Emit and return the next occurrence of ``event``."""
 
         ...
 
     def scope(
-        self, operation: OperationT
+        self, operation: OperationT, *, state: DomainState | None = None
     ) -> ContextManager[Occurrence[Started[OperationT]]]:
-        """Bracket ``operation`` with paired started and ended records."""
+        """Bracket ``operation`` with paired started and ended records.
+
+        Both boundaries carry the same ``state`` reference, so a handler at the
+        ended boundary observes whatever the scope body mutated.
+        """
 
         ...
 
 
 __all__ = [
+    "DomainState",
     "Ended",
     "Event",
     "EventEmitter",
