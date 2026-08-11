@@ -73,8 +73,6 @@ callbacks:
   - exception
   output_path: ${run.dir}/status.json
 - _target_: tpen.callback.DataIntegrity
-  triggers:
-  - step_end
   every_n_steps: 1
   fail_fast: true
   max_nonfinite_energy_fraction: 0.0
@@ -84,14 +82,10 @@ callbacks:
   check_batch: true
   strict_sign_values: true
 - _target_: tpen.callback.GradientStats
-  triggers:
-  - step_end
   every_n_steps: 1
   fail_fast: true
   check_finite: true
 - _target_: tpen.callback.SamplerHealth
-  triggers:
-  - step_end
   every_n_steps: 1
   fail_fast: false
 - _target_: tpen.callback.Checkpoint

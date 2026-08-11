@@ -9,7 +9,11 @@ import pytest
 
 from tpen.callback import RuntimeEquivariance
 from tpen.equivariance.checks import EquivarianceCheckResult
-from tests.unit.callback.support import FakeState, RecordingContext, step_event
+from tests.unit.callback.support import (
+    RecordingContext,
+    deliver_completed_iteration,
+    training_state,
+)
 
 
 class FakePassingChecker:
@@ -36,14 +40,17 @@ class FakeFailingChecker:
 
 
 def _handle(callback: RuntimeEquivariance, context: RecordingContext, step: int = 1) -> None:
-    callback.handle(step_event(context, FakeState(step=step), step=step))
+    # ``state.step`` is deliberately left at the constructor default: the step
+    # this callback encodes into an artifact PATH must come from the typed
+    # event, so a state carrying a different value would expose a wrong read.
+    deliver_completed_iteration(callback, context, training_state(), step=step)
 
 
 def test_runs_all_checkers_and_logs_class_derived_namespaces() -> None:
     passing, failing = FakePassingChecker(), FakeFailingChecker()
     context = RecordingContext()
 
-    _handle(RuntimeEquivariance(["step_end"], checkers=[passing, failing], fail_fast=False), context)
+    _handle(RuntimeEquivariance(checkers=[passing, failing], fail_fast=False), context)
 
     assert passing.calls == 1 and failing.calls == 1
     namespaces = {record["namespace"] for record in context.records}
@@ -57,7 +64,7 @@ def test_duplicate_names_warn_and_disambiguate_without_failing() -> None:
     context = RecordingContext()
     with pytest.warns(UserWarning, match="duplicate checker name 'fake_passing'"):
         callback = RuntimeEquivariance(
-            ["step_end"], checkers=[FakePassingChecker(), FakePassingChecker()], fail_fast=False
+            checkers=[FakePassingChecker(), FakePassingChecker()], fail_fast=False
         )
 
     _handle(callback, context)
@@ -69,7 +76,7 @@ def test_duplicate_names_warn_and_disambiguate_without_failing() -> None:
 def test_writes_artifact_and_adds_artifact_path_metric(tmp_path: Path) -> None:
     context = RecordingContext()
     callback = RuntimeEquivariance(
-        ["step_end"], checkers=[FakeFailingChecker()], fail_fast=False, artifact_dir=tmp_path
+        checkers=[FakeFailingChecker()], fail_fast=False, artifact_dir=tmp_path
     )
 
     _handle(callback, context, step=12)
@@ -83,7 +90,7 @@ def test_writes_artifact_and_adds_artifact_path_metric(tmp_path: Path) -> None:
 
 def test_no_artifact_written_without_artifact_dir() -> None:
     context = RecordingContext()
-    callback = RuntimeEquivariance(["step_end"], checkers=[FakeFailingChecker()], fail_fast=False)
+    callback = RuntimeEquivariance(checkers=[FakeFailingChecker()], fail_fast=False)
 
     _handle(callback, context)
 
@@ -91,7 +98,7 @@ def test_no_artifact_written_without_artifact_dir() -> None:
 
 
 def test_fail_fast_raises_on_failure() -> None:
-    callback = RuntimeEquivariance(["step_end"], checkers=[FakeFailingChecker()], fail_fast=True)
+    callback = RuntimeEquivariance(checkers=[FakeFailingChecker()], fail_fast=True)
 
     with pytest.raises(RuntimeError, match="fake_failing"):
         _handle(callback, RecordingContext())
@@ -100,16 +107,52 @@ def test_fail_fast_raises_on_failure() -> None:
 def test_no_raise_when_not_fail_fast() -> None:
     context = RecordingContext()
 
-    _handle(RuntimeEquivariance(["step_end"], checkers=[FakeFailingChecker()], fail_fast=False), context)
+    _handle(RuntimeEquivariance(checkers=[FakeFailingChecker()], fail_fast=False), context)
 
     assert context.latest("checks/equivariance/fake_failing")["passed"] is False
 
 
 def test_checkers_run_only_on_scheduled_steps() -> None:
     checker = FakePassingChecker()
-    callback = RuntimeEquivariance(["step_end"], checkers=[checker], every_n_steps=2, fail_fast=False)
+    callback = RuntimeEquivariance(checkers=[checker], every_n_steps=2, fail_fast=False)
 
     for step in range(0, 5):
-        callback.handle(step_event(RecordingContext(), FakeState(step=step), step=step))
+        deliver_completed_iteration(
+            callback, RecordingContext(), training_state(), step=step
+        )
 
     assert checker.calls == 3  # steps 0, 2, 4
+
+
+def test_artifact_step_comes_from_the_event_not_the_state(tmp_path: Path) -> None:
+    # This is the only migrated callback whose step reaches a durable PATH.
+    # `f"{-1:06d}"` renders "-00001", so a callback reading a stale
+    # ``state.step`` would write ``step_-00001/`` on the first iteration and
+    # collide iteration k with k-1 thereafter -- silently. The state here holds
+    # exactly that stale default while the event says 12.
+    context = RecordingContext()
+    callback = RuntimeEquivariance(
+        checkers=[FakeFailingChecker()], fail_fast=False, artifact_dir=tmp_path
+    )
+    stale = training_state(step=-1)
+
+    deliver_completed_iteration(callback, context, stale, step=12)
+
+    metrics = context.latest("checks/equivariance/fake_failing")
+    assert Path(metrics["artifact_path"]) == tmp_path / "fake_failing" / "step_000012" / "failure.json"
+    assert not (tmp_path / "fake_failing" / "step_-00001").exists()
+
+
+def test_cadence_gates_on_the_durable_step_not_the_occurrence_count() -> None:
+    # A run-local `Occurrence.count` restarts after a checkpoint restore; the
+    # durable step does not. This is the most expensive check in the stack, so
+    # a schedule that shifted phase on a resumed run would be visible.
+    checker = FakePassingChecker()
+    callback = RuntimeEquivariance(checkers=[checker], every_n_steps=5, fail_fast=False)
+    context = RecordingContext()
+
+    for step in range(12):
+        deliver_completed_iteration(callback, context, training_state(), step=step, count=1)
+
+    assert [r["step"] for r in context.by_namespace("checks/equivariance/fake_passing")] == [0, 5, 10]
+    assert checker.calls == 3

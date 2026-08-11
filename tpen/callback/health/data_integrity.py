@@ -2,25 +2,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any
+from typing import Any, ClassVar
 
+from tpen.artifacts import RunContext
 from tpen.dependencies import require_torch
-from ..base import Callback, Event
+from tpen.events import DomainState
+from tpen.events import Event as TypedEvent
+from tpen.events import Occurrence, Subscription
+from tpen.training.events import TrainingIterationCompleted
+from tpen.training.state import TrainerState
+
+from ..base import StatefulCallback
+from ..cadence import StepCadenceGate, SubscriptionGroup, pop_step_cadence
 
 
-class DataIntegrity(Callback):
-    """Hard guardrail catching invalid training tensors at ``step_end``.
+class DataIntegrity(StatefulCallback[TrainerState]):
+    """Hard guardrail catching invalid training tensors at iteration end.
 
     Inspects the batch, wavefunction output (``sign``/``logabs``), local energy,
     and loss on the `TrainerState`, logging finite/validity metrics under
     ``checks/data_integrity``. In ``fail_fast`` mode a failed required check
     raises a clear `RuntimeError` instead of silently continuing.
+
+    Notes
+    -----
+    Two independent axes meet here and must not be conflated. This callback
+    *runs* after the optimizer update, but the tensors it describes are the
+    pre-update ones that produced that update. That is the correct pairing: the
+    check reports on the data the step consumed, not on the model the step
+    produced.
     """
+
+    state_type: ClassVar[type[DomainState]] = TrainerState
 
     def __init__(
         self,
-        triggers: Iterable[str],
         *,
         fail_fast: bool = False,
         max_nonfinite_energy_fraction: float = 0.0,
@@ -31,7 +47,21 @@ class DataIntegrity(Callback):
         strict_sign_values: bool = True,
         **kwargs: Any,
     ) -> None:
-        super().__init__(triggers, **kwargs)
+        cadence = pop_step_cadence(kwargs)
+        super().__init__(
+            # Subscriptions are class-owned, never configured: this callback
+            # observes completed training iterations and nothing else.
+            typed_groups=(
+                SubscriptionGroup(
+                    selectors=(Subscription.of(TrainingIterationCompleted),)
+                ),
+            ),
+            **kwargs,
+        )
+        # `cadence=None` on the group above is deliberate: a group `Cadence`
+        # gates on the run-local occurrence count, which restarts after a
+        # restore. Scheduling uses the durable trainer step instead.
+        self._steps = StepCadenceGate(cadence)
         self.fail_fast = bool(fail_fast)
         self.max_nonfinite_energy_fraction = float(max_nonfinite_energy_fraction)
         self.max_nonfinite_logabs_fraction = float(max_nonfinite_logabs_fraction)
@@ -40,14 +70,31 @@ class DataIntegrity(Callback):
         self.check_batch = bool(check_batch)
         self.strict_sign_values = bool(strict_sign_values)
 
-    def on_step_end(self, event: Event) -> None:
+    def handle_occurrence_impl(
+        self,
+        occurrence: Occurrence[TypedEvent],
+        context: RunContext,
+        state: TrainerState,
+    ) -> None:
         """Validate the most recent training step's tensors."""
 
-        state = event.state
+        event = occurrence.event
+        if not isinstance(event, TrainingIterationCompleted):
+            return
+        # The coordinate rides the typed event, never `state.step`; see the note
+        # on `tpen.training.state.TrainerState`'s value fields in the trainer.
+        step = int(event.iteration.step)
+        if not self._steps.should_run(step):
+            return
+
         metrics: dict[str, Any] = {}
         failures: list[str] = []
 
-        local_energy = getattr(state, "local_energy", None)
+        # The state is typed now, so its fields are read by name. ``None`` is a
+        # declared value of each field, not a missing attribute. The probes that
+        # remain below inspect the *contents* -- a batch or output object whose
+        # own contract this callback verifies rather than assumes.
+        local_energy = state.local_energy
         if local_energy is not None:
             finite, total = _finite_counts(local_energy)
             energy_fraction = _nonfinite_fraction(finite, total)
@@ -61,7 +108,7 @@ class DataIntegrity(Callback):
                 )
 
         if self.check_wavefunction_output:
-            output = getattr(state, "wavefunction_output", None)
+            output = state.wavefunction_output
             if output is not None:
                 finite, total = _finite_counts(output.logabs)
                 logabs_fraction = _nonfinite_fraction(finite, total)
@@ -88,7 +135,7 @@ class DataIntegrity(Callback):
                     )
                 else:
                     kwargs: dict[str, Any] = {}
-                    batch = getattr(state, "batch", None)
+                    batch = state.batch
                     if batch is not None:
                         sample_shape = getattr(batch, "sample_shape", None)
                         batch_size = getattr(batch, "batch_size", None)
@@ -107,7 +154,7 @@ class DataIntegrity(Callback):
                         metrics["output_validated"] = True
 
         if self.check_loss:
-            loss = getattr(state, "loss", None)
+            loss = state.loss
             if loss is not None:
                 torch = require_torch(feature="DataIntegrity callback")
                 loss_is_finite = bool(torch.isfinite(loss).all().item())
@@ -116,7 +163,7 @@ class DataIntegrity(Callback):
                     failures.append("loss is not finite")
 
         if self.check_batch:
-            batch = getattr(state, "batch", None)
+            batch = state.batch
             if batch is not None:
                 validate = getattr(batch, "validate", None)
                 if not callable(validate):
@@ -138,9 +185,9 @@ class DataIntegrity(Callback):
 
         passed = not failures
         metrics["passed"] = passed
-        event.context.log(metrics, step=state.step, namespace="checks/data_integrity")
+        context.log(metrics, step=step, namespace="checks/data_integrity")
         if self.fail_fast and not passed:
-            raise RuntimeError(f"DataIntegrity failed at step {state.step}: {failures[0]}")
+            raise RuntimeError(f"DataIntegrity failed at step {step}: {failures[0]}")
 
 
 def _finite_counts(tensor: object) -> tuple[int, int]:
