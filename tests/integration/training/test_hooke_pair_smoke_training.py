@@ -98,6 +98,14 @@ def test_pair_smoke_training_equivariance_checks_actually_compared_something(tmp
     trace = [r["metrics"] for r in records if r.get("namespace") == "checks/equivariance/trace"]
     assert trace, "no trace equivariance records"
     for metrics in trace:
+        # Assert the check compared something BEFORE asserting the arithmetic.
+        # The product identity below holds at zero -- a trace checker that
+        # recorded no trace at all gives `0 == 1 * 0` and passes -- which is
+        # exactly the vacuous-comparison shape this file exists to catch. The
+        # product alone would therefore ratify the defect rather than expose
+        # it. Measured on Cannon at this fixture: n_trace_entries == 7.
+        assert metrics["n_trace_entries"] > 0
+        assert metrics["n_comparisons"] > 0
         # The fixture sets compare_output: false, so the count is exactly one
         # comparison per shared trace key per permutation.
         assert metrics["n_comparisons"] == metrics["n_permutations_tested"] * metrics["n_trace_entries"]
