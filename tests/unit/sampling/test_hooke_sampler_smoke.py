@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from tpen.sampling import SamplerStats
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 
@@ -23,6 +24,6 @@ def test_sampler_produces_typed_walkers_with_fixed_spin() -> None:
     assert torch.equal(batch.spins[0], expected)
     assert torch.all(batch.spins == expected)
 
-    assert isinstance(stats, dict)
-    assert "acceptance_rate" in stats
-    assert stats["n_walkers"] == n_walkers
+    assert isinstance(stats, SamplerStats)
+    assert 0.0 <= stats.acceptance_rate <= 1.0
+    assert stats.n_walkers == n_walkers

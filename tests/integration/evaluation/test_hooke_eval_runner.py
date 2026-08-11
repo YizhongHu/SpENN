@@ -36,6 +36,7 @@ from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from tpen.run import run_from_config
 from tpen.runner import Evaluate, Train
+from tpen.sampling import SamplerStats
 from tpen.training.state import TrainerState
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
@@ -392,7 +393,14 @@ class _StaticSampler:
     def collect_samples(self, model, *, device: str | torch.device | None = None):
         self.calls += 1
         positions = self.positions.to(device=device)
-        return Walkers(positions=positions), {"n_walkers": positions.shape[0], "acceptance_rate": 1.0}
+        stats = SamplerStats(
+            acceptance_rate=1.0,
+            n_walkers=positions.shape[0],
+            burn_in=0,
+            n_steps=1,
+            proposal_scale=0.1,
+        )
+        return Walkers(positions=positions), stats
 
 
 class _NoopTrainer:

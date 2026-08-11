@@ -11,7 +11,7 @@ import pytest
 
 from tpen.callback import Event, Status, configure_terminal_logging
 from tpen.callback.status import _format_status_box
-from tests.unit.callback.support import FakeState
+from tests.unit.callback.support import FakeState, make_sampler_stats
 
 
 def _context(tmp_path: Path) -> SimpleNamespace:
@@ -112,7 +112,7 @@ def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pyte
             "grad_norm": 0.012,
             "local_energy_finite_fraction": 1.0,
         },
-        sampler_stats={"acceptance_rate": 0.61},
+        sampler_stats=make_sampler_stats(acceptance_rate=0.61),
     )
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):

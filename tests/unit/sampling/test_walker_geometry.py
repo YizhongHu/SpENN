@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tpen.data.batch import Walkers
-from tpen.sampling import summarize_walker_geometry
+from tpen.sampling import SamplerStats, summarize_walker_geometry
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
 GEOMETRY_KEYS = (
@@ -133,6 +133,15 @@ def test_collect_samples_includes_geometry_and_metadata_stats() -> None:
 
     walkers, stats = sampler.collect_samples(model)
 
+    assert isinstance(stats, SamplerStats)
+    # Geometry is a field of the typed record, not a flattened attribute set.
+    for key in (*GEOMETRY_KEYS, *PAIR_DISTANCE_KEYS):
+        assert key in stats.geometry, f"missing geometry stat {key}"
+    assert stats.n_walkers == walkers.batch_size
+    assert stats.geometry["n_electrons"] == 2
+
+    # The logging edge still emits every durable train/sampler key.
+    metrics = stats.as_metrics()
     for key in (
         "acceptance_rate",
         "n_walkers",
@@ -143,8 +152,8 @@ def test_collect_samples_includes_geometry_and_metadata_stats() -> None:
         *GEOMETRY_KEYS,
         *PAIR_DISTANCE_KEYS,
     ):
-        assert key in stats, f"missing stat {key}"
-    assert stats["n_walkers"] == walkers.batch_size
-    assert stats["n_electrons"] == 2
-    assert stats["radius_max"] >= stats["radius_q99"] >= stats["radius_q50"] > 0.0
-    assert stats["electron_distance_min"] > 0.0
+        assert key in metrics, f"missing stat {key}"
+    assert metrics["n_walkers"] == walkers.batch_size
+    assert metrics["n_electrons"] == 2
+    assert metrics["radius_max"] >= metrics["radius_q99"] >= metrics["radius_q50"] > 0.0
+    assert metrics["electron_distance_min"] > 0.0

@@ -248,13 +248,18 @@ class VMCTrainer:
                 state.local_energy = total_local_energy.detach()
                 state.loss = loss.detach()
                 state.wavefunction_output = output
-                state.sampler_stats = dict(sampler_stats)
+                state.sampler_stats = sampler_stats
 
                 if self.log_every_n_steps and step % self.log_every_n_steps == 0:
                     context.log(metrics, step=step, namespace="train")
-                    if sampler_stats:
+                    # Explicit None check: SamplerStats defines no __bool__, so a
+                    # truthiness test would always pass and could not express
+                    # "this sampler produced no diagnostics". The typed record
+                    # owns the metric-name composition, so the trainer never
+                    # re-spells a train/sampler key.
+                    if sampler_stats is not None:
                         context.log(
-                            dict(sampler_stats),
+                            sampler_stats.as_metrics(),
                             step=step,
                             namespace="train/sampler",
                         )
