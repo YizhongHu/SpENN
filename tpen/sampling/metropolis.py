@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from tpen.accelerator import canonical_device
 from tpen.data.batch import Walkers, WavefunctionOutput
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.sampling.diagnostics import summarize_walker_geometry
@@ -15,20 +16,19 @@ nn = require_torch_nn(feature="Metropolis sampling")
 
 
 def _canonical_device(device) -> "torch.device":
-    """Return a fully indexed CUDA device so ``cuda`` and ``cuda:0`` compare equal.
+    """Return a fully indexed accelerator device so ``cuda`` and ``cuda:0`` compare equal.
 
-    Tensors always report an indexed CUDA device (``cuda:0``), while configs and
-    callers usually pass the index-less ``cuda``; ``torch.device`` treats those
-    as unequal. CPU devices are reported index-less by tensors, so they pass
-    through unchanged.
+    Tensors always report an indexed accelerator device (``cuda:0``, ``xpu:0``),
+    while configs and callers usually pass the index-less form; ``torch.device``
+    treats those as unequal. CPU devices are reported index-less by tensors, so
+    they pass through unchanged.
+
+    Backend resolution is owned by :mod:`tpen.accelerator`. This comparison only
+    detects device mismatch; per ADR-013 a generator's state is device-bound and
+    is never reinterpreted across device types.
     """
 
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and resolved.index is None:
-        if not torch.cuda.is_available():
-            return resolved
-        return torch.device("cuda", torch.cuda.current_device())
-    return resolved
+    return canonical_device(device, feature="Metropolis sampling")
 
 
 class MetropolisSampler(nn.Module):
