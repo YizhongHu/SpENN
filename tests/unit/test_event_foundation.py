@@ -136,6 +136,35 @@ class _CyclicPulse(Event):
     node: _Cyclic
 
 
+@dataclass(frozen=True)
+class _SiblingPulse(Event):
+    """One dataclass instance bound to two sibling fields of the same parent."""
+
+    left: _Detail
+    right: _Detail
+
+
+@dataclass(frozen=True)
+class _DiamondPulse(Event):
+    """One dataclass instance reachable at two different depths."""
+
+    wrapper: _Wrapper
+    detail: _Detail
+
+
+@dataclass(frozen=True)
+class _Link:
+    """One node of a deep *acyclic* chain of distinct dataclass instances."""
+
+    depth: int
+    child: object = None
+
+
+@dataclass(frozen=True)
+class _ChainPulse(Event):
+    link: _Link
+
+
 class _Recorder:
     def __init__(self, name: str, order: list[tuple[str, Occurrence[Any]]]) -> None:
         self.name = name
@@ -701,6 +730,153 @@ def test_typed_event_rejects_a_cyclic_dataclass_field(tmp_path: Path) -> None:
         context.emit(_CyclicPulse(node=node))
 
     assert not context.path("occurrences.jsonl").exists()
+
+
+# The cycle guard tracks the instances open on the *current field path*, not
+# every instance ever visited. That distinction is load-bearing and invisible:
+# swapping the ancestors tuple for an all-visited set would make legitimate
+# sharing raise "cyclic typed value", and before the two sharing tests below
+# existed, every other test in this file still passed under that change. The
+# sibling and diamond tests are the ones that fail on an all-visited set; the
+# deep-chain test covers the other way the guard can go wrong, a depth budget
+# standing in for a path scope.
+#
+# ``_field_paths`` turns a serialised record into a set of dotted leaf paths, so
+# a *dropped* shared value surfaces as a missing path rather than as an
+# assertion that happened not to look at it. Containers stay a pinned boundary
+# -- the walker does not descend a list or a dict either, matching
+# ``test_typed_event_does_not_recurse_into_containers``, so the walker and the
+# code under test agree on scope by construction.
+
+
+def _field_paths(value: object, prefix: str = "") -> list[str]:
+    """Return every dotted leaf path under ``value``, tagged with its kind."""
+
+    if isinstance(value, dict):
+        if not value:
+            return [f"{prefix}={{}}"]
+        paths: list[str] = []
+        for key in sorted(value):
+            child = f"{prefix}.{key}" if prefix else key
+            paths.extend(_field_paths(value[key], child))
+        return paths
+    if isinstance(value, list):
+        kinds = sorted({type(item).__name__ for item in value})
+        return [f"{prefix}=[{len(value)}:{','.join(kinds)}]"]
+    return [f"{prefix}:{type(value).__name__}"]
+
+
+def _type_only_paths(value: object, prefix: str = "") -> list[str]:
+    """Return the paths whose value collapsed to a bare ``{"type": ...}``."""
+
+    if not isinstance(value, dict):
+        return []
+    if list(value) == ["type"]:
+        return [f"{prefix}={value['type']}"]
+    found: list[str] = []
+    for key in sorted(value):
+        child = f"{prefix}.{key}" if prefix else key
+        found.extend(_type_only_paths(value[key], child))
+    return found
+
+
+def _emitted_fields(context: RunContext) -> dict[str, Any]:
+    """Return the ``fields`` mapping of the single occurrence record written."""
+
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert len(records) == 1, records
+    return records[0]["fields"]
+
+
+def test_typed_event_serializes_one_instance_shared_by_two_sibling_fields(
+    tmp_path: Path,
+) -> None:
+    """Sibling sharing is not a cycle: both occurrences must expand field-wise."""
+
+    context = _context(tmp_path)
+    shared = _Detail(code=7, note="shared")
+
+    context.emit(_SiblingPulse(left=shared, right=shared))
+
+    fields = _emitted_fields(context)
+    expanded = {"code": 7, "note": "shared"}
+    # Assert *both* paths: an implementation that expanded one occurrence and
+    # dropped the other would satisfy a single-sided assertion.
+    assert fields == {"left": expanded, "right": expanded}
+    assert fields["left"] == fields["right"]
+    assert set(_field_paths(fields)) == {
+        "left.code:int",
+        "left.note:str",
+        "right.code:int",
+        "right.note:str",
+    }
+    assert _type_only_paths(fields) == []
+
+
+def test_typed_event_serializes_one_instance_shared_at_two_depths(
+    tmp_path: Path,
+) -> None:
+    """Diamond sharing is not a cycle: depth 1 and depth 2 must both expand."""
+
+    context = _context(tmp_path)
+    shared = _Detail(code=7, note="shared")
+
+    context.emit(
+        _DiamondPulse(wrapper=_Wrapper(detail=shared, label="via-wrapper"), detail=shared)
+    )
+
+    fields = _emitted_fields(context)
+    expanded = {"code": 7, "note": "shared"}
+    assert fields == {
+        "wrapper": {"detail": expanded, "label": "via-wrapper"},
+        "detail": expanded,
+    }
+    assert fields["detail"] == fields["wrapper"]["detail"]
+    assert set(_field_paths(fields)) == {
+        "detail.code:int",
+        "detail.note:str",
+        "wrapper.detail.code:int",
+        "wrapper.detail.note:str",
+        "wrapper.label:str",
+    }
+    assert _type_only_paths(fields) == []
+
+
+def test_typed_event_serializes_a_deep_acyclic_dataclass_chain(tmp_path: Path) -> None:
+    """The guard is scoped to a field path, not to a depth budget.
+
+    Depth 60 is the depth the recursion was measured clean at while the guard
+    was written, and it is far past any plausible small depth cap. It stays
+    cheap: the walk costs a small constant number of interpreter frames per
+    level -- under 250 in total, comfortably inside CPython's default
+    1000-frame limit even on top of pytest's own stack.
+    """
+
+    context = _context(tmp_path)
+    depth = 60
+    link = _Link(depth=depth - 1)
+    for index in range(depth - 2, -1, -1):
+        link = _Link(depth=index, child=link)
+
+    context.emit(_ChainPulse(link=link))
+
+    fields = _emitted_fields(context)
+    expected = {f"link{'.child' * level}.depth:int" for level in range(depth)}
+    expected.add(f"link{'.child' * depth}:NoneType")
+    assert set(_field_paths(fields)) == expected
+    assert _type_only_paths(fields) == []
+
+    # Every level carries its own distinct payload, so no level was skipped,
+    # truncated, or aliased onto another.
+    depths = []
+    node = fields["link"]
+    while node is not None:
+        depths.append(node["depth"])
+        node = node["child"]
+    assert depths == list(range(depth))
 
 
 def test_training_phase_base_is_abstract() -> None:
