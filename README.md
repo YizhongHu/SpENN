@@ -32,6 +32,40 @@ Use `cu128` or `cu130` instead if that is the CUDA Torch build you want. Keep
 the `UV_PROJECT_ENVIRONMENT` setting in GPU Slurm scripts so GPU jobs do not
 mutate the CPU `.venv`.
 
+### AMD ROCm Environment (OLCF Frontier)
+
+Frontier's MI250X GPUs use the `rocm71` extra, which resolves
+`torch 2.13.0+rocm7.1` and `triton-rocm` from the PyTorch ROCm index:
+
+```bash
+export UV_PROJECT_ENVIRONMENT=.venv-rocm
+uv sync --extra rocm71
+uv run --extra rocm71 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+```
+
+ROCm Torch exposes the same `torch.cuda` API as a CUDA build, so no TPEN code
+path changes and `torch.cuda.is_available()` reports the MI250X.
+
+Unlike the CUDA extras, `rocm71` pins an exact Torch version. The ROCm index
+also carries old non-ROCm builds, and an unpinned `torch` resolves to 2.0.1
+with aarch64-only wheels, which installs nowhere on Frontier's x86_64 nodes.
+When bumping the pin, check the resolved version *and* the wheel platform, not
+just that `uv lock` succeeded.
+
+Facility selection is environment variables only; nothing facility-specific is
+committed. On Frontier, provision against the system interpreter rather than a
+uv-managed download:
+
+```bash
+module load rocm craype-accel-amd-gfx90a
+module load miniforge3
+export UV_PYTHON_PREFERENCE=only-system   # overrides python-preference in pyproject.toml
+export UV_NO_MANAGED_PYTHON=1
+export UV_PYTHON_DOWNLOADS=never
+export UV_PROJECT_ENVIRONMENT=.venv-rocm
+uv sync --extra rocm71
+```
+
 Core tests are the active validation target:
 
 ```bash
