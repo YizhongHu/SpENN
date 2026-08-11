@@ -94,13 +94,6 @@ class Status(Callback):
         if line is not None:
             self._log_status(line, kind="train")
 
-    def on_evaluate_end(self, event: Event) -> None:
-        """Write one compact evaluation status line."""
-
-        line = _format_evaluate_status(event)
-        if line is not None:
-            self._log_status(line, kind="eval")
-
     def _log_status(self, line: str, *, kind: str) -> None:
         if not self.terminal:
             return
@@ -327,31 +320,6 @@ def _format_train_status(event: Event, include: Sequence[str]) -> str | None:
     step = event.step
     prefix = "[train]" if step is None else f"[train] step={step}"
     return " ".join([prefix, *rendered])
-
-
-def _format_evaluate_status(event: Event) -> str | None:
-    metrics = event.payload.get("metrics")
-    values = {}
-    if isinstance(metrics, Mapping):
-        values.update({f"eval/{key}": value for key, value in metrics.items()})
-    values.update(_payload_metric_values(event))
-    if not values:
-        return None
-    include = ("eval/energy", "eval/energy_stderr", "eval/energy_error", "eval/perf/wall_time_sec")
-    labels = {
-        "eval/energy": "energy",
-        "eval/energy_stderr": "stderr",
-        "eval/energy_error": "abs_error",
-        "eval/perf/wall_time_sec": "wall_time",
-    }
-    rendered = [
-        f"{labels[identity]}={_format_status_value(values[identity])}"
-        for identity in include
-        if identity in values
-    ]
-    if not rendered:
-        return None
-    return " ".join(["[eval]", *rendered])
 
 
 def _training_metric_values(state: object) -> dict[str, object]:

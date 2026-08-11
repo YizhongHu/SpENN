@@ -131,21 +131,6 @@ def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pyte
     )
 
 
-def test_status_renders_evaluation_metrics(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    callback = Status(["evaluate_end"], terminal=True, color="never")
-
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(
-            Event(
-                name="evaluate_end",
-                context=_context(tmp_path),
-                payload={"metrics": {"energy": 2.0, "energy_stderr": 0.01, "other": 3.0}},
-            )
-        )
-
-    assert caplog.records[-1].getMessage() == "[eval] energy=2 stderr=0.01"
-
-
 def test_status_terminal_false_suppresses_terminal_output(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

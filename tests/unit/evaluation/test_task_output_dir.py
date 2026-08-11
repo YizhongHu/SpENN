@@ -9,11 +9,14 @@ import pytest
 from torch import nn
 
 from tpen.artifacts import RunContext
+from tpen.callback import Callback, SubscriptionGroup
 from tpen.evaluation import Evaluator, EvaluationTask
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
 from tpen.data.batch import ElectronBatch
+from tpen.evaluation.events import ComponentFailed
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import SummaryResult
+from tpen.events import Subscription
 from tests.helpers.run_context import make_run_context
 
 
@@ -110,7 +113,7 @@ def test_task_output_dir_is_respected(tmp_path: Path) -> None:
             )
         ],
     )
-    evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=lambda *a, **kw: None)
+    evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path))
     assert recorder.recorded_task_output_dir == explicit_dir
 
 
@@ -130,7 +133,7 @@ def test_task_output_dir_override_is_respected(tmp_path: Path) -> None:
             )
         ],
     )
-    evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=lambda *a, **kw: None)
+    evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path))
     assert recorder.recorded_task_output_dir == custom_dir
 
 
@@ -152,7 +155,7 @@ def test_relative_task_output_dir_is_resolved_against_run_dir(tmp_path: Path) ->
 
     context = _run_context(tmp_path)
 
-    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=lambda *a, **kw: None)
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context)
 
     # Resolved against the context's real run directory, which is what the
     # evaluator reads; ``tmp_path`` is only the root that directory sits under.
@@ -161,7 +164,19 @@ def test_relative_task_output_dir_is_resolved_against_run_dir(tmp_path: Path) ->
 
 
 def test_duplicate_summary_metrics_are_structured_task_failures(tmp_path: Path) -> None:
-    events: list[str] = []
+    failures: list[ComponentFailed] = []
+
+    class _FailureRecorder(Callback):
+        def __init__(self) -> None:
+            super().__init__(
+                typed_groups=(
+                    SubscriptionGroup(selectors=(Subscription.of(ComponentFailed),)),
+                )
+            )
+
+        def handle_occurrence_impl(self, occurrence, context) -> None:
+            failures.append(occurrence.event)
+
     evaluator = Evaluator(
         namespace="eval",
         tasks=[
@@ -178,11 +193,12 @@ def test_duplicate_summary_metrics_are_structured_task_failures(tmp_path: Path) 
 
     result = evaluator.evaluate(
         model=nn.Linear(1, 1),
-        context=_run_context(tmp_path),
-        emit=lambda name, **kw: events.append(name),
+        context=make_run_context(tmp_path, callbacks=[_FailureRecorder()]),
     )
 
     assert result.status == "failed"
     assert result.task_results[0].status == "partial_failed"
     assert result.task_results[0].failures[0].error_type == "ValueError"
-    assert "summary_failed" in events
+    # The metric-key collision is reported as a summary component failure, which
+    # is what `FailureLog` writes to ``diagnostics/failures.jsonl``.
+    assert [event.failure.component_type for event in failures] == ["summary"]

@@ -906,16 +906,23 @@ adding an identity now would be speculative construction. `RestoreReport`
 already carries the restored checkpoint's counters, and when a real consumer
 appears, attaching that identity is one local change.
 
-Evaluation's typed lifecycle now exists *alongside* those legacy strings:
-`EvaluationStarted` / `EvaluationCompleted`, the `EvaluationTaskRun` and
-`ComponentRun` operations, `ComponentFailed`, and `CheckpointRestored`, whose
-`RestoreReport` reaches `occurrences.jsonl` field-wise and is where the restored
-checkpoint's identity is durably recorded. No callback subscribes to any of them
-yet and the legacy `evaluate_start` / `evaluate_end` / `task_*` /
-`checkpoint_restored` strings are still emitted, so nothing in this document
-changes: no metric key moved, and evaluation metric records still carry no
-checkpoint identity. Deleting the strings and migrating the five evaluation
-callbacks is separate work.
+Evaluation's lifecycle is now typed, and the typed vocabulary is the domain's
+only reporting channel: `EvaluationStarted` / `EvaluationCompleted`, the
+`EvaluationTaskRun` and `ComponentRun` operations, `ComponentFailed`, and
+`CheckpointRestored`, whose `RestoreReport` reaches `occurrences.jsonl`
+field-wise and is where the restored checkpoint's identity is durably recorded.
+All five evaluation callbacks read those occurrences, and the legacy
+`evaluate_start` / `evaluate_end` / `task_*` / `<component>_*` strings are gone.
+**No metric key moved**: every name in this document is unchanged, every
+evaluation record is still logged at `step = 0`, and evaluation metric records
+still carry no checkpoint identity.
+
+Two run-level legacy strings still reach an evaluation callback, and both are
+deliberate. `EvaluationTiming` keeps `exception`, which is the only writer of
+`eval/perf {failed: True}`; `ArtifactIndex` keeps `run_end`, which is the only
+thing that writes `diagnostics/index.json` for a suite with no tasks. Neither
+has a typed equivalent or an owning domain, and typing the run lifecycle is
+separate work.
 
 Run-level metadata may use `step = 0`:
 
@@ -1078,10 +1085,12 @@ diagnostics/energy/time_sec
 ```
 
 Recommended per-task evaluation component timing (from
-`EvaluationComponentTiming`, driven by the evaluator's
-`generator_start`/`generator_end`, `calculator_start`/`calculator_end`, and
-`summary_start`/`summary_end` events; logged as one `eval/perf/<task_name>`
-record at `task_end` or `task_failed`):
+`EvaluationComponentTiming`, driven by the `Started`/`Ended` boundaries of the
+evaluator's typed `GeneratorRun`, `CalculatorRun`, and `SummaryRun` scopes;
+logged as one `eval/perf/<task_name>` record when the enclosing
+`EvaluationTaskRun` scope ends, on the success and failure paths alike). Each
+`<component kind>` fragment below is the `component_kind` ClassVar on the
+operation type, never a literal in the callback:
 
 ```text
 eval/perf/<task_name>/generator_time_sec

@@ -1,13 +1,12 @@
 """Typed events and operations owned by the evaluation domain.
 
-The typed vocabulary below is the evaluation domain's counterpart to
-`tpen.training.events`. The legacy string-payload builders at the bottom of
-this module are what it replaces: each one flattens an already-typed frozen
-object into a mapping that four callbacks then re-parse with ``.get()`` probes
-and ``isinstance(dict)`` guards. That is the magic payload dict ADR-E007
-rejects, so the builders are scheduled for deletion once the callbacks move
-onto the typed events. Until then both are emitted, side by side, and no
-callback has been migrated.
+This is the evaluation domain's counterpart to `tpen.training.events`. It
+replaced a set of payload builders that flattened already-typed frozen objects
+into mappings, which four callbacks then re-parsed with seventeen ``.get()``
+probes and eight ``isinstance(dict)`` guards -- the magic payload dict ADR-E007
+rejects, in production on the legacy side. Those builders, the fourteen string
+emit sites that called them, and every probe are gone; the typed vocabulary
+below is now the evaluation domain's only reporting channel.
 """
 
 from __future__ import annotations
@@ -16,8 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from tpen.evaluation.results import EvaluationFailure, TaskResult
-from tpen.evaluation.task import EvaluationTask
+from tpen.evaluation.results import EvaluationFailure
 from tpen.events import Event, Operation
 
 
@@ -140,11 +138,11 @@ class EvaluationStarted(Event):
 class EvaluationCompleted(Event):
     """The evaluation suite ran every task it was going to run and returned.
 
-    Emitted only on the success path, mirroring the legacy ``evaluate_end``
-    string. There is deliberately no suite-level failure event: a failed suite
-    is a *status field* on `tpen.evaluation.results.EvaluationResult`, and no
-    distinct moment exists to attach one to. Minting an event so a subscriber
-    could read that status is precisely the manufacturing ADR-E007 forbids.
+    Emitted only on the success path. There is deliberately no suite-level
+    failure event: a failed suite is a *status field* on
+    `tpen.evaluation.results.EvaluationResult`, and no distinct moment exists to
+    attach one to. Minting an event so a subscriber could read that status is
+    precisely the manufacturing ADR-E007 forbids.
 
     See `EvaluationStarted` for why this is a point event and not a scope.
     """
@@ -168,60 +166,6 @@ class ComponentFailed(Event):
     failure: EvaluationFailure
 
 
-# --------------------------------------------------------------------------
-# Legacy string-event payload builders, replaced by the typed vocabulary above
-# and kept only until the evaluation callbacks are migrated off the strings.
-# --------------------------------------------------------------------------
-
-
-def task_payload(task: EvaluationTask, *, output_dir: str | Path | None = None) -> dict[str, object]:
-    """Return the standard payload for task lifecycle events."""
-
-    payload: dict[str, object] = {
-        "task_name": task.name,
-        "task_namespace": task.namespace,
-    }
-    if output_dir is not None:
-        payload["output_dir"] = str(output_dir)
-    return payload
-
-
-def component_payload(
-    *,
-    task: EvaluationTask,
-    component_name: str | None,
-    output_dir: str | Path | None = None,
-) -> dict[str, object]:
-    """Return the standard payload for component lifecycle events."""
-
-    return {
-        **task_payload(task, output_dir=output_dir),
-        "component_name": component_name,
-    }
-
-
-def component_failure_payload(
-    *,
-    task: EvaluationTask,
-    component_name: str | None,
-    failure: EvaluationFailure,
-    output_dir: str | Path | None = None,
-) -> dict[str, object]:
-    """Return a standard component-failure event payload."""
-
-    return {
-        **task_payload(task, output_dir=output_dir),
-        "component_name": component_name,
-        "failure": failure.to_dict(),
-    }
-
-
-def task_result_payload(task_result: TaskResult) -> dict[str, object]:
-    """Return the standard payload for task completion/failure events."""
-
-    return {"task_result": task_result.to_payload()}
-
-
 __all__ = [
     "CalculatorRun",
     "ComponentFailed",
@@ -231,8 +175,4 @@ __all__ = [
     "EvaluationTaskRun",
     "GeneratorRun",
     "SummaryRun",
-    "component_failure_payload",
-    "component_payload",
-    "task_payload",
-    "task_result_payload",
 ]

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import traceback as traceback_module
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -15,61 +14,14 @@ from tpen.evaluation.bundle import EvaluationBundle
 from tpen.evaluation.events import (
     CalculatorRun,
     ComponentFailed,
-    ComponentRun,
     EvaluationTaskRun,
     GeneratorRun,
     SummaryRun,
-    component_failure_payload,
-    component_payload,
-    task_payload,
-    task_result_payload,
 )
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import ArtifactRecord, EvaluationFailure, EvaluationResult, MetricScalar, TaskResult
 from tpen.evaluation.state import EvaluationRunState
 from tpen.evaluation.task import ArtifactLevel, EvaluationTask, FailurePolicy, coerce_task
-
-
-@contextmanager
-def _component_span(
-    emit: Callable[..., None],
-    *,
-    task: EvaluationTask,
-    component_type: str,
-    component_class: type[ComponentRun],
-    component_name: str | None,
-    output_dir: Path,
-    run_context: Any,
-    state: EvaluationRunState,
-):
-    """Bracket one evaluation component with lifecycle events.
-
-    The evaluator owns the component boundaries but no timing policy: it only
-    emits ``<component_type>_start``/``<component_type>_end`` events, and
-    timing callbacks such as ``EvaluationComponentTiming`` decide whether and
-    how to measure them. The ``_end`` event fires on success and failure
-    alike; failures additionally emit the existing ``<component_type>_failed``
-    events.
-
-    The typed `ComponentRun` scope is nested strictly inside the legacy string
-    pair, so the legacy sequence is unchanged and no callback has to move yet.
-    ``component_class`` is passed as a type rather than derived from
-    ``component_type``: resolving a type from a string would be the routing
-    bridge ADR-E002 forecloses.
-    """
-
-    emit(
-        f"{component_type}_start",
-        payload=component_payload(task=task, component_name=component_name, output_dir=output_dir),
-    )
-    try:
-        with run_context.scope(component_class(name=component_name), state=state):
-            yield
-    finally:
-        emit(
-            f"{component_type}_end",
-            payload=component_payload(task=task, component_name=component_name, output_dir=output_dir),
-        )
 
 
 class Evaluator:
@@ -101,9 +53,20 @@ class Evaluator:
         *,
         model: torch.nn.Module,
         context: Any,
-        emit: Callable[..., None],
     ) -> EvaluationResult:
-        """Run all configured tasks and return aggregate metrics."""
+        """Run all configured tasks and return aggregate metrics.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            Wavefunction model every task is evaluated against.
+        context : RunContext
+            Run-level context. It owns typed emission, so it is the only
+            reporting channel the evaluator needs: the string-event ``emit``
+            callable this method used to take carried the same moments in a
+            flattened payload that four callbacks re-parsed, and every one of
+            them now observes the typed occurrences instead.
+        """
 
         # Two unrelated context types meet here: `context` is the run-level
         # `tpen.artifacts.RunContext` that owns typed emission, while
@@ -141,7 +104,6 @@ class Evaluator:
                     model=model,
                     task=task,
                     context=task_context,
-                    emit=emit,
                     run_context=run_context,
                     state=state,
                 )
@@ -152,7 +114,7 @@ class Evaluator:
             artifacts.extend(result.artifacts)
             for key, value in result.metrics.items():
                 full_metrics[f"{result.namespace}/{key}"] = value
-            if result.status in {"failed", "partial_failed"} and self.task_failure_policy == "fail_fast":
+            if result.failed and self.task_failure_policy == "fail_fast":
                 break
 
         status = _aggregate_status(task_results)
@@ -186,12 +148,10 @@ class Evaluator:
         model: torch.nn.Module,
         task: EvaluationTask,
         context: EvaluationContext,
-        emit: Callable[..., None],
         run_context: Any,
         state: EvaluationRunState,
     ) -> TaskResult:
         output_dir = context.task_output_dir
-        emit("task_start", payload=task_payload(task, output_dir=output_dir))
         failures: list[EvaluationFailure] = []
         artifacts: list[ArtifactRecord] = []
         metrics: dict[str, MetricScalar] = {}
@@ -199,16 +159,14 @@ class Evaluator:
         partial_failed = False
         bundle: EvaluationBundle | None = None
 
+        # Each component is bracketed by its own typed scope. The evaluator owns
+        # the boundaries but no timing policy: `EvaluationComponentTiming`
+        # decides whether and how to measure them. `scope` emits ``Ended`` from a
+        # ``finally``, so a component scope closes on failure as well as success,
+        # and the failure is then reported separately as `ComponentFailed`.
         try:
-            with _component_span(
-                emit,
-                task=task,
-                component_type="generator",
-                component_class=GeneratorRun,
-                component_name=_component_name(task.generator),
-                output_dir=output_dir,
-                run_context=run_context,
-                state=state,
+            with run_context.scope(
+                GeneratorRun(name=_component_name(task.generator)), state=state
             ):
                 generated = task.generator.generate(model=model, context=context)
             bundle = EvaluationBundle(generated=generated)
@@ -216,48 +174,19 @@ class Evaluator:
             failure = _failure(context, task=task, component=task.generator, component_type="generator", exc=exc)
             failures.append(failure)
             result = _task_result(task, output_dir, "failed", metrics, artifacts, failures)
-            # Deliberately inverted relative to the calculator and summary paths:
-            # this path builds the task result first and only then reports the
-            # component. `test_generator_failure_emits_task_failed_first` pins it.
-            emit("task_failed", payload=task_result_payload(result))
-            emit(
-                "generator_failed",
-                payload=component_failure_payload(
-                    task=task,
-                    component_name=_component_name(task.generator),
-                    failure=failure,
-                    output_dir=output_dir,
-                ),
-            )
             run_context.emit(ComponentFailed(failure=failure), state=state)
             return result
 
         for calculator in task.calculators:
             try:
-                with _component_span(
-                    emit,
-                    task=task,
-                    component_type="calculator",
-                    component_class=CalculatorRun,
-                    component_name=_component_name(calculator),
-                    output_dir=output_dir,
-                    run_context=run_context,
-                    state=state,
+                with run_context.scope(
+                    CalculatorRun(name=_component_name(calculator)), state=state
                 ):
                     bundle = calculator.calculate(model=model, bundle=bundle, context=context)
             except Exception as exc:
                 failure = _failure(context, task=task, component=calculator, component_type="calculator", exc=exc)
                 failures.append(failure)
                 task_failed = True
-                emit(
-                    "calculator_failed",
-                    payload=component_failure_payload(
-                        task=task,
-                        component_name=_component_name(calculator),
-                        failure=failure,
-                        output_dir=output_dir,
-                    ),
-                )
                 run_context.emit(ComponentFailed(failure=failure), state=state)
                 if context.task_failure_policy == "fail_fast":
                     break
@@ -270,27 +199,11 @@ class Evaluator:
                     failure = _missing_dependency_failure(context, task=task, summary=summary)
                     failures.append(failure)
                     partial_failed = True
-                    emit(
-                        "summary_failed",
-                        payload=component_failure_payload(
-                            task=task,
-                            component_name=_component_name(summary),
-                            failure=failure,
-                            output_dir=output_dir,
-                        ),
-                    )
                     run_context.emit(ComponentFailed(failure=failure), state=state)
                     continue
                 try:
-                    with _component_span(
-                        emit,
-                        task=task,
-                        component_type="summary",
-                        component_class=SummaryRun,
-                        component_name=_component_name(summary),
-                        output_dir=output_dir,
-                        run_context=run_context,
-                        state=state,
+                    with run_context.scope(
+                        SummaryRun(name=_component_name(summary)), state=state
                     ):
                         result = summary.summarize(bundle=bundle, context=context, namespace=task.namespace)
                     _merge_metrics(metrics, result.metrics, component_name=_component_name(summary))
@@ -298,15 +211,6 @@ class Evaluator:
                     failure = _failure(context, task=task, component=summary, component_type="summary", exc=exc)
                     failures.append(failure)
                     partial_failed = True
-                    emit(
-                        "summary_failed",
-                        payload=component_failure_payload(
-                            task=task,
-                            component_name=_component_name(summary),
-                            failure=failure,
-                            output_dir=output_dir,
-                        ),
-                    )
                     run_context.emit(ComponentFailed(failure=failure), state=state)
                     continue
                 artifacts.extend(result.artifacts)
@@ -317,10 +221,13 @@ class Evaluator:
             status = "partial_failed"
         else:
             status = "success"
-        task_result = _task_result(task, output_dir, status, metrics, artifacts, failures)
-        event_name = "task_failed" if status in {"failed", "partial_failed"} else "task_end"
-        emit(event_name, payload=task_result_payload(task_result))
-        return task_result
+        # No event is emitted here. The legacy path split this single moment in
+        # two by comparing the status string -- ``task_end`` or ``task_failed``
+        # -- so a subscriber could tell them apart. The typed path does not need
+        # the split: the caller writes this result onto `EvaluationRunState`
+        # before the task scope closes, so `Ended[EvaluationTaskRun]` carries the
+        # outcome, status included, on both paths (ADR-E008).
+        return _task_result(task, output_dir, status, metrics, artifacts, failures)
 
 
 def _task_result(
@@ -402,7 +309,7 @@ def _aggregate_status(task_results: Sequence[TaskResult]) -> str:
     # Any configured task failure (full or partial) fails the suite; there is no
     # `required` flag to downgrade it. `success_with_warnings` is reserved for
     # non-task-critical issues (e.g. skipped tasks), not broken evaluation tasks.
-    if any(task.status in {"failed", "partial_failed"} for task in task_results):
+    if any(task.failed for task in task_results):
         return "failed"
     if any(task.status == "skipped" for task in task_results):
         return "success_with_warnings"

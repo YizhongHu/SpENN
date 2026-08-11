@@ -5,7 +5,6 @@ from __future__ import annotations
 from .base import Callback, Event, StatefulCallback
 from .cadence import Cadence, CadenceGate, StepCadence, StepCadenceGate, SubscriptionGroup
 from .checkpoint import Checkpoint
-from .evaluation import ArtifactIndex, FailureLog
 from .metadata import Metadata
 from .snapshot import ConfigSnapshot, ResolvedConfigSnapshot
 from .status import Status, configure_terminal_logging
@@ -14,13 +13,22 @@ from .status import Status, configure_terminal_logging
 def __getattr__(name: str) -> object:
     """Load torch-dependent callback classes only when they are requested.
 
-    A `StatefulCallback` declaring ``state_type = TrainerState`` has to import
-    that class at class-creation time, and importing anything from
-    ``tpen.training`` runs that package's ``__init__``, which pulls in torch.
-    Every such callback therefore has to be loaded lazily to keep
-    ``import tpen.callback`` torch-free.
+    A `StatefulCallback` declaring a ``state_type`` has to import that state
+    class at class-creation time, and importing anything from ``tpen.training``
+    or ``tpen.evaluation`` runs that package's ``__init__``, which pulls in
+    torch. Every such callback therefore has to be loaded lazily to keep
+    ``import tpen.callback`` torch-free. `FailureLog` needs no state but shares
+    a module with `ArtifactIndex`, so it is loaded lazily with it.
     """
 
+    if name == "ArtifactIndex":
+        from .evaluation import ArtifactIndex
+
+        return ArtifactIndex
+    if name == "FailureLog":
+        from .evaluation import FailureLog
+
+        return FailureLog
     if name == "RuntimeEquivariance":
         from .equivariance import RuntimeEquivariance
 

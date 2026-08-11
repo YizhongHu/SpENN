@@ -212,7 +212,7 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
             ),
         ],
     )
-    evaluator.evaluate(model=nn.Identity(), context=ctx, emit=lambda *a, **kw: None)
+    evaluator.evaluate(model=nn.Identity(), context=ctx)
 
     assert recorded[0] == tmp_path / "cusp"
     assert recorded[1] == tmp_path / "tail"

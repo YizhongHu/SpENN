@@ -1,10 +1,9 @@
 """Tests for the evaluation domain's typed event vocabulary.
 
-Slice 1 of D1 lands the vocabulary purely additively: the typed occurrences are
-emitted beside the legacy string events and no callback has been migrated, so
-these tests assert what the evaluator now *emits* and what an evaluation-domain
-`tpen.callback.StatefulCallback` would *receive*, not any production callback's
-behaviour.
+These assert what the evaluator *emits* and what an evaluation-domain
+`tpen.callback.StatefulCallback` *receives*. What the migrated production
+callbacks then do with those occurrences is asserted in
+``tests/unit/callback/test_typed_evaluation_delivery.py``.
 """
 
 from __future__ import annotations
@@ -152,12 +151,6 @@ def _evaluator(output_dir: Path, *, generator: object, summaries: list[object] |
     )
 
 
-def _noop_emit(name: str, *, payload: dict[str, Any] | None = None) -> None:
-    """Swallow the legacy string events these tests do not assert on."""
-
-    del name, payload
-
-
 # --------------------------------------------------------------------------
 # The vocabulary itself
 # --------------------------------------------------------------------------
@@ -242,7 +235,7 @@ def test_the_task_ended_boundary_observes_the_result_written_in_the_body(tmp_pat
     context = make_run_context(tmp_path, callbacks=[recorder])
     evaluator = _evaluator(tmp_path / "energy", generator=_NullGenerator())
 
-    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=_noop_emit)
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context)
 
     assert result.status == "success"
     assert [label for label, _ in recorder.seen] == [
@@ -277,7 +270,7 @@ def test_a_later_task_start_does_not_observe_the_previous_task_result(tmp_path: 
         ],
     )
 
-    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=_noop_emit)
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context)
 
     observed = [(label, None if task is None else task.name) for label, task in recorder.seen]
     assert observed == [
@@ -301,7 +294,7 @@ def test_a_successful_task_emits_nested_typed_scopes(tmp_path: Path) -> None:
     context = make_run_context(tmp_path, callbacks=[recorder])
     evaluator = _evaluator(tmp_path / "energy", generator=_NullGenerator())
 
-    evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=_noop_emit)
+    evaluator.evaluate(model=nn.Linear(1, 1), context=context)
 
     assert recorder.labels() == [
         "Started[EvaluationTaskRun]",
@@ -320,7 +313,7 @@ def test_the_task_operation_carries_the_task_identity(tmp_path: Path) -> None:
     context = make_run_context(tmp_path, callbacks=[recorder])
     evaluator = _evaluator(tmp_path / "energy", generator=_NullGenerator())
 
-    evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=_noop_emit)
+    evaluator.evaluate(model=nn.Linear(1, 1), context=context)
 
     task_run = recorder.seen[0].operation
     assert task_run == EvaluationTaskRun(
@@ -338,7 +331,7 @@ def test_a_failing_component_emits_the_typed_failure_object(tmp_path: Path) -> N
     context = make_run_context(tmp_path, callbacks=[recorder])
     evaluator = _evaluator(tmp_path / "energy", generator=_FailingGenerator())
 
-    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context, emit=_noop_emit)
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=context)
 
     assert result.status == "failed"
     failed = [event for event in recorder.seen if isinstance(event, ComponentFailed)]

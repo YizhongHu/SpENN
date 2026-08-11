@@ -30,8 +30,14 @@ from tpen.evaluation import (
     SamplerStatsSummary,
     WavefunctionCalculator,
 )
-from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
-from tpen.events import Subscription
+from tpen.evaluation.events import (
+    ComponentFailed,
+    ComponentRun,
+    EvaluationCompleted,
+    EvaluationStarted,
+    EvaluationTaskRun,
+)
+from tpen.events import Ended, Started, Subscription, ended, started
 from tpen.physics.hamiltonian import LocalEnergyResult
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
@@ -151,9 +157,10 @@ def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_pa
     assert recorder.events == ["run_start"]
 
 
-def test_evaluate_start_is_emitted_after_model_ready(tmp_path: Path) -> None:
+def test_evaluation_started_is_emitted_after_model_ready(tmp_path: Path) -> None:
     recorder = _EventRecorder()
-    context, _ = _recording_context(tmp_path, [recorder])
+    typed = _TypedOccurrenceRecorder()
+    context, _ = _recording_context(tmp_path, [recorder, typed])
     runner = Evaluate(
         model=nn.LazyLinear(1),
         evaluator=_energy_evaluator(_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)), []),
@@ -163,6 +170,9 @@ def test_evaluate_start_is_emitted_after_model_ready(tmp_path: Path) -> None:
         runner.run(context)
 
     assert recorder.events == ["run_start"]
+    # The lazy model is rejected before evaluation begins, so the typed suite
+    # boundary is never reached either.
+    assert typed.seen == []
 
 
 def test_train_rejects_model_only_load_mode(tmp_path: Path) -> None:
@@ -274,8 +284,9 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: 
 
 
 def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> None:
-    recorder = _EventRecorder()
-    context, logger = _recording_context(tmp_path, [recorder])
+    recorder = _AllOccurrenceRecorder()
+    string_recorder = _EventRecorder()
+    context, logger = _recording_context(tmp_path, [recorder, string_recorder])
     runner = Evaluate(
         model=build_tiny_spenn(),
         evaluator=_energy_evaluator(
@@ -288,38 +299,42 @@ def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> 
     result = runner.run(context)
 
     assert result.status == "completed"
-    assert recorder.events == [
-        "run_start",
-        "evaluate_start",
-        "task_start",
-        "generator_start",
-        "generator_end",
-        "calculator_start",
-        "calculator_end",
-        "calculator_start",
-        "calculator_end",
-        "summary_start",
-        "summary_end",
-        "summary_start",
-        "summary_end",
-        "summary_start",
-        "summary_end",
-        "task_end",
-        "evaluate_end",
-        "run_end",
+    # The full typed lifecycle, in emission order. This replaces the identical
+    # assertion over the legacy string sequence, which slice 2 deleted along
+    # with the fourteen emit sites that produced it.
+    assert recorder.labels() == [
+        "EvaluationStarted",
+        "Started[EvaluationTaskRun]",
+        "Started[GeneratorRun]",
+        "Ended[GeneratorRun]",
+        "Started[CalculatorRun]",
+        "Ended[CalculatorRun]",
+        "Started[CalculatorRun]",
+        "Ended[CalculatorRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Ended[EvaluationTaskRun]",
+        "EvaluationCompleted",
     ]
+    # Only run-level strings remain on the legacy path.
+    assert string_recorder.events == ["run_start", "run_end"]
     energy_records = [record.metrics for record in logger.by_namespace("eval/energy")]
     assert energy_records
     assert "local_energy_mean" in energy_records[-1]
     assert "reference_energy" not in energy_records[-1]
 
 
-def test_evaluate_emits_the_typed_suite_boundaries_beside_the_strings(tmp_path: Path) -> None:
-    """The typed vocabulary is emitted alongside the legacy strings, not instead.
+def test_evaluate_emits_the_typed_suite_boundaries(tmp_path: Path) -> None:
+    """`EvaluationStarted`/`EvaluationCompleted` bracket the suite as POINT events.
 
-    `EvaluationStarted` and `EvaluationCompleted` are point events rather than a
-    scope, so nothing fires them on the failure path and the run-level
-    ``exception`` event keeps producing ``eval/perf {failed: True}``.
+    Deliberately not a scope: a scope's ``Ended`` fires from a ``finally``, which
+    would pre-empt the run-level ``exception`` event that `EvaluationTiming`
+    turns into ``eval/perf {failed: True}``. Nothing fires these on the failure
+    path, which is exactly why that residual trigger has to stay.
     """
 
     recorder = _TypedOccurrenceRecorder()
@@ -387,14 +402,55 @@ def _runner_context(cfg) -> RunContext:
 
 
 class _EventRecorder(Callback):
+    """Capture the run-level string events the runner still emits.
+
+    Only four legacy strings survive anywhere: ``run_start``, ``run_end``,
+    ``exception``, and ``run_failed``. They are run-level, have no typed
+    equivalent, and have no owning domain -- that is item ``39eacd99``. The
+    evaluation-domain strings this recorder used to also list are gone.
+    """
+
     def __init__(self) -> None:
-        super().__init__(
-            triggers=("run_start", "evaluate_start", "task_start", "task_end", "task_failed", "evaluate_end", "run_end")
-        )
+        super().__init__(triggers=("run_start", "run_end", "exception"))
         self.events: list[str] = []
 
     def handle(self, event: Event) -> None:
         self.events.append(event.name)
+
+
+class _AllOccurrenceRecorder(Callback):
+    """Capture the whole typed evaluation lifecycle, in delivery order."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            typed_groups=(
+                # One group: `ComponentRun` and a subclass selector in separate
+                # groups would be rejected as overlapping (ADR-E002).
+                SubscriptionGroup(
+                    selectors=(
+                        Subscription.of(EvaluationStarted),
+                        Subscription.of(EvaluationCompleted),
+                        Subscription.of(ComponentFailed),
+                        started(EvaluationTaskRun),
+                        ended(EvaluationTaskRun),
+                        started(ComponentRun),
+                        ended(ComponentRun),
+                    ),
+                ),
+            )
+        )
+        self.seen: list[object] = []
+
+    def handle_occurrence_impl(self, occurrence, context) -> None:
+        self.seen.append(occurrence.event)
+
+    def labels(self) -> list[str]:
+        return [
+            f"{type(event).__name__}[{type(event.operation).__name__}]"
+            if isinstance(event, (Started, Ended))
+            else type(event).__name__
+            for event in self.seen
+        ]
 
 
 class _TypedOccurrenceRecorder(Callback):

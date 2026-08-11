@@ -1,193 +1,159 @@
-"""Tests for evaluator component lifecycle events."""
+"""Tests for evaluator component lifecycle occurrences.
+
+These used to assert the evaluator's legacy STRING sequence. Slice 2 of D1
+deleted that path -- the four payload builders and all fourteen emit sites --
+so the same control flow is asserted here through the typed vocabulary, which
+is now the evaluation domain's only reporting channel.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-import torch
 from torch import nn
 
 from tpen.artifacts import RunContext
-from tpen.data.batch import ElectronBatch
-from tpen.evaluation import Evaluator, EvaluationTask
-from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
-from tpen.evaluation.protocols import EvaluationContext
-from tpen.evaluation.results import SummaryResult
+from tpen.callback import Callback, SubscriptionGroup
+from tpen.evaluation.events import (
+    CalculatorRun,
+    ComponentFailed,
+    ComponentRun,
+    EvaluationTaskRun,
+)
+from tpen.events import Ended, Occurrence, Started, Subscription, ended, started
+from tests.helpers.evaluation_components import (
+    FailingCalculator,
+    FailingGenerator,
+    single_task_evaluator,
+)
 from tests.helpers.run_context import make_run_context
 
 
-class _NullGenerator:
-    name = "null"
+class _OccurrenceRecorder(Callback):
+    """Capture every typed evaluation occurrence, in delivery order."""
 
-    def generate(self, *, model: nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
-        batch = ElectronBatch(
-            positions=torch.zeros(1, 2, 3, dtype=torch.float64),
-            spins=torch.tensor([[1.0, -1.0]], dtype=torch.float64),
-        )
-        return GeneratedConfigurations(batch=batch, metadata={})
-
-
-class _FailingGenerator:
-    name = "broken-generator"
-
-    def generate(self, *, model: nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
-        raise RuntimeError("generator boom")
-
-
-class _IdentityCalculator:
-    name = "identity"
-
-    def calculate(self, *, model: nn.Module | None, bundle: EvaluationBundle, context: EvaluationContext) -> EvaluationBundle:
-        return bundle
-
-
-class _FailingCalculator:
-    name = "broken"
-
-    def calculate(self, *, model: nn.Module | None, bundle: EvaluationBundle, context: EvaluationContext) -> EvaluationBundle:
-        raise RuntimeError("calculator boom")
-
-
-class _MetricSummary:
-    name = "metric"
-    required_fields: frozenset[str] = frozenset()
-
-    def summarize(
-        self,
-        *,
-        bundle: EvaluationBundle,
-        context: EvaluationContext,
-        namespace: str,
-    ) -> SummaryResult:
-        return SummaryResult(metrics={"value": 1.0})
-
-
-def _run_context(run_dir: Path) -> RunContext:
-    """Return a real `RunContext`.
-
-    The evaluator now emits typed occurrences through the context itself, so a
-    `types.SimpleNamespace` stand-in no longer suffices: `RunContext.scope`
-    needs the occurrence counters and `write_occurrence_artifact` needs the
-    artifact manager and the run clock.
-    """
-
-    return make_run_context(run_dir)
-
-
-def _evaluator(tmp_path: Path, calculators: list[object], *, generator: object | None = None) -> Evaluator:
-    return Evaluator(
-        namespace="eval",
-        tasks=[
-            EvaluationTask(
-                name="energy",
-                namespace="eval/energy",
-                output_dir=tmp_path / "energy",
-                generator=_NullGenerator() if generator is None else generator,
-                calculators=calculators,
-                summaries=[_MetricSummary()],
+    def __init__(self) -> None:
+        super().__init__(
+            typed_groups=(
+                # One group: `ComponentRun` and any subclass selector in separate
+                # groups would be rejected as overlapping (ADR-E002).
+                SubscriptionGroup(
+                    selectors=(
+                        started(EvaluationTaskRun),
+                        ended(EvaluationTaskRun),
+                        started(ComponentRun),
+                        ended(ComponentRun),
+                        Subscription.of(ComponentFailed),
+                    ),
+                ),
             )
-        ],
-    )
+        )
+        self.seen: list[Any] = []
+
+    def handle_occurrence_impl(self, occurrence: Occurrence[Any], context: Any) -> None:
+        self.seen.append(occurrence.event)
+
+    def labels(self) -> list[str]:
+        return [
+            f"{type(event).__name__}[{type(event.operation).__name__}]"
+            if isinstance(event, (Started, Ended))
+            else type(event).__name__
+            for event in self.seen
+        ]
 
 
-def _emit_recorder(events: list[tuple[str, dict[str, Any]]]):
-    def emit(name: str, *, payload: dict[str, Any] | None = None) -> None:
-        events.append((name, dict(payload or {})))
-
-    return emit
+def _run_context(run_dir: Path, recorder: _OccurrenceRecorder) -> RunContext:
+    return make_run_context(run_dir, callbacks=[recorder])
 
 
-def test_component_events_bracket_each_component_on_success(tmp_path: Path) -> None:
-    events: list[tuple[str, dict[str, Any]]] = []
-    evaluator = _evaluator(tmp_path, calculators=[_IdentityCalculator()])
+def test_component_scopes_bracket_each_component_on_success(tmp_path: Path) -> None:
+    recorder = _OccurrenceRecorder()
+    evaluator = single_task_evaluator(tmp_path)
 
-    result = evaluator.evaluate(
-        model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=_emit_recorder(events)
-    )
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path, recorder))
 
     assert result.status == "success"
-    assert [name for name, _ in events] == [
-        "task_start",
-        "generator_start",
-        "generator_end",
-        "calculator_start",
-        "calculator_end",
-        "summary_start",
-        "summary_end",
-        "task_end",
+    assert recorder.labels() == [
+        "Started[EvaluationTaskRun]",
+        "Started[GeneratorRun]",
+        "Ended[GeneratorRun]",
+        "Started[CalculatorRun]",
+        "Ended[CalculatorRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Ended[EvaluationTaskRun]",
     ]
-    by_name = dict(events)
-    for event_name, component_name in [
-        ("generator_start", "null"),
-        ("generator_end", "null"),
-        ("calculator_start", "identity"),
-        ("calculator_end", "identity"),
-        ("summary_start", "metric"),
-        ("summary_end", "metric"),
-    ]:
-        payload = by_name[event_name]
-        assert payload["task_name"] == "energy"
-        assert payload["task_namespace"] == "eval/energy"
-        assert payload["component_name"] == component_name
-        assert payload["output_dir"] == str(tmp_path / "energy")
+    # Each component operation carries its own instance name; the owning task is
+    # read from the enclosing task scope rather than repeated on every event.
+    assert [
+        event.operation.name
+        for event in recorder.seen
+        if isinstance(event, Started) and isinstance(event.operation, ComponentRun)
+    ] == ["null", "identity", "metric"]
 
 
-def test_calculator_end_fires_before_calculator_failed_on_failure(tmp_path: Path) -> None:
-    events: list[tuple[str, dict[str, Any]]] = []
-    evaluator = _evaluator(tmp_path, calculators=[_FailingCalculator()])
+def test_calculator_scope_closes_before_the_failure_is_reported(tmp_path: Path) -> None:
+    recorder = _OccurrenceRecorder()
+    evaluator = single_task_evaluator(tmp_path, calculators=[FailingCalculator()])
 
-    result = evaluator.evaluate(
-        model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=_emit_recorder(events)
-    )
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path, recorder))
 
     assert result.status == "failed"
-    # The default "continue" policy still runs summaries after a calculator
-    # failure; calculator_end fires before calculator_failed either way.
-    assert [name for name, _ in events] == [
-        "task_start",
-        "generator_start",
-        "generator_end",
-        "calculator_start",
-        "calculator_end",
-        "calculator_failed",
-        "summary_start",
-        "summary_end",
-        "task_failed",
+    # `scope` emits ``Ended`` from a ``finally``, so the component scope closes
+    # even though the calculator raised. The default "continue" policy still
+    # runs summaries afterwards.
+    assert recorder.labels() == [
+        "Started[EvaluationTaskRun]",
+        "Started[GeneratorRun]",
+        "Ended[GeneratorRun]",
+        "Started[CalculatorRun]",
+        "Ended[CalculatorRun]",
+        "ComponentFailed",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Ended[EvaluationTaskRun]",
     ]
-    by_name = dict(events)
-    assert by_name["calculator_end"]["component_name"] == "broken"
-    assert by_name["calculator_failed"]["failure"]["error_type"] == "RuntimeError"
+    failed = [event for event in recorder.seen if isinstance(event, ComponentFailed)]
+    assert failed[0].failure.component == "broken"
+    assert failed[0].failure.error_type == "RuntimeError"
 
 
-def test_generator_failure_emits_task_failed_first(tmp_path: Path) -> None:
-    """Pin the generator path's inverted failure order.
+def test_generator_failure_reports_the_component_before_the_task_boundary(tmp_path: Path) -> None:
+    """The legacy path's inverted generator order does not survive typing.
 
-    Unlike the calculator and summary paths, a failing generator reports
-    ``task_failed`` BEFORE ``generator_failed``: that path has to build the task
-    result to return it, and does so before reporting the component. Nothing
-    pinned that asymmetry, so a later rewrite could normalise it by accident and
-    silently reorder what `FailureLog` and `DiagnosticTiming` observe. Pinning it
-    makes keeping it, or changing it, a deliberate choice.
+    On the string path this case emitted ``task_failed`` BEFORE
+    ``generator_failed`` -- the reverse of the calculator and summary paths --
+    because the generator branch had to build the task result in order to return
+    it. `test_generator_failure_emits_task_failed_first` pinned that asymmetry so
+    a rewrite could not flatten it by accident.
+
+    Deleting the string path does not flatten the asymmetry; it DISSOLVES it.
+    There is no typed task-failure event to order: the task outcome is delivered
+    at ``Ended[EvaluationTaskRun]``, which `scope` fires from a ``finally`` and
+    which is therefore structurally last on every path. So all three component
+    kinds now report the failure first, uniformly. This test pins the new
+    uniform order, and the state assertions below pin why it is uniform.
     """
 
-    events: list[tuple[str, dict[str, Any]]] = []
-    evaluator = _evaluator(tmp_path, calculators=[_IdentityCalculator()], generator=_FailingGenerator())
+    recorder = _OccurrenceRecorder()
+    evaluator = single_task_evaluator(tmp_path, generator=FailingGenerator())
 
-    result = evaluator.evaluate(
-        model=nn.Linear(1, 1), context=_run_context(tmp_path), emit=_emit_recorder(events)
-    )
+    result = evaluator.evaluate(model=nn.Linear(1, 1), context=_run_context(tmp_path, recorder))
 
     assert result.status == "failed"
-    assert [name for name, _ in events] == [
-        "task_start",
-        "generator_start",
-        "generator_end",
-        "task_failed",
-        "generator_failed",
+    assert recorder.labels() == [
+        "Started[EvaluationTaskRun]",
+        "Started[GeneratorRun]",
+        "Ended[GeneratorRun]",
+        "ComponentFailed",
+        "Ended[EvaluationTaskRun]",
     ]
-    by_name = dict(events)
-    assert by_name["generator_failed"]["component_name"] == "broken-generator"
-    assert by_name["generator_failed"]["failure"]["error_type"] == "RuntimeError"
+    failed = [event for event in recorder.seen if isinstance(event, ComponentFailed)]
+    assert failed[0].failure.component == "broken-generator"
+    assert failed[0].failure.component_type == "generator"
     # No calculator or summary runs once the generator has failed.
-    assert not any(name.startswith(("calculator", "summary")) for name, _ in events)
+    assert not any(
+        isinstance(event, (Started, Ended)) and isinstance(event.operation, CalculatorRun)
+        for event in recorder.seen
+    )
