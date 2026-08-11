@@ -651,21 +651,51 @@ def _typed_event_fields(value: object) -> dict[str, Any]:
     return {}
 
 
-def _typed_dataclass_fields(value: object) -> dict[str, Any]:
-    """Encode explicit public fields of one typed dataclass value."""
+def _typed_dataclass_fields(value: object, ancestors: tuple[int, ...] = ()) -> dict[str, Any]:
+    """Encode explicit public fields of one typed dataclass value.
 
+    Parameters
+    ----------
+    value : object
+        Dataclass instance whose declared public fields are encoded.
+    ancestors : tuple of int, optional
+        Identities of the dataclass instances already open on the current
+        field path, used to refuse a cycle instead of exhausting the stack.
+    """
+
+    nested = (*ancestors, id(value))
     return {
-        item.name: _typed_event_field_value(getattr(value, item.name))
+        item.name: _typed_event_field_value(getattr(value, item.name), nested)
         for item in dataclass_fields(value)
         if not item.name.startswith("_")
     }
 
 
-def _typed_event_field_value(value: object) -> Any:
-    """Preserve nested typed dataclass fields without probing containers."""
+def _typed_event_field_value(value: object, ancestors: tuple[int, ...] = ()) -> Any:
+    """Preserve nested typed dataclass fields without probing containers.
 
-    if isinstance(value, (TypedEvent, Operation)) and is_dataclass(value):
-        return _typed_dataclass_fields(value)
+    Any dataclass instance is encoded field-wise, not only an ``Event`` or an
+    ``Operation``. A dataclass declares its fields explicitly, so reading
+    ``dataclass_fields`` is typed access to a stated contract rather than a
+    probe of an arbitrary container. Without this, a domain object carried on a
+    typed event -- a ``RestoreReport``, an ``EvaluationFailure`` -- would reach
+    ``occurrences.jsonl`` as a bare ``{"type": ...}`` marker with every field
+    silently dropped.
+
+    A dataclass reached through a list, a tuple, or a mapping value still
+    collapses to its type marker, exactly as before. No typed event carries a
+    container of dataclasses, so widening the traversal would be speculative
+    (ADR-E003); ``test_typed_event_does_not_recurse_into_containers`` pins that
+    boundary so a later change to it is deliberate.
+    """
+
+    # A dataclass *type* is not an instance and keeps its previous encoding.
+    if is_dataclass(value) and not isinstance(value, type):
+        if id(value) in ancestors:
+            raise TypeError(
+                f"cyclic typed value {_qualified_type_name(value)} cannot be serialized"
+            )
+        return _typed_dataclass_fields(value, ancestors)
     return _event_jsonable(value)
 
 

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import torch
 from omegaconf import OmegaConf
 from typeguard import suppress_type_checks
 
@@ -21,6 +22,7 @@ from tpen.artifacts import (
     write_event_artifact,
 )
 from tpen.callback import Event as LegacyEvent
+from tpen.checkpoint.restore import RestoreReport
 from tpen.callback import TrainPhaseTiming
 from tpen.events import Ended, Event, Occurrence, Operation, Started, Subscription
 from tpen.events import ended, started
@@ -80,6 +82,58 @@ class _SlottedStatefulEvent(Event):
 class _PrivatePulse(Event):
     label: str
     _private: str
+
+
+@dataclass(frozen=True)
+class _Detail:
+    """A plain domain dataclass: neither an ``Event`` nor an ``Operation``."""
+
+    code: int
+    note: str
+    _hidden: str = "hidden"
+
+
+@dataclass(frozen=True)
+class _Wrapper:
+    """A plain dataclass whose own field is another plain dataclass."""
+
+    detail: _Detail
+    label: str
+
+
+@dataclass(frozen=True)
+class _ReportPulse(Event):
+    """Stands in for D1's ``CheckpointRestored(report: RestoreReport)``."""
+
+    report: RestoreReport
+
+
+@dataclass(frozen=True)
+class _WrappedPulse(Event):
+    wrapper: _Wrapper
+
+
+@dataclass(frozen=True)
+class _ContainerPulse(Event):
+    details: tuple[_Detail, ...]
+    by_name: dict[str, _Detail]
+
+
+@dataclass(frozen=True)
+class _TensorPulse(Event):
+    tensor: torch.Tensor
+
+
+@dataclass
+class _Cyclic:
+    """Mutable so a field can be rebound to point back at its own parent."""
+
+    child: object = None
+
+
+@dataclass(frozen=True)
+class _CyclicPulse(Event):
+    node: _Cyclic
 
 
 class _Recorder:
@@ -520,6 +574,133 @@ def test_typed_completion_serializes_nested_iteration_fields(tmp_path: Path) -> 
     # Each concrete event type counts independently from one.
     assert [record["count"] for record in records] == [1, 1, 1]
     assert all(record["fields"] == {"iteration": {"step": 7}} for record in records)
+
+
+def test_typed_event_serializes_a_plain_dataclass_field_field_wise(tmp_path: Path) -> None:
+    """A domain object that is neither ``Event`` nor ``Operation`` must not collapse.
+
+    ``RestoreReport`` is the concrete case D1 depends on: ``completed_updates``
+    exists so a restored run's applied-update cursor reaches the durable record,
+    and ``checkpoint_restored`` has no callback handlers, so the record is its
+    only consumer.
+    """
+
+    context = _context(tmp_path)
+
+    context.emit(
+        _ReportPulse(
+            report=RestoreReport(
+                mode="train_resume",
+                checkpoint_dir="checkpoints/step_000010",
+                schema_version=2,
+                next_iteration=11,
+                completed_updates=10,
+                loaded_model=True,
+                loaded_optimizer=True,
+                loaded_trainer=True,
+                loaded_sampler=True,
+                loaded_rng=True,
+            )
+        )
+    )
+
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert records[0]["fields"] == {
+        "report": {
+            "mode": "train_resume",
+            "checkpoint_dir": "checkpoints/step_000010",
+            "schema_version": 2,
+            "next_iteration": 11,
+            "completed_updates": 10,
+            "loaded_model": True,
+            "loaded_optimizer": True,
+            "loaded_trainer": True,
+            "loaded_sampler": True,
+            "loaded_rng": True,
+        }
+    }
+
+
+def test_typed_event_recurses_through_nested_plain_dataclasses(tmp_path: Path) -> None:
+    """Nesting depth is unbounded, and private field names stay excluded."""
+
+    context = _context(tmp_path)
+
+    context.emit(
+        _WrappedPulse(wrapper=_Wrapper(detail=_Detail(code=3, note="deep"), label="outer"))
+    )
+
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert records[0]["fields"] == {
+        "wrapper": {"detail": {"code": 3, "note": "deep"}, "label": "outer"}
+    }
+
+
+def test_typed_event_does_not_recurse_into_containers(tmp_path: Path) -> None:
+    """Pin the boundary: a dataclass behind a container keeps its type marker.
+
+    No typed event carries a container of dataclasses, so ADR-E003 defers
+    widening the traversal until one does. This test exists so that widening is
+    a deliberate edit rather than an accident.
+    """
+
+    context = _context(tmp_path)
+
+    context.emit(
+        _ContainerPulse(
+            details=(_Detail(code=1, note="first"),),
+            by_name={"second": _Detail(code=2, note="second")},
+        )
+    )
+
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    marker = {"type": f"{_Detail.__module__}.{_Detail.__name__}"}
+    assert records[0]["fields"] == {"details": [marker], "by_name": {"second": marker}}
+
+
+def test_typed_event_keeps_the_tensor_encoding_for_non_dataclass_values(
+    tmp_path: Path,
+) -> None:
+    """A tensor is not a dataclass, so it keeps its shape/dtype/device encoding."""
+
+    context = _context(tmp_path)
+
+    context.emit(_TensorPulse(tensor=torch.zeros((2, 3), dtype=torch.float64)))
+
+    records = [
+        json.loads(line)
+        for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert records[0]["fields"] == {
+        "tensor": {
+            "device": "cpu",
+            "dtype": "torch.float64",
+            "shape": [2, 3],
+            "type": "torch.Tensor",
+        }
+    }
+
+
+def test_typed_event_rejects_a_cyclic_dataclass_field(tmp_path: Path) -> None:
+    """Field-wise recursion refuses a cycle rather than exhausting the stack."""
+
+    context = _context(tmp_path)
+    node = _Cyclic()
+    node.child = node
+
+    with pytest.raises(TypeError, match="cyclic typed value"):
+        context.emit(_CyclicPulse(node=node))
+
+    assert not context.path("occurrences.jsonl").exists()
 
 
 def test_training_phase_base_is_abstract() -> None:
