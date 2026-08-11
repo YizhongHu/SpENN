@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from .base import Callback, Event, _attach_event_metrics, _sync_device
 
 
 class RunTiming(Callback):
@@ -34,7 +34,7 @@ class RunTiming(Callback):
     def on_run_start(self, event: Event) -> None:
         """Record run start timing."""
 
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         self._start_perf = self.clock()
         if self.log_start_end_timestamps:
             event.context.log({"start_time_unix": self.wall_clock()}, step=0, namespace="runtime")
@@ -55,7 +55,7 @@ class RunTiming(Callback):
         self._log_end(event, failed=True)
 
     def _log_end(self, event: Event, *, failed: bool) -> None:
-        _sync_cuda(self.cuda_synchronize)
+        _sync_device(self.cuda_synchronize)
         now = self.clock()
         metrics: dict[str, float | bool] = {}
         if self.log_start_end_timestamps:
