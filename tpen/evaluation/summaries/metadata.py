@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from tpen.evaluation.bundle import EvaluationBundle
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import MetricScalar, SummaryResult
+from tpen.sampling.stats import SamplerStats
 
 
 class SamplerStatsSummary:
@@ -27,18 +26,23 @@ class SamplerStatsSummary:
     ) -> SummaryResult:
         """Return scalar sampler stats from generated metadata."""
 
-        stats = bundle.generated.metadata.get("sampler_stats", {})
-        if not isinstance(stats, Mapping):
-            raise TypeError("generated metadata field 'sampler_stats' must be a mapping")
+        stats = bundle.generated.metadata.get("sampler_stats")
+        if stats is None:
+            return SummaryResult(metrics={})
+        if not isinstance(stats, SamplerStats):
+            raise TypeError(
+                "generated metadata field 'sampler_stats' must be a SamplerStats record"
+            )
         metrics: dict[str, MetricScalar] = {}
-        for key, value in stats.items():
+        # The record composes the metric names; this summary only prefixes them.
+        for key, value in stats.as_metrics().items():
             if isinstance(value, bool):
                 scalar: MetricScalar = value
             elif isinstance(value, int | float):
                 scalar = value
             else:
                 continue
-            metric_key = str(key).strip()
+            metric_key = key.strip()
             if not metric_key:
                 continue
             metrics[f"{self.prefix}_{metric_key}" if self.prefix else metric_key] = scalar

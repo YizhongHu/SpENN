@@ -10,6 +10,7 @@ from tpen.data.batch import Walkers, WavefunctionOutput
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.sampling.diagnostics import summarize_walker_geometry
 from tpen.sampling.moves import GaussianMove
+from tpen.sampling.stats import SamplerStats
 
 torch = require_torch(feature="Metropolis sampling")
 nn = require_torch_nn(feature="Metropolis sampling")
@@ -321,7 +322,7 @@ class MetropolisSampler(nn.Module):
         *,
         reset: bool = False,
         device=None,
-    ) -> tuple[Walkers, dict[str, float]]:
+    ) -> tuple[Walkers, SamplerStats]:
         """Advance the persistent chain and draw production samples.
 
         On the first call (or when ``reset=True``) the chain is initialized and
@@ -342,7 +343,7 @@ class MetropolisSampler(nn.Module):
         -------
         tuple
             Pair ``(walkers, stats)`` where ``walkers`` holds the final samples
-            and ``stats`` reports sampler diagnostics for logging.
+            and ``stats`` is the typed `SamplerStats` record for logging.
         """
 
         if reset or self._walkers is None:
@@ -353,19 +354,18 @@ class MetropolisSampler(nn.Module):
             self._walkers = self.sample(model, self._walkers, self.burn_in)
             self._has_burned_in = True
         self._walkers = self.sample(model, self._walkers, self.n_steps)
-        stats: dict[str, float] = {
-            "acceptance_rate": float(self.acceptance_rate),
-            "n_walkers": int(self._walkers.batch_size),
-            "burn_in": int(self.burn_in),
-            "n_steps": int(self.n_steps),
-            "proposal_scale": float(getattr(self.move, "step_size", self.proposal_scale)),
-        }
-        if self.seed is not None:
-            stats["seed"] = int(self.seed)
-        # Geometry diagnostics describe the production samples actually
-        # returned to the caller; phase namespacing (train/validation/eval)
-        # is owned by whoever logs these stats.
-        stats.update(summarize_walker_geometry(self._walkers))
+        stats = SamplerStats(
+            acceptance_rate=self.acceptance_rate,
+            n_walkers=self._walkers.batch_size,
+            burn_in=self.burn_in,
+            n_steps=self.n_steps,
+            proposal_scale=getattr(self.move, "step_size", self.proposal_scale),
+            # Geometry diagnostics describe the production samples actually
+            # returned to the caller; phase namespacing (train/validation/eval)
+            # is owned by whoever logs these stats.
+            geometry=summarize_walker_geometry(self._walkers),
+            seed=self.seed,
+        )
         return self._walkers, stats
 
     def mcmc_state_dict(self) -> dict[str, Any]:

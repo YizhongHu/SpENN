@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from tpen.data.batch import WavefunctionOutput
+from tpen.sampling.stats import SamplerStats
 
 
 @dataclass
@@ -43,8 +44,9 @@ class TrainerState:
         Most recent surrogate loss (detached).
     wavefunction_output : WavefunctionOutput or None, optional
         Most recent wavefunction output (signed-log form) for the batch.
-    sampler_stats : dict, optional
-        Most recent sampler diagnostics (e.g. acceptance rate, walker count).
+    sampler_stats : SamplerStats or None, optional
+        Most recent typed sampler diagnostics, or ``None`` before the first
+        collection.
     """
 
     step: int = -1
@@ -58,7 +60,7 @@ class TrainerState:
     local_energy: Any = None
     loss: torch.Tensor | None = None
     wavefunction_output: WavefunctionOutput | None = None
-    sampler_stats: dict[str, Any] = field(default_factory=dict)
+    sampler_stats: SamplerStats | None = None
 
 
 __all__ = ["TrainerState"]

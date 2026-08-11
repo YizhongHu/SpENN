@@ -206,6 +206,13 @@ Sampler geometry keys (the `position_*`/`radius_*`/`electron_distance_*`/
 logged the sampler stats: `train/sampler/*`, `validation/sampler/*`, or
 `eval/sampler/*`.
 
+All sampler keys are composed by `tpen.sampling.SamplerStats`, the typed record
+a sampler returns from `collect_samples`. `SamplerStats.as_metrics` produces the
+full `*/sampler` key set (named fields plus the open geometry key set), and
+`SamplerStats.as_check_metrics` produces the fixed `checks/sampler` subset
+`acceptance_rate`, `n_walkers`, `n_steps`, `burn_in`, to which `SamplerHealth`
+adds `passed`. Nothing else spells these names.
+
 Use underscores inside keys.
 
 Avoid dots in keys.
@@ -647,6 +654,15 @@ occurrence cadence for those successful completions; `start_step=0` maps to
 one-based occurrence `1`, and `every_n_steps=None` reports every successful
 occurrence. Unconditional `Ended[TrainingIteration]` observation clears
 measurements for failed and cadence-skipped iterations.
+
+`train/perf/sampling_time_sec` at step 0 silently includes burn-in. The
+`CollectSamples` scope brackets the whole `collect_samples` call, and burn-in
+runs once, on the first iteration of a chain. A sampler with `burn_in = 20` and
+`n_steps = 10` therefore times 30 Metropolis-Hastings transitions on iteration 0
+and 10 on every later iteration, so step 0 is not comparable with the rest of
+the series. This is documented rather than fixed: splitting burn-in out would
+need a separate sampler phase type, and nothing consumes one today. Treat step 0
+as an outlier when reading the series, or drop it.
 
 An iteration that applied its optimizer update emits `UpdateCompleted` after
 the `OptimizerUpdate` scope closes; an iteration that deliberately skipped the

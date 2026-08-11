@@ -7,6 +7,7 @@ from typing import Any
 
 from tpen.artifacts import RunContext
 from tpen.callback import Event
+from tpen.sampling import SamplerStats
 
 
 class RecordingContext(RunContext):
@@ -48,7 +49,30 @@ class FakeState:
     local_energy: Any = None
     loss: Any = None
     wavefunction_output: Any = None
-    sampler_stats: dict[str, Any] = field(default_factory=dict)
+    sampler_stats: SamplerStats | None = None
+
+
+def make_sampler_stats(
+    *,
+    acceptance_rate: float = 0.5,
+    n_walkers: int = 8,
+    burn_in: int = 0,
+    n_steps: int = 1,
+    proposal_scale: float = 0.1,
+    geometry: dict[str, float] | None = None,
+    seed: int | None = None,
+) -> SamplerStats:
+    """Build a `SamplerStats` record with test-friendly defaults."""
+
+    return SamplerStats(
+        acceptance_rate=acceptance_rate,
+        n_walkers=n_walkers,
+        burn_in=burn_in,
+        n_steps=n_steps,
+        proposal_scale=proposal_scale,
+        geometry={} if geometry is None else geometry,
+        seed=seed,
+    )
 
 
 def step_event(context: Any, state: Any, step: int | None = None) -> Event:

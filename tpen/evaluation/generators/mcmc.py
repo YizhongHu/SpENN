@@ -42,9 +42,11 @@ class MCMCGenerator:
         if self.max_samples is not None and self.max_samples >= 0:
             batch = _slice_batch(batch, 0, min(self.max_samples, batch.batch_size))
         sample_index = torch.arange(batch.batch_size, device=batch.device)
+        # The typed SamplerStats record is stored as-is; flattening to metric
+        # names is owned by the record and happens at the summary edge.
         metadata: dict[str, Any] = {
             "sample_index": sample_index,
-            "sampler_stats": dict(sampler_stats),
+            "sampler_stats": sampler_stats,
         }
         if self.seed is not None:
             metadata["seed"] = self.seed
