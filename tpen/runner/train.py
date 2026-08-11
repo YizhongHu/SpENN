@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tpen.artifacts import RunContext, RunResult
-from tpen.checkpoint import restore_checkpoint_with_events
+from tpen.checkpoint import CheckpointRestored, restore_checkpoint_with_events
 from tpen.training.optim import make_optimizer
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
@@ -81,6 +81,18 @@ class Train(Runner):
                 emit=self.emit,
             )
             self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
+            # Typed counterpart, carrying the report itself rather than a
+            # flattened mapping, exactly as `tpen.runner.Evaluate` does at its
+            # own restore. No callback subscribes it; its consumer is the
+            # durable occurrence record (D3).
+            #
+            # Without this line a *training* resume records its restored
+            # checkpoint identity only in the legacy string channel, so a
+            # training run's `completed_updates` -- the counter that identifies
+            # which model version it continues -- never reaches
+            # ``occurrences.jsonl`` and would be lost outright when the string
+            # path is deleted.
+            context.emit(CheckpointRestored(report=report))
 
         self.emit("train_start", context)
         final_state = self.trainer.fit(
