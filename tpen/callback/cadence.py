@@ -1,9 +1,17 @@
-"""Occurrence-count cadence primitives for typed callback subscriptions."""
+"""Cadence primitives for typed callback subscriptions.
+
+Two coordinates are available, and choosing between them is a correctness
+decision rather than a style one. `Cadence` counts `tpen.events.Occurrence`
+values, which are run-local. `StepCadence` counts a domain's own durable step,
+which survives a checkpoint restore.
+"""
 
 from __future__ import annotations
 
 import random
+from collections.abc import MutableMapping
 from dataclasses import dataclass
+from typing import Any
 
 from tpen.events import Subscription
 
@@ -91,6 +99,168 @@ class CadenceGate:
 
 
 @dataclass(frozen=True)
+class StepCadence:
+    """Schedule keyed on a domain's DURABLE step coordinate.
+
+    This is the sibling of `Cadence`, and the difference between them is the
+    coordinate they count, not the arithmetic they apply.
+
+    `Cadence` gates on `tpen.events.Occurrence.count`, which is run-local: it
+    restarts at 1 after a checkpoint restore, so a resumed run gated on it fires
+    on a different schedule than an uninterrupted one. `StepCadence` gates on
+    the durable step the emitting domain carries on its own typed operation, so
+    the two runs agree. `tpen.callback.Checkpoint` avoids the same trap on the
+    legacy path by gating on the durable ``completed_updates`` counter.
+
+    The window reproduces the legacy string path's (`_CallbackCore.should_run`)
+    exactly, so migrating a callback off that path cannot move which steps it
+    fires on: a callback is admitted when ``step >= start`` and
+    ``(step - start) % every_n == 0``, subject to ``max_calls`` and a
+    ``probability`` draw applied in that order.
+
+    Parameters
+    ----------
+    every_n : int, optional
+        Interval between eligible durable steps.
+    start : int, optional
+        First eligible durable step. Zero-based, because trainer steps are.
+        This is the one place `StepCadence` differs from `Cadence`, whose
+        one-based occurrence counts start at 1.
+    max_calls : int or None, optional
+        Maximum admitted steps across the whole run.
+    probability : float, optional
+        Admission probability after step-window filtering.
+    seed : int or None, optional
+        Seed for the callback-local probability stream. Kept separate from any
+        seed a callback's injected collaborators use, so scheduling randomness
+        never perturbs their streams.
+    """
+
+    every_n: int = 1
+    start: int = 0
+    max_calls: int | None = None
+    probability: float = 1.0
+    seed: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.every_n, int) or isinstance(self.every_n, bool):
+            raise TypeError("every_n must be an integer")
+        if self.every_n < 1:
+            raise ValueError(f"every_n must be at least 1, got {self.every_n}")
+        if not isinstance(self.start, int) or isinstance(self.start, bool):
+            raise TypeError("start must be an integer")
+        if self.max_calls is not None:
+            if not isinstance(self.max_calls, int) or isinstance(self.max_calls, bool):
+                raise TypeError("max_calls must be an integer or None")
+            if self.max_calls < 0:
+                raise ValueError(f"max_calls must be non-negative, got {self.max_calls}")
+        # The legacy path validated this in `_CallbackCore.__init__`. A migrated
+        # callback routes `probability` here instead, so the check has to move
+        # with it or an out-of-range value would silently stop being rejected.
+        if not 0.0 <= self.probability <= 1.0:
+            raise ValueError(f"probability must be in [0, 1], got {self.probability}")
+
+
+class StepCadenceGate:
+    """Mutable counter and RNG stream for one immutable `StepCadence`.
+
+    Deliberately has no ``reset``, unlike `CadenceGate`. The legacy scalar path
+    this replaces never reset its ``num_calls`` or its RNG when the owning
+    `tpen.artifacts.RunContext` identity changed, and a migration that added a
+    reset would change when a reused callback instance fires. Reusing one
+    instance across two contexts happens in tests, not in production, where
+    Hydra builds a fresh callback per run.
+
+    Parameters
+    ----------
+    cadence : StepCadence
+        Immutable scheduling values owned by this gate.
+    """
+
+    def __init__(self, cadence: StepCadence) -> None:
+        if not isinstance(cadence, StepCadence):
+            raise TypeError(f"cadence must be StepCadence, got {type(cadence).__name__}")
+        self.cadence = cadence
+        self.num_calls = 0
+        self._rng = random.Random(cadence.seed)
+
+    def should_run(self, step: int) -> bool:
+        """Return whether the domain's durable ``step`` is admitted.
+
+        Parameters
+        ----------
+        step : int
+            Durable zero-based step read from the emitting domain's typed
+            operation -- never from a mutable state object, whose value fields
+            are stale at any boundary above their assignment.
+        """
+
+        cadence = self.cadence
+        if cadence.max_calls is not None and self.num_calls >= cadence.max_calls:
+            return False
+        if step < cadence.start or (step - cadence.start) % cadence.every_n != 0:
+            return False
+        if not self._draw():
+            return False
+        # Counted only on admission, matching the legacy path, where
+        # ``num_calls`` advanced in `handle` and only for a delivered event.
+        self.num_calls += 1
+        return True
+
+    def _draw(self) -> bool:
+        """Apply the probability gate using the callback-local RNG."""
+
+        probability = self.cadence.probability
+        # The RNG is consumed only for a genuinely probabilistic schedule, so a
+        # fully-scheduled callback draws nothing and its stream stays untouched.
+        if probability >= 1.0:
+            return True
+        if probability <= 0.0:
+            return False
+        return self._rng.random() < probability
+
+
+def pop_step_cadence(kwargs: MutableMapping[str, Any]) -> StepCadence:
+    """Consume the five legacy scheduling scalars from ``kwargs``.
+
+    A callback migrated off the legacy string path keeps the option names its
+    configs already spell -- ``every_n_steps``, ``start_step``, ``max_calls``,
+    ``probability``, ``seed`` -- but routes them to a durable step window
+    instead of to `_CallbackCore`'s trigger path. Exactly those five named keys
+    are removed; nothing else in ``kwargs`` is read.
+
+    Parameters
+    ----------
+    kwargs : MutableMapping
+        Constructor keywords, mutated in place.
+
+    Returns
+    -------
+    StepCadence
+        Durable-step schedule equivalent to the legacy scalar window.
+    """
+
+    every_n_steps = kwargs.pop("every_n_steps", None)
+    max_calls = kwargs.pop("max_calls", None)
+    start_step = int(kwargs.pop("start_step", 0))
+    return StepCadence(
+        # ``None`` meant "no window" on the legacy path. Trainer steps are
+        # non-negative, so a window of every step from 0 admits the same set.
+        every_n=1 if every_n_steps is None else int(every_n_steps),
+        # The legacy path guarded its WHOLE window, ``start_step`` included,
+        # behind ``if every_n_steps is not None``, so a ``start_step`` set
+        # without an ``every_n_steps`` was silently inert. That is preserved
+        # rather than repaired: this migration must not move which steps a
+        # callback fires on, and no shipped config sets one without the other.
+        # Dropping this line is the whole fix, if that quirk is ever ruled a bug.
+        start=0 if every_n_steps is None else start_step,
+        max_calls=None if max_calls is None else int(max_calls),
+        probability=float(kwargs.pop("probability", 1.0)),
+        seed=kwargs.pop("seed", None),
+    )
+
+
+@dataclass(frozen=True)
 class SubscriptionGroup:
     """Selectors sharing one optional occurrence cadence decision.
 
@@ -144,6 +314,9 @@ def _subscriptions_overlap(first: Subscription, second: Subscription) -> bool:
 __all__ = [
     "Cadence",
     "CadenceGate",
+    "StepCadence",
+    "StepCadenceGate",
     "SubscriptionGroup",
+    "pop_step_cadence",
     "validate_subscription_groups",
 ]

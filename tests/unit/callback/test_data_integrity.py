@@ -7,12 +7,18 @@ import torch
 
 from tpen.callback import DataIntegrity
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
-from tests.unit.callback.support import FakeState, RecordingContext, step_event
+from tpen.training.state import TrainerState
+from tests.unit.callback.support import (
+    RecordingContext,
+    deliver_completed_iteration,
+    training_state,
+)
+
+STEP = 1
 
 
-def _finite_state() -> FakeState:
-    return FakeState(
-        step=1,
+def _finite_state() -> TrainerState:
+    return training_state(
         batch=ElectronBatch(
             positions=torch.zeros(4, 2, 3, dtype=torch.float64),
             spins=torch.tensor([[1.0, -1.0]] * 4, dtype=torch.float64),
@@ -26,14 +32,14 @@ def _finite_state() -> FakeState:
     )
 
 
-def _handle(callback: DataIntegrity, state: FakeState) -> RecordingContext:
+def _handle(callback: DataIntegrity, state: TrainerState) -> RecordingContext:
     context = RecordingContext()
-    callback.handle(step_event(context, state))
+    deliver_completed_iteration(callback, context, state, step=STEP)
     return context
 
 
 def test_passes_on_finite_state() -> None:
-    context = _handle(DataIntegrity(["step_end"], fail_fast=True), _finite_state())
+    context = _handle(DataIntegrity(fail_fast=True), _finite_state())
 
     metrics = context.latest("checks/data_integrity")
     assert metrics["passed"] is True
@@ -57,7 +63,7 @@ def test_typed_output_validation_failure_is_reported() -> None:
         spins=torch.tensor([[1.0, -1.0]] * 3, dtype=torch.float64),
     )
 
-    context = _handle(DataIntegrity(["step_end"], fail_fast=False), state)
+    context = _handle(DataIntegrity(fail_fast=False), state)
 
     metrics = context.latest("checks/data_integrity")
     assert metrics["output_validated"] is False
@@ -70,8 +76,8 @@ def test_counts_disambiguate_empty_from_all_nonfinite() -> None:
     empty = _finite_state()
     empty.local_energy = torch.empty(0, dtype=torch.float64)
 
-    nan_metrics = _handle(DataIntegrity(["step_end"], fail_fast=False), all_nan).latest("checks/data_integrity")
-    empty_metrics = _handle(DataIntegrity(["step_end"], fail_fast=False), empty).latest("checks/data_integrity")
+    nan_metrics = _handle(DataIntegrity(fail_fast=False), all_nan).latest("checks/data_integrity")
+    empty_metrics = _handle(DataIntegrity(fail_fast=False), empty).latest("checks/data_integrity")
 
     # Both share fraction 1.0 but the counts tell them apart.
     assert nan_metrics["local_energy_nonfinite_fraction"] == 1.0
@@ -89,7 +95,7 @@ def test_valid_batch_logs_typed_validity_metrics() -> None:
         spins=torch.tensor([[1.0, -1.0]] * 4, dtype=torch.float64),
     )
 
-    metrics = _handle(DataIntegrity(["step_end"], fail_fast=False), state).latest("checks/data_integrity")
+    metrics = _handle(DataIntegrity(fail_fast=False), state).latest("checks/data_integrity")
 
     assert metrics["batch_validated"] is True
     assert metrics["batch_positions_nonfinite_fraction"] == 0.0
@@ -101,7 +107,7 @@ def test_fails_on_nan_local_energy() -> None:
     state.local_energy = torch.tensor([1.0, float("nan"), 3.0, 4.0], dtype=torch.float64)
 
     with pytest.raises(RuntimeError, match="local_energy_nonfinite_fraction"):
-        _handle(DataIntegrity(["step_end"], fail_fast=True), state)
+        _handle(DataIntegrity(fail_fast=True), state)
 
 
 def test_fails_on_inf_logabs() -> None:
@@ -112,7 +118,7 @@ def test_fails_on_inf_logabs() -> None:
     )
 
     with pytest.raises(RuntimeError, match="logabs_nonfinite_fraction"):
-        _handle(DataIntegrity(["step_end"], fail_fast=True), state)
+        _handle(DataIntegrity(fail_fast=True), state)
 
 
 def test_fails_on_nonfinite_loss() -> None:
@@ -120,7 +126,7 @@ def test_fails_on_nonfinite_loss() -> None:
     state.loss = torch.tensor(float("nan"), dtype=torch.float64)
 
     with pytest.raises(RuntimeError, match="loss is not finite"):
-        _handle(DataIntegrity(["step_end"], fail_fast=True), state)
+        _handle(DataIntegrity(fail_fast=True), state)
 
 
 def test_strict_sign_values_catches_invalid_sign() -> None:
@@ -130,7 +136,7 @@ def test_strict_sign_values_catches_invalid_sign() -> None:
         sign=torch.tensor([1.0, 0.5, -1.0, 1.0], dtype=torch.float64),
     )
 
-    context = _handle(DataIntegrity(["step_end"], fail_fast=False, strict_sign_values=True), state)
+    context = _handle(DataIntegrity(fail_fast=False, strict_sign_values=True), state)
 
     metrics = context.latest("checks/data_integrity")
     assert metrics["sign_invalid_fraction"] == pytest.approx(0.25)
@@ -141,7 +147,7 @@ def test_logs_nonfinite_fractions_without_raising_when_not_fail_fast() -> None:
     state = _finite_state()
     state.local_energy = torch.tensor([1.0, float("inf"), float("nan"), 4.0], dtype=torch.float64)
 
-    context = _handle(DataIntegrity(["step_end"], fail_fast=False), state)
+    context = _handle(DataIntegrity(fail_fast=False), state)
 
     metrics = context.latest("checks/data_integrity")
     assert metrics["local_energy_nonfinite_fraction"] == pytest.approx(0.5)
@@ -153,8 +159,34 @@ def test_batch_without_validate_method_fails() -> None:
     # A plain dict is not a typed batch: it exposes no validate() contract.
     state.batch = {"positions": torch.tensor([[float("nan")]], dtype=torch.float64)}
 
-    context = _handle(DataIntegrity(["step_end"], fail_fast=False), state)
+    context = _handle(DataIntegrity(fail_fast=False), state)
 
     metrics = context.latest("checks/data_integrity")
     assert metrics["batch_validated"] is False
     assert metrics["passed"] is False
+
+
+def test_logged_step_comes_from_the_event_not_the_state() -> None:
+    # See the matching note in test_gradient_stats.py: `TrainerState` value
+    # fields are stale at any boundary above their end-of-body assignment, so
+    # the coordinate has to ride the typed event.
+    state = _finite_state()
+    state.step = -1
+    context = RecordingContext()
+
+    deliver_completed_iteration(DataIntegrity(), context, state, step=6)
+
+    assert [r["step"] for r in context.by_namespace("checks/data_integrity")] == [6]
+
+
+def test_cadence_gates_on_the_durable_step_not_the_occurrence_count() -> None:
+    # A run-local `Occurrence.count` restarts after a checkpoint restore; the
+    # durable step does not. Holding the count fixed proves which one gates.
+    callback = DataIntegrity(every_n_steps=5)
+    context = RecordingContext()
+    state = _finite_state()
+
+    for step in range(12):
+        deliver_completed_iteration(callback, context, state, step=step, count=1)
+
+    assert [r["step"] for r in context.by_namespace("checks/data_integrity")] == [0, 5, 10]

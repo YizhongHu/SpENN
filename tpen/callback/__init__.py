@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from .base import Callback, Event, StatefulCallback
-from .cadence import Cadence, CadenceGate, SubscriptionGroup
+from .cadence import Cadence, CadenceGate, StepCadence, StepCadenceGate, SubscriptionGroup
 from .checkpoint import Checkpoint
-from .equivariance import RuntimeEquivariance
 from .evaluation import ArtifactIndex, FailureLog
 from .metadata import Metadata
 from .snapshot import ConfigSnapshot, ResolvedConfigSnapshot
@@ -13,8 +12,19 @@ from .status import Status, configure_terminal_logging
 
 
 def __getattr__(name: str) -> object:
-    """Load torch-dependent callback classes only when they are requested."""
+    """Load torch-dependent callback classes only when they are requested.
 
+    A `StatefulCallback` declaring ``state_type = TrainerState`` has to import
+    that class at class-creation time, and importing anything from
+    ``tpen.training`` runs that package's ``__init__``, which pulls in torch.
+    Every such callback therefore has to be loaded lazily to keep
+    ``import tpen.callback`` torch-free.
+    """
+
+    if name == "RuntimeEquivariance":
+        from .equivariance import RuntimeEquivariance
+
+        return RuntimeEquivariance
     if name == "DataIntegrity":
         from .health import DataIntegrity
 
@@ -79,6 +89,8 @@ __all__ = [
     "SamplerHealth",
     "StatefulCallback",
     "Status",
+    "StepCadence",
+    "StepCadenceGate",
     "SubscriptionGroup",
     "TrainPhaseTiming",
     "TrainStepTiming",
