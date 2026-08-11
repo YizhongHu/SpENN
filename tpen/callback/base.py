@@ -368,18 +368,36 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
         - a stateless group on a class that never overrode
           ``handle_stateless_occurrence_impl``, whose deliveries would land in
           the inherited no-op and disappear;
-        - a plan whose groups are ALL stateless, which declares a ``state_type``
+        - a plan whose groups are ALL stateless ON A CLASS THAT ALSO NEVER
+          OVERRODE ``handle_occurrence_impl``, which declares a ``state_type``
           that can never route anything and should be a `Callback` instead.
 
-        A class with no groups at all is untouched: `tpen.callback.Status`
-        subscribes nothing when its training line is off, and that is not the
-        same claim.
+        THE SECOND CHECK IS NARROWER THAN IT FIRST LANDED, and the qualifier is
+        load-bearing rather than defensive. A group plan is per-INSTANCE while
+        ``state_type`` is per-CLASS, and `tpen.callback.Status` is the first
+        class whose plan varies by constructor argument: with ``train_lines``
+        off it declares only the stateless run-lifecycle group, yet the same
+        class with ``train_lines`` on routes `tpen.training.state.TrainerState`
+        through ``handle_occurrence_impl``. "Make it a `Callback` instead" is
+        false advice there, and refusing the instance would have made the
+        shipped default of that callback unconstructible.
+
+        Asking whether the CLASS overrode ``handle_occurrence_impl`` asks the
+        question the check was written for -- can this ``state_type`` ever route
+        a delivery? -- at the granularity where the answer lives. A class that
+        never overrode it cannot consume its domain's state under any
+        configuration, which is exactly the wiring error being caught.
+
+        A class with no groups at all is untouched, which is a third claim
+        again: it subscribes nothing rather than subscribing state-free.
         """
 
         stateless = tuple(group for group in groups if group.stateless)
         if not stateless:
             return
-        if len(stateless) == len(groups):
+        if len(stateless) == len(groups) and (
+            type(self).handle_occurrence_impl is StatefulCallback.handle_occurrence_impl
+        ):
             raise TypeError(
                 f"every subscription group on {type(self).__name__} is stateless, so "
                 "its state_type can never route a delivery; make it a Callback"

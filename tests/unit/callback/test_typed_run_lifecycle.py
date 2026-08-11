@@ -15,17 +15,17 @@ end-to-end tests drive the real `run_from_config` for that reason, and they are
 the only thing standing between that mistake and a run that quietly stops
 recording itself.
 
-Also pinned here: `tpen.callback.Status` and `tpen.callback.ArtifactIndex` keep
-their residual legacy triggers. The MEASURED reason they had to, when this slice
-landed, was that both are `StatefulCallback`s, the run lifecycle carries no
+Also pinned here: `tpen.callback.Status` and `tpen.callback.ArtifactIndex` now
+have NO legacy triggers left. The MEASURED reason they once had to, when this
+slice landed, was that both are `StatefulCallback`s, the run lifecycle carries no
 domain state, and the dispatcher's ``isinstance(state, callback.state_type)``
 branch therefore skipped them at every run-level boundary -- silently.
 
 Item ``24f91145`` removed that constraint by moving the gate from per-callback to
 per-GROUP, so ``test_a_state_free_run_event_now_reaches_a_stateful_callback``
-records the same scenario with the opposite outcome. The two triggers survive
-only because the mechanism landed with zero consumers; their migration is a
-separate slice.
+records the same scenario with the opposite outcome, and the two callbacks
+consumed the mechanism directly afterwards. Their own delivery tests live in
+``test_status.py`` and ``test_typed_evaluation_delivery.py``.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from omegaconf import OmegaConf
 from tpen.artifacts import RunContext, RunResult
 from tpen.callback import (
     ArtifactIndex,
+    Callback,
     ConfigSnapshot,
     EvaluationTiming,
     Metadata,
@@ -509,19 +510,70 @@ def test_a_state_free_run_event_now_reaches_a_stateful_callback(tmp_path: Path) 
     assert callback.domain_seen == [EvaluationStarted()]
 
 
-def test_status_and_artifact_index_keep_exactly_their_residual_triggers() -> None:
-    """The residual legacy surface, pinned so it can only shrink deliberately.
+def test_status_is_reached_at_every_run_boundary_by_the_real_dispatcher(
+    tmp_path: Path,
+) -> None:
+    """`Status` through `RunContext`, which is what its whole artifact depends on.
 
-    These two are no longer BLOCKED from migrating -- ``24f91145`` delivered the
-    mechanism they need. They are simply not migrated yet: that mechanism landed
-    with zero consumers, the shape PR #174 used for ADR-E008 itself, so the
-    migration is its own reviewable slice. This pin stays until then, because
-    ``status.json`` and the empty-suite ``diagnostics/index.json`` are the
-    artifacts at stake and dropping a trigger early would delete them silently.
+    Required by the ruling on item ``62593af4``: the delivery itself is the
+    thing that can silently stop happening, and only the real dispatcher can
+    show it happening. `Status` is a `StatefulCallback`, so this is the path
+    where `_dispatch_occurrence` hands it ``state=None`` and its group's
+    ``stateless`` declaration is what keeps the occurrence from being dropped.
+
+    Three separate runs rather than one sequence, because a run reaches at most
+    one terminal boundary and a single ``status.json`` would only show the last.
     """
 
-    assert Status().triggers == ("run_start", "run_end", "exception")
-    assert ArtifactIndex().triggers == ("run_end",)
+    statuses = []
+    for name, event in (
+        ("started", RunStarted()),
+        ("completed", RunCompleted()),
+        ("failed", RunFailed(exception_type="ValueError", exception_message="boom")),
+    ):
+        output_path = tmp_path / f"{name}.json"
+        status = Status(output_path=output_path, terminal=False)
+        context = make_run_context(tmp_path / name, callbacks=[status])
+        context.emit(RunStarted())
+        if not isinstance(event, RunStarted):
+            context.emit(event)
+        statuses.append(json.loads(output_path.read_text()))
+
+    assert [entry["status"] for entry in statuses] == ["running", "completed", "failed"]
+    assert statuses[2]["exception_type"] == "ValueError"
+    assert statuses[2]["exception_message"] == "boom"
+
+
+def test_no_callback_anywhere_still_answers_a_run_level_string() -> None:
+    """The precondition item ``85870732`` deletes the string path under.
+
+    `Status` and `ArtifactIndex` were the LAST two consumers of a run-level
+    string anywhere in `tpen`; every other callback reached ``triggers=()`` in
+    an earlier slice. With them migrated, ``run_start``, ``run_end``,
+    ``run_failed`` and ``exception`` are emitted to nobody at all.
+
+    Asserted over every callback class rather than over those two, because the
+    claim that makes the deletion safe is the universal one, and a NEW callback
+    reaching for a run-level string is exactly what would quietly falsify it.
+    """
+
+    from tpen import callback as callback_package
+
+    run_level = {"run_start", "run_end", "run_failed", "exception"}
+    offenders = {}
+    for name in callback_package.__all__:
+        attribute = getattr(callback_package, name)
+        if not isinstance(attribute, type) or not issubclass(
+            attribute, (Callback, StatefulCallback)
+        ):
+            continue
+        answered = run_level & {
+            method[len("on_") :] for method in dir(attribute) if method.startswith("on_")
+        }
+        if answered:
+            offenders[name] = sorted(answered)
+
+    assert offenders == {}
 
 
 # --------------------------------------------------------------------------
@@ -539,6 +591,12 @@ _MIGRATED: list[tuple[str, Any]] = [
     ("RunTiming", RunTiming),
     ("ResourceUsage", ResourceUsage),
     ("EvaluationTiming", lambda **kw: EvaluationTiming(clock=FakeClock([]), **kw)),
+    # The last two to arrive, and the only `StatefulCallback`s in the table.
+    # They belong in it on exactly the same terms as the six above: a stateless
+    # subscription group let them answer the run lifecycle without a string, so
+    # there is no longer any sense in which they are a special case.
+    ("Status", Status),
+    ("ArtifactIndex", ArtifactIndex),
 ]
 
 

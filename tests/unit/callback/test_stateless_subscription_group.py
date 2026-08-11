@@ -369,7 +369,12 @@ def test_a_plain_callback_rejects_a_stateless_group() -> None:
 
 
 def test_an_all_stateless_stateful_callback_is_rejected() -> None:
-    """A ``state_type`` that can never route a delivery is a wiring error."""
+    """A ``state_type`` that can never route a delivery is a wiring error.
+
+    "Can never" is a fact about the CLASS: this one overrides no
+    ``handle_occurrence_impl``, so no configuration of it could consume
+    ``_OwnState``, and it should have been a `Callback`.
+    """
 
     class _AllStateless(StatefulCallback[_OwnState]):
         state_type: ClassVar[type[DomainState]] = _OwnState
@@ -390,6 +395,91 @@ def test_an_all_stateless_stateful_callback_is_rejected() -> None:
 
     with pytest.raises(TypeError, match="make it a Callback"):
         _AllStateless()
+
+
+def test_an_all_stateless_plan_is_allowed_when_the_class_can_route_state() -> None:
+    """The group plan is per-INSTANCE; ``state_type`` is per-CLASS.
+
+    `tpen.callback.Status` is why this distinction had to be drawn. With
+    ``train_lines`` off it declares only the state-free run-lifecycle group, yet
+    the same class with ``train_lines`` on routes
+    `tpen.training.state.TrainerState` through ``handle_occurrence_impl``.
+    Judging the plan alone would have made the SHIPPED DEFAULT of that callback
+    unconstructible, and "make it a `Callback` instead" is false advice for a
+    class that genuinely observes a domain.
+
+    Overriding ``handle_occurrence_impl`` is the class-level evidence that the
+    ``state_type`` can route something, so it is what the check asks about.
+    """
+
+    class _StatefulByConfiguration(StatefulCallback[_OwnState]):
+        state_type: ClassVar[type[DomainState]] = _OwnState
+
+        def __init__(self, *, domain_group: bool) -> None:
+            super().__init__(
+                typed_groups=(
+                    (SubscriptionGroup(selectors=(Subscription.of(_IterationDone),)),)
+                    if domain_group
+                    else ()
+                )
+                + (
+                    SubscriptionGroup(
+                        selectors=(Subscription.of(RunStarted),), stateless=True
+                    ),
+                )
+            )
+            self.seen: list[TypedEvent] = []
+
+        def handle_occurrence_impl(
+            self,
+            occurrence: Occurrence[TypedEvent],
+            context: RunContext,
+            state: _OwnState,
+        ) -> None:
+            del context, state
+            self.seen.append(occurrence.event)
+
+        def handle_stateless_occurrence_impl(
+            self, occurrence: Occurrence[TypedEvent], context: RunContext
+        ) -> None:
+            del context
+            self.seen.append(occurrence.event)
+
+    assert _StatefulByConfiguration(domain_group=False) is not None
+    assert _StatefulByConfiguration(domain_group=True) is not None
+
+
+def test_an_all_stateless_plan_still_needs_the_stateless_hook() -> None:
+    """Narrowing the all-stateless check must not open the silent-drop hole.
+
+    A class that overrides ``handle_occurrence_impl`` now passes the
+    all-stateless check, so the "forgot the hook" check is the only thing left
+    catching an all-stateless plan whose deliveries would land in the inherited
+    no-op.
+    """
+
+    class _RoutesStateButForgotTheHook(StatefulCallback[_OwnState]):
+        state_type: ClassVar[type[DomainState]] = _OwnState
+
+        def __init__(self) -> None:
+            super().__init__(
+                typed_groups=(
+                    SubscriptionGroup(
+                        selectors=(Subscription.of(RunStarted),), stateless=True
+                    ),
+                )
+            )
+
+        def handle_occurrence_impl(
+            self,
+            occurrence: Occurrence[TypedEvent],
+            context: RunContext,
+            state: _OwnState,
+        ) -> None:
+            del occurrence, context, state
+
+    with pytest.raises(TypeError, match="silently discarded"):
+        _RoutesStateButForgotTheHook()
 
 
 def test_a_stateless_group_without_its_hook_is_rejected() -> None:
@@ -421,10 +511,13 @@ def test_a_stateless_group_without_its_hook_is_rejected() -> None:
 
 
 def test_a_stateful_callback_with_no_groups_at_all_still_constructs() -> None:
-    """`Status(train_lines=False)` subscribes nothing, which is a different claim.
+    """"No groups" is a third claim again: it subscribes nothing at all.
 
-    "No groups" is not "no stateful group": rejecting it would break the shipped
-    default of a callback this change exists to unblock.
+    This described `Status(train_lines=False)` when the mechanism landed with no
+    consumers. That instance now declares the state-free run-lifecycle group, so
+    the case it guards is a hypothetical one -- kept because the check above it
+    reads ``if not stateless: return`` and an empty plan must fall through it
+    rather than be judged by it.
     """
 
     class _NoGroups(StatefulCallback[_OwnState]):

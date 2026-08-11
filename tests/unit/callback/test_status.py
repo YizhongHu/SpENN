@@ -9,8 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tpen.callback import Event, Status, configure_terminal_logging
+from tpen.callback import Status, configure_terminal_logging
 from tpen.callback.status import _format_status_box
+from tpen.events import Occurrence
+from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tests.unit.callback.support import (
     RecordingContext,
     deliver_completed_iteration,
@@ -65,13 +67,27 @@ def _context(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(metadata=metadata, now_iso=lambda: "2026-06-11T10:00:00-04:00")
 
 
+def _deliver_run_event(callback: Status, context, event) -> None:
+    """Hand one run-lifecycle occurrence to ``callback``'s stateless route.
+
+    ``state=None``, because that is what the run lifecycle carries and what
+    `tpen.artifacts.RunContext._dispatch_occurrence` passes for it. Delivering
+    the same occurrence through the REAL dispatcher, rather than through this
+    context stand-in, is covered in ``test_typed_run_lifecycle.py``; here the
+    stand-in is what lets these tests assert rendered box content without
+    building a run directory.
+    """
+
+    callback.handle_occurrence(Occurrence(event=event, count=1), context, None)
+
+
 def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     callback = Status(output_path=tmp_path / "status.json", color="never")
     context = _context(tmp_path)
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(Event(name="run_start", context=context))
-        callback.handle(Event(name="run_end", context=context))
+        _deliver_run_event(callback, context, RunStarted())
+        _deliver_run_event(callback, context, RunCompleted())
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("TPEN Run Status" in message for message in messages)
@@ -178,7 +194,7 @@ def test_status_terminal_false_suppresses_terminal_output(
     )
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(Event(name="run_start", context=_context(tmp_path)))
+        _deliver_run_event(callback, _context(tmp_path), RunStarted())
 
     assert not caplog.records
     assert json.loads((tmp_path / "status.json").read_text())["status"] == "running"
@@ -217,7 +233,7 @@ def test_status_max_line_width_option_controls_start_boxes(
     )
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(Event(name="run_start", context=context))
+        _deliver_run_event(callback, context, RunStarted())
 
     box_lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith(("+", "|"))]
     assert box_lines
@@ -252,24 +268,133 @@ def test_status_rejects_too_small_max_line_width() -> None:
         Status(max_line_width=39)
 
 
-def test_status_keeps_only_the_three_run_level_legacy_triggers() -> None:
-    """The residual legacy surface, pinned so it can only shrink deliberately.
+def test_status_records_a_failed_run_from_the_failure_boundary(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """THE failure this migration could most easily have shipped in silence.
 
-    ``run_start``, ``run_end``, and ``exception`` are the only thing that writes
-    ``status.json``. They are hardcoded rather than configured because ADR-E002
-    forbids a config from naming events, and the training line that ``step_end``
-    used to select is now the ``train_lines`` option.
+    ``run_end`` and ``exception`` were two strings, and a migration that mapped
+    both onto `RunCompleted` -- or that simply forgot `RunFailed` while adding
+    the other two selectors -- would leave every test that emits a SUCCESS path
+    green while ``status.json`` silently stopped recording failed runs. Runs
+    fail on a cluster far more often than anyone reads the passing tests, so
+    that regression would have been found by a missing artifact months later.
 
-    THE REASON THEY SURVIVE CHANGED with item ``39eacd99``, which minted the
-    typed equivalents in `tpen.run_events`. They are still here because `Status`
-    is a `StatefulCallback` and the run lifecycle carries no domain state, so
-    `RunContext._dispatch_occurrence` would skip every run-level occurrence for
-    it -- silently, stopping ``status.json`` being written. See
-    ``test_typed_run_lifecycle.test_a_state_free_run_event_reaches_no_stateful_callback``.
+    Nothing but `RunFailed` is delivered here, so the assertion cannot be
+    satisfied by a completion path.
     """
 
-    callback = Status()
+    callback = Status(output_path=tmp_path / "status.json", color="never")
+    context = _context(tmp_path)
 
-    assert callback.triggers == ("run_start", "run_end", "exception")
-    assert not hasattr(callback, "on_step_end")
-    assert not hasattr(callback, "on_evaluate_end")
+    with caplog.at_level(logging.INFO, logger="spenn.status"):
+        _deliver_run_event(callback, context, RunStarted())
+        _deliver_run_event(
+            callback,
+            context,
+            RunFailed(exception_type="ValueError", exception_message="boom in the loop"),
+        )
+
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["status"] == "failed"
+    assert status["exception_type"] == "ValueError"
+    assert status["exception_message"] == "boom in the loop"
+    assert status["end_time"] == "2026-06-11T10:00:00-04:00"
+    # ``current_event`` names a moment in a durable artifact rather than
+    # selecting an event, so it keeps the value shipped runs already carry.
+    assert status["current_event"] == "exception"
+    assert caplog.records[-1].getMessage() == (
+        f"[run] failed dir={context.metadata.run_dir} "
+        'exception=ValueError message="boom in the loop"'
+    )
+
+
+def test_status_writes_the_three_statuses_on_the_three_run_boundaries(tmp_path: Path) -> None:
+    """One boundary per status, and the ``current_event`` value each carries."""
+
+    callback = Status(output_path=tmp_path / "status.json", color="never", terminal=False)
+    context = _context(tmp_path)
+    written = []
+
+    for event in (
+        RunStarted(),
+        RunCompleted(),
+        RunFailed(exception_type="RuntimeError", exception_message="late"),
+    ):
+        _deliver_run_event(callback, context, event)
+        written.append(json.loads((tmp_path / "status.json").read_text()))
+
+    assert [entry["status"] for entry in written] == ["running", "completed", "failed"]
+    assert [entry["current_event"] for entry in written] == [
+        "run_start",
+        "run_end",
+        "exception",
+    ]
+    assert written[0]["end_time"] is None
+    assert [entry["start_time"] for entry in written] == ["2026-06-11T10:00:00-04:00"] * 3
+
+
+def test_status_writes_nothing_for_the_legacy_run_level_strings(tmp_path: Path) -> None:
+    """The migration MOVED the write; it did not add a second one.
+
+    A callback that kept its ``on_run_end`` while gaining the typed group would
+    write ``status.json`` twice per boundary and pass every other test in this
+    file. `_CallbackCore.handle` dispatches by name, so the check is that the
+    name resolves to nothing.
+    """
+
+    from tpen.callback import Event
+
+    callback = Status(output_path=tmp_path / "status.json", color="never")
+    context = _context(tmp_path)
+
+    for name in ("run_start", "run_end", "run_failed", "exception"):
+        callback.handle(Event(name=name, context=context))
+
+    assert not (tmp_path / "status.json").exists()
+
+
+def test_status_subscribes_the_run_lifecycle_with_the_training_line_off(
+    tmp_path: Path,
+) -> None:
+    """The shipped default writes ``status.json``, and its plan is all-stateless.
+
+    ``Status(train_lines=False)`` is what every shipped config builds, and after
+    this migration its ONLY subscription group is the state-free run-lifecycle
+    one. `StatefulCallback._validate_typed_groups` refuses an all-stateless plan
+    on a class that can never route its ``state_type``; this class can, through
+    ``handle_occurrence_impl``, so the instance must construct and be delivered
+    to. Both halves are asserted, because a construction that succeeded while
+    delivering nothing is the exact silence this callback keeps falling into.
+    """
+
+    callback = Status(output_path=tmp_path / "status.json", color="never", terminal=False)
+
+    groups = [state.group for state in callback._typed_group_states]
+    assert [group.stateless for group in groups] == [True]
+
+    _deliver_run_event(callback, _context(tmp_path), RunStarted())
+    assert json.loads((tmp_path / "status.json").read_text())["status"] == "running"
+
+
+def test_status_keeps_its_domain_group_and_its_run_group_apart(tmp_path: Path) -> None:
+    """``train_lines=True`` adds a group; it does not replace the run-level one.
+
+    Both routes on one instance is the whole point of the ADR-E008 amendment,
+    and the failure mode is one group quietly shadowing the other.
+    """
+
+    callback = Status(
+        output_path=tmp_path / "status.json",
+        color="never",
+        terminal=False,
+        train_lines=True,
+    )
+
+    groups = [state.group for state in callback._typed_group_states]
+    assert [group.stateless for group in groups] == [False, True]
+
+    _deliver_run_event(callback, _context(tmp_path), RunCompleted())
+    assert json.loads((tmp_path / "status.json").read_text())["status"] == "completed"
+
+    deliver_completed_iteration(callback, RecordingContext(), _train_state(), step=10)

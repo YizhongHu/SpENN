@@ -19,8 +19,9 @@ from tpen.evaluation.state import EvaluationRunState
 from tpen.events import DomainState, Ended
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription, ended
+from tpen.run_events import RunCompleted
 
-from .base import Callback, Event, StatefulCallback
+from .base import Callback, StatefulCallback
 from .cadence import SubscriptionGroup
 
 
@@ -50,29 +51,31 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            # ``run_end`` is a RUN-level string emitted by the runners. It is
-            # load-bearing exactly once: `_write` already runs after every task,
-            # so on any run with at least one task dropping this trigger would be
-            # byte-identical, but on an EMPTY suite it is the only thing that
-            # writes the ``{"tasks": []}`` index at all. Deleting a durable
-            # artifact is not a refactor (ADR-E006).
-            #
-            # Item ``39eacd99`` minted the typed equivalent
-            # (`tpen.run_events.RunCompleted`), and this trigger could not then
-            # be replaced by it: `RunContext._dispatch_occurrence` decided
-            # delivery once per CALLBACK on
-            # ``isinstance(state, callback.state_type)``, the run lifecycle
-            # carries no state, and this class is a `StatefulCallback`, so the
-            # occurrence was skipped SILENTLY and the empty index would have
-            # stopped being written. Item ``24f91145`` removed that blocker by
-            # moving the gate to the subscription group: a group may now declare
-            # `SubscriptionGroup.stateless` and be delivered through the
-            # two-argument hook while the task group above keeps its state. That
-            # mechanism landed with zero consumers, so replacing this trigger is
-            # a separate slice. Same story on `tpen.callback.Status`.
-            triggers=("run_end",),
+            triggers=(),
             typed_groups=(
                 SubscriptionGroup(selectors=(ended(EvaluationTaskRun),)),
+                # The run boundary is load-bearing exactly once: `_write`
+                # already runs after every task, so on any run with at least one
+                # task this group is byte-identical to not having it, but on an
+                # EMPTY suite it is the only thing that writes the
+                # ``{"tasks": []}`` index at all. Deleting a durable artifact is
+                # not a refactor (ADR-E006).
+                #
+                # `RunCompleted` is the faithful replacement for the ``run_end``
+                # string this used to answer, MEASURED rather than assumed. That
+                # string was emitted by the runners as the last statement of
+                # ``Train.run`` and ``Evaluate.run`` before their ``return``,
+                # never from a ``finally``, so it fired on the success path only;
+                # `RunCompleted` is emitted by the harness immediately after
+                # ``runner.run`` returns, with nothing between the two points. A
+                # group selecting `RunFailed` too would therefore write an index
+                # on crashed runs where none was written before, which is why
+                # this selects one event and `tpen.callback.Status` -- which DID
+                # answer the failure boundary, under a different string -- selects
+                # three.
+                SubscriptionGroup(
+                    selectors=(Subscription.of(RunCompleted),), stateless=True
+                ),
             ),
             **kwargs,
         )
@@ -111,10 +114,14 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
         }
         self._write(context)
 
-    def on_run_end(self, event: Event) -> None:
-        """Flush the artifact index at the end of the run."""
+    def handle_stateless_occurrence_impl(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext
+    ) -> None:
+        """Flush the artifact index at the end of a run that completed."""
 
-        self._write(event.context)
+        if not isinstance(occurrence.event, RunCompleted):
+            return
+        self._write(context)
 
     def _write(self, context: RunContext) -> None:
         path = self._path(context)
