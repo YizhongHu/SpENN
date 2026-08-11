@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ from omegaconf import OmegaConf
 
 from .artifact import resolve_checkpoint_dir
 from .hashing import checkpoint_hashes
+from .rng import apply_rng_state, require_restorable_rng_state, runtime_device
 from .schema import read_manifest
 
 RESTORE_MODES = ("none", "model_only", "train_resume")
@@ -141,11 +141,21 @@ def restore_checkpoint(
             allow_mismatch=(hash_name == "hamiltonian_config" and allow_mismatch),
         )
 
+    # The RNG payload is read and validated before anything is restored. A
+    # refused resume must leave the process unmutated, and `_load_sampler` is
+    # itself destructive: `MetropolisSampler.load_mcmc_state_dict` recreates its
+    # generator on a device mismatch -- reseeding it, or leaving it unseeded when
+    # no seed is configured -- so a refusal raised after that point would already
+    # have reset the run's dominant RNG source.
+    device = runtime_device(context)
+    rng_state = _read_rng_state(checkpoint_dir, manifest.files)
+    require_restorable_rng_state(rng_state, device, checkpoint_dir)
+
     _load_model(checkpoint_dir, manifest.files, model, strict=strict_load, context=context)
     _load_optimizer(checkpoint_dir, manifest.files, optimizer)
     _load_trainer(checkpoint_dir, manifest.files, trainer)
     _load_sampler(checkpoint_dir, manifest.files, sampler, context)
-    _load_rng(checkpoint_dir, manifest.files)
+    apply_rng_state(rng_state, device)
     return RestoreReport(
         mode=mode,
         checkpoint_dir=str(checkpoint_dir),
@@ -319,26 +329,13 @@ def _load_sampler(checkpoint_dir: Path, files: dict[str, str], sampler: Any, con
         load_state(state)
 
 
-def _load_rng(checkpoint_dir: Path, files: dict[str, str]) -> None:
+def _read_rng_state(checkpoint_dir: Path, files: dict[str, str]) -> dict[str, Any]:
+    """Read ``rng.pt`` without applying it, so provenance can be checked first."""
+
     import torch
 
     path = _required_file(checkpoint_dir, files, "rng")
-    state = torch.load(path, map_location="cpu", weights_only=False)
-    if "torch_cpu" in state:
-        torch.set_rng_state(state["torch_cpu"])
-    cuda_states = state.get("torch_cuda")
-    cuda = getattr(torch, "cuda", None)
-    if cuda_states is not None and cuda is not None and callable(getattr(cuda, "is_available", None)):
-        if cuda.is_available():
-            cuda.set_rng_state_all(cuda_states)
-    if state.get("python") is not None:
-        random.setstate(state["python"])
-    if state.get("numpy") is not None:
-        try:
-            import numpy as np
-        except ImportError:
-            return
-        np.random.set_state(state["numpy"])
+    return torch.load(path, map_location="cpu", weights_only=False)
 
 
 def _required_file(checkpoint_dir: Path, files: dict[str, str], key: str) -> Path:

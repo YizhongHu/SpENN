@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import shutil
 import socket
 import sys
@@ -18,6 +17,7 @@ from tpen import __version__ as tpen_version
 from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_latest
 from .hashing import checkpoint_hashes
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
+from .rng import rng_state_dict, runtime_device
 
 
 def save_checkpoint(
@@ -105,7 +105,10 @@ def save_checkpoint(
             files["sampler"] = "sampler.pt"
 
         if save_rng:
-            torch.save(_rng_state_dict(), tmp_dir / "rng.pt")
+            # The run's declared device is recorded with the state, so a resume
+            # onto a different device is refused instead of silently continuing
+            # on a different random stream.
+            torch.save(rng_state_dict(runtime_device(context)), tmp_dir / "rng.pt")
             files["rng"] = "rng.pt"
 
         manifest = CheckpointManifest(
@@ -176,25 +179,6 @@ def _sampler_state_dict(sampler: Any) -> Mapping[str, Any]:
     state = state_dict()
     if not isinstance(state, Mapping):
         raise TypeError("sampler.mcmc_state_dict() must return a mapping")
-    return state
-
-
-def _rng_state_dict() -> dict[str, Any]:
-    import torch
-
-    state: dict[str, Any] = {
-        "torch_cpu": torch.get_rng_state(),
-        "python": random.getstate(),
-    }
-    cuda = getattr(torch, "cuda", None)
-    if cuda is not None and callable(getattr(cuda, "is_available", None)) and cuda.is_available():
-        state["torch_cuda"] = cuda.get_rng_state_all()
-    try:
-        import numpy as np
-    except ImportError:
-        state["numpy"] = None
-    else:
-        state["numpy"] = np.random.get_state()
     return state
 
 
