@@ -84,10 +84,6 @@ train
 train/sampler
 train/perf
 
-validation
-validation/sampler
-validation/perf
-
 eval
 eval/sampler
 eval/perf
@@ -107,14 +103,33 @@ Phase meaning:
 
 ```text
 train       optimization-time metrics from the training sampler
-validation  model/protocol selection metrics computed during the training
-            lifecycle by the Validation callback, using an independent
-            validation sampler; never includes exact-reference comparisons
-eval        final held-out evaluation metrics after protocol selection;
-            the only place for eval/energy_error, eval/energy_abs_error,
-            and eval/reference_energy
+eval        evaluation metrics produced by the Evaluate runner through an
+            Evaluator; the only place for eval/energy_error,
+            eval/energy_abs_error, and eval/reference_energy
 checks/*    runtime data/numerics soundness (DataIntegrity and friends),
             not model selection
+```
+
+There is **no `validation/*` phase.** No callback emits that namespace, and
+`tests/integration/training/test_hooke_pair_smoke_training.py` asserts that no
+emitted namespace starts with `validation`. An earlier train-end validation
+callback was removed; this document described it for some time after it was
+gone.
+
+An `Evaluator`'s namespace is a **user-defined string**, not a phase the code
+infers: `EvaluationContext` has no `phase` field and `Evaluator` accepts any
+namespace, which `tests/unit/evaluation/test_namespace_is_user_defined.py`
+pins. A run stage *called* "validation" (as in
+`experiments/hooke/pair_stability_v3`) is free to log under any namespace it
+configures, and today those stages configure `namespace: eval`. If a
+configuration ever does pick `validation`, that is a name the config chose, not
+a phase this document defines.
+
+Two namespaces are composed rather than written literally:
+
+```text
+checks/equivariance/<checker_log_name>   one per configured checker
+<evaluator or task namespace>/status     suite- and task-level status flags
 ```
 
 Avoid putting hierarchy inside the key:
@@ -165,6 +180,16 @@ local_energy_n_total
 local_energy_finite_fraction
 local_energy_nonfinite_count
 
+logabs_mean
+logabs_min
+logabs_max
+nonfinite_logabs_fraction
+
+grad_norm
+param_norm
+loss_has_grad
+optimizer_step
+
 acceptance_rate
 n_walkers
 burn_in
@@ -202,9 +227,8 @@ step_time_sec
 
 Sampler geometry keys (the `position_*`/`radius_*`/`electron_distance_*`/
 `center_of_mass_rms` block above) come from
-`tpen.sampling.summarize_walker_geometry` and appear under whichever phase
-logged the sampler stats: `train/sampler/*`, `validation/sampler/*`, or
-`eval/sampler/*`.
+`tpen.sampling.summarize_walker_geometry` and appear under whichever namespace
+logged the sampler stats — `train/sampler/*` today.
 
 All sampler keys are composed by `tpen.sampling.SamplerStats`, the typed record
 a sampler returns from `collect_samples`. `SamplerStats.as_metrics` produces the
@@ -216,6 +240,147 @@ adds `passed`. Nothing else spells these names.
 Use underscores inside keys.
 
 Avoid dots in keys.
+
+### The live key set, by namespace
+
+The list above is style guidance. This is the actual set the code emits today,
+in emission order, with the module that spells each group. Anything not here is
+not currently logged.
+
+`train` — one record per logged iteration, from `VMCTrainer`:
+
+```text
+loss                                    | tpen.training.vmc.compute_vmc_objective
+energy                                  |
+energy_variance                         |
+energy_std                              |
+energy_stderr                           |
+local_energy_n_finite                   |
+local_energy_n_total                    |
+local_energy_finite_fraction            |
+local_energy_nonfinite_count            |
+
+logabs_mean                             | tpen.training.vmc.summarize_logabs
+logabs_min                              |
+logabs_max                              |
+nonfinite_logabs_fraction               |
+
+energy_term_<name>                      | tpen.training.vmc
+energy_term_<name>_variance             |   .summarize_local_energy_terms,
+energy_term_<name>_std                  |   only when return_terms is enabled
+energy_term_<name>_stderr               |
+energy_term_<name>_n_finite             |
+energy_term_<name>_n_total              |
+energy_term_<name>_finite_fraction      |
+energy_term_<name>_nonfinite_count      |
+
+grad_norm                               | tpen.training.trainer (trainer-owned)
+param_norm                              |
+loss_has_grad                           |
+optimizer_step                          |
+```
+
+`train/sampler` — `SamplerStats.as_metrics`:
+
+```text
+acceptance_rate
+n_walkers
+burn_in
+n_steps
+proposal_scale
+seed                                    only when the sampler was seeded
+<geometry keys>                         the position_*/radius_*/
+                                        electron_distance_*/center_of_mass_rms
+                                        block, whose membership varies with
+                                        n_electrons
+```
+
+`train/perf` — `TrainStepTiming` then `TrainPhaseTiming`:
+
+```text
+step_time_sec
+step_time_sec_rolling_mean
+<phase>_time_sec                        see "Timing metrics" below
+```
+
+`checks/data_integrity` — `DataIntegrity`; membership depends on which state
+the callback found, so this namespace's key set is genuinely conditional:
+
+```text
+local_energy_finite_count
+local_energy_total_count
+local_energy_nonfinite_fraction
+logabs_finite_count
+logabs_total_count
+logabs_nonfinite_fraction
+sign_invalid_fraction                   only when a sign tensor is present
+output_validated
+loss_is_finite
+batch_validated
+batch_<key>                             from ElectronBatch.validity_metrics()
+passed
+```
+
+`checks/gradient` — `GradientStats`:
+
+```text
+n_grad_elements
+global_grad_norm
+max_abs_grad
+mean_abs_grad
+nonfinite_grad_fraction
+passed
+```
+
+`checks/sampler` — `SamplerStats.as_check_metrics` plus `SamplerHealth`:
+
+```text
+acceptance_rate
+n_walkers
+n_steps
+burn_in
+passed
+```
+
+`checks/equivariance/<checker_log_name>` — checker-supplied metrics plus:
+
+```text
+passed
+checker_class
+artifact_path                           only when an artifact_dir is configured
+                                        and the checker produced an artifact
+```
+
+`runtime` — `RunTiming` and `ResourceUsage`:
+
+```text
+start_time_unix
+end_time_unix
+wall_time_sec
+failed                                  only on a failed run
+peak_memory_mb
+cuda_max_memory_allocated_mb            only when CUDA is available
+cuda_max_memory_reserved_mb
+cuda_device_count
+```
+
+`<evaluator namespace>/status` and `<task namespace>/status` — `Evaluate`:
+
+```text
+suite_success                           suite level
+suite_failed
+task_success                            task level
+task_failed
+```
+
+#### `train` record attribution
+
+`grad_norm` is the norm over the parameter gradients that drove this
+iteration's update, taken after clipping. `param_norm` is the L2 norm over
+trainable parameters. `loss_has_grad` records whether the loss was connected to
+the parameters at all; `optimizer_step` records whether an optimizer update was
+actually applied. See "Step conventions" for the attribution contract that
+binds these together.
 
 ---
 
@@ -488,23 +653,120 @@ Health flags do not replace detailed metrics under `checks/...`.
 
 ## Step conventions
 
-Steps are 0-indexed: the first training step is `step = 0`. This means the
-first step always satisfies `step % every_n_steps == 0` cadence gates, so
-periodic metric callbacks and loggers report at the start of every run.
+### The metric step axis is the 0-indexed trainer loop step
 
-Training metrics use the training step:
+Three progress counters exist, and only one of them is the metric step axis:
+
+| Counter            | What it counts                                     | Where it appears                     |
+| ------------------ | -------------------------------------------------- | ------------------------------------ |
+| loop step          | 0-indexed position in `for step in range(...)`      | **the metric step axis**             |
+| `next_iteration`   | durable resume cursor; iterations that completed    | `trainer.json`, manifest, dir names  |
+| `completed_updates`| optimizer updates that actually returned            | `trainer.json`, manifest, checkpoint cadence |
+
+The step on a `train`, `train/sampler`, `train/perf`, or `checks/*` record is
+the **0-indexed trainer loop step** — `VMCTrainer.fit`'s loop variable. Nothing
+else. It is not `next_iteration` and it is not `completed_updates`.
+
+Training metrics use it:
 
 ```text
-step = trainer step
+step = 0-indexed trainer loop step
 namespace = train
 ```
 
-Training runtime checks use the same training step:
+Training runtime checks use the same value:
 
 ```text
-step = trainer step
+step = 0-indexed trainer loop step
 namespace = checks/...
 ```
+
+Because the loop advances once per *iteration* whether or not that iteration
+applied an update, **on a run with vacuum skips this axis counts iterations,
+not updates.** A run of `max_steps = N` produces N points on this axis and may
+have applied fewer than N updates. `experiments/toolkit/cost.py` inherits this:
+its `n_steps` is a count of `train/perf` records, so it counts attempted
+iterations.
+
+### `optimizer_step` is the authoritative discriminator
+
+A reader who needs to know whether a point corresponds to a real model change
+must consult `train/optimizer_step`. That is the one authoritative signal, and
+the step axis alone cannot answer the question.
+
+A skipped iteration (the zero-electron vacuum) emits the **same record shape at
+the same coordinate** as any other iteration: same namespaces, same key set,
+same order. That is deliberate — consistency means a consumer never branches on
+whether an update happened, and record counts stay equal to iteration counts.
+
+No new metric key was added to mark a skip, because the fact is already stated:
+
+```text
+optimizer_step = False            authoritative
+loss_has_grad  = False            corroborating
+grad_norm      = 0.0              corroborating
+train/perf: optimizer_step_time_sec and backward_time_sec ABSENT
+```
+
+Adding a fourth spelling of one fact would violate the rule against duplicating
+a metric under multiple spellings. The typed event stream says the same thing
+once more, as `UpdateCompleted` versus `UpdateSkipped`, but those reach
+`occurrences.jsonl` and never become a metric record.
+
+`grad_norm = 0.0` on the skip path is a **literal, not a fabrication**:
+`loss.requires_grad` is `False`, no backward runs, every `param.grad` is
+`None`, and the norm over an empty gradient set is `0.0` anyway. The literal is
+exactly what the computation would return. Leaving it as `0.0` rather than
+`None` keeps the key set step-independent in JSONL and non-blank in CSV.
+
+### The whole `train` record describes the pre-update model
+
+Every key in the `train` record at loop step `k` describes the model that
+produced step `k`'s samples — before that step's optimizer update. That
+includes `param_norm`, which is read *before* `optimizer.step()`.
+
+> **Discontinuity.** In runs produced before this change, `param_norm` was read
+> *after* `optimizer.step()` and therefore described the post-update model,
+> while every other key in the same record described the pre-update one.
+> `train/param_norm` values from older runs are **not comparable** with values
+> from newer runs. Every other `train` key is unaffected; `param_norm` appears
+> in no dashboard alias and in no experiment collector, so the blast radius is
+> limited to anyone reading the raw series.
+
+This is a contract, not an incidental ordering: a new trainer-owned `train`
+metric must be computable before the update, or it does not belong in this
+record.
+
+The `checks/*` namespaces are **not** covered by that contract, and this is a
+known inconsistency rather than a claim of correctness:
+
+| Namespace                   | What it actually observes                                     |
+| --------------------------- | ------------------------------------------------------------- |
+| `checks/data_integrity`     | pre-update tensors                                             |
+| `checks/gradient`           | pre-update gradients, read off a post-update model object      |
+| `checks/equivariance/*`     | re-runs the model, so it measures the **post-update** model    |
+
+All three log at the same loop step as the pre-update `train/energy`.
+`checks/gradient` is correct only because `optimizer.zero_grad` sits at the top
+of the loop body, which is an implicit ordering contract. Where observers
+should be re-pointed is a separate open question, tracked as the
+observation-point contract (ADR-008); this document records the situation and
+does not resolve it.
+
+### Cadence gates do not always fire at step 0
+
+Steps are 0-indexed and a fresh run starts at `step = 0`, so on a fresh run the
+first step satisfies `step % every_n_steps == 0` and periodic callbacks and
+loggers do report immediately.
+
+**This does not hold on `train_resume`.** The loop runs
+`range(self.next_iteration, self.max_steps)`, so a resumed run's first step is
+the restored cursor, not `0`. A run resumed at `next_iteration = 37` with
+`every_n_steps = 10` does not report on its first step; it waits until step 40.
+Do not assume a run's first emitted step is `0`, and do not assume every run
+has a record at step `0`.
+
+### Checkpoint identity uses the resume cursor, not the metric step
 
 Checkpoint directory names use the trainer's durable resume cursor
 `next_iteration`, not the 0-indexed training step. The cursor is assigned near
@@ -622,12 +884,32 @@ Directory identity is unaffected by cadence: a checkpoint written at
 `completed_updates = 40` still lands in the directory named by its
 `next_iteration`, which may be larger.
 
-Evaluation metrics use an evaluation step or `0` if there is only one evaluation event:
+### Evaluation metrics are logged at step 0
+
+There is no evaluation step counter. `tpen/runner/evaluate.py` hard-codes
+`step=0` at all three of its logging sites — the suite status record, each
+task's metrics record, and each task's status record:
 
 ```text
-step = eval step or 0
-namespace = eval
+step = 0                                always, not "an eval step or 0"
+namespace = <evaluator namespace> or <task namespace>
 ```
+
+An evaluation run therefore produces a flat set of records at a single
+coordinate. That is adequate because one `Evaluate` run performs one evaluation
+pass; it is not a step *series*.
+
+**Evaluation metric records deliberately carry no checkpoint identity.** They
+do not record which checkpoint was restored, in any field. This is not an
+oversight: nothing currently joins evaluation metrics to a training curve, so
+adding an identity now would be speculative construction. `RestoreReport`
+already carries the restored checkpoint's counters, and when a real consumer
+appears, attaching that identity is one local change.
+
+Evaluation's typed lifecycle — replacing the legacy `evaluate_start` /
+`evaluate_end` / `task_*` / `checkpoint_restored` strings with typed events
+that can carry the restored-checkpoint identity — is separate work and is not
+described here yet.
 
 Run-level metadata may use `step = 0`:
 
@@ -653,7 +935,7 @@ run.define_metric("train/*", step_metric="train/step")
 run.define_metric("train/sampler/*", step_metric="train/step")
 run.define_metric("train/perf/*", step_metric="train/step")
 
-# Validation happens inside the training lifecycle, so it shares train/step.
+# Vestigial: registered by tpen/logging/wandb.py, but nothing emits these.
 run.define_metric("validation/*", step_metric="train/step")
 run.define_metric("validation/sampler/*", step_metric="train/step")
 run.define_metric("validation/perf/*", step_metric="train/step")
@@ -678,6 +960,12 @@ checks/train_step
 ```
 
 when logging records in those namespaces.
+
+Two of these axes describe nothing the code emits. The `validation/*`
+registrations above are vestigial — no callback emits that namespace (see
+"Namespace conventions") — and `eval/step` is registered even though evaluation
+records are all logged at step `0`. They are recorded here because
+`tpen/logging/wandb.py` still registers them, not because they are meaningful.
 
 Runtime metrics such as `runtime/wall_time_sec` may be logged once and also written to the W&B run summary.
 
@@ -716,6 +1004,7 @@ phase key from `TrainPhaseTiming` observing typed `TrainingPhase` scopes):
 
 ```text
 train/perf/step_time_sec
+train/perf/step_time_sec_rolling_mean
 train/perf/sampling_time_sec
 train/perf/batch_build_time_sec
 train/perf/local_energy_time_sec
@@ -743,7 +1032,11 @@ metric fragment, so the names above cannot drift from the loop:
 | `Metrics`         | `post_step_metrics` | `post_step_metrics_time_sec`   |
 
 Phase times approximately sum to at most `step_time_sec`; the difference is
-unclassified loop overhead (gradient clipping, event dispatch, logging).
+unclassified loop overhead (gradient clipping, event dispatch, logging, and the
+pre-update parameter-norm read). That last item used to fall inside the
+`Metrics` scope: because `param_norm` is now computed before the optimizer
+update, `post_step_metrics_time_sec` no longer includes it and is slightly
+smaller than in older runs.
 `TrainPhaseTiming` is trigger-free: it observes `Started`/`Ended` boundaries of
 `TrainingPhase` scopes and reports only on a successful typed
 `TrainingIterationCompleted` event. Its scalar `every_n_steps`, `start_step`,
@@ -899,18 +1192,13 @@ train/logabs_mean
 train/sampler/acceptance_rate
 train/sampler/n_walkers
 
+train/grad_norm
+train/param_norm
+train/loss_has_grad
+train/optimizer_step
+
 train/perf/step_time_sec
 train/perf/sampling_time_sec
-
-validation/energy
-validation/energy_variance
-validation/energy_stderr
-validation/local_energy_finite_fraction
-validation/sampler/acceptance_rate
-validation/sampler/seed
-validation/sampler/radius_q99
-validation/sampler/electron_distance_q01
-validation/perf/wall_time_sec
 
 checks/data_integrity/passed
 checks/gradient/global_grad_norm
@@ -935,9 +1223,6 @@ sampler.acceptance_rate
 energy
 energy_mean
 full_model_equivariance_max_abs_error
-validation/energy_error
-validation/energy_abs_error
-validation/reference_energy
 checks.equivariance.full_model.max_abs_error
 runtime_wall_time_sec
 ```
