@@ -649,6 +649,7 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
     # delegated to the backend-agnostic accelerator helper, so the seam under
     # test is that helper rather than torch.cuda.
     calls: list[str] = []
+    context = RecordingContext()
     monkeypatch.setattr(
         timing_base,
         "_synchronize_accelerator",

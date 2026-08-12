@@ -2251,15 +2251,15 @@ def test_train_config_wires_profiling_callbacks() -> None:
     assert "spenn.callback.TrainPhaseTiming" in targets
     assert "spenn.callback.ResourceUsage" in targets
     phase_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.TrainPhaseTiming")
-    assert phase_timing["triggers"] == ["train_phase_start", "train_phase_end"]
+    assert "triggers" not in phase_timing
 
 
 def test_train_config_writes_periodic_and_final_checkpoints() -> None:
     entries = _callback_entries("pair_stability.yaml")
     checkpoints = [entry for entry in entries if entry["_target_"] == "spenn.callback.Checkpoint"]
 
-    periodic = next(entry for entry in checkpoints if entry["triggers"] == ["step_end"])
-    final = next(entry for entry in checkpoints if entry["triggers"] == ["train_end"])
+    periodic = next(entry for entry in checkpoints if "every_n_steps" in entry)
+    final = next(entry for entry in checkpoints if "every_n_steps" not in entry)
     assert periodic["keep_last"] == "${checkpoint.keep_last}"
     assert "keep_last" not in final
 

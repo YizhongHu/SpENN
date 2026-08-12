@@ -210,7 +210,7 @@ class Callback(_CallbackCore):
 
     @final
     def handle_occurrence(
-        self, occurrence: Occurrence[TypedEvent], context: RunContext
+        self, occurrence: Occurrence[TypedEvent], context: Any
     ) -> None:
         """Match, gate, and deliver one typed occurrence in group order."""
 
@@ -369,7 +369,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
     def handle_occurrence(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: RunContext,
+        context: Any,
         state: DomainState | None,
     ) -> None:
         """Match, gate, and route one typed occurrence group by group.

@@ -295,8 +295,8 @@ def test_vmc_trainer_scopes_every_training_phase() -> None:
 
     _fit_one_typed_step(context, emit=emit)
 
-    # Only the two step-lifecycle events survive as legacy emissions.
-    assert legacy_events == [("step_start", 0), ("step_end", 0)]
+    # No legacy string emissions survive the typed lifecycle migration.
+    assert legacy_events == []
     # Phases are sequential and non-nested inside one iteration scope.
     assert _occurrence_labels(context.occurrences) == [
         ("started", TrainingIteration),
@@ -322,7 +322,6 @@ def test_vmc_trainer_scopes_every_training_phase() -> None:
     ]
     # One iteration means every concrete type is at its first occurrence.
     assert [occurrence.count for occurrence in context.occurrences] == [1] * 20
-    step_end_index = context.trace.index(("legacy", "step_end"))
     completion_index = next(
         index
         for index, (kind, event) in enumerate(context.trace)
@@ -335,7 +334,7 @@ def test_vmc_trainer_scopes_every_training_phase() -> None:
         and isinstance(event, Ended)
         and isinstance(event.operation, TrainingIteration)
     )
-    assert step_end_index < completion_index < iteration_end_index
+    assert completion_index < iteration_end_index
 
 
 def test_vmc_trainer_step_end_failure_skips_completion_but_ends_iteration() -> None:
@@ -352,15 +351,14 @@ def test_vmc_trainer_step_end_failure_skips_completion_but_ends_iteration() -> N
         if name == "step_end":
             raise RuntimeError("legacy step_end failed")
 
-    with pytest.raises(RuntimeError, match="legacy step_end failed"):
-        trainer.fit(
-            model=model,
-            sampler=sampler,
-            hamiltonian_terms=terms,
-            optimizer=optimizer,
-            context=context,
-            emit=emit,
-        )
+    trainer.fit(
+        model=model,
+        sampler=sampler,
+        hamiltonian_terms=terms,
+        optimizer=optimizer,
+        context=context,
+        emit=emit,
+    )
 
     assert not any(
         isinstance(occurrence.event, TrainingIterationCompleted)
