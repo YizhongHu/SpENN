@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import tempfile
+import urllib.parse
 import threading
 import unittest
 from contextlib import contextmanager
@@ -43,14 +44,43 @@ def _item(
 
 
 @contextmanager
-def _api(*, item: dict | None = None, root_id: str = ROOT_ID) -> Iterator[str]:
+def _api(
+    *,
+    item: dict | None = None,
+    root_id: str = ROOT_ID,
+    active_claim_ids: set[str] | None = None,
+) -> Iterator[str]:
     payload = item or _item()
+    if active_claim_ids is None:
+        active_claim_ids = {ITEM_ID} if payload.get("isClaimed") is True else set()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path == f"/api/v1/items/{ITEM_ID}?include=notes":
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == f"/api/v1/items/{ITEM_ID}" and parsed.query == "include=notes":
                 body = payload
-            elif self.path == f"/api/v1/items/{ITEM_ID}/breadcrumbs":
+            elif parsed.path == "/api/v1/items":
+                query = urllib.parse.parse_qs(parsed.query)
+                expected = {
+                    "rootId": [ROOT_ID],
+                    "role": ["work"],
+                    "type": ["implementation-slice"],
+                    "claimStatus": ["claimed"],
+                    "page": ["1"],
+                    "pageSize": ["100"],
+                }
+                if query != expected:
+                    self.send_error(400)
+                    return
+                items = [payload] if ITEM_ID in active_claim_ids else []
+                body = {
+                    "items": items,
+                    "page": 1,
+                    "pageSize": 100,
+                    "totalItems": len(items),
+                    "hasMore": False,
+                }
+            elif parsed.path == f"/api/v1/items/{ITEM_ID}/breadcrumbs":
                 body = [{"id": root_id}, {"id": ITEM_ID}]
             else:
                 self.send_error(404)
@@ -103,7 +133,7 @@ class AuthoritativeEditGuardTest(unittest.TestCase):
     def check(self, api_url: str) -> dict[str, str]:
         return GUARD.check_launch(self.repo, ITEM_ID, api_url, ROOT_ID)
 
-    def test_allows_clean_agent_branch_with_claimed_work_item(self) -> None:
+    def test_allows_clean_agent_branch_with_live_work_claim(self) -> None:
         (self.repo / "untracked-research-data").write_text("preserve me\n")
         with _api() as api_url:
             receipt = self.check(api_url)
@@ -125,14 +155,27 @@ class AuthoritativeEditGuardTest(unittest.TestCase):
     def test_rejects_invalid_item_contract(self) -> None:
         cases = [
             (_item(item_type="research"), "item must have type"),
-            (_item(role="queue"), "item must be in work role"),
-            (_item(claimed=False), "item must have an active claim"),
             (_item(body="  "), "non-empty queue acceptance-contract"),
         ]
         for item, message in cases:
             with self.subTest(message=message):
                 with _api(item=item) as api_url, self.assertRaisesRegex(GUARD.GuardFailure, message):
                     self.check(api_url)
+
+    def test_rejects_expired_work_claim_residue(self) -> None:
+        with _api(active_claim_ids=set()) as api_url:
+            with self.assertRaisesRegex(GUARD.GuardFailure, "active unexpired claim"):
+                self.check(api_url)
+
+    def test_rejects_terminal_claim_residue(self) -> None:
+        with _api(item=_item(role="terminal"), active_claim_ids={ITEM_ID}) as api_url:
+            with self.assertRaisesRegex(GUARD.GuardFailure, "item must be in work role"):
+                self.check(api_url)
+
+    def test_rejects_no_claim(self) -> None:
+        with _api(item=_item(claimed=False), active_claim_ids=set()) as api_url:
+            with self.assertRaisesRegex(GUARD.GuardFailure, "active unexpired claim"):
+                self.check(api_url)
 
     def test_rejects_item_outside_tpen_root(self) -> None:
         with _api(root_id="22222222-2222-4222-8222-222222222222") as api_url:

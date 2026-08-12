@@ -55,6 +55,30 @@ def _validated_api_url(value: str) -> str:
     return f"http://{host}:{port}"
 
 
+def _active_claimed_item_ids(api_url: str, project_root_id: str) -> set[str]:
+    query = urllib.parse.urlencode(
+        {
+            "rootId": project_root_id,
+            "role": "work",
+            "type": EXPECTED_ITEM_TYPE,
+            "claimStatus": "claimed",
+            "page": 1,
+            "pageSize": 100,
+        }
+    )
+    payload = _read_json(api_url, f"/api/v1/items?{query}")
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise GuardFailure("Task Orchestrator claimed-item response is malformed")
+    if payload.get("hasMore") is True:
+        raise GuardFailure("Task Orchestrator claimed-item response is ambiguous")
+    return {
+        str(item["id"])
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+
+
 def _read_json(api_url: str, path: str) -> Any:
     request = urllib.request.Request(f"{api_url}{path}", headers={"Accept": "application/json"})
     try:
@@ -90,8 +114,8 @@ def _validate_item(api_url: str, item_id: str, project_root_id: str) -> None:
         raise GuardFailure(f"item must have type {EXPECTED_ITEM_TYPE!r}")
     if item.get("role") != "work":
         raise GuardFailure("item must be in work role")
-    if item.get("isClaimed") is not True:
-        raise GuardFailure("item must have an active claim")
+    if item_id not in _active_claimed_item_ids(api_url, project_root_id):
+        raise GuardFailure("item must have an active unexpired claim")
 
     breadcrumbs = _read_json(api_url, f"/api/v1/items/{quoted_id}/breadcrumbs")
     if not breadcrumbs or breadcrumbs[0].get("id") != project_root_id:
