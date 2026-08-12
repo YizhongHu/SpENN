@@ -57,22 +57,32 @@ committed. On Frontier, provision against the system interpreter rather than a
 uv-managed download:
 
 ```bash
-module load rocm craype-accel-amd-gfx90a
-module load miniforge3
-export UV_NO_MANAGED_PYTHON=1   # overrides python-preference in pyproject.toml
+# The exact installed ROCm minor is unverified; check `module -t avail rocm`
+# on Frontier and replace X.Y.Z before provisioning.
+module load rocm/X.Y.Z
+module load craype-accel-amd-gfx90a
+module load miniforge3/23.11.0-0
+PYBIN="$(command -v python3)"
+export UV_PYTHON="$PYBIN"
+export UV_NO_MANAGED_PYTHON=1
 export UV_PYTHON_DOWNLOADS=never
-export UV_PROJECT_ENVIRONMENT=.venv-rocm
+export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/tpen-frontier-rocm71"
 uv sync --extra rocm71
 ```
 
-Do not add `UV_PYTHON_PREFERENCE=only-system` alongside these. uv rejects the
-combination outright, so the recipe would not run at all:
+Do not add `UV_PYTHON_PREFERENCE=only-system` alongside these. On Polaris's
+facility uv 0.8.23, the combination is rejected before resolution:
 
 ```text
 error: the argument `UV_NO_MANAGED_PYTHON` (environment variable) cannot be used with `--python-preference`
 ```
 
 `UV_NO_MANAGED_PYTHON=1` already overrides the committed `python-preference`.
+
+The Frontier profile remains documented but **has not been executed on Frontier
+hardware**. The ROCm module version, Frontier's uv version, the facility
+interpreter path, and the resolved `rocm71` Torch wheel have not been validated
+there. Do not treat the recipe as a Frontier hardware or run-validation receipt.
 
 ### NVIDIA A100 Environment (ALCF Polaris)
 
