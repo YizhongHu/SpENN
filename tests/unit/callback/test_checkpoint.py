@@ -13,7 +13,7 @@ import torch
 from omegaconf import OmegaConf
 
 import tpen.checkpoint.restore as restore_module
-from tpen.accelerator import device_module
+from tpen.accelerator import current_accelerator_type, device_module
 from tpen.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
     checkpoint_hashes,
@@ -148,10 +148,41 @@ def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) 
     assert report.loaded_sampler is False
 
 
-def test_restore_runtime_device_check_normalizes_unindexed_cuda() -> None:
-    assert restore_module._canonical_runtime_device("cuda") == torch.device("cuda:0")
-    assert restore_module._canonical_runtime_device(torch.device("cuda:0")) == torch.device("cuda:0")
-    assert restore_module._canonical_runtime_device("cpu") == torch.device("cpu")
+def test_restore_runtime_device_check_accepts_this_hosts_accelerator() -> None:
+    # THE case the old CUDA-only canonicalization could not express, and the
+    # reason the bug survived: metadata carries the index-free device string a
+    # config declares, while tensors report an indexed accelerator device
+    # (`xpu:0`, `cuda:0`). A check that resolves an index for CUDA alone raises
+    # on every other backend. Runs on whatever this host has, so it is CPU on
+    # CI, `cuda` on Polaris, and `xpu` on Aurora -- where it would have failed.
+    device_type = current_accelerator_type()
+    if device_type != "cpu" and not device_module(device_type).is_available():
+        pytest.skip("needs a live accelerator")
+
+    context = _context()
+    context.metadata.device = device_type
+    model = torch.nn.Linear(3, 2).double().to(device_type)
+
+    restore_module._assert_model_runtime(model, context)
+
+
+def test_restore_runtime_device_check_still_rejects_a_different_device() -> None:
+    # Discriminates the test above from one that passes because the check was
+    # weakened: canonicalizing both sides must not make mismatches compare equal.
+    context = _context()
+    context.metadata.device = "meta"
+    model = torch.nn.Linear(3, 2).double()
+
+    with pytest.raises(RuntimeError, match="expected meta"):
+        restore_module._assert_model_runtime(model, context)
+
+
+def test_restore_runtime_device_check_still_rejects_a_different_dtype() -> None:
+    context = _context()
+    model = torch.nn.Linear(3, 2).float()
+
+    with pytest.raises(RuntimeError, match="torch.float64"):
+        restore_module._assert_model_runtime(model, context)
 
 
 def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:

@@ -17,12 +17,15 @@ from tests.unit.callback.support import (
 
 
 class FakePassingChecker:
-    def __init__(self) -> None:
+    def __init__(self, n_comparisons: int = 3) -> None:
         self.calls = 0
+        self.n_comparisons = n_comparisons
 
     def run(self, state) -> EquivarianceCheckResult:
         self.calls += 1
-        return EquivarianceCheckResult(passed=True, metrics={"max_abs_error": 0.0})
+        return EquivarianceCheckResult(
+            passed=True, metrics={"max_abs_error": 0.0}, n_comparisons=self.n_comparisons
+        )
 
 
 class FakeFailingChecker:
@@ -34,8 +37,26 @@ class FakeFailingChecker:
         return EquivarianceCheckResult(
             passed=False,
             metrics={"max_abs_error": 1.0},
+            n_comparisons=2,
             failures=["boom"],
             artifact={"checker_class": "FakeFailingChecker", "failures": ["boom"]},
+        )
+
+
+class FakeMisreportingChecker:
+    """Returns a comparison count in ``metrics`` that contradicts the field.
+
+    The published record must follow the typed field, not this. A checker that
+    could overwrite the key from its own free-form metrics would be able to
+    claim it compared something while the contract said it compared nothing --
+    which is the failure this key exists to expose.
+    """
+
+    def run(self, state) -> EquivarianceCheckResult:
+        return EquivarianceCheckResult(
+            passed=True,
+            metrics={"max_abs_error": 0.0, "n_comparisons": 99},
+            n_comparisons=0,
         )
 
 
@@ -156,3 +177,77 @@ def test_cadence_gates_on_the_durable_step_not_the_occurrence_count() -> None:
 
     assert [r["step"] for r in context.by_namespace("checks/equivariance/fake_passing")] == [0, 5, 10]
     assert checker.calls == 3
+
+
+# --- an empty checker list must be loud, not silently absent ---
+
+
+@pytest.mark.parametrize("fail_fast", [True, False])
+def test_empty_checker_list_is_rejected_at_construction(fail_fast: bool) -> None:
+    # Every record this callback publishes comes from inside the per-checker
+    # loop, so an empty list makes the whole `checks/equivariance/*` namespace
+    # vanish rather than fail -- a vacuous ABSENCE, which is harder to notice
+    # than a vacuous pass because it leaves no record to inspect. Parametrised
+    # over `fail_fast` because a log-time failing record would have been silent
+    # in the `False` mode, which is exactly the case being closed.
+    with pytest.raises(ValueError, match="requires at least one checker"):
+        RuntimeEquivariance(checkers=[], fail_fast=fail_fast)
+
+
+def test_empty_checker_rejection_survives_other_constructor_arguments() -> None:
+    # `every_n_steps` is popped from kwargs before the base class runs, so the
+    # rejection has to happen ahead of that bookkeeping rather than after it.
+    with pytest.raises(ValueError, match="requires at least one checker"):
+        RuntimeEquivariance(checkers=(), every_n_steps=5, fail_fast=False)
+
+
+def test_a_configured_checker_always_produces_a_record() -> None:
+    # The positive half of the same contract: construction succeeded, so the
+    # namespace must appear. Guards the loop against a future gate that could
+    # skip the `context.log` call and take the namespace with it.
+    context = RecordingContext()
+
+    _handle(RuntimeEquivariance(checkers=[FakePassingChecker()], fail_fast=False), context)
+
+    assert context.by_namespace("checks/equivariance/fake_passing")
+
+
+# --- n_comparisons: a zero-comparison pass must be structurally visible ---
+
+
+def test_comparison_count_is_published_on_every_record() -> None:
+    context = RecordingContext()
+    callback = RuntimeEquivariance(
+        checkers=[FakePassingChecker(n_comparisons=7), FakeFailingChecker()], fail_fast=False
+    )
+
+    _handle(callback, context)
+
+    assert context.latest("checks/equivariance/fake_passing")["n_comparisons"] == 7
+    assert context.latest("checks/equivariance/fake_failing")["n_comparisons"] == 2
+
+
+def test_zero_comparison_pass_is_visible_in_the_record() -> None:
+    # `passed` is well defined over an empty comparison set -- no permutation
+    # failed because none was tested -- so without this key the record would
+    # read as a healthy check that measured nothing.
+    context = RecordingContext()
+    callback = RuntimeEquivariance(
+        checkers=[FakePassingChecker(n_comparisons=0)], fail_fast=True
+    )
+
+    _handle(callback, context)
+
+    metrics = context.latest("checks/equivariance/fake_passing")
+    assert metrics["passed"] is True
+    assert metrics["n_comparisons"] == 0
+
+
+def test_comparison_count_comes_from_the_field_not_checker_metrics() -> None:
+    # Mirrors how `passed` is published: the typed field is authoritative, so a
+    # checker cannot dress an empty check up as a busy one via free-form metrics.
+    context = RecordingContext()
+
+    _handle(RuntimeEquivariance(checkers=[FakeMisreportingChecker()], fail_fast=False), context)
+
+    assert context.latest("checks/equivariance/fake_misreporting")["n_comparisons"] == 0

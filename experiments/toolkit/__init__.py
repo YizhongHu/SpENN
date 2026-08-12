@@ -1,7 +1,15 @@
 """Reusable experiment planning and execution helpers."""
 
 from .execution import ExecutionRecord, execution_records_from_submission, write_execution_records
-from .executors import Executor, ExecutorOptions, LauncherExecutor, LocalExecutor, SubmissionRequest, SubmititExecutor
+from .executors import (
+    AllocationPoolExecutor,
+    Executor,
+    ExecutorOptions,
+    LauncherExecutor,
+    LocalExecutor,
+    SubmissionRequest,
+    SubmititExecutor,
+)
 from .lineage import (
     TaskLineageRow,
     read_task_lineage,
@@ -13,6 +21,7 @@ from .resources import ResourceSpec
 from .specs import CompletionSpec, StagePlan, TaskSpec, task_id_from_parts
 
 __all__ = [
+    "AllocationPoolExecutor",
     "CompletionSpec",
     "Executor",
     "ExecutionRecord",

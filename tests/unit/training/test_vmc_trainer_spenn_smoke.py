@@ -29,6 +29,7 @@ from tpen.training.events import (
     UpdateCompleted,
     UpdateSkipped,
 )
+from tpen.training.state import TrainerState
 from tpen.training.trainer import VMCTrainer, _parameter_norm
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 
@@ -458,6 +459,49 @@ def test_skipped_update_logs_the_same_train_record_shape() -> None:
     # norm -- and on that path pre-update and post-update coincide anyway.
     assert skipped["param_norm"] == pytest.approx(0.0)
     assert skipped["grad_norm"] == 0.0
+
+
+def test_the_state_carries_the_optimizer_step_discriminator() -> None:
+    """The typed field beside the metric, and it must agree with the metric.
+
+    A health callback observing update by-products cannot tell "no gradients
+    because no update ran" from "no gradients because they were already cleared"
+    without this field; `tpen.callback.GradientStats` reads it for exactly that.
+    Because the callback reads only the state, an assignment lost from the loop
+    body would make its check unfalsifiable while every metric stayed correct --
+    so the agreement is asserted here, at the one place both spellings are set.
+    """
+
+    completed_context = _StubContext()
+    _fit_one_typed_step(completed_context)
+    skipped_context = _StubContext()
+    _fit_vacuum_steps(skipped_context)
+
+    completed = _train_metrics(completed_context)
+    skipped = _train_metrics(skipped_context)
+
+    def observed_state(context: _StubContext) -> TrainerState:
+        """Return the state handed to the completed-iteration boundary.
+
+        The trainer mutates one state object in place all run long, so this is
+        only unambiguous because both fits above run a single step.
+        """
+
+        states = [
+            state
+            for occurrence, state in zip(context.occurrences, context.states, strict=True)
+            if isinstance(occurrence.event, TrainingIterationCompleted)
+        ]
+        assert len(states) == 1, f"expected one completed iteration, got {len(states)}"
+        state = states[0]
+        assert isinstance(state, TrainerState)
+        return state
+
+    assert observed_state(completed_context).optimizer_step is True
+    assert observed_state(skipped_context).optimizer_step is False
+    # One fact, one spelling on each side of the durable boundary.
+    assert observed_state(completed_context).optimizer_step is completed["optimizer_step"]
+    assert observed_state(skipped_context).optimizer_step is skipped["optimizer_step"]
 
 
 def test_load_state_dict_round_trips_both_progress_counters() -> None:

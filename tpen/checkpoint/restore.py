@@ -10,12 +10,16 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
+from tpen.accelerator import canonical_device
+
 from .artifact import resolve_checkpoint_dir
 from .hashing import checkpoint_hashes
 from .rng import apply_rng_state, require_restorable_rng_state, runtime_device
 from .schema import read_manifest
 
 RESTORE_MODES = ("none", "model_only", "train_resume")
+
+_FEATURE = "checkpoint restore"
 
 
 @dataclass(frozen=True)
@@ -326,10 +330,15 @@ def _assert_model_runtime(model: Any, context: Any) -> None:
     expected_dtype_name = getattr(metadata, "dtype", None)
     if expected_device is None or expected_dtype_name is None:
         return
-    expected_torch_device = _canonical_runtime_device(expected_device)
+    # Index-resolved on both sides: metadata carries the config's index-free
+    # device string while tensors report an indexed accelerator device, and
+    # `torch.device` treats those as unequal. `canonical_device` closes that gap
+    # for whatever backend is live, so this check does not silently become
+    # CUDA-only.
+    expected_torch_device = canonical_device(expected_device, feature=_FEATURE)
     expected_dtype = getattr(torch, str(expected_dtype_name))
     for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
-        if _canonical_runtime_device(tensor.device) != expected_torch_device:
+        if canonical_device(tensor.device, feature=_FEATURE) != expected_torch_device:
             raise RuntimeError(
                 f"checkpoint restore left model tensor {name!r} on {tensor.device}, "
                 f"expected {expected_device}"
@@ -339,15 +348,3 @@ def _assert_model_runtime(model: Any, context: Any) -> None:
                 f"checkpoint restore left model tensor {name!r} with dtype {tensor.dtype}, "
                 f"expected {expected_dtype}"
             )
-
-
-def _canonical_runtime_device(device: Any) -> Any:
-    """Return a comparable torch device for runtime checks."""
-
-    import torch
-
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and resolved.index is None:
-        index = torch.cuda.current_device() if torch.cuda.is_available() else 0
-        return torch.device("cuda", index)
-    return resolved

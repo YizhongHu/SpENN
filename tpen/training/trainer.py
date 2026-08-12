@@ -265,6 +265,12 @@ class VMCTrainer:
 
                 state.step = step
                 state.metrics = metrics
+                # Published as `train/optimizer_step` above and carried here as
+                # a typed field for the same reason: a callback observing update
+                # by-products (gradients) must be able to tell "this iteration
+                # applied no update, so there is nothing to see" from "an update
+                # ran and I still saw nothing", which is a broken observation.
+                state.optimizer_step = optimizer_step
                 state.samples = walkers
                 state.batch = batch
                 state.local_energy = total_local_energy.detach()

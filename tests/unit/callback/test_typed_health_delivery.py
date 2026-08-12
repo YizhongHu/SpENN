@@ -64,7 +64,9 @@ class _RecordingChecker:
 
     def run(self, state: Any) -> EquivarianceCheckResult:
         self.states.append(state)
-        return EquivarianceCheckResult(passed=True, metrics={"max_abs_error": 0.0})
+        return EquivarianceCheckResult(
+            passed=True, metrics={"max_abs_error": 0.0}, n_comparisons=1
+        )
 
 
 def _populated_state() -> TrainerState:

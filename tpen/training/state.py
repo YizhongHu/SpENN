@@ -32,6 +32,15 @@ class TrainerState(TrainingTimingState):
         first step).
     metrics : dict, optional
         Scalar metrics logged for the most recent step.
+    optimizer_step : bool, optional
+        Whether the most recently completed iteration applied an optimizer
+        update. ``False`` before the first step, and on any iteration that
+        deliberately skipped its update (the zero-electron vacuum). This is the
+        in-process typed carrier of the same fact the ``train/optimizer_step``
+        metric publishes durably, and `tpen.metrics_naming` documents it as the
+        authoritative discriminator between "no update happened" and "an update
+        happened". A health callback that observes update by-products needs it
+        to tell an empty observation apart from a legitimately empty iteration.
     model : Any, optional
         Wavefunction model being optimized.
     optimizer : Any, optional
@@ -60,6 +69,13 @@ class TrainerState(TrainingTimingState):
 
     step: int = -1
     metrics: dict[str, Any] = field(default_factory=dict)
+    # A typed field rather than a `metrics["optimizer_step"]` lookup: reading a
+    # published metric back by string key to decide behaviour would make a
+    # durable metric name the mechanism one part of the program uses to find
+    # another, which ADR-E006 bars. The metric stays the durable spelling; this
+    # is the in-process one, and they carry the same name so neither can drift
+    # into meaning something else.
+    optimizer_step: bool = False
     model: Any = None
     optimizer: Any = None
     trainer: Any = None
