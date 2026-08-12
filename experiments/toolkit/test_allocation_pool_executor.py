@@ -137,6 +137,161 @@ def _trace(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+def _status_task(
+    tmp_path: Path,
+    run_id: str,
+    command: Sequence[str],
+    status_path: Path,
+) -> TaskSpec:
+    task = _task(tmp_path, run_id, command)
+    return TaskSpec(
+        task_id=task.task_id,
+        stage=task.stage,
+        attempt_id=task.attempt_id,
+        run_id=task.run_id,
+        command=task.command,
+        result_dir=task.result_dir,
+        logs=task.logs,
+        resources=task.resources,
+        completion=CompletionSpec(policy="status_completed", status_path=str(status_path)),
+    )
+
+
+def _single_worker_executor(tmp_path: Path, pass_id: str) -> AllocationPoolExecutor:
+    return AllocationPoolExecutor(
+        pass_id=pass_id,
+        n_workers=1,
+        visibility_variable="TEST_VISIBLE_DEVICE",
+        visibility_values=("worker-0",),
+        run_root=tmp_path / "pool",
+        deadline_guard_min=0,
+    )
+
+
+def _attempt_statuses(tmp_path: Path) -> list[dict[str, object]]:
+    return [
+        read_json(path)
+        for path in sorted((tmp_path / "pool" / "_allocation_pool").glob("*/attempt*/status.json"))
+    ]
+
+
+def test_zero_exit_requires_completed_status(tmp_path: Path) -> None:
+    status_path = tmp_path / "run" / "status.json"
+    command = (
+        sys.executable,
+        "-c",
+        "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+        "p.parent.mkdir(parents=True); p.write_text(json.dumps({'status':'completed'}))",
+        str(status_path),
+    )
+    task = _status_task(tmp_path, "completed", command, status_path)
+
+    records = _single_worker_executor(tmp_path, "completed-pass").submit(
+        _plan(tmp_path, (task,)), (task,), _request((task,))
+    )
+
+    assert len(records) == 1
+    assert read_json(task.logs[0])["status"] == "success"
+    assert _attempt_statuses(tmp_path)[0]["status"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("status_payload", "run_id"),
+    [
+        (None, "missing"),
+        ('{"status":"failed"}', "not-completed"),
+    ],
+)
+def test_zero_exit_without_completed_status_fails_with_receipts(
+    tmp_path: Path,
+    status_payload: str | None,
+    run_id: str,
+) -> None:
+    status_path = tmp_path / run_id / "status.json"
+    if status_payload is None:
+        command = (sys.executable, "-c", "raise SystemExit(0)")
+    else:
+        command = (
+            sys.executable,
+            "-c",
+            "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+            "p.parent.mkdir(parents=True); p.write_text(sys.argv[2])",
+            str(status_path),
+            status_payload,
+        )
+    task = _status_task(tmp_path, run_id, command, status_path)
+
+    with pytest.raises(RuntimeError, match="completion predicate 'status_completed'.*not satisfied"):
+        _single_worker_executor(tmp_path, "pass-a").submit(
+            _plan(tmp_path, (task,)), (task,), _request((task,))
+        )
+
+    attempt = _attempt_statuses(tmp_path)[0]
+    launcher = read_json(task.logs[0])
+    assert attempt["status"] == launcher["status"] == "failed"
+    assert attempt["returncode"] == launcher["returncode"] == 0
+    assert "not satisfied" in str(attempt["completion_error"])
+    assert attempt["completion_error"] == launcher["completion_error"]
+
+
+def test_zero_exit_missing_status_is_retryable_on_new_pass(tmp_path: Path) -> None:
+    status_path = tmp_path / "retry" / "status.json"
+    task = _status_task(
+        tmp_path,
+        "retry",
+        (sys.executable, "-c", "raise SystemExit(0)"),
+        status_path,
+    )
+    plan = _plan(tmp_path, (task,))
+    request = _request((task,))
+
+    for pass_id in ("pass-a", "pass-b"):
+        with pytest.raises(RuntimeError, match="completion predicate"):
+            _single_worker_executor(tmp_path, pass_id).submit(plan, (task,), request)
+
+    assert len(_attempt_statuses(tmp_path)) == 2
+
+
+def test_nonzero_exit_remains_failed(tmp_path: Path) -> None:
+    status_path = tmp_path / "nonzero" / "status.json"
+    task = _status_task(
+        tmp_path,
+        "nonzero",
+        (sys.executable, "-c", "raise SystemExit(7)"),
+        status_path,
+    )
+
+    records = _single_worker_executor(tmp_path, "nonzero-pass").submit(
+        _plan(tmp_path, (task,)), (task,), _request((task,))
+    )
+
+    assert len(records) == 1
+    attempt = _attempt_statuses(tmp_path)[0]
+    assert attempt["status"] == "failed"
+    assert attempt["returncode"] == 7
+    assert "completion_error" not in attempt
+
+
+def test_completed_task_is_skipped_before_claiming(tmp_path: Path) -> None:
+    status_path = tmp_path / "already-completed" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_text('{"status":"completed"}')
+    task = _status_task(
+        tmp_path,
+        "already-completed",
+        ("/bin/false",),
+        status_path,
+    )
+
+    records = _single_worker_executor(tmp_path, "skip-pass").submit(
+        _plan(tmp_path, (task,)), (task,), _request((task,))
+    )
+
+    assert records == ()
+    assert not pass_claim_path(tmp_path / "pool", "skip-pass", task.task_id).exists()
+    assert not Path(task.logs[0]).exists()
+
+
 def _run_pool_process(
     plan: StagePlan,
     tasks: tuple[TaskSpec, ...],

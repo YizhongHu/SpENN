@@ -60,6 +60,19 @@ def test_dry_run_has_config_and_device_overrides_for_cuda_and_xpu(tmp_path: Path
             f"runtime.device={device}",
         )
         assert request.submitted_commands == (command,)
+        expected_run_dir = (
+            Path(tmp_path / "results").resolve()
+            / "tpen_pair_v1"
+            / "pair"
+            / "smoke-001"
+        )
+        assert plan.tasks[0].result_dir == str(expected_run_dir)
+        assert plan.tasks[0].logs == (str(expected_run_dir / "launcher-status.json"),)
+        assert plan.tasks[0].completion == CompletionSpec(
+            policy="status_completed",
+            status_path=str(expected_run_dir / "status.json"),
+        )
+        assert plan.results_root == str(Path(tmp_path / "results").resolve())
 
 
 def test_dry_run_prints_the_submitted_argv_without_executing_it(

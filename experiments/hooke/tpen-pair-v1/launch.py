@@ -18,6 +18,9 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 
+from omegaconf import OmegaConf
+from tpen.artifacts import ArtifactManager
+
 from experiments.toolkit import (
     AllocationPoolExecutor,
     CompletionSpec,
@@ -71,6 +74,22 @@ def _outside_checkout(results_root: Path, checkout: Path) -> Path:
     raise ValueError(f"results root must be outside repository checkout: {resolved}")
 
 
+def run_directory(results_root: Path, run_id: str) -> Path:
+    """Resolve the configured TPEN artifact directory for one pair-v1 run."""
+
+    config = OmegaConf.load(repository_root() / CONFIG_PATH)
+    experiment_name = str(OmegaConf.select(config, "experiment.name"))
+    sector = str(OmegaConf.select(config, "experiment.sector"))
+    layout = str(OmegaConf.select(config, "run.layout", default="nested"))
+    return ArtifactManager(
+        results_root,
+        experiment_name,
+        sector,
+        run_id,
+        layout=layout,
+    ).run_dir
+
+
 def build_command(args: argparse.Namespace, results_root: Path) -> tuple[str, ...]:
     """Build the exact argv used for one pair-v1 smoke task."""
 
@@ -101,7 +120,7 @@ def build_plan(args: argparse.Namespace, *, checkout: Path | None = None) -> tup
     visibility_variable = _non_empty(str(args.visibility_variable), "--visibility-variable")
     values = _visibility_values(args.visibility_values)
     results_root = _outside_checkout(Path(args.results_root), checkout)
-    run_root = results_root / run_id
+    run_root = run_directory(results_root, run_id)
     command = build_command(args, results_root)
     stage = "01_train"
     attempt_id = str(args.pass_id)

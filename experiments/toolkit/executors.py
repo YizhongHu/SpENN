@@ -438,9 +438,21 @@ class AllocationPoolExecutor:
                 launch_error = repr(exc)
                 stderr.write(launch_error + "\n")
                 returncode = None
+        completion_error: str | None = None
+        if (
+            returncode == 0
+            and task.completion.policy != "none"
+            and not task.completion.is_complete()
+        ):
+            completion_error = (
+                f"command exited 0 but completion predicate {task.completion.policy!r} "
+                f"was not satisfied for task {task.task_id!r}: "
+                f"{task.completion.to_dict()!r}"
+            )
+
         ended_at = time.time()
 
-        row_status = "success" if returncode == 0 else "failed"
+        row_status = "success" if returncode == 0 and completion_error is None else "failed"
         attempt_status = {
             "status": row_status,
             "task_id": task.task_id,
@@ -466,6 +478,8 @@ class AllocationPoolExecutor:
         }
         if launch_error is not None:
             attempt_status["error"] = launch_error
+        if completion_error is not None:
+            attempt_status["completion_error"] = completion_error
         write_json(attempt_status_path, attempt_status)
 
         if launcher_status_path is not None:
@@ -477,7 +491,12 @@ class AllocationPoolExecutor:
             }
             if launch_error is not None:
                 launcher_status["error"] = launch_error
+            if completion_error is not None:
+                launcher_status["completion_error"] = completion_error
             write_json(launcher_status_path, launcher_status)
+
+        if completion_error is not None:
+            raise RuntimeError(completion_error)
         status_path = launcher_status_path or attempt_status_path
 
         return ExecutionRecord(
