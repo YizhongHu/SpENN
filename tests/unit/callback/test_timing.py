@@ -11,7 +11,6 @@ from tpen.callback import (
     DiagnosticTiming,
     EvaluationComponentTiming,
     EvaluationTiming,
-    Event,
     RunTiming,
     Status,
     TrainPhaseTiming,
@@ -174,10 +173,10 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     context = RecordingContext()
     callback = TrainStepTiming(rolling_window=2, clock=FakeClock([1.0, 1.5, 3.0, 4.0]))
 
-    callback.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    callback.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
-    callback.handle(Event(name="step_start", context=context, payload={"step": 2}, step=2))
-    callback.handle(Event(name="step_end", context=context, payload={"step": 2}, step=2))
+    for count, step in enumerate((1, 2), start=1):
+        iteration = TrainingIteration(step=step)
+        callback.handle_occurrence(Occurrence(event=Started(iteration), count=count), context)
+        callback.handle_occurrence(Occurrence(event=Ended(iteration), count=count), context)
 
     assert context.by_namespace("train/perf") == [
         {
@@ -216,8 +215,9 @@ def test_train_step_timing_no_longer_feeds_the_status_line(
     timing = TrainStepTiming(clock=FakeClock([1.0, 1.25]))
     status = Status(include=["train/perf/step_time_sec"], color="never", train_lines=True)
 
-    timing.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    timing.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
+    iteration = TrainingIteration(step=1)
+    timing.handle_occurrence(Occurrence(event=Started(iteration), count=1), context)
+    timing.handle_occurrence(Occurrence(event=Ended(iteration), count=1), context)
     with caplog.at_level(logging.INFO, logger="spenn.status"):
         deliver_completed_iteration(status, context, training_state(step=1), step=1)
 
@@ -656,19 +656,12 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
     )
 
     no_sync = TrainStepTiming(cuda_synchronize=False, clock=FakeClock([1.0, 2.0]))
-    no_sync.handle(
-        Event(name="step_start", context=RecordingContext(), payload={"step": 1}, step=1)
-    )
-    no_sync.handle(
-        Event(name="step_end", context=RecordingContext(), payload={"step": 1}, step=1)
-    )
+    iteration = TrainingIteration(step=1)
+    no_sync.handle_occurrence(Occurrence(event=Started(iteration), count=1), context)
+    no_sync.handle_occurrence(Occurrence(event=Ended(iteration), count=1), context)
     assert calls == []
 
     with_sync = TrainStepTiming(cuda_synchronize=True, clock=FakeClock([1.0, 2.0]))
-    with_sync.handle(
-        Event(name="step_start", context=RecordingContext(), payload={"step": 1}, step=1)
-    )
-    with_sync.handle(
-        Event(name="step_end", context=RecordingContext(), payload={"step": 1}, step=1)
-    )
+    with_sync.handle_occurrence(Occurrence(event=Started(iteration), count=1), context)
+    with_sync.handle_occurrence(Occurrence(event=Ended(iteration), count=1), context)
     assert calls == ["sync", "sync"]

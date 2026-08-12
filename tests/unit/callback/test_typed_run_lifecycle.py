@@ -458,7 +458,6 @@ class _RunLevelStateful(StatefulCallback[_ForeignState]):
 
     def __init__(self) -> None:
         super().__init__(
-            triggers=(),
             typed_groups=(
                 SubscriptionGroup(selectors=(Subscription.of(EvaluationStarted),)),
                 SubscriptionGroup(

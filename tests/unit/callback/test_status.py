@@ -334,26 +334,6 @@ def test_status_writes_the_three_statuses_on_the_three_run_boundaries(tmp_path: 
     assert [entry["start_time"] for entry in written] == ["2026-06-11T10:00:00-04:00"] * 3
 
 
-def test_status_writes_nothing_for_the_legacy_run_level_strings(tmp_path: Path) -> None:
-    """The migration MOVED the write; it did not add a second one.
-
-    A callback that kept its ``on_run_end`` while gaining the typed group would
-    write ``status.json`` twice per boundary and pass every other test in this
-    file. `_CallbackCore.handle` dispatches by name, so the check is that the
-    name resolves to nothing.
-    """
-
-    from tpen.callback import Event
-
-    callback = Status(output_path=tmp_path / "status.json", color="never")
-    context = _context(tmp_path)
-
-    for name in ("run_start", "run_end", "run_failed", "exception"):
-        callback.handle(Event(name=name, context=context))
-
-    assert not (tmp_path / "status.json").exists()
-
-
 def test_status_subscribes_the_run_lifecycle_with_the_training_line_off(
     tmp_path: Path,
 ) -> None:
