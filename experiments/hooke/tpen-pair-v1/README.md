@@ -17,9 +17,9 @@ allocation.
 ## Common launcher shape
 
 Run this from the repository checkout inside the allocation. `--python` is the
-already-provisioned facility or overlay interpreter. The number of workers is
-the number of `--visibility-values`; `--workers` may be supplied to assert the
-expected count.
+already-provisioned facility or overlay interpreter. This smoke has one task
+and one allocation worker; pass exactly one `--visibility-values` entry so the
+device binding is deterministic.
 
 ```bash
 python experiments/hooke/tpen-pair-v1/launch.py \
@@ -64,8 +64,8 @@ stack rather than copying this example's `cu126` blindly.
 
 Provision the system-site-packages overlay on a login node as documented in
 the root README, then submit an allocation with an operator-supplied account,
-queue, and Eagle run root. Polaris's four-worker binding is deliberately
-reverse ordered:
+queue, and Eagle run root. For this single-task smoke, choose one allocated
+GPU explicitly:
 
 ```bash
 qsub -A <polaris-account> -q <queue> -l \
@@ -78,7 +78,7 @@ cd "$TPEN_CHECKOUT"
   --python "$TPEN_PYTHON" --results-root "$TPEN_RUNS" \
   --run-id <run-id> --device cuda \
   --visibility-variable CUDA_VISIBLE_DEVICES \
-  --visibility-values 3 2 1 0 --workers 4 \
+  --visibility-values 3 \
   --deadline-env-var PBS_WALLTIME
 PBS
 ```
@@ -105,14 +105,14 @@ cd "$TPEN_CHECKOUT"
   --python "$TPEN_PYTHON" --results-root "$TPEN_RUNS" \
   --run-id <run-id> --device xpu \
   --visibility-variable ZE_AFFINITY_MASK \
-  --visibility-values 0 1 2 3 --workers 4 \
+  --visibility-values 0 \
   --deadline-env-var PBS_WALLTIME
 PBS
 ```
 
-The `ZE_AFFINITY_MASK` values are allocation-local worker bindings. Confirm
-the facility's supported mask syntax before running a real job; the launcher
-passes each value to its worker unchanged.
+The `ZE_AFFINITY_MASK` value is an allocation-local binding. Confirm the
+facility's supported mask syntax before running a real job; the launcher
+passes the one value to its one worker unchanged.
 
 ## OLCF Frontier — Slurm + ROCm overlay
 

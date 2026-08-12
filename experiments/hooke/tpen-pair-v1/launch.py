@@ -47,11 +47,16 @@ def _non_empty(value: str, name: str) -> str:
 
 
 def _visibility_values(raw: Sequence[str]) -> tuple[str, ...]:
-    """Normalize visibility values while rejecting empty worker bindings."""
+    """Normalize the one visibility value required by the smoke."""
 
     values = tuple(value.strip() for value in raw)
     if not values or any(not value for value in values):
         raise ValueError("--visibility-values must contain non-empty values")
+    if len(values) != 1:
+        raise ValueError(
+            "pair-v1 smoke runs a single task on a single device; "
+            "provide exactly one --visibility-values entry"
+        )
     return values
 
 
@@ -64,19 +69,6 @@ def _outside_checkout(results_root: Path, checkout: Path) -> Path:
     except ValueError:
         return resolved
     raise ValueError(f"results root must be outside repository checkout: {resolved}")
-
-
-def _worker_count(args: argparse.Namespace, values: tuple[str, ...]) -> int:
-    """Resolve and validate the allocation worker count."""
-
-    workers = len(values) if args.workers is None else int(args.workers)
-    if workers <= 0:
-        raise ValueError("--workers must be positive")
-    if workers != len(values):
-        raise ValueError(
-            f"worker/visibility-value count mismatch: {workers} workers, {len(values)} values"
-        )
-    return workers
 
 
 def build_command(args: argparse.Namespace, results_root: Path) -> tuple[str, ...]:
@@ -105,11 +97,9 @@ def build_plan(args: argparse.Namespace, *, checkout: Path | None = None) -> tup
     """
 
     checkout = (checkout or repository_root()).resolve()
-    python = _non_empty(str(args.python), "--python")
     run_id = _non_empty(str(args.run_id), "--run-id")
     visibility_variable = _non_empty(str(args.visibility_variable), "--visibility-variable")
     values = _visibility_values(args.visibility_values)
-    _worker_count(args, values)
     results_root = _outside_checkout(Path(args.results_root), checkout)
     run_root = results_root / run_id
     command = build_command(args, results_root)
@@ -153,7 +143,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=("cuda", "xpu"), required=True)
     parser.add_argument("--visibility-variable", required=True)
     parser.add_argument("--visibility-values", nargs="+", required=True)
-    parser.add_argument("--workers", type=int, help="Expected allocation worker count")
     parser.add_argument("--deadline")
     parser.add_argument("--deadline-env-var")
     parser.add_argument("--pass-id", default="pass-1")
@@ -172,11 +161,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"results_root={plan.results_root}")
             print(f"visibility={args.visibility_variable}:{','.join(args.visibility_values)}")
             return 0
+        visibility_value = _visibility_values(args.visibility_values)[0]
         AllocationPoolExecutor(
             pass_id=args.pass_id,
-            n_workers=len(args.visibility_values),
+            n_workers=1,
             visibility_variable=args.visibility_variable,
-            visibility_values=args.visibility_values,
+            visibility_values=(visibility_value,),
             run_root=plan.results_root,
             working_directory=str(repository_root()),
             deadline=args.deadline,

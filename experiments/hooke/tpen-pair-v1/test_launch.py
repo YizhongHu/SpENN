@@ -36,8 +36,7 @@ def _args(tmp_path: Path, **overrides: object):
         "run_id": "smoke-001",
         "device": "cuda",
         "visibility_variable": "CUDA_VISIBLE_DEVICES",
-        "visibility_values": ["0", "1"],
-        "workers": None,
+        "visibility_values": ["0"],
         "deadline": None,
         "deadline_env_var": None,
         "pass_id": "pass-test",
@@ -95,8 +94,8 @@ def test_results_root_and_worker_bindings_are_validated(tmp_path: Path) -> None:
     checkout.mkdir()
     with pytest.raises(ValueError, match="outside repository"):
         launch.build_plan(_args(tmp_path, results_root=str(checkout / "results")), checkout=checkout)
-    with pytest.raises(ValueError, match="count mismatch"):
-        launch.build_plan(_args(tmp_path, workers=3), checkout=checkout)
+    with pytest.raises(ValueError, match="single task on a single device"):
+        launch.build_plan(_args(tmp_path, visibility_values=["0", "1"]), checkout=checkout)
     with pytest.raises(ValueError, match="outside repository"):
         launch.build_plan(_args(tmp_path, results_root="."), checkout=Path.cwd())
 
@@ -129,7 +128,6 @@ def test_deadline_arguments_are_forwarded_to_allocation_executor(tmp_path: Path,
             "CUDA_VISIBLE_DEVICES",
             "--visibility-values",
             "0",
-            "1",
             "--deadline",
             "2030-01-01T00:00:00Z",
             "--deadline-env-var",
@@ -138,7 +136,39 @@ def test_deadline_arguments_are_forwarded_to_allocation_executor(tmp_path: Path,
     ) == 0
     assert captured["deadline"] == "2030-01-01T00:00:00Z"
     assert captured["deadline_env_var"] == "PBS_WALLTIME"
-    assert captured["n_workers"] == 2
+    assert captured["n_workers"] == 1
+    assert captured["visibility_values"] == ("0",)
+
+
+def test_single_visibility_value_binds_one_deterministic_worker(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def submit(self, plan, tasks, request):
+            return ()
+
+    monkeypatch.setattr(launch, "AllocationPoolExecutor", FakeExecutor)
+    launch.main(
+        [
+            "--python",
+            sys.executable,
+            "--results-root",
+            str(tmp_path / "results"),
+            "--run-id",
+            "one-device",
+            "--device",
+            "cuda",
+            "--visibility-variable",
+            "CUDA_VISIBLE_DEVICES",
+            "--visibility-values",
+            "3",
+        ]
+    )
+    assert captured["n_workers"] == 1
+    assert captured["visibility_values"] == ("3",)
 
 
 def _pool_task(tmp_path: Path, run_id: str, script: Path, output: Path) -> TaskSpec:
@@ -214,7 +244,6 @@ def test_launcher_has_no_scheduler_invocation(monkeypatch, tmp_path: Path) -> No
             "ZE_AFFINITY_MASK",
             "--visibility-values",
             "0",
-            "1",
             "--dry-run",
         ]
     ) == 0
