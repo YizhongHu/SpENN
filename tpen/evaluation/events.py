@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from tpen.evaluation.results import EvaluationFailure
+from tpen.evaluation.results import EvaluationFailure, EvaluationStatus
 from tpen.events import Event, Operation
 
 
@@ -138,14 +138,19 @@ class EvaluationStarted(Event):
 class EvaluationCompleted(Event):
     """The evaluation suite ran every task it was going to run and returned.
 
-    Emitted only on the success path. There is deliberately no suite-level
-    failure event: a failed suite is a *status field* on
-    `tpen.evaluation.results.EvaluationResult`, and no distinct moment exists to
-    attach one to. Minting an event so a subscriber could read that status is
-    precisely the manufacturing ADR-E007 forbids.
+    Emitted when the evaluator returns, including a suite-level failure. The
+    aggregate status rides this existing point event so subscribers can close
+    their timers with the evaluator's verdict without manufacturing a second
+    lifecycle moment.
+
+    status : EvaluationStatus, optional
+        Aggregate evaluator verdict. The default preserves fieldless callers
+        that construct this event for a successful suite.
 
     See `EvaluationStarted` for why this is a point event and not a scope.
     """
+
+    status: EvaluationStatus = "success"
 
 
 @dataclass(frozen=True)

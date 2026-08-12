@@ -80,9 +80,9 @@ class Evaluate(Runner):
         result = self.evaluator.evaluate(model=self.model, context=context)
         _log_result(context, result, namespace=self.evaluator.namespace)
 
-        # Success path only: a failed suite is a status field on the result, not
-        # a distinct moment (ADR-E007).
-        context.emit(EvaluationCompleted())
+        # The existing completion moment carries the evaluator's aggregate
+        # verdict so timing consumers can close it truthfully.
+        context.emit(EvaluationCompleted(status=result.status))
         return RunResult(status="completed" if result.status != "failed" else "failed")
 
 

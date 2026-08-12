@@ -47,10 +47,12 @@ _STATUS_CALLBACK = {
 }
 
 _ARTIFACT_INDEX_CALLBACK = {"_target_": "tpen.callback.ArtifactIndex"}
+_EVALUATION_TIMING_CALLBACK = {"_target_": "tpen.callback.EvaluationTiming"}
 _METADATA_CALLBACK = {
     "_target_": "tpen.callback.Metadata",
     "output_path": "${run.dir}/metadata.json",
 }
+_JSONL_LOGGER = {"_target_": "tpen.logging.JSONL", "path": "${run.dir}/metrics.jsonl"}
 
 
 class _RaisingGenerator:
@@ -112,6 +114,10 @@ def _run_dir(tmp_path: Path) -> Path:
     return run_dirs[0]
 
 
+def _events(run_dir: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+
+
 def test_a_successful_run_records_completed_and_an_empty_index(tmp_path: Path) -> None:
     """The success path, through the real harness, for both callbacks at once.
 
@@ -132,6 +138,10 @@ def test_a_successful_run_records_completed_and_an_empty_index(tmp_path: Path) -
     assert status["exception_type"] is None
     assert status["exception_message"] is None
 
+    run_end = [event for event in _events(run_dir) if event["event"] == "run_end"]
+    assert len(run_end) == 1
+    assert run_end[0]["payload"] == {"status": "completed"}
+
     assert json.loads((run_dir / "diagnostics" / "index.json").read_text()) == {"tasks": []}
 
 
@@ -140,7 +150,8 @@ def test_a_failed_evaluation_suite_returns_nonzero_and_records_failed(tmp_path: 
 
     cfg = _cfg(
         tmp_path,
-        callbacks=[_STATUS_CALLBACK, _METADATA_CALLBACK],
+        callbacks=[_STATUS_CALLBACK, _METADATA_CALLBACK, _EVALUATION_TIMING_CALLBACK],
+        loggers=[_JSONL_LOGGER],
         evaluator={
             "_target_": "tpen.evaluation.Evaluator",
             "namespace": "eval",
@@ -156,6 +167,16 @@ def test_a_failed_evaluation_suite_returns_nonzero_and_records_failed(tmp_path: 
     assert status["status"] == "failed"
     assert status["current_event"] == "run_end"
     assert metadata["status"] == "failed"
+
+    run_end = [event for event in _events(run_dir) if event["event"] == "run_end"]
+    assert len(run_end) == 1
+    assert run_end[0]["payload"] == {"status": "failed"}
+
+    metrics = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines()]
+    eval_perf = [record for record in metrics if record["namespace"] == "eval/perf"]
+    assert eval_perf[-1]["metrics"]["failed"] is True
+    suite_status = [record for record in metrics if record["namespace"] == "eval/status"]
+    assert suite_status[-1]["metrics"]["suite_failed"] is True
 
 
 def test_a_run_that_fails_inside_the_runner_records_failed(tmp_path: Path) -> None:
