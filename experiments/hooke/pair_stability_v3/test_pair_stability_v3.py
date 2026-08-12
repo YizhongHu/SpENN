@@ -2271,20 +2271,8 @@ def test_validation_config_wires_profiling_callbacks() -> None:
     assert "spenn.callback.EvaluationComponentTiming" in targets
     assert "spenn.callback.ResourceUsage" in targets
     diagnostic_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.DiagnosticTiming")
-    assert diagnostic_timing["triggers"] == ["task_start", "task_end", "task_failed"], (
-        "DiagnosticTiming must subscribe to the composable evaluator's task_* events; "
-        "the diagnostic_* triggers never fire on this path"
-    )
+    assert "triggers" not in diagnostic_timing
     component_timing = next(
         entry for entry in entries if entry["_target_"] == "spenn.callback.EvaluationComponentTiming"
     )
-    assert set(component_timing["triggers"]) == {
-        "generator_start",
-        "generator_end",
-        "calculator_start",
-        "calculator_end",
-        "summary_start",
-        "summary_end",
-        "task_end",
-        "task_failed",
-    }
+    assert "triggers" not in component_timing

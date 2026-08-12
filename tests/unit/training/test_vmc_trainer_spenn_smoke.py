@@ -339,26 +339,27 @@ def test_vmc_trainer_scopes_every_training_phase() -> None:
 
 def test_vmc_trainer_step_end_failure_skips_completion_but_ends_iteration() -> None:
     model = build_tiny_spenn()
-    sampler = build_tiny_sampler()
+
+    class _FailingSampler:
+        def collect_samples(self, model, *, device=None):
+            del model, device
+            raise RuntimeError("sample collection failed")
+
+    sampler = _FailingSampler()
     terms = [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()]
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     trainer = VMCTrainer(max_steps=1, log_every_n_steps=1)
     context = _StubContext()
 
-    def emit(name: str, *, state=None, payload=None, step=None) -> None:
-        del state, payload, step
-        context.trace.append(("legacy", name))
-        if name == "step_end":
-            raise RuntimeError("legacy step_end failed")
-
-    trainer.fit(
-        model=model,
-        sampler=sampler,
-        hamiltonian_terms=terms,
-        optimizer=optimizer,
-        context=context,
-        emit=emit,
-    )
+    with pytest.raises(RuntimeError, match="sample collection failed"):
+        trainer.fit(
+            model=model,
+            sampler=sampler,
+            hamiltonian_terms=terms,
+            optimizer=optimizer,
+            context=context,
+            emit=lambda *args, **kwargs: pytest.fail("legacy emit site was used"),
+        )
 
     assert not any(
         isinstance(occurrence.event, TrainingIterationCompleted)

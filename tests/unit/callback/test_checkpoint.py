@@ -23,6 +23,7 @@ from tpen.checkpoint import (
     save_checkpoint,
     stable_config_hash,
 )
+from tpen.checkpoint.events import LoadStarted, LoadSucceeded
 from tpen.checkpoint.artifact import prune_old_checkpoints, write_latest
 from tpen.checkpoint.manifest import LEGACY_CHECKPOINT_KIND, LEGACY_CHECKPOINT_SCHEMA_VERSION
 from tpen.checkpoint.rng import (
@@ -159,8 +160,9 @@ def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:
     fresh = torch.nn.Linear(3, 2).double()
     events = []
 
-    def emit(name, context, *, payload=None):
-        events.append((name, payload))
+    def emit(event, *, state=None):
+        del state
+        events.append(event)
 
     report = restore_checkpoint_with_events(
         load={"path": str(root), "mode": "model_only", "strict": True},
@@ -170,10 +172,12 @@ def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:
     )
 
     assert report.loaded_model is True
-    assert [name for name, _ in events] == ["load_start", "load_success"]
-    assert events[0][1] == {"path": str(root), "mode": "model_only", "strict": True}
-    assert events[1][1] == {
-        "path": str(root),
+    assert [type(event) for event in events] == [LoadStarted, LoadSucceeded]
+    assert events[0].path == str(root)
+    assert events[0].mode == "model_only"
+    assert events[0].strict is True
+    assert events[1].path == str(root)
+    assert events[1].report.to_dict() == {
         "resolved_checkpoint_dir": str(root / "step_000003"),
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "next_iteration": 3,

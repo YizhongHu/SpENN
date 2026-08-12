@@ -177,7 +177,7 @@ class Status(StatefulCallback[TrainerState]):
         self.start_time: str | None = None
 
     def handle_stateless_occurrence_impl(
-        self, occurrence: Occurrence[TypedEvent], context: RunContext
+        self, occurrence: Occurrence[TypedEvent], context: Any
     ) -> None:
         """Write the status artifact and terminal line for one run boundary."""
 
@@ -252,7 +252,7 @@ class Status(StatefulCallback[TrainerState]):
     def handle_occurrence_impl(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: RunContext,
+        context: Any,
         state: TrainerState,
     ) -> None:
         """Write one compact training status line for a completed iteration."""

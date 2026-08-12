@@ -140,7 +140,7 @@ def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_pa
             raise AssertionError("optimizer should not be constructed")
 
     optimizer = _OptimizerFactory()
-    recorder = _EventRecorder()
+    recorder = _TypedOccurrenceRecorder()
     context, _ = _recording_context(tmp_path, [recorder])
     runner = Train(
         model=nn.LazyLinear(1),
@@ -154,11 +154,11 @@ def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_pa
         runner.run(context)
 
     assert optimizer.called is False
-    assert recorder.events == ["run_start"]
+    assert recorder.seen == []
 
 
 def test_evaluation_started_is_emitted_after_model_ready(tmp_path: Path) -> None:
-    recorder = _EventRecorder()
+    recorder = _TypedOccurrenceRecorder()
     typed = _TypedOccurrenceRecorder()
     context, _ = _recording_context(tmp_path, [recorder, typed])
     runner = Evaluate(
@@ -169,7 +169,7 @@ def test_evaluation_started_is_emitted_after_model_ready(tmp_path: Path) -> None
     with pytest.raises(RuntimeError, match="uninitialized"):
         runner.run(context)
 
-    assert recorder.events == ["run_start"]
+    assert recorder.seen == []
     # The lazy model is rejected before evaluation begins, so the typed suite
     # boundary is never reached either.
     assert typed.seen == []
@@ -225,7 +225,7 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Pa
     assert calls and calls[0]["model"] is runner.model
     assert calls[0]["trainer"] is runner.trainer
     assert calls[0]["sampler"] is runner.sampler
-    assert calls[0]["emit"] == runner.emit
+    assert calls[0]["emit"].__self__ is context
 
 
 def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:
@@ -252,7 +252,7 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: P
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
     assert "sampler" not in calls[0]
-    assert calls[0]["emit"] == runner.emit
+    assert calls[0]["emit"].__self__ is context
 
 
 def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: Path) -> None:
