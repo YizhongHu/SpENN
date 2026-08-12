@@ -6,7 +6,6 @@ import logging
 import random
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from collections.abc import Callable
 from typing import Any, ClassVar, Generic, Protocol, final, runtime_checkable
 
 from tpen.artifacts import RunContext
@@ -33,10 +32,8 @@ class CallbackContext(Protocol):
 
     metadata: Any
 
-    # A callable-valued member is intentional: lightweight unit-test contexts
-    # provide this method as an instance attribute, while typeguard's Protocol
-    # method checker inspects the stand-in class rather than the instance.
-    now_iso: Callable[[], str]
+    def now_iso(self) -> str:
+        """Return the current run timestamp in the configured timezone."""
 
 
 @dataclass
