@@ -173,6 +173,17 @@ def test_prepare_run_context_default_run_name_is_tpen_run(tmp_path: Path) -> Non
     assert context.metadata.run_name == "tpen_run"
 
 
+def test_prepare_run_context_null_run_name_falls_back_to_experiment_name(tmp_path: Path) -> None:
+    cfg = _run_cfg(tmp_path)
+    cfg.experiment.run_name = None
+
+    context = prepare_run_context(cfg, config_path="test.yaml", command="pytest")
+
+    assert context.metadata.run_name == "metadata"
+    assert context.cfg.experiment.run_name == "metadata"
+    assert context.metadata.run_id.split("_")[2] == "metadata"
+
+
 def _run_cfg(tmp_path: Path) -> DictConfig:
     return OmegaConf.create(
         {
