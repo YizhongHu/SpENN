@@ -11,7 +11,6 @@ from tpen.callback import (
     DiagnosticTiming,
     EvaluationComponentTiming,
     EvaluationTiming,
-    Event,
     RunTiming,
     Status,
     TrainPhaseTiming,
@@ -173,11 +172,15 @@ def test_run_timing_logs_one_failed_record_per_failed_run() -> None:
 def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     context = RecordingContext()
     callback = TrainStepTiming(rolling_window=2, clock=FakeClock([1.0, 1.5, 3.0, 4.0]))
+    state = training_state()
 
-    callback.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    callback.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
-    callback.handle(Event(name="step_start", context=context, payload={"step": 2}, step=2))
-    callback.handle(Event(name="step_end", context=context, payload={"step": 2}, step=2))
+    for count, step in ((1, 1), (2, 2)):
+        callback.handle_occurrence(
+            Occurrence(event=Started(TrainingIteration(step=step)), count=count), context, state
+        )
+        callback.handle_occurrence(
+            Occurrence(event=Ended(TrainingIteration(step=step)), count=count), context, state
+        )
 
     assert context.by_namespace("train/perf") == [
         {
@@ -193,36 +196,31 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
             "event": None,
         },
     ]
+    assert state.timing is not None
+    assert state.timing.step_time_sec_rolling_mean == 0.75
 
 
-def test_train_step_timing_no_longer_feeds_the_status_line(
+def test_train_step_timing_feeds_status_line_through_typed_state(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``train/perf`` reaches the loggers, and no longer reaches `Status`.
-
-    It used to travel between these two callbacks on the shared legacy
-    ``step_end`` payload, which one mutated in place and the other re-parsed --
-    the untyped inter-callback side channel ADR-E007 rejects. `Status` now
-    receives a typed occurrence, which has no payload, so the two ``train/perf``
-    identities in its default include list cannot render. The METRIC itself is
-    unaffected: `TrainStepTiming` still logs it to every configured logger,
-    which is what the first assertion pins.
-
-    Recorded as a test rather than left as an absence, so restoring the line is
-    a deliberate, findable change instead of a gap nobody notices.
-    """
+    """Timing reaches `Status` through the typed `TrainerState` contract."""
 
     context = RecordingContext()
     timing = TrainStepTiming(clock=FakeClock([1.0, 1.25]))
     status = Status(include=["train/perf/step_time_sec"], color="never", train_lines=True)
+    state = training_state(step=1)
 
-    timing.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    timing.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
+    timing.handle_occurrence(
+        Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
+    )
+    timing.handle_occurrence(
+        Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
+    )
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        deliver_completed_iteration(status, context, training_state(step=1), step=1)
+        deliver_completed_iteration(status, context, state, step=1)
 
     assert context.latest("train/perf")["step_time_sec"] == 0.25
-    assert not caplog.records
+    assert caplog.records[-1].getMessage() == "[train] step=1 step_time=0.25"
 
 
 def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:
@@ -656,19 +654,21 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
     )
 
     no_sync = TrainStepTiming(cuda_synchronize=False, clock=FakeClock([1.0, 2.0]))
-    no_sync.handle(
-        Event(name="step_start", context=RecordingContext(), payload={"step": 1}, step=1)
+    context = RecordingContext()
+    state = training_state()
+    no_sync.handle_occurrence(
+        Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
     )
-    no_sync.handle(
-        Event(name="step_end", context=RecordingContext(), payload={"step": 1}, step=1)
+    no_sync.handle_occurrence(
+        Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
     )
     assert calls == []
 
     with_sync = TrainStepTiming(cuda_synchronize=True, clock=FakeClock([1.0, 2.0]))
-    with_sync.handle(
-        Event(name="step_start", context=RecordingContext(), payload={"step": 1}, step=1)
+    with_sync.handle_occurrence(
+        Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
     )
-    with_sync.handle(
-        Event(name="step_end", context=RecordingContext(), payload={"step": 1}, step=1)
+    with_sync.handle_occurrence(
+        Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
     )
     assert calls == ["sync", "sync"]

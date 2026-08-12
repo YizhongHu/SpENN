@@ -30,9 +30,7 @@ class RunTiming(Callback):
     ``wall_time_sec``, so the duplicate was not even byte-identical. One typed
     `tpen.run_events.RunFailed` collapses it. No metric name changes.
 
-    The ``_attach_event_metrics`` mirror into the legacy payload is dropped with
-    the migration: a typed occurrence has no payload, and ``metrics_by_namespace``
-    has had zero readers since PR #181.
+    Runtime timing is logger-owned and is not an inter-callback contract.
 
     Parameters
     ----------

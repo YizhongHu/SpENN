@@ -51,11 +51,7 @@ class ResourceUsage(Callback):
     metric name changes and no series disappears -- one record per failed run
     replaces two identical ones.
 
-    The migration also drops the ``_attach_event_metrics`` call that mirrored
-    these metrics into the legacy event payload. A typed occurrence has no
-    payload, and ``metrics_by_namespace`` has had ZERO readers since PR #181
-    moved `tpen.callback.Status` off the legacy ``step_end`` payload, so nothing
-    observed it.
+    These metrics are logger-owned; they are not an inter-callback contract.
 
     Parameters
     ----------

@@ -12,6 +12,14 @@ from tpen.events import DomainState
 from tpen.sampling.stats import SamplerStats
 
 
+@dataclass(frozen=True)
+class TrainingTiming:
+    """Whole-iteration timing published on the typed training state."""
+
+    step_time_sec: float
+    step_time_sec_rolling_mean: float
+
+
 @dataclass
 class TrainerState(DomainState):
     """Snapshot of the VMC training loop at one step.
@@ -53,6 +61,9 @@ class TrainerState(DomainState):
     sampler_stats : SamplerStats or None, optional
         Most recent typed sampler diagnostics, or ``None`` before the first
         collection.
+    timing : TrainingTiming or None, optional
+        Most recent whole-iteration timing, or ``None`` before the first
+        completed iteration.
     """
 
     step: int = -1
@@ -67,6 +78,7 @@ class TrainerState(DomainState):
     loss: torch.Tensor | None = None
     wavefunction_output: WavefunctionOutput | None = None
     sampler_stats: SamplerStats | None = None
+    timing: TrainingTiming | None = None
 
 
-__all__ = ["TrainerState"]
+__all__ = ["TrainerState", "TrainingTiming"]

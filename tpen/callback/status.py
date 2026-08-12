@@ -102,18 +102,10 @@ class Status(StatefulCallback[TrainerState]):
     ``train_lines`` replaces the former string selector for step completion
     the training line, as a semantic option rather than an event selector.
 
-    One capability was lost in the migration and is recorded here rather than
-    silently dropped. The training line used to also render metrics that other
-    CALLBACKS attached to the shared legacy ``step_end`` payload -- in practice
-    ``train/perf/step_time_sec`` and ``train/perf/step_time_sec_rolling_mean``
-    from `tpen.callback.timing.TrainStepTiming`. That inter-callback side
-    channel is the untyped payload dict ADR-E007 rejects, and a typed occurrence
-    has no payload to replace it with, so those two keys cannot currently
-    render. They stay in `_DEFAULT_STATUS_METRICS` because they name real
-    published metrics that a typed route would restore; the metrics themselves
-    are unaffected, since ``TrainStepTiming`` still logs them to every
-    configured logger. No shipped config renders a training line today, so no
-    run's terminal output changes.
+    ``TrainStepTiming`` publishes its two whole-iteration values as the typed
+    ``TrainerState.timing`` record before ``TrainingIterationCompleted`` is
+    delivered. This keeps the terminal line on the same typed state route as
+    the other training metrics without a mutable event payload side channel.
     """
 
     # ClassVar: the runtime authority for typed state delivery.
@@ -308,10 +300,6 @@ _DEFAULT_STATUS_METRICS = (
     "train/sampler/acceptance_rate",
     "train/grad_norm",
     "train/local_energy_finite_fraction",
-    # The two `train/perf` identities below name real published metrics but
-    # cannot currently render: they reached this callback only through the
-    # legacy `step_end` payload another callback mutated in place, and a typed
-    # occurrence has no payload. See the note on `Status`.
     "train/perf/step_time_sec",
     "train/perf/step_time_sec_rolling_mean",
 )
@@ -468,6 +456,10 @@ def _training_metric_values(state: TrainerState) -> dict[str, object]:
     if sampler_stats is not None:
         for key, value in sampler_stats.as_metrics().items():
             values[f"train/sampler/{key}"] = value
+    timing = state.timing
+    if timing is not None:
+        values["train/perf/step_time_sec"] = timing.step_time_sec
+        values["train/perf/step_time_sec_rolling_mean"] = timing.step_time_sec_rolling_mean
     return values
 
 
