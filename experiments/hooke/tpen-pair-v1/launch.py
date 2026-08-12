@@ -207,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"visibility={args.visibility_variable}:{','.join(args.visibility_values)}")
             return 0
         visibility_value = _visibility_values(args.visibility_values)[0]
-        AllocationPoolExecutor(
+        records = AllocationPoolExecutor(
             pass_id=args.pass_id,
             n_workers=1,
             visibility_variable=args.visibility_variable,
@@ -218,9 +218,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             deadline_env_var=args.deadline_env_var,
             allocation_id=args.allocation_id,
         ).submit(plan, plan.tasks, request)
+        if not records:
+            return 0
+        return int(
+            not all(
+                type(record.metadata.get("returncode")) is int
+                and record.metadata["returncode"] == 0
+                for record in records
+            )
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    return 0
 
 
 if __name__ == "__main__":
