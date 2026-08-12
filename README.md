@@ -544,3 +544,23 @@ compatible with each other.
 
 Metric naming and logger conventions are documented in
 [`tpen/metrics_naming.md`](tpen/metrics_naming.md).
+
+### FASRC Cannon provisioning and smoke orientation
+
+Cannon provisioning and the allocation-local pair-v1 smoke are operator
+actions: supply the project account, partition, CUDA module/extra, overlay
+location, and results root at run time. Do not commit those values. Inside an
+existing GPU allocation, use the tracked [pair-v1 allocation runbook](experiments/hooke/tpen-pair-v1/README.md)
+and its single launcher; the launcher never provisions or submits Slurm jobs.
+Keep run data outside the checkout and pass the allocation's visible device
+values through `--visibility-values` and `CUDA_VISIBLE_DEVICES`.
+
+### ALCF Aurora provisioning and smoke orientation
+
+Aurora uses the facility-provided Python/Intel overlay and PBS. Provision the
+overlay and load its required runtime modules before entering the allocation;
+pass the operator-supplied account, queue, filesystem, and Eagle run root on
+the `qsub` command line. The [pair-v1 allocation runbook](experiments/hooke/tpen-pair-v1/README.md)
+uses `--device xpu` with per-worker `ZE_AFFINITY_MASK` values. No Aurora
+account, path, module version, or provisioning default is committed, and the
+launcher does not invoke PBS or perform provisioning.
