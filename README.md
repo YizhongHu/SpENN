@@ -74,10 +74,13 @@ Do not add `UV_PYTHON_PREFERENCE=only-system` alongside these. On Polaris's
 facility uv 0.8.23, the combination is rejected before resolution:
 
 ```text
-error: the argument `UV_NO_MANAGED_PYTHON` (environment variable) cannot be used with `--python-preference`
+error: the argument '--python-preference <PYTHON_PREFERENCE>' cannot be used with '--no-managed-python'
 ```
 
 `UV_NO_MANAGED_PYTHON=1` already overrides the committed `python-preference`.
+The same conflict was independently recorded on Cannon with uv 0.11.16, where
+the wording is reversed: `error: the argument UV_NO_MANAGED_PYTHON
+(environment variable) cannot be used with --python-preference`.
 
 The Frontier profile remains documented but **has not been executed on Frontier
 hardware**. The ROCm module version, Frontier's uv version, the facility
