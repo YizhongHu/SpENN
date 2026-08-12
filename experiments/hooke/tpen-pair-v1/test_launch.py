@@ -40,6 +40,7 @@ def _args(tmp_path: Path, **overrides: object):
         "deadline": None,
         "deadline_env_var": None,
         "pass_id": "pass-test",
+        "allocation_id": "allocation-test",
         "dry_run": False,
     }
     values.update(overrides)
@@ -93,6 +94,8 @@ def test_dry_run_prints_the_submitted_argv_without_executing_it(
             "ZE_AFFINITY_MASK",
             "--visibility-values",
             "0",
+            "--allocation-id",
+            "allocation-dry-run",
             "--dry-run",
         ]
     ) == 0
@@ -141,6 +144,8 @@ def test_deadline_arguments_are_forwarded_to_allocation_executor(tmp_path: Path,
             "CUDA_VISIBLE_DEVICES",
             "--visibility-values",
             "0",
+            "--allocation-id",
+            "allocation-deadline",
             "--deadline",
             "2030-01-01T00:00:00Z",
             "--deadline-env-var",
@@ -151,6 +156,7 @@ def test_deadline_arguments_are_forwarded_to_allocation_executor(tmp_path: Path,
     assert captured["deadline_env_var"] == "PBS_WALLTIME"
     assert captured["n_workers"] == 1
     assert captured["visibility_values"] == ("0",)
+    assert captured["allocation_id"] == "allocation-deadline"
 
 
 def test_single_visibility_value_binds_one_deterministic_worker(tmp_path: Path, monkeypatch) -> None:
@@ -178,10 +184,18 @@ def test_single_visibility_value_binds_one_deterministic_worker(tmp_path: Path, 
             "CUDA_VISIBLE_DEVICES",
             "--visibility-values",
             "3",
+            "--allocation-id",
+            "allocation-one-device",
         ]
     )
     assert captured["n_workers"] == 1
     assert captured["visibility_values"] == ("3",)
+    assert captured["allocation_id"] == "allocation-one-device"
+
+
+def test_interpreter_must_be_absolute(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="absolute path"):
+        launch.build_plan(_args(tmp_path, python="python"), checkout=tmp_path / "checkout")
 
 
 def _pool_task(tmp_path: Path, run_id: str, script: Path, output: Path) -> TaskSpec:
@@ -257,6 +271,8 @@ def test_launcher_has_no_scheduler_invocation(monkeypatch, tmp_path: Path) -> No
             "ZE_AFFINITY_MASK",
             "--visibility-values",
             "0",
+            "--allocation-id",
+            "allocation-dry-run",
             "--dry-run",
         ]
     ) == 0

@@ -29,6 +29,7 @@ python experiments/hooke/tpen-pair-v1/launch.py \
   --device cuda \
   --visibility-variable CUDA_VISIBLE_DEVICES \
   --visibility-values 0 \
+  --allocation-id <scheduler-allocation-id> \
   --deadline-env-var SLURM_JOB_END_TIME \
   --pass-id smoke-pass-1
 ```
@@ -52,6 +53,7 @@ export UV_PROJECT_ENVIRONMENT=<operator-cuda-overlay>
   --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
   --results-root <operator-run-root> --run-id <run-id> --device cuda \
   --visibility-variable CUDA_VISIBLE_DEVICES --visibility-values 0 \
+  --allocation-id "$SLURM_JOB_ID" \
   --deadline-env-var SLURM_JOB_END_TIME
 '
 ```
@@ -79,6 +81,7 @@ cd "$TPEN_CHECKOUT"
   --run-id <run-id> --device cuda \
   --visibility-variable CUDA_VISIBLE_DEVICES \
   --visibility-values 3 \
+  --allocation-id "$PBS_JOBID" \
   --deadline-env-var PBS_WALLTIME
 PBS
 ```
@@ -106,6 +109,7 @@ cd "$TPEN_CHECKOUT"
   --run-id <run-id> --device xpu \
   --visibility-variable ZE_AFFINITY_MASK \
   --visibility-values 0 \
+  --allocation-id "$PBS_JOBID" \
   --deadline-env-var PBS_WALLTIME
 PBS
 ```
@@ -129,6 +133,7 @@ cd <checkout>
   --python <rocm-overlay>/bin/python --results-root <operator-run-root> \
   --run-id <run-id> --device cuda \
   --visibility-variable CUDA_VISIBLE_DEVICES --visibility-values 0 \
+  --allocation-id "$SLURM_JOB_ID" \
   --deadline-env-var SLURM_JOB_END_TIME
 '
 ```
