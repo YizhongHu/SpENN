@@ -188,6 +188,7 @@ only `UV_*` settings; `UV_PYTHON_PREFERENCE` was unset. `uv lock --check`,
 `uv venv --system-site-packages`, and `uv sync --inexact --locked` succeeded.
 The overlay inherited facility Torch 2.8.0 (CUDA 12.9) from
 `/soft/applications/conda/2025-09-25/mconda3/lib/python3.12/site-packages`,
+at the measured overlay path `/home/rhu/tpen-facility-proof-20260812/venv`,
 not from a TPEN extra; its recorded facility wheel was
 `torch-2.8.0-cp312-cp312-linux_x86_64.whl`, and the overlay had no `torch*`
 directory. On the login node, device visibility was expectedly zero
