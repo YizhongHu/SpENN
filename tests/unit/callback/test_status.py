@@ -407,4 +407,4 @@ def test_status_keeps_its_domain_group_and_its_run_group_apart(tmp_path: Path) -
     _deliver_run_event(callback, _context(tmp_path), RunCompleted())
     assert json.loads((tmp_path / "status.json").read_text())["status"] == "completed"
 
-    deliver_completed_iteration(callback, RecordingContext(), _train_state(), step=10)
+    deliver_completed_iteration(callback, _context(tmp_path), _train_state(), step=10)
