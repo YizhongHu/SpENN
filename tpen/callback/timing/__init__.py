@@ -6,24 +6,28 @@ from .evaluation_component_timing import EvaluationComponentTiming
 from .evaluation_timing import EvaluationTiming
 from .run_timing import RunTiming
 from .train_phase_timing import TrainPhaseTiming
-from .train_step_timing import TrainStepTiming
 
 
 def __getattr__(name: str) -> object:
     """Load timing callbacks that resolve a domain state class only on demand.
 
     A `tpen.callback.StatefulCallback` declares its ``state_type`` as a ClassVar,
-    which forces the state class to be imported at class-creation time. For the
-    evaluation domain that runs `tpen.evaluation`'s ``__init__``, which pulls in
-    torch, so `DiagnosticTiming` has to be loaded lazily to keep
-    ``import tpen.callback.timing`` torch-free. The callbacks that only need
-    event TYPES resolve those inside their ``__init__`` and stay eager.
+    which forces the state class to be imported at class-creation time.
+    Importing one from either the evaluation or training domain runs that
+    package's ``__init__``, which pulls in torch. `DiagnosticTiming` and
+    `TrainStepTiming` therefore load lazily to keep
+    ``import tpen.callback.timing`` torch-free. Callbacks that only need event
+    TYPES resolve those inside their ``__init__`` and stay eager.
     """
 
     if name == "DiagnosticTiming":
         from .diagnostic_timing import DiagnosticTiming
 
         return DiagnosticTiming
+    if name == "TrainStepTiming":
+        from .train_step_timing import TrainStepTiming
+
+        return TrainStepTiming
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
