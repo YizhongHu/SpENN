@@ -492,8 +492,9 @@ def test_no_migrated_callback_still_answers_a_deleted_trigger(
     would be a regression.
     """
 
+    del triggers
     callback = build()
-    assert callback.triggers == triggers
+    assert not hasattr(callback, "triggers")
     for method in dead:
         assert not hasattr(callback, method), f"{name}.{method} survived the migration"
 
