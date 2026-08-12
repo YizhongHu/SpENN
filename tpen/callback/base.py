@@ -212,7 +212,12 @@ class Callback(_CallbackCore):
     def handle_occurrence(
         self, occurrence: Occurrence[TypedEvent], context: Any
     ) -> None:
-        """Match, gate, and deliver one typed occurrence in group order."""
+        """Match, gate, and deliver one typed occurrence in group order.
+
+        ``context`` is deliberately widened at this final boundary: the
+        runtime context identity is validated before delivery, while concrete
+        hooks retain the precise ``RunContext`` contract.
+        """
 
         self._ensure_typed_context(context)
         for group_state in self._typed_group_states:
@@ -462,7 +467,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
     def handle_occurrence_impl(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: Any,
+        context: RunContext,
         state: StateT,
     ) -> None:
         """Handle one occurrence admitted by a configured typed group."""
