@@ -23,13 +23,29 @@ class TwoParamModule(nn.Module):
         self.b = nn.Parameter(torch.zeros(2, dtype=torch.float64))
 
 
-def _handle(callback: GradientStats, model: nn.Module) -> RecordingContext:
+def _handle(
+    callback: GradientStats, model: nn.Module, *, optimizer_step: bool = True
+) -> RecordingContext:
+    """Deliver one completed iteration to `callback`.
+
+    Parameters
+    ----------
+    optimizer_step : bool, optional
+        Whether this iteration applied an optimizer update, i.e. whether it had
+        gradients to produce. It defaults to ``True`` because that is what an
+        ordinary iteration does; a test of the vacuum-skip path must say
+        ``False`` explicitly, since that is the whole distinction under test.
+    """
+
     context = RecordingContext()
     # ``state.step`` is left at its constructor default on purpose: the logged
     # coordinate must come from the typed event, so a state carrying a
     # different value would expose a callback that read the wrong one.
     deliver_completed_iteration(
-        callback, context, training_state(model=model), step=STEP
+        callback,
+        context,
+        training_state(model=model, optimizer_step=optimizer_step),
+        step=STEP,
     )
     return context
 
@@ -61,12 +77,95 @@ def test_handles_parameters_with_grad_none() -> None:
     assert metrics["global_grad_norm"] == pytest.approx(1.0)
 
 
-def test_no_gradients_passes_with_zero_norm() -> None:
-    metrics = _handle(GradientStats(), TwoParamModule()).latest("checks/gradient")
+def test_vacuum_skip_with_no_gradients_still_passes() -> None:
+    """An iteration that applied no update had nothing to differentiate.
+
+    This is the property the deleted ``test_no_gradients_passes_with_zero_norm``
+    was really protecting, and it must survive the fix: the zero-electron vacuum
+    has ``loss.requires_grad is False``, runs no backward, and leaves every
+    ``.grad`` as ``None``. There were no gradients to look at, so reporting a
+    failure here would be a regression, not a catch.
+    """
+
+    metrics = _handle(
+        GradientStats(), TwoParamModule(), optimizer_step=False
+    ).latest("checks/gradient")
 
     assert metrics["n_grad_tensors"] == 0
     assert metrics["global_grad_norm"] == 0.0
     assert metrics["passed"] is True
+
+
+def test_vacuum_skip_does_not_raise_under_fail_fast() -> None:
+    """The sharp edge of the property above: production sets ``fail_fast: true``.
+
+    ``experiments/hooke/tpen-pair-v1/configs/train.yaml`` runs this callback with
+    ``fail_fast: true``, so a fix that failed the vacuum path would not merely
+    mislabel a metric -- it would abort a legitimate run.
+    """
+
+    metrics = _handle(
+        GradientStats(fail_fast=True, check_finite=True),
+        TwoParamModule(),
+        optimizer_step=False,
+    ).latest("checks/gradient")
+
+    assert metrics["passed"] is True
+
+
+def test_cleared_gradients_on_an_updated_iteration_fail() -> None:
+    """An update ran and consumed gradients, yet none are visible: broken.
+
+    Every statistic is well defined over the empty set -- the norm is ``0.0``
+    and ``nonfinite_grad_fraction`` is ``0.0``, so the finiteness check passes --
+    which is exactly how this state used to report ``passed``. Measured on
+    Cannon three times with ``fail_fast: true`` set and never firing.
+    """
+
+    metrics = _handle(
+        GradientStats(), TwoParamModule(), optimizer_step=True
+    ).latest("checks/gradient")
+
+    assert metrics["n_grad_tensors"] == 0
+    assert metrics["global_grad_norm"] == 0.0
+    assert metrics["passed"] is False
+
+
+def test_fail_fast_raises_when_an_update_ran_but_no_gradients_were_observed() -> None:
+    with pytest.raises(RuntimeError, match="observed no gradients"):
+        _handle(
+            GradientStats(fail_fast=True, check_finite=True),
+            TwoParamModule(),
+            optimizer_step=True,
+        )
+
+
+@pytest.mark.parametrize("optimizer_step", [False, True], ids=["vacuum_skip", "cleared"])
+def test_the_published_key_set_does_not_depend_on_what_was_observed(
+    optimizer_step: bool,
+) -> None:
+    """No metric key was added to mark the distinction, and none may be dropped.
+
+    ``n_grad_tensors`` and ``train/optimizer_step`` already state between them
+    whether anything was observed, so a third spelling would duplicate one fact
+    (ADR-E003, ADR-E006). Pinning the exact key set here is what stops the fix
+    from quietly growing an ``observed`` flag later, and what stops either
+    branch from publishing a step-dependent key set into JSONL/CSV.
+    """
+
+    metrics = _handle(
+        GradientStats(), TwoParamModule(), optimizer_step=optimizer_step
+    ).latest("checks/gradient")
+
+    assert list(metrics) == [
+        "n_grad_tensors",
+        "n_grad_elements",
+        "global_grad_norm",
+        "max_abs_grad",
+        "mean_abs_grad",
+        "nonfinite_grad_fraction",
+        "passed",
+    ]
 
 
 def test_detects_nonfinite_gradients_without_raising() -> None:

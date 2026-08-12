@@ -83,11 +83,11 @@ def test_hooke_models_initialize_and_train_for_small_electron_counts(
         assert "tpen.training.events.UpdateSkipped" not in typed_events
         assert "tpen.training.events.OptimizerUpdate" in scoped_operations
 
-    # Periodic checkpoint cadence is driven by `UpdateCompleted`, so an
+    # Periodic checkpoint eligibility is decided by `UpdateCompleted`, so an
     # iteration that skipped its optimizer update writes no checkpoint at all.
-    # This config wires only a periodic `step_end` Checkpoint, so the vacuum run
-    # produces no checkpoint directory; its counters are pinned by the trainer
-    # unit tests instead.
+    # This config wires a periodic-only Checkpoint (``terminal: false``), so the
+    # vacuum run produces no checkpoint directory; its counters are pinned by
+    # the trainer unit tests instead.
     checkpoint_dir = run_dir / "checkpoints" / "step_000001"
     if n_electrons == 0:
         assert not checkpoint_dir.exists()

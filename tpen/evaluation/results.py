@@ -77,6 +77,16 @@ class SummaryResult:
     records: tuple[dict[str, Any], ...] = ()
 
 
+FAILED_TASK_STATUSES: frozenset[str] = frozenset({"failed", "partial_failed"})
+"""Task statuses that count as a failure wherever one is reported.
+
+Spelled once, next to `TaskStatus`, because four call sites used to re-spell the
+set inline -- including `tpen.callback.timing.DiagnosticTiming`, which publishes
+the durable ``diagnostics/<task>/failed`` flag. A callback disagreeing with the
+evaluator about which statuses are failures would be a silent metric defect.
+"""
+
+
 @dataclass(frozen=True)
 class TaskResult:
     """Result for one evaluation task."""
@@ -88,6 +98,12 @@ class TaskResult:
     metrics: dict[str, MetricScalar]
     artifacts: tuple[ArtifactRecord, ...]
     failures: tuple[EvaluationFailure, ...]
+
+    @property
+    def failed(self) -> bool:
+        """Return whether this task counts as failed for reporting purposes."""
+
+        return self.status in FAILED_TASK_STATUSES
 
     def to_payload(self) -> dict[str, Any]:
         """Return compact event payload data."""
@@ -134,6 +150,7 @@ def _is_json_scalar(value: object) -> bool:
 
 
 __all__ = [
+    "FAILED_TASK_STATUSES",
     "ArtifactRecord",
     "ComponentType",
     "EvaluationFailure",

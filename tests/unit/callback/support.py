@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from tpen.artifacts import RunContext
-from tpen.callback import Event
 from tpen.events import Occurrence
 from tpen.sampling import SamplerStats
 from tpen.training.events import TrainingIteration, TrainingIterationCompleted
@@ -38,31 +36,6 @@ class RecordingContext(RunContext):
         return self.by_namespace(namespace)[-1]["metrics"]
 
 
-@dataclass
-class FakeState:
-    """Mutable stand-in for `TrainerState` carrying step artifacts.
-
-    Only the callbacks still on the legacy string path use this. A callback
-    migrated to `tpen.callback.StatefulCallback` declares
-    ``state_type = TrainerState``, and its ``handle_occurrence_impl`` narrows
-    the parameter to that class, so under typeguard a stand-in would be
-    rejected at delivery. Those tests build a real `TrainerState` with
-    `training_state`.
-    """
-
-    step: int = 1
-    metrics: dict[str, Any] = field(default_factory=dict)
-    model: Any = None
-    optimizer: Any = None
-    sampler: Any = None
-    samples: Any = None
-    batch: Any = None
-    local_energy: Any = None
-    loss: Any = None
-    wavefunction_output: Any = None
-    sampler_stats: SamplerStats | None = None
-
-
 def make_sampler_stats(
     *,
     acceptance_rate: float = 0.5,
@@ -83,19 +56,6 @@ def make_sampler_stats(
         proposal_scale=proposal_scale,
         geometry={} if geometry is None else geometry,
         seed=seed,
-    )
-
-
-def step_event(context: Any, state: Any, step: int | None = None) -> Event:
-    """Build a ``step_end`` event for `state`."""
-
-    resolved = state.step if step is None else step
-    return Event(
-        name="step_end",
-        context=context,
-        state=state,
-        payload={"step": resolved},
-        step=resolved,
     )
 
 

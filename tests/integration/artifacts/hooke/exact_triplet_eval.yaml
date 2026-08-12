@@ -101,10 +101,6 @@ callbacks:
 - _target_: tpen.callback.ArtifactIndex
 - _target_: tpen.callback.FailureLog
 - _target_: tpen.callback.Status
-  triggers:
-  - run_start
-  - run_end
-  - exception
   output_path: ${run.dir}/status.json
 loggers:
 - _target_: tpen.logging.CSV

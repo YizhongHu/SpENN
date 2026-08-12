@@ -23,6 +23,16 @@ saw no gradient tensors at all, yet still logged as if the numbers were valid.
 The whole suite reported ``859 passed, 3 skipped`` in BOTH arms. Not one test
 noticed.
 
+The *second* half of that finding -- that the callback reported ``passed`` while
+observing nothing -- was filed as defect ``933b5f78`` and recorded here rather
+than fixed here. It is fixed now: `tpen.callback.GradientStats` fails when it
+sees no gradients on an iteration whose ``optimizer_step`` is ``True``. The two
+arm-B tests below therefore assert ``passed is False``, and those assertions do
+double duty: they are the only end-to-end check that the trainer still hands the
+callback its ``optimizer_step`` discriminator at all. Drop that one assignment in
+`tpen.training.trainer` and every gradient observation silently becomes
+unfalsifiable again -- these two tests are what notices.
+
 The Event Clock migration preserves that boundary rather than moving it (posture
 A), so the contract survives and is DECLARED here instead of being fixed by
 relocating the observer. Three tests do that job together:
@@ -196,10 +206,11 @@ def test_clearing_gradients_after_the_update_empties_every_gradient_metric(
         assert metrics["n_grad_tensors"] == 0
         assert metrics["n_grad_elements"] == 0
         assert metrics["global_grad_norm"] == 0.0
-        # The defect that makes this invisible in production: a check observing
-        # nothing still reports success. Filed separately as `933b5f78`; pinned
-        # here, not fixed here.
-        assert metrics["passed"] is True
+        # What used to make this invisible in production: a check observing
+        # nothing still reported success (defect `933b5f78`). It now fails,
+        # because this arm's iterations DID apply an optimizer update -- so an
+        # empty gradient set here is a broken observation, not an idle step.
+        assert metrics["passed"] is False
 
     # The control the Cannon probe used. Training itself is untouched by the
     # move -- only what the observer can see changes -- so this must stay
@@ -243,8 +254,10 @@ def test_the_perturbation_moves_only_what_the_observer_sees(tmp_path: Path) -> N
     assert all(count != 0 for count in control_tensors), control_tensors
     assert check_series(perturbed, "n_grad_tensors") == [0] * MAX_STEPS
 
-    # Recorded, not asserted as acceptable: an observer that saw nothing still
-    # reports success. Reproduced a third time by job `38268849`. Defect
-    # `933b5f78` owns the fix; this line only makes it visible at the point
-    # where the emptiness is proven.
-    assert check_series(perturbed, "passed") == [True] * MAX_STEPS
+    # ... and now says so. Defect `933b5f78` was that an observer which saw
+    # nothing still reported success (reproduced a third time by job
+    # `38268849`). Asserted at the point where the emptiness is proven, and
+    # paired with the control arm below so the verdict is shown to track the
+    # observation rather than being uniformly negative.
+    assert check_series(perturbed, "passed") == [False] * MAX_STEPS
+    assert check_series(control, "passed") == [True] * MAX_STEPS
