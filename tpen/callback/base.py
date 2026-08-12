@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Generic, final
+from typing import Any, ClassVar, Generic, Protocol, final, runtime_checkable
 
 from tpen.artifacts import RunContext
 from tpen.events import DomainState, Ended, Started, StateT
@@ -18,6 +18,22 @@ from .cadence import CadenceGate, SubscriptionGroup, validate_subscription_group
 # Named for the same reason `spenn.status` and `spenn.bootstrap` are: a run's
 # logging configuration can silence or route this channel on its own.
 _LOGGER = logging.getLogger("spenn.callback")
+
+
+@runtime_checkable
+class CallbackContext(Protocol):
+    """Minimal context contract shared by typed callback delivery hooks.
+
+    Direct callback tests may use a structural stand-in, while production
+    dispatch supplies :class:`tpen.artifacts.RunContext`. Keeping this contract
+    narrow preserves runtime typeguard checks without requiring unit-only
+    rendering tests to construct the full artifact manager.
+    """
+
+    metadata: Any
+
+    def now_iso(self) -> str:
+        """Return the current run timestamp in the configured timezone."""
 
 
 @dataclass
@@ -416,7 +432,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
     def handle_occurrence(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: Any,
+        context: CallbackContext,
         state: DomainState | None,
     ) -> None:
         """Match, gate, and route one typed occurrence group by group.
@@ -509,7 +525,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
     def handle_occurrence_impl(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: Any,
+        context: CallbackContext,
         state: StateT,
     ) -> None:
         """Handle one occurrence admitted by a configured typed group."""
@@ -517,7 +533,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
         del occurrence, context, state
 
     def handle_stateless_occurrence_impl(
-        self, occurrence: Occurrence[TypedEvent], context: Any
+        self, occurrence: Occurrence[TypedEvent], context: CallbackContext
     ) -> None:
         """Handle one occurrence admitted by a group that declared no state.
 

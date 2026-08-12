@@ -18,7 +18,7 @@ from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.training.events import TrainingIterationCompleted
 from tpen.training.state import TrainerState
 
-from .base import StatefulCallback
+from .base import CallbackContext, StatefulCallback
 from .cadence import StepCadenceGate, SubscriptionGroup, pop_step_cadence
 from .terminal_logging import color_status_line, validate_terminal_choice
 
@@ -178,7 +178,7 @@ class Status(StatefulCallback[TrainerState]):
         self.start_time: str | None = None
 
     def handle_stateless_occurrence_impl(
-        self, occurrence: Occurrence[TypedEvent], context: Any
+        self, occurrence: Occurrence[TypedEvent], context: CallbackContext
     ) -> None:
         """Write the status artifact and terminal line for one run boundary."""
 
@@ -190,7 +190,7 @@ class Status(StatefulCallback[TrainerState]):
         elif isinstance(event, RunFailed):
             self._record_run_failed(context, event)
 
-    def _record_run_start(self, context: Any) -> None:
+    def _record_run_start(self, context: CallbackContext) -> None:
         """Record run start."""
 
         self.start_time = context.now_iso()
@@ -207,7 +207,7 @@ class Status(StatefulCallback[TrainerState]):
             exception_message=None,
         )
 
-    def _record_run_completed(self, context: Any) -> None:
+    def _record_run_completed(self, context: CallbackContext) -> None:
         """Record successful completion."""
 
         self._log_status(_format_run_end(context), kind="completed")
@@ -220,7 +220,7 @@ class Status(StatefulCallback[TrainerState]):
             exception_message=None,
         )
 
-    def _record_run_failed(self, context: Any, event: RunFailed) -> None:
+    def _record_run_failed(self, context: CallbackContext, event: RunFailed) -> None:
         """Record run failure.
 
         The two strings are read off the typed event rather than derived from a
@@ -253,7 +253,7 @@ class Status(StatefulCallback[TrainerState]):
     def handle_occurrence_impl(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: Any,
+        context: CallbackContext,
         state: TrainerState,
     ) -> None:
         """Write one compact training status line for a completed iteration."""
@@ -278,7 +278,7 @@ class Status(StatefulCallback[TrainerState]):
 
     def _write(
         self,
-        context: Any,
+        context: CallbackContext,
         *,
         status: str,
         current_event: str,
@@ -328,7 +328,7 @@ _STATUS_LABELS = {
     "train/perf/step_time_sec_rolling_mean": "step_avg",
 }
 
-def _format_run_start_lines(context: Any, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
+def _format_run_start_lines(context: CallbackContext, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
     metadata = context.metadata
     extra = getattr(metadata, "extra", {}) or {}
     hardware = extra.get("hardware") if isinstance(extra, Mapping) else None
@@ -423,11 +423,11 @@ def _format_run_start_lines(context: Any, *, max_line_width: int = _STATUS_BOX_M
     ]
 
 
-def _format_run_end(context: Any) -> str:
+def _format_run_end(context: CallbackContext) -> str:
     return f"[run] completed dir={context.metadata.run_dir}"
 
 
-def _format_run_failure(context: Any, *, exception_type: str, exception_message: str) -> str:
+def _format_run_failure(context: CallbackContext, *, exception_type: str, exception_message: str) -> str:
     return " ".join(
         [
             "[run] failed",
