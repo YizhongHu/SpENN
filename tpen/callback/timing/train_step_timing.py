@@ -9,7 +9,7 @@ from typing import Any, Callable
 from tpen.artifacts import RunContext
 from tpen.events import Ended, Event as TypedEvent, Occurrence, Started, ended, started
 
-from ..base import Callback, _sync_device
+from .base import Callback, _sync_device
 from ..cadence import SubscriptionGroup
 
 
