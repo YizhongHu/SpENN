@@ -67,10 +67,6 @@ callbacks:
   - exception
   output_path: ${run.dir}/metadata.json
 - _target_: tpen.callback.Status
-  triggers:
-  - run_start
-  - run_end
-  - exception
   output_path: ${run.dir}/status.json
 - _target_: tpen.callback.DataIntegrity
   every_n_steps: 1
@@ -89,8 +85,7 @@ callbacks:
   every_n_steps: 1
   fail_fast: false
 - _target_: tpen.callback.Checkpoint
-  triggers:
-  - step_end
+  terminal: false
   every_n_steps: 1
   output_dir: ${run.dir}/checkpoints
 loggers:

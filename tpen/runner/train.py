@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tpen.artifacts import RunContext, RunResult
-from tpen.checkpoint import restore_checkpoint_with_events
+from tpen.checkpoint import CheckpointRestored, restore_checkpoint_with_events
 from tpen.training.optim import make_optimizer
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
@@ -81,6 +81,18 @@ class Train(Runner):
                 emit=self.emit,
             )
             self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
+            # Typed counterpart, carrying the report itself rather than a
+            # flattened mapping, exactly as `tpen.runner.Evaluate` does at its
+            # own restore. No callback subscribes it; its consumer is the
+            # durable occurrence record (D3).
+            #
+            # Without this line a *training* resume records its restored
+            # checkpoint identity only in the legacy string channel, so a
+            # training run's `completed_updates` -- the counter that identifies
+            # which model version it continues -- never reaches
+            # ``occurrences.jsonl`` and would be lost outright when the string
+            # path is deleted.
+            context.emit(CheckpointRestored(report=report))
 
         self.emit("train_start", context)
         final_state = self.trainer.fit(
@@ -110,6 +122,20 @@ class Train(Runner):
             step=int(next_iteration),
             payload={"model": self.model},
         )
+        # Typed counterpart of the legacy ``train_end`` above, emitted at the
+        # same point in the same order the trainer pairs its own two channels
+        # (legacy ``step_end`` first, then `TrainingIterationCompleted`). It
+        # carries the loop's state so `tpen.callback.Checkpoint` can write the
+        # terminal checkpoint through typed delivery.
+        #
+        # Emitting it HERE rather than inside `fit` is what makes it fire when
+        # the loop body never ran: `max_steps=0` and a fully-resumed run both
+        # return from `fit` without executing an iteration, and both still owe a
+        # terminal checkpoint. Deferred import because importing `tpen.training`
+        # pulls in torch, and `tpen.runner` must stay importable without it.
+        from tpen.training.events import TrainingCompleted
+
+        context.emit(TrainingCompleted(), state=final_state)
         self.emit("run_end", context)
         return RunResult(status="completed")
 

@@ -250,7 +250,6 @@ callbacks:
     triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/metadata.json
   - _target_: tpen.callback.Status
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/status.json
 
 loggers:

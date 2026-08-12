@@ -37,6 +37,7 @@ from tpen.evaluation.generators import (
 )
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import ArtifactRecord, EvaluationFailure, EvaluationResult, SummaryResult, TaskResult
+from tpen.evaluation.state import EvaluationRunState
 from tpen.evaluation.summaries import (
     CoalescenceDivergenceSummary,
     FeatureTraceSummary,
@@ -63,6 +64,7 @@ __all__ = [
     "EvaluationContext",
     "EvaluationFailure",
     "EvaluationResult",
+    "EvaluationRunState",
     "EvaluationTask",
     "Evaluator",
     "ExchangeOrbitGenerator",

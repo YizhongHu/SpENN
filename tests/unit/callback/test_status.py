@@ -11,7 +11,12 @@ import pytest
 
 from tpen.callback import Event, Status, configure_terminal_logging
 from tpen.callback.status import _format_status_box
-from tests.unit.callback.support import FakeState, make_sampler_stats
+from tests.unit.callback.support import (
+    RecordingContext,
+    deliver_completed_iteration,
+    make_sampler_stats,
+    training_state,
+)
 
 
 def _context(tmp_path: Path) -> SimpleNamespace:
@@ -61,11 +66,7 @@ def _context(tmp_path: Path) -> SimpleNamespace:
 
 
 def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    callback = Status(
-        ["run_start", "run_end"],
-        output_path=tmp_path / "status.json",
-        color="never",
-    )
+    callback = Status(output_path=tmp_path / "status.json", color="never")
     context = _context(tmp_path)
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
@@ -91,11 +92,11 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
     assert status["end_time"] == "2026-06-11T10:00:00-04:00"
 
 
-def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    callback = Status(
-        ["step_end"],
+def _train_status(**overrides) -> Status:
+    return Status(
         terminal=True,
         color="never",
+        train_lines=True,
         include=[
             "train/loss",
             "train/energy",
@@ -103,8 +104,12 @@ def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pyte
             "train/grad_norm",
             "train/local_energy_finite_fraction",
         ],
+        **overrides,
     )
-    state = FakeState(
+
+
+def _train_state():
+    return training_state(
         step=10,
         metrics={
             "loss": 0.421,
@@ -115,35 +120,51 @@ def test_status_renders_training_metrics_from_state(tmp_path: Path, caplog: pyte
         sampler_stats=make_sampler_stats(acceptance_rate=0.61),
     )
 
+
+def test_status_renders_training_metrics_from_state(caplog: pytest.LogCaptureFixture) -> None:
+    callback = _train_status()
+
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(
-            Event(
-                name="step_end",
-                context=_context(tmp_path),
-                state=state,
-                payload={"step": 10},
-                step=10,
-            )
-        )
+        deliver_completed_iteration(callback, RecordingContext(), _train_state(), step=10)
 
     assert caplog.records[-1].getMessage() == (
         "[train] step=10 loss=0.421 energy=2.104 acc=0.61 grad=0.012 finite=1"
     )
 
 
-def test_status_renders_evaluation_metrics(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    callback = Status(["evaluate_end"], terminal=True, color="never")
+def test_status_train_line_step_comes_from_the_event_not_the_state(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`TrainerState.step` is stale at any boundary above its assignment.
+
+    The two coordinates are diverged here so the rendered one is unambiguous.
+    """
+
+    callback = _train_status()
+    state = _train_state()
+    state.step = 999
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        callback.handle(
-            Event(
-                name="evaluate_end",
-                context=_context(tmp_path),
-                payload={"metrics": {"energy": 2.0, "energy_stderr": 0.01, "other": 3.0}},
-            )
-        )
+        deliver_completed_iteration(callback, RecordingContext(), state, step=10)
 
-    assert caplog.records[-1].getMessage() == "[eval] energy=2 stderr=0.01"
+    assert caplog.records[-1].getMessage().startswith("[train] step=10 ")
+
+
+def test_status_renders_no_train_line_by_default(caplog: pytest.LogCaptureFixture) -> None:
+    """A run-lifecycle `Status` must not start narrating the training loop.
+
+    Every shipped config builds `Status` for ``status.json`` alone. Subscribing
+    it to completed iterations unconditionally would add one terminal line per
+    step to every run, so the training line is a semantic option that replaces
+    the ``triggers: [step_end]`` the old config path used to select it with.
+    """
+
+    callback = Status(color="never")
+
+    with caplog.at_level(logging.INFO, logger="spenn.status"):
+        deliver_completed_iteration(callback, RecordingContext(), _train_state(), step=10)
+
+    assert not caplog.records
 
 
 def test_status_terminal_false_suppresses_terminal_output(
@@ -151,7 +172,6 @@ def test_status_terminal_false_suppresses_terminal_output(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     callback = Status(
-        ["run_start"],
         output_path=tmp_path / "status.json",
         terminal=False,
         color="never",
@@ -189,7 +209,7 @@ def test_status_max_line_width_option_controls_start_boxes(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    callback = Status(["run_start"], color="never", max_line_width=72)
+    callback = Status(color="never", max_line_width=72)
     context = _context(tmp_path)
     context.metadata.run_dir = (
         "/n/holystore01/LABS/kozinsky_lab/Lab/User/rhu/TPEN/outputs/"
@@ -224,9 +244,27 @@ def test_configure_terminal_logging_adds_one_package_handler() -> None:
 
 def test_status_rejects_invalid_color() -> None:
     with pytest.raises(ValueError, match="color"):
-        Status(["run_start"], color="sometimes")
+        Status(color="sometimes")
 
 
 def test_status_rejects_too_small_max_line_width() -> None:
     with pytest.raises(ValueError, match="max_line_width"):
-        Status(["run_start"], max_line_width=39)
+        Status(max_line_width=39)
+
+
+def test_status_keeps_only_the_three_run_level_legacy_triggers() -> None:
+    """The residual legacy surface, pinned so it can only shrink deliberately.
+
+    ``run_start``, ``run_end``, and ``exception`` are run-level events with no
+    typed equivalent (item ``39eacd99``) and no owning domain, and they are the
+    only thing that writes ``status.json``. They are hardcoded rather than
+    configured because ADR-E002 forbids a config from naming events, and the
+    training line that ``step_end`` used to select is now the ``train_lines``
+    option.
+    """
+
+    callback = Status()
+
+    assert callback.triggers == ("run_start", "run_end", "exception")
+    assert not hasattr(callback, "on_step_end")
+    assert not hasattr(callback, "on_evaluate_end")
