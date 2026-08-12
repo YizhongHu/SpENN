@@ -54,7 +54,7 @@ def _cfg(tmp_path: Path, **extra) -> DictConfig:
         },
         "runner": {
             "_target_": "tpen.runner.Evaluate",
-            "model": {"_target_": "torch.nn.Identity"},
+            "model": None,
             "evaluator": "${evaluator}",
         },
     }
@@ -154,5 +154,5 @@ def test_a_run_that_fails_before_the_runner_exists_still_records_failed(
 
     status = json.loads((_run_dir(tmp_path) / "status.json").read_text())
     assert status["status"] == "failed"
-    assert status["exception_type"] == "InstantiationException"
+    assert status["exception_type"] == "ValueError"
     assert "evaluator" in status["exception_message"]

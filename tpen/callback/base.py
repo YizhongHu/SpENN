@@ -369,7 +369,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
     def handle_occurrence(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: Any,
+        context: RunContext,
         state: DomainState | None,
     ) -> None:
         """Match, gate, and route one typed occurrence group by group.
@@ -470,7 +470,7 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
         del occurrence, context, state
 
     def handle_stateless_occurrence_impl(
-        self, occurrence: Occurrence[TypedEvent], context: Any
+        self, occurrence: Occurrence[TypedEvent], context: RunContext
     ) -> None:
         """Handle one occurrence admitted by a group that declared no state.
 
