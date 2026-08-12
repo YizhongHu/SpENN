@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from hydra.utils import instantiate
+from hydra.errors import InstantiationException
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from tpen.accelerator import seed_all as accelerator_seed_all
@@ -330,7 +331,15 @@ def _instantiate_runner(context: RunContext) -> Runner:
             raise ValueError(
                 f"runner config must not own {forbidden!r}; configure it at the config root."
             )
-    runner = instantiate(runner_cfg)
+    try:
+        runner = instantiate(runner_cfg)
+    except InstantiationException as exc:
+        # Hydra wraps constructor/configuration failures, but the run artifact
+        # contract records the underlying failure identity. Preserve the
+        # original exception when Hydra attached it as the cause.
+        if exc.__cause__ is not None:
+            raise exc.__cause__ from exc
+        raise
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to tpen.runner.Runner, got {type(runner)!r}")
     return runner
