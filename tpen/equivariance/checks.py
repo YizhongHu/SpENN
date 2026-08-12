@@ -55,15 +55,42 @@ class EquivarianceCheckResult:
         Whether the check passed.
     metrics : dict
         Scalar metrics for logging (JSON/CSV-safe).
+    n_comparisons : int
+        How many value comparisons the checker actually performed — one per
+        ``.compare(...)`` call. Required, and deliberately given no default, so
+        that a checker which cannot say how much it compared cannot be built.
     failures : list of str, optional
         Human-readable failure messages.
     artifact : Mapping or None, optional
         JSON-safe failure metadata for the callback to persist. ``None`` when
         there is nothing to write.
+
+    Notes
+    -----
+    **``passed`` alone is not evidence that anything was checked.** Every
+    verdict here is well defined over an empty comparison set: no permutation
+    failed, no trace key failed, so ``passed`` is ``True``. ``n_comparisons`` is
+    the structural key that can contradict such a vacuous pass, which is why
+    `tpen.callback.RuntimeEquivariance` publishes it on every record.
+
+    It is a count, not a verdict, following the ``n_grad_tensors`` precedent
+    under ``checks/gradient``. Zero comparisons is **not** automatically a
+    failure: a system with fewer than two particles has no non-identity
+    permutation to test and legitimately compares nothing. The count makes that
+    case readable instead of leaving it to be guessed from ``passed``.
+
+    It is not a second spelling of ``n_permutations_tested``. That key counts
+    permutations *selected*; this counts comparisons *performed*. The two
+    coincide for `FullModelEquivarianceChecker`, which makes exactly one
+    comparison per permutation, and diverge for `TraceEquivarianceChecker`,
+    which compares once per shared trace key per permutation and so reports
+    ``n_comparisons = 0`` against a non-zero ``n_permutations_tested`` whenever
+    the model records no trace at all.
     """
 
     passed: bool
     metrics: dict[str, float | int | bool | str]
+    n_comparisons: int
     failures: list[str] = field(default_factory=list)
     artifact: Mapping[str, Any] | None = None
 
@@ -126,7 +153,10 @@ class FullModelEquivarianceChecker:
             metrics["max_abs_error"] = 0.0
             metrics["worst_permutation"] = ""
             metrics["passed"] = True
-            return EquivarianceCheckResult(passed=True, metrics=metrics)
+            # Nothing was compared. Legitimate here -- fewer than two particles
+            # admit no non-identity permutation -- but the count still says so
+            # rather than letting ``passed`` imply a measurement happened.
+            return EquivarianceCheckResult(passed=True, metrics=metrics, n_comparisons=0)
 
         permutations = select_nonidentity_permutations(
             n_particles=n_particles,
@@ -138,6 +168,9 @@ class FullModelEquivarianceChecker:
         failed: list[list[int]] = []
         max_abs_error = 0.0
         worst: list[int] | None = None
+        # Counted at the comparison site rather than taken as ``len(permutations)``
+        # so the reported number stays the number of comparisons actually made.
+        n_comparisons = 0
         with torch.no_grad():
             output = model(batch)
             for permutation in permutations:
@@ -145,6 +178,7 @@ class FullModelEquivarianceChecker:
                 lhs = model(permuted_batch)
                 rhs = apply_particle_permutation(output, permutation)
                 close, comparison = lhs.compare(rhs, atol=self.atol, rtol=self.rtol)
+                n_comparisons += 1
                 error = float(comparison.get("max_abs_error", 0.0))
                 if error > max_abs_error:
                     max_abs_error = error
@@ -179,7 +213,13 @@ class FullModelEquivarianceChecker:
                 "rtol": self.rtol,
                 "failures": failures,
             }
-        return EquivarianceCheckResult(passed=passed, metrics=metrics, failures=failures, artifact=artifact)
+        return EquivarianceCheckResult(
+            passed=passed,
+            metrics=metrics,
+            n_comparisons=n_comparisons,
+            failures=failures,
+            artifact=artifact,
+        )
 
     def _base_metrics(self, n_particles: int | None) -> dict[str, float | int | bool | str]:
         n_available = count_nonidentity_permutations(n_particles) if n_particles is not None else 0
@@ -261,7 +301,9 @@ class TraceEquivarianceChecker:
                     "passed": True,
                 }
             )
-            return EquivarianceCheckResult(passed=True, metrics=metrics)
+            # See the sibling early return in `FullModelEquivarianceChecker`:
+            # a legitimate zero, still reported as a zero.
+            return EquivarianceCheckResult(passed=True, metrics=metrics, n_comparisons=0)
 
         permutations = select_nonidentity_permutations(
             n_particles=n_particles,
@@ -280,6 +322,11 @@ class TraceEquivarianceChecker:
         worst_key: str | None = None
         worst_permutation: list[int] | None = None
         output_failed = False
+        # A model that records no trace produces an empty key set, so the inner
+        # loop never runs and this checker reports `passed` having compared
+        # nothing while ``n_permutations_tested`` stays non-zero. Counting at the
+        # comparison sites is what makes that case visible.
+        n_comparisons = 0
 
         with torch.no_grad():
             with Trace.capture(model=model) as trace_a:
@@ -300,6 +347,7 @@ class TraceEquivarianceChecker:
                     expected = apply_particle_permutation(trace_a[key].value, permutation)
                     actual = trace_b[key].value
                     close, comparison = actual.compare(expected, atol=self.atol, rtol=self.rtol)
+                    n_comparisons += 1
                     error = float(comparison.get("max_abs_error", 0.0))
                     per_key_error[key] = max(per_key_error.get(key, 0.0), error)
                     if error > max_abs_error:
@@ -313,6 +361,7 @@ class TraceEquivarianceChecker:
                 if self.compare_output:
                     expected_output = apply_particle_permutation(output_a, permutation)
                     close, comparison = output_b.compare(expected_output, atol=self.atol, rtol=self.rtol)
+                    n_comparisons += 1
                     error = float(comparison.get("max_abs_error", 0.0))
                     if error > max_abs_error:
                         max_abs_error = error
@@ -381,7 +430,13 @@ class TraceEquivarianceChecker:
                         for key in sorted(per_key_error)
                     ],
                 }
-        return EquivarianceCheckResult(passed=passed, metrics=metrics, failures=failures, artifact=artifact)
+        return EquivarianceCheckResult(
+            passed=passed,
+            metrics=metrics,
+            n_comparisons=n_comparisons,
+            failures=failures,
+            artifact=artifact,
+        )
 
     def _base_metrics(self, n_particles: int | None) -> dict[str, float | int | bool | str]:
         n_available = count_nonidentity_permutations(n_particles) if n_particles is not None else 0

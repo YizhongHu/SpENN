@@ -12,10 +12,15 @@ from omegaconf import OmegaConf
 
 import tpen
 from tpen.artifacts import RunContext
-from tpen.callback import Checkpoint, Event
+from tpen.callback import Checkpoint
 from tpen.checkpoint import checkpoint_hashes
 from tpen.events import Occurrence
-from tpen.training.events import TrainingIteration, UpdateCompleted
+from tpen.training.events import (
+    TrainingCompleted,
+    TrainingIteration,
+    TrainingIterationCompleted,
+    UpdateCompleted,
+)
 from tpen.training.state import TrainerState
 
 
@@ -23,12 +28,10 @@ class _CheckpointContext(RunContext):
     """Minimal `RunContext` carrying only what `save_checkpoint` reads.
 
     This subclasses `RunContext` rather than duck-typing a `SimpleNamespace`
-    because `tpen.callback.Callback.handle_occurrence` annotates its context
-    parameter and the suite runs typeguard over the ``tpen`` package, so the
-    typed dispatch path rejects a stand-in that is not really a `RunContext`.
-    The legacy ``handle`` path is unannotated and accepted either way, which is
-    why a plain namespace sufficed before these tests began driving typed
-    occurrences.
+    because `tpen.callback.StatefulCallback.handle_occurrence` annotates its
+    context parameter and the suite runs typeguard over the ``tpen`` package, so
+    the typed dispatch path rejects a stand-in that is not really a
+    `RunContext`.
 
     The dataclass ``__init__`` is bypassed on purpose -- an artifact manager,
     clock, and logger list are irrelevant to checkpoint writing -- and
@@ -103,16 +106,6 @@ class _SamplerWithMCMCState:
         return {"has_burned_in": True}
 
 
-def _event(state: TrainerState, *, context=None, name: str = "step_end") -> Event:
-    return Event(
-        name=name,
-        context=_context() if context is None else context,
-        state=state,
-        payload={"step": state.step},
-        step=state.step,
-    )
-
-
 def _iteration(
     callback: Checkpoint,
     state: TrainerState,
@@ -121,17 +114,18 @@ def _iteration(
     applied_update: bool = True,
     occurrence_count: int = 1,
 ) -> None:
-    """Replay one trainer iteration's callback deliveries in loop order.
+    """Replay one trainer iteration's typed deliveries in loop order.
 
     Mirrors `tpen.training.VMCTrainer.fit`: an iteration that applied its
-    optimizer update emits the typed `UpdateCompleted` immediately after
-    ``optimizer.step()`` returns, then the legacy ``step_end``. A vacuum
-    iteration emits `UpdateSkipped` instead, which `Checkpoint` does not
-    subscribe to, so ``applied_update=False`` delivers nothing typed at all.
+    optimizer update emits `UpdateCompleted` immediately after
+    ``optimizer.step()`` returns, then `TrainingIterationCompleted` at the end
+    of the body. A vacuum iteration emits `UpdateSkipped` instead, which
+    `Checkpoint` does not subscribe to, so ``applied_update=False`` arms
+    nothing.
 
-    The same `context` object must reach both paths, exactly as at runtime:
-    `tpen.callback.Callback` resets typed state when the context identity
-    changes.
+    The same `context` object must reach every delivery, exactly as at runtime:
+    `tpen.callback.StatefulCallback` resets typed state when the context
+    identity changes.
 
     Parameters
     ----------
@@ -141,19 +135,36 @@ def _iteration(
         follows the durable counter rather than this one.
     """
 
+    iteration = TrainingIteration(step=state.step)
     if applied_update:
         callback.handle_occurrence(
-            Occurrence(
-                event=UpdateCompleted(iteration=TrainingIteration(step=state.step)),
-                count=occurrence_count,
-            ),
+            Occurrence(event=UpdateCompleted(iteration=iteration), count=occurrence_count),
             context,
+            state,
         )
-    callback.handle(_event(state, context=context))
+    callback.handle_occurrence(
+        Occurrence(
+            event=TrainingIterationCompleted(iteration=iteration), count=occurrence_count
+        ),
+        context,
+        state,
+    )
+
+
+def _finish(
+    callback: Checkpoint, state: TrainerState, context, *, occurrence_count: int = 1
+) -> None:
+    """Deliver the terminal boundary the runner emits once `fit` returns."""
+
+    callback.handle_occurrence(
+        Occurrence(event=TrainingCompleted(), count=occurrence_count), context, state
+    )
 
 
 def test_checkpoint_writes_step_directory_and_latest_pointer(tmp_path) -> None:
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path / "checkpoints", every_n_steps=1)
+    callback = Checkpoint(
+        output_dir=tmp_path / "checkpoints", terminal=False, every_n_steps=1
+    )
 
     _iteration(callback, _state(2), _context())
 
@@ -172,8 +183,37 @@ def test_checkpoint_writes_step_directory_and_latest_pointer(tmp_path) -> None:
     assert not (ckpt_dir / "step_000003.tmp").exists()
 
 
+def test_no_checkpoint_is_written_at_the_update_boundary(tmp_path) -> None:
+    """The periodic write lands on the completed ITERATION, not on the update.
+
+    `UpdateCompleted` fires immediately after ``optimizer.step()`` returns,
+    which is before any health check can run. Writing there would persist a
+    model version no check has yet accepted, and would make defect ``195c3ff3``
+    strictly worse than the state PR #175 left it in. Its only job here is to
+    arm the write that the later boundary performs.
+    """
+
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=1)
+    context = _context()
+    state = _state(0)
+    iteration = TrainingIteration(step=0)
+
+    callback.handle_occurrence(
+        Occurrence(event=UpdateCompleted(iteration=iteration), count=1), context, state
+    )
+    assert sorted(path.name for path in tmp_path.glob("step_*")) == []
+    assert not (tmp_path / "latest.json").exists()
+
+    callback.handle_occurrence(
+        Occurrence(event=TrainingIterationCompleted(iteration=iteration), count=1),
+        context,
+        state,
+    )
+    assert (tmp_path / "step_000001" / "COMPLETE").exists()
+
+
 def test_checkpoint_payload_contains_expected_keys(tmp_path) -> None:
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=1)
     state = _state(3)
 
     _iteration(callback, state, _context())
@@ -185,7 +225,7 @@ def test_checkpoint_payload_contains_expected_keys(tmp_path) -> None:
 
 
 def test_checkpoint_respects_every_n_steps_filter(tmp_path) -> None:
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=2)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=2)
     context = _context()
 
     _iteration(callback, _state(0), context)
@@ -198,7 +238,7 @@ def test_checkpoint_respects_every_n_steps_filter(tmp_path) -> None:
 def test_checkpoint_cadence_counts_completed_updates(tmp_path) -> None:
     """Cadence is spaced by applied updates; identity stays the resume cursor."""
 
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=5)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=5)
 
     # Five completed updates hits the cadence, but the run attempted six
     # iterations, so the directory is named for the cursor, not the count.
@@ -211,23 +251,22 @@ def test_checkpoint_cadence_counts_completed_updates(tmp_path) -> None:
 def test_checkpoint_cadence_fires_once_per_update_completed(tmp_path) -> None:
     """One firing per `UpdateCompleted`; a skipped update fires nothing."""
 
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=1)
     context = _context()
 
     # Iteration 0 applies its update: cursor 1, one completed update.
     _iteration(callback, _state(0, next_iteration=1, completed_updates=1), context)
     # Iteration 1 is a zero-electron vacuum. It emits `UpdateSkipped`, which
-    # this callback does not subscribe to, so no typed delivery arrives and the
-    # gate cannot fire -- even though the cursor advanced and every_n_steps=1
-    # would otherwise admit the unchanged count.
+    # this callback does not subscribe to, so nothing is armed and the write is
+    # skipped -- even though the cursor advanced and every_n_steps=1 would
+    # otherwise admit the unchanged count.
     _iteration(
         callback,
         _state(1, next_iteration=2, completed_updates=1),
         context,
         applied_update=False,
     )
-    # Iteration 2 applies an update again, so a typed delivery arrives and the
-    # gate fires exactly once more.
+    # Iteration 2 applies an update again, so the write fires exactly once more.
     _iteration(callback, _state(2, next_iteration=3, completed_updates=2), context)
 
     assert sorted(path.name for path in tmp_path.glob("step_*")) == [
@@ -247,7 +286,7 @@ def test_checkpoint_cadence_phase_survives_resume(tmp_path) -> None:
 
     uninterrupted_dir = tmp_path / "uninterrupted"
     uninterrupted = Checkpoint(
-        triggers=["step_end"], output_dir=uninterrupted_dir, every_n_steps=3
+        output_dir=uninterrupted_dir, terminal=False, every_n_steps=3
     )
     context = _context()
     # Nine iterations, each applying its update: completed_updates 1..9.
@@ -255,7 +294,7 @@ def test_checkpoint_cadence_phase_survives_resume(tmp_path) -> None:
         _iteration(uninterrupted, _state(step), context, occurrence_count=step + 1)
 
     resumed_dir = tmp_path / "resumed"
-    resumed = Checkpoint(triggers=["step_end"], output_dir=resumed_dir, every_n_steps=3)
+    resumed = Checkpoint(output_dir=resumed_dir, terminal=False, every_n_steps=3)
     resumed_context = _context()
     # Restored mid-phase at completed_updates=4, so the next admitted count is
     # 6, not 4 + 3. Occurrence counts restart at 1 for the new context.
@@ -275,15 +314,14 @@ def test_checkpoint_cadence_phase_survives_resume(tmp_path) -> None:
 def test_checkpoint_without_cadence_still_requires_a_completed_update(tmp_path) -> None:
     """No `every_n_steps` means every completed update, not every iteration."""
 
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False)
     context = _context()
 
     _iteration(callback, _state(0, next_iteration=1, completed_updates=1), context)
     assert (tmp_path / "step_000001").exists()
 
-    # The base class consults the cadence hook only when `every_n_steps` is
-    # set, so update selection cannot live there: a vacuum iteration would
-    # otherwise write a checkpoint here.
+    # Update selection is unconditional rather than part of the cadence window,
+    # so a vacuum iteration writes nothing even with no window configured.
     _iteration(
         callback,
         _state(1, next_iteration=2, completed_updates=1),
@@ -293,21 +331,19 @@ def test_checkpoint_without_cadence_still_requires_a_completed_update(tmp_path) 
     assert not (tmp_path / "step_000002").exists()
 
 
-def test_train_end_checkpoint_survives_a_final_vacuum_iteration(tmp_path) -> None:
-    """Update selection must not reach the terminal trigger."""
+def test_terminal_checkpoint_survives_a_final_vacuum_iteration(tmp_path) -> None:
+    """Update selection must not reach the terminal write."""
 
-    callback = Checkpoint(
-        triggers=["step_end", "train_end"], output_dir=tmp_path, every_n_steps=1
-    )
+    callback = Checkpoint(output_dir=tmp_path, every_n_steps=1)
     context = _context()
 
     _iteration(callback, _state(0, next_iteration=1, completed_updates=1), context)
     # The run's last iteration is a zero-electron vacuum, so no periodic
-    # checkpoint fires and the armed step stays behind `state.step`.
+    # checkpoint fires and the armed step stays behind the iteration's own.
     vacuum = _state(1, next_iteration=2, completed_updates=1)
     _iteration(callback, vacuum, context, applied_update=False)
-    # `train_end` carries that same mutated state. It must still write.
-    callback.handle(_event(vacuum, context=context, name="train_end"))
+    # The terminal boundary carries that same mutated state. It must still write.
+    _finish(callback, vacuum, context)
 
     assert sorted(path.name for path in tmp_path.glob("step_*")) == [
         "step_000001",
@@ -315,49 +351,58 @@ def test_train_end_checkpoint_survives_a_final_vacuum_iteration(tmp_path) -> Non
     ]
 
 
-def test_train_end_checkpoint_written_when_the_loop_body_never_ran(tmp_path) -> None:
-    """`max_steps=0` or a fully-resumed run still writes its terminal checkpoint."""
+def test_terminal_checkpoint_written_when_the_loop_body_never_ran(tmp_path) -> None:
+    """`max_steps=0` or a fully-resumed run still writes its terminal checkpoint.
 
-    callback = Checkpoint(triggers=["train_end"], output_dir=tmp_path, every_n_steps=1)
-    # No iteration executed: `TrainerState.step` is still -1 and no
-    # `UpdateCompleted` was ever delivered, but the resume cursor is 5.
+    This is the case that forced a typed terminal event to exist at all. No
+    iteration ran, so no `TrainingIterationCompleted` was ever emitted and there
+    is no "last iteration" to hang the terminal write on; `TrainingCompleted`
+    fires from the runner once `fit` returns, whether or not the body executed.
+    """
+
+    callback = Checkpoint(output_dir=tmp_path, periodic=False, every_n_steps=1)
+    # No iteration executed: `TrainerState.step` is still -1 and nothing was
+    # ever armed, but the resume cursor is 5.
     state = _state(-1, next_iteration=5, completed_updates=5)
 
-    callback.handle(_event(state, name="train_end"))
+    _finish(callback, state, _context())
 
     assert (tmp_path / "step_000005" / "COMPLETE").exists()
+    # `state.step` is -1 here, and `f"step_{-1:06d}"` renders `step_-00001`.
+    # The coordinate comes from the trainer's resume cursor, never from state.
+    assert sorted(path.name for path in tmp_path.glob("step_*")) == ["step_000005"]
 
 
-def test_checkpoint_writes_train_end_checkpoint_without_step_cadence(tmp_path) -> None:
-    callback = Checkpoint(triggers=["train_end"], output_dir=tmp_path)
+def test_checkpoint_writes_terminal_checkpoint_without_step_cadence(tmp_path) -> None:
+    callback = Checkpoint(output_dir=tmp_path, periodic=False)
     state = _state(3, next_iteration=4)
 
-    callback.handle(_event(state, name="train_end"))
+    _finish(callback, state, _context())
 
     assert (tmp_path / "step_000004" / "COMPLETE").exists()
     assert (tmp_path / "latest.json").exists()
 
 
-def test_checkpoint_train_end_skips_existing_complete_checkpoint(tmp_path) -> None:
-    callback = Checkpoint(triggers=["step_end", "train_end"], output_dir=tmp_path, every_n_steps=1)
+def test_checkpoint_terminal_skips_existing_complete_checkpoint(tmp_path) -> None:
+    callback = Checkpoint(output_dir=tmp_path, every_n_steps=1)
     context = _context()
     state = _state(1, next_iteration=2)
 
     _iteration(callback, state, context)
-    callback.handle(_event(state, context=context, name="train_end"))
+    _finish(callback, state, context)
 
     assert sorted(path.name for path in tmp_path.glob("step_*")) == ["step_000002"]
 
 
-def test_train_end_updates_latest_when_cadence_misses_terminal_step(tmp_path) -> None:
-    periodic = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=2)
-    terminal = Checkpoint(triggers=["train_end"], output_dir=tmp_path)
+def test_terminal_updates_latest_when_cadence_misses_terminal_step(tmp_path) -> None:
+    periodic = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=2)
+    terminal = Checkpoint(output_dir=tmp_path, periodic=False)
     context = _context()
 
     _iteration(periodic, _state(1, next_iteration=2), context)
     final_state = _state(2, next_iteration=3)
     _iteration(periodic, final_state, context)
-    terminal.handle(_event(final_state, context=context, name="train_end"))
+    _finish(terminal, final_state, context)
 
     assert sorted(path.name for path in tmp_path.glob("step_*")) == [
         "step_000002",
@@ -366,6 +411,33 @@ def test_train_end_updates_latest_when_cadence_misses_terminal_step(tmp_path) ->
     latest = json.loads((tmp_path / "latest.json").read_text())
     assert latest["checkpoint_dir"] == "step_000003"
     assert latest["step"] == 3
+
+
+def test_periodic_only_checkpoint_ignores_the_terminal_boundary(tmp_path) -> None:
+    """``terminal: false`` is the config's old ``triggers: [step_end]``."""
+
+    callback = Checkpoint(output_dir=tmp_path, terminal=False)
+    context = _context()
+
+    _finish(callback, _state(4, next_iteration=5), context)
+
+    assert sorted(path.name for path in tmp_path.glob("step_*")) == []
+
+
+def test_terminal_only_checkpoint_ignores_completed_iterations(tmp_path) -> None:
+    """``periodic: false`` is the config's old ``triggers: [train_end]``."""
+
+    callback = Checkpoint(output_dir=tmp_path, periodic=False)
+    context = _context()
+
+    _iteration(callback, _state(0), context)
+
+    assert sorted(path.name for path in tmp_path.glob("step_*")) == []
+
+
+def test_checkpoint_that_would_write_nothing_is_rejected(tmp_path) -> None:
+    with pytest.raises(ValueError, match="periodic"):
+        Checkpoint(output_dir=tmp_path, periodic=False, terminal=False)
 
 
 def _context() -> _CheckpointContext:
@@ -396,23 +468,10 @@ def _context() -> _CheckpointContext:
 
 
 def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=1)
     context = _context()
-    state = _state(1)
 
-    callback.handle_occurrence(
-        Occurrence(event=UpdateCompleted(iteration=TrainingIteration(step=1)), count=1),
-        context,
-    )
-    callback.handle(
-        Event(
-            name="step_end",
-            context=context,
-            state=state,
-            payload={"step": 1},
-            step=1,
-        )
-    )
+    _iteration(callback, _state(1), context)
 
     manifest = json.loads((tmp_path / "step_000002" / "manifest.json").read_text())
     assert manifest["schema_version"] == 2
@@ -433,82 +492,53 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
 
 
 def test_checkpoint_fails_loudly_when_required_state_is_missing(tmp_path) -> None:
-    callback = Checkpoint(triggers=["step_end"], output_dir=tmp_path, every_n_steps=1)
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=1)
     state = _state(1)
     state.trainer = None
 
     with pytest.raises(ValueError, match="trainer"):
-        callback.handle(_event(state))
+        _iteration(callback, state, _context())
 
 
-def test_checkpoint_uses_inherited_should_run_with_owned_step_hook(tmp_path) -> None:
+def test_checkpoint_owns_no_legacy_scheduling_hooks(tmp_path) -> None:
+    """Nothing routes this callback by an event NAME any more.
+
+    A stale ``triggers:`` key left in a config cannot make it fire, because the
+    legacy dispatch in `_CallbackCore.handle` finds no ``on_<name>`` method to
+    call. Double firing is structurally impossible rather than merely
+    unconfigured.
+    """
+
     assert "should_run" not in Checkpoint.__dict__
-    assert "_legacy_cadence_step" in Checkpoint.__dict__
-    callback = Checkpoint(
-        triggers=["step_end"],
-        output_dir=tmp_path,
-        every_n_steps=2,
-    )
-    context = _context()
-    state = _state(1, next_iteration=2, completed_updates=2)
-    callback.handle_occurrence(
-        Occurrence(event=UpdateCompleted(iteration=TrainingIteration(step=1)), count=1),
-        context,
-    )
+    assert "_legacy_cadence_step" not in Checkpoint.__dict__
 
-    # The cadence coordinate comes from the trainer's typed state alone. The
-    # payload's `step` is not a cadence input and must not move the gate.
-    event = Event(
-        name="step_end",
-        context=context,
-        state=state,
-        payload={"step": 1},
-    )
+    callback = Checkpoint(output_dir=tmp_path)
 
-    assert callback.should_run(event)
+    assert callback.triggers == ()
+    assert not hasattr(callback, "on_step_end")
+    assert not hasattr(callback, "on_train_end")
 
 
-def test_checkpoint_cadence_ignores_payload_and_state_step(tmp_path) -> None:
-    """Only `completed_updates` gates cadence -- no step-shaped fallbacks."""
+def test_checkpoint_cadence_reads_completed_updates_and_nothing_else(tmp_path) -> None:
+    """Only `completed_updates` gates the periodic window -- no step fallbacks."""
 
-    callback = Checkpoint(
-        triggers=["step_end"],
-        output_dir=tmp_path,
-        every_n_steps=2,
-    )
-    context = _context()
-    callback.handle_occurrence(
-        Occurrence(event=UpdateCompleted(iteration=TrainingIteration(step=2)), count=2),
-        context,
-    )
+    callback = Checkpoint(output_dir=tmp_path, terminal=False, every_n_steps=2)
+
     # The counters are deliberately diverged, so this pins which one the window
-    # reads: `completed_updates=3` is odd and closes the gate, while the
-    # resume cursor `next_iteration=4` would have opened it. The payload and
-    # `state.step` values would also have passed a step-based gate.
-    event = Event(
-        name="step_end",
-        context=context,
-        state=_state(2, next_iteration=4, completed_updates=3),
-        payload={"step": 2},
-        step=2,
-    )
+    # reads: `completed_updates=3` is odd and closes the gate, while the resume
+    # cursor `next_iteration=4` would have opened it. `state.step` and the
+    # event's own step would also have passed a step-based gate.
+    _iteration(callback, _state(2, next_iteration=4, completed_updates=3), _context())
 
-    assert not callback.should_run(event)
+    assert sorted(path.name for path in tmp_path.glob("step_*")) == []
 
 
 def test_checkpoint_cadence_requires_a_trainer_on_state(tmp_path) -> None:
     """No `global_step`/`state.step` probing survives: the trainer is required."""
 
-    callback = Checkpoint(
-        triggers=["train_end"],
-        output_dir=tmp_path,
-        every_n_steps=2,
-    )
-    event = Event(
-        name="train_end",
-        context=_context(),
-        state=SimpleNamespace(global_step=2, step=1, trainer=None),
-    )
+    callback = Checkpoint(output_dir=tmp_path, periodic=False, every_n_steps=2)
+    state = _state(1)
+    state.trainer = None
 
     with pytest.raises(ValueError, match="trainer"):
-        callback.should_run(event)
+        _finish(callback, state, _context())
