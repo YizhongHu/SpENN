@@ -20,6 +20,32 @@ highest complete checkpoint to resume from) and they can legitimately
 disagree with each other and with ``_attempt_already_completed`` on the same
 attempt directory. Unifying them would be a behavior change, not a
 relocation.
+
+Two row-claim policies coexist here, deliberately
+--------------------------------------------------
+
+``_claim_row``
+    *Release-by-reclaim.* One claim file per row; a later worker reclaims the
+    row once its status is ``failed`` or ``stopped``. Used by Slurm
+    mixed-profile submission (``pair_stability_v3``'s ``launch.py`` and
+    :mod:`experiments.toolkit.executors`), where at most one submitter is
+    racing per command profile and an operator's re-submit is what retries a
+    row.
+
+``claim_row_for_pass``
+    *Pass-scoped, never released* (ADR-C012). Used by the allocation-pool
+    worker model, where N long-lived workers share one immutable plan. Retry
+    comes from starting a **new pass id**, never from releasing a claim.
+
+The two are not interchangeable, and the choice is dictated by the concurrency
+model rather than by taste. Under N concurrent workers, release-by-reclaim lets
+every *other* worker re-claim and re-run a deterministically failing row inside
+one pass: that is exactly the 2026-08-07 Polaris incident, in which one broken
+row executed four times in a single pass and broke both "no duplicate rows" and
+"failures remain isolated". Under a single racing submitter per profile, that
+same policy is what lets a re-submit pick a failed row back up, so it is kept.
+
+Pick pass-scoped claims for worker pools, ``_claim_row`` for submission races.
 """
 
 from __future__ import annotations
@@ -30,7 +56,8 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 _DEFAULT_TIMEZONE = "America/New_York"
@@ -175,7 +202,19 @@ def _write_claim(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _claim_row(path: str | Path | None, payload: dict[str, Any], status_path: str | Path | None = None) -> bool:
-    """Atomically claim one row for a racing CPU/CUDA submission."""
+    """Atomically claim one row for a racing CPU/CUDA submission.
+
+    This is the *release-by-reclaim* policy: a claim on a row whose status has
+    reached ``failed`` or ``stopped`` is taken over by the next caller, so an
+    operator's re-submit retries the row. That is correct for mixed-profile
+    Slurm submission, where at most one submitter races per command profile.
+
+    It is **not** safe for a worker pool. Do not call this from an
+    allocation-pool worker: with N concurrent workers, a deterministically
+    failing row is re-claimed and re-run by every other worker within a single
+    pass. Use :func:`claim_row_for_pass` there instead, and see the "Two
+    row-claim policies" section of the module docstring for why both exist.
+    """
 
     if path is None:
         return True
@@ -216,6 +255,207 @@ def _claim_row(path: str | Path | None, payload: dict[str, Any], status_path: st
     with os.fdopen(fd, "w") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Pass-scoped row claims (ADR-C012) -- the allocation-pool policy
+# ---------------------------------------------------------------------------
+
+PASS_CLAIMS_DIRNAME = "_claims"
+"""Name of the claim namespace directory created under a run root."""
+
+ATTEMPT_DIR_PREFIX = "attempt"
+"""Prefix of the per-execution directories created by :func:`next_attempt_dir`."""
+
+_UNUSABLE_CLAIM_NAMES = {"", ".", ".."}
+
+
+def _claim_component(value: str) -> str:
+    """Return one path-safe directory name for a pass id or row id.
+
+    Percent-encoding is used rather than character stripping because it is
+    injective: ``quote`` escapes ``%`` itself, so two distinct row ids can never
+    collapse onto one claim directory. A collision here would silently drop a
+    row from a whole pass, which is worse than an ugly directory name.
+    """
+
+    name = quote(str(value), safe="")
+    if name in _UNUSABLE_CLAIM_NAMES:
+        raise ValueError(f"claim key {value!r} has no usable directory name")
+    return name
+
+
+def pass_claims_dir(run_root: str | Path, pass_id: str) -> Path:
+    """Return the claim namespace for one pass under ``run_root``.
+
+    Parameters
+    ----------
+    run_root : str or Path
+        Durable run root shared by every worker in the allocation.
+    pass_id : str
+        Identifier of the current pass. A retry uses a *new* pass id, which
+        yields a fresh, empty claim namespace.
+
+    Returns
+    -------
+    Path
+        ``<run_root>/_claims/<pass_id>``. Not created by this call.
+    """
+
+    return Path(run_root) / PASS_CLAIMS_DIRNAME / _claim_component(pass_id)
+
+
+def claim_row_for_pass(
+    run_root: str | Path,
+    pass_id: str,
+    row: str,
+    payload: dict[str, Any] | None = None,
+) -> bool:
+    """Claim one row for one pass, atomically and permanently (ADR-C012).
+
+    The claim is the directory ``<run_root>/_claims/<pass_id>/<row>``, created
+    with a single ``mkdir``. ``mkdir`` is atomic on Lustre, so exactly one of
+    any number of concurrent callers observes success.
+
+    A claim is **never released**. A caller that loses the race must move on to
+    the next row: it must not inspect the row's status and must not reclaim.
+    Retry is expressed by running a new pass, whose claim namespace is empty;
+    rows that already succeeded are skipped by the ordinary completion checks
+    (:func:`_attempt_already_completed`), so a fresh pass re-runs only the rows
+    that did not complete.
+
+    Parameters
+    ----------
+    run_root : str or Path
+        Durable run root shared by every worker in the allocation.
+    pass_id : str
+        Identifier of the current pass.
+    row : str
+        Identifier of the row being claimed, unique within the plan. Any string
+        is accepted; it is percent-encoded into a single directory name.
+    payload : dict, optional
+        Extra provenance merged into the claim receipt written inside the claim
+        directory. The receipt is provenance only -- the directory is the claim.
+
+    Returns
+    -------
+    bool
+        ``True`` if this caller now owns the row for this pass, ``False`` if
+        another caller already owns it. A ``False`` result is an ordinary,
+        expected outcome under contention and is worth logging as a lost claim.
+
+    See Also
+    --------
+    _claim_row : the release-by-reclaim policy used for Slurm submission races.
+    """
+
+    claim_dir = pass_claims_dir(run_root, pass_id) / _claim_component(row)
+    try:
+        # ``parents=True`` creates intermediates permissively, but the leaf is
+        # still one bare ``os.mkdir`` -- that is the atomic step that decides
+        # the race.
+        claim_dir.mkdir(parents=True)
+    except FileExistsError:
+        return False
+    receipt = {
+        "pass_id": str(pass_id),
+        "row": str(row),
+        "pid": os.getpid(),
+        "claimed_at_unix": time.time(),
+        **(payload or {}),
+    }
+    try:
+        (claim_dir / "claim.json").write_text(json.dumps(receipt, indent=2, sort_keys=False) + "\n")
+    except OSError:
+        # The directory is the claim; a failed receipt write must never hand the
+        # row to a second worker.
+        pass
+    return True
+
+
+def next_attempt_dir(row_dir: str | Path) -> Path:
+    """Create and return the first free ``<row_dir>/attempt<N>`` directory.
+
+    Numbering starts at 1 and the directory is created by this call, so the
+    returned path is always fresh: a re-run of a row never overwrites the
+    evidence left by an earlier attempt.
+
+    Creation uses ``mkdir`` on each candidate rather than counting existing
+    directories, so two callers cannot select the same ``N``. Within one pass
+    that race cannot happen anyway -- :func:`claim_row_for_pass` admits a single
+    worker per row -- but attempts also accumulate across passes, and the loop
+    keeps the numbering correct without depending on that.
+
+    Parameters
+    ----------
+    row_dir : str or Path
+        Directory holding one row's attempts. Created if missing.
+
+    Returns
+    -------
+    Path
+        The newly created attempt directory.
+    """
+
+    row_path = Path(row_dir)
+    row_path.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while True:
+        attempt_dir = row_path / f"{ATTEMPT_DIR_PREFIX}{number}"
+        try:
+            attempt_dir.mkdir()
+        except FileExistsError:
+            number += 1
+            continue
+        return attempt_dir
+
+
+def allocation_deadline_unix(
+    explicit: str | float | None = None,
+    *,
+    env_var: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> float | None:
+    """Return the UNIX deadline an allocation-pool worker must stop claiming by.
+
+    Resolution order: an explicit value, then ``env_var`` if the caller named
+    one, then ``SLURM_JOB_END_TIME``. Values are parsed by
+    :func:`parse_deadline_unix`, so UNIX seconds and ISO timestamps are both
+    accepted.
+
+    There is deliberately no PBS branch. Per ADR-C008 facility selection is by
+    environment variable only and is never committed configuration, so a PBS
+    allocation supplies its end time through ``env_var`` (or an explicit value
+    derived from ``qstat``) rather than through facility-specific code here.
+    The resulting value feeds the already-tracked
+    :func:`_deadline_guard_reached`; only the value was missing.
+
+    Parameters
+    ----------
+    explicit : str or float, optional
+        Deadline supplied directly, e.g. from a CLI flag. Wins over both
+        environment lookups. Blank strings are treated as absent.
+    env_var : str, optional
+        Name of a facility-supplied environment variable to consult before the
+        Slurm fallback.
+    environ : Mapping, optional
+        Environment mapping to read. Defaults to :data:`os.environ`.
+
+    Returns
+    -------
+    float or None
+        UNIX deadline in seconds, or ``None`` when no source supplied one.
+    """
+
+    env = os.environ if environ is None else environ
+    if explicit is not None and str(explicit).strip():
+        return parse_deadline_unix(str(explicit))
+    names = ([env_var] if env_var else []) + ["SLURM_JOB_END_TIME"]
+    for name in names:
+        value = env.get(name)
+        if value is not None and str(value).strip():
+            return parse_deadline_unix(str(value))
+    return None
 
 
 def _checkpoint_ready(train_attempt: Path) -> bool:
