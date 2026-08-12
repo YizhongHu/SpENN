@@ -28,6 +28,7 @@ from experiments.toolkit.task_state import (
     local_claim_deadline_unix,
     next_attempt_dir,
     parse_deadline_unix,
+    pass_claim_path,
     pass_claims_dir,
 )
 
@@ -154,6 +155,9 @@ def test_claim_component_is_injective_over_path_separators() -> None:
 
 def test_pass_claims_dir_is_namespaced_by_pass(tmp_path: Path) -> None:
     assert pass_claims_dir(tmp_path, "pass-a") == tmp_path / "_claims" / "pass-a"
+    assert pass_claim_path(tmp_path, "pass-a", "row/a") == (
+        tmp_path / "_claims" / "pass-a" / "row%2Fa"
+    )
     assert not (tmp_path / "_claims").exists()
 
 

@@ -305,6 +305,28 @@ def pass_claims_dir(run_root: str | Path, pass_id: str) -> Path:
     return Path(run_root) / PASS_CLAIMS_DIRNAME / _claim_component(pass_id)
 
 
+def pass_claim_path(run_root: str | Path, pass_id: str, row: str) -> Path:
+    """Return the atomic claim directory for one row in one pass.
+
+    Parameters
+    ----------
+    run_root : str or Path
+        Durable run root shared by every worker in the allocation.
+    pass_id : str
+        Identifier of the current pass.
+    row : str
+        Identifier of the row being claimed.
+
+    Returns
+    -------
+    Path
+        Percent-encoded row path below :func:`pass_claims_dir`. Not created by
+        this call.
+    """
+
+    return pass_claims_dir(run_root, pass_id) / _claim_component(row)
+
+
 def claim_row_for_pass(
     run_root: str | Path,
     pass_id: str,
@@ -349,7 +371,7 @@ def claim_row_for_pass(
     _claim_row : the release-by-reclaim policy used for Slurm submission races.
     """
 
-    claim_dir = pass_claims_dir(run_root, pass_id) / _claim_component(row)
+    claim_dir = pass_claim_path(run_root, pass_id, row)
     try:
         # ``parents=True`` creates intermediates permissively, but the leaf is
         # still one bare ``os.mkdir`` -- that is the atomic step that decides
