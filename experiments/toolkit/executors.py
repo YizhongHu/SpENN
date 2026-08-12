@@ -30,6 +30,10 @@ LauncherSubmitter = Callable[..., Sequence[str]]
 ClaimPathResolver = Callable[[Sequence[str | Path | None] | None], Sequence[str | Path | None] | None]
 
 
+class _CompletionError(RuntimeError):
+    """Declared completion remained unsatisfied after a successful command."""
+
+
 class Executor(Protocol):
     """Protocol implemented by local, Submitit, and future executors."""
 
@@ -326,6 +330,10 @@ class AllocationPoolExecutor:
                     )
                     with result_lock:
                         records[task.task_id] = record
+                except _CompletionError as exc:
+                    with result_lock:
+                        errors.append(exc)
+                    continue
                 except Exception as exc:
                     with result_lock:
                         errors.append(exc)
@@ -496,7 +504,7 @@ class AllocationPoolExecutor:
             write_json(launcher_status_path, launcher_status)
 
         if completion_error is not None:
-            raise RuntimeError(completion_error)
+            raise _CompletionError(completion_error)
         status_path = launcher_status_path or attempt_status_path
 
         return ExecutionRecord(

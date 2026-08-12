@@ -252,6 +252,46 @@ def test_zero_exit_missing_status_is_retryable_on_new_pass(tmp_path: Path) -> No
     assert len(_attempt_statuses(tmp_path)) == 2
 
 
+def test_completion_failure_drains_unrelated_pending_tasks(tmp_path: Path) -> None:
+    later_marker = tmp_path / "later-ran"
+    missing = _status_task(
+        tmp_path,
+        "missing-first",
+        (sys.executable, "-c", "raise SystemExit(0)"),
+        tmp_path / "missing-first" / "status.json",
+    )
+    later_status = tmp_path / "later" / "status.json"
+    later = _status_task(
+        tmp_path,
+        "later",
+        (
+            sys.executable,
+            "-c",
+            "import json,pathlib,sys; marker=pathlib.Path(sys.argv[1]); "
+            "status=pathlib.Path(sys.argv[2]); marker.touch(); "
+            "status.parent.mkdir(parents=True); "
+            "status.write_text(json.dumps({'status':'completed'}))",
+            str(later_marker),
+            str(later_status),
+        ),
+        later_status,
+    )
+    tasks = (missing, later)
+
+    with pytest.raises(RuntimeError, match="missing-first"):
+        _single_worker_executor(tmp_path, "drain-pass").submit(
+            _plan(tmp_path, tasks), tasks, _request(tasks)
+        )
+
+    assert later_marker.is_file()
+    assert read_json(missing.logs[0])["status"] == "failed"
+    assert read_json(later.logs[0])["status"] == "success"
+    assert {status["status"] for status in _attempt_statuses(tmp_path)} == {
+        "failed",
+        "success",
+    }
+
+
 def test_nonzero_exit_remains_failed(tmp_path: Path) -> None:
     status_path = tmp_path / "nonzero" / "status.json"
     task = _status_task(
