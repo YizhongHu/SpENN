@@ -182,6 +182,19 @@ For this project, correctness is more important than breadth. Prefer small chang
 
 Avoid large PRs that change multiple things at the same time.
 
+### Require an authoritative-edit launch receipt
+
+Before the first repository edit for any implementation slice, run:
+
+```bash
+uv run --no-project python tools/check_authoritative_edit.py --item <task-orchestrator-item-id>
+```
+
+Proceed only when it emits `"status": "ok"`. The guard requires a clean tracked
+tree on an agent-namespaced branch plus a claimed TPEN `implementation-slice`
+already in `work` with a non-empty `acceptance-contract`. Existing untracked
+research and run data are deliberately ignored and must remain untouched.
+
 ## Branches
 
 ### Sectioning
