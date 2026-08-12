@@ -219,7 +219,8 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Pa
         load={"mode": "train_resume", "path": "ckpt"},
     )
 
-    result = runner.run(_recording_context(tmp_path, [])[0])
+    context, _ = _recording_context(tmp_path, [])
+    result = runner.run(context)
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
@@ -247,7 +248,8 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: P
         load={"mode": "model_only", "path": "ckpt"},
     )
 
-    result = runner.run(_recording_context(tmp_path, [])[0])
+    context, _ = _recording_context(tmp_path, [])
+    result = runner.run(context)
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model

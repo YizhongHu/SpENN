@@ -178,7 +178,8 @@ def test_model_only_restore_emits_load_lifecycle_events(tmp_path: Path) -> None:
     assert events[0].strict is True
     assert events[1].path == str(root)
     assert events[1].report.to_dict() == {
-        "resolved_checkpoint_dir": str(root / "step_000003"),
+        "mode": "model_only",
+        "checkpoint_dir": str(root / "step_000003"),
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "next_iteration": 3,
         "completed_updates": 3,
