@@ -28,7 +28,7 @@ runner:
   trainer: ${trainer}
 model:
   _target_: tpen.nn.TPENWaveFunction
-  trace_name: spenn
+  trace_name: tpen
   embedding:
     _target_: tpen.nn.Embedding
     max_order: 2

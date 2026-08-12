@@ -28,7 +28,7 @@ def configure_terminal_logging(
     enabled: bool = True,
     level: str = "info",
     color: str = "auto",
-    logger_name: str = "spenn",
+    logger_name: str = "tpen",
 ) -> None:
     """Configure the package terminal logging channel.
 

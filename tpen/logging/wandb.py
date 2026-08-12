@@ -119,7 +119,7 @@ class WandB(Logger):
             return
         self._ensure_run()
         artifact_name = name or Path(path).name
-        artifact = self._wandb.Artifact(artifact_name, type="spenn-artifact")
+        artifact = self._wandb.Artifact(artifact_name, type="tpen-artifact")
         artifact_path = Path(path)
         if artifact_path.is_dir():
             artifact.add_dir(str(artifact_path))

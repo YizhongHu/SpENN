@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -94,7 +95,7 @@ def test_status_writes_json_and_terminal_lifecycle_lines(tmp_path: Path, caplog:
     callback = Status(output_path=tmp_path / "status.json", color="never")
     context = _context(tmp_path)
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         _deliver_run_event(callback, context, RunStarted())
         _deliver_run_event(callback, context, RunCompleted())
 
@@ -149,7 +150,7 @@ def _train_state():
 def test_status_renders_training_metrics_from_state(caplog: pytest.LogCaptureFixture) -> None:
     callback = _train_status()
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         deliver_completed_iteration(callback, _context(Path(".")), _train_state(), step=10)
 
     assert caplog.records[-1].getMessage() == (
@@ -169,7 +170,7 @@ def test_status_train_line_step_comes_from_the_event_not_the_state(
     state = _train_state()
     state.step = 999
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         deliver_completed_iteration(callback, _context(Path(".")), state, step=10)
 
     assert caplog.records[-1].getMessage().startswith("[train] step=10 ")
@@ -186,7 +187,7 @@ def test_status_renders_no_train_line_by_default(caplog: pytest.LogCaptureFixtur
 
     callback = Status(color="never")
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         deliver_completed_iteration(callback, _context(Path(".")), _train_state(), step=10)
 
     assert not caplog.records
@@ -202,7 +203,7 @@ def test_status_terminal_false_suppresses_terminal_output(
         color="never",
     )
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         _deliver_run_event(callback, _context(tmp_path), RunStarted())
 
     assert not caplog.records
@@ -241,7 +242,7 @@ def test_status_max_line_width_option_controls_start_boxes(
         "hooke_pair_smoke/pair/run-1"
     )
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         _deliver_run_event(callback, context, RunStarted())
 
     box_lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith(("+", "|"))]
@@ -250,7 +251,7 @@ def test_status_max_line_width_option_controls_start_boxes(
 
 
 def test_configure_terminal_logging_adds_one_package_handler() -> None:
-    logger_name = "spenn.test_terminal_status"
+    logger_name = "tpen.test_terminal_status"
     logger = logging.getLogger(logger_name)
     original_handlers = list(logger.handlers)
     logger.handlers.clear()
@@ -265,6 +266,20 @@ def test_configure_terminal_logging_adds_one_package_handler() -> None:
     finally:
         logger.handlers[:] = original_handlers
         logger.propagate = True
+
+
+def test_default_terminal_logging_channels_are_the_tpen_tree() -> None:
+    """The default channel names are the PUBLIC logging contract, so they are pinned.
+
+    A run's logging configuration silences or routes TPEN output by channel name, and
+    ``tests/conftest.py`` isolates exactly these two loggers. Both defaults were
+    ``spenn``-spelled before the v0.3.0 rename, and neither was pinned; a partial
+    rename would have left the conftest isolation silently pointing at dead channels
+    instead of failing, so an explicit pin is what makes the next drift loud.
+    """
+
+    assert inspect.signature(configure_terminal_logging).parameters["logger_name"].default == "tpen"
+    assert inspect.signature(Status.__init__).parameters["logger_name"].default == "tpen.status"
 
 
 def test_status_rejects_invalid_color() -> None:
@@ -296,7 +311,7 @@ def test_status_records_a_failed_run_from_the_failure_boundary(
     callback = Status(output_path=tmp_path / "status.json", color="never")
     context = _context(tmp_path)
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         _deliver_run_event(callback, context, RunStarted())
         _deliver_run_event(
             callback,

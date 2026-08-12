@@ -32,7 +32,7 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
         self,
         *,
         rolling_window: int = 20,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -47,7 +47,7 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
         if rolling_window <= 0:
             raise ValueError(f"rolling_window must be positive, got {rolling_window}")
         self.rolling_window = int(rolling_window)
-        self.cuda_synchronize = bool(cuda_synchronize)
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self._iteration_type = TrainingIteration
         self._starts: dict[tuple[type[object], int], tuple[int, float]] = {}
@@ -58,7 +58,7 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
     ) -> None:
         event = occurrence.event
         if isinstance(event, Started) and isinstance(event.operation, self._iteration_type):
-            _sync_device(self.cuda_synchronize)
+            _sync_device(self.accelerator_synchronize)
             self._starts[(type(event.operation), occurrence.count)] = (
                 event.operation.step,
                 self.clock(),
@@ -69,7 +69,7 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
         record = self._starts.pop((type(event.operation), occurrence.count), None)
         if record is None:
             return
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         step, start = record
         duration = self.clock() - start
         self._durations.append(duration)

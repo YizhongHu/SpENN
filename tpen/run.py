@@ -33,9 +33,15 @@ from tpen.events import Event as TypedEvent
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.runner import Runner
 
-# Register custom OmegaConf resolvers (e.g. spenn.basis_feature_dim) before any
+# Register custom OmegaConf resolvers (e.g. tpen.basis_feature_dim) before any
 # config is loaded or resolved on the run path.
 register_resolvers()
+
+# Bootstrap diagnostics get their own channel so a run's logging configuration can
+# silence or route fatal pre-context errors independently. Spelled once: the channel
+# name is read by tests/conftest.py logger isolation, so a partial rename would
+# silently disable that isolation rather than fail loudly.
+_BOOTSTRAP_LOGGER_NAME = "tpen.bootstrap"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -109,7 +115,7 @@ def prepare_run_context(
         OmegaConf.select(
             resolved_cfg,
             "experiment.run_name",
-            default=OmegaConf.select(resolved_cfg, "experiment.name", default="spenn_run"),
+            default=OmegaConf.select(resolved_cfg, "experiment.name", default="tpen_run"),
         )
     )
     run_id = OmegaConf.select(resolved_cfg, "run.run_id", default=None)
@@ -360,7 +366,7 @@ def _configure_terminal_logging(cfg: DictConfig) -> None:
 def _install_bootstrap_stderr_logger() -> None:
     """Install a minimal stderr logger for fatal bootstrap diagnostics."""
 
-    logger = logging.getLogger("spenn.bootstrap")
+    logger = logging.getLogger(_BOOTSTRAP_LOGGER_NAME)
     logger.setLevel(logging.ERROR)
     for handler in logger.handlers:
         if getattr(handler, "_spenn_bootstrap_handler", False):
@@ -406,7 +412,7 @@ def _write_error_if_possible(
             config_path=config_path,
         )
     except Exception as artifact_exc:  # pragma: no cover - disk/runtime dependent
-        logging.getLogger("spenn.bootstrap").error(
+        logging.getLogger(_BOOTSTRAP_LOGGER_NAME).error(
             "FATAL: failed to write error.json: %s: %s",
             type(artifact_exc).__name__,
             artifact_exc,
@@ -425,7 +431,7 @@ def _emit_typed_event_if_possible(context: RunContext, event: TypedEvent) -> Non
     try:
         context.emit(event)
     except Exception as event_exc:  # pragma: no cover - callback/runtime dependent
-        logging.getLogger("spenn.bootstrap").error(
+        logging.getLogger(_BOOTSTRAP_LOGGER_NAME).error(
             "FATAL: failed to emit %s while reporting failure: %s: %s",
             type(event).__name__,
             type(event_exc).__name__,

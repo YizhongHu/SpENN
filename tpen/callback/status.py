@@ -117,7 +117,7 @@ class Status(StatefulCallback[TrainerState]):
         output_path: str | Path | None = None,
         *,
         terminal: bool = True,
-        logger_name: str = "spenn.status",
+        logger_name: str = "tpen.status",
         include: Sequence[str] | None = None,
         color: str = "auto",
         max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH,

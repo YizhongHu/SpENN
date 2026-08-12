@@ -40,8 +40,8 @@ class TrainPhaseTiming(Callback):
         Admission probability for an otherwise eligible typed completion.
     seed : int or None, optional
         Seed for the typed reporting group's independent RNG stream.
-    cuda_synchronize : bool, optional
-        Synchronize CUDA at phase boundaries for accurate device timing.
+    accelerator_synchronize : bool, optional
+        Synchronize the accelerator at phase boundaries for accurate device timing.
     clock : callable, optional
         Monotonic clock override for deterministic tests.
     """
@@ -49,7 +49,7 @@ class TrainPhaseTiming(Callback):
     def __init__(
         self,
         *,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -90,7 +90,7 @@ class TrainPhaseTiming(Callback):
             ),
         )
         super().__init__(typed_groups=typed_groups, **kwargs)
-        self.cuda_synchronize = bool(cuda_synchronize)
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self._phase_type = TrainingPhase
         self._training_iteration_type = TrainingIteration
@@ -108,7 +108,7 @@ class TrainPhaseTiming(Callback):
         event = occurrence.event
         if isinstance(event, Started) and isinstance(event.operation, self._phase_type):
             key = (type(event.operation), occurrence.count)
-            _sync_device(self.cuda_synchronize)
+            _sync_device(self.accelerator_synchronize)
             self._phase_starts[key] = (int(event.operation.step), self.clock())
             return
         if isinstance(event, Ended) and isinstance(event.operation, self._phase_type):
@@ -116,7 +116,7 @@ class TrainPhaseTiming(Callback):
             start_record = self._phase_starts.pop(key, None)
             if start_record is None:
                 return
-            _sync_device(self.cuda_synchronize)
+            _sync_device(self.accelerator_synchronize)
             step, start = start_record
             # The metric fragment is owned by the phase type, never re-spelled
             # here, so timing keys cannot drift away from the phase contract.

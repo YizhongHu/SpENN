@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import logging
 from pathlib import Path
 
@@ -227,7 +229,7 @@ def test_train_step_timing_feeds_status_line_through_typed_state(
     timing.handle_occurrence(
         Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
     )
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         deliver_completed_iteration(status, context, state, step=1)
 
     assert context.latest("train/perf")["step_time_sec"] == 0.25
@@ -659,10 +661,31 @@ def test_diagnostic_timing_logs_nothing_when_the_task_body_raised() -> None:
     assert callback._starts == {}
 
 
-def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The public option keeps its `cuda_synchronize` name, but the work is now
-    # delegated to the backend-agnostic accelerator helper, so the seam under
-    # test is that helper rather than torch.cuda.
+@pytest.mark.parametrize(
+    "callback_type",
+    (
+        DiagnosticTiming,
+        EvaluationComponentTiming,
+        EvaluationTiming,
+        RunTiming,
+        TrainPhaseTiming,
+        TrainStepTiming,
+    ),
+)
+def test_all_timing_callbacks_publish_only_accelerator_synchronize(callback_type: type) -> None:
+    signature = inspect.signature(callback_type)
+    assert "accelerator_synchronize" in signature.parameters
+    assert "cuda_synchronize" not in signature.parameters
+
+    callback_type(accelerator_synchronize=True)
+    with pytest.raises(TypeError, match="cuda_synchronize"):
+        callback_type(cuda_synchronize=True)
+
+
+def test_accelerator_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The public option is `accelerator_synchronize` as of v0.3.0 (formerly
+    # `cuda_synchronize`); the work is delegated to the backend-agnostic accelerator
+    # helper, so the seam under test is that helper rather than torch.cuda.
     calls: list[str] = []
     context = RecordingContext()
     monkeypatch.setattr(
@@ -671,7 +694,7 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
         lambda **kwargs: calls.append("sync"),
     )
 
-    no_sync = TrainStepTiming(cuda_synchronize=False, clock=FakeClock([1.0, 2.0]))
+    no_sync = TrainStepTiming(accelerator_synchronize=False, clock=FakeClock([1.0, 2.0]))
     context = RecordingContext()
     state = training_state()
     no_sync.handle_occurrence(
@@ -682,7 +705,7 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
     )
     assert calls == []
 
-    with_sync = TrainStepTiming(cuda_synchronize=True, clock=FakeClock([1.0, 2.0]))
+    with_sync = TrainStepTiming(accelerator_synchronize=True, clock=FakeClock([1.0, 2.0]))
     with_sync.handle_occurrence(
         Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
     )

@@ -38,7 +38,7 @@ class RunTiming(Callback):
         Whether to log ``start_time_unix`` and ``end_time_unix``.
     log_wall_time : bool, optional
         Whether to log ``wall_time_sec``.
-    cuda_synchronize : bool, optional
+    accelerator_synchronize : bool, optional
         Synchronize the accelerator at each boundary for device timing.
     clock : callable, optional
         Monotonic clock override for deterministic tests.
@@ -53,7 +53,7 @@ class RunTiming(Callback):
         *,
         log_start_end_timestamps: bool = True,
         log_wall_time: bool = True,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         wall_clock: Callable[[], float] | None = None,
         **kwargs: Any,
@@ -72,7 +72,7 @@ class RunTiming(Callback):
         )
         self.log_start_end_timestamps = bool(log_start_end_timestamps)
         self.log_wall_time = bool(log_wall_time)
-        self.cuda_synchronize = bool(cuda_synchronize)
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self.wall_clock = time.time if wall_clock is None else wall_clock
         self._start_perf: float | None = None
@@ -93,13 +93,13 @@ class RunTiming(Callback):
             self._log_end(context, failed=True)
 
     def _start(self, context: RunContext) -> None:
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         self._start_perf = self.clock()
         if self.log_start_end_timestamps:
             context.log({"start_time_unix": self.wall_clock()}, step=0, namespace="runtime")
 
     def _log_end(self, context: RunContext, *, failed: bool) -> None:
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         now = self.clock()
         metrics: dict[str, float | bool] = {}
         if self.log_start_end_timestamps:

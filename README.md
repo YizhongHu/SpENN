@@ -382,16 +382,17 @@ callbacks:
   - _target_: tpen.callback.TrainStepTiming
     every_n_steps: 1
     rolling_window: 20
-    cuda_synchronize: false
+    accelerator_synchronize: false
 
   - _target_: tpen.callback.EvaluationTiming
-    cuda_synchronize: false
+    accelerator_synchronize: false
 
   - _target_: tpen.callback.DiagnosticTiming
-    cuda_synchronize: false
+    accelerator_synchronize: false
 ```
-GPU synchronization is opt-in with `cuda_synchronize: true` for
-benchmarking; it is disabled by default for normal training.
+Device synchronization is opt-in with `accelerator_synchronize: true` for
+benchmarking; it is disabled by default for normal training. The flag routes
+through `tpen.accelerator.synchronize`, so it covers CUDA, ROCm, and XPU alike.
 
 ## Eager Model Invariant
 

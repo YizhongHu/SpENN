@@ -15,9 +15,9 @@ from tpen.events import Occurrence
 
 from .cadence import CadenceGate, SubscriptionGroup, validate_subscription_groups
 
-# Named for the same reason `spenn.status` and `spenn.bootstrap` are: a run's
+# Named for the same reason `tpen.status` and `tpen.bootstrap` are: a run's
 # logging configuration can silence or route this channel on its own.
-_LOGGER = logging.getLogger("spenn.callback")
+_LOGGER = logging.getLogger("tpen.callback")
 
 
 @runtime_checkable

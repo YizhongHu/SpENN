@@ -42,7 +42,7 @@ class EvaluationComponentTiming(Callback):
 
     Parameters
     ----------
-    cuda_synchronize : bool, optional
+    accelerator_synchronize : bool, optional
         Synchronize the accelerator at component boundaries for device timing.
     clock : callable, optional
         Monotonic clock override for deterministic tests.
@@ -51,7 +51,7 @@ class EvaluationComponentTiming(Callback):
     def __init__(
         self,
         *,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -78,7 +78,7 @@ class EvaluationComponentTiming(Callback):
             ),
             **kwargs,
         )
-        self.cuda_synchronize = bool(cuda_synchronize)
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self._task_run_type = EvaluationTaskRun
         self._component_run_type = ComponentRun
@@ -124,7 +124,7 @@ class EvaluationComponentTiming(Callback):
                 "evaluation component timing requires an enclosing EvaluationTaskRun scope"
             )
         metric_key = self._metric_key(operation)
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         self._starts[key] = (task, metric_key, self.clock())
 
     def _record_end(self, key: tuple[type[object], int]) -> None:
@@ -133,7 +133,7 @@ class EvaluationComponentTiming(Callback):
         start_record = self._starts.pop(key, None)
         if start_record is None:
             return
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         task, metric_key, start = start_record
         durations = self._durations.setdefault(task, {})
         durations[metric_key] = durations.get(metric_key, 0.0) + (self.clock() - start)

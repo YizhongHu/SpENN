@@ -155,6 +155,24 @@ def test_prepare_run_context_rejects_invalid_timezone(tmp_path: Path) -> None:
         prepare_run_context(cfg, config_path="test.yaml", command="pytest")
 
 
+def test_prepare_run_context_default_run_name_is_tpen_run(tmp_path: Path) -> None:
+    """The unnamed-run fallback is a DURABLE public name, so it is pinned here.
+
+    ``run_name`` reaches run directories, ``run_start.json``, and durable metadata, so
+    a silent drift in this default renames artifacts for every config that omits both
+    ``experiment.run_name`` and ``experiment.name``. It was ``spenn_run`` before the
+    v0.3.0 rename and nothing pinned it, which is exactly how that residue survived.
+    """
+
+    cfg = _run_cfg(tmp_path)
+    del cfg.experiment.run_name
+    del cfg.experiment.name
+
+    context = prepare_run_context(cfg, config_path="test.yaml", command="pytest")
+
+    assert context.metadata.run_name == "tpen_run"
+
+
 def _run_cfg(tmp_path: Path) -> DictConfig:
     return OmegaConf.create(
         {

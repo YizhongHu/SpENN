@@ -12,7 +12,7 @@ import pytest
 # ``propagate=False`` into later caplog-based unit tests, which then capture no
 # records. Reset these loggers to a clean, propagating state before each test
 # and restore the pre-test snapshot afterwards.
-_ISOLATED_LOGGERS = ("spenn", "spenn.status")
+_ISOLATED_LOGGERS = ("tpen", "tpen.status")
 
 
 def _drop_terminal_handlers(logger: logging.Logger) -> None:
@@ -22,7 +22,7 @@ def _drop_terminal_handlers(logger: logging.Logger) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _restore_spenn_logger_state():
+def _restore_tpen_logger_state():
     """Give each test a clean TPEN logger tree and restore it afterwards."""
 
     saved = {}

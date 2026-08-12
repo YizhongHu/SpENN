@@ -42,7 +42,7 @@ class EvaluationTiming(Callback):
 
     Parameters
     ----------
-    cuda_synchronize : bool, optional
+    accelerator_synchronize : bool, optional
         Synchronize the accelerator at both boundaries for device timing.
     clock : callable, optional
         Monotonic clock override for deterministic tests.
@@ -51,7 +51,7 @@ class EvaluationTiming(Callback):
     def __init__(
         self,
         *,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -74,7 +74,7 @@ class EvaluationTiming(Callback):
             ),
             **kwargs,
         )
-        self.cuda_synchronize = bool(cuda_synchronize)
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self._started_type = EvaluationStarted
         self._completed_type = EvaluationCompleted
@@ -99,13 +99,13 @@ class EvaluationTiming(Callback):
             self._log_end(context, failed=True)
 
     def _start_timing(self) -> None:
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         self._start = self.clock()
 
     def _log_end(self, context: RunContext, *, failed: bool) -> None:
         if self._start is None:
             return
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         metrics: dict[str, float | bool] = {"wall_time_sec": self.clock() - self._start}
         if failed:
             metrics["failed"] = True
