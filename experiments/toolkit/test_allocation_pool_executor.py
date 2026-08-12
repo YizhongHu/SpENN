@@ -6,9 +6,11 @@ import json
 import multiprocessing
 import shlex
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Sequence
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +23,7 @@ from experiments.toolkit import (
     TaskSpec,
     task_id_from_parts,
 )
+import experiments.toolkit.executors as executors_module
 from experiments.toolkit.jsonio import read_json
 from experiments.toolkit.task_state import claim_row_for_pass, pass_claim_path
 
@@ -290,6 +293,99 @@ def test_completion_failure_drains_unrelated_pending_tasks(tmp_path: Path) -> No
         "failed",
         "success",
     }
+
+
+def test_fatal_worker_error_wins_over_completion_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    completion_ready = threading.Event()
+    stop_observed = threading.Event()
+    real_event = threading.Event
+
+    class TrackingStopEvent:
+        def __init__(self) -> None:
+            self._event = real_event()
+
+        def is_set(self) -> bool:
+            return self._event.is_set()
+
+        def set(self) -> None:
+            self._event.set()
+            stop_observed.set()
+
+    monkeypatch.setattr(
+        executors_module,
+        "threading",
+        SimpleNamespace(
+            Event=TrackingStopEvent,
+            Thread=threading.Thread,
+            Lock=threading.Lock,
+        ),
+    )
+    original_execute = AllocationPoolExecutor._execute_task
+
+    def controlled_execute(self, **kwargs):
+        task = kwargs["task"]
+        if task.run_id == "completion":
+            try:
+                return original_execute(self, **kwargs)
+            except RuntimeError:
+                completion_ready.set()
+                assert stop_observed.wait(timeout=5)
+                raise
+        record = original_execute(self, **kwargs)
+        if task.run_id == "fatal":
+            assert completion_ready.wait(timeout=5)
+            raise ValueError("fatal worker error")
+        return record
+
+    monkeypatch.setattr(AllocationPoolExecutor, "_execute_task", controlled_execute)
+    completion = _status_task(
+        tmp_path,
+        "completion",
+        (sys.executable, "-c", "raise SystemExit(0)"),
+        tmp_path / "completion" / "status.json",
+    )
+    fatal = _task(
+        tmp_path,
+        "fatal",
+        (sys.executable, "-c", "raise SystemExit(9)"),
+    )
+    queued_marker = tmp_path / "queued-ran"
+    queued = _task(
+        tmp_path,
+        "queued",
+        (
+            sys.executable,
+            "-c",
+            "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+            str(queued_marker),
+        ),
+    )
+    tasks = (completion, fatal, queued)
+    executor = AllocationPoolExecutor(
+        pass_id="fatal-priority-pass",
+        n_workers=2,
+        visibility_variable="TEST_VISIBLE_DEVICE",
+        visibility_values=("worker-0", "worker-1"),
+        run_root=tmp_path / "pool",
+        deadline_guard_min=0,
+    )
+
+    with pytest.raises(ValueError, match="fatal worker error"):
+        executor.submit(_plan(tmp_path, tasks), tasks, _request(tasks))
+
+    assert read_json(completion.logs[0])["status"] == "failed"
+    assert read_json(completion.logs[0])["completion_error"]
+    assert read_json(fatal.logs[0])["status"] == "failed"
+    assert read_json(fatal.logs[0])["returncode"] == 9
+    assert not queued_marker.exists()
+    assert not pass_claim_path(
+        tmp_path / "pool",
+        "fatal-priority-pass",
+        queued.task_id,
+    ).exists()
 
 
 def test_nonzero_exit_remains_failed(tmp_path: Path) -> None:

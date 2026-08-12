@@ -282,9 +282,10 @@ class AllocationPoolExecutor:
         pending: queue.Queue[tuple[int, TaskSpec]] = queue.Queue()
         for task_index, task in enumerate(selected_tasks):
             pending.put((task_index, task))
+        completion_errors: list[_CompletionError] = []
+        fatal_errors: list[Exception] = []
 
         records: dict[str, ExecutionRecord] = {}
-        errors: list[Exception] = []
         result_lock = threading.Lock()
         stop_claiming = threading.Event()
 
@@ -332,11 +333,11 @@ class AllocationPoolExecutor:
                         records[task.task_id] = record
                 except _CompletionError as exc:
                     with result_lock:
-                        errors.append(exc)
+                        completion_errors.append(exc)
                     continue
                 except Exception as exc:
                     with result_lock:
-                        errors.append(exc)
+                        fatal_errors.append(exc)
                     stop_claiming.set()
                     return
                 finally:
@@ -355,8 +356,10 @@ class AllocationPoolExecutor:
         for thread in workers:
             thread.join()
 
-        if errors:
-            raise errors[0]
+        if fatal_errors:
+            raise fatal_errors[0]
+        if completion_errors:
+            raise completion_errors[0]
         return tuple(records[task.task_id] for task in selected_tasks if task.task_id in records)
 
     def _validate(self) -> None:
