@@ -8,20 +8,12 @@ from typing import Any
 import torch
 
 from tpen.data.batch import WavefunctionOutput
-from tpen.events import DomainState
+from tpen.events import TrainingTiming, TrainingTimingState
 from tpen.sampling.stats import SamplerStats
 
 
-@dataclass(frozen=True)
-class TrainingTiming:
-    """Whole-iteration timing published on the typed training state."""
-
-    step_time_sec: float
-    step_time_sec_rolling_mean: float
-
-
 @dataclass
-class TrainerState(DomainState):
+class TrainerState(TrainingTimingState):
     """Snapshot of the VMC training loop at one step.
 
     This is the training domain's `DomainState`: the trainer passes it beside
