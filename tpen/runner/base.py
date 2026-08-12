@@ -22,7 +22,6 @@ class Runner:
         raise NotImplementedError
 
 
-
 def _place_module_for_runtime(module: Any, context: RunContext) -> None:
     """Move a configured module to the run's device and floating dtype."""
 

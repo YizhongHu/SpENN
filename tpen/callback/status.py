@@ -88,9 +88,10 @@ class Status(StatefulCallback[TrainerState]):
       identical failure-swallowing helper, and carries the two strings this
       callback derived from the payload's live exception.
 
-    Because ``run_end`` is success-only, `RunCompleted` alone is its faithful
-    replacement and no failure case is dropped; the ``failed`` status keeps
-    coming from the failure boundary, which is now `RunFailed`.
+    Because ``run_end`` is raise-free-path-only, `RunCompleted` alone is its
+    faithful replacement and no failure case is dropped. TWO boundaries can now
+    write ``failed``, though: `RunFailed`, and `RunCompleted` carrying a
+    runner's own ``failed`` verdict. See `_record_run_completed`.
 
     ``current_event`` in ``status.json`` keeps the legacy STRINGS as its values.
     That field names a moment in a durable artifact rather than selecting an
@@ -177,7 +178,7 @@ class Status(StatefulCallback[TrainerState]):
         if isinstance(event, RunStarted):
             self._record_run_start(context)
         elif isinstance(event, RunCompleted):
-            self._record_run_completed(context)
+            self._record_run_completed(context, event)
         elif isinstance(event, RunFailed):
             self._record_run_failed(context, event)
 
@@ -198,13 +199,27 @@ class Status(StatefulCallback[TrainerState]):
             exception_message=None,
         )
 
-    def _record_run_completed(self, context: CallbackContext) -> None:
-        """Record successful completion."""
+    def _record_run_completed(self, context: CallbackContext, event: RunCompleted) -> None:
+        """Record the runner's own verdict at the completion boundary.
 
-        self._log_status(_format_run_end(context), kind="completed")
+        The status is READ OFF THE EVENT rather than hardcoded to ``completed``.
+        "Completed" names the moment -- the runner returned without raising --
+        not the outcome, and an evaluation suite whose tasks all failed returns
+        ``RunResult(status="failed")`` and arrives here like any other run.
+        Writing ``completed`` for it made ``status.json`` contradict the result
+        the harness had in hand, and ``experiments/toolkit/task_state.py``
+        treats that ``completed`` as proof a row need never be retried, so a
+        failed evaluation was banked as a finished attempt.
+
+        ``current_event`` stays ``run_end``. Only the verdict was wrong; the
+        moment is the same one, and that field names a moment in a durable
+        artifact rather than selecting an event (ADR-E006).
+        """
+
+        self._log_status(_format_run_end(context, status=event.status), kind=event.status)
         self._write(
             context,
-            status="completed",
+            status=event.status,
             current_event="run_end",
             end_time=context.now_iso(),
             exception_type=None,
@@ -410,8 +425,8 @@ def _format_run_start_lines(context: CallbackContext, *, max_line_width: int = _
     ]
 
 
-def _format_run_end(context: CallbackContext) -> str:
-    return f"[run] completed dir={context.metadata.run_dir}"
+def _format_run_end(context: CallbackContext, *, status: str) -> str:
+    return f"[run] {status} dir={context.metadata.run_dir}"
 
 
 def _format_run_failure(context: CallbackContext, *, exception_type: str, exception_message: str) -> str:

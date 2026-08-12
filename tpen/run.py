@@ -173,7 +173,12 @@ def run_from_config(
     -------
     int
         ``0`` on success, ``1`` on a handled failure (when
-        ``raise_exceptions=False``).
+        ``raise_exceptions=False``). A runner that RETURNS
+        ``RunResult(status="failed")`` -- an evaluation suite whose tasks
+        failed, which raises nothing -- is a handled failure too and also
+        returns ``1``. It used to return ``0``, so a failed evaluation exited
+        successfully and every launcher that reads an exit code recorded it as
+        a success.
     """
 
     _install_bootstrap_stderr_logger()
@@ -188,14 +193,22 @@ def run_from_config(
         result = runner.run(context)
         # The harness owns the whole run lifecycle, including this boundary,
         # which the runners emitted the ``run_end`` string for. See
-        # `tpen.run_events` for why one emitter rather than three. Emitted BEFORE
-        # the status is copied off the result, matching the legacy ordering:
-        # `Metadata` sets ``metadata.status`` itself, and a run whose evaluation
-        # suite failed would otherwise have its ``failed`` status overwritten.
-        context.emit(RunCompleted())
+        # `tpen.run_events` for why one emitter rather than three.
+        #
+        # The runner's own verdict rides the event. It cannot be read off
+        # `context.metadata` by the callbacks instead: the copy below has to
+        # stay AFTER the emit, because `Metadata` assigns ``metadata.status``
+        # itself while handling this event and would otherwise overwrite a
+        # failed suite's status with the boundary's own name.
+        status = result.status if isinstance(result, RunResult) else "completed"
+        context.emit(RunCompleted(status=status))
         if isinstance(result, RunResult):
             context.metadata.status = result.status
-        return 0
+        # A failed suite raises nothing -- the runner returned -- but the process
+        # must not claim success. Same exit code as the raising path: no caller
+        # distinguishes between nonzero codes, and inventing a second one would
+        # be a new contract for no consumer.
+        return 1 if status == "failed" else 0
     except Exception as exc:
         phase = _failure_phase(exc, context=context, runner=runner)
         traceback_text = traceback.format_exc()

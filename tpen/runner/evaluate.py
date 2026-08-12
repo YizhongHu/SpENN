@@ -10,7 +10,12 @@ from tpen.dependencies import require_torch
 from tpen.evaluation import EvaluationResult, Evaluator
 from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
 
-from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
+from .base import (
+    Runner,
+    _assert_eager_initialized,
+    _is_torch_module,
+    _place_module_for_runtime,
+)
 
 torch = require_torch(feature="evaluation runner")
 
