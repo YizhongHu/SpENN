@@ -36,14 +36,40 @@ class RuntimeEquivariance(StatefulCallback[TrainerState]):
     ----------
     checkers : sequence
         Checker objects exposing ``run(state) -> EquivarianceCheckResult``.
+        Must be non-empty; see the note below.
     fail_fast : bool, optional
         Raise when any checker fails.
     artifact_dir : str or pathlib.Path or None, optional
         Root directory for failure artifacts. When ``None``, artifacts are not
         written even if a checker returns one.
 
+    Raises
+    ------
+    ValueError
+        If ``checkers`` is empty.
+
     Notes
     -----
+    **An empty checker list is rejected at construction.** Every record this
+    callback publishes is emitted from inside the per-checker loop, so with no
+    checkers the loop body never runs and the whole ``checks/equivariance/*``
+    namespace simply never appears — while a config carrying ``fail_fast: true``
+    reads as though equivariance were being enforced. That is worse than a check
+    that passes vacuously: a vacuous pass at least leaves a record with counts in
+    it that somebody could notice, whereas a vacuous *absence* leaves nothing to
+    notice at all.
+
+    Rejecting at construction rather than emitting a failing record at log time
+    is deliberate, for three reasons. There is no log name to hang a record on:
+    names are derived per checker, so a no-checker record would have to invent a
+    ``checks/equivariance/*`` namespace that exists only to describe a
+    misconfiguration. It is a configuration error, not an observation, and it is
+    fully decidable before any compute is spent. And it is the only option that
+    is loud in both modes — a failing record would crash a ``fail_fast: true``
+    run late and would never fire at all under ``fail_fast: false``, which is
+    precisely the silent case. The cost accepted in exchange is that the error
+    surfaces during run setup instead of at the first checked step.
+
     This is the only migrated callback whose step coordinate reaches a durable
     path name: `_write_equivariance_artifact` formats ``step_{step:06d}``. It is
     read from the typed event so a future boundary change cannot turn it into
@@ -62,6 +88,17 @@ class RuntimeEquivariance(StatefulCallback[TrainerState]):
         artifact_dir: str | Path | None = None,
         **kwargs: Any,
     ) -> None:
+        # Validated before anything else: `pop_step_cadence` mutates `kwargs`,
+        # and a callback that cannot check anything should not get that far.
+        checkers = list(checkers)
+        if not checkers:
+            raise ValueError(
+                "RuntimeEquivariance requires at least one checker, got an empty "
+                "`checkers` list. With no checkers this callback logs no "
+                "`checks/equivariance/*` record at all, so a run would report no "
+                "equivariance metrics while `fail_fast` suggested the checks were "
+                "being enforced. Configure a checker, or remove the callback."
+            )
         cadence = pop_step_cadence(kwargs)
         super().__init__(
             # Subscriptions are class-owned, never configured: this callback
@@ -78,7 +115,7 @@ class RuntimeEquivariance(StatefulCallback[TrainerState]):
         # restore. This is the most expensive check in the stack, so a schedule
         # that silently shifted phase on a resumed run would be visible.
         self._steps = StepCadenceGate(cadence)
-        self.checkers = list(checkers)
+        self.checkers = checkers
         self.fail_fast = bool(fail_fast)
         self.artifact_dir = Path(artifact_dir) if artifact_dir is not None else None
         self._checker_log_names = _assign_checker_log_names(self.checkers)
@@ -105,6 +142,11 @@ class RuntimeEquivariance(StatefulCallback[TrainerState]):
 
             metrics = dict(result.metrics)
             metrics["passed"] = bool(result.passed)
+            # Published here, from the typed field, rather than left to each
+            # checker's free-form metrics: this is the key that can contradict a
+            # `passed` reached by comparing nothing, so it must be present on
+            # every record regardless of what the checker chose to report.
+            metrics["n_comparisons"] = int(result.n_comparisons)
             metrics["checker_class"] = type(checker).__name__
 
             if result.artifact is not None and self.artifact_dir is not None:

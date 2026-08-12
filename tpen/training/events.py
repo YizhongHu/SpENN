@@ -159,6 +159,31 @@ class UpdateSkipped(Event):
     iteration: TrainingIteration
 
 
+@dataclass(frozen=True)
+class TrainingCompleted(Event):
+    """The training loop ran every iteration it was going to run and returned.
+
+    The training domain's counterpart to
+    `tpen.evaluation.events.EvaluationCompleted`, and the moment a terminal
+    checkpoint is owed. It carries no fields: under ADR-E007 an event says WHEN
+    and nothing else, and its subscriber reads the resume cursor from the
+    trainer on the `tpen.training.state.TrainerState` delivered beside it.
+
+    Emitted once per training run, after `tpen.training.VMCTrainer.fit`
+    returns -- INCLUDING when the loop body never executed at all, which is the
+    case for ``max_steps=0`` and for a fully-resumed run whose cursor already
+    sits at ``max_steps``. Both still owe a terminal checkpoint while emitting
+    no `TrainingIterationCompleted` at all, which is precisely why this moment
+    cannot be expressed as "the last completed iteration".
+
+    Deliberately NOT modelled as an `Operation` scope, for the same reason as
+    `EvaluationCompleted`: `tpen.artifacts.RunContext.scope` emits its ``Ended``
+    record from a ``finally``, so a scope would fire this boundary when the loop
+    RAISES, and a run killed by a failed ``fail_fast`` health check would then
+    write the very terminal checkpoint it must not write.
+    """
+
+
 __all__ = [
     "Backward",
     "BuildBatch",
@@ -168,6 +193,7 @@ __all__ = [
     "Metrics",
     "Objective",
     "OptimizerUpdate",
+    "TrainingCompleted",
     "TrainingIteration",
     "TrainingIterationCompleted",
     "TrainingPhase",

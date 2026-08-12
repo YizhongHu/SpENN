@@ -4,29 +4,93 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import socket
-import sys
 import textwrap
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from tpen.artifacts import write_json
+from tpen.artifacts import RunContext, write_json
+from tpen.events import DomainState
+from tpen.events import Event as TypedEvent
+from tpen.events import Occurrence, Subscription
+from tpen.training.events import TrainingIterationCompleted
+from tpen.training.state import TrainerState
 
-from .base import Callback, Event
+from .base import Event, StatefulCallback
+from .cadence import StepCadenceGate, SubscriptionGroup, pop_step_cadence
+from .terminal_logging import color_status_line, validate_terminal_choice
 
 _STATUS_BOX_MAX_LINE_WIDTH = 100
 _STATUS_BOX_BORDER_WIDTH = 4
 _STATUS_BOX_SEPARATOR = " : "
 
 
-class Status(Callback):
-    """Write lifecycle status artifacts and terminal status lines."""
+class Status(StatefulCallback[TrainerState]):
+    """Write lifecycle status artifacts and terminal status lines.
+
+    Parameters
+    ----------
+    output_path : str or pathlib.Path or None, optional
+        Where the run's ``status.json`` is written. ``None`` writes no file.
+    terminal : bool, optional
+        Whether any line is emitted to the terminal logging channel at all.
+    logger_name : str, optional
+        Logger the status lines are written to.
+    include : sequence of str, optional
+        Fully-qualified metric identities rendered on the per-iteration training
+        line, in order.
+    color : {"auto", "always", "never"}, optional
+        Terminal colouring policy.
+    max_line_width : int, optional
+        Width the ``run_start`` status boxes are wrapped to.
+    train_lines : bool, optional
+        Whether to render one compact line per completed training iteration.
+        Off by default, so a `Status` configured only for the run lifecycle does
+        not start narrating the loop.
+    **kwargs
+        Forwarded to `StatefulCallback` (e.g. ``every_n_steps``).
+
+    Notes
+    -----
+    This callback is HALF migrated, deliberately. The per-iteration training
+    line reads `tpen.training.state.TrainerState` and now arrives through typed
+    delivery at `tpen.training.events.TrainingIterationCompleted`.
+
+    Three legacy string triggers survive: ``run_start``, ``run_end``, and
+    ``exception`` are RUN-level events emitted by `tpen.run` and
+    `tpen.runner.Runner`, they have no typed equivalent and no owning domain,
+    and that gap is item ``39eacd99`` rather than this migration. They are the
+    only thing that writes ``status.json`` at all, so dropping them would delete
+    the run's status artifact outright. Same shape, and the same reason, as the
+    residual ``exception`` trigger on
+    `tpen.callback.timing.EvaluationTiming`. Ugly, and correct.
+
+    They are hardcoded rather than configured because every shipped config
+    listed exactly these three, and because ADR-E002 forbids a config from
+    naming the events a callback answers to. ``train_lines`` replaces the
+    ``triggers: [step_end]`` spelling that selected the training line, as a
+    semantic option rather than an event selector.
+
+    One capability was lost in the migration and is recorded here rather than
+    silently dropped. The training line used to also render metrics that other
+    CALLBACKS attached to the shared legacy ``step_end`` payload -- in practice
+    ``train/perf/step_time_sec`` and ``train/perf/step_time_sec_rolling_mean``
+    from `tpen.callback.timing.TrainStepTiming`. That inter-callback side
+    channel is the untyped payload dict ADR-E007 rejects, and a typed occurrence
+    has no payload to replace it with, so those two keys cannot currently
+    render. They stay in `_DEFAULT_STATUS_METRICS` because they name real
+    published metrics that a typed route would restore; the metrics themselves
+    are unaffected, since ``TrainStepTiming`` still logs them to every
+    configured logger. No shipped config renders a training line today, so no
+    run's terminal output changes.
+    """
+
+    # ClassVar: the runtime authority for typed state delivery.
+    state_type: ClassVar[type[DomainState]] = TrainerState
 
     def __init__(
         self,
-        triggers: Iterable[str],
         output_path: str | Path | None = None,
         *,
         terminal: bool = True,
@@ -34,15 +98,38 @@ class Status(Callback):
         include: Sequence[str] | None = None,
         color: str = "auto",
         max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH,
+        train_lines: bool = False,
         **kwargs: Any,
     ) -> None:
-        super().__init__(triggers, **kwargs)
+        cadence = pop_step_cadence(kwargs)
+        super().__init__(
+            # See the class notes: run-level residual, not a configurable knob.
+            triggers=("run_start", "run_end", "exception"),
+            # An instance rendering no training line subscribes to nothing,
+            # rather than subscribing and discarding every delivery.
+            typed_groups=(
+                (
+                    SubscriptionGroup(
+                        selectors=(Subscription.of(TrainingIterationCompleted),)
+                    ),
+                )
+                if train_lines
+                else ()
+            ),
+            **kwargs,
+        )
         self.output_path = None if output_path is None else Path(output_path)
         self.terminal = bool(terminal)
+        self.train_lines = bool(train_lines)
         self.logger = logging.getLogger(logger_name)
         self.include = tuple(_DEFAULT_STATUS_METRICS if include is None else include)
-        self.color = _validate_terminal_choice(color, name="color")
+        self.color = validate_terminal_choice(color, name="color")
         self.max_line_width = _validate_max_line_width(max_line_width)
+        # The scheduling scalars gate the typed training line only. On the
+        # legacy path they could never have gated the three run-level triggers
+        # anyway: those carry no step, and `_CallbackCore.should_run` rejected a
+        # `None` coordinate outright the moment `every_n_steps` was set.
+        self._steps = StepCadenceGate(cadence)
         self.start_time: str | None = None
 
     def on_run_start(self, event: Event) -> None:
@@ -87,24 +174,31 @@ class Status(Callback):
             exception_message=None if exception is None else str(exception),
         )
 
-    def on_step_end(self, event: Event) -> None:
-        """Write one compact training status line."""
+    def handle_occurrence_impl(
+        self,
+        occurrence: Occurrence[TypedEvent],
+        context: RunContext,
+        state: TrainerState,
+    ) -> None:
+        """Write one compact training status line for a completed iteration."""
 
-        line = _format_train_status(event, self.include)
+        del context
+        event = occurrence.event
+        if not isinstance(event, TrainingIterationCompleted):
+            return
+        # The coordinate rides the typed event, never `state.step`, whose value
+        # fields are stale at any boundary above their assignment.
+        step = int(event.iteration.step)
+        if not self._steps.should_run(step):
+            return
+        line = _format_train_status(state, self.include, step=step)
         if line is not None:
             self._log_status(line, kind="train")
-
-    def on_evaluate_end(self, event: Event) -> None:
-        """Write one compact evaluation status line."""
-
-        line = _format_evaluate_status(event)
-        if line is not None:
-            self._log_status(line, kind="eval")
 
     def _log_status(self, line: str, *, kind: str) -> None:
         if not self.terminal:
             return
-        self.logger.info(_color_status_line(line, kind=kind, color=self.color))
+        self.logger.info(color_status_line(line, kind=kind, color=self.color))
 
     def _write(
         self,
@@ -132,44 +226,6 @@ class Status(Callback):
         )
 
 
-def configure_terminal_logging(
-    *,
-    enabled: bool = True,
-    level: str = "info",
-    color: str = "auto",
-    logger_name: str = "spenn",
-) -> None:
-    """Configure the package terminal logging channel.
-
-    Parameters
-    ----------
-    enabled : bool, optional
-        If ``False``, leave logging configuration unchanged.
-    level : str, optional
-        Logging level name.
-    color : {"auto", "always", "never"}, optional
-        Accepted for config validation and consistency with `Status`.
-    logger_name : str, optional
-        Logger subtree to configure.
-    """
-
-    if not enabled:
-        return
-    _validate_terminal_choice(color, name="color")
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(_logging_level(level))
-    for handler in logger.handlers:
-        if getattr(handler, "_spenn_terminal_handler", False):
-            handler.setLevel(_logging_level(level))
-            return
-    handler = logging.StreamHandler()
-    handler._spenn_terminal_handler = True
-    handler.setLevel(_logging_level(level))
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(handler)
-    logger.propagate = False
-
-
 def _now(event: Event) -> str:
     return event.context.now_iso()
 
@@ -181,6 +237,10 @@ _DEFAULT_STATUS_METRICS = (
     "train/sampler/acceptance_rate",
     "train/grad_norm",
     "train/local_energy_finite_fraction",
+    # The two `train/perf` identities below name real published metrics but
+    # cannot currently render: they reached this callback only through the
+    # legacy `step_end` payload another callback mutated in place, and a typed
+    # occurrence has no payload. See the note on `Status`.
     "train/perf/step_time_sec",
     "train/perf/step_time_sec_rolling_mean",
 )
@@ -195,15 +255,6 @@ _STATUS_LABELS = {
     "train/perf/step_time_sec": "step_time",
     "train/perf/step_time_sec_rolling_mean": "step_avg",
 }
-
-_STATUS_COLORS = {
-    "run": "\033[36m",
-    "train": "\033[34m",
-    "eval": "\033[35m",
-    "completed": "\033[32m",
-    "failed": "\033[31m",
-}
-
 
 def _format_run_start_lines(event: Event, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
     metadata = event.context.metadata
@@ -311,12 +362,10 @@ def _format_run_failure(event: Event, exception: object | None) -> str:
     return " ".join(parts)
 
 
-def _format_train_status(event: Event, include: Sequence[str]) -> str | None:
-    state = event.state
-    if state is None:
-        return None
+def _format_train_status(
+    state: TrainerState, include: Sequence[str], *, step: int
+) -> str | None:
     values = _training_metric_values(state)
-    values.update(_payload_metric_values(event))
     rendered = [
         f"{_STATUS_LABELS.get(identity, identity)}={_format_status_value(values[identity])}"
         for identity in include
@@ -324,59 +373,26 @@ def _format_train_status(event: Event, include: Sequence[str]) -> str | None:
     ]
     if not rendered:
         return None
-    step = event.step
-    prefix = "[train]" if step is None else f"[train] step={step}"
-    return " ".join([prefix, *rendered])
+    return " ".join([f"[train] step={step}", *rendered])
 
 
-def _format_evaluate_status(event: Event) -> str | None:
-    metrics = event.payload.get("metrics")
-    values = {}
-    if isinstance(metrics, Mapping):
-        values.update({f"eval/{key}": value for key, value in metrics.items()})
-    values.update(_payload_metric_values(event))
-    if not values:
-        return None
-    include = ("eval/energy", "eval/energy_stderr", "eval/energy_error", "eval/perf/wall_time_sec")
-    labels = {
-        "eval/energy": "energy",
-        "eval/energy_stderr": "stderr",
-        "eval/energy_error": "abs_error",
-        "eval/perf/wall_time_sec": "wall_time",
-    }
-    rendered = [
-        f"{labels[identity]}={_format_status_value(values[identity])}"
-        for identity in include
-        if identity in values
-    ]
-    if not rendered:
-        return None
-    return " ".join(["[eval]", *rendered])
+def _training_metric_values(state: TrainerState) -> dict[str, object]:
+    """Compose the metric identities reachable from typed training state.
 
+    Both fields are read by name off a typed `tpen.training.state.TrainerState`,
+    not probed: ``None`` and an empty mapping are declared values, not absent
+    attributes.
+    """
 
-def _training_metric_values(state: object) -> dict[str, object]:
     values: dict[str, object] = {}
-    for key, value in dict(getattr(state, "metrics", {}) or {}).items():
+    for key, value in dict(state.metrics).items():
         values[f"train/{key}"] = value
     # ``sampler_stats`` is a typed SamplerStats record that composes its own
     # metric names; status never re-spells or re-flattens them.
-    sampler_stats = getattr(state, "sampler_stats", None)
+    sampler_stats = state.sampler_stats
     if sampler_stats is not None:
         for key, value in sampler_stats.as_metrics().items():
             values[f"train/sampler/{key}"] = value
-    return values
-
-
-def _payload_metric_values(event: Event) -> dict[str, object]:
-    values: dict[str, object] = {}
-    by_namespace = event.payload.get("metrics_by_namespace")
-    if not isinstance(by_namespace, Mapping):
-        return values
-    for namespace, metrics in by_namespace.items():
-        if not isinstance(namespace, str) or not isinstance(metrics, Mapping):
-            continue
-        for key, value in metrics.items():
-            values[f"{namespace}/{key}"] = value
     return values
 
 
@@ -477,12 +493,6 @@ def _needs_shell_quote(value: str) -> bool:
     return any(character.isspace() for character in value) or value == ""
 
 
-def _validate_terminal_choice(value: str, *, name: str) -> str:
-    if value not in {"auto", "always", "never"}:
-        raise ValueError(f"{name} must be one of 'auto', 'always', or 'never', got {value!r}")
-    return value
-
-
 def _validate_max_line_width(value: int) -> int:
     width = int(value)
     if width < 40:
@@ -490,35 +500,4 @@ def _validate_max_line_width(value: int) -> int:
     return width
 
 
-def _logging_level(level: str) -> int:
-    value = getattr(logging, str(level).upper(), None)
-    if not isinstance(value, int):
-        raise ValueError(f"Unsupported logging level {level!r}")
-    return value
-
-
-def _color_status_line(line: str, *, kind: str, color: str) -> str:
-    if not _color_enabled(color):
-        return line
-    prefix = _STATUS_COLORS.get(kind)
-    if prefix is None:
-        return line
-    return f"{prefix}{line}\033[0m"
-
-
-def _color_enabled(color: str) -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("FORCE_COLOR"):
-        return True
-    if color == "always":
-        return True
-    if color == "never":
-        return False
-    if os.environ.get("SLURM_JOB_ID"):
-        return False
-    return sys.stderr.isatty()
-
-
-
-__all__ = ["Status", "configure_terminal_logging"]
+__all__ = ["Status"]

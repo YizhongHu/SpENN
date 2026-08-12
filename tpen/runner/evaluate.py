@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from tpen.artifacts import RunContext, RunResult
-from tpen.checkpoint import restore_checkpoint_with_events
+from tpen.checkpoint import CheckpointRestored, restore_checkpoint_with_events
 from tpen.dependencies import require_torch
 from tpen.evaluation import EvaluationResult, Evaluator
+from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
 
@@ -62,18 +63,23 @@ class Evaluate(Runner):
                 emit=self.emit,
             )
             self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
+            # Typed counterpart, carrying the report itself rather than a
+            # flattened mapping. No callback subscribes it; its consumer is the
+            # durable occurrence record (D3).
+            context.emit(CheckpointRestored(report=report))
             if _is_torch_module(self.model):
                 self.model.eval()
 
-        self.emit("evaluate_start", context)
-        result = self.evaluator.evaluate(
-            model=self.model,
-            context=context,
-            emit=lambda name, *, payload=None: self.emit(name, context, payload=payload),
-        )
+        # A point event rather than a scope: a scope's `Ended` fires from a
+        # `finally`, which would pre-empt the run-level `exception` event that
+        # `EvaluationTiming` turns into `eval/perf {failed: True}`.
+        context.emit(EvaluationStarted())
+        result = self.evaluator.evaluate(model=self.model, context=context)
         _log_result(context, result, namespace=self.evaluator.namespace)
 
-        self.emit("evaluate_end", context, payload=result.to_payload())
+        # Success path only: a failed suite is a status field on the result, not
+        # a distinct moment (ADR-E007).
+        context.emit(EvaluationCompleted())
         self.emit("run_end", context)
         return RunResult(status="completed" if result.status != "failed" else "failed")
 
@@ -100,7 +106,7 @@ def _log_result(context: RunContext, result: EvaluationResult, *, namespace: str
     for task in result.task_results:
         status_metrics: dict[str, Any] = {
             "task_success": task.status == "success",
-            "task_failed": task.status in {"failed", "partial_failed"},
+            "task_failed": task.failed,
         }
         if task.metrics:
             context.log(dict(task.metrics), step=0, namespace=task.namespace)

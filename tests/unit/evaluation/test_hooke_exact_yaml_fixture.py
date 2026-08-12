@@ -7,7 +7,6 @@ on the exact Hooke wavefunction and check that the diagnostics recover known val
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -32,6 +31,7 @@ from tpen.evaluation.summaries import (
 from tpen.physics.hooke import HookeSingletExact
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tests.helpers.run_context import make_run_context
 
 FIXTURES = Path(__file__).resolve().parents[2] / "integration" / "artifacts" / "hooke"
 SINGLET_FIXTURE = FIXTURES / "exact_singlet_eval.yaml"
@@ -187,10 +187,9 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
             )
             return GeneratedConfigurations(batch=batch, metadata={})
 
-    ctx = SimpleNamespace()
-    ctx.run_dir = tmp_path
-    ctx.metadata = SimpleNamespace(device=None, dtype=None)
-    ctx.log = lambda *a, **kw: None
+    # A real `RunContext`: the evaluator emits typed occurrences through it, and
+    # both `scope` and the occurrence artifact writer need its own state.
+    ctx = make_run_context(tmp_path)
 
     evaluator = Evaluator(
         namespace="eval",
@@ -213,7 +212,7 @@ def test_hooke_exact_task_outputs_use_task_directories(tmp_path: Path) -> None:
             ),
         ],
     )
-    evaluator.evaluate(model=nn.Identity(), context=ctx, emit=lambda *a, **kw: None)
+    evaluator.evaluate(model=nn.Identity(), context=ctx)
 
     assert recorded[0] == tmp_path / "cusp"
     assert recorded[1] == tmp_path / "tail"

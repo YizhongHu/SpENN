@@ -72,19 +72,13 @@ callbacks:
   rolling_window: 2
 - _target_: tpen.callback.TrainPhaseTiming
 - _target_: tpen.callback.Status
-  triggers:
-  - run_start
-  - run_end
-  - exception
   output_path: ${run.dir}/status.json
 - _target_: tpen.callback.Checkpoint
-  triggers:
-  - step_end
+  terminal: false
   every_n_steps: 2
   output_dir: ${run.dir}/checkpoints
 - _target_: tpen.callback.Checkpoint
-  triggers:
-  - train_end
+  periodic: false
   output_dir: ${run.dir}/checkpoints
 loggers:
 - _target_: tpen.logging.CSV
