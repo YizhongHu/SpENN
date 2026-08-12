@@ -324,6 +324,7 @@ passed
 `checks/gradient` — `GradientStats`:
 
 ```text
+n_grad_tensors
 n_grad_elements
 global_grad_norm
 max_abs_grad
@@ -752,6 +753,43 @@ of the loop body, which is an implicit ordering contract. Where observers
 should be re-pointed is a separate open question, tracked as the
 observation-point contract (ADR-008); this document records the situation and
 does not resolve it.
+
+### `checks/gradient/passed` distinguishes empty from healthy
+
+**Semantic change, no name change.** `checks/gradient` publishes the same seven
+keys it always did; what `passed` *means* narrowed. (The key list earlier in this
+document had omitted `n_grad_tensors`, which the callback has always published.
+That was a documentation gap, corrected alongside this section, not a change.)
+
+Every statistic in this namespace is well defined over an empty gradient set:
+`global_grad_norm` is `0.0` and `nonfinite_grad_fraction` is `0.0`, so the
+finiteness bound holds trivially. `GradientStats` therefore used to report
+`passed = True` while observing nothing at all — measured on Cannon three times
+with `fail_fast: true` configured and never firing. A silently disabled check is
+worse than an absent one, because it looks like coverage.
+
+`passed` now reads `optimizer_step` — the authoritative discriminator above — to
+separate the two ways a gradient set can be empty:
+
+```text
+n_grad_tensors == 0, optimizer_step == False   passed = True    nothing to differentiate
+n_grad_tensors == 0, optimizer_step == True    passed = False   observation is broken
+```
+
+The vacuum skip is the first row and stays a pass, for the same reason
+`grad_norm = 0.0` there is a literal rather than a fabrication. The second row is
+a real failure: an update ran, consumed gradients, and the observer saw none.
+
+No key was added to mark the distinction. `n_grad_tensors` and
+`train/optimizer_step` already state it between them and `passed` carries the
+verdict, so an `observed` flag would be a third spelling of one fact — the same
+reason no key was added to mark a vacuum skip. The key set stays independent of
+which row applied, so JSONL/CSV columns are unchanged.
+
+For readers of historical data: in runs produced before this change, a
+`checks/gradient` record with `n_grad_tensors = 0` and
+`train/optimizer_step = True` at the same step carries `passed = True` and that
+value means nothing. Read the `n_grad_tensors`/`optimizer_step` pair instead.
 
 ### Cadence gates do not always fire at step 0
 
