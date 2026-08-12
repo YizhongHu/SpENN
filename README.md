@@ -103,6 +103,18 @@ $PYBIN -m uv venv --system-site-packages "$UV_PROJECT_ENVIRONMENT"
 $PYBIN -m uv sync --inexact --locked
 ```
 
+For a reproducibility check from a genuinely pristine tracked checkout, clone
+the ref first and use that directory as `cd`'s target (do not copy a dirty
+worktree or untracked files):
+
+```bash
+git clone --no-checkout https://github.com/YizhongHu/TPEN.git "$HOME/tpen-proof/checkout"
+git -C "$HOME/tpen-proof/checkout" checkout --detach <tracked-ref>
+cd "$HOME/tpen-proof/checkout"
+test -z "$(git status --porcelain)"
+test -z "$(git ls-files --others --exclude-standard)"
+```
+
 Afterwards, invoke `"$UV_PROJECT_ENVIRONMENT/bin/python"` directly. Workers must
 not run `uv sync`, and `uv` must never run concurrently from several workers.
 
@@ -137,6 +149,9 @@ error: a value is required for '--no-extra <NO_EXTRA>'
 Omitting it is equivalent. Extras are opt-in, TPEN declares no
 `default-extras`, so no CUDA extra is selected and facility PyTorch is never
 shadowed.
+The selected environment is therefore **no TPEN PyTorch extra**; `uv tree` may
+list the lock's opt-in extras, but `uv sync` does not install them unless one is
+requested.
 
 **Do not add `UV_PYTHON_PREFERENCE=only-system`** alongside
 `UV_NO_MANAGED_PYTHON=1`, for the same reason as Frontier — uv rejects the
@@ -165,6 +180,22 @@ Nothing in the checkout needs editing to make this work. A pinned
 `.python-version` and `[tool.uv] python-preference = "only-system"` were used
 once as temporary cluster evidence and have been reverted; the env-var-only
 profile is proven from a pristine checkout, so neither belongs in a commit.
+
+Measured pristine-checkout receipt (Polaris login node, 2026-08-11
+`America/New_York`, tracked ref `79ce4e5`): `uv` was absent from `PATH` and
+resolved only as `$PYBIN -m uv` (`uv 0.8.23`). The four overrides above were the
+only `UV_*` settings; `UV_PYTHON_PREFERENCE` was unset. `uv lock --check`,
+`uv venv --system-site-packages`, and `uv sync --inexact --locked` succeeded.
+The overlay inherited facility Torch 2.8.0 (CUDA 12.9) from
+`/soft/applications/conda/2025-09-25/mconda3/lib/python3.12/site-packages`,
+not from a TPEN extra; its recorded facility wheel was
+`torch-2.8.0-cp312-cp312-linux_x86_64.whl`, and the overlay had no `torch*`
+directory. On the login node, device visibility was expectedly zero
+(`torch.cuda.is_available() == False`, NVML unavailable). The bounded slice
+`tests/unit/test_optional_dependencies.py tests/unit/test_no_spenn_testing_package.py tests/unit/test_accelerator.py`
+returned **15 passed, 2 skipped**. This is provisioning and login-node test
+evidence, not hardware validation of a run; Cannon is not a substitute for
+Polaris hardware validation.
 
 Polaris jobs do not share nodes, so treat a node as a four-GPU worker pool: one
 independent single-GPU TPEN row per GPU rather than one grid row per exclusive
