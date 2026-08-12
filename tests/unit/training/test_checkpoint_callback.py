@@ -514,7 +514,7 @@ def test_checkpoint_owns_no_legacy_scheduling_hooks(tmp_path) -> None:
 
     callback = Checkpoint(output_dir=tmp_path)
 
-    assert callback.triggers == ()
+    assert not hasattr(callback, "triggers")
     assert not hasattr(callback, "on_step_end")
     assert not hasattr(callback, "on_train_end")
 

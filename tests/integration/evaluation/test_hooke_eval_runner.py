@@ -16,7 +16,7 @@ import tpen.runner as runner_module
 import tpen.runner.evaluate as evaluate_runner_module
 import tpen.runner.train as train_runner_module
 from tpen.artifacts import RunContext
-from tpen.callback import Callback, Event, SubscriptionGroup
+from tpen.callback import Callback, SubscriptionGroup
 from tpen.checkpoint import RestoreReport
 from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from tpen.evaluation import (
@@ -285,8 +285,7 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: 
 
 def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> None:
     recorder = _AllOccurrenceRecorder()
-    string_recorder = _EventRecorder()
-    context, logger = _recording_context(tmp_path, [recorder, string_recorder])
+    context, logger = _recording_context(tmp_path, [recorder])
     runner = Evaluate(
         model=build_tiny_spenn(),
         evaluator=_energy_evaluator(
@@ -320,8 +319,6 @@ def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> 
         "Ended[EvaluationTaskRun]",
         "EvaluationCompleted",
     ]
-    # Only run-level strings remain on the legacy path.
-    assert string_recorder.events == ["run_start", "run_end"]
     energy_records = [record.metrics for record in logger.by_namespace("eval/energy")]
     assert energy_records
     assert "local_energy_mean" in energy_records[-1]
@@ -399,26 +396,6 @@ def _runner_context(cfg) -> RunContext:
     context = object.__new__(RunContext)
     context.cfg = cfg
     return context
-
-
-class _EventRecorder(Callback):
-    """Capture the run-level string events the runner still emits.
-
-    Four legacy strings still EXIST -- ``run_start``, ``run_end``, ``exception``,
-    ``run_failed`` -- but item ``39eacd99`` typed all three run-lifecycle moments
-    in `tpen.run_events`, so only two callbacks still SUBSCRIBE any of them:
-    `tpen.callback.Status` and `tpen.callback.ArtifactIndex`, both
-    `StatefulCallback`s that the state-free typed lifecycle cannot reach. The
-    emits themselves stay until item ``85870732``, which is why this recorder
-    still observes them here.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(triggers=("run_start", "run_end", "exception"))
-        self.events: list[str] = []
-
-    def handle(self, event: Event) -> None:
-        self.events.append(event.name)
 
 
 class _AllOccurrenceRecorder(Callback):

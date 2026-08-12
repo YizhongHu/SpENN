@@ -170,7 +170,7 @@ def test_no_migrated_callback_still_answers_a_legacy_trigger(
     assert not hasattr(callback, "on_train_end")
     # Nothing is configured either: subscriptions are class-owned under ADR-E002
     # and the constructors no longer accept a positional trigger list.
-    assert callback.triggers == ()
+    assert not hasattr(callback, "triggers")
 
 
 def test_the_trainer_passes_state_at_the_boundary_these_callbacks_subscribe_to(
