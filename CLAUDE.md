@@ -194,6 +194,37 @@ Agents must not push to branches other than these mentioned above, such as `main
 `hooke` and `experiment` are retired intermediate integration branches — do not open new
 PRs against them. 
 
+### Stacked pull requests
+
+Use GitHub's native `gh-stack` extension for dependent pull requests. A stack may
+contain any number of reviewable layers; TPEN sets no stack-depth or open-PR cap.
+Depth does not relax these invariants:
+
+- The stack is one acyclic linear chain rooted at `dev`. The bottom PR targets
+  `dev`; every higher PR targets exactly the branch immediately below it.
+- One layer is one typed Task Orchestrator implementation item, one
+  agent-namespaced branch, one PR, and one live writer claim. Forks, skipped
+  bases, duplicate layers, and cross-stack dependencies are forbidden.
+- Create or adopt the full ordered chain with `gh stack init --base dev
+  <bottom> ... <top>`. Add one new top layer with `gh stack add <branch>`.
+- Agents use non-interactive commands: `gh stack submit --auto`,
+  `gh stack view --json`, and explicit `--remote origin` where supported. Do not
+  invoke a bare command that may open a prompt or TUI.
+- Before publishing or after changing a lower layer, require
+  `needsRebase == false` for every layer in `gh stack view --json` and verify
+  each parent tip is an ancestor of its child. Rebase and reverify the upstack
+  when a predecessor moves.
+- Record the branch, PR URL/base, and exact full head SHA in the implementation
+  receipt. An independent clean verifier must test that SHA; any new commit
+  invalidates the receipt.
+- An open or draft PR is still `work`/awaiting merge, not `terminal`. Humans
+  merge bottom-up; after GitHub confirms a merge, terminalize that layer and
+  run `gh stack sync --prune`.
+
+`gh-stack` owns Git branch and PR topology. Task Orchestrator owns scope,
+claims, dependencies, acceptance criteria, and verification receipts. Do not
+build a second stack state machine in project scripts or notes.
+
 ### `main` and `dev`
 
 **Ownership split between SpENN and SpENN-dev:** 

@@ -1,0 +1,27 @@
+project:
+  rootId: 58348558-a4c8-4ed7-8f7b-829ef8163145
+  name: TPEN
+
+work_item_schemas:
+  implementation-slice:
+    lifecycle: auto
+    notes:
+      - key: acceptance-contract
+        role: queue
+        required: true
+        description: "Scope, non-goals, and observable completion criteria."
+        guidance: "Define one reviewable PR layer before work starts. For a stacked layer, record its immediate predecessor item and branch; the bottom layer records dev. TPEN sets no stack-depth cap, but every layer must remain in one acyclic linear gh-stack chain."
+        maxLength: 3000
+      - key: implementation-receipt
+        role: work
+        required: true
+        description: "Implemented surfaces, deviations, branch topology, and current branch tip."
+        guidance: "Record files and behavior changed, deviations from the acceptance contract, branch, PR URL and base, immediate predecessor, full head SHA, gh stack view --json linearity result, and verification still outstanding. A partial or red result is not completion. An open or draft PR remains work/awaiting merge."
+        maxLength: 4000
+      - key: tip-verification
+        role: review
+        required: true
+        description: "Independent clean verification bound to the exact final SHA."
+        guidance: "Verify the exact full head SHA from a clean environment. Record verifier identity, commands, exit codes, pass/fail/skip counts, job ID when applicable, durable log locations, and the verified PR base/predecessor. Confirm every gh-stack layer is linear and needsRebase is false. Any changed SHA, moved predecessor, failing check, or unexecuted required check keeps the item in work or blocked. Human-confirmed merge is required before terminalization."
+        skill: clean-final-verifier
+        maxLength: 4000
