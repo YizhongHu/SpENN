@@ -123,7 +123,11 @@ def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(
     event_names = [event["event"] for event in events]
     assert event_names[:2] == ["run_start", "load_start"]
     assert "load_failed" in event_names
-    assert "run_failed" in event_names
+    # RunFailed is projected as the canonical exception artifact; the old
+    # duplicate ``run_failed`` string was deliberately removed.
+    assert "run_failed" not in event_names
+    exception = next(event for event in events if event["event"] == "exception")
+    assert exception["payload"]["exception_type"] == "FileNotFoundError"
 
     load_start = next(event for event in events if event["event"] == "load_start")
     assert load_start["payload"] == {

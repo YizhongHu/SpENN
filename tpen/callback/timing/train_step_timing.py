@@ -7,18 +7,26 @@ from collections import deque
 from typing import Any, Callable
 
 from tpen.artifacts import RunContext
-from tpen.events import Ended, Event as TypedEvent, Occurrence, Started, ended, started
-from tpen.training.state import TrainerState, TrainingTiming
+from tpen.events import (
+    Ended,
+    Event as TypedEvent,
+    Occurrence,
+    Started,
+    TrainingTiming,
+    TrainingTimingState,
+    ended,
+    started,
+)
 
 from ..base import StatefulCallback
 from ..cadence import SubscriptionGroup
 from .base import _sync_device
 
 
-class TrainStepTiming(StatefulCallback[TrainerState]):
+class TrainStepTiming(StatefulCallback[TrainingTimingState]):
     """Measure completed ``TrainingIteration`` scopes."""
 
-    state_type = TrainerState
+    state_type = TrainingTimingState
 
     def __init__(
         self,
@@ -46,7 +54,7 @@ class TrainStepTiming(StatefulCallback[TrainerState]):
         self._durations: deque[float] = deque(maxlen=self.rolling_window)
 
     def handle_occurrence_impl(
-        self, occurrence: Occurrence[TypedEvent], context: RunContext, state: TrainerState
+        self, occurrence: Occurrence[TypedEvent], context: RunContext, state: TrainingTimingState
     ) -> None:
         event = occurrence.event
         if isinstance(event, Started) and isinstance(event.operation, self._iteration_type):

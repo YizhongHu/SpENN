@@ -33,6 +33,29 @@ class DomainState:
     """
 
 
+@dataclass(frozen=True)
+class TrainingTiming:
+    """Whole-iteration timing published on the typed training state.
+
+    This value lives in the torch-free event vocabulary so timing producers
+    and consumers can share it without importing the training stack.
+    """
+
+    step_time_sec: float
+    step_time_sec_rolling_mean: float
+
+
+class TrainingTimingState(DomainState):
+    """Typed state capability exposing whole-iteration training timing.
+
+    The concrete training state subclasses this capability and owns the
+    mutable storage. Keeping the capability here lets timing callbacks import
+    their contract without importing ``tpen.training`` or Torch.
+    """
+
+    timing: TrainingTiming | None
+
+
 EventT = TypeVar("EventT", bound=Event)
 OperationT = TypeVar("OperationT", bound=Operation)
 StateT = TypeVar("StateT", bound=DomainState)
@@ -179,6 +202,8 @@ __all__ = [
     "Operation",
     "Started",
     "Subscription",
+    "TrainingTiming",
+    "TrainingTimingState",
     "ended",
     "started",
 ]

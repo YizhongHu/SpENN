@@ -54,7 +54,9 @@ def _cfg(tmp_path: Path, **extra) -> DictConfig:
         },
         "runner": {
             "_target_": "tpen.runner.Evaluate",
-            "model": None,
+            # Evaluator.evaluate has a real torch.nn.Module contract even for
+            # an empty task list; Identity is the minimal no-op model.
+            "model": {"_target_": "torch.nn.Identity"},
             "evaluator": "${evaluator}",
         },
     }
