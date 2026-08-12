@@ -21,7 +21,17 @@ from tests.unit.callback.support import (
 )
 
 
-def _context(tmp_path: Path) -> SimpleNamespace:
+class _StatusContext:
+    """Small direct-handler context implementing ``CallbackContext``."""
+
+    def __init__(self, metadata: SimpleNamespace) -> None:
+        self.metadata = metadata
+
+    def now_iso(self) -> str:
+        return "2026-06-11T10:00:00-04:00"
+
+
+def _context(tmp_path: Path) -> _StatusContext:
     metadata = SimpleNamespace(
         run_id="run-1",
         run_name="unit-status",
@@ -64,7 +74,7 @@ def _context(tmp_path: Path) -> SimpleNamespace:
             },
         },
     )
-    return SimpleNamespace(metadata=metadata, now_iso=lambda: "2026-06-11T10:00:00-04:00")
+    return _StatusContext(metadata)
 
 
 def _deliver_run_event(callback: Status, context, event) -> None:
