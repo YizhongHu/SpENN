@@ -6,7 +6,6 @@ import importlib
 from typing import Any
 
 from tpen.artifacts import RunContext, RunResult
-from tpen.callback.base import _legacy_event
 
 
 class Runner:
@@ -16,37 +15,6 @@ class Runner:
     config root); ``emit`` dispatches lifecycle events into ``context.callbacks``
     and runners log through ``context.log``.
     """
-
-    def emit(
-        self,
-        name: str,
-        context: RunContext,
-        *,
-        state: object | None = None,
-        payload: dict[str, Any] | None = None,
-        step: int | None = None,
-    ) -> None:
-        """Emit one lifecycle event to the context's callbacks."""
-
-        emit_event = getattr(context, "emit_event", None)
-        if callable(emit_event) and hasattr(context, "artifact_manager") and hasattr(context, "clock"):
-            emit_event(name, state=state, payload=payload, step=step)
-            return
-
-        event = _legacy_event(
-            name=name,
-            context=context,
-            state=state,
-            payload=payload,
-            step=step,
-        )
-        if name == "run_start":
-            if getattr(context, "_run_start_emitted", False):
-                return
-            setattr(context, "_run_start_emitted", True)
-
-        for callback in context.callbacks:
-            callback.handle(event)
 
     def run(self, context: RunContext) -> RunResult:
         """Execute a configured run."""

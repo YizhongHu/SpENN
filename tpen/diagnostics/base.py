@@ -96,9 +96,6 @@ def validate_diagnostics(diagnostics: Sequence[object] | None) -> tuple[Diagnost
 def evaluate_diagnostics(
     diagnostics: Sequence[Diagnostic],
     context: EvaluationContext,
-    *,
-    emit=None,
-    step: int = 0,
 ) -> dict[str, JsonScalar]:
     """Evaluate diagnostics and merge their flat metric mappings.
 
@@ -108,26 +105,14 @@ def evaluate_diagnostics(
         Already-validated diagnostics (see `validate_diagnostics`).
     context : EvaluationContext
         Shared evaluation state consumed by every diagnostic.
-    emit : callable or None, optional
-        Optional ``emit(name, payload=...)`` lifecycle hook receiving
-        ``diagnostic_start``/``diagnostic_end``/``diagnostic_failed`` events.
-    step : int, optional
-        Step recorded in the emitted diagnostic event payloads.
     """
 
     metrics: dict[str, JsonScalar] = {}
     for diagnostic in diagnostics:
-        payload = {"diagnostic_name": diagnostic.name, "step": step}
-        if emit is not None:
-            emit("diagnostic_start", payload=payload)
         try:
             result = diagnostic.evaluate(context)
-        except Exception as exc:
-            if emit is not None:
-                emit("diagnostic_failed", payload={**payload, "exception": exc})
+        except Exception:
             raise
-        if emit is not None:
-            emit("diagnostic_end", payload=payload)
         if not isinstance(result, Mapping):
             raise TypeError(f"diagnostic {diagnostic.name!r} must return a mapping of metric names to scalars")
         for key, value in result.items():

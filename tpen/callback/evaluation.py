@@ -51,7 +51,6 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            triggers=(),
             typed_groups=(
                 SubscriptionGroup(selectors=(ended(EvaluationTaskRun),)),
                 # The run boundary is load-bearing exactly once: `_write`

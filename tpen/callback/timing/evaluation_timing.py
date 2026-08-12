@@ -64,7 +64,6 @@ class EvaluationTiming(Callback):
         from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
 
         super().__init__(
-            triggers=(),
             typed_groups=(
                 SubscriptionGroup(
                     selectors=(

@@ -45,7 +45,6 @@ class Evaluate(Runner):
     def run(self, context: RunContext) -> RunResult:
         """Prepare the model, delegate evaluation, and log task metrics."""
 
-        self.emit("run_start", context)
 
         if _is_torch_module(self.model):
             _place_module_for_runtime(self.model, context)
@@ -60,9 +59,8 @@ class Evaluate(Runner):
                 load=self.load,
                 model=self.model,
                 context=context,
-                emit=self.emit,
+                emit=context.emit,
             )
-            self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
             # Typed counterpart, carrying the report itself rather than a
             # flattened mapping. No callback subscribes it; its consumer is the
             # durable occurrence record (D3).
@@ -80,7 +78,6 @@ class Evaluate(Runner):
         # Success path only: a failed suite is a status field on the result, not
         # a distinct moment (ADR-E007).
         context.emit(EvaluationCompleted())
-        self.emit("run_end", context)
         return RunResult(status="completed" if result.status != "failed" else "failed")
 
 

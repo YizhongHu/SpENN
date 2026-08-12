@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from tpen.artifacts import RunContext, RunResult
-from tpen.checkpoint import restore_checkpoint_with_events
+from tpen.checkpoint import CheckpointRestored, restore_checkpoint_with_events
+from tpen.training.events import ModelBuilt, TrainingCompleted, TrainingStarted
 from tpen.training.optim import make_optimizer
 
 from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
@@ -59,14 +60,13 @@ class Train(Runner):
     def run(self, context: RunContext) -> RunResult:
         """Build the optimizer and run the configured VMC training loop."""
 
-        self.emit("run_start", context)
         if _is_torch_module(self.model):
             _place_module_for_runtime(self.model, context)
             _assert_eager_initialized(self.model)
             self.model.train()
 
         optimizer = make_optimizer(self.optimizer, self.model.parameters())
-        self.emit("model_built", context, payload={"model": self.model, "optimizer": optimizer})
+        context.emit(ModelBuilt())
         mode = _load_mode(self.load)
         if mode == "model_only":
             raise ValueError("Train rejects load.mode='model_only'; use train_resume")
@@ -78,38 +78,24 @@ class Train(Runner):
                 trainer=self.trainer,
                 sampler=self.sampler,
                 context=context,
-                emit=self.emit,
+                emit=context.emit,
             )
-            self.emit("checkpoint_restored", context, payload={"restore_report": report.to_dict()})
+            context.emit(CheckpointRestored(report=report))
 
-        self.emit("train_start", context)
+        context.emit(TrainingStarted())
         final_state = self.trainer.fit(
             model=self.model,
             sampler=self.sampler,
             hamiltonian_terms=self.hamiltonian_terms,
             optimizer=optimizer,
             context=context,
-            emit=lambda name, *, state=None, payload=None, step=None: self.emit(
-                name,
-                context,
-                state=state,
-                payload=payload,
-                step=step,
-            ),
+            emit=lambda **_: None,
         )
         # train_end carries the trained model and the durable resume cursor so
         # lifecycle callbacks can label terminal artifacts consistently. The
         # cursor is a hard requirement on the trainer: guessing it from
         # `final_state.step + 1` silently produces a different terminal
         # checkpoint identity whenever the two disagree.
-        next_iteration = int(self.trainer.next_iteration)
-        self.emit(
-            "train_end",
-            context,
-            state=final_state,
-            step=int(next_iteration),
-            payload={"model": self.model},
-        )
         # Typed counterpart of the legacy ``train_end`` above, emitted at the
         # same point in the same order the trainer pairs its own two channels
         # (legacy ``step_end`` first, then `TrainingIterationCompleted`). It
@@ -124,7 +110,6 @@ class Train(Runner):
         from tpen.training.events import TrainingCompleted
 
         context.emit(TrainingCompleted(), state=final_state)
-        self.emit("run_end", context)
         return RunResult(status="completed")
 
 

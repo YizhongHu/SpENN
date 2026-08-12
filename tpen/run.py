@@ -182,13 +182,7 @@ def run_from_config(
     try:
         context = prepare_run_context(cfg, config_path=config_path, command=command, bootstrap=bootstrap)
         _seed_runtime_rngs(context.cfg)
-        # Typed first, then the legacy string, so that within one moment the
-        # migrated subscribers keep the order they had when both arrived on the
-        # same event: `RunTiming` started its clock before `Status` rendered its
-        # start boxes, and reversing the two emits would fold that rendering
-        # into the measured wall time.
         context.emit(RunStarted())
-        context.emit_event("run_start")
         runner = _instantiate_runner(context)
         result = runner.run(context)
         # The harness owns the whole run lifecycle, including this boundary,
@@ -226,8 +220,6 @@ def run_from_config(
                     exception_message=str(payload["exception_message"]),
                 ),
             )
-            _emit_event_if_possible(context, "run_failed", payload=payload)
-            _emit_event_if_possible(context, "exception", payload=payload)
         elif bootstrap.run_dir is not None:
             _write_error_if_possible(
                 bootstrap.run_dir,
@@ -403,22 +395,10 @@ def _write_error_if_possible(
         )
 
 
-def _emit_event_if_possible(context: RunContext, name: str, *, payload: dict[str, object]) -> None:
-    try:
-        context.emit_event(name, payload=payload)
-    except Exception as event_exc:  # pragma: no cover - callback/runtime dependent
-        logging.getLogger("spenn.bootstrap").error(
-            "FATAL: failed to emit %s while reporting failure: %s: %s",
-            name,
-            type(event_exc).__name__,
-            event_exc,
-        )
-
-
 def _emit_typed_event_if_possible(context: RunContext, event: TypedEvent) -> None:
     """Emit one typed event on the failure path without masking the failure.
 
-    The typed sibling of `_emit_event_if_possible`, and it exists for the same
+    This reports the typed failure event without masking the original error; it
     reason: this runs after the run has already raised, possibly from a
     half-constructed context, so a callback or a disk error here must not replace
     the exception the user needs to see.

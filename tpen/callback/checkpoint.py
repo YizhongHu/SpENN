@@ -131,7 +131,7 @@ class Checkpoint(StatefulCallback[TrainerState]):
         # event -- but WHICH of this class's two writes an instance performs is
         # a semantic option, which is the alternative that ADR names for a
         # callback with genuinely different policy modes. It replaces the
-        # ``triggers: [step_end]`` / ``triggers: [train_end]`` selection that
+        # former string selection of step completion / training completion that
         # configs used to spell, one flag per former trigger.
         selectors: tuple[Subscription, ...] = ()
         if periodic:

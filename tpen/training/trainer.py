@@ -182,7 +182,6 @@ class VMCTrainer:
         for step in range(self.next_iteration, self.max_steps):
             iteration = TrainingIteration(step=step)
             with context.scope(iteration, state=state):
-                emit("step_start", step=step)
 
                 with context.scope(CollectSamples(step=step), state=state):
                     walkers, sampler_stats = sampler.collect_samples(
@@ -292,17 +291,6 @@ class VMCTrainer:
                 # above retries this same step on resume. An iteration that
                 # applied no optimizer update still advances it.
                 self.next_iteration = step + 1
-                emit(
-                    "step_end",
-                    state=state,
-                    step=step,
-                    payload={
-                        "model": model,
-                        "optimizer": optimizer,
-                        "trainer": self,
-                        "sampler": sampler,
-                    },
-                )
                 context.emit(TrainingIterationCompleted(iteration=iteration), state=state)
 
         return state

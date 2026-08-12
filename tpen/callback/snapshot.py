@@ -45,7 +45,6 @@ class _RunStartSnapshot(Callback):
                 "_RunStartSnapshot is abstract; use ConfigSnapshot or ResolvedConfigSnapshot"
             )
         super().__init__(
-            triggers=(),
             typed_groups=(
                 SubscriptionGroup(selectors=(Subscription.of(RunStarted),)),
             ),

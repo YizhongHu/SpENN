@@ -37,7 +37,6 @@ class Metadata(Callback):
 
     def __init__(self, output_path: str | Path, **kwargs: Any) -> None:
         super().__init__(
-            triggers=(),
             # All three selectors in ONE group: `validate_subscription_groups`
             # rejects overlapping deliveries across groups, and one group is
             # also the honest shape here, since the three share a single

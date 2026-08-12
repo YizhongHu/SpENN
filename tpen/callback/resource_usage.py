@@ -72,7 +72,6 @@ class ResourceUsage(Callback):
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            triggers=(),
             typed_groups=(
                 SubscriptionGroup(
                     selectors=(

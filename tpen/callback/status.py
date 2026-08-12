@@ -99,7 +99,7 @@ class Status(StatefulCallback[TrainerState]):
 
     The subscriptions are hardcoded rather than configured because ADR-E002
     forbids a config from naming the events a callback answers to.
-    ``train_lines`` replaces the ``triggers: [step_end]`` spelling that selected
+    ``train_lines`` replaces the former string selector for step completion
     the training line, as a semantic option rather than an event selector.
 
     One capability was lost in the migration and is recorded here rather than
@@ -133,7 +133,6 @@ class Status(StatefulCallback[TrainerState]):
     ) -> None:
         cadence = pop_step_cadence(kwargs)
         super().__init__(
-            triggers=(),
             # An instance rendering no training line subscribes to no TRAINING
             # group, rather than subscribing and discarding every delivery. The
             # run-lifecycle group below is unconditional either way, because

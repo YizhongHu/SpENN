@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Generic, final
 
@@ -18,17 +18,6 @@ from .cadence import CadenceGate, SubscriptionGroup, validate_subscription_group
 # Named for the same reason `spenn.status` and `spenn.bootstrap` are: a run's
 # logging configuration can silence or route this channel on its own.
 _LOGGER = logging.getLogger("spenn.callback")
-
-
-@dataclass
-class Event:
-    """Lifecycle event delivered to callbacks."""
-
-    name: str
-    context: RunContext
-    state: object | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
-    step: int | None = None
 
 
 @dataclass
@@ -59,16 +48,13 @@ _UNSET_CONTEXT = object()
 class _CallbackCore:
     """Scheduling, subscription-plan, and context-reset machinery.
 
-    This holds everything the two public callback bases share: the legacy
-    string-trigger path, the typed subscription plan with its per-group cadence
-    gates, and the reset performed when the owning `RunContext` identity
+    This holds the typed subscription plan with its per-group cadence gates and
+    the reset performed when the owning `RunContext` identity
     changes. It owns no delivery signature of its own, because that is exactly
     what distinguishes `Callback` from `StatefulCallback`.
 
     Parameters
     ----------
-    triggers : iterable of str, optional
-        Event names that should trigger this callback.
     every_n_steps : int or None, optional
         Optional periodic step filter.
     start_step : int, optional
@@ -89,7 +75,6 @@ class _CallbackCore:
 
     def __init__(
         self,
-        triggers: Iterable[str] = (),
         every_n_steps: int | None = None,
         start_step: int = 0,
         max_calls: int | None = None,
@@ -100,7 +85,6 @@ class _CallbackCore:
     ) -> None:
         if not 0.0 <= probability <= 1.0:
             raise ValueError(f"probability must be in [0, 1], got {probability}")
-        self.triggers = tuple(triggers)
         self.every_n_steps = every_n_steps
         self.start_step = int(start_step)
         self.max_calls = max_calls
@@ -126,21 +110,6 @@ class _CallbackCore:
 
         del groups
 
-    def should_run(self, event: Event) -> bool:
-        """Return whether this callback should handle `event`."""
-
-        if event.name not in self.triggers:
-            return False
-        if self.max_calls is not None and self.num_calls >= self.max_calls:
-            return False
-        if self.every_n_steps is not None:
-            step = self._legacy_cadence_step(event)
-            if step is None or step < self.start_step:
-                return False
-            if (step - self.start_step) % self.every_n_steps != 0:
-                return False
-        return self._draw_probability()
-
     def _draw_probability(self) -> bool:
         """Apply the probability gate using the callback-local RNG."""
 
@@ -149,22 +118,6 @@ class _CallbackCore:
         if self.probability <= 0.0:
             return False
         return self._rng.random() < self.probability
-
-    def _legacy_cadence_step(self, event: Event) -> int | None:
-        """Return the legacy step coordinate used by `should_run`."""
-
-        return event.step
-
-    def handle(self, event: Event) -> None:
-        """Handle an event if this callback is subscribed to it."""
-
-        self._ensure_typed_context(event.context)
-        if not self.should_run(event):
-            return
-        method = getattr(self, f"on_{event.name}", None)
-        if method is not None:
-            method(event)
-        self.num_calls += 1
 
     def _ensure_typed_context(self, context: object) -> None:
         if not self._typed_group_states or self._typed_context is context:
@@ -530,42 +483,3 @@ class StatefulCallback(_CallbackCore, Generic[StateT]):
         """
 
         del occurrence, context
-
-
-def _legacy_event(
-    *,
-    name: str,
-    context: RunContext,
-    state: object | None = None,
-    payload: dict[str, Any] | None = None,
-    step: int | None = None,
-) -> Event:
-    """Normalize one legacy ingress event without probing runtime state."""
-
-    event_payload = {} if payload is None else payload
-    explicit_step = None if step is None else int(step)
-    payload_has_step = "step" in event_payload
-    payload_value = event_payload.get("step")
-    payload_step = None if payload_value is None else int(payload_value)
-    if explicit_step is not None and payload_has_step and payload_step != explicit_step:
-        raise ValueError(
-            "legacy event step mismatch: "
-            f"explicit step {explicit_step} != payload step {payload_step}"
-        )
-    resolved_step = explicit_step if explicit_step is not None else payload_step
-    return Event(
-        name=name,
-        context=context,
-        state=state,
-        payload=event_payload,
-        step=resolved_step,
-    )
-
-
-def _attach_event_metrics(event: Event, namespace: str, metrics: Mapping[str, object]) -> None:
-    by_namespace = event.payload.setdefault("metrics_by_namespace", {})
-    if not isinstance(by_namespace, dict):
-        return
-    existing = by_namespace.setdefault(namespace, {})
-    if isinstance(existing, dict):
-        existing.update(metrics)

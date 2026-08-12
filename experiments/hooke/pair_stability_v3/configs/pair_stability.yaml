@@ -368,19 +368,14 @@ trainer:
 
 callbacks:
   - _target_: spenn.callback.ConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/config.yaml
   - _target_: spenn.callback.ResolvedConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/resolved_config.yaml
   - _target_: spenn.callback.Metadata
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/metadata.json
   - _target_: spenn.callback.Status
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/status.json
   - _target_: spenn.callback.DataIntegrity
-    triggers: [step_end]
     every_n_steps: ${checks.every_n_steps}
     fail_fast: ${checks.fail_fast}
     max_nonfinite_energy_fraction: ${checks.data_integrity.max_nonfinite_energy_fraction}
@@ -390,16 +385,13 @@ callbacks:
     check_batch: ${checks.data_integrity.check_batch}
     strict_sign_values: ${checks.data_integrity.strict_sign_values}
   - _target_: spenn.callback.GradientStats
-    triggers: [step_end]
     every_n_steps: ${checks.every_n_steps}
     fail_fast: ${checks.fail_fast}
     check_finite: ${checks.gradients.check_finite}
   - _target_: spenn.callback.SamplerHealth
-    triggers: [step_end]
     every_n_steps: ${checks.every_n_steps}
     fail_fast: ${checks.sampler.fail_fast}
   - _target_: spenn.callback.RuntimeEquivariance
-    triggers: [step_end]
     every_n_steps: ${checks.every_n_steps}
     probability: ${checks.equivariance.probability}
     fail_fast: ${checks.fail_fast}
@@ -419,7 +411,6 @@ callbacks:
         atol: ${checks.equivariance.atol}
         rtol: ${checks.equivariance.rtol}
   - _target_: spenn.callback.Checkpoint
-    triggers: [step_end]
     every_n_steps: ${checkpoint.every_n_steps}
     output_dir: ${run.dir}/checkpoints
     keep_last: ${checkpoint.keep_last}
@@ -428,26 +419,20 @@ callbacks:
     save_sampler: ${checkpoint.save_sampler}
     save_rng: ${checkpoint.save_rng}
   - _target_: spenn.callback.Checkpoint
-    triggers: [train_end]
     output_dir: ${run.dir}/checkpoints
     save_optimizer: ${checkpoint.save_optimizer}
     save_trainer: ${checkpoint.save_trainer}
     save_sampler: ${checkpoint.save_sampler}
     save_rng: ${checkpoint.save_rng}
   - _target_: spenn.callback.RunTiming
-    triggers: [run_start, run_end, exception]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.TrainStepTiming
-    triggers: [step_start, step_end]
     rolling_window: ${timing.rolling_window}
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.TrainPhaseTiming
-    triggers: [train_phase_start, train_phase_end]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.ResourceUsage
-    triggers: [run_start, run_end, exception, run_failed]
   - _target_: spenn.callback.Status
-    triggers: [step_end]
     every_n_steps: ${status.every_n_steps}
     include: ${status.include}
 
