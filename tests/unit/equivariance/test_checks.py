@@ -93,6 +93,7 @@ def test_full_model_passes_on_equivariant_module_via_normal_forward() -> None:
     assert result.passed is True
     assert result.metrics["n_permutations_tested"] == 5  # all of 3! - 1
     assert result.metrics["n_failed_permutations"] == 0
+    assert result.n_comparisons == 5  # one comparison per permutation
     assert result.artifact is None
 
 
@@ -113,6 +114,9 @@ def test_full_model_trivial_pass_without_particle_count() -> None:
 
     assert result.passed is True
     assert result.metrics["n_permutations_tested"] == 0
+    # The pass is real -- there was nothing to permute -- and the count says so
+    # rather than leaving `passed` to imply a measurement happened.
+    assert result.n_comparisons == 0
 
 
 def test_full_model_trivial_pass_for_zero_particles() -> None:
@@ -124,6 +128,7 @@ def test_full_model_trivial_pass_for_zero_particles() -> None:
     assert result.metrics["n_particles"] == 0
     assert result.metrics["n_available_permutations"] == 0
     assert result.metrics["n_permutations_tested"] == 0
+    assert result.n_comparisons == 0
 
 
 # --- TraceEquivarianceChecker ---
@@ -138,6 +143,9 @@ def test_trace_passes_when_traced_values_transform_correctly() -> None:
     assert result.passed is True
     assert result.metrics["n_trace_entries"] == 1  # layer/output
     assert result.metrics["n_failed_entries"] == 0
+    # One comparison per shared trace key per permutation; compare_output is off.
+    assert result.metrics["n_permutations_tested"] == 4
+    assert result.n_comparisons == 4
 
 
 def test_trace_fails_with_worst_key_on_violation() -> None:
@@ -162,6 +170,34 @@ def test_trace_reports_missing_and_extra_keys() -> None:
     assert result.metrics["n_missing_keys"] > 0
     assert result.metrics["n_extra_keys"] > 0
     assert result.artifact["missing_keys"] or result.artifact["extra_keys"]
+
+
+def test_trace_pass_over_an_empty_trace_reports_zero_comparisons() -> None:
+    # The case `n_permutations_tested` cannot express. `IdentityModule` is a
+    # plain nn.Module, so it records nothing; the key sets are both empty, so no
+    # key is missing, no key is extra, no key fails, and the checker reports
+    # `passed` having compared literally nothing across four permutations.
+    # `n_comparisons` is the only published number that contradicts that.
+    result = TraceEquivarianceChecker(permutation_fraction=1.0, max_permutations=4, seed=0).run(
+        _State(TraceModel(IdentityModule()), _feature())
+    )
+
+    assert result.passed is True
+    assert result.metrics["n_permutations_tested"] == 4
+    assert result.metrics["n_trace_entries"] == 0
+    assert result.n_comparisons == 0
+
+
+def test_trace_counts_the_output_comparison_when_compare_output_is_on() -> None:
+    # compare_output adds one comparison per permutation on top of the per-key
+    # ones, so the count tracks comparisons performed rather than permutations.
+    result = TraceEquivarianceChecker(
+        permutation_fraction=1.0, max_permutations=4, seed=0, compare_output=True
+    ).run(_State(TraceModel(TracedIdentity()), _feature()))
+
+    assert result.passed is True
+    assert result.metrics["n_trace_entries"] == 1
+    assert result.n_comparisons == 8  # 4 permutations x (1 trace key + 1 output)
 
 
 def test_trace_dump_on_failure_false_returns_no_artifact() -> None:

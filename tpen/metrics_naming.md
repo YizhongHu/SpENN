@@ -347,6 +347,7 @@ passed
 
 ```text
 passed
+n_comparisons
 checker_class
 artifact_path                           only when an artifact_dir is configured
                                         and the checker produced an artifact
@@ -501,6 +502,7 @@ Runtime-check record:
     "n_failed_permutations": 0,
     "max_abs_error": 0.0,
     "passed": true,
+    "n_comparisons": 1,
     "checker_class": "FullModelEquivarianceChecker"
   }
 }
@@ -1212,6 +1214,79 @@ checks/sampler/acceptance_rate
 checks/equivariance/full_model/max_abs_error
 checks/equivariance/trace/n_failed_entries
 ```
+
+### `checks/equivariance/*/n_comparisons` says how much was actually compared
+
+**New key, added to every `checks/equivariance/<checker_log_name>` record.**
+`RuntimeEquivariance` publishes it from a required field on
+`EquivarianceCheckResult`, next to `passed` and for the same reason `passed` is
+published there: it is a property of the result contract, not of whatever
+free-form metrics a particular checker chose to report. Every checker, including
+one written outside this repository, must state it.
+
+It counts the value comparisons a checker actually performed — one per
+`.compare(...)` call:
+
+```text
+FullModelEquivarianceChecker    one per permutation tested
+TraceEquivarianceChecker        one per shared trace key per permutation,
+                                plus one per permutation when compare_output
+```
+
+The key exists because `passed` on its own is not evidence that anything was
+checked. Every verdict in this namespace is well defined over an empty
+comparison set — no permutation failed, no trace key failed — so a checker that
+compared nothing reports `passed = True` with nothing to contradict it. This is
+the `n_grad_tensors` role under `checks/gradient`, played by a namespace that
+previously had no equivalent.
+
+`n_comparisons` is a **count, not a verdict**. Zero does not fail the check, and
+`fail_fast` does not fire on it. There is a legitimate zero: a system with fewer
+than two particles admits no non-identity permutation, and comparing nothing
+there is correct rather than broken. Reading `passed` together with
+`n_comparisons` is what distinguishes the two, which is exactly what a bare
+`passed` could not express.
+
+It is **not a second spelling of `n_permutations_tested`**, which both in-tree
+checkers already publish. That key counts permutations *selected*; this one
+counts comparisons *performed*. They agree for `FullModelEquivarianceChecker`,
+which compares once per permutation, and come apart for
+`TraceEquivarianceChecker`:
+
+```text
+n_permutations_tested = 4, n_trace_entries = 0   ->  n_comparisons = 0
+```
+
+which is a model recording no trace at all, passing while measuring nothing —
+visible in the new key and in no existing one. `n_permutations_tested` keeps its
+current meaning and its current spelling; nothing was renamed or removed.
+
+For readers of historical data: records written before this change have no
+`n_comparisons` key, and a `passed = True` in them does not distinguish a check
+that compared many values from one that compared none. Where the checker is
+`FullModelEquivarianceChecker`, `n_permutations_tested` is the closest available
+substitute; for `TraceEquivarianceChecker` the product
+`n_permutations_tested * n_trace_entries` reconstructs it when
+`compare_output` was false.
+
+### An empty `checkers` list is a construction error, not an empty record
+
+`RuntimeEquivariance` raises `ValueError` when built with no checkers, so this
+namespace is never *absent* on a run that configured the callback.
+
+Every record here is emitted from inside the per-checker loop. With an empty
+list the loop body never runs, nothing is logged, and the entire
+`checks/equivariance/*` namespace silently disappears from the metric stream
+while a config carrying `fail_fast: true` reads as though the checks were being
+enforced. That is worse than a vacuous pass: a vacuous pass leaves a record whose
+counts someone could notice, whereas a vacuous absence leaves nothing to notice.
+
+Rejecting at construction was chosen over emitting a failing record at log time
+because there is no log name to hang such a record on — names are derived per
+checker, so a no-checker record would have to invent a namespace describing only
+a misconfiguration — and because it is the only option that is loud in both
+modes: a failing record would crash a `fail_fast: true` run late and would never
+fire at all under `fail_fast: false`, which is the silent case being fixed.
 
 ---
 
