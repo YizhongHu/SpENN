@@ -606,7 +606,7 @@ def test_a_migrated_callback_is_trigger_free_and_answers_no_run_level_string(
     """Double firing is structurally impossible, not merely unconfigured."""
 
     callback = build()
-    assert callback.triggers == ()
+    assert not hasattr(callback, "triggers")
     for method in ("on_run_start", "on_run_end", "on_exception", "on_run_failed"):
         assert not hasattr(callback, method), f"{name}.{method} survived the migration"
 
