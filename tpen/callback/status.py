@@ -14,10 +14,11 @@ from tpen.artifacts import RunContext, write_json
 from tpen.events import DomainState
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription
+from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.training.events import TrainingIterationCompleted
 from tpen.training.state import TrainerState
 
-from .base import Event, StatefulCallback
+from .base import CallbackContext, StatefulCallback
 from .cadence import StepCadenceGate, SubscriptionGroup, pop_step_cadence
 from .terminal_logging import color_status_line, validate_terminal_choice
 
@@ -43,7 +44,7 @@ class Status(StatefulCallback[TrainerState]):
     color : {"auto", "always", "never"}, optional
         Terminal colouring policy.
     max_line_width : int, optional
-        Width the ``run_start`` status boxes are wrapped to.
+        Width the run-start status boxes are wrapped to.
     train_lines : bool, optional
         Whether to render one compact line per completed training iteration.
         Off by default, so a `Status` configured only for the run lifecycle does
@@ -53,37 +54,58 @@ class Status(StatefulCallback[TrainerState]):
 
     Notes
     -----
-    This callback is HALF migrated, deliberately. The per-iteration training
-    line reads `tpen.training.state.TrainerState` and now arrives through typed
-    delivery at `tpen.training.events.TrainingIterationCompleted`.
+    This callback is now fully migrated, and it observes TWO different kinds of
+    moment. The per-iteration training line reads
+    `tpen.training.state.TrainerState` and arrives at
+    `tpen.training.events.TrainingIterationCompleted`. The run lifecycle carries
+    no domain state and arrives through a group declaring
+    `tpen.callback.cadence.SubscriptionGroup.stateless`, which is the capability
+    item ``24f91145`` added and this callback is the first consumer of. Before
+    it, `tpen.artifacts.RunContext._dispatch_occurrence` decided delivery once
+    per CALLBACK on ``isinstance(state, callback.state_type)``, so a run-level
+    occurrence was SKIPPED here silently and ``status.json`` would have stopped
+    being written with no error anywhere.
 
-    Three legacy string triggers survive: ``run_start``, ``run_end``, and
-    ``exception`` are RUN-level events emitted by `tpen.run` and
-    `tpen.runner.Runner`, they have no typed equivalent and no owning domain,
-    and that gap is item ``39eacd99`` rather than this migration. They are the
-    only thing that writes ``status.json`` at all, so dropping them would delete
-    the run's status artifact outright. Same shape, and the same reason, as the
-    residual ``exception`` trigger on
-    `tpen.callback.timing.EvaluationTiming`. Ugly, and correct.
+    WHAT THE THREE LEGACY STRINGS ACTUALLY FIRED ON, measured rather than
+    assumed, because a wrong mapping here would drop a durable artifact in
+    silence:
 
-    They are hardcoded rather than configured because every shipped config
-    listed exactly these three, and because ADR-E002 forbids a config from
-    naming the events a callback answers to. ``train_lines`` replaces the
-    ``triggers: [step_end]`` spelling that selected the training line, as a
-    semantic option rather than an event selector.
+    - ``run_start`` was emitted by `tpen.run.run_from_config` (line 191) AND by
+      each runner at the top of ``run()``, the second suppressed by the
+      ``_run_start_emitted`` flag on both emitters. `tpen.run_events.RunStarted`
+      is emitted once, by the harness only, one line earlier.
+    - ``run_end`` was emitted by the RUNNERS, as the last statement of
+      ``Train.run`` and ``Evaluate.run`` before ``return RunResult(...)`` --
+      NOT from a ``finally``, so it never fired on a failure. Its typed
+      counterpart `tpen.run_events.RunCompleted` is emitted by the harness
+      immediately after ``runner.run`` returns, with nothing between the two
+      points. Success path both ways; a suite whose tasks all failed still
+      returns a result and still reaches it, exactly as before.
+    - ``exception`` was emitted by the harness on the failure path only, on the
+      line after ``run_failed``, both carrying one payload no consumer
+      distinguished. `tpen.run_events.RunFailed` replaces both, is emitted eight
+      lines earlier under the identical ``context is not None`` guard and the
+      identical failure-swallowing helper, and carries the two strings this
+      callback derived from the payload's live exception.
 
-    One capability was lost in the migration and is recorded here rather than
-    silently dropped. The training line used to also render metrics that other
-    CALLBACKS attached to the shared legacy ``step_end`` payload -- in practice
-    ``train/perf/step_time_sec`` and ``train/perf/step_time_sec_rolling_mean``
-    from `tpen.callback.timing.TrainStepTiming`. That inter-callback side
-    channel is the untyped payload dict ADR-E007 rejects, and a typed occurrence
-    has no payload to replace it with, so those two keys cannot currently
-    render. They stay in `_DEFAULT_STATUS_METRICS` because they name real
-    published metrics that a typed route would restore; the metrics themselves
-    are unaffected, since ``TrainStepTiming`` still logs them to every
-    configured logger. No shipped config renders a training line today, so no
-    run's terminal output changes.
+    Because ``run_end`` is success-only, `RunCompleted` alone is its faithful
+    replacement and no failure case is dropped; the ``failed`` status keeps
+    coming from the failure boundary, which is now `RunFailed`.
+
+    ``current_event`` in ``status.json`` keeps the legacy STRINGS as its values.
+    That field names a moment in a durable artifact rather than selecting an
+    event, and rewriting shipped runs' vocabulary is not something a delivery
+    migration gets to do (ADR-E006).
+
+    The subscriptions are hardcoded rather than configured because ADR-E002
+    forbids a config from naming the events a callback answers to.
+    ``train_lines`` replaces the former string selector for step completion
+    the training line, as a semantic option rather than an event selector.
+
+    ``TrainStepTiming`` publishes its two whole-iteration values as the typed
+    ``TrainerState.timing`` record before ``TrainingIterationCompleted`` is
+    delivered. This keeps the terminal line on the same typed state route as
+    the other training metrics without a mutable event payload side channel.
     """
 
     # ClassVar: the runtime authority for typed state delivery.
@@ -103,10 +125,10 @@ class Status(StatefulCallback[TrainerState]):
     ) -> None:
         cadence = pop_step_cadence(kwargs)
         super().__init__(
-            # See the class notes: run-level residual, not a configurable knob.
-            triggers=("run_start", "run_end", "exception"),
-            # An instance rendering no training line subscribes to nothing,
-            # rather than subscribing and discarding every delivery.
+            # An instance rendering no training line subscribes to no TRAINING
+            # group, rather than subscribing and discarding every delivery. The
+            # run-lifecycle group below is unconditional either way, because
+            # ``status.json`` is written on every run.
             typed_groups=(
                 (
                     SubscriptionGroup(
@@ -115,6 +137,20 @@ class Status(StatefulCallback[TrainerState]):
                 )
                 if train_lines
                 else ()
+            )
+            + (
+                # One group with three selectors rather than three groups, the
+                # shape `tpen.callback.timing.RunTiming` already uses for the
+                # same three moments: they share one decision (observe the run
+                # lifecycle) and no cadence gates any of them.
+                SubscriptionGroup(
+                    selectors=(
+                        Subscription.of(RunStarted),
+                        Subscription.of(RunCompleted),
+                        Subscription.of(RunFailed),
+                    ),
+                    stateless=True,
+                ),
             ),
             **kwargs,
         )
@@ -125,59 +161,90 @@ class Status(StatefulCallback[TrainerState]):
         self.include = tuple(_DEFAULT_STATUS_METRICS if include is None else include)
         self.color = validate_terminal_choice(color, name="color")
         self.max_line_width = _validate_max_line_width(max_line_width)
-        # The scheduling scalars gate the typed training line only. On the
-        # legacy path they could never have gated the three run-level triggers
-        # anyway: those carry no step, and `_CallbackCore.should_run` rejected a
-        # `None` coordinate outright the moment `every_n_steps` was set.
+        # The scheduling scalars gate the typed training line only. They could
+        # never have gated the run-level boundaries on the legacy path either:
+        # those carry no step, and `_CallbackCore.should_run` rejected a `None`
+        # coordinate outright the moment `every_n_steps` was set.
         self._steps = StepCadenceGate(cadence)
         self.start_time: str | None = None
 
-    def on_run_start(self, event: Event) -> None:
+    def handle_stateless_occurrence_impl(
+        self, occurrence: Occurrence[TypedEvent], context: CallbackContext
+    ) -> None:
+        """Write the status artifact and terminal line for one run boundary."""
+
+        event = occurrence.event
+        if isinstance(event, RunStarted):
+            self._record_run_start(context)
+        elif isinstance(event, RunCompleted):
+            self._record_run_completed(context)
+        elif isinstance(event, RunFailed):
+            self._record_run_failed(context, event)
+
+    def _record_run_start(self, context: CallbackContext) -> None:
         """Record run start."""
 
-        self.start_time = _now(event)
-        for line in _format_run_start_lines(event, max_line_width=self.max_line_width):
+        self.start_time = context.now_iso()
+        for line in _format_run_start_lines(context, max_line_width=self.max_line_width):
             self._log_status(line, kind="run")
         self._write(
-            event,
+            context,
             status="running",
-            current_event=event.name,
+            # The durable artifact's own vocabulary, not an event selector. See
+            # the note on `Status`.
+            current_event="run_start",
             end_time=None,
             exception_type=None,
             exception_message=None,
         )
 
-    def on_run_end(self, event: Event) -> None:
+    def _record_run_completed(self, context: CallbackContext) -> None:
         """Record successful completion."""
 
-        self._log_status(_format_run_end(event), kind="completed")
+        self._log_status(_format_run_end(context), kind="completed")
         self._write(
-            event,
+            context,
             status="completed",
-            current_event=event.name,
-            end_time=_now(event),
+            current_event="run_end",
+            end_time=context.now_iso(),
             exception_type=None,
             exception_message=None,
         )
 
-    def on_exception(self, event: Event) -> None:
-        """Record run failure."""
+    def _record_run_failed(self, context: CallbackContext, event: RunFailed) -> None:
+        """Record run failure.
 
-        exception = event.payload.get("exception")
-        self._log_status(_format_run_failure(event, exception), kind="failed")
+        The two strings are read off the typed event rather than derived from a
+        live exception in an untyped payload. They are the same two values:
+        `tpen.run.run_from_config` built the legacy payload's ``exception_type``
+        and ``exception_message`` with ``type(exc).__name__`` and ``str(exc)``,
+        which is exactly what this callback used to recompute here. The old
+        ``exception is None`` branch went with them: the payload's ``exception``
+        key was set unconditionally by the only emitter, so the branch never
+        rendered, and `RunFailed` cannot carry an absent failure at all.
+        """
+
+        self._log_status(
+            _format_run_failure(
+                context,
+                exception_type=event.exception_type,
+                exception_message=event.exception_message,
+            ),
+            kind="failed",
+        )
         self._write(
-            event,
+            context,
             status="failed",
-            current_event=event.name,
-            end_time=_now(event),
-            exception_type=None if exception is None else type(exception).__name__,
-            exception_message=None if exception is None else str(exception),
+            current_event="exception",
+            end_time=context.now_iso(),
+            exception_type=event.exception_type,
+            exception_message=event.exception_message,
         )
 
     def handle_occurrence_impl(
         self,
         occurrence: Occurrence[TypedEvent],
-        context: RunContext,
+        context: CallbackContext,
         state: TrainerState,
     ) -> None:
         """Write one compact training status line for a completed iteration."""
@@ -202,7 +269,7 @@ class Status(StatefulCallback[TrainerState]):
 
     def _write(
         self,
-        event: Event,
+        context: CallbackContext,
         *,
         status: str,
         current_event: str,
@@ -216,7 +283,7 @@ class Status(StatefulCallback[TrainerState]):
             self.output_path,
             {
                 "status": status,
-                "timezone": event.context.metadata.timezone,
+                "timezone": context.metadata.timezone,
                 "start_time": self.start_time,
                 "end_time": end_time,
                 "current_event": current_event,
@@ -226,10 +293,6 @@ class Status(StatefulCallback[TrainerState]):
         )
 
 
-def _now(event: Event) -> str:
-    return event.context.now_iso()
-
-
 _DEFAULT_STATUS_METRICS = (
     "train/loss",
     "train/energy",
@@ -237,10 +300,6 @@ _DEFAULT_STATUS_METRICS = (
     "train/sampler/acceptance_rate",
     "train/grad_norm",
     "train/local_energy_finite_fraction",
-    # The two `train/perf` identities below name real published metrics but
-    # cannot currently render: they reached this callback only through the
-    # legacy `step_end` payload another callback mutated in place, and a typed
-    # occurrence has no payload. See the note on `Status`.
     "train/perf/step_time_sec",
     "train/perf/step_time_sec_rolling_mean",
 )
@@ -256,8 +315,8 @@ _STATUS_LABELS = {
     "train/perf/step_time_sec_rolling_mean": "step_avg",
 }
 
-def _format_run_start_lines(event: Event, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
-    metadata = event.context.metadata
+def _format_run_start_lines(context: CallbackContext, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
+    metadata = context.metadata
     extra = getattr(metadata, "extra", {}) or {}
     hardware = extra.get("hardware") if isinstance(extra, Mapping) else None
     runtime = extra.get("runtime") if isinstance(extra, Mapping) else None
@@ -351,15 +410,19 @@ def _format_run_start_lines(event: Event, *, max_line_width: int = _STATUS_BOX_M
     ]
 
 
-def _format_run_end(event: Event) -> str:
-    return f"[run] completed dir={event.context.metadata.run_dir}"
+def _format_run_end(context: CallbackContext) -> str:
+    return f"[run] completed dir={context.metadata.run_dir}"
 
 
-def _format_run_failure(event: Event, exception: object | None) -> str:
-    parts = ["[run] failed", f"dir={event.context.metadata.run_dir}"]
-    if exception is not None:
-        parts.extend([f"exception={type(exception).__name__}", f"message={_quote_value(str(exception))}"])
-    return " ".join(parts)
+def _format_run_failure(context: CallbackContext, *, exception_type: str, exception_message: str) -> str:
+    return " ".join(
+        [
+            "[run] failed",
+            f"dir={context.metadata.run_dir}",
+            f"exception={exception_type}",
+            f"message={_quote_value(exception_message)}",
+        ]
+    )
 
 
 def _format_train_status(
@@ -393,6 +456,10 @@ def _training_metric_values(state: TrainerState) -> dict[str, object]:
     if sampler_stats is not None:
         for key, value in sampler_stats.as_metrics().items():
             values[f"train/sampler/{key}"] = value
+    timing = state.timing
+    if timing is not None:
+        values["train/perf/step_time_sec"] = timing.step_time_sec
+        values["train/perf/step_time_sec_rolling_mean"] = timing.step_time_sec_rolling_mean
     return values
 
 

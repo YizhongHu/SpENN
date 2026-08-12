@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Callback, Event, StatefulCallback
+from .base import Callback, StatefulCallback
 from .cadence import Cadence, CadenceGate, StepCadence, StepCadenceGate, SubscriptionGroup
 from .metadata import Metadata
 from .snapshot import ConfigSnapshot, ResolvedConfigSnapshot
@@ -93,7 +93,6 @@ __all__ = [
     "DiagnosticTiming",
     "EvaluationComponentTiming",
     "EvaluationTiming",
-    "Event",
     "FailureLog",
     "GradientStats",
     "Metadata",

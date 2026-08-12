@@ -1,60 +1,87 @@
-"""Training-step timing callback."""
+"""Typed training-iteration timing callback."""
 
 from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Iterable
 from typing import Any, Callable
 
-from .base import Callback, Event, _attach_event_metrics, _sync_device
+from tpen.artifacts import RunContext
+from tpen.events import (
+    Ended,
+    Event as TypedEvent,
+    Occurrence,
+    Started,
+    TrainingTiming,
+    TrainingTimingState,
+    ended,
+    started,
+)
+
+from ..base import StatefulCallback
+from ..cadence import SubscriptionGroup
+from .base import _sync_device
 
 
-class TrainStepTiming(Callback):
-    """Measure training step durations."""
+class TrainStepTiming(StatefulCallback[TrainingTimingState]):
+    """Measure completed ``TrainingIteration`` scopes."""
+
+    state_type = TrainingTimingState
 
     def __init__(
         self,
-        triggers: Iterable[str] = ("step_start", "step_end"),
         *,
         rolling_window: int = 20,
         cuda_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(triggers, **kwargs)
+        from tpen.training.events import TrainingIteration
+
+        super().__init__(
+            typed_groups=(
+                SubscriptionGroup(selectors=(started(TrainingIteration), ended(TrainingIteration))),
+            ),
+            **kwargs,
+        )
         if rolling_window <= 0:
             raise ValueError(f"rolling_window must be positive, got {rolling_window}")
         self.rolling_window = int(rolling_window)
         self.cuda_synchronize = bool(cuda_synchronize)
         self.clock = time.perf_counter if clock is None else clock
-        self._starts: dict[int, float] = {}
+        self._iteration_type = TrainingIteration
+        self._starts: dict[tuple[type[object], int], tuple[int, float]] = {}
         self._durations: deque[float] = deque(maxlen=self.rolling_window)
 
-    def on_step_start(self, event: Event) -> None:
-        """Record the start time for one training step."""
-
-        step = event.step
-        if step is None:
+    def handle_occurrence_impl(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext, state: TrainingTimingState
+    ) -> None:
+        event = occurrence.event
+        if isinstance(event, Started) and isinstance(event.operation, self._iteration_type):
+            _sync_device(self.cuda_synchronize)
+            self._starts[(type(event.operation), occurrence.count)] = (
+                event.operation.step,
+                self.clock(),
+            )
+            return
+        if not isinstance(event, Ended) or not isinstance(event.operation, self._iteration_type):
+            return
+        record = self._starts.pop((type(event.operation), occurrence.count), None)
+        if record is None:
             return
         _sync_device(self.cuda_synchronize)
-        self._starts[int(step)] = self.clock()
-
-    def on_step_end(self, event: Event) -> None:
-        """Log step duration and rolling mean."""
-
-        step = event.step
-        if step is None or int(step) not in self._starts:
-            return
-        _sync_device(self.cuda_synchronize)
-        duration = self.clock() - self._starts.pop(int(step))
+        step, start = record
+        duration = self.clock() - start
         self._durations.append(duration)
         metrics = {
             "step_time_sec": duration,
             "step_time_sec_rolling_mean": sum(self._durations) / len(self._durations),
         }
-        event.context.log(metrics, step=int(step), namespace="train/perf")
-        _attach_event_metrics(event, "train/perf", metrics)
+        state.timing = TrainingTiming(**metrics)
+        context.log(metrics, step=step, namespace="train/perf")
+
+    def _reset_typed_state(self) -> None:
+        self._starts.clear()
 
 
 __all__ = ["TrainStepTiming"]

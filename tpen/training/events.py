@@ -184,6 +184,16 @@ class TrainingCompleted(Event):
     """
 
 
+@dataclass(frozen=True)
+class ModelBuilt(Event):
+    """The model and optimizer have been constructed."""
+
+
+@dataclass(frozen=True)
+class TrainingStarted(Event):
+    """The training loop is about to begin."""
+
+
 __all__ = [
     "Backward",
     "BuildBatch",
@@ -194,8 +204,10 @@ __all__ = [
     "Objective",
     "OptimizerUpdate",
     "TrainingCompleted",
+    "ModelBuilt",
     "TrainingIteration",
     "TrainingIterationCompleted",
+    "TrainingStarted",
     "TrainingPhase",
     "UpdateCompleted",
     "UpdateSkipped",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from tpen.accelerator import synchronize as _synchronize_accelerator
 
-from ..base import Callback, Event, _attach_event_metrics
+from ..base import Callback
 
 
 def _sync_device(cuda_synchronize: bool) -> None:
@@ -22,4 +22,4 @@ def _sync_device(cuda_synchronize: bool) -> None:
     _synchronize_accelerator(feature="device timing synchronization")
 
 
-__all__ = ["Callback", "Event", "_attach_event_metrics", "_sync_device"]
+__all__ = ["Callback", "_sync_device"]

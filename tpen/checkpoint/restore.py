@@ -193,15 +193,9 @@ def restore_checkpoint_with_events(
         return RestoreReport(mode="none")
     path = config.get("path")
     strict = bool(config.get("strict", True))
-    emit(
-        "load_start",
-        context,
-        payload={
-            "path": path,
-            "mode": mode,
-            "strict": strict,
-        },
-    )
+    from .events import LoadFailed, LoadStarted, LoadSucceeded
+
+    emit(LoadStarted(path=str(path), mode=mode, strict=strict))
     try:
         report = restore_checkpoint(
             load=load,
@@ -215,34 +209,10 @@ def restore_checkpoint_with_events(
         setattr(exc, "_spenn_failure_phase", "load")
         setattr(exc, "_spenn_load_path", path)
         setattr(exc, "_spenn_load_mode", mode)
-        emit(
-            "load_failed",
-            context,
-            payload={
-                "path": path,
-                "mode": mode,
-                "exception_type": type(exc).__name__,
-                "message": str(exc),
-            },
-        )
+        emit(LoadFailed(path=str(path), mode=mode, exception_type=type(exc).__name__, message=str(exc)))
         raise
 
-    emit(
-        "load_success",
-        context,
-        payload={
-            "path": path,
-            "resolved_checkpoint_dir": report.checkpoint_dir,
-            "schema_version": report.schema_version,
-            "next_iteration": report.next_iteration,
-            "completed_updates": report.completed_updates,
-            "loaded_model": report.loaded_model,
-            "loaded_optimizer": report.loaded_optimizer,
-            "loaded_trainer": report.loaded_trainer,
-            "loaded_sampler": report.loaded_sampler,
-            "loaded_rng": report.loaded_rng,
-        },
-    )
+    emit(LoadSucceeded(path=str(path), report=report))
     return report
 
 

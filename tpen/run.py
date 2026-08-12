@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from hydra.utils import instantiate
+from hydra.errors import InstantiationException
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from tpen.accelerator import seed_all as accelerator_seed_all
@@ -28,6 +29,8 @@ from tpen.artifacts import (
 from tpen.callback import configure_terminal_logging
 from tpen.config import register_resolvers
 from tpen.dependencies import OptionalDependencyError, require_torch
+from tpen.events import Event as TypedEvent
+from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.runner import Runner
 
 # Register custom OmegaConf resolvers (e.g. spenn.basis_feature_dim) before any
@@ -180,9 +183,16 @@ def run_from_config(
     try:
         context = prepare_run_context(cfg, config_path=config_path, command=command, bootstrap=bootstrap)
         _seed_runtime_rngs(context.cfg)
-        context.emit_event("run_start")
+        context.emit(RunStarted())
         runner = _instantiate_runner(context)
         result = runner.run(context)
+        # The harness owns the whole run lifecycle, including this boundary,
+        # which the runners emitted the ``run_end`` string for. See
+        # `tpen.run_events` for why one emitter rather than three. Emitted BEFORE
+        # the status is copied off the result, matching the legacy ordering:
+        # `Metadata` sets ``metadata.status`` itself, and a run whose evaluation
+        # suite failed would otherwise have its ``failed`` status overwritten.
+        context.emit(RunCompleted())
         if isinstance(result, RunResult):
             context.metadata.status = result.status
         return 0
@@ -199,8 +209,18 @@ def run_from_config(
         if context is not None:
             context.metadata.status = "failed"
             _write_error_if_possible(context, exc, phase=phase, traceback_text=traceback_text)
-            _emit_event_if_possible(context, "run_failed", payload=payload)
-            _emit_event_if_possible(context, "exception", payload=payload)
+            # ONE typed event for the two legacy strings below, which carry the
+            # same payload and are distinguished by no consumer -- see `RunFailed`.
+            # Guarded exactly as they are: this runs while the context may be
+            # half-constructed, and an emit that raised here would mask the
+            # original exception.
+            _emit_typed_event_if_possible(
+                context,
+                RunFailed(
+                    exception_type=str(payload["exception_type"]),
+                    exception_message=str(payload["exception_message"]),
+                ),
+            )
         elif bootstrap.run_dir is not None:
             _write_error_if_possible(
                 bootstrap.run_dir,
@@ -228,17 +248,13 @@ def run_from_config(
 
 
 def _validate_callbacks(callbacks: list[object]) -> None:
-    """Fail loudly if a configured callback lacks either dispatch method.
+    """Fail loudly if a configured callback lacks typed dispatch.
 
     This checks the interface shape only; callback behavior is invoked lazily
     through normal lifecycle events, never during setup.
     """
 
     for index, callback in enumerate(callbacks):
-        if not callable(getattr(callback, "handle", None)):
-            raise TypeError(
-                f"callbacks[{index}]={type(callback).__name__} must expose callable handle(event)"
-            )
         if not callable(getattr(callback, "handle_occurrence", None)):
             raise TypeError(
                 f"callbacks[{index}]={type(callback).__name__} must expose callable "
@@ -303,7 +319,15 @@ def _instantiate_runner(context: RunContext) -> Runner:
             raise ValueError(
                 f"runner config must not own {forbidden!r}; configure it at the config root."
             )
-    runner = instantiate(runner_cfg)
+    try:
+        runner = instantiate(runner_cfg)
+    except InstantiationException as exc:
+        # Hydra wraps constructor/configuration failures, but the run artifact
+        # contract records the underlying failure identity. Preserve the
+        # original exception when Hydra attached it as the cause.
+        if exc.__cause__ is not None:
+            raise exc.__cause__ from exc
+        raise
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to tpen.runner.Runner, got {type(runner)!r}")
     return runner
@@ -376,13 +400,21 @@ def _write_error_if_possible(
         )
 
 
-def _emit_event_if_possible(context: RunContext, name: str, *, payload: dict[str, object]) -> None:
+def _emit_typed_event_if_possible(context: RunContext, event: TypedEvent) -> None:
+    """Emit one typed event on the failure path without masking the failure.
+
+    This reports the typed failure event without masking the original error; it
+    reason: this runs after the run has already raised, possibly from a
+    half-constructed context, so a callback or a disk error here must not replace
+    the exception the user needs to see.
+    """
+
     try:
-        context.emit_event(name, payload=payload)
+        context.emit(event)
     except Exception as event_exc:  # pragma: no cover - callback/runtime dependent
         logging.getLogger("spenn.bootstrap").error(
             "FATAL: failed to emit %s while reporting failure: %s: %s",
-            name,
+            type(event).__name__,
             type(event_exc).__name__,
             event_exc,
         )

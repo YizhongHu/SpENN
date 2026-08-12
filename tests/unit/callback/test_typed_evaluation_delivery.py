@@ -43,6 +43,7 @@ from tpen.evaluation.events import ComponentFailed, EvaluationTaskRun
 from tpen.evaluation.results import TaskResult
 from tpen.evaluation.state import EvaluationRunState
 from tpen.events import DomainState, Occurrence, Subscription, ended
+from tpen.run_events import RunCompleted, RunFailed
 from tests.helpers.evaluation_components import (
     FailingCalculator,
     FailingGenerator,
@@ -371,23 +372,48 @@ def test_the_artifact_index_covers_every_task_in_a_multi_task_suite(tmp_path: Pa
 
 
 def test_an_empty_suite_still_writes_an_index(tmp_path: Path) -> None:
-    """The one thing `ArtifactIndex`'s retained ``run_end`` trigger still buys.
+    """The one thing `ArtifactIndex`'s run-level subscription still buys.
 
-    ``run_end`` is a run-level string with no typed equivalent (item
-    ``39eacd99``). Every other run writes the index from the task boundary, so
-    dropping the trigger would be byte-identical -- except here, where there is
-    no task boundary at all and the empty index would silently stop existing.
+    Every other run writes the index from the task boundary, so dropping the
+    subscription would be byte-identical -- except here, where there is no task
+    boundary at all and the empty index would silently stop existing.
+
+    Driven through the REAL dispatcher and through `RunCompleted` ALONE, with no
+    legacy string emitted anywhere: that is the whole assertion. The retired
+    ``run_end`` trigger reached this callback through `_CallbackCore.handle`,
+    which a typed occurrence never enters, so a migration that declared the
+    group but never received a delivery would leave this file the only thing
+    between it and an index that stopped being written.
     """
 
-    from tpen.callback import Event
-
-    context = make_run_context(tmp_path, callbacks=[])
     index = ArtifactIndex()
+    context = make_run_context(tmp_path, callbacks=[index])
 
-    index.handle(Event(name="run_end", context=context))
+    context.emit(RunCompleted())
 
     written = json.loads((Path(context.run_dir) / "diagnostics" / "index.json").read_text())
     assert written == {"tasks": []}
+
+
+def test_an_empty_suite_writes_no_index_when_the_run_failed(tmp_path: Path) -> None:
+    """`RunCompleted` is success-only, and so was the string it replaces.
+
+    ``run_end`` was the last statement of ``Train.run`` and ``Evaluate.run``
+    before their ``return``, never a ``finally``, so a crashed run never wrote
+    an index. Selecting `RunFailed` here as well would invent one.
+
+    NOT DISCRIMINATING on its own: it also passes against the pre-migration
+    tree, where `ArtifactIndex` subscribed no run-level typed event at all and
+    so wrote nothing for a different reason. It is here to pin the selector
+    against a later widening, not to prove this migration.
+    """
+
+    index = ArtifactIndex()
+    context = make_run_context(tmp_path, callbacks=[index])
+
+    context.emit(RunFailed(exception_type="ValueError", exception_message="boom"))
+
+    assert not (Path(context.run_dir) / "diagnostics" / "index.json").exists()
 
 
 # --------------------------------------------------------------------------
@@ -395,7 +421,12 @@ def test_an_empty_suite_still_writes_an_index(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 _MIGRATED: list[tuple[str, Any, tuple[str, ...], tuple[str, ...]]] = [
-    ("ArtifactIndex", ArtifactIndex, ("run_end",), ("on_task_end", "on_task_failed")),
+    (
+        "ArtifactIndex",
+        ArtifactIndex,
+        (),
+        ("on_task_end", "on_task_failed", "on_run_end"),
+    ),
     (
         "FailureLog",
         FailureLog,
@@ -405,8 +436,8 @@ _MIGRATED: list[tuple[str, Any, tuple[str, ...], tuple[str, ...]]] = [
     (
         "EvaluationTiming",
         lambda: EvaluationTiming(clock=FakeClock([])),
-        ("exception",),
-        ("on_evaluate_start", "on_evaluate_end"),
+        (),
+        ("on_evaluate_start", "on_evaluate_end", "on_exception"),
     ),
     (
         "EvaluationComponentTiming",
@@ -451,12 +482,19 @@ def test_no_migrated_callback_still_answers_a_deleted_trigger(
 
     Each class dropped its ``on_<name>`` methods, so the legacy dispatch in
     `tpen.callback.base._CallbackCore.handle` finds nothing to call even if a
-    config still carries the key. The two residual triggers are asserted
-    exactly, so neither can be widened back by accident.
+    config still carries the key. The residual triggers are asserted exactly, so
+    they cannot be widened back by accident.
+
+    `EvaluationTiming` lost its last one to item ``39eacd99``: ``exception`` is
+    now `tpen.run_events.RunFailed`. `ArtifactIndex` lost its last one,
+    ``run_end``, once a subscription group could declare that it needs no domain
+    state -- so every entry in this table is now empty, and any non-empty one
+    would be a regression.
     """
 
+    del triggers
     callback = build()
-    assert callback.triggers == triggers
+    assert not hasattr(callback, "triggers")
     for method in dead:
         assert not hasattr(callback, method), f"{name}.{method} survived the migration"
 

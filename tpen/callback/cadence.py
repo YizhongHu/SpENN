@@ -264,16 +264,37 @@ def pop_step_cadence(kwargs: MutableMapping[str, Any]) -> StepCadence:
 class SubscriptionGroup:
     """Selectors sharing one optional occurrence cadence decision.
 
+    The group, not the callback class, is the unit that decides whether a
+    delivery carries domain state. That follows the cadence precedent directly:
+    a cadence gate has always been group-local, so a callback already answers
+    "when do I fire?" once per group rather than once per class, and ``stateless``
+    makes "what do I receive?" answer at the same granularity.
+
     Parameters
     ----------
     selectors : tuple of Subscription
         Typed deliveries sharing one logical decision.
     cadence : Cadence or None, optional
         Group-local schedule. ``None`` observes and delivers without a gate.
+    stateless : bool, optional
+        Declare that this group observes boundaries carrying NO domain state.
+        Meaningful only on a `tpen.callback.StatefulCallback`, where it routes
+        the group's deliveries to the two-argument
+        ``handle_stateless_occurrence_impl`` hook and exempts them from the
+        ``state_type`` filter. `tpen.callback.Callback` rejects it, because
+        every group on a state-free observer is already delivered state-free
+        and the flag there could only mislead a reader into believing some
+        sibling group is not.
+
+        Defaults to ``False``, which is the pre-existing behaviour for every
+        already-declared group: a `StatefulCallback` group still receives its
+        domain's state, and this change adds a capability rather than moving
+        any existing delivery.
     """
 
     selectors: tuple[Subscription, ...]
     cadence: Cadence | None = None
+    stateless: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.selectors, tuple):
@@ -284,10 +305,26 @@ class SubscriptionGroup:
             raise TypeError("selectors must contain only Subscription values")
         if self.cadence is not None and not isinstance(self.cadence, Cadence):
             raise TypeError("cadence must be Cadence or None")
+        # Checked explicitly because typeguard instruments parameters and
+        # returns, never dataclass FIELDS, so the annotation above guards
+        # nothing at runtime. A truthy non-bool would otherwise select the
+        # stateless route silently, which is the failure shape this whole
+        # change exists to remove.
+        if not isinstance(self.stateless, bool):
+            raise TypeError("stateless must be a bool")
 
 
 def validate_subscription_groups(groups: tuple[SubscriptionGroup, ...]) -> None:
-    """Reject selectors whose deliveries overlap across cadence groups."""
+    """Reject selectors whose deliveries overlap across cadence groups.
+
+    This is load-bearing beyond cadence. Because no two groups can select the
+    same occurrence, at most ONE group matches any occurrence, which is what
+    makes it structurally impossible for `tpen.callback.StatefulCallback` to
+    call both its stateful and its stateless hook for a single delivery. The
+    check is deliberately by ``issubclass`` rather than by identity, so a
+    subclass selector in one group and its base in another is rejected too; a
+    ``stateless`` group is not exempt from any of it.
+    """
 
     for first_index, first in enumerate(groups):
         for second_index in range(first_index + 1, len(groups)):

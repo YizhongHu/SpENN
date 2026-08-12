@@ -2,10 +2,15 @@
 
 A test that only calls a callback's handler directly can use a lightweight
 stand-in. A test that has to prove *delivery* cannot: the routing it is trying
-to exercise -- the ``isinstance(state, callback.state_type)`` branch in
-`RunContext._dispatch_occurrence` -- lives in the very method a stand-in
-overrides. These helpers build the genuine article instead, writing its
+to exercise runs through `RunContext._dispatch_occurrence`, the very method a
+stand-in overrides. These helpers build the genuine article instead, writing its
 artifacts under a ``tmp_path``.
+
+Since item ``24f91145`` the ``isinstance(state, callback.state_type)`` decision
+lives one level down, in `tpen.callback.StatefulCallback.handle_occurrence`, and
+is taken once per subscription GROUP rather than once per callback. Both halves
+are needed to observe a delivery, which is a further reason a dispatcher
+stand-in cannot substitute for the real one here.
 """
 
 from __future__ import annotations

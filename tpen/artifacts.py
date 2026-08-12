@@ -166,7 +166,6 @@ class RunContext:
     clock: RunClock
     callbacks: list[Any] = field(default_factory=list)
     loggers: list[Any] = field(default_factory=list)
-    _run_start_emitted: bool = field(default=False, init=False, repr=False)
     _occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -198,13 +197,12 @@ class RunContext:
         *,
         step: int | None = None,
         namespace: str = "run",
-        event: str | None = None,
     ) -> None:
         """Emit one metric record to every configured logger."""
 
         from tpen.logging import LogRecord
 
-        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
+        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics))
         for logger in self.loggers:
             logger.log(record)
 
@@ -288,54 +286,32 @@ class RunContext:
         """
 
         write_occurrence_artifact(self, occurrence)
+        write_typed_event_artifact(self, occurrence)
         if not self.callbacks:
             return
-        # Deferred for the same reason as `_legacy_event` in `emit_event`:
+        # Deferred because callback base imports RunContext from this module:
         # `tpen.callback.base` imports `RunContext` from this module, so a
         # module-level import here would be circular.
         from tpen.callback.base import StatefulCallback
 
         for callback in self.callbacks:
             if isinstance(callback, StatefulCallback):
-                # A callback observing a different domain has nothing to see at
-                # this boundary, so it is skipped rather than failed: one run
-                # emits several domains' occurrences, and only some carry state.
-                # Both boundaries of a scope share one state, so a skipped
-                # `Started` is always matched by a skipped `Ended` and no
-                # lifecycle pair is left half-open.
-                if not isinstance(state, callback.state_type):
-                    continue
+                # The ``isinstance(state, callback.state_type)`` filter used to
+                # live here, and moving it inside is the whole point of the
+                # ADR-E008 amendment. A callback may now declare one subscription
+                # group that wants its domain's state and another that wants a
+                # state-free boundary such as the run lifecycle, and the
+                # dispatcher cannot tell which of them an occurrence will match.
+                # Only the callback can, because only it holds the groups.
+                #
+                # A callback observing a different domain is still skipped rather
+                # than failed -- one run emits several domains' occurrences, and
+                # only some carry state -- and because both boundaries of a scope
+                # share one state, a skipped `Started` is still always matched by
+                # a skipped `Ended`, so no lifecycle pair is left half-open.
                 callback.handle_occurrence(occurrence, self, state)
             else:
                 callback.handle_occurrence(occurrence, self)
-
-    def emit_event(
-        self,
-        name: str,
-        *,
-        state: object | None = None,
-        payload: dict[str, Any] | None = None,
-        step: int | None = None,
-    ) -> None:
-        """Durably record and dispatch one lifecycle event."""
-
-        from tpen.callback.base import _legacy_event
-
-        event = _legacy_event(
-            name=name,
-            context=self,
-            state=state,
-            payload=payload,
-            step=step,
-        )
-        if name == "run_start":
-            if self._run_start_emitted:
-                return
-            self._run_start_emitted = True
-
-        write_event_artifact(self, event)
-        for callback in self.callbacks:
-            callback.handle(event)
 
 
 def generate_run_id(run_name: str, *, clock: RunClock | None = None) -> str:
@@ -479,31 +455,6 @@ def append_jsonl(path: Path, data: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
-def write_event_artifact(context: RunContext, event: Any) -> None:
-    """Append one lifecycle event to the run's durable event stream."""
-
-    payload = dict(event.payload)
-    if event.step is not None:
-        if "step" in payload:
-            payload_step = None if payload["step"] is None else int(payload["step"])
-            if payload_step != event.step:
-                raise ValueError(
-                    "legacy event step mismatch while writing artifact: "
-                    f"event step {event.step} != payload step {payload_step}"
-                )
-        payload.setdefault("step", event.step)
-    append_jsonl(
-        context.path("events.jsonl"),
-        {
-            "event": event.name,
-            "payload": _event_jsonable(payload),
-            "run_id": context.metadata.run_id,
-            "step": event.step,
-            "time": context.now_iso(),
-        },
-    )
-
-
 def write_occurrence_artifact(context: RunContext, occurrence: Occurrence[Any]) -> None:
     """Append one typed occurrence to the separate typed JSONL edge."""
 
@@ -522,6 +473,75 @@ def write_occurrence_artifact(context: RunContext, occurrence: Occurrence[Any]) 
     # remain typed objects.
     record["fields"] = _typed_event_fields(subject)
     append_jsonl(context.path("occurrences.jsonl"), record)
+
+
+def write_typed_event_artifact(context: RunContext, occurrence: Occurrence[Any]) -> None:
+    """Project typed occurrences onto the stable human-facing event stream.
+
+    ``events.jsonl`` is an artifact schema, not a callback transport.  Its
+    names remain stable for existing run tooling while routing and callback
+    delivery use only typed occurrences.
+    """
+
+    from tpen.checkpoint.events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
+    from tpen.run_events import RunCompleted, RunFailed, RunStarted
+    from tpen.training.events import (
+        ModelBuilt,
+        TrainingCompleted,
+        TrainingIteration,
+        TrainingStarted,
+    )
+    from tpen.events import Ended, Started
+
+    event = occurrence.event
+    name: str | None = None
+    payload: dict[str, Any] = {}
+    step: int | None = None
+    if isinstance(event, RunStarted):
+        name = "run_start"
+    elif isinstance(event, RunCompleted):
+        name = "run_end"
+    elif isinstance(event, RunFailed):
+        name = "exception"
+        payload = {"exception_type": event.exception_type, "exception_message": event.exception_message}
+    elif isinstance(event, LoadStarted):
+        name = "load_start"
+        payload = {"path": event.path, "mode": event.mode, "strict": event.strict}
+    elif isinstance(event, LoadFailed):
+        name = "load_failed"
+        payload = {"path": event.path, "mode": event.mode, "exception_type": event.exception_type, "message": event.message}
+    elif isinstance(event, LoadSucceeded):
+        name = "load_success"
+        payload = {"path": event.path, **event.report.to_dict()}
+    elif isinstance(event, CheckpointRestored):
+        name = "checkpoint_restored"
+        payload = {"restore_report": event.report.to_dict()}
+    elif isinstance(event, ModelBuilt):
+        name = "model_built"
+    elif isinstance(event, TrainingStarted):
+        name = "train_start"
+    elif isinstance(event, TrainingCompleted):
+        name = "train_end"
+    elif isinstance(event, Started) and isinstance(event.operation, TrainingIteration):
+        name = "step_start"
+        step = event.operation.step
+    elif isinstance(event, Ended) and isinstance(event.operation, TrainingIteration):
+        name = "step_end"
+        step = event.operation.step
+    if name is None:
+        return
+    if step is not None:
+        payload["step"] = step
+    append_jsonl(
+        context.path("events.jsonl"),
+        {
+            "event": name,
+            "payload": _event_jsonable(payload),
+            "run_id": context.metadata.run_id,
+            "step": step,
+            "time": context.now_iso(),
+        },
+    )
 
 
 def write_error_artifact(
@@ -835,7 +855,7 @@ __all__ = [
     "resolve_run_clock",
     "write_json",
     "write_error_artifact",
-    "write_event_artifact",
     "write_occurrence_artifact",
+    "write_typed_event_artifact",
     "write_run_start_artifact",
 ]

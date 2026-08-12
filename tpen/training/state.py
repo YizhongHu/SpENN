@@ -8,12 +8,12 @@ from typing import Any
 import torch
 
 from tpen.data.batch import WavefunctionOutput
-from tpen.events import DomainState
+from tpen.events import TrainingTiming, TrainingTimingState
 from tpen.sampling.stats import SamplerStats
 
 
 @dataclass
-class TrainerState(DomainState):
+class TrainerState(TrainingTimingState):
     """Snapshot of the VMC training loop at one step.
 
     This is the training domain's `DomainState`: the trainer passes it beside
@@ -62,6 +62,9 @@ class TrainerState(DomainState):
     sampler_stats : SamplerStats or None, optional
         Most recent typed sampler diagnostics, or ``None`` before the first
         collection.
+    timing : TrainingTiming or None, optional
+        Most recent whole-iteration timing, or ``None`` before the first
+        completed iteration.
     """
 
     step: int = -1
@@ -83,6 +86,7 @@ class TrainerState(DomainState):
     loss: torch.Tensor | None = None
     wavefunction_output: WavefunctionOutput | None = None
     sampler_stats: SamplerStats | None = None
+    timing: TrainingTiming | None = None
 
 
-__all__ = ["TrainerState"]
+__all__ = ["TrainerState", "TrainingTiming"]

@@ -19,8 +19,9 @@ from tpen.evaluation.state import EvaluationRunState
 from tpen.events import DomainState, Ended
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription, ended
+from tpen.run_events import RunCompleted
 
-from .base import Callback, Event, StatefulCallback
+from .base import Callback, StatefulCallback
 from .cadence import SubscriptionGroup
 
 
@@ -50,17 +51,30 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
         **kwargs: Any,
     ) -> None:
         super().__init__(
-            # ``run_end`` is a RUN-level string emitted by `tpen.run`. It has no
-            # typed equivalent and no owning domain -- that is item ``39eacd99``,
-            # not this migration -- so it is retained rather than dropped. The
-            # retention is deliberate and load-bearing exactly once: `_write`
-            # already runs after every task, so on any run with at least one task
-            # dropping this trigger would be byte-identical, but on an EMPTY
-            # suite it is the only thing that writes the ``{"tasks": []}`` index
-            # at all. Deleting a durable artifact is not a refactor (ADR-E006).
-            triggers=("run_end",),
             typed_groups=(
                 SubscriptionGroup(selectors=(ended(EvaluationTaskRun),)),
+                # The run boundary is load-bearing exactly once: `_write`
+                # already runs after every task, so on any run with at least one
+                # task this group is byte-identical to not having it, but on an
+                # EMPTY suite it is the only thing that writes the
+                # ``{"tasks": []}`` index at all. Deleting a durable artifact is
+                # not a refactor (ADR-E006).
+                #
+                # `RunCompleted` is the faithful replacement for the ``run_end``
+                # string this used to answer, MEASURED rather than assumed. That
+                # string was emitted by the runners as the last statement of
+                # ``Train.run`` and ``Evaluate.run`` before their ``return``,
+                # never from a ``finally``, so it fired on the success path only;
+                # `RunCompleted` is emitted by the harness immediately after
+                # ``runner.run`` returns, with nothing between the two points. A
+                # group selecting `RunFailed` too would therefore write an index
+                # on crashed runs where none was written before, which is why
+                # this selects one event and `tpen.callback.Status` -- which DID
+                # answer the failure boundary, under a different string -- selects
+                # three.
+                SubscriptionGroup(
+                    selectors=(Subscription.of(RunCompleted),), stateless=True
+                ),
             ),
             **kwargs,
         )
@@ -99,10 +113,14 @@ class ArtifactIndex(StatefulCallback[EvaluationRunState]):
         }
         self._write(context)
 
-    def on_run_end(self, event: Event) -> None:
-        """Flush the artifact index at the end of the run."""
+    def handle_stateless_occurrence_impl(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext
+    ) -> None:
+        """Flush the artifact index at the end of a run that completed."""
 
-        self._write(event.context)
+        if not isinstance(occurrence.event, RunCompleted):
+            return
+        self._write(context)
 
     def _write(self, context: RunContext) -> None:
         path = self._path(context)

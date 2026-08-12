@@ -11,7 +11,6 @@ from tpen.callback import (
     DiagnosticTiming,
     EvaluationComponentTiming,
     EvaluationTiming,
-    Event,
     RunTiming,
     Status,
     TrainPhaseTiming,
@@ -30,6 +29,7 @@ from tpen.evaluation.events import (
 from tpen.evaluation.results import TaskResult
 from tpen.evaluation.state import EvaluationRunState
 from tpen.events import Ended, Occurrence, Started
+from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.training.events import (
     Backward,
     BuildBatch,
@@ -122,31 +122,45 @@ def _dispatch_iteration_success(
     )
 
 
+def _deliver_run_event(callback: object, context: RecordingContext, event: object) -> None:
+    """Hand one `tpen.run_events` occurrence to a migrated run-level callback."""
+
+    callback.handle_occurrence(Occurrence(event=event, count=1), context)
+
+
 def test_run_timing_logs_start_end_and_wall_time() -> None:
     context = RecordingContext()
     callback = RunTiming(clock=FakeClock([10.0, 12.5]), wall_clock=FakeClock([100.0, 103.0]))
 
-    callback.handle(Event(name="run_start", context=context))
-    callback.handle(Event(name="run_end", context=context))
+    _deliver_run_event(callback, context, RunStarted())
+    _deliver_run_event(callback, context, RunCompleted())
 
     assert context.records == [
-        {"metrics": {"start_time_unix": 100.0}, "step": 0, "namespace": "runtime", "event": None},
+        {"metrics": {"start_time_unix": 100.0}, "step": 0, "namespace": "runtime"},
         {
             "metrics": {"end_time_unix": 103.0, "wall_time_sec": 2.5},
             "step": 0,
             "namespace": "runtime",
-            "event": None,
         },
     ]
 
 
-def test_run_timing_logs_failure_without_swallowing_exception() -> None:
+def test_run_timing_logs_one_failed_record_per_failed_run() -> None:
+    """`RunFailed` replaces the ``run_failed``/``exception`` pair this answered.
+
+    Both strings carried the same payload, so a failed run logged ``runtime``
+    twice -- with a later ``end_time_unix`` the second time, so not even
+    identically. The clock holds exactly two values, which makes a regression to
+    two firings raise rather than merely compare unequal.
+    """
+
     context = RecordingContext()
     callback = RunTiming(clock=FakeClock([1.0, 4.0]), wall_clock=FakeClock([10.0, 13.0]))
 
-    callback.handle(Event(name="run_start", context=context))
-    callback.handle(Event(name="exception", context=context, payload={"exception": RuntimeError("boom")}))
+    _deliver_run_event(callback, context, RunStarted())
+    _deliver_run_event(callback, context, RunFailed(exception_type="RuntimeError", exception_message="boom"))
 
+    assert len(context.by_namespace("runtime")) == 2
     assert context.records[-1]["metrics"] == {
         "end_time_unix": 13.0,
         "wall_time_sec": 3.0,
@@ -157,56 +171,53 @@ def test_run_timing_logs_failure_without_swallowing_exception() -> None:
 def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     context = RecordingContext()
     callback = TrainStepTiming(rolling_window=2, clock=FakeClock([1.0, 1.5, 3.0, 4.0]))
+    state = training_state()
 
-    callback.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    callback.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
-    callback.handle(Event(name="step_start", context=context, payload={"step": 2}, step=2))
-    callback.handle(Event(name="step_end", context=context, payload={"step": 2}, step=2))
+    for count, step in ((1, 1), (2, 2)):
+        callback.handle_occurrence(
+            Occurrence(event=Started(TrainingIteration(step=step)), count=count), context, state
+        )
+        callback.handle_occurrence(
+            Occurrence(event=Ended(TrainingIteration(step=step)), count=count), context, state
+        )
 
     assert context.by_namespace("train/perf") == [
         {
             "metrics": {"step_time_sec": 0.5, "step_time_sec_rolling_mean": 0.5},
             "step": 1,
             "namespace": "train/perf",
-            "event": None,
         },
         {
             "metrics": {"step_time_sec": 1.0, "step_time_sec_rolling_mean": 0.75},
             "step": 2,
             "namespace": "train/perf",
-            "event": None,
         },
     ]
+    assert state.timing is not None
+    assert state.timing.step_time_sec_rolling_mean == 0.75
 
 
-def test_train_step_timing_no_longer_feeds_the_status_line(
+def test_train_step_timing_feeds_status_line_through_typed_state(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``train/perf`` reaches the loggers, and no longer reaches `Status`.
-
-    It used to travel between these two callbacks on the shared legacy
-    ``step_end`` payload, which one mutated in place and the other re-parsed --
-    the untyped inter-callback side channel ADR-E007 rejects. `Status` now
-    receives a typed occurrence, which has no payload, so the two ``train/perf``
-    identities in its default include list cannot render. The METRIC itself is
-    unaffected: `TrainStepTiming` still logs it to every configured logger,
-    which is what the first assertion pins.
-
-    Recorded as a test rather than left as an absence, so restoring the line is
-    a deliberate, findable change instead of a gap nobody notices.
-    """
+    """Timing reaches `Status` through the typed `TrainerState` contract."""
 
     context = RecordingContext()
     timing = TrainStepTiming(clock=FakeClock([1.0, 1.25]))
     status = Status(include=["train/perf/step_time_sec"], color="never", train_lines=True)
+    state = training_state(step=1)
 
-    timing.handle(Event(name="step_start", context=context, payload={"step": 1}, step=1))
-    timing.handle(Event(name="step_end", context=context, payload={"step": 1}, step=1))
+    timing.handle_occurrence(
+        Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
+    )
+    timing.handle_occurrence(
+        Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
+    )
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        deliver_completed_iteration(status, context, training_state(step=1), step=1)
+        deliver_completed_iteration(status, context, state, step=1)
 
     assert context.latest("train/perf")["step_time_sec"] == 0.25
-    assert not caplog.records
+    assert caplog.records[-1].getMessage() == "[train] step=1 step_time=0.25"
 
 
 def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:
@@ -228,7 +239,6 @@ def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:
             "metrics": {"batch_build_time_sec": 0.25, "backward_time_sec": 0.75},
             "step": 3,
             "namespace": "train/perf",
-            "event": None,
         }
     ]
 
@@ -275,7 +285,6 @@ def test_train_phase_timing_derives_every_metric_key_from_phase_name() -> None:
             },
             "step": 0,
             "namespace": "train/perf",
-            "event": None,
         }
     ]
 
@@ -327,7 +336,6 @@ def test_train_phase_timing_drops_unmatched_phase_starts_at_iteration_end() -> N
             "metrics": {"batch_build_time_sec": 0.5},
             "step": 2,
             "namespace": "train/perf",
-            "event": None,
         }
     ]
     assert callback._phase_starts == {}
@@ -393,19 +401,21 @@ def test_evaluation_timing_logs_eval_perf_wall_time() -> None:
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
 
 
-def test_evaluation_timing_reports_failed_through_its_residual_exception_trigger() -> None:
-    """``exception`` is run-level and has no typed equivalent (item 39eacd99).
+def test_evaluation_timing_reports_failed_off_the_typed_run_failure() -> None:
+    """The only writer of ``eval/perf {failed: True}``, now fully typed.
 
-    It is also the only writer of ``eval/perf {failed: True}``: the evaluation
-    domain has no suite-level failure moment to hang a typed event on, so
-    dropping this trigger would delete a published metric series.
+    The evaluation domain has no suite-level failure moment to hang an event on,
+    so this metric has always come from the RUN's failure boundary. That used to
+    be the ``exception`` string, the last legacy run-level trigger in the
+    codebase; it is now `tpen.run_events.RunFailed`, and the metric is unchanged
+    (ADR-E006).
     """
 
     context = RecordingContext()
     callback = EvaluationTiming(clock=FakeClock([2.0, 6.0]))
 
     callback.handle_occurrence(Occurrence(event=EvaluationStarted(), count=1), context)
-    callback.handle(Event(name="exception", context=context))
+    _deliver_run_event(callback, context, RunFailed(exception_type="E", exception_message="m"))
 
     assert context.latest("eval/perf") == {"wall_time_sec": 4.0, "failed": True}
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
@@ -415,7 +425,7 @@ def test_evaluation_timing_reports_nothing_if_evaluation_never_started() -> None
     context = RecordingContext()
     callback = EvaluationTiming(clock=FakeClock([]))
 
-    callback.handle(Event(name="exception", context=context))
+    _deliver_run_event(callback, context, RunFailed(exception_type="E", exception_message="m"))
 
     assert context.records == []
 
@@ -441,7 +451,6 @@ def test_evaluation_component_timing_logs_one_record_per_task_at_the_task_scope_
             },
             "step": 0,
             "namespace": "eval/perf/energy",
-            "event": None,
         }
     ]
 
@@ -488,7 +497,6 @@ def test_evaluation_component_timing_flushes_measured_components_of_a_failed_tas
             "metrics": {"generator_time_sec": 0.5},
             "step": 0,
             "namespace": "eval/perf/energy",
-            "event": None,
         }
     ]
 
@@ -538,7 +546,6 @@ def test_evaluation_component_timing_drops_unmatched_starts_at_the_task_boundary
             "metrics": {"calculator/local_energy_time_sec": 0.5},
             "step": 0,
             "namespace": "eval/perf/energy",
-            "event": None,
         }
     ]
     assert callback._starts == {}
@@ -631,6 +638,7 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
     # delegated to the backend-agnostic accelerator helper, so the seam under
     # test is that helper rather than torch.cuda.
     calls: list[str] = []
+    context = RecordingContext()
     monkeypatch.setattr(
         timing_base,
         "_synchronize_accelerator",
@@ -638,19 +646,21 @@ def test_cuda_synchronize_flag_controls_device_sync(monkeypatch: pytest.MonkeyPa
     )
 
     no_sync = TrainStepTiming(cuda_synchronize=False, clock=FakeClock([1.0, 2.0]))
-    no_sync.handle(
-        Event(name="step_start", context=RecordingContext(), payload={"step": 1}, step=1)
+    context = RecordingContext()
+    state = training_state()
+    no_sync.handle_occurrence(
+        Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
     )
-    no_sync.handle(
-        Event(name="step_end", context=RecordingContext(), payload={"step": 1}, step=1)
+    no_sync.handle_occurrence(
+        Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
     )
     assert calls == []
 
     with_sync = TrainStepTiming(cuda_synchronize=True, clock=FakeClock([1.0, 2.0]))
-    with_sync.handle(
-        Event(name="step_start", context=RecordingContext(), payload={"step": 1}, step=1)
+    with_sync.handle_occurrence(
+        Occurrence(event=Started(TrainingIteration(step=1)), count=1), context, state
     )
-    with_sync.handle(
-        Event(name="step_end", context=RecordingContext(), payload={"step": 1}, step=1)
+    with_sync.handle_occurrence(
+        Occurrence(event=Ended(TrainingIteration(step=1)), count=1), context, state
     )
     assert calls == ["sync", "sync"]

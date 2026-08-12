@@ -27,7 +27,6 @@ class JSONL(Logger):
         payload = {
             "step": record.step,
             "namespace": record.namespace,
-            "event": record.event,
             "metrics": record.metrics,
         }
         with self.path.open("a", encoding="utf-8") as handle:

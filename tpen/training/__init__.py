@@ -1,7 +1,7 @@
 """Training-loop namespace."""
 
 from tpen.training.optim import make_optimizer
-from tpen.training.state import TrainerState
+from tpen.training.state import TrainerState, TrainingTiming
 from tpen.training.trainer import VMCTrainer
 from tpen.training.vmc import (
     VMCObjectiveResult,
@@ -13,6 +13,7 @@ from tpen.training.vmc import (
 
 __all__ = [
     "TrainerState",
+    "TrainingTiming",
     "VMCObjectiveResult",
     "VMCTrainer",
     "compute_vmc_objective",

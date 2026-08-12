@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from tpen.artifacts import RunContext
@@ -16,6 +17,12 @@ class RecordingContext(RunContext):
 
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
+        self.metadata = SimpleNamespace(timezone="UTC")
+
+    def now_iso(self) -> str:
+        """Return the deterministic timestamp required by callback contexts."""
+
+        return "2026-06-11T10:00:00+00:00"
 
     def log(
         self,
@@ -23,11 +30,8 @@ class RecordingContext(RunContext):
         *,
         step: int | None = None,
         namespace: str = "run",
-        event: str | None = None,
     ) -> None:
-        self.records.append(
-            {"metrics": dict(metrics), "step": step, "namespace": namespace, "event": event}
-        )
+        self.records.append({"metrics": dict(metrics), "step": step, "namespace": namespace})
 
     def by_namespace(self, namespace: str) -> list[dict[str, Any]]:
         return [record for record in self.records if record["namespace"] == namespace]

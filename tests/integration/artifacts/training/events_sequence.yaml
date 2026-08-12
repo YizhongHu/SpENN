@@ -1,7 +1,22 @@
+# Fixture for the durable `events.jsonl` boundary-sequence test.
+#
+# Deliberately minimal in its callback battery: the only wired callbacks are the
+# two `Checkpoint` writers, and they are here solely to produce the checkpoints
+# the resume run and the evaluation run restore from. `events.jsonl` is written
+# by `RunContext.emit_event` itself, not by any callback, so the asserted event
+# sequence stays independent of whichever callbacks a real run configures.
+#
+# The scale is reduced (64 walkers, 3 trainer steps); the stage stack is the
+# real one -- `run_from_config` -> `Train` -> `VMCTrainer.fit` -> sampler ->
+# Hamiltonian terms -> optimizer.
+#
+# `load.mode: none` keeps the section present but inert. The resume run
+# overrides only `load`, never a hashed section, so the checkpoint's
+# model/optimizer/trainer/sampler/hamiltonian config hashes still match.
 experiment:
-  name: vmc_smoke
+  name: events_sequence
   sector: singlet
-  run_name: vmc_smoke_train
+  run_name: events_sequence_train
 run:
   root: outputs
   run_id: null
@@ -15,6 +30,8 @@ system:
   n_particles: 2
   spatial_dim: 3
   omega: 0.5
+load:
+  mode: none
 runner:
   _target_: tpen.runner.Train
   model: ${model}
@@ -22,6 +39,7 @@ runner:
   hamiltonian_terms: ${hamiltonian_terms}
   optimizer: ${optimizer}
   trainer: ${trainer}
+  load: ${load}
 model:
   _target_: tests.helpers.trainable_wavefunctions.TrainableHookeSingletAnsatz
 hamiltonian_terms:
@@ -34,9 +52,9 @@ hamiltonian_terms:
     _target_: tpen.physics.potential.ElectronElectronInteraction
 sampler:
   _target_: tpen.sampling.metropolis.MetropolisSampler
-  n_walkers: 256
-  burn_in: 20
-  n_steps: 10
+  n_walkers: 64
+  burn_in: 5
+  n_steps: 5
   proposal_scale: 0.5
   seed: ${runtime.seed}
   n_electrons: ${system.n_particles}
@@ -50,21 +68,11 @@ trainer:
   _target_: tpen.training.trainer.VMCTrainer
   max_steps: 3
   log_every_n_steps: 1
-  return_terms: true
+  return_terms: false
 callbacks:
-- _target_: tpen.callback.ConfigSnapshot
-  output_path: ${run.dir}/config.yaml
-- _target_: tpen.callback.ResolvedConfigSnapshot
-  output_path: ${run.dir}/resolved_config.yaml
-- _target_: tpen.callback.Metadata
-  output_path: ${run.dir}/metadata.json
-- _target_: tpen.callback.RunTiming
-- _target_: tpen.callback.TrainStepTiming
-  every_n_steps: 1
-  rolling_window: 2
-- _target_: tpen.callback.TrainPhaseTiming
-- _target_: tpen.callback.Status
-  output_path: ${run.dir}/status.json
+# Cadence 2 over applied updates writes one mid-run checkpoint, at
+# `next_iteration == 2`; the terminal writer adds `next_iteration == 3`. The
+# resume run restores the mid-run one so it still has an iteration left to run.
 - _target_: tpen.callback.Checkpoint
   terminal: false
   every_n_steps: 2
@@ -72,8 +80,3 @@ callbacks:
 - _target_: tpen.callback.Checkpoint
   periodic: false
   output_dir: ${run.dir}/checkpoints
-loggers:
-- _target_: tpen.logging.CSV
-  path: ${run.dir}/metrics.csv
-- _target_: tpen.logging.JSONL
-  path: ${run.dir}/metrics.jsonl

@@ -38,4 +38,31 @@ class CheckpointRestored(Event):
     report: RestoreReport
 
 
-__all__ = ["CheckpointRestored"]
+@dataclass(frozen=True)
+class LoadStarted(Event):
+    """A configured checkpoint restore was requested."""
+
+    path: str
+    mode: str
+    strict: bool
+
+
+@dataclass(frozen=True)
+class LoadFailed(Event):
+    """A checkpoint restore failed after being requested."""
+
+    path: str
+    mode: str
+    exception_type: str
+    message: str
+
+
+@dataclass(frozen=True)
+class LoadSucceeded(Event):
+    """A checkpoint restore completed and reports its typed result."""
+
+    path: str
+    report: RestoreReport
+
+
+__all__ = ["CheckpointRestored", "LoadFailed", "LoadStarted", "LoadSucceeded"]

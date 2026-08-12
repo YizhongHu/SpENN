@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -19,14 +18,11 @@ from tpen.artifacts import (
     RunClock,
     RunContext,
     RunMetadata,
-    write_event_artifact,
 )
-from tpen.callback import Event as LegacyEvent
 from tpen.checkpoint.restore import RestoreReport
 from tpen.callback import TrainPhaseTiming
 from tpen.events import Ended, Event, Occurrence, Operation, Started, Subscription
 from tpen.events import ended, started
-from tpen.runner.base import Runner
 from tpen.training.events import (
     Backward,
     CollectSamples,
@@ -170,11 +166,6 @@ class _Recorder:
         self.name = name
         self.order = order
         self.occurrences: list[Occurrence[Any]] = []
-        self.legacy_events: list[object] = []
-
-    def handle(self, event: object) -> None:
-        self.legacy_events.append(event)
-
     def handle_occurrence(self, occurrence: Occurrence[Any], context: RunContext) -> None:
         del context
         self.occurrences.append(occurrence)
@@ -184,9 +175,6 @@ class _Recorder:
 class _RaisesOnStarted:
     def __init__(self) -> None:
         self.occurrences: list[Occurrence[Any]] = []
-
-    def handle(self, event: object) -> None:
-        del event
 
     def handle_occurrence(self, occurrence: Occurrence[Any], context: RunContext) -> None:
         del context
@@ -379,186 +367,6 @@ def test_typed_occurrences_have_an_explicit_jsonl_edge_encoding(tmp_path: Path) 
         },
     ]
     assert all("step" not in record and "payload" not in record for record in records)
-
-
-def test_legacy_and_typed_records_use_separate_jsonl_edges(tmp_path: Path) -> None:
-    context = _context(tmp_path)
-
-    context.emit_event("legacy_event", payload={"step": 4, "value": "legacy"})
-    context.emit(_Pulse("typed"))
-
-    legacy_records = [
-        json.loads(line) for line in context.path("events.jsonl").read_text().splitlines()
-    ]
-    typed_records = [
-        json.loads(line)
-        for line in context.path("occurrences.jsonl").read_text().splitlines()
-    ]
-    without_time = [
-        {key: value for key, value in record.items() if key != "time"}
-        for record in legacy_records
-    ]
-    assert without_time == [
-        {
-            "event": "legacy_event",
-            "payload": {"step": 4, "value": "legacy"},
-            "run_id": "typed-events-unit",
-            "step": 4,
-        }
-    ]
-    assert len(typed_records) == 1
-    assert typed_records[0]["count"] == 1
-    assert typed_records[0]["fields"] == {"label": "typed"}
-    assert "payload" not in typed_records[0]
-    assert "count" not in legacy_records[0]
-
-
-def test_direct_legacy_event_payload_does_not_populate_explicit_step() -> None:
-    event = LegacyEvent(
-        name="direct",
-        context=None,  # type: ignore[arg-type]
-        state=SimpleNamespace(global_step=99),
-        payload={"step": 4},
-    )
-
-    assert event.step is None
-
-
-def test_legacy_ingress_normalizes_steps_and_preserves_jsonl_shapes(
-    tmp_path: Path,
-) -> None:
-    recorder = _Recorder("legacy", [])
-    context = _context(tmp_path, callbacks=[recorder])
-
-    context.emit_event("payload_only", payload={"step": 1, "value": "legacy"})
-    explicit_payload: dict[str, Any] = {"value": "explicit"}
-    context.emit_event(
-        "explicit_only",
-        state=SimpleNamespace(global_step=99),
-        payload=explicit_payload,
-        step=2,
-    )
-    context.emit_event("matching_dual", payload={"step": "3"}, step=3)
-    context.emit_event(
-        "stepless",
-        state=SimpleNamespace(global_step=123),
-        payload={},
-    )
-
-    delivered = recorder.legacy_events
-    assert [event.step for event in delivered] == [1, 2, 3, None]
-    assert explicit_payload == {"value": "explicit"}
-    records = [
-        json.loads(line)
-        for line in context.path("events.jsonl").read_text().splitlines()
-    ]
-    without_time = [
-        {key: value for key, value in record.items() if key != "time"}
-        for record in records
-    ]
-    assert without_time == [
-        {
-            "event": "payload_only",
-            "payload": {"step": 1, "value": "legacy"},
-            "run_id": "typed-events-unit",
-            "step": 1,
-        },
-        {
-            "event": "explicit_only",
-            "payload": {"step": 2, "value": "explicit"},
-            "run_id": "typed-events-unit",
-            "step": 2,
-        },
-        {
-            "event": "matching_dual",
-            "payload": {"step": "3"},
-            "run_id": "typed-events-unit",
-            "step": 3,
-        },
-        {
-            "event": "stepless",
-            "payload": {},
-            "run_id": "typed-events-unit",
-            "step": None,
-        },
-    ]
-
-
-def test_legacy_ingress_step_mismatch_writes_and_dispatches_nothing(
-    tmp_path: Path,
-) -> None:
-    recorder = _Recorder("legacy", [])
-    context = _context(tmp_path, callbacks=[recorder])
-
-    with pytest.raises(ValueError, match="step mismatch"):
-        context.emit_event("mismatch", payload={"step": 2}, step=1)
-
-    assert recorder.legacy_events == []
-    assert not context.path("events.jsonl").exists()
-
-
-def test_event_artifact_rejects_direct_step_mismatch_before_append(
-    tmp_path: Path,
-) -> None:
-    context = _context(tmp_path)
-    event = LegacyEvent(
-        name="mismatch",
-        context=context,
-        payload={"step": 2},
-        step=1,
-    )
-
-    with pytest.raises(ValueError, match="step mismatch"):
-        write_event_artifact(context, event)
-
-    assert not context.path("events.jsonl").exists()
-
-
-def test_runner_fallback_uses_the_same_legacy_step_adapter() -> None:
-    recorder = _Recorder("legacy", [])
-    context = object.__new__(RunContext)
-    context.callbacks = [recorder]
-    runner = Runner()
-
-    runner.emit("step_end", context, payload={"step": 5}, step=5)
-    with pytest.raises(ValueError, match="step mismatch"):
-        runner.emit("step_end", context, payload={"step": 6}, step=5)
-
-    assert [event.step for event in recorder.legacy_events] == [5]
-
-
-def test_migrated_and_compatibility_event_names_keep_legacy_payload_schema(
-    tmp_path: Path,
-) -> None:
-    context = _context(tmp_path)
-
-    context.emit_event("step_start", step=0)
-    context.emit_event("step_end", step=0)
-    context.emit_event("train_end", step=1)
-    context.emit_event(
-        "diagnostic_start",
-        payload={"step": 4, "diagnostic_name": "energy"},
-    )
-    context.emit_event(
-        "load_start",
-        payload={"mode": "train_resume", "path": "checkpoint"},
-    )
-    context.emit_event("run_failed", payload={"phase": "run"})
-
-    records = [
-        json.loads(line)
-        for line in context.path("events.jsonl").read_text().splitlines()
-    ]
-    by_name = {record["event"]: record for record in records}
-    assert by_name["step_start"]["payload"] == {"step": 0}
-    assert by_name["step_end"]["payload"] == {"step": 0}
-    assert by_name["train_end"]["payload"] == {"step": 1}
-    assert by_name["diagnostic_start"]["step"] == 4
-    assert by_name["diagnostic_start"]["payload"]["step"] == 4
-    assert by_name["load_start"]["step"] is None
-    assert "step" not in by_name["load_start"]["payload"]
-    assert by_name["run_failed"]["step"] is None
-    assert "step" not in by_name["run_failed"]["payload"]
 
 
 def test_typed_serialization_encodes_markers_and_public_dataclass_fields(

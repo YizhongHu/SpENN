@@ -16,7 +16,7 @@ import tpen.runner as runner_module
 import tpen.runner.evaluate as evaluate_runner_module
 import tpen.runner.train as train_runner_module
 from tpen.artifacts import RunContext
-from tpen.callback import Callback, Event, SubscriptionGroup
+from tpen.callback import Callback, SubscriptionGroup
 from tpen.checkpoint import RestoreReport
 from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from tpen.evaluation import (
@@ -140,7 +140,7 @@ def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_pa
             raise AssertionError("optimizer should not be constructed")
 
     optimizer = _OptimizerFactory()
-    recorder = _EventRecorder()
+    recorder = _TypedOccurrenceRecorder()
     context, _ = _recording_context(tmp_path, [recorder])
     runner = Train(
         model=nn.LazyLinear(1),
@@ -154,11 +154,11 @@ def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_pa
         runner.run(context)
 
     assert optimizer.called is False
-    assert recorder.events == ["run_start"]
+    assert recorder.seen == []
 
 
 def test_evaluation_started_is_emitted_after_model_ready(tmp_path: Path) -> None:
-    recorder = _EventRecorder()
+    recorder = _TypedOccurrenceRecorder()
     typed = _TypedOccurrenceRecorder()
     context, _ = _recording_context(tmp_path, [recorder, typed])
     runner = Evaluate(
@@ -169,7 +169,7 @@ def test_evaluation_started_is_emitted_after_model_ready(tmp_path: Path) -> None
     with pytest.raises(RuntimeError, match="uninitialized"):
         runner.run(context)
 
-    assert recorder.events == ["run_start"]
+    assert recorder.seen == []
     # The lazy model is rejected before evaluation begins, so the typed suite
     # boundary is never reached either.
     assert typed.seen == []
@@ -219,13 +219,14 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Pa
         load={"mode": "train_resume", "path": "ckpt"},
     )
 
-    result = runner.run(_recording_context(tmp_path, [])[0])
+    context, _ = _recording_context(tmp_path, [])
+    result = runner.run(context)
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
     assert calls[0]["trainer"] is runner.trainer
     assert calls[0]["sampler"] is runner.sampler
-    assert calls[0]["emit"] == runner.emit
+    assert calls[0]["emit"].__self__ is context
 
 
 def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:
@@ -247,12 +248,13 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: P
         load={"mode": "model_only", "path": "ckpt"},
     )
 
-    result = runner.run(_recording_context(tmp_path, [])[0])
+    context, _ = _recording_context(tmp_path, [])
+    result = runner.run(context)
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
     assert "sampler" not in calls[0]
-    assert calls[0]["emit"] == runner.emit
+    assert calls[0]["emit"].__self__ is context
 
 
 def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: Path) -> None:
@@ -285,8 +287,7 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: 
 
 def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> None:
     recorder = _AllOccurrenceRecorder()
-    string_recorder = _EventRecorder()
-    context, logger = _recording_context(tmp_path, [recorder, string_recorder])
+    context, logger = _recording_context(tmp_path, [recorder])
     runner = Evaluate(
         model=build_tiny_spenn(),
         evaluator=_energy_evaluator(
@@ -320,8 +321,6 @@ def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> 
         "Ended[EvaluationTaskRun]",
         "EvaluationCompleted",
     ]
-    # Only run-level strings remain on the legacy path.
-    assert string_recorder.events == ["run_start", "run_end"]
     energy_records = [record.metrics for record in logger.by_namespace("eval/energy")]
     assert energy_records
     assert "local_energy_mean" in energy_records[-1]
@@ -399,23 +398,6 @@ def _runner_context(cfg) -> RunContext:
     context = object.__new__(RunContext)
     context.cfg = cfg
     return context
-
-
-class _EventRecorder(Callback):
-    """Capture the run-level string events the runner still emits.
-
-    Only four legacy strings survive anywhere: ``run_start``, ``run_end``,
-    ``exception``, and ``run_failed``. They are run-level, have no typed
-    equivalent, and have no owning domain -- that is item ``39eacd99``. The
-    evaluation-domain strings this recorder used to also list are gone.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(triggers=("run_start", "run_end", "exception"))
-        self.events: list[str] = []
-
-    def handle(self, event: Event) -> None:
-        self.events.append(event.name)
 
 
 class _AllOccurrenceRecorder(Callback):

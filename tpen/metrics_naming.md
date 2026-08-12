@@ -460,6 +460,24 @@ step,namespace,key,value
 
 JSONL should preserve the same logical metric identity.
 
+### On-disk record format
+
+`metrics.csv` is a UTF-8 newline-delimited long-form file with the exact
+header `step,namespace,key,value`. Each metric in a logged record becomes one
+row; the `step` and `namespace` values are copied to every row. Values are
+serialized as scalar text, with booleans written as `true` or `false` and
+missing values represented by an empty field. Existing files are not rewritten
+when this format is documented or when logging code changes.
+
+`metrics.jsonl` is a UTF-8 file containing one JSON object per logged record:
+`{"step": ..., "namespace": ..., "metrics": {...}}`. The `metrics` object
+keeps all scalar values for that record. JSON objects are emitted with sorted
+keys and strict JSON numbers (`allow_nan=False`); non-finite floats therefore
+raise instead of being written as invalid JSON. The durable record has no
+`event` field: typed lifecycle events are dispatched separately and are not
+metric-record metadata. This schema applies to records written going forward;
+existing run outputs remain unchanged.
+
 Recommended event-oriented shape:
 
 ```json
@@ -973,12 +991,22 @@ All five evaluation callbacks read those occurrences, and the legacy
 evaluation record is still logged at `step = 0`, and evaluation metric records
 still carry no checkpoint identity.
 
-Two run-level legacy strings still reach an evaluation callback, and both are
-deliberate. `EvaluationTiming` keeps `exception`, which is the only writer of
-`eval/perf {failed: True}`; `ArtifactIndex` keeps `run_end`, which is the only
-thing that writes `diagnostics/index.json` for a suite with no tasks. Neither
-has a typed equivalent or an owning domain, and typing the run lifecycle is
-separate work.
+The run's own lifecycle is typed too: `RunStarted`, `RunCompleted`, and
+`RunFailed` in `tpen.run_events`, emitted only by `tpen.run.run_from_config`.
+`EvaluationTiming` now writes the sole `eval/perf {failed: True}` record off
+`RunFailed` rather than off the `exception` string. `ArtifactIndex` still keeps
+`run_end`, the only thing that writes `diagnostics/index.json` for a suite with
+no tasks, because it is a `StatefulCallback` and the run lifecycle carries no
+domain state, so the dispatcher would skip a typed run-level occurrence for it.
+`Status` keeps `run_start` / `run_end` / `exception` for the same reason.
+
+**One durable change, and it is a removal of duplication rather than of a
+series.** `tpen.run` emitted `run_failed` and `exception` back to back with the
+same payload, and `RunTiming` and `ResourceUsage` answered both, so a FAILED run
+wrote its `runtime` record twice -- with a later `end_time_unix` and a longer
+`wall_time_sec` the second time. One `RunFailed` replaces both, so a failed run
+now writes one `runtime` record. No metric name changes and no series
+disappears.
 
 Run-level metadata may use `step = 0`:
 
@@ -1004,11 +1032,6 @@ run.define_metric("train/*", step_metric="train/step")
 run.define_metric("train/sampler/*", step_metric="train/step")
 run.define_metric("train/perf/*", step_metric="train/step")
 
-# Vestigial: registered by tpen/logging/wandb.py, but nothing emits these.
-run.define_metric("validation/*", step_metric="train/step")
-run.define_metric("validation/sampler/*", step_metric="train/step")
-run.define_metric("validation/perf/*", step_metric="train/step")
-
 run.define_metric("eval/*", step_metric="eval/step")
 run.define_metric("eval/sampler/*", step_metric="eval/step")
 run.define_metric("eval/perf/*", step_metric="eval/step")
@@ -1030,11 +1053,8 @@ checks/train_step
 
 when logging records in those namespaces.
 
-Two of these axes describe nothing the code emits. The `validation/*`
-registrations above are vestigial — no callback emits that namespace (see
-"Namespace conventions") — and `eval/step` is registered even though evaluation
-records are all logged at step `0`. They are recorded here because
-`tpen/logging/wandb.py` still registers them, not because they are meaningful.
+`eval/step` is registered even though evaluation records are all logged at
+step `0`; it remains part of the explicit W&B projection contract.
 
 Runtime metrics such as `runtime/wall_time_sec` may be logged once and also written to the W&B run summary.
 
