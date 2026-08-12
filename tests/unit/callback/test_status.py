@@ -14,7 +14,6 @@ from tpen.callback.status import _format_status_box
 from tpen.events import Occurrence
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tests.unit.callback.support import (
-    RecordingContext,
     deliver_completed_iteration,
     make_sampler_stats,
     training_state,
@@ -151,7 +150,7 @@ def test_status_renders_training_metrics_from_state(caplog: pytest.LogCaptureFix
     callback = _train_status()
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        deliver_completed_iteration(callback, RecordingContext(), _train_state(), step=10)
+        deliver_completed_iteration(callback, _context(Path(".")), _train_state(), step=10)
 
     assert caplog.records[-1].getMessage() == (
         "[train] step=10 loss=0.421 energy=2.104 acc=0.61 grad=0.012 finite=1"
@@ -171,7 +170,7 @@ def test_status_train_line_step_comes_from_the_event_not_the_state(
     state.step = 999
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        deliver_completed_iteration(callback, RecordingContext(), state, step=10)
+        deliver_completed_iteration(callback, _context(Path(".")), state, step=10)
 
     assert caplog.records[-1].getMessage().startswith("[train] step=10 ")
 
@@ -188,7 +187,7 @@ def test_status_renders_no_train_line_by_default(caplog: pytest.LogCaptureFixtur
     callback = Status(color="never")
 
     with caplog.at_level(logging.INFO, logger="spenn.status"):
-        deliver_completed_iteration(callback, RecordingContext(), _train_state(), step=10)
+        deliver_completed_iteration(callback, _context(Path(".")), _train_state(), step=10)
 
     assert not caplog.records
 
