@@ -197,13 +197,12 @@ class RunContext:
         *,
         step: int | None = None,
         namespace: str = "run",
-        event: str | None = None,
     ) -> None:
         """Emit one metric record to every configured logger."""
 
         from tpen.logging import LogRecord
 
-        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
+        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics))
         for logger in self.loggers:
             logger.log(record)
 

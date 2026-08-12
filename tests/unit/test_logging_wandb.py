@@ -192,8 +192,6 @@ def test_runtime_metrics_are_written_to_summary(monkeypatch: pytest.MonkeyPatch)
         {
             "runtime/step": 0,
             "runtime/wall_time_sec": 12.5,
-            "dashboard/wall_time_sec": 12.5,
-            "train/step": 0,
         }
     ]
     assert fake.run.summary["runtime/wall_time_sec"] == 12.5

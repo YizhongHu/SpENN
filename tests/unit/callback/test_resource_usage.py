@@ -51,7 +51,7 @@ def test_resource_usage_logs_peak_rss_at_run_completion(monkeypatch: pytest.Monk
     _deliver(callback, context, RunCompleted())
 
     assert context.by_namespace("runtime") == [
-        {"metrics": {"peak_memory_mb": 512.0}, "step": 0, "namespace": "runtime", "event": None}
+        {"metrics": {"peak_memory_mb": 512.0}, "step": 0, "namespace": "runtime"}
     ]
 
 
@@ -92,7 +92,7 @@ def test_resource_usage_logs_at_the_failure_boundary(monkeypatch: pytest.MonkeyP
     _deliver(callback, context, RunFailed(exception_type="RuntimeError", exception_message="boom"))
 
     assert context.by_namespace("runtime") == [
-        {"metrics": {"peak_memory_mb": 100.5}, "step": 0, "namespace": "runtime", "event": None}
+        {"metrics": {"peak_memory_mb": 100.5}, "step": 0, "namespace": "runtime"}
     ]
 
 

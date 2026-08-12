@@ -136,12 +136,11 @@ def test_run_timing_logs_start_end_and_wall_time() -> None:
     _deliver_run_event(callback, context, RunCompleted())
 
     assert context.records == [
-        {"metrics": {"start_time_unix": 100.0}, "step": 0, "namespace": "runtime", "event": None},
+        {"metrics": {"start_time_unix": 100.0}, "step": 0, "namespace": "runtime"},
         {
             "metrics": {"end_time_unix": 103.0, "wall_time_sec": 2.5},
             "step": 0,
             "namespace": "runtime",
-            "event": None,
         },
     ]
 
@@ -187,13 +186,11 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
             "metrics": {"step_time_sec": 0.5, "step_time_sec_rolling_mean": 0.5},
             "step": 1,
             "namespace": "train/perf",
-            "event": None,
         },
         {
             "metrics": {"step_time_sec": 1.0, "step_time_sec_rolling_mean": 0.75},
             "step": 2,
             "namespace": "train/perf",
-            "event": None,
         },
     ]
     assert state.timing is not None
@@ -242,7 +239,6 @@ def test_train_phase_timing_logs_one_record_per_successful_completion() -> None:
             "metrics": {"batch_build_time_sec": 0.25, "backward_time_sec": 0.75},
             "step": 3,
             "namespace": "train/perf",
-            "event": None,
         }
     ]
 
@@ -289,7 +285,6 @@ def test_train_phase_timing_derives_every_metric_key_from_phase_name() -> None:
             },
             "step": 0,
             "namespace": "train/perf",
-            "event": None,
         }
     ]
 
@@ -341,7 +336,6 @@ def test_train_phase_timing_drops_unmatched_phase_starts_at_iteration_end() -> N
             "metrics": {"batch_build_time_sec": 0.5},
             "step": 2,
             "namespace": "train/perf",
-            "event": None,
         }
     ]
     assert callback._phase_starts == {}
@@ -457,7 +451,6 @@ def test_evaluation_component_timing_logs_one_record_per_task_at_the_task_scope_
             },
             "step": 0,
             "namespace": "eval/perf/energy",
-            "event": None,
         }
     ]
 
@@ -504,7 +497,6 @@ def test_evaluation_component_timing_flushes_measured_components_of_a_failed_tas
             "metrics": {"generator_time_sec": 0.5},
             "step": 0,
             "namespace": "eval/perf/energy",
-            "event": None,
         }
     ]
 
@@ -554,7 +546,6 @@ def test_evaluation_component_timing_drops_unmatched_starts_at_the_task_boundary
             "metrics": {"calculator/local_energy_time_sec": 0.5},
             "step": 0,
             "namespace": "eval/perf/energy",
-            "event": None,
         }
     ]
     assert callback._starts == {}

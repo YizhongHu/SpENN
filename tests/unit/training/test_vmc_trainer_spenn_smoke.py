@@ -46,7 +46,7 @@ class _StubContext(RunContext):
         self.trace: list[tuple[str, object]] = []
         self._occurrence_counts = {}
 
-    def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
+    def log(self, metrics, *, step=None, namespace="run") -> None:
         self.records.append((namespace, dict(metrics)))
 
     def _dispatch_occurrence(

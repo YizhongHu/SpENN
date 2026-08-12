@@ -458,6 +458,24 @@ step,namespace,key,value
 
 JSONL should preserve the same logical metric identity.
 
+### On-disk record format
+
+`metrics.csv` is a UTF-8 newline-delimited long-form file with the exact
+header `step,namespace,key,value`. Each metric in a logged record becomes one
+row; the `step` and `namespace` values are copied to every row. Values are
+serialized as scalar text, with booleans written as `true` or `false` and
+missing values represented by an empty field. Existing files are not rewritten
+when this format is documented or when logging code changes.
+
+`metrics.jsonl` is a UTF-8 file containing one JSON object per logged record:
+`{"step": ..., "namespace": ..., "metrics": {...}}`. The `metrics` object
+keeps all scalar values for that record. JSON objects are emitted with sorted
+keys and strict JSON numbers (`allow_nan=False`); non-finite floats therefore
+raise instead of being written as invalid JSON. The durable record has no
+`event` field: typed lifecycle events are dispatched separately and are not
+metric-record metadata. This schema applies to records written going forward;
+existing run outputs remain unchanged.
+
 Recommended event-oriented shape:
 
 ```json
@@ -974,11 +992,6 @@ run.define_metric("train/*", step_metric="train/step")
 run.define_metric("train/sampler/*", step_metric="train/step")
 run.define_metric("train/perf/*", step_metric="train/step")
 
-# Vestigial: registered by tpen/logging/wandb.py, but nothing emits these.
-run.define_metric("validation/*", step_metric="train/step")
-run.define_metric("validation/sampler/*", step_metric="train/step")
-run.define_metric("validation/perf/*", step_metric="train/step")
-
 run.define_metric("eval/*", step_metric="eval/step")
 run.define_metric("eval/sampler/*", step_metric="eval/step")
 run.define_metric("eval/perf/*", step_metric="eval/step")
@@ -1000,11 +1013,8 @@ checks/train_step
 
 when logging records in those namespaces.
 
-Two of these axes describe nothing the code emits. The `validation/*`
-registrations above are vestigial — no callback emits that namespace (see
-"Namespace conventions") — and `eval/step` is registered even though evaluation
-records are all logged at step `0`. They are recorded here because
-`tpen/logging/wandb.py` still registers them, not because they are meaningful.
+`eval/step` is registered even though evaluation records are all logged at
+step `0`; it remains part of the explicit W&B projection contract.
 
 Runtime metrics such as `runtime/wall_time_sec` may be logged once and also written to the W&B run summary.
 

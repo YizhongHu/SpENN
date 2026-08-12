@@ -23,11 +23,8 @@ class RecordingContext(RunContext):
         *,
         step: int | None = None,
         namespace: str = "run",
-        event: str | None = None,
     ) -> None:
-        self.records.append(
-            {"metrics": dict(metrics), "step": step, "namespace": namespace, "event": event}
-        )
+        self.records.append({"metrics": dict(metrics), "step": step, "namespace": namespace})
 
     def by_namespace(self, namespace: str) -> list[dict[str, Any]]:
         return [record for record in self.records if record["namespace"] == namespace]
