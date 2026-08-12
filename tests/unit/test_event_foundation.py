@@ -176,9 +176,6 @@ class _RaisesOnStarted:
     def __init__(self) -> None:
         self.occurrences: list[Occurrence[Any]] = []
 
-    def handle(self, event: object) -> None:
-        del event
-
     def handle_occurrence(self, occurrence: Occurrence[Any], context: RunContext) -> None:
         del context
         self.occurrences.append(occurrence)
