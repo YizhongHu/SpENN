@@ -68,21 +68,28 @@ DEFAULT_EXPECTED_FINAL_SEEDS = 10
 DEFAULT_HISTOGRAM_BINS = 32
 PATHOLOGY_ABS_LOCAL_ENERGY = 10.0
 AXIS_PROVENANCE_COLUMNS = ("major_id", "minor_id", "config_id")
-REPORT_AXIS_COLUMN = "basis_update"
-REPORT_ROW_KEY = "basis_update"
-REPORT_COL_KEY = "feature_normalization"
+# Derived report grouping columns. The scan's axes are plain scalars, so these
+# carry the two axis values the report grids are keyed by, not a composite.
+REPORT_ROW_COLUMN = "report_row"
+REPORT_COL_COLUMN = "report_col"
+
+# The eval task names this stage projects, matching the scan's `eval.yaml`
+# suite: mcmc_energy, stratified_geometry, cusp, tail, hooke_orbital,
+# full_model_antisymmetry, trace_equivariance.
+SYMMETRY_TASKS = ("full_model_antisymmetry",)
+TRACE_TASKS = ("trace_equivariance",)
 
 EVAL_EXACT_METRICS = {
-    "eval/energy/local_energy_mean",
-    "eval/energy/local_energy_stderr",
-    "eval/energy/local_energy_variance",
-    "eval/energy/local_energy_n_finite",
-    "eval/energy/local_energy_n_total",
-    "eval/energy/local_energy_finite_fraction",
-    "eval/energy/local_energy_pathology_count",
-    "eval/energy/term/kinetic_mean",
-    "eval/energy/term/harmonic_trap_mean",
-    "eval/energy/term/electron_electron_mean",
+    "eval/mcmc_energy/local_energy_mean",
+    "eval/mcmc_energy/local_energy_stderr",
+    "eval/mcmc_energy/local_energy_variance",
+    "eval/mcmc_energy/local_energy_n_finite",
+    "eval/mcmc_energy/local_energy_n_total",
+    "eval/mcmc_energy/local_energy_finite_fraction",
+    "eval/mcmc_energy/local_energy_pathology_count",
+    "eval/mcmc_energy/term/kinetic_mean",
+    "eval/mcmc_energy/term/harmonic_trap_mean",
+    "eval/mcmc_energy/term/electron_electron_mean",
     "eval/trace_equivariance/compared_entry_count",
     "eval/trace_equivariance/comparison_error_count",
     "eval/trace_equivariance/max_abs_error",
@@ -133,8 +140,8 @@ RUN_INDEX_COLUMNS = [
     "final_run_id",
     "final_eval_attempt_id",
     "source_champion_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "model_seed",
@@ -149,8 +156,8 @@ RUN_INDEX_COLUMNS = [
 ]
 
 ARCHITECTURE_SUMMARY_COLUMNS = [
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "n_success",
     "n_expected",
@@ -166,8 +173,8 @@ ARCHITECTURE_SUMMARY_COLUMNS = [
 
 ENERGY_BY_RUN_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "energy_mean",
@@ -185,8 +192,8 @@ ENERGY_BY_RUN_COLUMNS = [
 
 LOCAL_ENERGY_HISTOGRAM_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "bin_left",
@@ -198,8 +205,8 @@ LOCAL_ENERGY_HISTOGRAM_COLUMNS = [
 
 CUSP_PROFILE_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "com_id",
@@ -220,8 +227,8 @@ CUSP_PROFILE_COLUMNS = [
 
 TAIL_PROFILE_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "com_id",
@@ -242,8 +249,8 @@ TAIL_PROFILE_COLUMNS = [
 
 STRATIFIED_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "stratum",
@@ -258,8 +265,8 @@ STRATIFIED_COLUMNS = [
 
 HOOKE_ORBITAL_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "com_bin",
@@ -276,8 +283,8 @@ HOOKE_ORBITAL_COLUMNS = [
 
 SYMMETRY_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "symmetry_task",
@@ -290,8 +297,8 @@ SYMMETRY_COLUMNS = [
 
 TRACE_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "trace_kind",
@@ -308,8 +315,8 @@ TRACE_COLUMNS = [
 
 TRAINING_CURVE_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "step",
@@ -323,8 +330,8 @@ TRAINING_CURVE_COLUMNS = [
 
 RESOURCE_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "train_wall_time_sec",
@@ -335,8 +342,8 @@ RESOURCE_COLUMNS = [
 
 FAILURE_COLUMNS = [
     "final_run_id",
-    "basis_class",
-    "normalization",
+    "report_row",
+    "report_col",
     "winner_kind",
     "seed_index",
     "task",
@@ -463,12 +470,14 @@ def _axis_columns_from_contexts(contexts: Sequence[dict[str, Any]]) -> list[str]
 
 
 def _report_axes(manifest: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Return the two axes used by legacy report grid aliases."""
+    """Return the two planned axes the report grids are keyed by.
+
+    Derived from the recorded grid, never from hardcoded axis names: the first
+    major axis is the grid row, and the grid column is the second major axis
+    when one exists, else the first minor axis.
+    """
 
     major_axes = _major_axes(manifest)
-    major = set(major_axes)
-    if {"basis", "update_normalization", "feature_normalization"}.issubset(major):
-        return REPORT_ROW_KEY, REPORT_COL_KEY
     minor_axes = _minor_axes(manifest)
     row_axis = major_axes[0] if major_axes else None
     col_axis = major_axes[1] if len(major_axes) > 1 else (minor_axes[0] if minor_axes else None)
@@ -476,26 +485,10 @@ def _report_axes(manifest: dict[str, Any]) -> tuple[str | None, str | None]:
 
 
 def _report_axis_values(job: dict[str, Any], manifest: dict[str, Any]) -> tuple[str, str]:
-    """Return report-only two-axis labels, preserving raw axes separately."""
+    """Return one job's values on the two report axes."""
 
-    major = set(_major_axes(manifest))
-    if {"basis", "update_normalization", "feature_normalization"}.issubset(major):
-        basis = _axis_value(job, "basis") or _basis_class(job)
-        update = _axis_value(job, "update_normalization")
-        feature = _axis_value(job, "feature_normalization")
-        basis_update = "+".join(value for value in (basis, update) if value)
-        return basis_update or _basis_class(job), feature or str(job.get("normalization", ""))
-
-    configured_major = _major_axes(manifest)
-    configured_minor = _minor_axes(manifest)
-    row_axis = configured_major[0] if configured_major else None
-    col_axis = configured_major[1] if len(configured_major) > 1 else (
-        configured_minor[0] if configured_minor else None
-    )
-    return (
-        _axis_value(job, row_axis) or _basis_class(job),
-        _axis_value(job, col_axis) or str(job.get("normalization", "")),
-    )
+    row_axis, col_axis = _report_axes(manifest)
+    return _axis_value(job, row_axis), _axis_value(job, col_axis)
 
 
 def _axis_value(job: dict[str, Any], axis: str | None) -> str:
@@ -636,14 +629,13 @@ def _keep_train_metric(key: str) -> bool:
 def _base_row(context: dict[str, Any]) -> dict[str, Any]:
     job = context["job"]
     axis_row = _axis_row(context)
-    basis_update, feature_normalization = _report_axis_values(job, context.get("final_grid_manifest", {}))
+    report_row, report_col = _report_axis_values(job, context.get("final_grid_manifest", {}))
     return {
         "final_run_id": context["final_run_id"],
         "source_champion_id": job.get("source_champion_id", ""),
         **axis_row,
-        REPORT_AXIS_COLUMN: basis_update,
-        "basis_class": basis_update,
-        "normalization": feature_normalization,
+        REPORT_ROW_COLUMN: report_row,
+        REPORT_COL_COLUMN: report_col,
         "winner_kind": _winner_kind(job),
         "seed_index": _seed_index(job),
         "model_seed": job.get("final_train_model_seed", ""),
@@ -734,31 +726,31 @@ def _run_index_row(context: dict[str, Any]) -> dict[str, Any]:
 def _energy_row(context: dict[str, Any]) -> dict[str, Any]:
     base = _base_row(context)
     metrics = context["eval_metric_map"]
-    energy = _as_float(metrics.get("eval/energy/local_energy_mean"))
-    kinetic = _as_float(metrics.get("eval/energy/term/kinetic_mean"))
-    harmonic = _as_float(metrics.get("eval/energy/term/harmonic_trap_mean"))
-    electron_electron = _as_float(metrics.get("eval/energy/term/electron_electron_mean"))
+    energy = _as_float(metrics.get("eval/mcmc_energy/local_energy_mean"))
+    kinetic = _as_float(metrics.get("eval/mcmc_energy/term/kinetic_mean"))
+    harmonic = _as_float(metrics.get("eval/mcmc_energy/term/harmonic_trap_mean"))
+    electron_electron = _as_float(metrics.get("eval/mcmc_energy/term/electron_electron_mean"))
     virial = _derive_virial_metrics(kinetic, harmonic, electron_electron)
-    n_finite = _as_float(metrics.get("eval/energy/local_energy_n_finite"))
-    n_total = _as_float(metrics.get("eval/energy/local_energy_n_total"))
-    finite_fraction = _as_float(metrics.get("eval/energy/local_energy_finite_fraction"))
+    n_finite = _as_float(metrics.get("eval/mcmc_energy/local_energy_n_finite"))
+    n_total = _as_float(metrics.get("eval/mcmc_energy/local_energy_n_total"))
+    finite_fraction = _as_float(metrics.get("eval/mcmc_energy/local_energy_finite_fraction"))
     if finite_fraction is None and n_finite is not None and n_total:
         finite_fraction = n_finite / n_total
-    pathology_count = _as_float(metrics.get("eval/energy/local_energy_pathology_count"))
+    pathology_count = _as_float(metrics.get("eval/mcmc_energy/local_energy_pathology_count"))
     pathology_fraction = None
     if pathology_count is not None and n_total:
         pathology_fraction = pathology_count / n_total
     return {
         **base,
         "energy_mean": _format_number(energy),
-        "energy_stderr": _format_number(_as_float(metrics.get("eval/energy/local_energy_stderr"))),
+        "energy_stderr": _format_number(_as_float(metrics.get("eval/mcmc_energy/local_energy_stderr"))),
         "energy_error": _format_number(None if energy is None else energy - EXACT_HOOKE_ENERGY),
         "kinetic_mean": _format_number(kinetic),
         "harmonic_trap_mean": _format_number(harmonic),
         "electron_electron_mean": _format_number(electron_electron),
         "virial_residual": _format_number(virial["residual"]),
         "virial_relative_residual": _format_number(virial["relative_residual"]),
-        "local_energy_var": _format_number(_as_float(metrics.get("eval/energy/local_energy_variance"))),
+        "local_energy_var": _format_number(_as_float(metrics.get("eval/mcmc_energy/local_energy_variance"))),
         "finite_fraction": _format_number(finite_fraction),
         "pathology_fraction": _format_number(pathology_fraction),
     }
@@ -852,7 +844,7 @@ def _task_records(context: dict[str, Any], task: str, filename: str) -> list[dic
 def _local_energy_values(contexts: Sequence[dict[str, Any]]) -> dict[str, list[float]]:
     values_by_run: dict[str, list[float]] = {}
     for context in contexts:
-        rows = _read_csv(context["attempt_dir"] / "energy" / "mcmc_energy_samples.csv")
+        rows = _read_csv(context["attempt_dir"] / "mcmc_energy" / "mcmc_energy_samples.csv")
         values_by_run[context["final_run_id"]] = [value for value in (_as_float(row.get("local_energy")) for row in rows) if value is not None]
     return values_by_run
 
@@ -863,7 +855,7 @@ def _local_energy_histograms(contexts: Sequence[dict[str, Any]]) -> list[dict[st
     groups_by_run: dict[str, tuple[str, str, str]] = {}
     for context in contexts:
         base = _base_row(context)
-        group = (str(base.get("basis_class", "")), str(base.get("normalization", "")), str(base.get("winner_kind", "")))
+        group = (str(base.get(REPORT_ROW_COLUMN, "")), str(base.get(REPORT_COL_COLUMN, "")), str(base.get("winner_kind", "")))
         groups_by_run[context["final_run_id"]] = group
         group_values[group].extend(values_by_run.get(context["final_run_id"], []))
     edges_by_group = {group: _bin_edges(values) for group, values in group_values.items()}
@@ -1047,7 +1039,10 @@ def _hooke_orbital_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
 def _symmetry_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     base = _base_row(context)
-    for task in ("full_model_antisymmetry", "spatial_exchange_symmetry", "rotation_consistency"):
+    # The TPEN eval suite's only symmetry task. v3 also projected
+    # `spatial_exchange_symmetry` and `rotation_consistency`, which the scan's
+    # eval config does not register.
+    for task in SYMMETRY_TASKS:
         rows = _task_records(context, task, "transform_records.csv")
         if not rows:
             continue
@@ -1068,7 +1063,10 @@ def _trace_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     base = _base_row(context)
     metrics = context["eval_metric_map"]
-    for task in ("trace_equivariance", "feature_trace_stability", "readout_trace_stability"):
+    # The TPEN eval suite's only trace task. v3's `feature_trace_stability` and
+    # `readout_trace_stability` do not exist in this stack, so projecting them
+    # would emit rows that can never be populated.
+    for task in TRACE_TASKS:
         rows = _task_records(context, task, "trace_records.csv")
         if not rows and task == "trace_equivariance":
             key = ""
@@ -1195,7 +1193,7 @@ def _architecture_summary(
 ) -> list[dict[str, Any]]:
     group_axes = tuple(axis for axis in major_axes if axis)
     if not group_axes:
-        group_axes = ("basis_class", "normalization")
+        group_axes = (REPORT_ROW_COLUMN, REPORT_COL_COLUMN)
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in energy_rows:
         groups[(*[str(row.get(axis, "")) for axis in group_axes], str(row["winner_kind"]))].append(row)
@@ -1222,9 +1220,8 @@ def _architecture_summary(
         successful = [row for row in rows if _as_float(row.get("energy_mean")) is not None]
         out.append({
             **{column: representative.get(column, "") for column in (*AXIS_PROVENANCE_COLUMNS, *axis_columns)},
-            REPORT_AXIS_COLUMN: representative.get(REPORT_AXIS_COLUMN, ""),
-            "basis_class": representative.get("basis_class", ""),
-            "normalization": representative.get("normalization", ""),
+            REPORT_ROW_COLUMN: representative.get(REPORT_ROW_COLUMN, ""),
+            REPORT_COL_COLUMN: representative.get(REPORT_COL_COLUMN, ""),
             "winner_kind": key[-1],
             "n_success": len(successful),
             "n_expected": expected_final_seeds,
@@ -1266,12 +1263,6 @@ def _insert_columns(columns: Sequence[str], insert_after: str, additions: Sequen
             if addition not in output:
                 output.append(addition)
     return output
-
-
-def _with_report_axis_columns(columns: Sequence[str]) -> list[str]:
-    """Add report-only derived axis columns without changing raw axis columns."""
-
-    return _insert_columns(columns, "basis_class", (REPORT_AXIS_COLUMN,))
 
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
@@ -1335,19 +1326,19 @@ def collect_final_outputs(
     axis_provenance_columns = [column for column in (*AXIS_PROVENANCE_COLUMNS, *axis_columns) if column]
     run_columns = _insert_columns(RUN_INDEX_COLUMNS, "source_champion_id", axis_provenance_columns)
     compact_columns = {
-        "run_index.csv": _with_report_axis_columns(run_columns),
-        "architecture_summary.csv": _with_report_axis_columns(_insert_columns(ARCHITECTURE_SUMMARY_COLUMNS, "normalization", axis_provenance_columns)),
-        "energy_by_run.csv": _with_report_axis_columns(_insert_columns(ENERGY_BY_RUN_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "local_energy_histograms.csv": _with_report_axis_columns(_insert_columns(LOCAL_ENERGY_HISTOGRAM_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "cusp_profile_summary.csv": _with_report_axis_columns(_insert_columns(CUSP_PROFILE_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "tail_profile_summary.csv": _with_report_axis_columns(_insert_columns(TAIL_PROFILE_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "stratified_summary.csv": _with_report_axis_columns(_insert_columns(STRATIFIED_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "hooke_orbital_summary.csv": _with_report_axis_columns(_insert_columns(HOOKE_ORBITAL_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "symmetry_summary.csv": _with_report_axis_columns(_insert_columns(SYMMETRY_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "trace_summary.csv": _with_report_axis_columns(_insert_columns(TRACE_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "training_curve_summary.csv": _with_report_axis_columns(_insert_columns(TRAINING_CURVE_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "resource_summary.csv": _with_report_axis_columns(_insert_columns(RESOURCE_COLUMNS, "final_run_id", axis_provenance_columns)),
-        "failure_modes.csv": _with_report_axis_columns(_insert_columns(FAILURE_COLUMNS, "final_run_id", axis_provenance_columns)),
+        "run_index.csv": run_columns,
+        "architecture_summary.csv": _insert_columns(ARCHITECTURE_SUMMARY_COLUMNS, "normalization", axis_provenance_columns),
+        "energy_by_run.csv": _insert_columns(ENERGY_BY_RUN_COLUMNS, "final_run_id", axis_provenance_columns),
+        "local_energy_histograms.csv": _insert_columns(LOCAL_ENERGY_HISTOGRAM_COLUMNS, "final_run_id", axis_provenance_columns),
+        "cusp_profile_summary.csv": _insert_columns(CUSP_PROFILE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "tail_profile_summary.csv": _insert_columns(TAIL_PROFILE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "stratified_summary.csv": _insert_columns(STRATIFIED_COLUMNS, "final_run_id", axis_provenance_columns),
+        "hooke_orbital_summary.csv": _insert_columns(HOOKE_ORBITAL_COLUMNS, "final_run_id", axis_provenance_columns),
+        "symmetry_summary.csv": _insert_columns(SYMMETRY_COLUMNS, "final_run_id", axis_provenance_columns),
+        "trace_summary.csv": _insert_columns(TRACE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "training_curve_summary.csv": _insert_columns(TRAINING_CURVE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "resource_summary.csv": _insert_columns(RESOURCE_COLUMNS, "final_run_id", axis_provenance_columns),
+        "failure_modes.csv": _insert_columns(FAILURE_COLUMNS, "final_run_id", axis_provenance_columns),
     }
     expected_final_seeds = _expected_final_seeds(contexts)
     report_row_key, report_col_key = _report_axes(final_grid_manifest)
@@ -1368,14 +1359,13 @@ def collect_final_outputs(
     resource_rows = [_resource_row(context) for context in contexts]
     failure_rows = [row for context in contexts for row in _failure_rows(context)]
     cost_rows, cost_task_rows = _cost_tables_rows(contexts)
-    cost_axis_names = [column for column in (*major_axes, *minor_axes, REPORT_AXIS_COLUMN, "basis_class", "normalization", "winner_kind") if column]
+    cost_axis_names = [column for column in (*major_axes, *minor_axes, REPORT_ROW_COLUMN, REPORT_COL_COLUMN, "winner_kind") if column]
     cost_by_run_columns = [
         *COST_BY_RUN_BASE_COLUMNS,
         "source_champion_id",
         *(column for column in axis_provenance_columns if column),
-        REPORT_AXIS_COLUMN,
-        "basis_class",
-        "normalization",
+        REPORT_ROW_COLUMN,
+        REPORT_COL_COLUMN,
         "winner_kind",
         "seed_index",
     ]
@@ -1422,8 +1412,8 @@ def collect_final_outputs(
         "major_axes": list(major_axes),
         "minor_axes": list(minor_axes),
         "axis_columns": axis_columns,
-        "report_row_key": report_row_key or "basis_class",
-        "report_col_key": report_col_key or "normalization",
+        "report_row_key": report_row_key or REPORT_ROW_COLUMN,
+        "report_col_key": report_col_key or REPORT_COL_COLUMN,
         "expected_final_replicates": expected_final_seeds,
         "tables": {filename: len(rows) for filename, (rows, _) in table_specs.items()},
         "source_stages": {
