@@ -267,7 +267,8 @@ plan, and nothing here should be read as an existing interface.
 ```
 experiments/baselines/
   README.md                 # this document (landed)
-  systems.yaml              # system id -> Hamiltonian spec, spin sector, E_ref + citation
+  systems.yaml              # system id -> Hamiltonian spec, spin sector, E_ref + citation (landed)
+  test_systems.py           # registry schema + evidence-discipline test (landed)
   adapters/ferminet.py      # + lapnet.py, deepqmc.py: run, then emit the common record
   adapters/tpen.py          # wraps tpen.run.run_from_config (the one sanctioned import)
   collect.py                # scan run roots -> results.jsonl
