@@ -1,0 +1,226 @@
+# =============================================================================
+# tpen-pair-scan-v1 — smoke grid
+# =============================================================================
+#
+# The SAME schema, stage stack, launcher flags, partitions, resource defaults and
+# dependency pattern as `configs/grid.yaml` (CLAUDE.md, Tools: "smoke runs should
+# stay as close to the corresponding real run as possible"). Only two things are
+# reduced: the grid size and the TRAIN step budget. There is no smoke launcher
+# mode — every stage runs its normal script with `--grid .../smoke.yaml`.
+#
+# 4 basis x (1 lr x 1 channels x 2 activations) x 3 seed rows = 24 scan jobs,
+# 8 configurations, 4 champions, `final_replicates: 1` -> 4 final train + 4 final
+# eval.
+#
+# ---------------------------------------------------------------------------
+# What this grid is shaped to exercise
+# ---------------------------------------------------------------------------
+#
+# 1. ALL FOUR basis levels. They are the newest surface in the study: two of them
+#    threw at construction until `include_gaussian_factor` was written out, one
+#    was crippled by an off-by-one `box_size`, and blinding has to reslot the
+#    library's self-references for any of them to resolve inside an array task. A
+#    smoke that ran two levels would leave half of that unproven.
+# 2. The `Gaussian` activation, for the same reason: `Gamma(0) != 0`, so it writes
+#    an invariant constant onto the tuple entries `EquivariantMixing` never
+#    updates (`equivariant_mixing.py:87-90`).
+# 3. Split-sample champion selection, which needs the full three seed rows: the
+#    selector reads rows {0, 1} and must never read row 2.
+#
+# The EVALUATION budget is deliberately NOT reduced. The stratified sample count
+# and the validation sampler define the selection metrics themselves
+# (`eval.yaml`), so shrinking them would smoke-test a different measurement than
+# the one the scan performs; at 24 rows and ~82 s of un-reduced eval per row that
+# costs well under an hour of GPU time.
+# =============================================================================
+
+study: tpen_pair_scan_v1
+config: experiments/hooke/tpen-pair-scan-v1/configs/train.yaml
+validation_config: experiments/hooke/tpen-pair-scan-v1/configs/eval.yaml
+results_root: experiments/hooke/tpen-pair-scan-v1/results
+
+choice_libraries:
+  - path: experiments/hooke/choices/basis_levels.yaml
+    provides: choices.basis
+
+config_snapshots:
+  train: train_config.yaml
+  validation: validation_config.yaml
+
+# Full basis axis: every level, because these are the least-proven surfaces.
+major_grid:
+  basis:
+    - no-basis
+    - hooke-axiswise-v1
+    - hooke-total-shell
+    - hooke-cartesian-box
+
+# Reduced minor axes. `lr` and `channels` are pinned to the base-config defaults,
+# so a difference between two smoke rows can only come from the axes that are
+# still moving. `Gaussian` is kept alongside `SiLU` because the two sit on
+# opposite sides of the `Gamma(0) == 0` contract.
+minor_grid:
+  lr:
+    - 1.0e-3
+
+  channels:
+    - 8
+
+  activation:
+    - SiLU
+    - Gaussian
+
+# Identical to the full grid: split-sample selection needs both selection seeds
+# and the holdout seed to exist.
+scan_seed_axis: seed_index
+scan_seed_rows:
+  - seed_index: 0
+    training_model_seed: 0
+    training_sampler_seed: 10
+    validation_sampler_seed: 20
+  - seed_index: 1
+    training_model_seed: 1
+    training_sampler_seed: 11
+    validation_sampler_seed: 21
+  - seed_index: 2
+    training_model_seed: 2
+    training_sampler_seed: 12
+    validation_sampler_seed: 22
+
+blinding:
+  enabled_by_default: true
+  slot_prefixes:
+    basis: B
+
+axis_id_labels:
+  basis: b
+  lr: lr
+  channels: ch
+  activation: act
+  seed_index: seed
+
+axis_overrides:
+  basis: run_parameters.basis_slot
+  lr: run_parameters.lr
+  channels: run_parameters.channels
+  activation: run_parameters.activation_slot
+
+choice_validation:
+  basis:
+    choices_path: choices.basis
+    tags_path: choices.basis.{value}.tags
+  activation:
+    choices_path: choices.activation
+    tags_path: choices.activation.{value}.tags
+
+seed_overrides:
+  scan_train:
+    run_parameters.training_model_seed: training_model_seed
+    run_parameters.training_sampler_seed: training_sampler_seed
+    run_parameters.validation_sampler_seed: validation_sampler_seed
+
+  validation:
+    run_parameters.training_model_seed: training_model_seed
+    run_parameters.training_sampler_seed: training_sampler_seed
+    run_parameters.validation_sampler_seed: validation_sampler_seed
+
+  final_train:
+    run_parameters.training_model_seed: final_train_model_seed
+    run_parameters.training_sampler_seed: final_train_sampler_seed
+
+  final_eval:
+    run_parameters.training_model_seed: final_train_model_seed
+    run_parameters.validation_sampler_seed: final_eval_sampler_seed
+
+final_seed_sequences:
+  final_train_model_seed:
+    start: 100
+    step: 1
+  final_train_sampler_seed:
+    start: 1000
+    step: 1
+  final_eval_sampler_seed:
+    start: 10000
+    step: 1
+
+# -----------------------------------------------------------------------------
+# The tiny train workload
+# -----------------------------------------------------------------------------
+#
+# READ THIS BEFORE CHANGING `training.max_steps`.
+#
+# `Checkpoint` shares ONE `StepCadenceGate` between its periodic and its terminal
+# write (`callback/checkpoint.py:190,218`), and `_write_terminal` consults it with
+# the final iteration index. A config that sets `checkpoint.every_n_steps: N`
+# therefore writes NO terminal checkpoint unless `max_steps` is an exact multiple
+# of N — and it fails SILENTLY: training completes, `status.json` says
+# `completed`, the checkpoints directory is empty, and validation then dies on
+# "checkpoint directory lacks COMPLETE marker". A 60-step smoke against
+# `every_n_steps: 100` reproduced exactly that.
+#
+# So `checkpoint.every_n_steps` is absent here and MUST STAY ABSENT. `train.yaml`
+# registers `Checkpoint` with `periodic: false` and no cadence kwarg, which leaves
+# the gate's `every_n` at 1, and the terminal write then fires for ANY
+# `max_steps`. Note that `checkpoint.every_n_steps` is not even a key the base
+# config reads, so adding it here would not throttle anything — it would only
+# create an inert key and, if it were ever wired up, suppress the one artifact the
+# next stage needs.
+#
+# `tests/unit/experiments/test_scan_smoke_workload.py` asserts the terminal write
+# fires at this exact `max_steps`, driving the real `Checkpoint` gate rather than
+# trusting the arithmetic.
+static_overrides:
+  train:
+    training.max_steps: 4
+    training.log_every_n_steps: 1
+    sampler_params.n_walkers: 16
+    sampler_params.burn_in: 1
+    sampler_params.n_steps: 1
+    checks.every_n_steps: 1
+    status.every_n_steps: 1
+    timing.rolling_window: 2
+
+  final_train:
+    training.max_steps: 4
+    training.log_every_n_steps: 1
+    sampler_params.n_walkers: 16
+    sampler_params.burn_in: 1
+    sampler_params.n_steps: 1
+    checks.every_n_steps: 1
+    status.every_n_steps: 1
+    timing.rolling_window: 2
+
+# Selection is byte-identical to the full grid, including the split-sample seeds:
+# the smoke is what proves the selector runs on real collected rows before the
+# 288-row scan depends on it.
+champions:
+  - name: energy
+    selector: metric_ladder
+    metrics:
+      - eval/mcmc_energy/local_energy_mean
+      - eval/stratified_geometry/local_energy_variance
+      - eval/mcmc_energy/energy_abs_error
+    mode: min
+    fallback_metric: eval/mcmc_energy/energy_abs_error
+    fallback_mode: min
+    selection_seeds: [0, 1]
+    holdout_seeds: [2]
+    reference_distribution_best_k: 3
+
+champion_reference_metrics:
+  - label: mcmc_energy
+    metric: eval/mcmc_energy/local_energy_mean
+  - label: mcmc_energy_stderr
+    metric: eval/mcmc_energy/local_energy_stderr
+  - label: mcmc_energy_variance
+    metric: eval/mcmc_energy/local_energy_variance
+  - label: mcmc_energy_abs_error
+    metric: eval/mcmc_energy/energy_abs_error
+  - label: stratified_variance
+    metric: eval/stratified_geometry/local_energy_variance
+  - label: stratified_energy_mean
+    metric: eval/stratified_geometry/local_energy_mean
+  - label: antisymmetry_logabs_max_abs_error
+    metric: eval/full_model_antisymmetry/logabs_max_abs_error
+
+final_replicates: 1

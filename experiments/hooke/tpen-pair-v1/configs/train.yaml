@@ -11,7 +11,9 @@
 #     --config experiments/hooke/tpen-pair-v1/configs/train.yaml
 #
 # The Hooke per-axis basis knob (decisions D10/D11) is deliberately not
-# wired here yet; the basis-mode smoke axis arrives with the basis slice.
+# wired here: the basis slice landed (#148/#159) and D15(f) then withdrew
+# the basis-mode axis from this smoke, which stays no-basis. The four-level
+# basis axis lives in the tpen-pair-scan-v1 grid scan instead (D17).
 
 experiment:
   name: tpen_pair_v1

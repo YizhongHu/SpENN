@@ -1,5 +1,6 @@
 """Neural-network component namespace for TPEN."""
 
+from tpen.nn.activation import GaussianActivation
 from tpen.nn.basis import (
     ElectronBasis,
     ElectronBasisFeatures,
@@ -40,6 +41,7 @@ __all__ = [
     "Embedding",
     "Envelope",
     "EquivariantMixing",
+    "GaussianActivation",
     "GaussianCoordinateEnvelope",
     "GaussianDecayGate",
     "GaussianConfinement",
