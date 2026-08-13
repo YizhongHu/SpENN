@@ -468,13 +468,115 @@ def _materialize_slot_config(
             selected = OmegaConf.select(config, f"{choices_path}.{value}")
             if selected is None:
                 raise ValueError(f"cannot blind {axis} value {value!r}; missing {choices_path}.{value}")
-            choices[slot] = selected
+            choices[slot] = _reslotted_choice(
+                selected,
+                choices_path=choices_path,
+                slot_to_value=axis_maps["slot_to_value"],
+            )
         OmegaConf.update(materialized, choices_path, choices, merge=False)
+        _reject_dangling_choice_references(
+            OmegaConf.select(materialized, choices_path),
+            choices_path=choices_path,
+            slots=set(axis_maps["slot_to_value"]),
+            axis=axis,
+        )
         first_slot = next(iter(axis_maps["slot_to_value"]))
         override_path = axis_override_paths.get(axis)
         if isinstance(override_path, str):
             OmegaConf.update(materialized, override_path, first_slot, merge=False)
     return materialized
+
+
+def _reject_dangling_choice_references(
+    blinded_choices: Any,
+    *,
+    choices_path: str,
+    slots: set[str],
+    axis: str,
+) -> None:
+    """Fail when a blinded choice library still references a non-slot key.
+
+    Catches the residual case ``_reslotted_choice`` cannot fix: a library level
+    that references a sibling level the grid does not scan, so no slot exists to
+    point the reference at. Raising here keeps the failure at planning time.
+    """
+
+    prefix = f"{choices_path}."
+    dangling: set[str] = set()
+
+    def scan(node: Any) -> None:
+        if isinstance(node, str):
+            index = node.find(prefix)
+            while index != -1:
+                tail = node[index + len(prefix) :]
+                key = ""
+                for char in tail:
+                    if char.isalnum() or char in "-_":
+                        key += char
+                    else:
+                        break
+                if key and key not in slots:
+                    dangling.add(key)
+                index = node.find(prefix, index + 1)
+            return
+        if isinstance(node, dict):
+            for value in node.values():
+                scan(value)
+        elif isinstance(node, list):
+            for value in node:
+                scan(value)
+
+    scan(OmegaConf.to_container(blinded_choices, resolve=False))
+    if dangling:
+        raise ValueError(
+            f"blinded {axis} choice library still references non-slot key(s) "
+            f"{', '.join(sorted(dangling))} under {choices_path}; those levels are "
+            "not in the grid, so blinding cannot rewrite the reference"
+        )
+
+
+def _reslotted_choice(
+    selected: Any,
+    *,
+    choices_path: str,
+    slot_to_value: dict[str, str],
+) -> Any:
+    """Return one choice level with its intra-library self-references reslotted.
+
+    A choice library may reference its own entries by name. The basis library
+    does exactly that::
+
+        in_features: ${tpen.basis_feature_dim:${choices.basis.hooke-total-shell.basis}}
+
+    which is deliberate -- it is what stops the embedding input width from
+    drifting from the basis feeding it. But blinding rekeys ``choices.basis`` by
+    slot, so a verbatim copy leaves that interpolation pointing at a key that no
+    longer exists, and the run dies on ``InterpolationKeyError`` inside a Slurm
+    array task rather than at planning time.
+
+    So every ``{choices_path}.{value}`` reference is rewritten to
+    ``{choices_path}.{slot}`` as the level is copied. Longest value name first,
+    so a name that is a prefix of another cannot be partially rewritten.
+    """
+
+    container = OmegaConf.to_container(selected, resolve=False)
+    replacements = [
+        (f"{choices_path}.{value}", f"{choices_path}.{slot}")
+        for slot, value in sorted(slot_to_value.items(), key=lambda item: -len(item[1]))
+    ]
+
+    def rewrite(node: Any) -> Any:
+        if isinstance(node, str):
+            for old, new in replacements:
+                node = node.replace(old, new)
+            return node
+        if isinstance(node, dict):
+            return {key: rewrite(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [rewrite(value) for value in node]
+        return node
+
+    return OmegaConf.create(rewrite(container)) if isinstance(container, (dict, list)) else container
 
 
 def unblind_artifact(
