@@ -1,0 +1,160 @@
+# =============================================================================
+# Hooke basis-level choice library (MIG-TPEN-000 D17 four-level basis axis)
+# =============================================================================
+#
+# Single source of truth for the four levels of the `basis` axis. It is a
+# CONFIG FRAGMENT, not a runnable config: it defines only `choices.basis`.
+#
+# Ownership: this file is deliberately NOT inside a study directory. The axis is
+# a property of the Hooke sector's model wiring, not of one study, and both the
+# tpen-pair-scan-v1 grid and the integration fixtures that prove the levels
+# train must select from the same table. Keeping one copy here is what makes
+# "the scan ran the level we tested" checkable instead of a claim about two
+# files that were once identical.
+#
+# ---------------------------------------------------------------------------
+# Consuming it
+# ---------------------------------------------------------------------------
+#
+# `tpen.run.load_config` reads exactly one YAML file (`OmegaConf.load`), with no
+# include or defaults-list mechanism, so a host config consumes this fragment in
+# one of two equivalent ways:
+#
+#   1. Merge it, then run the merged config:
+#
+#        cfg = OmegaConf.merge(
+#            OmegaConf.load("<study>.yaml"),
+#            OmegaConf.load("experiments/hooke/choices/basis_levels.yaml"),
+#        )
+#
+#      `OmegaConf.save(cfg, path)` preserves interpolations, so the merged file
+#      is itself a valid single-file config for `run.py --config`.
+#
+#   2. Paste the `choices:` block below verbatim into the host config.
+#
+# The host config MUST provide:
+#
+#   system.omega              oscillator frequency, threaded into every basis
+#   system.spatial_dim        coordinate dimension
+#   run_parameters.basis_slot one of the four level names below
+#
+# and MUST wire its model block through the slot, both keys:
+#
+#   model:
+#     basis: ${choices.basis.${run_parameters.basis_slot}.basis}
+#     embedding:
+#       include_spins: true
+#       in_features: ${choices.basis.${run_parameters.basis_slot}.in_features}
+#
+# ---------------------------------------------------------------------------
+# Why `in_features` is a slot key and not a bare resolver interpolation
+# ---------------------------------------------------------------------------
+#
+# The obvious spelling, `in_features: ${tpen.basis_feature_dim:${model.basis}}`,
+# raises `TypeError` on the `no-basis` level: the resolver instantiates its
+# argument and reads `out_features`, and `instantiate(None)` has neither
+# (`tpen/config.py:66-70`). A single interpolation therefore cannot cover a null
+# basis. Carrying `in_features` inside the slot lets `no-basis` resolve it to
+# `null`, which makes `Embedding` fall back to its derived per-particle width
+# `spatial_dim + spin = 4` (`tpen/nn/embedding.py:112-117`).
+#
+# For the three real bases the slot's `in_features` is the resolver applied to
+# that slot's own `basis`, so the embedding input width can never drift from the
+# basis that feeds it.
+#
+# ---------------------------------------------------------------------------
+# Feature widths (per-particle one-body width reaching the embedding)
+# ---------------------------------------------------------------------------
+#
+#   no-basis              4   embedding-derived: spatial_dim 3 + spin 1
+#   hooke-axiswise-v1     7   spatial_dim * (max_shell + 1) + spin = 3*2 + 1
+#   hooke-total-shell     5   |n| <= 1 in 3D -> 1 + 3 indices, + spin
+#   hooke-cartesian-box   9   n_k < 2 in 3D -> 2^3 = 8 indices, + spin
+#
+# `ElectronBasis.out_features` is `coordinate_features + 1` when `include_spin`
+# is true (`tpen/nn/basis.py:143-147`), so the cartesian-box level's width is 9,
+# not the 8 multi-indices the box admits. These are the numbers
+# `tests/integration/training/test_basis_level_choices.py` pins.
+#
+# ---------------------------------------------------------------------------
+# Two load-bearing values. Do not "simplify" either one.
+# ---------------------------------------------------------------------------
+#
+# 1. `box_size: 2`, NOT 1. `_cartesian_box_multi_indices` admits
+#    `order < box_size` (`tpen/nn/basis.py:604-608`), so `box_size` counts
+#    admitted orders while `max_shell` / `max_total_shell` are maximum orders.
+#    `box_size: 1` therefore yields exactly one multi-index, `(0, 0, 0)` -- a
+#    single spherically symmetric feature. That is fatal rather than merely
+#    small: the basis is the ONLY path by which coordinates reach the trainable
+#    body (`TPENWaveFunction.forward_impl` feeds `basis_features`, and mixing and
+#    aggregation never read `context.batch`), so the arm would be a function of
+#    `(r1, r2, s1, s2)` alone and could not represent r12 dependence at all --
+#    exactly the factor the exact Hooke solution `(1 + r12/2) exp(-(r1^2 +
+#    r2^2)/4)` needs. `2` is the order-matched value.
+#
+# 2. `include_gaussian_factor` is set EXPLICITLY on every level.
+#    `product_v2` raises `ValueError` when it is left unset
+#    (`tpen/nn/basis.py:443-444`), so both product levels simply throw without
+#    it. `axiswise_v1` silently defaults it to `true` (`:411-413`); spelling it
+#    out there too keeps the three arms comparable by inspection rather than by
+#    remembering a default. It is outcome-determining, not cosmetic: with the
+#    factor on, features decay as `exp(-omega r^2 / 2)`, so at the evaluation
+#    tail stratum (radius 4-8) they are ~1e-7 while the `no-basis` arm feeds raw
+#    coordinates of magnitude 8.
+#
+# `hooke-axiswise-v1` emits a `FutureWarning` by design (D10/D11/D15d): it is a
+# retained legacy mode, not a deprecation on its way out. Nothing in
+# `pyproject.toml` escalates warnings to errors, and the warning must be neither
+# suppressed nor escalated -- a quarter of the scan grid depends on this level
+# running AND warning. It fires more than once per run because the
+# `basis_feature_dim` resolver instantiates the basis again.
+
+choices:
+  basis:
+    # Baseline: no basis at all. The embedding consumes the raw ElectronBatch
+    # and builds its own (coordinates, spin) per-particle vector.
+    no-basis:
+      basis: null
+      in_features: null
+      tags: [main, no_basis]
+
+    # Legacy per-axis Hermite features: one polynomial ladder per coordinate.
+    hooke-axiswise-v1:
+      basis:
+        _target_: tpen.nn.HookeOrbitalBasis
+        basis_semantics: axiswise_v1
+        omega: ${system.omega}
+        spatial_dim: ${system.spatial_dim}
+        max_shell: 1
+        include_gaussian_factor: true
+        include_spin: true
+      in_features: ${tpen.basis_feature_dim:${choices.basis.hooke-axiswise-v1.basis}}
+      tags: [main, hooke_basis, axiswise_v1, legacy]
+
+    # Product basis truncated by total shell |n| <= 1.
+    hooke-total-shell:
+      basis:
+        _target_: tpen.nn.HookeOrbitalBasis
+        basis_semantics: product_v2
+        omega: ${system.omega}
+        spatial_dim: ${system.spatial_dim}
+        truncation: total_shell
+        max_total_shell: 1
+        include_gaussian_factor: true
+        include_spin: true
+      in_features: ${tpen.basis_feature_dim:${choices.basis.hooke-total-shell.basis}}
+      tags: [main, hooke_basis, product_v2, total_shell]
+
+    # Product basis truncated by a per-coordinate box n_k < box_size.
+    hooke-cartesian-box:
+      basis:
+        _target_: tpen.nn.HookeOrbitalBasis
+        basis_semantics: product_v2
+        omega: ${system.omega}
+        spatial_dim: ${system.spatial_dim}
+        truncation: cartesian_box
+        box_size: 2
+        include_gaussian_factor: true
+        include_spin: true
+      in_features: ${tpen.basis_feature_dim:${choices.basis.hooke-cartesian-box.basis}}
+      tags: [main, hooke_basis, product_v2, cartesian_box]
