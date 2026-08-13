@@ -447,9 +447,9 @@ def test_path_aggregation_activation_writes_one_onto_non_distinct_entries() -> N
 @pytest.mark.parametrize("n_particles", [2, 3])
 def test_masked_contamination_does_not_reach_the_pfaffian_wavefunction(n_particles: int) -> None:
     # The readout antisymmetrizes K = 0.5 * (pair - pair^T), which annihilates
-    # the order-2 diagonal exactly, so the Gamma(0) = 1 contamination measured
-    # above cannot change logabs or sign. This is the null the downstream
-    # activation scan relies on.
+    # the order-2 diagonal exactly, so the contamination measured above cannot
+    # change logabs or sign. This is the null the downstream activation scan
+    # relies on.
     mixing = _mixing(GaussianActivation(sigma=0.9))
     aggregation = _chained_aggregation(GaussianActivation(sigma=0.9), seed=61)
     feature = _random_feature(n_particles, channels=2, max_order=2, seed=149, batch=2)
@@ -460,8 +460,23 @@ def test_masked_contamination_does_not_reach_the_pfaffian_wavefunction(n_particl
     clean_blocks[2] = _zero_masked_entries(clean_blocks[2], n_particles, 2, path_axis=False)
     clean = Feature(clean_blocks)
 
-    # The contamination really is present in the readout input.
-    assert (contaminated.blocks[2] - clean.blocks[2]).abs().max().item() == 1.0
+    # The contamination really is present in the readout input. After the full
+    # mixing -> aggregation chain the masked entries are no longer Gamma(0)
+    # itself: mixing writes Gamma(0) = 1 there, the path contraction turns that
+    # into sum_p U[c, p], and the aggregation Gamma maps it to a channel-wise
+    # invariant constant. It is still an invariant constant, which is why it
+    # cannot break equivariance -- and it is still nonzero.
+    difference = (contaminated.blocks[2] - clean.blocks[2]).abs()
+    assert difference.max().item() > 0.0
+    # It sits exactly on the masked entries and nowhere else.
+    assert torch.equal(
+        difference > 0.0,
+        (~no_repeated_particle_mask(n_particles, 2)).reshape(1, 1, n_particles, n_particles)
+        .expand_as(difference),
+    )
+    # And it is constant over the tuple indices, per batch element and channel.
+    masked_values = torch.diagonal(contaminated.blocks[2], dim1=-2, dim2=-1)
+    assert torch.equal(masked_values, masked_values[..., :1].expand_as(masked_values))
 
     readout = PfaffianReadout(channels=2).to(dtype=_DTYPE)
     batch = ElectronBatch(positions=torch.zeros(2, n_particles, 1, dtype=_DTYPE))
