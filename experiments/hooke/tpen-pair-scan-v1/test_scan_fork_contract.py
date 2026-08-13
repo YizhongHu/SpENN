@@ -338,6 +338,19 @@ def test_required_choice_paths_unions_library_provides_and_choice_validation(tmp
     assert "choices.basis" in plan.required_choice_paths(without_library)
 
 
+def test_a_library_provide_is_required_even_with_no_choice_validation_entry(tmp_path):
+    # The two declarations are independent halves of the union. A grid may merge
+    # a fragment it does not validate grid values against -- that path must
+    # still be required, or the merge for it is unenforced.
+    grid = _grid_data(tmp_path / "results")
+    grid["choice_libraries"] = [
+        {"path": "experiments/hooke/choices/basis_levels.yaml", "provides": "choices.unvalidated"}
+    ]
+    paths = plan.required_choice_paths(grid)
+    assert paths[0] == "choices.unvalidated"
+    assert paths == ["choices.unvalidated", "choices.basis", "choices.activation"]
+
+
 def test_planned_grid_attempt_snapshot_carries_the_merged_basis_library(tmp_path, monkeypatch):
     grid_path = _write_grid(tmp_path)
     _plan(monkeypatch, grid_path)
@@ -536,7 +549,17 @@ def test_the_forked_report_is_a_rewrite_not_a_copy_of_the_v3_report():
     # only the stage entry points.
     shared = _defined_names(forked) & _defined_names(original)
     assert shared <= {"main", "parse_args", "build_report"}, sorted(shared)
-    assert len(_defined_names(original)) > 4 * len(_defined_names(forked))
+    # Named rather than a size ratio: these are v3's report-figure and markdown
+    # builders, the surface a retarget would necessarily have carried over. The
+    # first assertion keeps the second honest if v3 is ever renamed.
+    v3_only = {
+        "_save_energy_variance_scatter",
+        "_save_cusp_winner_grid",
+        "_save_architecture_normalization_line_grid",
+        "_report_markdown",
+    }
+    assert v3_only <= _defined_names(original), sorted(v3_only - _defined_names(original))
+    assert not (v3_only & _defined_names(forked))
 
 
 def _live_strings_and_identifiers(path: Path) -> set[str]:
