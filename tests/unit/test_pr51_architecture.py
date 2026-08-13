@@ -68,6 +68,7 @@ def test_runtime_qol_modules_are_split_packages() -> None:
 
     importable_modules = (
         "tpen.callback.base",
+        "tpen.callback.cadence",
         "tpen.callback.status",
         "tpen.callback.snapshot",
         "tpen.callback.metadata",
@@ -141,6 +142,39 @@ def test_runner_import_does_not_require_torch_nn(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "Runner"
+
+
+def test_callback_timing_import_stays_torch_free(tmp_path: Path) -> None:
+    """Importing callback timing must not resolve training or Torch modules."""
+
+    (tmp_path / "torch.py").write_text(
+        'raise AssertionError("torch imported")\n',
+        encoding="utf-8",
+    )
+    repo = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    pythonpath = [str(tmp_path), str(repo)]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import tpen.callback.timing; "
+                "print('torch' in sys.modules, 'tpen.training' in sys.modules)"
+            ),
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False False"
 
 
 def test_required_run_dirs_are_checks_diagnostics_and_checkpoints() -> None:

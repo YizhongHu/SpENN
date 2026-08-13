@@ -119,7 +119,7 @@ class WandB(Logger):
             return
         self._ensure_run()
         artifact_name = name or Path(path).name
-        artifact = self._wandb.Artifact(artifact_name, type="spenn-artifact")
+        artifact = self._wandb.Artifact(artifact_name, type="tpen-artifact")
         artifact_path = Path(path)
         if artifact_path.is_dir():
             artifact.add_dir(str(artifact_path))
@@ -172,11 +172,6 @@ class WandB(Logger):
             ("train/*", "train/step"),
             ("train/sampler/*", "train/step"),
             ("train/perf/*", "train/step"),
-            # Validation runs inside the training lifecycle, so it shares the
-            # train step axis.
-            ("validation/*", "train/step"),
-            ("validation/sampler/*", "train/step"),
-            ("validation/perf/*", "train/step"),
             ("eval/*", "eval/step"),
             ("eval/sampler/*", "eval/step"),
             ("eval/perf/*", "eval/step"),
@@ -250,7 +245,6 @@ _DASHBOARD_ALIASES = {
     "train/grad_norm": "dashboard/grad_norm",
     "train/local_energy_finite_fraction": "dashboard/local_energy_finite_fraction",
     "train/perf/step_time_sec": "dashboard/step_time_sec",
-    "runtime/wall_time_sec": "dashboard/wall_time_sec",
 }
 
 
@@ -273,8 +267,6 @@ def _record_fields(record: LogRecord | Mapping[str, object]) -> tuple[int | None
 
 def _add_step_fields(payload: dict[str, object], namespace: str, step: int) -> None:
     if namespace == "train" or namespace.startswith("train/"):
-        payload["train/step"] = step
-    elif namespace == "validation" or namespace.startswith("validation/"):
         payload["train/step"] = step
     elif namespace == "eval" or namespace.startswith("eval/"):
         payload["eval/step"] = step

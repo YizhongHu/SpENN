@@ -2,50 +2,119 @@
 
 Checkpoint artifact format, hashing, and restore behavior are owned by
 ``tpen.checkpoint``. This callback is only the lifecycle adapter that receives
-runner state through events and asks the package-owned saver to write a
+runner state through typed events and asks the package-owned saver to write a
 directory checkpoint.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
+from tpen.artifacts import RunContext
 from tpen.checkpoint import checkpoint_step_dir_name, save_checkpoint
 from tpen.checkpoint.artifact import is_complete_checkpoint_dir
-from .base import Callback, Event
+from tpen.events import DomainState
+from tpen.events import Event as TypedEvent
+from tpen.events import Occurrence, Subscription
+from tpen.training.events import (
+    TrainingCompleted,
+    TrainingIterationCompleted,
+    UpdateCompleted,
+)
+from tpen.training.state import TrainerState
+
+from .base import StatefulCallback
+from .cadence import StepCadenceGate, SubscriptionGroup, pop_step_cadence
 
 
-class Checkpoint(Callback):
-    """Write directory checkpoints from explicit event state.
+class Checkpoint(StatefulCallback[TrainerState]):
+    """Write directory checkpoints from typed training state.
 
     Parameters
     ----------
-    triggers : iterable of str
-        Event names that should trigger checkpointing (typically ``step_end``).
     output_dir : str or pathlib.Path
         Directory into which checkpoints are written.
+    periodic : bool, optional
+        Write a checkpoint for each cadence-eligible completed iteration.
+    terminal : bool, optional
+        Write one checkpoint when the training loop finishes.
     keep_last : int or None, optional
         Keep only the latest ``keep_last`` complete checkpoint directories.
     save_optimizer, save_trainer, save_sampler, save_rng : bool, optional
         Whether to include train-resume state components.
     **kwargs
-        Forwarded to `Callback` (e.g. ``every_n_steps``).
+        Forwarded to `StatefulCallback` (e.g. ``every_n_steps``).
 
     Notes
     -----
-    Checkpoint step numbers count completed optimizer updates. A training run
-    with ``max_steps=500`` writes its terminal checkpoint as
-    ``step_000500``, while training metrics and other step callbacks keep
-    their existing 0-based loop step indices.
+    **Which typed events the two writes land on, and why it matters.**
+
+    The periodic write fires at `tpen.training.events.TrainingIterationCompleted`
+    -- the SAME boundary the four ``fail_fast`` health checks fire on -- and not
+    at `tpen.training.events.UpdateCompleted`, which reads more naturally
+    ("an update completed, persist it") and is therefore the mistake this note
+    exists to prevent. ``UpdateCompleted`` is emitted immediately after
+    ``optimizer.step()`` returns, i.e. BEFORE any health check can run, so a
+    ``fail_fast`` abort would persist the very model version that failed its own
+    check and advance ``latest.json`` to it. Sharing the health checks' boundary
+    restores the property that a failed check leaves no checkpoint for its step,
+    because dispatch within one occurrence is the callback-list loop and an
+    exception propagates out of it before later callbacks run.
+
+    That property is pinned by a behavioural test rather than by this comment or
+    by callback order (see ``tests/unit/training/test_health_checkpoint_order.py``),
+    because ordering alone is an undeclared contract that a config edit would
+    break silently.
+
+    ``UpdateCompleted`` is still subscribed, but only to ARM the periodic write:
+    it records which iteration applied an optimizer update, and the write at
+    ``TrainingIterationCompleted`` is skipped for any iteration that did not.
+    A vacuum iteration opens no optimizer scope and emits ``UpdateSkipped``,
+    which this callback does not subscribe to, so it arms nothing. Selection is
+    unconditional: with no ``every_n_steps`` configured, the periodic path
+    writes on every completed update, not on every attempted iteration.
+
+    The terminal write fires at `tpen.training.events.TrainingCompleted`, which
+    the runner emits after the loop returns. Update selection deliberately does
+    not apply to it: a run whose final iteration skipped its update, and a run
+    whose loop body never executed at all, must both still write a terminal
+    checkpoint.
+
+    **The two progress counters, and which job each has.**
+
+    Both are required keys of ``trainer.state_dict()`` and are read together on
+    every path, so a trainer that cannot report its resume cursor fails loudly
+    rather than mislabelling a directory. Neither is ever ``TrainerState.step``,
+    whose value is ``-1`` before the first iteration and would render a
+    directory named ``step_-00001``.
+
+    ``next_iteration`` is *identity*: it names the checkpoint directory, so a
+    restored run continues from exactly the iteration the name encodes. A run
+    with ``max_steps=500`` writes its terminal checkpoint as ``step_000500``,
+    while training metrics and other step callbacks keep their existing 0-based
+    loop step indices. It is also the terminal path's *cadence* coordinate.
+
+    ``completed_updates`` is the periodic path's *cadence* coordinate:
+    ``every_n_steps`` counts applied optimizer updates, so periodic checkpoints
+    are spaced by real training progress rather than by attempted iterations.
+
+    The split is deliberate and both halves are durable, so a resumed run
+    checkpoints at the same points an uninterrupted one does. Neither is the
+    run-local `tpen.events.Occurrence.count`, which restarts at 1 after a
+    restore and would silently shift a resumed run's checkpoint phase.
     """
+
+    # ClassVar: the runtime authority for typed state delivery.
+    state_type: ClassVar[type[DomainState]] = TrainerState
 
     def __init__(
         self,
-        triggers: Iterable[str],
         output_dir: str | Path,
         *,
+        periodic: bool = True,
+        terminal: bool = True,
         keep_last: int | None = None,
         save_optimizer: bool = True,
         save_trainer: bool = True,
@@ -53,42 +122,126 @@ class Checkpoint(Callback):
         save_rng: bool = True,
         **kwargs: Any,
     ) -> None:
-        super().__init__(triggers, **kwargs)
+        if not periodic and not terminal:
+            raise ValueError(
+                "Checkpoint writes nothing with periodic=False and terminal=False"
+            )
+        cadence = pop_step_cadence(kwargs)
+        # Subscriptions are class-owned under ADR-E002 -- no config names an
+        # event -- but WHICH of this class's two writes an instance performs is
+        # a semantic option, which is the alternative that ADR names for a
+        # callback with genuinely different policy modes. It replaces the
+        # former string selection of step completion / training completion that
+        # configs used to spell, one flag per former trigger.
+        selectors: tuple[Subscription, ...] = ()
+        if periodic:
+            selectors += (
+                Subscription.of(UpdateCompleted),
+                Subscription.of(TrainingIterationCompleted),
+            )
+        if terminal:
+            selectors += (Subscription.of(TrainingCompleted),)
+        super().__init__(
+            # One group holding every selector, so `validate_subscription_groups`
+            # has nothing to overlap. `cadence=None` is deliberate: a group
+            # `Cadence` gates on the run-local `Occurrence.count`, which restarts
+            # after a restore, so the window is applied to a durable counter
+            # below instead.
+            typed_groups=(SubscriptionGroup(selectors=selectors),),
+            **kwargs,
+        )
         self.output_dir = Path(output_dir)
+        self.periodic = bool(periodic)
+        self.terminal = bool(terminal)
         self.keep_last = keep_last
         self.save_optimizer = bool(save_optimizer)
         self.save_trainer = bool(save_trainer)
         self.save_sampler = bool(save_sampler)
         self.save_rng = bool(save_rng)
+        # One gate shared by both writes, matching the single scheduling window
+        # the legacy scalar path applied across both triggers. It only becomes
+        # observable when ``max_calls`` or ``probability`` is configured, which
+        # no shipped config does.
+        self._steps = StepCadenceGate(cadence)
+        # Trainer step of the most recent iteration that applied an optimizer
+        # update. Matched against the step the completed-iteration event carries,
+        # so it is self-clearing: a later iteration that skipped its update
+        # simply never matches, and no explicit per-iteration reset is required.
+        self._updated_iteration_step: int | None = None
 
-    def on_step_end(self, event: Event) -> None:
-        """Write the current step's checkpoint."""
+    def handle_occurrence_impl(
+        self,
+        occurrence: Occurrence[TypedEvent],
+        context: RunContext,
+        state: TrainerState,
+    ) -> None:
+        """Arm, write periodically, or write terminally, per typed boundary."""
 
-        self._save(event)
+        event = occurrence.event
+        if isinstance(event, UpdateCompleted):
+            # `occurrence.count` is deliberately unused: it is run-local and
+            # restarts after a restore. The durable coordinates are read from
+            # the trainer when a write is actually considered.
+            self._updated_iteration_step = int(event.iteration.step)
+            return
+        if isinstance(event, TrainingIterationCompleted):
+            self._write_periodic(int(event.iteration.step), context, state)
+            return
+        if isinstance(event, TrainingCompleted):
+            self._write_terminal(context, state)
 
-    def on_train_end(self, event: Event) -> None:
-        """Write the final completed training step checkpoint."""
+    def _write_periodic(self, step: int, context: RunContext, state: TrainerState) -> None:
+        """Write this iteration's checkpoint if it is eligible and in cadence.
 
-        self._save(event)
+        The cadence window is consulted BEFORE update selection, reproducing the
+        legacy path's order, where the window lived in ``should_run`` and
+        selection in the handler it gated. That order is what ``max_calls``
+        counts, so swapping the two would change when a bounded callback stops.
 
-    def _save(self, event: Event) -> None:
-        state = event.state
-        if state is None:
-            raise ValueError("Checkpoint callback requires event.state")
-        step = _checkpoint_step(event)
-        if step is None:
-            raise ValueError("Checkpoint callback requires a step in event payload or state")
-        final_dir = self.output_dir / checkpoint_step_dir_name(int(step))
+        Parameters
+        ----------
+        step : int
+            Durable zero-based trainer step, read from the typed event. Never
+            ``state.step``, whose value fields are stale above their assignment.
+        """
+
+        next_iteration, completed_updates = _trainer_progress(state)
+        if not self._steps.should_run(completed_updates):
+            return
+        if self._updated_iteration_step != step:
+            return
+        self._save(context, state, next_iteration, completed_updates)
+
+    def _write_terminal(self, context: RunContext, state: TrainerState) -> None:
+        """Write the final checkpoint for the run's resume cursor."""
+
+        next_iteration, completed_updates = _trainer_progress(state)
+        if not self._steps.should_run(next_iteration):
+            return
+        self._save(context, state, next_iteration, completed_updates)
+
+    def _save(
+        self,
+        context: RunContext,
+        state: TrainerState,
+        next_iteration: int,
+        completed_updates: int,
+    ) -> None:
+        final_dir = self.output_dir / checkpoint_step_dir_name(next_iteration)
         if is_complete_checkpoint_dir(final_dir):
             return
+        model = state.model
+        if model is None:
+            raise ValueError("Checkpoint callback requires state.model")
         save_checkpoint(
             output_dir=self.output_dir,
-            step=int(step),
-            model=_event_value(event, "model"),
-            optimizer=_event_value(event, "optimizer") if self.save_optimizer else None,
-            trainer=_event_value(event, "trainer") if self.save_trainer else None,
-            sampler=_event_value(event, "sampler") if self.save_sampler else None,
-            context=event.context,
+            next_iteration=next_iteration,
+            completed_updates=completed_updates,
+            model=model,
+            optimizer=state.optimizer if self.save_optimizer else None,
+            trainer=state.trainer if self.save_trainer else None,
+            sampler=state.sampler if self.save_sampler else None,
+            context=context,
             save_optimizer=self.save_optimizer,
             save_trainer=self.save_trainer,
             save_sampler=self.save_sampler,
@@ -96,64 +249,48 @@ class Checkpoint(Callback):
             keep_last=self.keep_last,
         )
 
-    def should_run(self, event: Event) -> bool:
-        """Return whether this checkpoint should handle `event`.
+    def _reset_typed_state(self) -> None:
+        """Drop the armed update when the owning RunContext identity changes."""
 
-        Checkpoint cadence is based on completed updates, not the trainer's
-        0-based loop index.
-        """
-
-        if event.name not in self.triggers:
-            return False
-        if self.max_calls is not None and self.num_calls >= self.max_calls:
-            return False
-        if self.every_n_steps is not None:
-            step = _checkpoint_step(event)
-            if step is None or step < self.start_step:
-                return False
-            if (step - self.start_step) % self.every_n_steps != 0:
-                return False
-        return self._draw_probability()
+        self._updated_iteration_step = None
 
 
-def _event_value(event: Event, name: str) -> Any:
-    if name in event.payload:
-        value = event.payload[name]
-    else:
-        value = getattr(event.state, name, None)
-    if value is None:
-        raise ValueError(f"Checkpoint callback requires {name!r} in event payload or state")
-    return value
+def _trainer_progress(state: TrainerState) -> tuple[int, int]:
+    """Read the trainer's two required progress counters from typed state.
 
+    Parameters
+    ----------
+    state : TrainerState
+        The loop's training state. Its ``trainer`` field is read by name; no
+        payload keys and no arbitrary attributes are probed.
 
-def _checkpoint_step(event: Event) -> int | None:
-    state = event.state
-    trainer = event.payload.get("trainer")
-    if trainer is None and state is not None:
-        trainer = getattr(state, "trainer", None)
-    completed_step = _completed_step_from_trainer(trainer)
-    if completed_step is not None:
-        return completed_step
+    Returns
+    -------
+    tuple of int
+        ``(next_iteration, completed_updates)``.
 
-    step = event.step
-    if step is None and state is not None:
-        step = getattr(state, "step", None)
-    if step is None:
-        return None
-    if event.name == "step_end":
-        return int(step) + 1
-    return int(step)
+    Raises
+    ------
+    ValueError
+        If the state carries no trainer.
+    TypeError
+        If the trainer does not expose a ``state_dict()`` returning a mapping.
+    KeyError
+        If either counter is missing. Both are required keys with no default:
+        a trainer that cannot report its resume cursor must not be allowed to
+        mislabel a checkpoint directory.
+    """
 
-
-def _completed_step_from_trainer(trainer: Any) -> int | None:
+    trainer = state.trainer
+    if trainer is None:
+        raise ValueError("Checkpoint callback requires state.trainer")
     state_dict = getattr(trainer, "state_dict", None)
     if not callable(state_dict):
-        return None
-    state = state_dict()
-    if not isinstance(state, Mapping):
-        return None
-    value = state.get("global_step", state.get("completed_steps"))
-    return None if value is None else int(value)
+        raise TypeError("trainer must expose state_dict() for checkpoint progress")
+    progress = state_dict()
+    if not isinstance(progress, Mapping):
+        raise TypeError("trainer.state_dict() must return a mapping")
+    return int(progress["next_iteration"]), int(progress["completed_updates"])
 
 
 __all__ = [

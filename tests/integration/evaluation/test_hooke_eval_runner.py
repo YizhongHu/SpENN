@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -17,7 +16,7 @@ import tpen.runner as runner_module
 import tpen.runner.evaluate as evaluate_runner_module
 import tpen.runner.train as train_runner_module
 from tpen.artifacts import RunContext
-from tpen.callback import Callback, Event
+from tpen.callback import Callback, SubscriptionGroup
 from tpen.checkpoint import RestoreReport
 from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
 from tpen.evaluation import (
@@ -31,13 +30,23 @@ from tpen.evaluation import (
     SamplerStatsSummary,
     WavefunctionCalculator,
 )
+from tpen.evaluation.events import (
+    ComponentFailed,
+    ComponentRun,
+    EvaluationCompleted,
+    EvaluationStarted,
+    EvaluationTaskRun,
+)
+from tpen.events import Ended, Started, Subscription, ended, started
 from tpen.physics.hamiltonian import LocalEnergyResult
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
 from tpen.run import run_from_config
 from tpen.runner import Evaluate, Train
+from tpen.sampling import SamplerStats
 from tpen.training.state import TrainerState
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
+from tests.helpers.run_context import RecordingLogger, make_run_context
 
 FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "hooke"
 
@@ -122,7 +131,7 @@ def test_runtime_dtype_rejects_non_floating_dtype() -> None:
         runner_module._runtime_dtype("int64")
 
 
-def test_train_asserts_eager_initialization_before_optimizer_construction() -> None:
+def test_train_asserts_eager_initialization_before_optimizer_construction(tmp_path: Path) -> None:
     class _OptimizerFactory:
         called = False
 
@@ -131,8 +140,8 @@ def test_train_asserts_eager_initialization_before_optimizer_construction() -> N
             raise AssertionError("optimizer should not be constructed")
 
     optimizer = _OptimizerFactory()
-    recorder = _EventRecorder()
-    context = _RecordingContext([recorder])
+    recorder = _TypedOccurrenceRecorder()
+    context, _ = _recording_context(tmp_path, [recorder])
     runner = Train(
         model=nn.LazyLinear(1),
         sampler=object(),
@@ -145,12 +154,13 @@ def test_train_asserts_eager_initialization_before_optimizer_construction() -> N
         runner.run(context)
 
     assert optimizer.called is False
-    assert recorder.events == ["run_start"]
+    assert recorder.seen == []
 
 
-def test_evaluate_start_is_emitted_after_model_ready() -> None:
-    recorder = _EventRecorder()
-    context = _RecordingContext([recorder])
+def test_evaluation_started_is_emitted_after_model_ready(tmp_path: Path) -> None:
+    recorder = _TypedOccurrenceRecorder()
+    typed = _TypedOccurrenceRecorder()
+    context, _ = _recording_context(tmp_path, [recorder, typed])
     runner = Evaluate(
         model=nn.LazyLinear(1),
         evaluator=_energy_evaluator(_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)), []),
@@ -159,10 +169,13 @@ def test_evaluate_start_is_emitted_after_model_ready() -> None:
     with pytest.raises(RuntimeError, match="uninitialized"):
         runner.run(context)
 
-    assert recorder.events == ["run_start"]
+    assert recorder.seen == []
+    # The lazy model is rejected before evaluation begins, so the typed suite
+    # boundary is never reached either.
+    assert typed.seen == []
 
 
-def test_train_rejects_model_only_load_mode() -> None:
+def test_train_rejects_model_only_load_mode(tmp_path: Path) -> None:
     runner = Train(
         model=nn.Linear(1, 1).double(),
         sampler=object(),
@@ -173,10 +186,10 @@ def test_train_rejects_model_only_load_mode() -> None:
     )
 
     with pytest.raises(ValueError, match="load.mode.*model_only"):
-        runner.run(_RecordingContext([]))
+        runner.run(_recording_context(tmp_path, [])[0])
 
 
-def test_evaluate_rejects_train_resume_load_mode() -> None:
+def test_evaluate_rejects_train_resume_load_mode(tmp_path: Path) -> None:
     runner = Evaluate(
         model=_QuadraticModel(),
         evaluator=_energy_evaluator(_StaticSampler(torch.zeros(1, 2, 1, dtype=torch.float64)), []),
@@ -184,15 +197,17 @@ def test_evaluate_rejects_train_resume_load_mode() -> None:
     )
 
     with pytest.raises(ValueError, match="load.mode.*train_resume"):
-        runner.run(_RecordingContext([]))
+        runner.run(_recording_context(tmp_path, [])[0])
 
 
-def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
+def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:
     calls = []
 
     def fake_restore_checkpoint_with_events(**kwargs):
         calls.append(kwargs)
-        return RestoreReport(mode="train_resume", checkpoint_dir="ckpt", step=4)
+        return RestoreReport(
+            mode="train_resume", checkpoint_dir="ckpt", next_iteration=4, completed_updates=4
+        )
 
     monkeypatch.setattr(train_runner_module, "restore_checkpoint_with_events", fake_restore_checkpoint_with_events)
     runner = Train(
@@ -204,21 +219,24 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch) -> None:
         load={"mode": "train_resume", "path": "ckpt"},
     )
 
-    result = runner.run(_RecordingContext([]))
+    context, _ = _recording_context(tmp_path, [])
+    result = runner.run(context)
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
     assert calls[0]["trainer"] is runner.trainer
     assert calls[0]["sampler"] is runner.sampler
-    assert calls[0]["emit"] == runner.emit
+    assert calls[0]["emit"].__self__ is context
 
 
-def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
+def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:
     calls = []
 
     def fake_restore_checkpoint_with_events(**kwargs):
         calls.append(kwargs)
-        return RestoreReport(mode="model_only", checkpoint_dir="ckpt", step=4)
+        return RestoreReport(
+            mode="model_only", checkpoint_dir="ckpt", next_iteration=4, completed_updates=4
+        )
 
     monkeypatch.setattr(evaluate_runner_module, "restore_checkpoint_with_events", fake_restore_checkpoint_with_events)
     runner = Evaluate(
@@ -230,15 +248,16 @@ def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch) -> None:
         load={"mode": "model_only", "path": "ckpt"},
     )
 
-    result = runner.run(_RecordingContext([]))
+    context, _ = _recording_context(tmp_path, [])
+    result = runner.run(context)
 
     assert result.status == "completed"
     assert calls and calls[0]["model"] is runner.model
     assert "sampler" not in calls[0]
-    assert calls[0]["emit"] == runner.emit
+    assert calls[0]["emit"].__self__ is context
 
 
-def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
+def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch, tmp_path: Path) -> None:
     def fail_restore(**kwargs):
         raise AssertionError("restore_checkpoint should not be called")
 
@@ -253,7 +272,7 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
         trainer=_NoopTrainer(),
         load={"mode": "none"},
     )
-    assert train.run(_RecordingContext([])).status == "completed"
+    assert train.run(_recording_context(tmp_path, [])[0]).status == "completed"
 
     evaluate = Evaluate(
         model=_QuadraticModel(),
@@ -263,12 +282,12 @@ def test_checkpoint_load_mode_none_does_not_call_restore(monkeypatch) -> None:
         ),
         load={"mode": "none"},
     )
-    assert evaluate.run(_RecordingContext([])).status == "completed"
+    assert evaluate.run(_recording_context(tmp_path / "evaluate", [])[0]).status == "completed"
 
 
-def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
-    recorder = _EventRecorder()
-    context = _RecordingContext([recorder])
+def test_evaluate_emits_lifecycle_events_through_run_context(tmp_path: Path) -> None:
+    recorder = _AllOccurrenceRecorder()
+    context, logger = _recording_context(tmp_path, [recorder])
     runner = Evaluate(
         model=build_tiny_spenn(),
         evaluator=_energy_evaluator(
@@ -281,34 +300,64 @@ def test_evaluate_emits_lifecycle_events_through_run_context() -> None:
     result = runner.run(context)
 
     assert result.status == "completed"
-    assert recorder.events == [
-        "run_start",
-        "evaluate_start",
-        "task_start",
-        "generator_start",
-        "generator_end",
-        "calculator_start",
-        "calculator_end",
-        "calculator_start",
-        "calculator_end",
-        "summary_start",
-        "summary_end",
-        "summary_start",
-        "summary_end",
-        "summary_start",
-        "summary_end",
-        "task_end",
-        "evaluate_end",
-        "run_end",
+    # The full typed lifecycle, in emission order. This replaces the identical
+    # assertion over the legacy string sequence, which slice 2 deleted along
+    # with the fourteen emit sites that produced it.
+    assert recorder.labels() == [
+        "EvaluationStarted",
+        "Started[EvaluationTaskRun]",
+        "Started[GeneratorRun]",
+        "Ended[GeneratorRun]",
+        "Started[CalculatorRun]",
+        "Ended[CalculatorRun]",
+        "Started[CalculatorRun]",
+        "Ended[CalculatorRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Started[SummaryRun]",
+        "Ended[SummaryRun]",
+        "Ended[EvaluationTaskRun]",
+        "EvaluationCompleted",
     ]
-    energy_records = [m for ns, m in context.records if ns == "eval/energy"]
+    energy_records = [record.metrics for record in logger.by_namespace("eval/energy")]
     assert energy_records
     assert "local_energy_mean" in energy_records[-1]
     assert "reference_energy" not in energy_records[-1]
 
 
-def test_evaluate_logs_reference_and_term_metrics_from_task() -> None:
-    context = _RecordingContext([])
+def test_evaluate_emits_the_typed_suite_boundaries(tmp_path: Path) -> None:
+    """`EvaluationStarted`/`EvaluationCompleted` bracket the suite as POINT events.
+
+    Deliberately not a scope: a scope's ``Ended`` fires from a ``finally``, which
+    would pre-empt the run-level ``exception`` event that `EvaluationTiming`
+    turns into ``eval/perf {failed: True}``. Nothing fires these on the failure
+    path, which is exactly why that residual trigger has to stay.
+    """
+
+    recorder = _TypedOccurrenceRecorder()
+    context, _ = _recording_context(tmp_path, [recorder])
+    runner = Evaluate(
+        model=build_tiny_spenn(),
+        evaluator=_energy_evaluator(
+            build_tiny_sampler(),
+            [KineticEnergy(), HarmonicTrap(omega=0.5), ElectronElectronInteraction()],
+            return_terms=True,
+        ),
+    )
+
+    result = runner.run(context)
+
+    assert result.status == "completed"
+    assert [type(event).__name__ for event in recorder.seen] == [
+        "EvaluationStarted",
+        "EvaluationCompleted",
+    ]
+
+
+def test_evaluate_logs_reference_and_term_metrics_from_task(tmp_path: Path) -> None:
+    context, logger = _recording_context(tmp_path, [])
     sampler = _StaticSampler(
         torch.tensor(
             [
@@ -336,7 +385,7 @@ def test_evaluate_logs_reference_and_term_metrics_from_task() -> None:
 
     assert result.status == "completed"
     assert sampler.calls == 1
-    metrics = [m for ns, m in context.records if ns == "eval/energy"][0]
+    metrics = logger.by_namespace("eval/energy")[0].metrics
     assert metrics["local_energy_mean"] == pytest.approx(7.0)
     assert metrics["energy_error"] == pytest.approx(0.0)
     assert metrics["energy_abs_error"] == pytest.approx(0.0)
@@ -351,26 +400,75 @@ def _runner_context(cfg) -> RunContext:
     return context
 
 
-class _EventRecorder(Callback):
+class _AllOccurrenceRecorder(Callback):
+    """Capture the whole typed evaluation lifecycle, in delivery order."""
+
     def __init__(self) -> None:
         super().__init__(
-            triggers=("run_start", "evaluate_start", "task_start", "task_end", "task_failed", "evaluate_end", "run_end")
+            typed_groups=(
+                # One group: `ComponentRun` and a subclass selector in separate
+                # groups would be rejected as overlapping (ADR-E002).
+                SubscriptionGroup(
+                    selectors=(
+                        Subscription.of(EvaluationStarted),
+                        Subscription.of(EvaluationCompleted),
+                        Subscription.of(ComponentFailed),
+                        started(EvaluationTaskRun),
+                        ended(EvaluationTaskRun),
+                        started(ComponentRun),
+                        ended(ComponentRun),
+                    ),
+                ),
+            )
         )
-        self.events: list[str] = []
+        self.seen: list[object] = []
 
-    def handle(self, event: Event) -> None:
-        self.events.append(event.name)
+    def handle_occurrence_impl(self, occurrence, context) -> None:
+        self.seen.append(occurrence.event)
+
+    def labels(self) -> list[str]:
+        return [
+            f"{type(event).__name__}[{type(event.operation).__name__}]"
+            if isinstance(event, (Started, Ended))
+            else type(event).__name__
+            for event in self.seen
+        ]
 
 
-class _RecordingContext(RunContext):
-    def __init__(self, callbacks) -> None:
-        self.callbacks = list(callbacks)
-        self.loggers = []
-        self.metadata = SimpleNamespace(device="cpu", dtype="float64")
-        self.records: list[tuple[str, dict]] = []
+class _TypedOccurrenceRecorder(Callback):
+    """Capture only the evaluation domain's suite-level typed point events."""
 
-    def log(self, metrics, *, step=None, namespace="run", event=None) -> None:
-        self.records.append((namespace, dict(metrics)))
+    def __init__(self) -> None:
+        super().__init__(
+            typed_groups=(
+                SubscriptionGroup(
+                    selectors=(
+                        Subscription.of(EvaluationStarted),
+                        Subscription.of(EvaluationCompleted),
+                    ),
+                ),
+            )
+        )
+        self.seen: list[object] = []
+
+    def handle_occurrence_impl(self, occurrence, context) -> None:
+        self.seen.append(occurrence.event)
+
+
+def _recording_context(tmp_path: Path, callbacks) -> tuple[RunContext, RecordingLogger]:
+    """Return a real `RunContext` and the logger capturing its metric records.
+
+    This replaced a `RunContext` subclass that skipped ``super().__init__`` and
+    worked only because `Runner.emit` falls back when ``artifact_manager`` is
+    missing. `Evaluate` now emits typed occurrences through the context itself,
+    which needs the occurrence counters, the artifact manager, and the run
+    clock, so the genuine article is the only usable option. Metric records are
+    read off a logger rather than an overridden ``log``, which also keeps
+    `RunContext.log` on its production path.
+    """
+
+    logger = RecordingLogger()
+    return make_run_context(tmp_path, callbacks=list(callbacks), loggers=[logger]), logger
 
 
 class _QuadraticModel(nn.Module):
@@ -388,10 +486,22 @@ class _StaticSampler:
     def collect_samples(self, model, *, device: str | torch.device | None = None):
         self.calls += 1
         positions = self.positions.to(device=device)
-        return Walkers(positions=positions), {"n_walkers": positions.shape[0], "acceptance_rate": 1.0}
+        stats = SamplerStats(
+            acceptance_rate=1.0,
+            n_walkers=positions.shape[0],
+            burn_in=0,
+            n_steps=1,
+            proposal_scale=0.1,
+        )
+        return Walkers(positions=positions), stats
 
 
 class _NoopTrainer:
+    # `Train` requires the durable resume cursor rather than guessing it from
+    # the final state, so even a no-op trainer has to report one. Completing
+    # step 0 leaves the cursor at 1.
+    next_iteration = 1
+
     def fit(self, *, model, sampler, hamiltonian_terms, optimizer, context, emit):
         return TrainerState(step=0, model=model, optimizer=optimizer, trainer=self, sampler=sampler)
 

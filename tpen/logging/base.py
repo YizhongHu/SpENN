@@ -14,7 +14,6 @@ class LogRecord:
     step: int | None
     namespace: str
     metrics: dict[str, Any]
-    event: str | None = None
 
 
 class Logger:

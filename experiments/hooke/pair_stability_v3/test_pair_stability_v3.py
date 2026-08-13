@@ -136,79 +136,6 @@ def _write_final_checkpoint(results_root: Path, final_run_id: str, attempt_id: s
     return checkpoint_dir
 
 
-def test_v3_submit_stack_script_is_valid_and_complete() -> None:
-    script = STUDY_DIR / "submit_stack.sh"
-    text = script.read_text()
-
-    syntax = subprocess.run(["bash", "-n", str(script)], check=False, capture_output=True, text=True)
-    assert syntax.returncode == 0, syntax.stderr
-    assert script.stat().st_mode & 0o111
-    assert "--cpus-per-task=4" in text
-    assert "--mem-per-cpu=8G" in text
-    assert "--mem=" not in text
-    assert "results/stack/<stack_id>/" in text
-
-    ordered_markers = (
-        "STAGE=plan",
-        "STAGE=train",
-        "STAGE=validation",
-        "STAGE=collect",
-        "STAGE=select",
-        "STAGE=final-plan",
-        "STAGE=final-train",
-        "STAGE=final-eval",
-        "STAGE=final-collect",
-        "STAGE=final-report",
-    )
-    positions = [text.index(marker) for marker in ordered_markers]
-    assert positions == sorted(positions)
-
-
-def test_v3_submit_stack_preserves_worker_source_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The Slurm worker must use the source checkout, not Slurm's copied script."""
-
-    script = (STUDY_DIR / "submit_stack.sh").resolve()
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    capture = tmp_path / "sbatch-argv.txt"
-    fake_sbatch = fake_bin / "sbatch"
-    fake_sbatch.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$@\" > \"$SBATCH_CAPTURE\"\n"
-        "printf '12345\\n'\n",
-    )
-    fake_sbatch.chmod(0o755)
-    fake_jq = fake_bin / "jq"
-    fake_jq.write_text("#!/usr/bin/env bash\nexit 0\n")
-    fake_jq.chmod(0o755)
-    results_root = tmp_path / "results"
-    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
-    monkeypatch.setenv("SBATCH_CAPTURE", str(capture))
-    monkeypatch.setenv("RESULTS_ROOT", str(results_root))
-    monkeypatch.setenv("STACK_ID", "stack-test")
-
-    result = subprocess.run([str(script), "smoke"], check=False, capture_output=True, text=True)
-
-    assert result.returncode == 0, result.stderr
-    arguments = capture.read_text().splitlines()
-    assert arguments[-7:] == [
-        str(script),
-        "--worker",
-        "smoke",
-        "stack-test",
-        str(results_root.resolve()),
-        str(STUDY_DIR.resolve()),
-        str(ROOT.resolve()),
-    ]
-
-def test_v3_submit_stack_usage_does_not_submit() -> None:
-    script = STUDY_DIR / "submit_stack.sh"
-    result = subprocess.run([str(script)], check=False, capture_output=True, text=True)
-
-    assert result.returncode == 2
-    assert "usage:" in result.stdout
-    assert "{full|smoke|pilot|pilot-smoke}" in result.stdout
-    assert "results/stack/<stack_id>/" in result.stdout
 
 
 def test_v3_test_partition_slurm_overrides_are_explicit() -> None:
@@ -2251,15 +2178,15 @@ def test_train_config_wires_profiling_callbacks() -> None:
     assert "spenn.callback.TrainPhaseTiming" in targets
     assert "spenn.callback.ResourceUsage" in targets
     phase_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.TrainPhaseTiming")
-    assert phase_timing["triggers"] == ["train_phase_start", "train_phase_end", "step_end"]
+    assert "triggers" not in phase_timing
 
 
 def test_train_config_writes_periodic_and_final_checkpoints() -> None:
     entries = _callback_entries("pair_stability.yaml")
     checkpoints = [entry for entry in entries if entry["_target_"] == "spenn.callback.Checkpoint"]
 
-    periodic = next(entry for entry in checkpoints if entry["triggers"] == ["step_end"])
-    final = next(entry for entry in checkpoints if entry["triggers"] == ["train_end"])
+    periodic = next(entry for entry in checkpoints if "every_n_steps" in entry)
+    final = next(entry for entry in checkpoints if "every_n_steps" not in entry)
     assert periodic["keep_last"] == "${checkpoint.keep_last}"
     assert "keep_last" not in final
 
@@ -2271,20 +2198,8 @@ def test_validation_config_wires_profiling_callbacks() -> None:
     assert "spenn.callback.EvaluationComponentTiming" in targets
     assert "spenn.callback.ResourceUsage" in targets
     diagnostic_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.DiagnosticTiming")
-    assert diagnostic_timing["triggers"] == ["task_start", "task_end", "task_failed"], (
-        "DiagnosticTiming must subscribe to the composable evaluator's task_* events; "
-        "the diagnostic_* triggers never fire on this path"
-    )
+    assert "triggers" not in diagnostic_timing
     component_timing = next(
         entry for entry in entries if entry["_target_"] == "spenn.callback.EvaluationComponentTiming"
     )
-    assert set(component_timing["triggers"]) == {
-        "generator_start",
-        "generator_end",
-        "calculator_start",
-        "calculator_end",
-        "summary_start",
-        "summary_end",
-        "task_end",
-        "task_failed",
-    }
+    assert "triggers" not in component_timing

@@ -33,16 +33,39 @@ class FakeRun:
         self.artifacts.append(artifact)
 
 
+
+class FakeArtifact:
+    """Small stand-in for a W&B artifact."""
+
+    def __init__(self, name: str, artifact_type: str) -> None:
+        self.name = name
+        self.type = artifact_type
+        self.files: list[str] = []
+        self.directories: list[str] = []
+
+    def add_file(self, path: str) -> None:
+        self.files.append(path)
+
+    def add_dir(self, path: str) -> None:
+        self.directories.append(path)
+
+
 class FakeWandB:
     """Small stand-in for the imported ``wandb`` module."""
 
     def __init__(self) -> None:
         self.run = FakeRun()
         self.init_kwargs: dict[str, object] | None = None
+        self.created_artifacts: list[FakeArtifact] = []
 
     def init(self, **kwargs: object) -> FakeRun:
         self.init_kwargs = dict(kwargs)
         return self.run
+
+    def Artifact(self, name: str, *, type: str) -> FakeArtifact:
+        artifact = FakeArtifact(name, type)
+        self.created_artifacts.append(artifact)
+        return artifact
 
 
 def test_wandb_constructor_does_not_import_wandb(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,6 +192,15 @@ def test_project_record_to_wandb_derives_health_flags_from_checks() -> None:
     }
 
 
+def test_project_record_to_wandb_derives_failed_run_health() -> None:
+    payload = project_record_to_wandb(
+        LogRecord(step=0, namespace="runtime", metrics={"failed": True})
+    )
+
+    assert payload["runtime/failed"] is True
+    assert payload["health/run_ok"] == 0.0
+
+
 def test_project_record_to_wandb_skips_non_scalar_values() -> None:
     payload = project_record_to_wandb(
         LogRecord(
@@ -192,8 +224,26 @@ def test_runtime_metrics_are_written_to_summary(monkeypatch: pytest.MonkeyPatch)
         {
             "runtime/step": 0,
             "runtime/wall_time_sec": 12.5,
-            "dashboard/wall_time_sec": 12.5,
-            "train/step": 0,
         }
     ]
     assert fake.run.summary["runtime/wall_time_sec"] == 12.5
+
+
+def test_wandb_artifact_uses_tpen_public_type(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    fake = FakeWandB()
+    monkeypatch.setattr(logging_module.importlib, "import_module", lambda name: fake)
+    artifact_path = tmp_path / "metadata.json"
+    artifact_path.write_text("{}")
+    logger = WandB(project="tpen", log_artifacts=True)
+
+    logger.log_artifact(artifact_path)
+
+    assert len(fake.created_artifacts) == 1
+    artifact = fake.created_artifacts[0]
+    assert artifact.name == "metadata.json"
+    assert artifact.type == "tpen-artifact"
+    assert artifact.files == [str(artifact_path)]
+    assert fake.run.artifacts == [artifact]

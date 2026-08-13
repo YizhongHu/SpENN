@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tpen"
-version = "0.2.3"
+version = "0.3.0"
 description = "Specht-module equivariant neural network fermionic wavefunctions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,14 @@ cu128 = [
 ]
 cu130 = [
   "torch",
+]
+# OLCF Frontier: AMD MI250X via ROCm wheels. Unlike the CUDA extras, torch is
+# pinned here: the rocm7.1 index also carries old non-ROCm builds, and an
+# unpinned `torch` silently resolves to 2.0.1 with aarch64-only wheels.
+# triton-rocm is not on PyPI, so it needs its own source mapping below.
+rocm71 = [
+  "torch==2.13.0+rocm7.1",
+  "triton-rocm; sys_platform == 'linux'",
 ]
 test = [
   "pytest",
@@ -60,7 +68,8 @@ conflicts = [
     { extra = "cpu" },
     { extra = "cu126" },
     { extra = "cu128" },
-    { extra = "cu130" }
+    { extra = "cu130" },
+    { extra = "rocm71" }
   ],
 ]
 
@@ -70,6 +79,12 @@ torch = [
   { index = "pytorch-cu126", extra = "cu126" },
   { index = "pytorch-cu128", extra = "cu128" },
   { index = "pytorch-cu130", extra = "cu130" },
+  { index = "pytorch-rocm71", extra = "rocm71" },
+]
+# The rocm71 index is explicit, so only packages named here are routed to it.
+# triton-rocm is a torch-2.13.0+rocm7.1 dependency that does not exist on PyPI.
+triton-rocm = [
+  { index = "pytorch-rocm71", extra = "rocm71" },
 ]
 
 [[tool.uv.index]]
@@ -90,6 +105,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm71"
+url = "https://download.pytorch.org/whl/rocm7.1"
 explicit = true
 
 [tool.setuptools.packages.find]

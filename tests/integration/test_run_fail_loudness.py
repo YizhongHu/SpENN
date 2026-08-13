@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
 
+import tpen.run as run_module
+
 from tpen.run import run_from_config
+
+
+class _HandleOnlyCallback:
+    def handle(self, event: object) -> None:
+        del event
 
 
 def _cfg(tmp_path: Path, **extra) -> OmegaConf:
@@ -42,11 +50,44 @@ def test_prepare_run_context_rejects_callback_without_handle(tmp_path: Path) -> 
         run_from_config(cfg, config_path="x", command="t", raise_exceptions=True)
 
 
+def test_prepare_run_context_rejects_handle_only_callback(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.callbacks = [
+        {"_target_": "tests.integration.test_run_fail_loudness._HandleOnlyCallback"}
+    ]
+
+    with pytest.raises(TypeError, match="handle_occurrence"):
+        run_from_config(cfg, config_path="x", command="t", raise_exceptions=True)
+
+
 def test_prepare_run_context_rejects_logger_without_log(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     cfg.loggers = [{"_target_": "builtins.object"}]
     with pytest.raises(TypeError, match="log"):
         run_from_config(cfg, config_path="x", command="t", raise_exceptions=True)
+
+
+def test_error_artifact_failures_use_tpen_bootstrap_channel(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    def fail_to_write(*args: object, **kwargs: object) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(run_module, "write_error_artifact", fail_to_write)
+    assert run_module._BOOTSTRAP_LOGGER_NAME == "tpen.bootstrap"
+
+    with caplog.at_level(logging.ERROR, logger="tpen.bootstrap"):
+        run_module._write_error_if_possible(
+            tmp_path,
+            RuntimeError("original failure"),
+            phase="run",
+            traceback_text="trace",
+        )
+
+    assert [record.name for record in caplog.records] == ["tpen.bootstrap"]
+    assert "failed to write error.json: OSError: disk unavailable" in caplog.records[0].getMessage()
 
 
 def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(
@@ -108,7 +149,11 @@ def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(
     event_names = [event["event"] for event in events]
     assert event_names[:2] == ["run_start", "load_start"]
     assert "load_failed" in event_names
-    assert "run_failed" in event_names
+    # RunFailed is projected as the canonical exception artifact; the old
+    # duplicate ``run_failed`` string was deliberately removed.
+    assert "run_failed" not in event_names
+    exception = next(event for event in events if event["event"] == "exception")
+    assert exception["payload"]["exception_type"] == "FileNotFoundError"
 
     load_start = next(event for event in events if event["event"] == "load_start")
     assert load_start["payload"] == {

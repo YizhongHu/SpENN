@@ -10,6 +10,7 @@ from .artifact import (
     read_latest,
     resolve_checkpoint_dir,
 )
+from .events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
 from .hashing import checkpoint_hashes, component_config_hash, resolved_config_hash, stable_config_hash
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
 from .restore import RESTORE_MODES, RestoreReport, restore_checkpoint, restore_checkpoint_with_events
@@ -22,6 +23,10 @@ __all__ = [
     "LATEST_JSON",
     "RESTORE_MODES",
     "CheckpointManifest",
+    "CheckpointRestored",
+    "LoadFailed",
+    "LoadStarted",
+    "LoadSucceeded",
     "RestoreReport",
     "checkpoint_hashes",
     "checkpoint_step_dir_name",

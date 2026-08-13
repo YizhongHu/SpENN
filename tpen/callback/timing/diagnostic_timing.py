@@ -1,95 +1,128 @@
-"""Diagnostic timing callback."""
+"""Diagnostic timing callback.
+
+Importing this module resolves `tpen.evaluation`, and therefore torch, because
+`DiagnosticTiming` declares its ``state_type`` as a class fact.
+`tpen.callback.timing` loads it lazily so that importing the timing package
+stays torch-free; the other evaluation timing callbacks resolve their event
+types inside ``__init__`` instead, which a ClassVar cannot do.
+"""
 
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
-from .base import Callback, Event, _attach_event_metrics, _sync_cuda
+from tpen.artifacts import RunContext
+from tpen.evaluation.state import EvaluationRunState
+from tpen.events import DomainState, Ended
+from tpen.events import Event as TypedEvent
+from tpen.events import Occurrence, Started, ended, started
+
+from ..base import StatefulCallback
+from ..cadence import SubscriptionGroup
+from .base import _sync_device
 
 
-class DiagnosticTiming(Callback):
-    """Measure per-diagnostic or per-evaluation-task durations."""
+class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
+    """Measure per-evaluation-task durations and report whether each failed.
+
+    Times every `tpen.evaluation.events.EvaluationTaskRun` scope and logs one
+    ``diagnostics/<task> {time_sec, failed}`` record when it ends.
+
+    The ``failed`` flag is what makes this callback the evidence ADR-E008 asked
+    D1 for: the evaluator writes the finished `tpen.evaluation.results.TaskResult`
+    into the domain state as the last statement of the task scope's body, so the
+    ``Ended`` boundary observes it, on the success and the failure path alike --
+    an evaluation task failure is a VALUE, not a raised exception. A published
+    metric key therefore depends on typed state delivery actually working. The
+    legacy path instead discriminated the same moment by comparing a string,
+    picking ``task_end`` or ``task_failed`` from the status.
+
+    Notes
+    -----
+    The class name predates the metric it writes. The ``diagnostics/`` namespace
+    is durable (ADR-E006) and the class is named in shipped configs, so neither
+    is renamed here; the three ``diagnostic_*`` string handlers this class also
+    carried are gone, because `tpen.diagnostics.evaluate_diagnostics` has no
+    callers anywhere in the repository and those events were never emitted by
+    any run.
+
+    Parameters
+    ----------
+    accelerator_synchronize : bool, optional
+        Synchronize the accelerator at task boundaries for device timing.
+    clock : callable, optional
+        Monotonic clock override for deterministic tests.
+    """
+
+    state_type: ClassVar[type[DomainState]] = EvaluationRunState
 
     def __init__(
         self,
-        triggers: Iterable[str] = (
-            "diagnostic_start",
-            "diagnostic_end",
-            "diagnostic_failed",
-            "task_start",
-            "task_end",
-            "task_failed",
-        ),
         *,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(triggers, **kwargs)
-        self.cuda_synchronize = bool(cuda_synchronize)
+        from tpen.evaluation.events import EvaluationTaskRun
+
+        super().__init__(
+            typed_groups=(
+                SubscriptionGroup(
+                    selectors=(started(EvaluationTaskRun), ended(EvaluationTaskRun))
+                ),
+            ),
+            **kwargs,
+        )
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
-        self._starts: dict[tuple[int, str], float] = {}
+        self._task_run_type = EvaluationTaskRun
+        # Keyed by the paired scope coordinate so Started and Ended always match.
+        self._starts: dict[tuple[type[object], int], float] = {}
 
-    def on_diagnostic_start(self, event: Event) -> None:
-        """Record one diagnostic start time."""
+    def handle_occurrence_impl(
+        self,
+        occurrence: Occurrence[TypedEvent],
+        context: RunContext,
+        state: EvaluationRunState,
+    ) -> None:
+        """Time one evaluation task scope and report its outcome."""
 
-        key = self._event_key(event)
-        _sync_cuda(self.cuda_synchronize)
-        self._starts[key] = self.clock()
-
-    def on_diagnostic_end(self, event: Event) -> None:
-        """Log one diagnostic duration."""
-
-        self._log_end(event, failed=False)
-
-    def on_diagnostic_failed(self, event: Event) -> None:
-        """Log one diagnostic failure duration when possible."""
-
-        self._log_end(event, failed=True)
-
-    def on_task_start(self, event: Event) -> None:
-        """Record one evaluation task start time."""
-
-        key = self._event_key(event)
-        _sync_cuda(self.cuda_synchronize)
-        self._starts[key] = self.clock()
-
-    def on_task_end(self, event: Event) -> None:
-        """Log one evaluation task duration."""
-
-        self._log_end(event, failed=False)
-
-    def on_task_failed(self, event: Event) -> None:
-        """Log one failed or partially failed task duration."""
-
-        self._log_end(event, failed=True)
-
-    def _log_end(self, event: Event, *, failed: bool) -> None:
-        key = self._event_key(event)
+        event = occurrence.event
+        if not isinstance(event, (Started, Ended)):
+            return
+        operation = event.operation
+        if not isinstance(operation, self._task_run_type):
+            return
+        key = (type(operation), occurrence.count)
+        if isinstance(event, Started):
+            _sync_device(self.accelerator_synchronize)
+            self._starts[key] = self.clock()
+            return
         if key not in self._starts:
             return
-        _sync_cuda(self.cuda_synchronize)
-        duration = self.clock() - self._starts.pop(key)
-        metrics: dict[str, float | bool] = {"time_sec": duration}
-        if failed:
+        result = state.task_result
+        if result is None:
+            # `scope` fires ``Ended`` from a ``finally``, so this boundary is
+            # also reached when the evaluator raises out of the task body, and
+            # then no result was ever written. The legacy path emitted neither
+            # ``task_end`` nor ``task_failed`` there, so no ``diagnostics/``
+            # record was written either. Preserve the silence rather than
+            # publishing a duration with a guessed status.
+            self._starts.pop(key)
+            return
+        _sync_device(self.accelerator_synchronize)
+        metrics: dict[str, float | bool] = {"time_sec": self.clock() - self._starts.pop(key)}
+        if result.failed:
             metrics["failed"] = True
-        step, diagnostic_name = key
-        namespace = f"diagnostics/{diagnostic_name}"
-        event.context.log(metrics, step=step, namespace=namespace)
-        _attach_event_metrics(event, namespace, metrics)
+        # The task identity rides the typed operation, and evaluation's step
+        # coordinate is 0 -- neither is read from the state cursor.
+        context.log(metrics, step=0, namespace=f"diagnostics/{operation.name}")
 
-    def _event_key(self, event: Event) -> tuple[int, str]:
-        name = event.payload.get("diagnostic_name")
-        if name is None:
-            name = event.payload.get("task_name")
-        if name is None and isinstance(event.payload.get("task_result"), dict):
-            name = event.payload["task_result"].get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("diagnostic timing events require a non-empty diagnostic_name or task_name payload")
-        step = 0 if event.step is None else int(event.step)
-        return step, name
+    def _reset_typed_state(self) -> None:
+        """Clear timing caches when the owning RunContext identity changes."""
+
+        self._starts.clear()
 
 
 __all__ = ["DiagnosticTiming"]

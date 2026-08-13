@@ -10,15 +10,21 @@ import re
 import socket
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
+from dataclasses import is_dataclass
 from datetime import UTC, datetime, tzinfo
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeVar
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from omegaconf import DictConfig, OmegaConf
+
+from tpen.events import DomainState, Ended, Event as TypedEvent, Occurrence, Operation, Started
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
@@ -30,6 +36,9 @@ RUN_START_ENV_ALLOWLIST = (
     "SLURM_JOB_PARTITION",
     "CUDA_VISIBLE_DEVICES",
 )
+
+_EventT = TypeVar("_EventT", bound=TypedEvent)
+_OperationT = TypeVar("_OperationT", bound=Operation)
 
 
 class ArtifactManager:
@@ -157,7 +166,9 @@ class RunContext:
     clock: RunClock
     callbacks: list[Any] = field(default_factory=list)
     loggers: list[Any] = field(default_factory=list)
-    _run_start_emitted: bool = field(default=False, init=False, repr=False)
+    _occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     @property
     def run_dir(self) -> Path:
@@ -186,36 +197,121 @@ class RunContext:
         *,
         step: int | None = None,
         namespace: str = "run",
-        event: str | None = None,
     ) -> None:
         """Emit one metric record to every configured logger."""
 
         from tpen.logging import LogRecord
 
-        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics), event=event)
+        record = LogRecord(step=step, namespace=namespace, metrics=dict(metrics))
         for logger in self.loggers:
             logger.log(record)
 
-    def emit_event(
-        self,
-        name: str,
-        *,
-        state: object | None = None,
-        payload: dict[str, Any] | None = None,
+    def emit(
+        self, event: _EventT, *, state: DomainState | None = None
+    ) -> Occurrence[_EventT]:
+        """Record and dispatch the next occurrence of a typed event.
+
+        Counts are one-based and local to this context. Each concrete event
+        type advances independently.
+
+        Parameters
+        ----------
+        event : Event
+            Typed instantaneous event to emit.
+        state : DomainState or None, optional
+            The emitting domain's state object, delivered to typed handlers
+            that declare this domain. ``None`` means this boundary offers no
+            domain state, which is how every state-free emitter behaves.
+        """
+
+        if not isinstance(event, TypedEvent):
+            raise TypeError(f"event must be an Event, got {type(event).__name__}")
+        if isinstance(event, (Started, Ended)):
+            raise TypeError("Started and Ended are emitted only by scope(operation)")
+        if state is not None and not isinstance(state, DomainState):
+            raise TypeError(f"state must be a DomainState, got {type(state).__name__}")
+        occurrence = Occurrence(event=event, count=self._next_occurrence_count(type(event)))
+        self._dispatch_occurrence(occurrence, state=state)
+        return occurrence
+
+    @contextmanager
+    def scope(
+        self, operation: _OperationT, *, state: DomainState | None = None
+    ) -> Iterator[Occurrence[Started[_OperationT]]]:
+        """Emit paired lifecycle records around one typed operation.
+
+        The operation's concrete type advances its counter once on entry. The
+        resulting ``Started`` and ``Ended`` records share that count. After a
+        successful start dispatch, the end record is dispatched even when the
+        body raises.
+
+        Parameters
+        ----------
+        operation : Operation
+            Typed operation to bracket.
+        state : DomainState or None, optional
+            The emitting domain's state object. Both boundaries carry the same
+            reference, so a handler at the ended boundary observes whatever the
+            scope body mutated in place. That is intended: the event says only
+            when the boundary happened, and the state is read at read time.
+        """
+
+        if not isinstance(operation, Operation):
+            raise TypeError(f"operation must be an Operation, got {type(operation).__name__}")
+        if state is not None and not isinstance(state, DomainState):
+            raise TypeError(f"state must be a DomainState, got {type(state).__name__}")
+        count = self._next_occurrence_count(type(operation))
+        started = Occurrence(event=Started(operation), count=count)
+        self._dispatch_occurrence(started, state=state)
+        try:
+            yield started
+        finally:
+            self._dispatch_occurrence(
+                Occurrence(event=Ended(operation), count=count), state=state
+            )
+
+    def _next_occurrence_count(self, event_type: type[TypedEvent] | type[Operation]) -> int:
+        count = self._occurrence_counts.get(event_type, 0) + 1
+        self._occurrence_counts[event_type] = count
+        return count
+
+    def _dispatch_occurrence(
+        self, occurrence: Occurrence[Any], *, state: DomainState | None = None
     ) -> None:
-        """Durably record and dispatch one lifecycle event."""
+        """Record and dispatch one typed occurrence in callback order.
 
-        if name == "run_start":
-            if self._run_start_emitted:
-                return
-            self._run_start_emitted = True
+        ``state`` never reaches the durable occurrence record: that edge says
+        only when something happened, and domain data travels beside it, to
+        handlers that declared the domain.
+        """
 
-        from tpen.callback.base import Event
+        write_occurrence_artifact(self, occurrence)
+        write_typed_event_artifact(self, occurrence)
+        if not self.callbacks:
+            return
+        # Deferred because callback base imports RunContext from this module:
+        # `tpen.callback.base` imports `RunContext` from this module, so a
+        # module-level import here would be circular.
+        from tpen.callback.base import StatefulCallback
 
-        event = Event(name=name, context=self, state=state, payload={} if payload is None else payload)
-        write_event_artifact(self, event)
         for callback in self.callbacks:
-            callback.handle(event)
+            if isinstance(callback, StatefulCallback):
+                # The ``isinstance(state, callback.state_type)`` filter used to
+                # live here, and moving it inside is the whole point of the
+                # ADR-E008 amendment. A callback may now declare one subscription
+                # group that wants its domain's state and another that wants a
+                # state-free boundary such as the run lifecycle, and the
+                # dispatcher cannot tell which of them an occurrence will match.
+                # Only the callback can, because only it holds the groups.
+                #
+                # A callback observing a different domain is still skipped rather
+                # than failed -- one run emits several domains' occurrences, and
+                # only some carry state -- and because both boundaries of a scope
+                # share one state, a skipped `Started` is still always matched by
+                # a skipped `Ended`, so no lifecycle pair is left half-open.
+                callback.handle_occurrence(occurrence, self, state)
+            else:
+                callback.handle_occurrence(occurrence, self)
 
 
 def generate_run_id(run_name: str, *, clock: RunClock | None = None) -> str:
@@ -359,16 +455,91 @@ def append_jsonl(path: Path, data: Mapping[str, Any]) -> None:
         handle.write("\n")
 
 
-def write_event_artifact(context: RunContext, event: Any) -> None:
-    """Append one lifecycle event to the run's durable event stream."""
+def write_occurrence_artifact(context: RunContext, occurrence: Occurrence[Any]) -> None:
+    """Append one typed occurrence to the separate typed JSONL edge."""
 
+    event = occurrence.event
+    subject: object = event
+    record: dict[str, Any] = {
+        "count": occurrence.count,
+        "event": _qualified_type_name(event),
+        "run_id": context.metadata.run_id,
+        "time": context.now_iso(),
+    }
+    if isinstance(event, (Started, Ended)):
+        subject = event.operation
+        record["operation"] = _qualified_type_name(subject)
+    # Mappings exist only in this serialization adapter; core event values
+    # remain typed objects.
+    record["fields"] = _typed_event_fields(subject)
+    append_jsonl(context.path("occurrences.jsonl"), record)
+
+
+def write_typed_event_artifact(context: RunContext, occurrence: Occurrence[Any]) -> None:
+    """Project typed occurrences onto the stable human-facing event stream.
+
+    ``events.jsonl`` is an artifact schema, not a callback transport.  Its
+    names remain stable for existing run tooling while routing and callback
+    delivery use only typed occurrences.
+    """
+
+    from tpen.checkpoint.events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
+    from tpen.run_events import RunCompleted, RunFailed, RunStarted
+    from tpen.training.events import (
+        ModelBuilt,
+        TrainingCompleted,
+        TrainingIteration,
+        TrainingStarted,
+    )
+    from tpen.events import Ended, Started
+
+    event = occurrence.event
+    name: str | None = None
+    payload: dict[str, Any] = {}
+    step: int | None = None
+    if isinstance(event, RunStarted):
+        name = "run_start"
+    elif isinstance(event, RunCompleted):
+        name = "run_end"
+        payload = {"status": event.status}
+    elif isinstance(event, RunFailed):
+        name = "exception"
+        payload = {"exception_type": event.exception_type, "exception_message": event.exception_message}
+    elif isinstance(event, LoadStarted):
+        name = "load_start"
+        payload = {"path": event.path, "mode": event.mode, "strict": event.strict}
+    elif isinstance(event, LoadFailed):
+        name = "load_failed"
+        payload = {"path": event.path, "mode": event.mode, "exception_type": event.exception_type, "message": event.message}
+    elif isinstance(event, LoadSucceeded):
+        name = "load_success"
+        payload = {"path": event.path, **event.report.to_dict()}
+    elif isinstance(event, CheckpointRestored):
+        name = "checkpoint_restored"
+        payload = {"restore_report": event.report.to_dict()}
+    elif isinstance(event, ModelBuilt):
+        name = "model_built"
+    elif isinstance(event, TrainingStarted):
+        name = "train_start"
+    elif isinstance(event, TrainingCompleted):
+        name = "train_end"
+    elif isinstance(event, Started) and isinstance(event.operation, TrainingIteration):
+        name = "step_start"
+        step = event.operation.step
+    elif isinstance(event, Ended) and isinstance(event.operation, TrainingIteration):
+        name = "step_end"
+        step = event.operation.step
+    if name is None:
+        return
+    if step is not None:
+        payload["step"] = step
     append_jsonl(
         context.path("events.jsonl"),
         {
-            "event": event.name,
-            "payload": _event_jsonable(event.payload),
+            "event": name,
+            "payload": _event_jsonable(payload),
             "run_id": context.metadata.run_id,
-            "step": event.step,
+            "step": step,
             "time": context.now_iso(),
         },
     )
@@ -489,6 +660,89 @@ def _event_jsonable(value: Any) -> Any:
     return {"type": f"{type(value).__module__}.{type(value).__name__}"}
 
 
+def _typed_event_fields(value: object) -> dict[str, Any]:
+    """Encode public dataclass fields at the event artifact boundary."""
+
+    if is_dataclass(value):
+        return _typed_dataclass_fields(value)
+    if _has_instance_state(value):
+        raise TypeError(
+            f"stateful typed value {_qualified_type_name(value)} must be a dataclass to serialize"
+        )
+    return {}
+
+
+def _typed_dataclass_fields(value: object, ancestors: tuple[int, ...] = ()) -> dict[str, Any]:
+    """Encode explicit public fields of one typed dataclass value.
+
+    Parameters
+    ----------
+    value : object
+        Dataclass instance whose declared public fields are encoded.
+    ancestors : tuple of int, optional
+        Identities of the dataclass instances already open on the current
+        field path, used to refuse a cycle instead of exhausting the stack.
+    """
+
+    nested = (*ancestors, id(value))
+    return {
+        item.name: _typed_event_field_value(getattr(value, item.name), nested)
+        for item in dataclass_fields(value)
+        if not item.name.startswith("_")
+    }
+
+
+def _typed_event_field_value(value: object, ancestors: tuple[int, ...] = ()) -> Any:
+    """Preserve nested typed dataclass fields without probing containers.
+
+    Any dataclass instance is encoded field-wise, not only an ``Event`` or an
+    ``Operation``. A dataclass declares its fields explicitly, so reading
+    ``dataclass_fields`` is typed access to a stated contract rather than a
+    probe of an arbitrary container. Without this, a domain object carried on a
+    typed event -- a ``RestoreReport``, an ``EvaluationFailure`` -- would reach
+    ``occurrences.jsonl`` as a bare ``{"type": ...}`` marker with every field
+    silently dropped.
+
+    A dataclass reached through a list, a tuple, or a mapping value still
+    collapses to its type marker, exactly as before. No typed event carries a
+    container of dataclasses, so widening the traversal would be speculative
+    (ADR-E003); ``test_typed_event_does_not_recurse_into_containers`` pins that
+    boundary so a later change to it is deliberate.
+    """
+
+    # A dataclass *type* is not an instance and keeps its previous encoding.
+    if is_dataclass(value) and not isinstance(value, type):
+        if id(value) in ancestors:
+            raise TypeError(
+                f"cyclic typed value {_qualified_type_name(value)} cannot be serialized"
+            )
+        return _typed_dataclass_fields(value, ancestors)
+    return _event_jsonable(value)
+
+
+def _has_instance_state(value: object) -> bool:
+    """Return whether a non-dataclass value carries instance-owned state."""
+
+    instance_dict = getattr(value, "__dict__", None)
+    if instance_dict:
+        return True
+    for value_type in type(value).__mro__:
+        slots = value_type.__dict__.get("__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for slot in slots:
+            if slot in {"__dict__", "__weakref__"}:
+                continue
+            if hasattr(value, slot):
+                return True
+    return False
+
+
+def _qualified_type_name(value: object) -> str:
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}"
+
+
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
     return slug.strip("_") or "run"
@@ -602,6 +856,7 @@ __all__ = [
     "resolve_run_clock",
     "write_json",
     "write_error_artifact",
-    "write_event_artifact",
+    "write_occurrence_artifact",
+    "write_typed_event_artifact",
     "write_run_start_artifact",
 ]

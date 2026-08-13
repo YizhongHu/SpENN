@@ -32,6 +32,203 @@ Use `cu128` or `cu130` instead if that is the CUDA Torch build you want. Keep
 the `UV_PROJECT_ENVIRONMENT` setting in GPU Slurm scripts so GPU jobs do not
 mutate the CPU `.venv`.
 
+### AMD ROCm Environment (OLCF Frontier)
+
+Frontier's MI250X GPUs use the `rocm71` extra, which resolves
+`torch 2.13.0+rocm7.1` and `triton-rocm` from the PyTorch ROCm index:
+
+```bash
+export UV_PROJECT_ENVIRONMENT=.venv-rocm
+uv sync --extra rocm71
+uv run --extra rocm71 python run.py --config experiments/hooke/configs/smoke/pair_train.yaml
+```
+
+ROCm Torch exposes the same `torch.cuda` API as a CUDA build, so no TPEN code
+path changes and `torch.cuda.is_available()` reports the MI250X.
+
+Unlike the CUDA extras, `rocm71` pins an exact Torch version. The ROCm index
+also carries old non-ROCm builds, and an unpinned `torch` resolves to 2.0.1
+with aarch64-only wheels, which installs nowhere on Frontier's x86_64 nodes.
+When bumping the pin, check the resolved version *and* the wheel platform, not
+just that `uv lock` succeeded.
+
+Facility selection is environment variables only; nothing facility-specific is
+committed. On Frontier, provision against the system interpreter rather than a
+uv-managed download:
+
+```bash
+# The exact installed ROCm minor is unverified; check `module -t avail rocm`
+# on Frontier and replace X.Y.Z before provisioning.
+module load rocm/X.Y.Z
+module load craype-accel-amd-gfx90a
+module load miniforge3/23.11.0-0
+PYBIN="$(command -v python3)"
+export UV_PYTHON="$PYBIN"
+export UV_NO_MANAGED_PYTHON=1
+export UV_PYTHON_DOWNLOADS=never
+export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/tpen-frontier-rocm71"
+uv sync --extra rocm71
+```
+
+Do not add `UV_PYTHON_PREFERENCE=only-system` alongside these. On Polaris's
+facility uv 0.8.23, the combination is rejected before resolution:
+
+```text
+error: the argument '--python-preference <PYTHON_PREFERENCE>' cannot be used with '--no-managed-python'
+```
+
+`UV_NO_MANAGED_PYTHON=1` already overrides the committed `python-preference`.
+The same conflict was independently recorded on Cannon with uv 0.11.16, where
+the wording is reversed: `error: the argument UV_NO_MANAGED_PYTHON
+(environment variable) cannot be used with --python-preference`.
+
+The Frontier profile remains documented but **has not been executed on Frontier
+hardware**. The ROCm module version, Frontier's uv version, the facility
+interpreter path, and the resolved `rocm71` Torch wheel have not been validated
+there. Do not treat the recipe as a Frontier hardware or run-validation receipt.
+
+### NVIDIA A100 Environment (ALCF Polaris)
+
+Polaris is the one facility where TPEN selects **no** PyTorch extra. ALCF owns
+Python, PyTorch, and CUDA; `uv` only layers TPEN's own dependencies on top of
+that stack, inside a versioned overlay created with `--system-site-packages`.
+Selecting `cu126`/`cu128`/`cu130` here would shadow the facility PyTorch, which
+is the one outcome to avoid.
+
+Facility selection is environment variables only; nothing facility-specific is
+committed. The conda path, overlay path, project account, and Eagle run root
+below are values you export or pass on the command line, never tracked defaults.
+
+Provision once, on a login node. Real compute stays off login nodes:
+
+```bash
+# Absolute facility interpreter; provisioning needs no module load at all.
+PYBIN=/soft/applications/conda/2025-09-25/mconda3/bin/python
+
+export UV_PYTHON="$PYBIN"
+export UV_NO_MANAGED_PYTHON=1   # overrides python-preference in pyproject.toml
+export UV_PYTHON_DOWNLOADS=never
+export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/tpen-polaris-alcf-2025-09-25"
+
+cd ~/src/TPEN-main
+$PYBIN -m uv lock --check                                      # lock readable and current
+$PYBIN -m uv venv --system-site-packages "$UV_PROJECT_ENVIRONMENT"
+$PYBIN -m uv sync --inexact --locked
+```
+
+For a reproducibility check from a genuinely pristine tracked checkout, clone
+the ref first and use that directory as `cd`'s target (do not copy a dirty
+worktree or untracked files):
+
+```bash
+git clone --no-checkout https://github.com/YizhongHu/TPEN.git "$HOME/tpen-proof/checkout"
+git -C "$HOME/tpen-proof/checkout" checkout --detach <tracked-ref>
+cd "$HOME/tpen-proof/checkout"
+test -z "$(git status --porcelain)"
+test -z "$(git ls-files --others --exclude-standard)"
+```
+
+Afterwards, invoke `"$UV_PROJECT_ENVIRONMENT/bin/python"` directly. Workers must
+not run `uv sync`, and `uv` must never run concurrently from several workers.
+
+`--inexact` matters because the facility PyTorch/CUDA stack is deliberately a
+package outside TPEN's resolved overlay dependencies, and an exact sync would
+treat it as extraneous. `--locked` forbids a silent re-lock of the tracked
+`uv.lock`, and `uv lock --check` gates on the facility `uv` — older than the one
+that writes the lock locally — actually being able to read it.
+
+Four properties of this recipe are load-bearing.
+
+**`uv` is not on Polaris's PATH.** No binary, no module, no `~/.local/bin` copy.
+It exists only as a module of the facility interpreter, `$PYBIN -m uv` (0.8.23
+on the validated stack). Nothing needs installing; do not try to bootstrap one.
+
+**`module use /soft/modulefiles` must precede `module load conda/2025-09-25`.**
+Without it the load is a *silent no-op*: it returns rc=0 and conda never reaches
+PATH, so the failure only surfaces later as the wrong interpreter. Never pipe
+`module` into another command either — it is a shell function, so
+`module use ... | tail` discards the `MODULEPATH` change in a subshell. The
+block above avoids the whole class of problem by naming the interpreter
+absolutely.
+
+**Never pass `--no-extra`.** On the facility `uv` the flag takes a value and
+applies only when `--all-extras` is also given, which this recipe never passes;
+on newer `uv` it fails outright:
+
+```text
+error: a value is required for '--no-extra <NO_EXTRA>'
+```
+
+Omitting it is equivalent. Extras are opt-in, TPEN declares no
+`default-extras`, so no CUDA extra is selected and facility PyTorch is never
+shadowed.
+The selected environment is therefore **no TPEN PyTorch extra**; `uv tree` may
+list the lock's opt-in extras, but `uv sync` does not install them unless one is
+requested.
+
+**Do not add `UV_PYTHON_PREFERENCE=only-system`** alongside
+`UV_NO_MANAGED_PYTHON=1`, for the same reason as Frontier — uv rejects the
+combination and the recipe would not run at all.
+
+Verify interpreter selection through the overlay's `pyvenv.cfg` (`home = ...`)
+or `sys.base_prefix`, **not** through `uv python find`. With `UV_PYTHON` set and
+`python-preference = "only-managed"` committed, `uv python find` reports the
+uv-managed interpreter while `uv venv` correctly uses the requested one:
+
+```bash
+"$UV_PROJECT_ENVIRONMENT/bin/python" - <<'PY'
+import sys, torch, numpy, tpen
+print("base_prefix", sys.base_prefix)   # must be the facility mconda3
+print("torch", torch.__version__, torch.version.cuda, torch.cuda.is_available())
+print("numpy", numpy.__version__, "tpen", tpen.__file__)
+PY
+```
+
+`torch.cuda.is_available()` is **False on a login node**, and torch emits
+`Can't initialize NVML`. Polaris login-node GPUs are not user-usable, so this is
+expected and not a provisioning failure. Confirm visible devices from inside a
+job instead.
+
+Nothing in the checkout needs editing to make this work. A pinned
+`.python-version` and `[tool.uv] python-preference = "only-system"` were used
+once as temporary cluster evidence and have been reverted; the env-var-only
+profile is proven from a pristine checkout, so neither belongs in a commit.
+
+Measured pristine-checkout receipt (Polaris login node, 2026-08-11
+`America/New_York`, tracked ref `79ce4e5`): `uv` was absent from `PATH` and
+resolved only as `$PYBIN -m uv` (`uv 0.8.23`). The four overrides above were the
+only `UV_*` settings; `UV_PYTHON_PREFERENCE` was unset. `uv lock --check`,
+`uv venv --system-site-packages`, and `uv sync --inexact --locked` succeeded.
+The overlay inherited facility Torch 2.8.0 (CUDA 12.9) from
+`/soft/applications/conda/2025-09-25/mconda3/lib/python3.12/site-packages`,
+at the measured overlay path `/home/rhu/tpen-facility-proof-20260812/venv`,
+not from a TPEN extra; its recorded facility wheel was
+`torch-2.8.0-cp312-cp312-linux_x86_64.whl`, and the overlay had no `torch*`
+directory. On the login node, device visibility was expectedly zero
+(`torch.cuda.is_available() == False`, NVML unavailable). The bounded slice
+`tests/unit/test_optional_dependencies.py tests/unit/test_no_spenn_testing_package.py tests/unit/test_accelerator.py`
+returned **15 passed, 2 skipped**. This is provisioning and login-node test
+evidence, not hardware validation of a run; Cannon is not a substitute for
+Polaris hardware validation.
+
+Polaris jobs do not share nodes, so treat a node as a four-GPU worker pool: one
+independent single-GPU TPEN row per GPU rather than one grid row per exclusive
+node. Set `CUDA_VISIBLE_DEVICES` before Python imports torch — PBS did not
+constrain visibility in partial-GPU allocations, so bind explicitly. Account,
+queue, and filesystem declarations stay on the `qsub` command line
+(`-A <project> -q <queue> -l filesystems=home:eagle`; the validated runs used
+project `HetRxnEnergy` and queue `debug`), and run data goes under the project's
+Eagle run root, `/eagle/<project>/<user>/runs`.
+
+Validated 2026-08-07 (`America/New_York`) against facility stack
+`conda/2025-09-25`: Python 3.12.11, PyTorch 2.8.0 with CUDA 12.9, NumPy 2.4.6,
+4x A100-SXM4-40GB, overlay `~/.venvs/tpen-polaris-alcf-2025-09-25` built from a
+clean checkout at `5a43b57`. Evidence: PBS `7369905` (single-node GPU probe),
+`7370030` (four concurrent single-GPU rows), `7370785` (four-worker
+claim/refill/deadline pilot). Facility stacks move — before trusting this on a
+later stack, re-check the conda module version, the facility `uv` version, and
+`torch.version.cuda`.
+
 Core tests are the active validation target:
 
 ```bash
@@ -185,16 +382,17 @@ callbacks:
   - _target_: tpen.callback.TrainStepTiming
     every_n_steps: 1
     rolling_window: 20
-    cuda_synchronize: false
+    accelerator_synchronize: false
 
   - _target_: tpen.callback.EvaluationTiming
-    cuda_synchronize: false
+    accelerator_synchronize: false
 
   - _target_: tpen.callback.DiagnosticTiming
-    cuda_synchronize: false
+    accelerator_synchronize: false
 ```
-GPU synchronization is opt-in with `cuda_synchronize: true` for
-benchmarking; it is disabled by default for normal training.
+Device synchronization is opt-in with `accelerator_synchronize: true` for
+benchmarking; it is disabled by default for normal training. The flag routes
+through `tpen.accelerator.synchronize`, so it covers CUDA, ROCm, and XPU alike.
 
 ## Eager Model Invariant
 
@@ -347,3 +545,23 @@ compatible with each other.
 
 Metric naming and logger conventions are documented in
 [`tpen/metrics_naming.md`](tpen/metrics_naming.md).
+
+### FASRC Cannon provisioning and smoke orientation
+
+Cannon provisioning and the allocation-local pair-v1 smoke are operator
+actions: supply the project account, partition, CUDA module/extra, overlay
+location, and results root at run time. Do not commit those values. Inside an
+existing GPU allocation, use the tracked [pair-v1 allocation runbook](experiments/hooke/tpen-pair-v1/README.md)
+and its single launcher; the launcher never provisions or submits Slurm jobs.
+Keep run data outside the checkout and pass the allocation's visible device
+values through `--visibility-values` and `CUDA_VISIBLE_DEVICES`.
+
+### ALCF Aurora provisioning and smoke orientation
+
+Aurora uses the facility-provided Python/Intel overlay and PBS. Provision the
+overlay and load its required runtime modules before entering the allocation;
+pass the operator-supplied account, queue, filesystem, and Eagle run root on
+the `qsub` command line. The [pair-v1 allocation runbook](experiments/hooke/tpen-pair-v1/README.md)
+uses `--device xpu` with per-worker `ZE_AFFINITY_MASK` values. No Aurora
+account, path, module version, or provisioning default is committed, and the
+launcher does not invoke PBS or perform provisioning.

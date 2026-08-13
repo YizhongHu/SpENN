@@ -2,18 +2,44 @@
 
 from __future__ import annotations
 
-from .base import Callback, Event
-from .checkpoint import Checkpoint
-from .equivariance import RuntimeEquivariance
-from .evaluation import ArtifactIndex, FailureLog
+from .base import Callback, StatefulCallback
+from .cadence import Cadence, CadenceGate, StepCadence, StepCadenceGate, SubscriptionGroup
 from .metadata import Metadata
 from .snapshot import ConfigSnapshot, ResolvedConfigSnapshot
-from .status import Status, configure_terminal_logging
+from .terminal_logging import configure_terminal_logging
 
 
 def __getattr__(name: str) -> object:
-    """Load torch-dependent callback classes only when they are requested."""
+    """Load torch-dependent callback classes only when they are requested.
 
+    A `StatefulCallback` declaring a ``state_type`` has to import that state
+    class at class-creation time, and importing anything from ``tpen.training``
+    or ``tpen.evaluation`` runs that package's ``__init__``, which pulls in
+    torch. Every such callback therefore has to be loaded lazily to keep
+    ``import tpen.callback`` torch-free. `FailureLog` needs no state but shares
+    a module with `ArtifactIndex`, so it is loaded lazily with it.
+    """
+
+    if name == "ArtifactIndex":
+        from .evaluation import ArtifactIndex
+
+        return ArtifactIndex
+    if name == "Checkpoint":
+        from .checkpoint import Checkpoint
+
+        return Checkpoint
+    if name == "Status":
+        from .status import Status
+
+        return Status
+    if name == "FailureLog":
+        from .evaluation import FailureLog
+
+        return FailureLog
+    if name == "RuntimeEquivariance":
+        from .equivariance import RuntimeEquivariance
+
+        return RuntimeEquivariance
     if name == "DataIntegrity":
         from .health import DataIntegrity
 
@@ -58,6 +84,8 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "ArtifactIndex",
+    "Cadence",
+    "CadenceGate",
     "Callback",
     "Checkpoint",
     "ConfigSnapshot",
@@ -65,7 +93,6 @@ __all__ = [
     "DiagnosticTiming",
     "EvaluationComponentTiming",
     "EvaluationTiming",
-    "Event",
     "FailureLog",
     "GradientStats",
     "Metadata",
@@ -74,7 +101,11 @@ __all__ = [
     "RunTiming",
     "RuntimeEquivariance",
     "SamplerHealth",
+    "StatefulCallback",
     "Status",
+    "StepCadence",
+    "StepCadenceGate",
+    "SubscriptionGroup",
     "TrainPhaseTiming",
     "TrainStepTiming",
     "configure_terminal_logging",

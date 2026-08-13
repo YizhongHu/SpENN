@@ -48,7 +48,7 @@ runner:
 
 model:
   _target_: tpen.nn.TPENWaveFunction
-  trace_name: spenn
+  trace_name: tpen
   embedding:
     _target_: tpen.nn.Embedding
     max_order: 2
@@ -125,19 +125,14 @@ trainer:
 
 callbacks:
   - _target_: tpen.callback.ConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/config.yaml
   - _target_: tpen.callback.ResolvedConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/resolved_config.yaml
   - _target_: tpen.callback.Metadata
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/metadata.json
   - _target_: tpen.callback.Status
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/status.json
   - _target_: tpen.callback.DataIntegrity
-    triggers: [step_end]
     every_n_steps: 1
     fail_fast: true
     max_nonfinite_energy_fraction: 0.0
@@ -147,16 +142,13 @@ callbacks:
     check_batch: true
     strict_sign_values: true
   - _target_: tpen.callback.GradientStats
-    triggers: [step_end]
     every_n_steps: 5
     fail_fast: true
     check_finite: true
   - _target_: tpen.callback.SamplerHealth
-    triggers: [step_end]
     every_n_steps: 5
     fail_fast: false
   - _target_: tpen.callback.RuntimeEquivariance
-    triggers: [step_end]
     every_n_steps: 5
     probability: 1.0
     fail_fast: true
@@ -176,7 +168,7 @@ callbacks:
         atol: 1.0e-06
         rtol: 1.0e-06
   - _target_: tpen.callback.Checkpoint
-    triggers: [step_end]
+    terminal: false
     every_n_steps: 5
     output_dir: ${run.dir}/checkpoints
 

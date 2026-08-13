@@ -8,11 +8,18 @@ from typing import Any
 import torch
 
 from tpen.data.batch import WavefunctionOutput
+from tpen.events import TrainingTiming, TrainingTimingState
+from tpen.sampling.stats import SamplerStats
 
 
 @dataclass
-class TrainerState:
+class TrainerState(TrainingTimingState):
     """Snapshot of the VMC training loop at one step.
+
+    This is the training domain's `DomainState`: the trainer passes it beside
+    every typed occurrence it emits, and a `tpen.callback.StatefulCallback`
+    declaring ``state_type = TrainerState`` receives it as a typed handler
+    argument.
 
     The state is updated in place each step and handed to callbacks (notably
     `tpen.callback.Checkpoint`) through ``Event.state``. Fields beyond
@@ -25,6 +32,15 @@ class TrainerState:
         first step).
     metrics : dict, optional
         Scalar metrics logged for the most recent step.
+    optimizer_step : bool, optional
+        Whether the most recently completed iteration applied an optimizer
+        update. ``False`` before the first step, and on any iteration that
+        deliberately skipped its update (the zero-electron vacuum). This is the
+        in-process typed carrier of the same fact the ``train/optimizer_step``
+        metric publishes durably, and `tpen.metrics_naming` documents it as the
+        authoritative discriminator between "no update happened" and "an update
+        happened". A health callback that observes update by-products needs it
+        to tell an empty observation apart from a legitimately empty iteration.
     model : Any, optional
         Wavefunction model being optimized.
     optimizer : Any, optional
@@ -43,12 +59,23 @@ class TrainerState:
         Most recent surrogate loss (detached).
     wavefunction_output : WavefunctionOutput or None, optional
         Most recent wavefunction output (signed-log form) for the batch.
-    sampler_stats : dict, optional
-        Most recent sampler diagnostics (e.g. acceptance rate, walker count).
+    sampler_stats : SamplerStats or None, optional
+        Most recent typed sampler diagnostics, or ``None`` before the first
+        collection.
+    timing : TrainingTiming or None, optional
+        Most recent whole-iteration timing, or ``None`` before the first
+        completed iteration.
     """
 
     step: int = -1
     metrics: dict[str, Any] = field(default_factory=dict)
+    # A typed field rather than a `metrics["optimizer_step"]` lookup: reading a
+    # published metric back by string key to decide behaviour would make a
+    # durable metric name the mechanism one part of the program uses to find
+    # another, which ADR-E006 bars. The metric stays the durable spelling; this
+    # is the in-process one, and they carry the same name so neither can drift
+    # into meaning something else.
+    optimizer_step: bool = False
     model: Any = None
     optimizer: Any = None
     trainer: Any = None
@@ -58,7 +85,8 @@ class TrainerState:
     local_energy: Any = None
     loss: torch.Tensor | None = None
     wavefunction_output: WavefunctionOutput | None = None
-    sampler_stats: dict[str, Any] = field(default_factory=dict)
+    sampler_stats: SamplerStats | None = None
+    timing: TrainingTiming | None = None
 
 
-__all__ = ["TrainerState"]
+__all__ = ["TrainerState", "TrainingTiming"]

@@ -72,7 +72,7 @@ evaluator:
 
 model:
   _target_: tpen.nn.TPENWaveFunction
-  trace_name: spenn
+  trace_name: tpen
   embedding:
     _target_: tpen.nn.Embedding
     max_order: 2
@@ -241,16 +241,12 @@ evaluation_tasks:
 
 callbacks:
   - _target_: tpen.callback.ConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/config.yaml
   - _target_: tpen.callback.ResolvedConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/resolved_config.yaml
   - _target_: tpen.callback.Metadata
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/metadata.json
   - _target_: tpen.callback.Status
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/status.json
 
 loggers:

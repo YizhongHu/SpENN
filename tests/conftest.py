@@ -1,4 +1,4 @@
-"""Shared pytest configuration and fixtures for the SpENN test suite."""
+"""Shared pytest configuration and fixtures for the TPEN test suite."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 # ``propagate=False`` into later caplog-based unit tests, which then capture no
 # records. Reset these loggers to a clean, propagating state before each test
 # and restore the pre-test snapshot afterwards.
-_ISOLATED_LOGGERS = ("spenn", "spenn.status")
+_ISOLATED_LOGGERS = ("tpen", "tpen.status", "tpen.bootstrap")
 
 
 def _drop_terminal_handlers(logger: logging.Logger) -> None:
@@ -21,9 +21,15 @@ def _drop_terminal_handlers(logger: logging.Logger) -> None:
     ]
 
 
+def _drop_bootstrap_handlers(logger: logging.Logger) -> None:
+    logger.handlers[:] = [
+        handler for handler in logger.handlers if not getattr(handler, "_spenn_bootstrap_handler", False)
+    ]
+
+
 @pytest.fixture(autouse=True)
-def _restore_spenn_logger_state():
-    """Give each test a clean SpENN logger tree and restore it afterwards."""
+def _restore_tpen_logger_state():
+    """Give each test a clean TPEN logger tree and restore it afterwards."""
 
     saved = {}
     for name in _ISOLATED_LOGGERS:
@@ -31,6 +37,7 @@ def _restore_spenn_logger_state():
         saved[name] = (list(logger.handlers), logger.level, logger.propagate)
         # Clear any leaked terminal handler / propagate=False from a prior test.
         _drop_terminal_handlers(logger)
+        _drop_bootstrap_handlers(logger)
         logger.propagate = True
     try:
         yield

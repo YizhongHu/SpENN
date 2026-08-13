@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Sequence
 
 from hydra.utils import instantiate
+from hydra.errors import InstantiationException
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from tpen.accelerator import seed_all as accelerator_seed_all
 from tpen.artifacts import (
     ArtifactManager,
     RunContext,
@@ -27,11 +29,19 @@ from tpen.artifacts import (
 from tpen.callback import configure_terminal_logging
 from tpen.config import register_resolvers
 from tpen.dependencies import OptionalDependencyError, require_torch
+from tpen.events import Event as TypedEvent
+from tpen.run_events import RunCompleted, RunFailed, RunStarted
 from tpen.runner import Runner
 
-# Register custom OmegaConf resolvers (e.g. spenn.basis_feature_dim) before any
+# Register custom OmegaConf resolvers (e.g. tpen.basis_feature_dim) before any
 # config is loaded or resolved on the run path.
 register_resolvers()
+
+# Bootstrap diagnostics get their own channel so a run's logging configuration can
+# silence or route fatal pre-context errors independently. Spelled once: the channel
+# name is read by tests/conftest.py logger isolation, so a partial rename would
+# silently disable that isolation rather than fail loudly.
+_BOOTSTRAP_LOGGER_NAME = "tpen.bootstrap"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -82,6 +92,15 @@ def load_config(config_path: str, overrides: Sequence[str] | None = None) -> Dic
     return cfg
 
 
+def _nonempty_text(value: object) -> str | None:
+    """Normalize one configured durable name, preserving only usable text."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def prepare_run_context(
     cfg: DictConfig,
     *,
@@ -101,18 +120,18 @@ def prepare_run_context(
     OmegaConf.update(source_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
     resolved_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
     OmegaConf.update(resolved_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
-    run_name = str(
-        OmegaConf.select(
-            resolved_cfg,
-            "experiment.run_name",
-            default=OmegaConf.select(resolved_cfg, "experiment.name", default="spenn_run"),
-        )
+    experiment_name = _nonempty_text(OmegaConf.select(resolved_cfg, "experiment.name"))
+    run_name = (
+        _nonempty_text(OmegaConf.select(resolved_cfg, "experiment.run_name"))
+        or experiment_name
+        or "tpen_run"
     )
+    OmegaConf.update(resolved_cfg, "experiment.run_name", run_name, merge=False, force_add=True)
     run_id = OmegaConf.select(resolved_cfg, "run.run_id", default=None)
     if run_id is None:
         run_id = generate_run_id(run_name, clock=run_clock)
         OmegaConf.update(resolved_cfg, "run.run_id", run_id, merge=False, force_add=True)
-    experiment_name = str(OmegaConf.select(resolved_cfg, "experiment.name", default="experiment"))
+    experiment_name = experiment_name or "experiment"
     sector = str(OmegaConf.select(resolved_cfg, "experiment.sector", default="default"))
     root = Path(str(OmegaConf.select(resolved_cfg, "run.root", default="outputs")))
     layout = str(OmegaConf.select(resolved_cfg, "run.layout", default="nested"))
@@ -169,7 +188,12 @@ def run_from_config(
     -------
     int
         ``0`` on success, ``1`` on a handled failure (when
-        ``raise_exceptions=False``).
+        ``raise_exceptions=False``). A runner that RETURNS
+        ``RunResult(status="failed")`` -- an evaluation suite whose tasks
+        failed, which raises nothing -- is a handled failure too and also
+        returns ``1``. It used to return ``0``, so a failed evaluation exited
+        successfully and every launcher that reads an exit code recorded it as
+        a success.
     """
 
     _install_bootstrap_stderr_logger()
@@ -179,12 +203,27 @@ def run_from_config(
     try:
         context = prepare_run_context(cfg, config_path=config_path, command=command, bootstrap=bootstrap)
         _seed_runtime_rngs(context.cfg)
-        context.emit_event("run_start")
+        context.emit(RunStarted())
         runner = _instantiate_runner(context)
         result = runner.run(context)
+        # The harness owns the whole run lifecycle, including this boundary,
+        # which the runners emitted the ``run_end`` string for. See
+        # `tpen.run_events` for why one emitter rather than three.
+        #
+        # The runner's own verdict rides the event. It cannot be read off
+        # `context.metadata` by the callbacks instead: the copy below has to
+        # stay AFTER the emit, because `Metadata` assigns ``metadata.status``
+        # itself while handling this event and would otherwise overwrite a
+        # failed suite's status with the boundary's own name.
+        status = result.status if isinstance(result, RunResult) else "completed"
+        context.emit(RunCompleted(status=status))
         if isinstance(result, RunResult):
             context.metadata.status = result.status
-        return 0
+        # A failed suite raises nothing -- the runner returned -- but the process
+        # must not claim success. Same exit code as the raising path: no caller
+        # distinguishes between nonzero codes, and inventing a second one would
+        # be a new contract for no consumer.
+        return 1 if status == "failed" else 0
     except Exception as exc:
         phase = _failure_phase(exc, context=context, runner=runner)
         traceback_text = traceback.format_exc()
@@ -198,8 +237,18 @@ def run_from_config(
         if context is not None:
             context.metadata.status = "failed"
             _write_error_if_possible(context, exc, phase=phase, traceback_text=traceback_text)
-            _emit_event_if_possible(context, "run_failed", payload=payload)
-            _emit_event_if_possible(context, "exception", payload=payload)
+            # ONE typed event for the two legacy strings below, which carry the
+            # same payload and are distinguished by no consumer -- see `RunFailed`.
+            # Guarded exactly as they are: this runs while the context may be
+            # half-constructed, and an emit that raised here would mask the
+            # original exception.
+            _emit_typed_event_if_possible(
+                context,
+                RunFailed(
+                    exception_type=str(payload["exception_type"]),
+                    exception_message=str(payload["exception_message"]),
+                ),
+            )
         elif bootstrap.run_dir is not None:
             _write_error_if_possible(
                 bootstrap.run_dir,
@@ -227,16 +276,17 @@ def run_from_config(
 
 
 def _validate_callbacks(callbacks: list[object]) -> None:
-    """Fail loudly if a configured callback lacks a callable ``handle(event)``.
+    """Fail loudly if a configured callback lacks typed dispatch.
 
     This checks the interface shape only; callback behavior is invoked lazily
     through normal lifecycle events, never during setup.
     """
 
     for index, callback in enumerate(callbacks):
-        if not callable(getattr(callback, "handle", None)):
+        if not callable(getattr(callback, "handle_occurrence", None)):
             raise TypeError(
-                f"callbacks[{index}]={type(callback).__name__} must expose callable handle(event)"
+                f"callbacks[{index}]={type(callback).__name__} must expose callable "
+                "handle_occurrence(occurrence, context)"
             )
 
 
@@ -285,8 +335,7 @@ def _seed_runtime_rngs(cfg: DictConfig) -> None:
     if _config_requires_torch(OmegaConf.to_container(cfg, resolve=False)):
         torch = require_torch(feature="seeded configured TPEN run")
         torch.manual_seed(seed_int)
-        if hasattr(torch, "cuda"):
-            torch.cuda.manual_seed_all(seed_int)
+        accelerator_seed_all(seed_int, feature="seeded configured TPEN run")
 
 
 def _instantiate_runner(context: RunContext) -> Runner:
@@ -298,7 +347,15 @@ def _instantiate_runner(context: RunContext) -> Runner:
             raise ValueError(
                 f"runner config must not own {forbidden!r}; configure it at the config root."
             )
-    runner = instantiate(runner_cfg)
+    try:
+        runner = instantiate(runner_cfg)
+    except InstantiationException as exc:
+        # Hydra wraps constructor/configuration failures, but the run artifact
+        # contract records the underlying failure identity. Preserve the
+        # original exception when Hydra attached it as the cause.
+        if exc.__cause__ is not None:
+            raise exc.__cause__ from exc
+        raise
     if not isinstance(runner, Runner):
         raise TypeError(f"runner must instantiate to tpen.runner.Runner, got {type(runner)!r}")
     return runner
@@ -318,7 +375,7 @@ def _configure_terminal_logging(cfg: DictConfig) -> None:
 def _install_bootstrap_stderr_logger() -> None:
     """Install a minimal stderr logger for fatal bootstrap diagnostics."""
 
-    logger = logging.getLogger("spenn.bootstrap")
+    logger = logging.getLogger(_BOOTSTRAP_LOGGER_NAME)
     logger.setLevel(logging.ERROR)
     for handler in logger.handlers:
         if getattr(handler, "_spenn_bootstrap_handler", False):
@@ -364,20 +421,28 @@ def _write_error_if_possible(
             config_path=config_path,
         )
     except Exception as artifact_exc:  # pragma: no cover - disk/runtime dependent
-        logging.getLogger("spenn.bootstrap").error(
+        logging.getLogger(_BOOTSTRAP_LOGGER_NAME).error(
             "FATAL: failed to write error.json: %s: %s",
             type(artifact_exc).__name__,
             artifact_exc,
         )
 
 
-def _emit_event_if_possible(context: RunContext, name: str, *, payload: dict[str, object]) -> None:
+def _emit_typed_event_if_possible(context: RunContext, event: TypedEvent) -> None:
+    """Emit one typed event on the failure path without masking the failure.
+
+    This reports the typed failure event without masking the original error; it
+    reason: this runs after the run has already raised, possibly from a
+    half-constructed context, so a callback or a disk error here must not replace
+    the exception the user needs to see.
+    """
+
     try:
-        context.emit_event(name, payload=payload)
+        context.emit(event)
     except Exception as event_exc:  # pragma: no cover - callback/runtime dependent
-        logging.getLogger("spenn.bootstrap").error(
+        logging.getLogger(_BOOTSTRAP_LOGGER_NAME).error(
             "FATAL: failed to emit %s while reporting failure: %s: %s",
-            name,
+            type(event).__name__,
             type(event_exc).__name__,
             event_exc,
         )

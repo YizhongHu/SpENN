@@ -65,3 +65,34 @@ def test_hooke_models_initialize_and_train_for_small_electron_counts(
     assert train_metrics["local_energy_n_total"] == 4
     assert train_metrics["loss_has_grad"] is (n_electrons > 0)
     assert train_metrics["optimizer_step"] is (n_electrons > 0)
+
+    occurrences = [
+        json.loads(line)
+        for line in (run_dir / "occurrences.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    typed_events = {record["event"] for record in occurrences}
+    scoped_operations = {record["operation"] for record in occurrences if "operation" in record}
+    if n_electrons == 0:
+        # The vacuum skips its update: no OptimizerUpdate scope opens at all.
+        assert "tpen.training.events.UpdateSkipped" in typed_events
+        assert "tpen.training.events.UpdateCompleted" not in typed_events
+        assert "tpen.training.events.OptimizerUpdate" not in scoped_operations
+    else:
+        assert "tpen.training.events.UpdateCompleted" in typed_events
+        assert "tpen.training.events.UpdateSkipped" not in typed_events
+        assert "tpen.training.events.OptimizerUpdate" in scoped_operations
+
+    # Periodic checkpoint eligibility is decided by `UpdateCompleted`, so an
+    # iteration that skipped its optimizer update writes no checkpoint at all.
+    # This config wires a periodic-only Checkpoint (``terminal: false``), so the
+    # vacuum run produces no checkpoint directory; its counters are pinned by
+    # the trainer unit tests instead.
+    checkpoint_dir = run_dir / "checkpoints" / "step_000001"
+    if n_electrons == 0:
+        assert not checkpoint_dir.exists()
+    else:
+        # The resume cursor advances for every attempted iteration; only
+        # applied updates increment completed_updates.
+        trainer_state = json.loads((checkpoint_dir / "trainer.json").read_text())
+        assert trainer_state == {"next_iteration": 1, "completed_updates": 1}

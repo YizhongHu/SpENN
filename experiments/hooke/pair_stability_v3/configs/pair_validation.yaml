@@ -764,41 +764,22 @@ final_eval_sampler:
 
 callbacks:
   - _target_: spenn.callback.ConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/config.yaml
   - _target_: spenn.callback.ResolvedConfigSnapshot
-    triggers: [run_start]
     output_path: ${run.dir}/resolved_config.yaml
   - _target_: spenn.callback.Metadata
-    triggers: [run_start, run_end, exception]
     output_path: ${run.dir}/metadata.json
   - _target_: spenn.callback.Status
-    triggers: [run_start, run_end, evaluate_end, exception]
     output_path: ${run.dir}/status.json
   - _target_: spenn.callback.RunTiming
-    triggers: [run_start, run_end, exception]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.EvaluationTiming
-    triggers: [evaluate_start, evaluate_end, exception]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.DiagnosticTiming
-    triggers: [task_start, task_end, task_failed]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.EvaluationComponentTiming
-    triggers:
-      [
-        generator_start,
-        generator_end,
-        calculator_start,
-        calculator_end,
-        summary_start,
-        summary_end,
-        task_end,
-        task_failed,
-      ]
     cuda_synchronize: ${timing.cuda_synchronize}
   - _target_: spenn.callback.ResourceUsage
-    triggers: [run_start, run_end, exception, run_failed]
   - _target_: spenn.callback.ArtifactIndex
   - _target_: spenn.callback.FailureLog
 
