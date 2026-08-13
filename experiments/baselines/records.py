@@ -41,6 +41,7 @@ _OPTIONAL_TEXT_FIELDS = (
     "ansatz",
     "optimizer",
     "dtype",
+    "device_type",
     "gpu_model",
     "run_id",
     "run_dir",
@@ -82,8 +83,17 @@ class BaselineRecord:
         hardware-free).
     wall_clock_seconds : float or None, optional
         Measured wall clock for the run (efficiency denominator 3).
+    device_type : str or None, optional
+        Accelerator family the run executed on, e.g. ``"cpu"``, ``"cuda"``,
+        ``"rocm"``, ``"xpu"``. Recorded separately from ``gpu_model`` because a
+        CPU row is a legitimate record rather than missing data, and because
+        float64 reduction order differs between CPU and GPU: without this field
+        a last-digit energy difference cannot be told apart from a device
+        artifact.
     gpu_model : str or None, optional
-        GPU model string; wall clock is meaningless without it.
+        Accelerator model string; wall clock is meaningless without it. One
+        Slurm partition can mix cards (Cannon's ``seas_gpu`` holds both A100-80GB
+        and H200 nodes), so this is per-run, not per-partition.
     n_gpus : int or None, optional
         Number of GPUs the run used.
     dtype : str or None, optional
@@ -121,6 +131,7 @@ class BaselineRecord:
     steps: int | None = None
     samples: int | None = None
     wall_clock_seconds: float | None = None
+    device_type: str | None = None
     gpu_model: str | None = None
     n_gpus: int | None = None
     dtype: str | None = None
