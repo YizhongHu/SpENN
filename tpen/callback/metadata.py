@@ -64,7 +64,14 @@ class Metadata(Callback):
             self._write(context, status="running")
             return
         if isinstance(event, RunCompleted):
-            self._write(context, status="completed")
+            # The runner's own verdict, not the boundary's name. A failed
+            # evaluation suite raises nothing and reaches this boundary with
+            # ``RunResult(status="failed")``; hardcoding ``completed`` here put
+            # ``metadata.json`` at odds with both the result and, since the
+            # same fix landed in `tpen.callback.Status`, with ``status.json``.
+            # A run that disagrees with itself is worse than one that is
+            # uniformly wrong.
+            self._write(context, status=event.status)
             return
         if isinstance(event, RunFailed):
             self._write(context, status="failed", failure=event)

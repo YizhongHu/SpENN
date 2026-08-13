@@ -60,15 +60,37 @@ class RunStarted(Event):
 class RunCompleted(Event):
     """The configured runner returned without raising.
 
-    SUCCESS PATH ONLY, which is the whole reason this is not the ``Ended``
+    RAISE-FREE PATH ONLY, which is the whole reason this is not the ``Ended``
     boundary of a scope. See the module docstring.
 
-    "Completed" here means the runner returned, not that its work succeeded: an
-    evaluation suite whose tasks all failed still returns a
-    `tpen.artifacts.RunResult` and still reaches this moment, exactly as it
-    reached the legacy ``run_end`` string. That distinction is a status field on
-    the result, and manufacturing an event to carry it is what ADR-E007 forbids.
+    "Completed" here names the MOMENT, not the verdict: an evaluation suite
+    whose tasks all failed still returns a `tpen.artifacts.RunResult` and still
+    reaches this moment, exactly as it reached the legacy ``run_end`` string.
+    That distinction is a status field on the result, and manufacturing a
+    SECOND EVENT to carry it is what ADR-E007 forbids -- so the field rides
+    THIS event rather than becoming a lifecycle moment of its own.
+
+    Attributes
+    ----------
+    status : str
+        `tpen.artifacts.RunResult.status` verbatim as the runner returned it:
+        ``"completed"``, or ``"failed"`` for a suite that aggregated to failed.
+
+        The two durable writers, `tpen.callback.Status` and
+        `tpen.callback.Metadata`, record this instead of hardcoding success.
+        Both used to write ``completed`` at this boundary unconditionally, so a
+        failed evaluation left ``status.json`` and ``metadata.json`` claiming a
+        success that `tpen.artifacts.RunResult` had already contradicted --
+        and ``experiments/toolkit/task_state.py`` banks a row as done on
+        exactly that ``completed``.
+
+        Defaults to ``"completed"``: a runner that returns anything other than
+        a `RunResult` reports no status to contradict the moment, and every
+        emitter of this event outside `tpen.run.run_from_config` is a test
+        driving the boundary itself.
     """
+
+    status: str = "completed"
 
 
 @dataclass(frozen=True)

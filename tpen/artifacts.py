@@ -501,6 +501,7 @@ def write_typed_event_artifact(context: RunContext, occurrence: Occurrence[Any])
         name = "run_start"
     elif isinstance(event, RunCompleted):
         name = "run_end"
+        payload = {"status": event.status}
     elif isinstance(event, RunFailed):
         name = "exception"
         payload = {"exception_type": event.exception_type, "exception_message": event.exception_message}

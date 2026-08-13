@@ -87,7 +87,7 @@ class RunTiming(Callback):
             self._start(context)
             return
         if isinstance(event, RunCompleted):
-            self._log_end(context, failed=False)
+            self._log_end(context, failed=event.status == "failed")
             return
         if isinstance(event, RunFailed):
             self._log_end(context, failed=True)

@@ -7,7 +7,12 @@ from tpen.checkpoint import CheckpointRestored, restore_checkpoint_with_events
 from tpen.training.events import ModelBuilt, TrainingCompleted, TrainingStarted
 from tpen.training.optim import make_optimizer
 
-from .base import Runner, _assert_eager_initialized, _is_torch_module, _place_module_for_runtime
+from .base import (
+    Runner,
+    _assert_eager_initialized,
+    _is_torch_module,
+    _place_module_for_runtime,
+)
 
 
 class Train(Runner):

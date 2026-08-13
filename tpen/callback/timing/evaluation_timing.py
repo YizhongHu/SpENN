@@ -25,12 +25,11 @@ class EvaluationTiming(Callback):
     Notes
     -----
     This callback observes TWO domains' moments, which is what made it the last
-    holder of a legacy run-level trigger. Two boundaries belong to the evaluation
-    suite; the third, `tpen.run_events.RunFailed`, belongs to the run, and it is
-    the only writer of ``eval/perf {failed: True}`` -- the evaluation domain has
-    no suite-level failure moment to hang a typed event on, because a failed
-    suite is a status field and minting an event to carry it is what ADR-E007
-    forbids. Dropping it would delete a published metric series (ADR-E006).
+    holder of a legacy run-level trigger. Two boundaries belong to the
+    evaluation suite; the third, `tpen.run_events.RunFailed`, belongs to the run.
+    The suite completion now carries its aggregate status, so both a returned
+    failed suite and a raising run produce ``eval/perf {failed: True}`` without
+    manufacturing a second lifecycle moment.
 
     Being a plain `Callback` is exactly why the migration works here and not on
     `tpen.callback.Status`: `tpen.artifacts.RunContext._dispatch_occurrence`
@@ -91,7 +90,7 @@ class EvaluationTiming(Callback):
             self._start_timing()
             return
         if isinstance(event, self._completed_type):
-            self._log_end(context, failed=False)
+            self._log_end(context, failed=event.status == "failed")
             return
         # A run that failed before or without evaluating never started the clock,
         # and `_log_end` returns early for it, so this reports only a suite that

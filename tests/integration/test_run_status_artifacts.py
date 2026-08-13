@@ -18,6 +18,15 @@ green test suite is read, and before these landed nothing at any level asserted
 that ``status.json`` records a failed run at all: the unit tests drove only the
 success boundaries, and ``test_run_fail_loudness.py`` asserts ``error.json`` and
 ``events.jsonl`` but never ``status.json``.
+
+A run can fail in TWO shapes, and only one of them raises. A crash reaches
+`tpen.run_events.RunFailed`; an evaluation SUITE whose tasks failed raises
+nothing at all, returns ``RunResult(status="failed")``, and reaches
+`tpen.run_events.RunCompleted` like any success. The second shape used to write
+``completed`` and exit ``0``, and it is the one automation reads: the
+``_attempt_already_completed`` check in ``experiments/toolkit/task_state.py``
+banks a row as finished on ``latest.json`` plus a ``completed`` ``status.json``,
+so a failed evaluation was never retried.
 """
 
 from __future__ import annotations
@@ -38,6 +47,41 @@ _STATUS_CALLBACK = {
 }
 
 _ARTIFACT_INDEX_CALLBACK = {"_target_": "tpen.callback.ArtifactIndex"}
+_EVALUATION_TIMING_CALLBACK = {"_target_": "tpen.callback.EvaluationTiming"}
+_METADATA_CALLBACK = {
+    "_target_": "tpen.callback.Metadata",
+    "output_path": "${run.dir}/metadata.json",
+}
+_JSONL_LOGGER = {"_target_": "tpen.logging.JSONL", "path": "${run.dir}/metrics.jsonl"}
+
+
+class _RaisingGenerator:
+    """Evaluation generator that always raises, to drive a failed SUITE.
+
+    A generator failure is the one component failure that makes its whole task
+    ``failed`` outright (`tpen.evaluation.evaluator.Evaluator._evaluate_task`
+    returns before any calculator runs), and one failed task aggregates the
+    suite to ``failed``. The exception never escapes the evaluator, which is
+    precisely why this shape reaches the COMPLETION boundary rather than the
+    failure one.
+    """
+
+    def generate(self, *, model: object, context: object) -> object:
+        """Raise instead of producing a bundle."""
+
+        del model, context
+        raise RuntimeError("generator exploded")
+
+
+def _failing_task_cfg() -> dict[str, object]:
+    return {
+        "name": "boom",
+        "namespace": "eval/boom",
+        "output_dir": "${run.dir}/boom",
+        "generator": {"_target_": f"{__name__}._RaisingGenerator"},
+        "calculators": [],
+        "summaries": [],
+    }
 
 
 def _cfg(tmp_path: Path, **extra) -> DictConfig:
@@ -70,6 +114,10 @@ def _run_dir(tmp_path: Path) -> Path:
     return run_dirs[0]
 
 
+def _events(run_dir: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+
+
 def test_a_successful_run_records_completed_and_an_empty_index(tmp_path: Path) -> None:
     """The success path, through the real harness, for both callbacks at once.
 
@@ -90,7 +138,45 @@ def test_a_successful_run_records_completed_and_an_empty_index(tmp_path: Path) -
     assert status["exception_type"] is None
     assert status["exception_message"] is None
 
+    run_end = [event for event in _events(run_dir) if event["event"] == "run_end"]
+    assert len(run_end) == 1
+    assert run_end[0]["payload"] == {"status": "completed"}
+
     assert json.loads((run_dir / "diagnostics" / "index.json").read_text()) == {"tasks": []}
+
+
+def test_a_failed_evaluation_suite_returns_nonzero_and_records_failed(tmp_path: Path) -> None:
+    """A task failure is a failed result, not a successful run boundary."""
+
+    cfg = _cfg(
+        tmp_path,
+        callbacks=[_STATUS_CALLBACK, _METADATA_CALLBACK, _EVALUATION_TIMING_CALLBACK],
+        loggers=[_JSONL_LOGGER],
+        evaluator={
+            "_target_": "tpen.evaluation.Evaluator",
+            "namespace": "eval",
+            "tasks": [_failing_task_cfg()],
+        },
+    )
+
+    assert run_from_config(cfg, config_path="s.yaml", command="pytest") == 1
+
+    run_dir = _run_dir(tmp_path)
+    status = json.loads((run_dir / "status.json").read_text())
+    metadata = json.loads((run_dir / "metadata.json").read_text())
+    assert status["status"] == "failed"
+    assert status["current_event"] == "run_end"
+    assert metadata["status"] == "failed"
+
+    run_end = [event for event in _events(run_dir) if event["event"] == "run_end"]
+    assert len(run_end) == 1
+    assert run_end[0]["payload"] == {"status": "failed"}
+
+    metrics = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines()]
+    eval_perf = [record for record in metrics if record["namespace"] == "eval/perf"]
+    assert eval_perf[-1]["metrics"]["failed"] is True
+    suite_status = [record for record in metrics if record["namespace"] == "eval/status"]
+    assert suite_status[-1]["metrics"]["suite_failed"] is True
 
 
 def test_a_run_that_fails_inside_the_runner_records_failed(tmp_path: Path) -> None:

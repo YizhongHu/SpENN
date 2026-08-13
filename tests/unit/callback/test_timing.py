@@ -168,6 +168,20 @@ def test_run_timing_logs_one_failed_record_per_failed_run() -> None:
     }
 
 
+def test_run_timing_marks_a_returned_failed_run_completed_boundary() -> None:
+    context = RecordingContext()
+    callback = RunTiming(clock=FakeClock([1.0, 4.0]), wall_clock=FakeClock([10.0, 13.0]))
+
+    _deliver_run_event(callback, context, RunStarted())
+    _deliver_run_event(callback, context, RunCompleted(status="failed"))
+
+    assert context.latest("runtime") == {
+        "end_time_unix": 13.0,
+        "wall_time_sec": 3.0,
+        "failed": True,
+    }
+
+
 def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     context = RecordingContext()
     callback = TrainStepTiming(rolling_window=2, clock=FakeClock([1.0, 1.5, 3.0, 4.0]))
@@ -399,6 +413,18 @@ def test_evaluation_timing_logs_eval_perf_wall_time() -> None:
 
     assert context.latest("eval/perf") == {"wall_time_sec": 3.5}
     assert context.by_namespace("eval/perf")[-1]["step"] == 0
+
+
+def test_evaluation_timing_marks_a_failed_suite_completion() -> None:
+    context = RecordingContext()
+    callback = EvaluationTiming(clock=FakeClock([2.0, 5.5]))
+
+    callback.handle_occurrence(Occurrence(event=EvaluationStarted(), count=1), context)
+    callback.handle_occurrence(
+        Occurrence(event=EvaluationCompleted(status="failed"), count=1), context
+    )
+
+    assert context.latest("eval/perf") == {"wall_time_sec": 3.5, "failed": True}
 
 
 def test_evaluation_timing_reports_failed_off_the_typed_run_failure() -> None:

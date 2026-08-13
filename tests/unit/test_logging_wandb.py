@@ -169,6 +169,15 @@ def test_project_record_to_wandb_derives_health_flags_from_checks() -> None:
     }
 
 
+def test_project_record_to_wandb_derives_failed_run_health() -> None:
+    payload = project_record_to_wandb(
+        LogRecord(step=0, namespace="runtime", metrics={"failed": True})
+    )
+
+    assert payload["runtime/failed"] is True
+    assert payload["health/run_ok"] == 0.0
+
+
 def test_project_record_to_wandb_skips_non_scalar_values() -> None:
     payload = project_record_to_wandb(
         LogRecord(
