@@ -822,6 +822,46 @@ def test_the_secondary_metric_is_a_variance_and_the_task_that_emits_it_is_kept(
     assert "local_energy_variance" in metrics
 
 
+def test_the_reference_energy_the_tiebreak_measures_is_the_exact_hooke_energy(
+    tmp_path: Path,
+) -> None:
+    """``mcmc_energy`` also emits |mean - 2.0|, and 2.0 is not a magic number.
+
+    The champion selector's tiebreak is the absolute deviation from the exact
+    energy of the Hooke omega=0.5 singlet, and it is measured by
+    ``ReferenceEnergySummary`` on the variational task rather than derived inside
+    the selector. That matters in one direction the raw mean cannot express: a
+    sampled energy that has fallen BELOW 2.0 is an estimator defect, and
+    ``energy_abs_error`` penalizes it exactly as much as the same excursion above.
+
+    There is no arithmetic resolver in ``tpen/config.py``, so the reference is a
+    literal in the config; it is asserted against
+    `tpen.physics.hooke.HookeSingletExact.exact_energy` so the literal cannot
+    drift from the physics it claims to be.
+    """
+
+    from tpen.physics.hooke import HookeSingletExact
+
+    task = _config("eval").evaluation_tasks.mcmc_energy
+    reference_summaries = [
+        summary
+        for summary in task.summaries
+        if summary._target_ == "tpen.evaluation.summaries.ReferenceEnergySummary"
+    ]
+
+    assert len(reference_summaries) == 1
+    assert float(reference_summaries[0].reference_energy) == HookeSingletExact.exact_energy
+    # The primary metric's summary keeps its position, so the two live side by
+    # side rather than one replacing the other.
+    assert task.summaries[0]._target_ == "tpen.evaluation.summaries.LocalEnergySummary"
+
+    metrics = _local_energy_metrics(
+        reference_summaries[0], torch.tensor([1.5, 2.0, 2.5], dtype=torch.float64), tmp_path
+    )
+    assert metrics["reference_energy"] == HookeSingletExact.exact_energy
+    assert metrics["energy_abs_error"] == abs(metrics["energy_error"])
+
+
 def test_the_stratified_sample_count_can_support_a_variance() -> None:
     """1024 points, not the 8 and 4 the invariant tasks use.
 

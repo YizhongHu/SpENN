@@ -225,26 +225,53 @@ def test_no_study_module_imports_tpen_outside_the_sanctioned_launcher_entrypoint
     assert {path: names for path, names in offending.items() if names} == {}
 
 
-def test_study_configs_reference_tpen_only_through_target_strings():
-    # Configs may name tpen classes, but only as Hydra _target_ strings.
-    for config_path in sorted(CONFIGS.glob("*.yaml")):
-        data = OmegaConf.to_container(OmegaConf.load(config_path), resolve=False)
-        targets: list[str] = []
+def _config_targets(config_path: Path) -> list[str]:
+    """Return every ``_target_`` string a config declares, at any depth."""
 
-        def collect(node: object) -> None:
-            if isinstance(node, dict):
-                for key, value in node.items():
-                    if key == "_target_":
-                        targets.append(str(value))
-                    else:
-                        collect(value)
-            elif isinstance(node, list):
-                for value in node:
+    data = OmegaConf.to_container(OmegaConf.load(config_path), resolve=False)
+    targets: list[str] = []
+
+    def collect(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "_target_":
+                    targets.append(str(value))
+                else:
                     collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
 
-        collect(data)
-        assert targets, config_path
-        assert [target for target in targets if target.startswith("tpen.")], config_path
+    collect(data)
+    return targets
+
+
+@pytest.mark.parametrize("name", ["train.yaml", "eval.yaml"])
+def test_stage_configs_reference_tpen_only_through_target_strings(name):
+    # Run configs may name tpen classes, but only as Hydra _target_ strings.
+    targets = _config_targets(CONFIGS / name)
+    assert targets, name
+    assert [target for target in targets if target.startswith("tpen.")], name
+
+
+@pytest.mark.parametrize("name", ["grid.yaml", "smoke.yaml"])
+def test_grid_configs_declare_no_component_targets(name):
+    # The grid configs are launcher METADATA: plan.py reads them, run.py never
+    # does, and nothing instantiates them. A `_target_` here would be a component
+    # spec written where no instantiation happens -- silently inert, and a
+    # standing invitation to move real wiring out of the stage configs, where the
+    # train/eval resolved-model identity check would have caught a mistake.
+    assert _config_targets(CONFIGS / name) == []
+
+
+def test_every_study_config_is_covered_by_one_of_the_two_target_rules():
+    # Guards both rules above against a new config file slipping in unchecked.
+    assert {path.name for path in CONFIGS.glob("*.yaml")} == {
+        "train.yaml",
+        "eval.yaml",
+        "grid.yaml",
+        "smoke.yaml",
+    }
 
 
 # ---------------------------------------------------------------------------

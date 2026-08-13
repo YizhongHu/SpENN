@@ -4,7 +4,8 @@ Operates purely on the ``summary.csv`` row-dict contract produced by a collect
 stage: a champion is chosen per grouping bucket by an ordered metric ladder or a
 single scalar metric, with non-overlapping seed error bars breaking ties and a
 configurable fallback metric closing them out. Spec/reference normalization,
-group-by parsing, and overlap logic live here too. Nothing in this module
+group-by parsing, overlap logic, split-sample seed partitioning, and the
+per-bucket distribution diagnostic live here too. Nothing in this module
 imports study code or ``spenn``; study-specific defaults (success statuses,
 reference statistics, wall-time metric, fallback metric name) and the
 ``id_for_axes`` id-builder are passed in explicitly by the caller.
@@ -215,11 +216,211 @@ def parse_group_by(group_by: str | Sequence[str]) -> tuple[str, ...]:
     return keys
 
 
+# ---------------------------------------------------------------------------
+# Split-sample selection and per-bucket distributions
+#
+# Both exist for the same reason: `min` over many noisy candidates is a winner's
+# curse. The argmin is biased toward whichever candidate's noise fell favorably,
+# and when buckets are COMPARED by their argmins that bias is differential -- the
+# noisier bucket wins by an artifact. Re-measuring the selected candidate on fresh
+# seeds fixes its reported value and does nothing for its identity, because
+# selection already happened on the noisy data.
+#
+# Split-sample selection fixes the identity: choose on one set of seed rows,
+# report on a set that had no vote. The distribution summary is the diagnostic
+# that says whether it mattered -- if a bucket ranking flips between champion and
+# median, the champion ranking was noise.
+# ---------------------------------------------------------------------------
+
+
+def split_sample_seeds(spec: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """Return one spec's ``(selection_seeds, holdout_seeds)``, or ``None``.
+
+    Seed labels are returned as text because they are matched against
+    ``summary.csv`` cells, which are text regardless of how the grid spelled them.
+
+    Returns
+    -------
+    tuple of tuple of str, or None
+        ``None`` when the spec declares no split, i.e. selection reads every seed
+        row -- the pre-split-sample behaviour, kept so a grid that predates this
+        surface still selects exactly as it did.
+
+    Raises
+    ------
+    ValueError
+        When a holdout is declared without a selection sample, or when the two
+        sets intersect. An intersecting holdout is not a degraded split; it is a
+        leak that silently restores the bias the split exists to remove, so it
+        fails loudly rather than being trimmed to something valid.
+    """
+
+    selection = tuple(
+        _key_text(seed) for seed in (spec.get("selection_seeds") or ()) if _key_text(seed)
+    )
+    holdout = tuple(_key_text(seed) for seed in (spec.get("holdout_seeds") or ()) if _key_text(seed))
+    name = spec.get("name", "<unnamed>")
+    if not selection:
+        if holdout:
+            raise ValueError(
+                f"champion {name!r} declares holdout_seeds without selection_seeds; "
+                "a holdout is only meaningful against an explicit selection sample"
+            )
+        return None
+    overlap = sorted(set(selection) & set(holdout))
+    if overlap:
+        raise ValueError(
+            f"champion {name!r} split-sample seeds overlap on {', '.join(overlap)}; "
+            "a seed that selects the champion cannot also evaluate it"
+        )
+    return selection, holdout
+
+
+def rows_for_seeds(
+    rows: Sequence[dict[str, Any]], *, seed_key: str, seeds: Sequence[str]
+) -> list[dict[str, Any]]:
+    """Return the rows whose ``seed_key`` cell is one of ``seeds``.
+
+    Raises
+    ------
+    ValueError
+        When ``seeds`` is empty, or when no row carries any of them. A silently
+        empty sample would make the selector fall through to its fallback on a
+        cohort of zero rows, which reads as "the metrics were missing" rather than
+        as "the requested seeds are not in this collection".
+    """
+
+    wanted = {_key_text(seed) for seed in seeds if _key_text(seed)}
+    if not wanted:
+        raise ValueError("rows_for_seeds requires at least one seed")
+    selected = [row for row in rows if _key_text(row.get(seed_key)) in wanted]
+    if not selected:
+        raise ValueError(
+            f"no summary row carries {seed_key} in {{{', '.join(sorted(wanted))}}}; "
+            "the collection does not contain the requested seed rows"
+        )
+    return selected
+
+
+def _quantile(ordered: Sequence[float], q: float) -> float:
+    """Return the linearly interpolated ``q`` quantile of a sorted sequence."""
+
+    if not ordered:
+        return math.inf
+    if len(ordered) == 1:
+        return float(ordered[0])
+    position = (len(ordered) - 1) * float(q)
+    low = int(math.floor(position))
+    high = int(math.ceil(position))
+    if low == high:
+        return float(ordered[low])
+    weight = position - low
+    return float(ordered[low]) * (1.0 - weight) + float(ordered[high]) * weight
+
+
+def metric_distribution(
+    rows: Sequence[dict[str, Any]],
+    metric: str,
+    *,
+    best_k: int = 3,
+    mode: str = "min",
+) -> dict[str, Any]:
+    """Summarize one metric's distribution across a bucket's aggregated configs.
+
+    Parameters
+    ----------
+    rows
+        Aggregated per-configuration rows for ONE bucket, as produced by
+        :func:`aggregate_candidates`.
+    metric
+        Source metric name; its seed-median column is read.
+    best_k
+        How many leading configs to name, in the direction ``mode`` implies.
+    mode
+        ``"min"`` or ``"max"``, defining which end of the distribution is "best".
+
+    Returns
+    -------
+    dict
+        ``n``, ``median``, ``q1``, ``q3``, ``best``, ``worst`` and a ``best_k``
+        list of ``{"config_id", "value"}`` entries. Numbers are formatted with
+        :func:`_csv_number` so the block is JSON- and CSV-safe.
+    """
+
+    if mode not in {"min", "max"}:
+        raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
+    column = metric if metric.endswith("_seed_median") else _seed_metric(metric, "median")
+    pairs = [
+        (_as_float(row.get(column)), _row_label(row))
+        for row in rows
+        if math.isfinite(_as_float(row.get(column)))
+    ]
+    if not pairs:
+        return {"metric": metric, "column": column, "n": 0, "best_k": []}
+    values = sorted(value for value, _label in pairs)
+    leading = sorted(pairs, key=lambda pair: (pair[0] if mode == "min" else -pair[0], pair[1]))
+    return {
+        "metric": metric,
+        "column": column,
+        "mode": mode,
+        "n": len(values),
+        "median": _csv_number(_quantile(values, 0.5)),
+        "q1": _csv_number(_quantile(values, 0.25)),
+        "q3": _csv_number(_quantile(values, 0.75)),
+        "best": _csv_number(values[0] if mode == "min" else values[-1]),
+        "worst": _csv_number(values[-1] if mode == "min" else values[0]),
+        "best_k": [
+            {"config_id": label, "value": _csv_number(value)}
+            for value, label in leading[: max(0, int(best_k))]
+        ],
+    }
+
+
+def ladder_metrics(spec: Mapping[str, Any]) -> list[str]:
+    """Return the ordered ladder rungs one ``metric_ladder`` spec declares.
+
+    Exactly one of two spellings, because they answer different needs and a spec
+    that used both would have two ladders:
+
+    ``metrics``
+        Full metric names, in declared order. Required when the rungs are
+        heterogeneous -- a study whose primary criterion is a MEAN on one task and
+        whose secondary is a VARIANCE on another cannot be spelled by any single
+        ``{task}`` template, and forcing it into one is how a selector ends up
+        ranking on a key nobody chose.
+    ``tasks`` + ``metric_template``
+        One template applied to each task name, for a ladder whose rungs really
+        are the same metric on different tasks.
+
+    Raises
+    ------
+    ValueError
+        When both spellings are present, when neither is, or when a declared
+        spelling is empty.
+    """
+
+    metrics = [str(metric).strip() for metric in (spec.get("metrics") or []) if str(metric).strip()]
+    tasks = [str(task).strip() for task in (spec.get("tasks") or []) if str(task).strip()]
+    template = str(spec.get("metric_template", "")).strip()
+    name = spec.get("name", "<unnamed>")
+    if metrics and (tasks or template):
+        raise ValueError(
+            f"champion {name!r} metric_ladder declares both metrics and tasks/metric_template; "
+            "use one spelling"
+        )
+    if metrics:
+        return metrics
+    if not tasks:
+        raise ValueError(f"champion {name!r} metric_ladder requires metrics or tasks")
+    if not template:
+        raise ValueError(f"champion {name!r} metric_ladder requires metric_template")
+    return [template.format(task=task) for task in tasks]
+
+
 def _select_by_metric_ladder(
     rows: Sequence[dict[str, Any]],
     *,
-    tasks: Sequence[str],
-    metric_template: str,
+    metrics: Sequence[str],
     mode: str = "min",
     fallback_metric: str,
     fallback_mode: str = "min",
@@ -228,22 +429,21 @@ def _select_by_metric_ladder(
 
     if mode != "min":
         raise ValueError("metric_ladder currently supports mode='min' only")
-    if not metric_template:
-        raise ValueError("metric_ladder requires metric_template")
+    if not metrics:
+        raise ValueError("metric_ladder requires at least one metric")
     remaining = list(rows)
     decisions: list[str] = []
     selected_metric = ""
     selected_value = ""
 
-    for task in tasks:
-        source_metric = metric_template.format(task=task)
+    for source_metric in metrics:
         if not _task_has_metric(remaining, source_metric):
-            decisions.append(f"{task}: skipped, no finite metric {source_metric!r} in the current cohort")
+            decisions.append(f"{source_metric}: skipped, no finite value in the current cohort")
             continue
         metric = _seed_metric(source_metric, "median")
         finite_rows = [row for row in remaining if math.isfinite(_as_float(row.get(metric)))]
         if not finite_rows:
-            decisions.append(f"{task}: skipped, no finite metric {source_metric!r} in the current cohort")
+            decisions.append(f"{source_metric}: skipped, no finite value in the current cohort")
             continue
         leader = min(finite_rows, key=lambda row: (_as_float(row.get(metric)), _row_label(row)))
         next_remaining = [
@@ -252,10 +452,13 @@ def _select_by_metric_ladder(
         selected_metric = metric
         selected_value = str(leader.get(metric, ""))
         if len(next_remaining) == 1:
-            decisions.append(f"{task}: {_row_label(leader)} clearly wins by non-overlapping seed error bars")
+            decisions.append(
+                f"{source_metric}: {_row_label(leader)} clearly wins by non-overlapping seed error bars"
+            )
             return leader, decisions, selected_metric, selected_value
         decisions.append(
-            f"{task}: {len(next_remaining)} configs remain because their seed error bars overlap the leader"
+            f"{source_metric}: {len(next_remaining)} configs remain because their seed error bars "
+            "overlap the leader"
         )
         remaining = next_remaining
 
@@ -414,13 +617,9 @@ def select_by_spec(
     if selector in {"metric_ladder", "energy_ladder"}:
         if metric_override is not None:
             return _select_by_single_metric(rows, metric=metric_override, mode=mode_override)
-        tasks = [str(task) for task in spec.get("tasks", [])]
-        if not tasks:
-            raise ValueError(f"champion {spec['name']!r} metric_ladder requires tasks")
         return _select_by_metric_ladder(
             rows,
-            tasks=tasks,
-            metric_template=str(spec.get("metric_template", "")),
+            metrics=ladder_metrics(spec),
             mode=str(spec.get("mode", "min")),
             fallback_metric=str(spec.get("fallback_metric", default_fallback_metric)),
             fallback_mode=str(spec.get("fallback_mode", "min")),

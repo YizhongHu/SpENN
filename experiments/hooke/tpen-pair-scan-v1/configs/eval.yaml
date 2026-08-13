@@ -336,6 +336,19 @@ evaluation_tasks:
         chunk_size: 256
     summaries:
       - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      # The selector's TIEBREAK, |mean - 2.0|, measured rather than derived in the
+      # selector. `energy_abs_error` penalizes a sampled energy that has fallen
+      # BELOW the exact 2.0 Ha as much as one above it, which raw `min` on the
+      # mean cannot do; the signed `energy_error` alongside it is what lets the
+      # report count below-exact rows as the estimator defect they are.
+      #
+      # 2.0 is the exact energy of the Hooke omega=0.5 singlet
+      # (`tpen/physics/hooke.py:19`, Taut 1993). It is pinned as a literal because
+      # there is no arithmetic resolver, and `tests/unit/experiments/`
+      # asserts it against `HookeSingletExact.exact_energy` rather than trusting
+      # this comment.
+      - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
+        reference_energy: 2.0
   # ---------------------------------------------------------------------------
   # SECONDARY: fixed-prior local-energy VARIANCE (never its mean — see header)
   # ---------------------------------------------------------------------------

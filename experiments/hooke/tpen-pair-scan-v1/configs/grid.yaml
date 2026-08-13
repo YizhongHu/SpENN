@@ -1,0 +1,333 @@
+# =============================================================================
+# tpen-pair-scan-v1 — full screening grid (MIG-TPEN-000 D17)
+# =============================================================================
+#
+# The 288-job scan: 4 basis levels x 2 learning rates x 3 channel widths x 4
+# activations = 96 configurations, each run on 3 paired seed rows. One champion
+# per basis bucket, then 9 fresh final replicates per champion (36 final train +
+# 36 final eval).
+#
+# This file is launcher METADATA, not a run config. `plan.py` reads it, expands
+# it, and compiles `run.py` commands against the grid attempt's own composed
+# config snapshots. It declares no `_target_`, because nothing here is
+# instantiated.
+#
+# `configs/smoke.yaml` is the same schema and the same stage stack, reduced only
+# in grid size and step budget (CLAUDE.md, Tools).
+#
+# ---------------------------------------------------------------------------
+# The base configs are NOT self-contained, and the launcher owes them a merge
+# ---------------------------------------------------------------------------
+#
+# `choices.basis` is absent from `configs/train.yaml` and `configs/eval.yaml`;
+# the four levels live in ONE table at
+# `experiments/hooke/choices/basis_levels.yaml`. `choice_libraries` below is what
+# makes `plan.py` merge it in, assert the merged paths are non-empty, snapshot
+# the composed result, and point every compiled command at that snapshot. A
+# launcher that skipped the merge would either die on a dangling
+# `${choices.basis...}` interpolation or resolve a partial config; the second is
+# the failure this study cannot tolerate, so the merge is declared as data here
+# rather than remembered by an operator.
+# =============================================================================
+
+study: tpen_pair_scan_v1
+config: experiments/hooke/tpen-pair-scan-v1/configs/train.yaml
+validation_config: experiments/hooke/tpen-pair-scan-v1/configs/eval.yaml
+results_root: experiments/hooke/tpen-pair-scan-v1/results
+
+# The shared fragments `plan.py` merges into both base configs before compiling
+# any command. `provides` is asserted against the MERGED config and again
+# against the snapshot written to disk.
+choice_libraries:
+  - path: experiments/hooke/choices/basis_levels.yaml
+    provides: choices.basis
+
+config_snapshots:
+  train: train_config.yaml
+  validation: validation_config.yaml
+
+# -----------------------------------------------------------------------------
+# Axes
+# -----------------------------------------------------------------------------
+#
+# MAJOR axes define the independent comparison buckets: one champion is selected
+# per major point, and the major axis is what the planner can blind. `basis` is
+# the study's primary deliverable (the `axiswise_v1` keep/drop verdict), so it is
+# the only major axis.
+#
+# NOT a pure semantics axis, and the report must not present it as one. The
+# per-particle width each level presents to the embedding is 4 / 7 / 5 / 9
+# (`basis_levels.yaml`), so first-layer parameter count varies by more than a
+# factor of two across the arms. Input dimensionality is confounded with basis
+# semantics by construction; `box_size: 2` fixed a crippled arm, it did not
+# equalize capacity.
+major_grid:
+  basis:
+    - no-basis
+    - hooke-axiswise-v1
+    - hooke-total-shell
+    - hooke-cartesian-box
+
+# MINOR axes are scanned inside every major point: 2 x 3 x 4 = 24 configs per
+# basis level. Final planning freezes the champion's minor values and drops the
+# seed axis.
+#
+# `channels` is confounded with initialization scale, measured not assumed: at
+# fixed batch and seed the initial log|psi| moves -3.945 / -5.351 / -6.374 across
+# 8 / 16 / 32 (layer-4 measurement), i.e. ~2.43 nats, which the two lr levels a
+# factor of 3.3 apart cannot span. A measured "channels" effect is substantially
+# an initialization-scale effect. `channels` is also a cost axis: the Pfaffian
+# readout loops over batch*channels in Python (`readout/pfaffian.py:69`) inside a
+# double backward, so wall time scales roughly linearly in it.
+minor_grid:
+  lr:
+    - 1.0e-3
+    - 3.0e-4
+
+  channels:
+    - 8
+    - 16
+    - 32
+
+  activation:
+    - SiLU
+    - Tanh
+    - Sigmoid
+    - Gaussian
+
+# -----------------------------------------------------------------------------
+# Seeds: paired rows, not a Cartesian seed grid
+# -----------------------------------------------------------------------------
+#
+# Three independent streams per row, because validation has to reproduce a train
+# row's MODEL while drawing a fresh sampler stream, which one integer cannot
+# express (see `train.yaml`'s `run_parameters` block):
+#
+#   training_model_seed      -> parameter initialization  (runtime.seed)
+#   training_sampler_seed    -> training MCMC chain       (sampler.seed)
+#   validation_sampler_seed  -> validation MCMC chain     (evaluation sampler)
+#
+# The nine values are pairwise distinct and disjoint from every final-replicate
+# block below, so no scan row can silently share a stream with a final replicate.
+scan_seed_axis: seed_index
+scan_seed_rows:
+  - seed_index: 0
+    training_model_seed: 0
+    training_sampler_seed: 10
+    validation_sampler_seed: 20
+  - seed_index: 1
+    training_model_seed: 1
+    training_sampler_seed: 11
+    validation_sampler_seed: 21
+  # Seed row 2 is the SELECTION HOLDOUT. It is trained and validated exactly like
+  # rows 0 and 1; it is simply never read by the champion selector. See the
+  # `champions` block.
+  - seed_index: 2
+    training_model_seed: 2
+    training_sampler_seed: 12
+    validation_sampler_seed: 22
+
+# Blind the basis axis into stable slots (B00..B03) for the whole scan, so the
+# arm identity is not visible while rows are inspected, triaged, or re-run. The
+# semantic map is written once per planning attempt to `unblind.json`.
+#
+# Blinding rekeys `choices.basis` by slot, and the library self-references its own
+# levels by name (`in_features: ${tpen.basis_feature_dim:${choices.basis.<level>.basis}}`),
+# so `plan.py` reslots those references as it copies each level. Without that,
+# every compiled command dies on `InterpolationKeyError` inside its array task.
+blinding:
+  enabled_by_default: true
+  slot_prefixes:
+    basis: B
+
+# Short labels used only in durable ids (`run_id`, `major_id`, `minor_id`).
+axis_id_labels:
+  basis: b
+  lr: lr
+  channels: ch
+  activation: act
+  seed_index: seed
+
+# The entire public override surface, one dotted path per axis. Every path exists
+# in BOTH base configs: `load_config` applies overrides with
+# `OmegaConf.merge(cfg, OmegaConf.from_dotlist(...))` (`tpen/run.py:88-90`), which
+# silently CREATES an unknown key instead of rejecting it, so a typo here would
+# no-op in silence on all 288 rows.
+axis_overrides:
+  basis: run_parameters.basis_slot
+  lr: run_parameters.lr
+  channels: run_parameters.channels
+  activation: run_parameters.activation_slot
+
+# Validate grid values against the choice libraries at PLAN time, so a
+# misspelled level fails before a single job is submitted rather than 288 rows
+# later. `basis` resolves against the merged-in library; `activation` against the
+# table declared in the base configs.
+choice_validation:
+  basis:
+    choices_path: choices.basis
+    tags_path: choices.basis.{value}.tags
+  activation:
+    choices_path: choices.activation
+    tags_path: choices.activation.{value}.tags
+
+# -----------------------------------------------------------------------------
+# Seed policy: which override path each named seed drives, per stage
+# -----------------------------------------------------------------------------
+#
+# The paths are `run_parameters.*`, never `runtime.seed` / `sampler.seed`
+# directly: those interpolate the run parameters (`train.yaml:82,452`), and
+# overriding the consumer instead of the source would leave the two disagreeing
+# in the run's own config snapshot.
+#
+# The full triple is written on both scan stages even though each stage reads
+# only part of it, matching the base configs, which declare all three in both
+# stages for exactly this reason: an unread path is recorded row identity, and a
+# path missing from one stage would no-op there in silence.
+seed_overrides:
+  scan_train:
+    run_parameters.training_model_seed: training_model_seed
+    run_parameters.training_sampler_seed: training_sampler_seed
+    run_parameters.validation_sampler_seed: validation_sampler_seed
+
+  validation:
+    run_parameters.training_model_seed: training_model_seed
+    run_parameters.training_sampler_seed: training_sampler_seed
+    run_parameters.validation_sampler_seed: validation_sampler_seed
+
+  final_train:
+    run_parameters.training_model_seed: final_train_model_seed
+    run_parameters.training_sampler_seed: final_train_sampler_seed
+
+  final_eval:
+    # The final-train replicate's model seed is replayed so `runtime.seed`
+    # matches the run whose checkpoint is being restored; only the sampler seed
+    # is fresh.
+    run_parameters.training_model_seed: final_train_model_seed
+    run_parameters.validation_sampler_seed: final_eval_sampler_seed
+
+# Final replicate seeds, in blocks that cannot collide with the scan rows above
+# or with each other: replicate i uses start + i * step, and 9 replicates reach
+# 100..108, 1000..1008, 10000..10008.
+final_seed_sequences:
+  final_train_model_seed:
+    start: 100
+    step: 1
+  final_train_sampler_seed:
+    start: 1000
+    step: 1
+  final_eval_sampler_seed:
+    start: 10000
+    step: 1
+
+# =============================================================================
+# Champion selection
+# =============================================================================
+#
+# Selectors are DATA. `name` is a label; `selector`, the metric ladder, the
+# fallback, and the split-sample seeds define the behaviour, and they are
+# snapshotted into the grid attempt's manifest so a champion is reproducible from
+# the artifact alone.
+#
+# ---------------------------------------------------------------------------
+# Why the primary metric is an MCMC mean and not the stratified one
+# ---------------------------------------------------------------------------
+#
+# PRIMARY `eval/mcmc_energy/local_energy_mean`, `min`. `MCMCGenerator` draws from
+# the trained sampler, i.e. from |psi|^2 (`generators/mcmc.py:13-55`), so this is
+# <psi|H|psi>/<psi|psi> and the variational principle bounds it below by the
+# exact 2.0 Ha of the Hooke omega=0.5 singlet (`tpen/physics/hooke.py:19`). `min`
+# is therefore the correct direction.
+#
+# It must NOT be `eval/stratified_geometry/local_energy_mean`.
+# `StratifiedGeometryGenerator.generate` begins `del model`
+# (`generators/hooke.py:232`) and draws from a FIXED seeded prior q, so that key
+# is E_q[E_L] for an arbitrary q: not variational, and unbounded below. `min` on
+# it rewards whichever wavefunction dips furthest below 2.0 on the sampled
+# points, i.e. the worst-behaved model. The decisive form is that for the exact
+# eigenstate E_L(R) = 2.0 for EVERY R, so E_q[E_L] = 2.0 for ANY q — exactness
+# pins the value at the optimum and supplies no direction of approach. Measured
+# side by side on one restored model: MCMC mean 2.020521 (just above exact, as a
+# variational estimator must be) against stratified mean 2.62999.
+#
+# SECONDARY `eval/stratified_geometry/local_energy_variance`, `min`. The variance
+# IS valid on that fixed prior: Var_q[E_L] = 0 iff psi is an eigenstate, for any
+# q. That is why the task is kept and why selection reads its variance and never
+# its mean.
+#
+# TIEBREAK `eval/mcmc_energy/energy_abs_error`, `min` — |mean - 2.0| against the
+# exact energy, emitted by `ReferenceEnergySummary` on the `mcmc_energy` task. It
+# penalizes a sampled energy that has fallen BELOW 2.0 as much as one above it,
+# which raw `min` on the mean cannot do.
+#
+# The fallback is the same deterministic quantity and never wall time: wall time
+# is machine- and load-dependent, so it makes champion identity irreproducible
+# across independent runs of the same selection.
+#
+# ---------------------------------------------------------------------------
+# Split-sample selection (adversarial review B4)
+# ---------------------------------------------------------------------------
+#
+# `min` over 24 noisy configs is a winner's curse: with 3-seed means the champion
+# is biased low by ~2.0 * sigma/sqrt(3) ~ 1.16 sigma, and the cross-basis
+# comparison is a DIFFERENCE of biases, so an arm with 30% more run-to-run noise
+# wins by ~0.35 sigma of pure artifact — landing directly on the study's primary
+# deliverable. The 9 final replicates fix the champion's reported energy; they
+# never revisit its identity.
+#
+# So selection reads seed rows {0, 1} only, and seed row 2 is held out. It is
+# trained and validated identically and is reported as the champion's held-out
+# measurement, which is unbiased with respect to the selection.
+#
+# The overlapping-error-bar rung is NOT a calibrated threshold. It is the
+# engine's inherited 1-stderr non-overlap test, and with 2 seeds in the selection
+# sample the spread it rests on has 1 degree of freedom, so it fires
+# near-randomly on close calls. It is left explicit and untuned on purpose: a
+# threshold is only defensible once the float64 GPU-drift floor (P0-e) has
+# returned a number, and inventing one now would hide the uncertainty rather than
+# bound it. Until then the ladder's job is to reduce the cohort, and the
+# deterministic fallback closes it out.
+champions:
+  - name: energy
+    selector: metric_ladder
+    # Explicit rungs, not `tasks` + `metric_template`: the primary rung is a MEAN
+    # on one task and the secondary is a VARIANCE on another, which no single
+    # `{task}` template can spell. Deliberate — it is the whole content of the
+    # metric correction above.
+    metrics:
+      - eval/mcmc_energy/local_energy_mean
+      - eval/stratified_geometry/local_energy_variance
+      - eval/mcmc_energy/energy_abs_error
+    mode: min
+    fallback_metric: eval/mcmc_energy/energy_abs_error
+    fallback_mode: min
+    # Split-sample selection. Values are `seed_index` levels.
+    selection_seeds: [0, 1]
+    holdout_seeds: [2]
+    # Report each basis level's distribution over its 24 configs alongside its
+    # champion, for every `champion_reference_metrics` entry. If the basis
+    # ranking flips between champion and median, the champion ranking was noise.
+    reference_distribution_best_k: 3
+
+# Seed-aggregated metrics copied into champions.csv, and the metrics whose
+# per-bucket distributions are reported. Audit only — none of these selects.
+champion_reference_metrics:
+  - label: mcmc_energy
+    metric: eval/mcmc_energy/local_energy_mean
+  - label: mcmc_energy_stderr
+    metric: eval/mcmc_energy/local_energy_stderr
+  - label: mcmc_energy_variance
+    metric: eval/mcmc_energy/local_energy_variance
+  - label: mcmc_energy_abs_error
+    metric: eval/mcmc_energy/energy_abs_error
+  - label: stratified_variance
+    metric: eval/stratified_geometry/local_energy_variance
+  # Recorded for the report, never for selection: the divergence between this and
+  # `mcmc_energy` is the evidence for the metric correction, so it has to be in
+  # the table.
+  - label: stratified_energy_mean
+    metric: eval/stratified_geometry/local_energy_mean
+  - label: antisymmetry_logabs_max_abs_error
+    metric: eval/full_model_antisymmetry/logabs_max_abs_error
+
+final_replicates: 9
