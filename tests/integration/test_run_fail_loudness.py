@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
+
+import tpen.run as run_module
 
 from tpen.run import run_from_config
 
@@ -62,6 +65,29 @@ def test_prepare_run_context_rejects_logger_without_log(tmp_path: Path) -> None:
     cfg.loggers = [{"_target_": "builtins.object"}]
     with pytest.raises(TypeError, match="log"):
         run_from_config(cfg, config_path="x", command="t", raise_exceptions=True)
+
+
+def test_error_artifact_failures_use_tpen_bootstrap_channel(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    def fail_to_write(*args: object, **kwargs: object) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(run_module, "write_error_artifact", fail_to_write)
+    assert run_module._BOOTSTRAP_LOGGER_NAME == "tpen.bootstrap"
+
+    with caplog.at_level(logging.ERROR, logger="tpen.bootstrap"):
+        run_module._write_error_if_possible(
+            tmp_path,
+            RuntimeError("original failure"),
+            phase="run",
+            traceback_text="trace",
+        )
+
+    assert [record.name for record in caplog.records] == ["tpen.bootstrap"]
+    assert "failed to write error.json: OSError: disk unavailable" in caplog.records[0].getMessage()
 
 
 def test_invalid_load_path_is_fatal_and_durable_with_terminal_disabled(

@@ -49,7 +49,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
 
     Parameters
     ----------
-    cuda_synchronize : bool, optional
+    accelerator_synchronize : bool, optional
         Synchronize the accelerator at task boundaries for device timing.
     clock : callable, optional
         Monotonic clock override for deterministic tests.
@@ -60,7 +60,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
     def __init__(
         self,
         *,
-        cuda_synchronize: bool = False,
+        accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -74,7 +74,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
             ),
             **kwargs,
         )
-        self.cuda_synchronize = bool(cuda_synchronize)
+        self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self._task_run_type = EvaluationTaskRun
         # Keyed by the paired scope coordinate so Started and Ended always match.
@@ -96,7 +96,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
             return
         key = (type(operation), occurrence.count)
         if isinstance(event, Started):
-            _sync_device(self.cuda_synchronize)
+            _sync_device(self.accelerator_synchronize)
             self._starts[key] = self.clock()
             return
         if key not in self._starts:
@@ -111,7 +111,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
             # publishing a duration with a guessed status.
             self._starts.pop(key)
             return
-        _sync_device(self.cuda_synchronize)
+        _sync_device(self.accelerator_synchronize)
         metrics: dict[str, float | bool] = {"time_sec": self.clock() - self._starts.pop(key)}
         if result.failed:
             metrics["failed"] = True

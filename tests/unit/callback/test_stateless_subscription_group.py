@@ -38,7 +38,7 @@ from tpen.events import Event as TypedEvent
 from tpen.run_events import RunCompleted, RunStarted
 from tests.helpers.run_context import make_run_context
 
-_DIAGNOSTIC_LOGGER = "spenn.callback"
+_DIAGNOSTIC_LOGGER = "tpen.callback"
 
 
 # --------------------------------------------------------------------------

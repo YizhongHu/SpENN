@@ -9,6 +9,7 @@ from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.data.real import Feature
 from tpen.equivariance import EquivariantMap
 from tpen.nn import AdditiveEnvelope, Embedding, TPENForwardContext, TPENWaveFunction
+from tpen.trace import Trace
 from tests.helpers.hooke_models import build_tiny_spenn, tiny_pair_batch
 
 
@@ -95,6 +96,17 @@ def test_forward_returns_finite_wavefunction_output() -> None:
     assert torch.isfinite(output.sign).all()
     assert torch.all((output.sign == 1) | (output.sign == -1) | (output.sign == 0))
 
+
+
+def test_real_pair_model_trace_uses_tpen_public_prefix() -> None:
+    model = build_tiny_spenn()
+    batch = tiny_pair_batch(n_walkers=1)
+
+    with Trace.capture(model=model) as trace:
+        model(batch)
+
+    assert "tpen/output" in trace
+    assert "spenn/output" not in trace
 
 def test_tiny_spenn_initializes_stock_parameters_before_first_forward() -> None:
     model = build_tiny_spenn()

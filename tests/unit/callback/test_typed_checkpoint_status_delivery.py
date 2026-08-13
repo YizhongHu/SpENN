@@ -120,7 +120,7 @@ def test_status_receives_state_at_the_completed_iteration_boundary(
         step=3, metrics={"loss": 0.25}, sampler_stats=make_sampler_stats()
     )
 
-    with caplog.at_level(logging.INFO, logger="spenn.status"):
+    with caplog.at_level(logging.INFO, logger="tpen.status"):
         context.emit(
             TrainingIterationCompleted(iteration=TrainingIteration(step=3)), state=state
         )
