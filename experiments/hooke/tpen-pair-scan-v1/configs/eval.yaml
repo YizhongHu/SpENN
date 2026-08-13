@@ -1,0 +1,522 @@
+# =============================================================================
+# tpen-pair-scan-v1 — scan validation base config (MIG-TPEN-000 D17)
+# =============================================================================
+#
+# Restores one scan train checkpoint under `mode: model_only, strict: true` and
+# runs the validation suite that produces the scan's selection metrics.
+#
+# ---------------------------------------------------------------------------
+# This file is NOT self-contained. Merge the basis library first.
+# ---------------------------------------------------------------------------
+#
+# Same contract as `train.yaml`: `choices.basis` lives in ONE table at
+# `experiments/hooke/choices/basis_levels.yaml` and is merged in before running.
+#
+#   uv run python -c "from omegaconf import OmegaConf; \
+#     OmegaConf.save(OmegaConf.merge( \
+#       OmegaConf.load('experiments/hooke/tpen-pair-scan-v1/configs/eval.yaml'), \
+#       OmegaConf.load('experiments/hooke/choices/basis_levels.yaml')), \
+#       'merged_eval.yaml')"
+#
+# Run (cluster, gpu_test), one grid row:
+#   srun -p gpu_test --gres=gpu:1 -c 4 --mem=32G -t 0:30:00 \
+#     uv run --extra cu126 python run.py --config merged_eval.yaml \
+#     load.path=<train run dir>/checkpoints \
+#     run_parameters.basis_slot=hooke-total-shell \
+#     run_parameters.activation_slot=Tanh \
+#     run_parameters.lr=1.0e-3 run_parameters.channels=16 \
+#     run_parameters.training_model_seed=0 \
+#     run_parameters.training_sampler_seed=0 \
+#     run_parameters.validation_sampler_seed=0 \
+#     run.root=experiments/hooke/tpen-pair-scan-v1/results/02_validate \
+#     run.layout=flat run.run_id=<config_id>/<attempt_id>
+#
+# The `model` block must RESOLVE identically to `train.yaml`'s for every slot
+# combination: `strict: true` rejects any wiring difference, and every slot value
+# has to be replayed on this side so the restored architecture matches the one
+# that was trained. `tests/unit/experiments/test_scan_config_surface.py` compares
+# the two resolved blocks across the slot grid, which is the property that
+# matters; the two YAML texts differ only in comments.
+#
+# ---------------------------------------------------------------------------
+# Which metric selects the champion, and why it is not the obvious one
+# ---------------------------------------------------------------------------
+#
+# PRIMARY: `eval/mcmc_energy/local_energy_mean`, from the `mcmc_energy` task.
+#   `MCMCGenerator` draws from the trained sampler, i.e. from |psi|^2
+#   (`tpen/evaluation/generators/mcmc.py:13-55`), so its mean local energy IS
+#   <psi|H|psi>/<psi|psi>. The variational principle bounds it from below by the
+#   exact 2.0 Ha of the Hooke omega=0.5 singlet, so `mode: min` is correct.
+#
+# SECONDARY: `eval/stratified_geometry/local_energy_variance`.
+#   `StratifiedGeometryGenerator.generate` begins `del model`
+#   (`tpen/evaluation/generators/hooke.py:232`) and draws from a FIXED seeded
+#   geometry prior q, so its `local_energy_mean` is E_q[E_L] for an arbitrary q
+#   — NOT the variational estimator, and unbounded below. `min` on it rewards
+#   whichever wavefunction dips furthest below 2.0 on the sampled points, which
+#   is the worst-behaved model. The decisive form: for the exact eigenstate
+#   E_L(R) = 2.0 for every R, so E_q[E_L] = 2.0 for ANY q — exactness pins the
+#   value at the optimum but supplies no direction of approach.
+#   The VARIANCE is valid on the same fixed prior: Var_q[E_L] = 0 iff psi is an
+#   eigenstate, for any q. That is why this task is kept and why selection reads
+#   its variance and never its mean.
+# =============================================================================
+
+experiment:
+  name: ${study.name}
+  sector: pair
+  run_name: ${study.name}_validate
+
+study:
+  name: tpen_pair_scan_v1
+  stage: "02_validate"
+  attempt_id: null
+  config_id: null
+
+run:
+  root: experiments/hooke/tpen-pair-scan-v1/results/02_validate
+  layout: flat
+  run_id: null
+  dir: null
+  # America/New_York for experiment logging; see the note in train.yaml on why
+  # this is pinned rather than left null for launcher injection.
+  timezone: America/New_York
+
+runtime:
+  # The train row's MODEL seed, replayed. Nothing here initializes parameters
+  # (they are restored), but keeping the process RNG stream equal to the train
+  # row's is what makes "same model, different sampler stream" literally true
+  # rather than approximately true.
+  seed: ${run_parameters.training_model_seed}
+  device: cuda
+  dtype: float64
+
+terminal:
+  enabled: true
+  level: info
+  color: auto
+  rich: auto
+  progress: false
+
+system:
+  name: hooke_pair
+  n_particles: 2
+  spatial_dim: 3
+  omega: 0.5
+  spin:
+    n_up: 1
+    n_down: 1
+
+# -----------------------------------------------------------------------------
+# Scalar run parameters — must mirror train.yaml's surface
+# -----------------------------------------------------------------------------
+#
+# The same seed triple is declared here as in `train.yaml`, including
+# `training_sampler_seed`, which validation never reads. `load_config` applies
+# overrides via `OmegaConf.merge(cfg, OmegaConf.from_dotlist(...))`
+# (`tpen/run.py:88-90`), which silently CREATES an unknown key instead of
+# rejecting it, so a seed path missing from one stage would no-op in silence.
+# One triple, both stages, no stage-specific override vocabulary.
+run_parameters:
+  basis_slot: no-basis
+  activation_slot: SiLU
+  # Replayed from the train row so the resolved model matches the checkpoint.
+  # `lr` reaches no component here; it is part of the row's identity and of the
+  # single override vocabulary shared with `train.yaml`.
+  lr: 1.0e-3
+  channels: 8
+  training_model_seed: 0
+  training_sampler_seed: 0
+  # The ONLY seed that changes what this stage computes: the validation MCMC
+  # stream. Paired seed rows hold `training_model_seed` fixed and move this.
+  validation_sampler_seed: 0
+  accelerator_synchronize: false
+
+evaluation:
+  namespace: eval
+  # Fixed-prior generators (cusp, tail, hooke_orbital, stratified geometry,
+  # permutation orbits) are seeded from a CONSTANT, never from the row's seeds.
+  # Those tasks compare wavefunctions on a point set; if the point set moved
+  # with `validation_sampler_seed`, the three seed replicates of one grid row
+  # would be evaluated on three different geometries and their spread would mix
+  # sampling noise into what is meant to be a fixed-geometry diagnostic.
+  geometry_seed: 0
+  seed: ${evaluation.geometry_seed}
+  artifact_level: summaries
+  task_failure_policy: continue
+  return_terms: true
+
+# The validation sampler budget. Pinned literals, deliberately NOT interpolated
+# from anything in `run_parameters` and deliberately NOT shared with the
+# training sampler block: the primary selection metric is a Monte Carlo mean,
+# and a metric whose sampling budget varied with the config being scored would
+# not be comparable across grid rows. The P0-e probe may retune the TRAINING
+# budget; these values must stay fixed for the whole grid.
+evaluation_sampler_params:
+  n_walkers: 1024
+  burn_in: 500
+  n_steps: 10
+  proposal_scale: 0.35
+
+load:
+  # Planner-injected: the train run's checkpoints directory or a concrete step_*.
+  path: ???
+  mode: model_only
+  strict: true
+  allow_protocol_mismatch: false
+
+model_params:
+  max_order: 2
+  max_virtual_order: 2
+  channels: ${run_parameters.channels}
+  hidden_channels: 16
+  num_hidden_layers: 1
+  mixing_implementation: vectorized
+  mixing_initial_weight: 0.5
+
+choices:
+  activation:
+    SiLU:
+      activation:
+        _target_: torch.nn.SiLU
+      tags: [main, zero_preserving]
+
+    Tanh:
+      activation:
+        _target_: torch.nn.Tanh
+      tags: [main, zero_preserving]
+
+    Sigmoid:
+      activation:
+        _target_: torch.nn.Sigmoid
+      tags: [main, nonzero_at_zero]
+
+    Gaussian:
+      activation:
+        _target_: tpen.nn.GaussianActivation
+        sigma: 1.0
+      tags: [main, nonzero_at_zero, gaussian]
+
+# =============================================================================
+# Component specs
+# =============================================================================
+runner:
+  _target_: tpen.runner.Evaluate
+  model: ${model}
+  load: ${load}
+  evaluator: ${evaluator}
+  # NO `callbacks` or `loggers` here — config-root, RunContext-owned
+  # (`tpen/run.py:343-348`).
+
+evaluator:
+  _target_: tpen.evaluation.Evaluator
+  namespace: ${evaluation.namespace}
+  seed: ${evaluation.seed}
+  artifact_level: ${evaluation.artifact_level}
+  task_failure_policy: ${evaluation.task_failure_policy}
+  tasks:
+    # Primary selection metric first.
+    - ${evaluation_tasks.mcmc_energy}
+    # Secondary selection metric (variance only).
+    - ${evaluation_tasks.stratified_geometry}
+    # Diagnostics and invariants.
+    - ${evaluation_tasks.cusp}
+    - ${evaluation_tasks.tail}
+    - ${evaluation_tasks.hooke_orbital}
+    - ${evaluation_tasks.full_model_antisymmetry}
+    - ${evaluation_tasks.trace_equivariance}
+
+# -----------------------------------------------------------------------------
+# Model — must resolve identically to train.yaml's `model` block
+# -----------------------------------------------------------------------------
+model:
+  _target_: tpen.nn.TPENWaveFunction
+  trace_name: tpen
+
+  basis: ${choices.basis.${run_parameters.basis_slot}.basis}
+
+  embedding:
+    _target_: tpen.nn.Embedding
+    max_order: ${model_params.max_order}
+    spatial_dim: ${system.spatial_dim}
+    out_channels: ${model_params.channels}
+    hidden_channels: ${model_params.hidden_channels}
+    num_hidden_layers: ${model_params.num_hidden_layers}
+    include_spins: true
+    in_features: ${choices.basis.${run_parameters.basis_slot}.in_features}
+    # DELIBERATE HELD CONTROL, pinned to SiLU at every activation level. See the
+    # long-form rationale on `train.yaml`'s embedding block: `activation_slot`
+    # owns the equivariant-op activation (D2) and the embedding MLP is a
+    # separate concept held fixed so the axis moves one thing. Restoring a
+    # checkpoint under `strict: true` also means this must match train.yaml
+    # exactly, so a leak here would additionally break restore.
+    activation:
+      _target_: torch.nn.SiLU
+
+  layers:
+    - _target_: tpen.nn.TPENLayer
+      mixing:
+        _target_: tpen.nn.EquivariantMixing
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+        implementation: ${model_params.mixing_implementation}
+        initial_weight: ${model_params.mixing_initial_weight}
+        activation: ${choices.activation.${run_parameters.activation_slot}.activation}
+      path_aggregation:
+        _target_: tpen.nn.PathAggregation
+        max_order: ${model_params.max_order}
+        max_virtual_order: ${model_params.max_virtual_order}
+        channels: ${model_params.channels}
+        activation: ${choices.activation.${run_parameters.activation_slot}.activation}
+      update:
+        _target_: tpen.nn.ResidualUpdater
+
+  envelope:
+    _target_: tpen.nn.AdditiveEnvelope
+    envelopes:
+      # coefficient = omega / 2 = 0.25. No arithmetic resolver exists, so this
+      # is pinned independently of `system.omega` here as well as in train.yaml,
+      # and their agreement is asserted by a test rather than promised by a
+      # comment.
+      - _target_: tpen.nn.GaussianConfinement
+        coefficient: 0.25
+      - _target_: tpen.nn.ElectronElectronCusp
+
+  readout:
+    _target_: tpen.nn.readout.PfaffianReadout
+    channels: ${model_params.channels}
+
+hamiltonian_terms:
+  kinetic:
+    _target_: tpen.physics.kinetic.KineticEnergy
+  harmonic_trap:
+    _target_: tpen.physics.potential.HarmonicTrap
+    omega: ${system.omega}
+  electron_electron:
+    _target_: tpen.physics.potential.ElectronElectronInteraction
+
+# The validation sampler, consumed only by the `mcmc_energy` task's generator.
+evaluation_sampler:
+  _target_: tpen.sampling.metropolis.MetropolisSampler
+  n_walkers: ${evaluation_sampler_params.n_walkers}
+  burn_in: ${evaluation_sampler_params.burn_in}
+  n_steps: ${evaluation_sampler_params.n_steps}
+  proposal_scale: ${evaluation_sampler_params.proposal_scale}
+  seed: ${run_parameters.validation_sampler_seed}
+  n_electrons: ${system.n_particles}
+  spatial_dim: ${system.spatial_dim}
+  n_up: ${system.spin.n_up}
+  n_down: ${system.spin.n_down}
+  dtype: ${runtime.dtype}
+
+evaluation_tasks:
+  # ---------------------------------------------------------------------------
+  # PRIMARY: the variational energy estimator
+  # ---------------------------------------------------------------------------
+  mcmc_energy:
+    name: mcmc_energy
+    namespace: ${evaluation.namespace}/mcmc_energy
+    output_dir: ${run.dir}/mcmc_energy
+    generator:
+      # Draws from the restored model's own |psi|^2 via a fresh Metropolis
+      # chain, so `local_energy_mean` is <psi|H|psi>/<psi|psi> and `mode: min`
+      # against the exact 2.0 Ha is the correct direction.
+      _target_: tpen.evaluation.generators.MCMCGenerator
+      sampler: ${evaluation_sampler}
+      seed: ${run_parameters.validation_sampler_seed}
+      # Spelled out rather than left null: the sample count reaching the
+      # estimator is part of the metric's definition and must be identical for
+      # every row of the grid.
+      max_samples: ${evaluation_sampler_params.n_walkers}
+    calculators:
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+  # ---------------------------------------------------------------------------
+  # SECONDARY: fixed-prior local-energy VARIANCE (never its mean — see header)
+  # ---------------------------------------------------------------------------
+  stratified_geometry:
+    name: stratified_geometry
+    namespace: ${evaluation.namespace}/stratified_geometry
+    output_dir: ${run.dir}/stratified_geometry
+    generator:
+      _target_: tpen.evaluation.generators.StratifiedGeometryGenerator
+      # 1024, not the 8 and 4 the tpen-pair-v1 invariant tasks use
+      # (`eval.yaml:207,229`). Those counts are adequate for a permutation
+      # consistency check, where every point must merely agree with its own
+      # image, and hopeless for a variance: a quarter of the stratum weight
+      # sits on `cusp` with `r12_min = 1.0e-4`, where E_L is near-singular and
+      # the sample statistics are heavy-tailed, so at 8 points the number
+      # tracks whichever run drew the worst outlier.
+      n_samples: 1024
+      # Constant across the whole grid: every row is scored on the SAME points.
+      seed: ${evaluation.geometry_seed}
+      strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+      bounds:
+        cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+        moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+        bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+        tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      # Present so `LocalEnergyPathologySummary` can count nonfinite log|psi|.
+      # Without it that counter silently reports 0 rather than "not measured"
+      # (`summaries/hooke.py:190-196`).
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+  # ---------------------------------------------------------------------------
+  # Diagnostics, carried over from tpen-pair-v1.
+  #
+  # `SampledRecordWriter` is deliberately dropped from every task: it writes one
+  # record per evaluation point, and at 288 grid rows (1024 stratified points
+  # each) that is hundreds of thousands of rows of per-point detail nothing in
+  # the selection or reporting path reads. `artifact_level: summaries` keeps the
+  # summary artifacts.
+  # ---------------------------------------------------------------------------
+  cusp:
+    name: cusp
+    namespace: ${evaluation.namespace}/cusp
+    output_dir: ${run.dir}/cusp
+    generator:
+      _target_: tpen.evaluation.generators.CuspGridGenerator
+      n_points: 16
+      r12_min: 1.0e-4
+      r12_max: 1.0e-1
+      n_directions: 4
+      center_of_mass_radii: [0.0]
+      paired_directions: true
+      seed: ${evaluation.geometry_seed}
+    calculators:
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+      - _target_: tpen.evaluation.calculators.RadialLogAbsDerivativeCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.CoalescenceDivergenceSummary
+      - _target_: tpen.evaluation.summaries.OppositeSpinCuspSummary
+  tail:
+    name: tail
+    namespace: ${evaluation.namespace}/tail
+    output_dir: ${run.dir}/tail
+    generator:
+      _target_: tpen.evaluation.generators.TailGridGenerator
+      radius_min: 0.5
+      radius_max: 8.0
+      n_points: 16
+      pair_distance: 1.0
+      n_directions: 4
+      seed: ${evaluation.geometry_seed}
+    calculators:
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+  hooke_orbital:
+    name: hooke_orbital
+    namespace: ${evaluation.namespace}/hooke_orbital
+    output_dir: ${run.dir}/hooke_orbital
+    generator:
+      _target_: tpen.evaluation.generators.HookeOrbitalGenerator
+      n_samples: 16
+      omega: ${system.omega}
+      seed: ${evaluation.geometry_seed}
+    calculators:
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: ${evaluation.return_terms}
+        chunk_size: 256
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.LocalEnergyStabilitySummary
+        abs_threshold: 10.0
+      - _target_: tpen.evaluation.summaries.LocalEnergyPathologySummary
+  full_model_antisymmetry:
+    name: full_model_antisymmetry
+    namespace: ${evaluation.namespace}/full_model_antisymmetry
+    output_dir: ${run.dir}/full_model_antisymmetry
+    generator:
+      _target_: tpen.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.geometry_seed}
+      base_generator:
+        _target_: tpen.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 8
+        seed: ${evaluation.geometry_seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: tpen.evaluation.calculators.FullModelAntisymmetryCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.TransformConsistencySummary
+  trace_equivariance:
+    name: trace_equivariance
+    namespace: ${evaluation.namespace}/trace_equivariance
+    output_dir: ${run.dir}/trace_equivariance
+    generator:
+      _target_: tpen.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.geometry_seed}
+      base_generator:
+        _target_: tpen.evaluation.generators.StratifiedGeometryGenerator
+        n_samples: 4
+        seed: ${evaluation.geometry_seed}
+        strata: {cusp: 0.25, moderate_pair: 0.25, bulk: 0.25, tail: 0.25}
+        bounds:
+          cusp: {r12_min: 1.0e-4, r12_max: 0.1, radius_max: 2.0}
+          moderate_pair: {r12_min: 0.1, r12_max: 1.5, radius_max: 3.0}
+          bulk: {r12_min: 0.5, r12_max: 3.0, radius_max: 4.0}
+          tail: {r12_min: 0.5, r12_max: 6.0, radius_min: 4.0, radius_max: 8.0}
+    calculators:
+      - _target_: tpen.evaluation.calculators.TraceEquivarianceCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.TraceEquivarianceSummary
+
+# -----------------------------------------------------------------------------
+# Callbacks — config-root and RunContext-owned (CLAUDE.md, Config ownership)
+# -----------------------------------------------------------------------------
+callbacks:
+  - _target_: tpen.callback.ConfigSnapshot
+    output_path: ${run.dir}/config.yaml
+  - _target_: tpen.callback.ResolvedConfigSnapshot
+    output_path: ${run.dir}/resolved_config.yaml
+  - _target_: tpen.callback.Metadata
+    output_path: ${run.dir}/metadata.json
+  - _target_: tpen.callback.Status
+    output_path: ${run.dir}/status.json
+  # Timing: whole-evaluation wall time plus the per-task and per-component
+  # breakdown the grid's cost table reads. tpen-pair-v1 registers neither.
+  - _target_: tpen.callback.EvaluationTiming
+    accelerator_synchronize: ${run_parameters.accelerator_synchronize}
+  - _target_: tpen.callback.EvaluationComponentTiming
+    accelerator_synchronize: ${run_parameters.accelerator_synchronize}
+
+loggers:
+  - _target_: tpen.logging.CSV
+    path: ${run.dir}/metrics.csv
+  - _target_: tpen.logging.JSONL
+    path: ${run.dir}/metrics.jsonl
