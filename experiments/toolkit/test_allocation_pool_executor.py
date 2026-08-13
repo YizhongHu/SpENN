@@ -6,9 +6,11 @@ import json
 import multiprocessing
 import shlex
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Sequence
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +23,7 @@ from experiments.toolkit import (
     TaskSpec,
     task_id_from_parts,
 )
+import experiments.toolkit.executors as executors_module
 from experiments.toolkit.jsonio import read_json
 from experiments.toolkit.task_state import claim_row_for_pass, pass_claim_path
 
@@ -135,6 +138,294 @@ def _request(tasks: Sequence[TaskSpec]) -> SubmissionRequest:
 
 def _trace(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _status_task(
+    tmp_path: Path,
+    run_id: str,
+    command: Sequence[str],
+    status_path: Path,
+) -> TaskSpec:
+    task = _task(tmp_path, run_id, command)
+    return TaskSpec(
+        task_id=task.task_id,
+        stage=task.stage,
+        attempt_id=task.attempt_id,
+        run_id=task.run_id,
+        command=task.command,
+        result_dir=task.result_dir,
+        logs=task.logs,
+        resources=task.resources,
+        completion=CompletionSpec(policy="status_completed", status_path=str(status_path)),
+    )
+
+
+def _single_worker_executor(tmp_path: Path, pass_id: str) -> AllocationPoolExecutor:
+    return AllocationPoolExecutor(
+        pass_id=pass_id,
+        n_workers=1,
+        visibility_variable="TEST_VISIBLE_DEVICE",
+        visibility_values=("worker-0",),
+        run_root=tmp_path / "pool",
+        deadline_guard_min=0,
+    )
+
+
+def _attempt_statuses(tmp_path: Path) -> list[dict[str, object]]:
+    return [
+        read_json(path)
+        for path in sorted((tmp_path / "pool" / "_allocation_pool").glob("*/attempt*/status.json"))
+    ]
+
+
+def test_zero_exit_requires_completed_status(tmp_path: Path) -> None:
+    status_path = tmp_path / "run" / "status.json"
+    command = (
+        sys.executable,
+        "-c",
+        "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+        "p.parent.mkdir(parents=True); p.write_text(json.dumps({'status':'completed'}))",
+        str(status_path),
+    )
+    task = _status_task(tmp_path, "completed", command, status_path)
+
+    records = _single_worker_executor(tmp_path, "completed-pass").submit(
+        _plan(tmp_path, (task,)), (task,), _request((task,))
+    )
+
+    assert len(records) == 1
+    assert read_json(task.logs[0])["status"] == "success"
+    assert _attempt_statuses(tmp_path)[0]["status"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("status_payload", "run_id"),
+    [
+        (None, "missing"),
+        ('{"status":"failed"}', "not-completed"),
+    ],
+)
+def test_zero_exit_without_completed_status_fails_with_receipts(
+    tmp_path: Path,
+    status_payload: str | None,
+    run_id: str,
+) -> None:
+    status_path = tmp_path / run_id / "status.json"
+    if status_payload is None:
+        command = (sys.executable, "-c", "raise SystemExit(0)")
+    else:
+        command = (
+            sys.executable,
+            "-c",
+            "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+            "p.parent.mkdir(parents=True); p.write_text(sys.argv[2])",
+            str(status_path),
+            status_payload,
+        )
+    task = _status_task(tmp_path, run_id, command, status_path)
+
+    with pytest.raises(RuntimeError, match="completion predicate 'status_completed'.*not satisfied"):
+        _single_worker_executor(tmp_path, "pass-a").submit(
+            _plan(tmp_path, (task,)), (task,), _request((task,))
+        )
+
+    attempt = _attempt_statuses(tmp_path)[0]
+    launcher = read_json(task.logs[0])
+    assert attempt["status"] == launcher["status"] == "failed"
+    assert attempt["returncode"] == launcher["returncode"] == 0
+    assert "not satisfied" in str(attempt["completion_error"])
+    assert attempt["completion_error"] == launcher["completion_error"]
+
+
+def test_zero_exit_missing_status_is_retryable_on_new_pass(tmp_path: Path) -> None:
+    status_path = tmp_path / "retry" / "status.json"
+    task = _status_task(
+        tmp_path,
+        "retry",
+        (sys.executable, "-c", "raise SystemExit(0)"),
+        status_path,
+    )
+    plan = _plan(tmp_path, (task,))
+    request = _request((task,))
+
+    for pass_id in ("pass-a", "pass-b"):
+        with pytest.raises(RuntimeError, match="completion predicate"):
+            _single_worker_executor(tmp_path, pass_id).submit(plan, (task,), request)
+
+    assert len(_attempt_statuses(tmp_path)) == 2
+
+
+def test_completion_failure_drains_unrelated_pending_tasks(tmp_path: Path) -> None:
+    later_marker = tmp_path / "later-ran"
+    missing = _status_task(
+        tmp_path,
+        "missing-first",
+        (sys.executable, "-c", "raise SystemExit(0)"),
+        tmp_path / "missing-first" / "status.json",
+    )
+    later_status = tmp_path / "later" / "status.json"
+    later = _status_task(
+        tmp_path,
+        "later",
+        (
+            sys.executable,
+            "-c",
+            "import json,pathlib,sys; marker=pathlib.Path(sys.argv[1]); "
+            "status=pathlib.Path(sys.argv[2]); marker.touch(); "
+            "status.parent.mkdir(parents=True); "
+            "status.write_text(json.dumps({'status':'completed'}))",
+            str(later_marker),
+            str(later_status),
+        ),
+        later_status,
+    )
+    tasks = (missing, later)
+
+    with pytest.raises(RuntimeError, match="missing-first"):
+        _single_worker_executor(tmp_path, "drain-pass").submit(
+            _plan(tmp_path, tasks), tasks, _request(tasks)
+        )
+
+    assert later_marker.is_file()
+    assert read_json(missing.logs[0])["status"] == "failed"
+    assert read_json(later.logs[0])["status"] == "success"
+    assert {status["status"] for status in _attempt_statuses(tmp_path)} == {
+        "failed",
+        "success",
+    }
+
+
+def test_fatal_worker_error_wins_over_completion_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    completion_ready = threading.Event()
+    stop_observed = threading.Event()
+    real_event = threading.Event
+
+    class TrackingStopEvent:
+        def __init__(self) -> None:
+            self._event = real_event()
+
+        def is_set(self) -> bool:
+            return self._event.is_set()
+
+        def set(self) -> None:
+            self._event.set()
+            stop_observed.set()
+
+    monkeypatch.setattr(
+        executors_module,
+        "threading",
+        SimpleNamespace(
+            Event=TrackingStopEvent,
+            Thread=threading.Thread,
+            Lock=threading.Lock,
+        ),
+    )
+    original_execute = AllocationPoolExecutor._execute_task
+
+    def controlled_execute(self, **kwargs):
+        task = kwargs["task"]
+        if task.run_id == "completion":
+            try:
+                return original_execute(self, **kwargs)
+            except RuntimeError:
+                completion_ready.set()
+                assert stop_observed.wait(timeout=5)
+                raise
+        record = original_execute(self, **kwargs)
+        if task.run_id == "fatal":
+            assert completion_ready.wait(timeout=5)
+            raise ValueError("fatal worker error")
+        return record
+
+    monkeypatch.setattr(AllocationPoolExecutor, "_execute_task", controlled_execute)
+    completion = _status_task(
+        tmp_path,
+        "completion",
+        (sys.executable, "-c", "raise SystemExit(0)"),
+        tmp_path / "completion" / "status.json",
+    )
+    fatal = _task(
+        tmp_path,
+        "fatal",
+        (sys.executable, "-c", "raise SystemExit(9)"),
+    )
+    queued_marker = tmp_path / "queued-ran"
+    queued = _task(
+        tmp_path,
+        "queued",
+        (
+            sys.executable,
+            "-c",
+            "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+            str(queued_marker),
+        ),
+    )
+    tasks = (completion, fatal, queued)
+    executor = AllocationPoolExecutor(
+        pass_id="fatal-priority-pass",
+        n_workers=2,
+        visibility_variable="TEST_VISIBLE_DEVICE",
+        visibility_values=("worker-0", "worker-1"),
+        run_root=tmp_path / "pool",
+        deadline_guard_min=0,
+    )
+
+    with pytest.raises(ValueError, match="fatal worker error"):
+        executor.submit(_plan(tmp_path, tasks), tasks, _request(tasks))
+
+    assert read_json(completion.logs[0])["status"] == "failed"
+    assert read_json(completion.logs[0])["completion_error"]
+    assert read_json(fatal.logs[0])["status"] == "failed"
+    assert read_json(fatal.logs[0])["returncode"] == 9
+    assert not queued_marker.exists()
+    assert not pass_claim_path(
+        tmp_path / "pool",
+        "fatal-priority-pass",
+        queued.task_id,
+    ).exists()
+
+
+def test_nonzero_exit_remains_failed(tmp_path: Path) -> None:
+    status_path = tmp_path / "nonzero" / "status.json"
+    task = _status_task(
+        tmp_path,
+        "nonzero",
+        (sys.executable, "-c", "raise SystemExit(7)"),
+        status_path,
+    )
+
+    records = _single_worker_executor(tmp_path, "nonzero-pass").submit(
+        _plan(tmp_path, (task,)), (task,), _request((task,))
+    )
+
+    assert len(records) == 1
+    attempt = _attempt_statuses(tmp_path)[0]
+    assert attempt["status"] == "failed"
+    assert attempt["returncode"] == 7
+    assert "completion_error" not in attempt
+
+
+def test_completed_task_is_skipped_before_claiming(tmp_path: Path) -> None:
+    status_path = tmp_path / "already-completed" / "status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_text('{"status":"completed"}')
+    task = _status_task(
+        tmp_path,
+        "already-completed",
+        ("/bin/false",),
+        status_path,
+    )
+
+    records = _single_worker_executor(tmp_path, "skip-pass").submit(
+        _plan(tmp_path, (task,)), (task,), _request((task,))
+    )
+
+    assert records == ()
+    assert not pass_claim_path(tmp_path / "pool", "skip-pass", task.task_id).exists()
+    assert not Path(task.logs[0]).exists()
 
 
 def _run_pool_process(
