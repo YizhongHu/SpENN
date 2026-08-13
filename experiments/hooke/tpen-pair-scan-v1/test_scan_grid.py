@@ -647,6 +647,12 @@ def test_the_holdout_seed_never_influences_the_champion_it_measures(tmp_path: Pa
     assert {row["minor_id"] for row in champions} == {BEST_ON_SELECTION}
     assert BEST_ON_HOLDOUT not in {row["minor_id"] for row in champions}
     assert report["overall_champion"].endswith(BEST_ON_SELECTION)
+    # The cross-bucket champion is chosen on the same sample as the per-bucket
+    # ones. Its seed count is the only observable that distinguishes "selected on
+    # {0,1}" from "selected on {0,1,2}", because a three-row median absorbs one
+    # excursion and would leave the identity unchanged.
+    assert int(report["overall_metric_seed_n"]) == len(SELECTION_SEEDS)
+    assert int(report["secondary_metric_seed_n"]) == len(SELECTION_SEEDS)
 
     # The champion's own metric is re-read on the row that had no vote.
     for row in champions:

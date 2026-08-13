@@ -105,6 +105,14 @@ HOLDOUT_COLUMNS = (
 )
 
 
+def _seed_count(row: dict[str, Any] | None, metric: str) -> str:
+    """Return how many seed rows backed one selected metric value."""
+
+    if row is None or not metric:
+        return ""
+    return str(row.get(metric.replace("_seed_median", "_seed_n"), ""))
+
+
 def _holdout_columns(
     winner: dict[str, Any] | None,
     *,
@@ -360,11 +368,18 @@ def select_champions(
         "overall_champion": None if overall is None else overall.get("config_id", ""),
         "overall_metric": overall_metric,
         "overall_metric_value": overall_metric_value,
+        # How many seed rows stand behind the cross-bucket headline number. Under
+        # split-sample selection this must equal the SELECTION sample size, not the
+        # collection's seed count: it is the one place a cross-bucket selection
+        # that quietly read every seed row becomes visible, because a seed median
+        # over three rows is robust to one excursion and would hide the leak.
+        "overall_metric_seed_n": _seed_count(overall, overall_metric),
         "overall_decisions": overall_decisions,
         "secondary_champion_kind": secondary_name,
         "secondary_champion": None if secondary is None else secondary.get("config_id", ""),
         "secondary_metric": secondary_metric,
         "secondary_metric_value": secondary_metric_value,
+        "secondary_metric_seed_n": _seed_count(secondary, secondary_metric),
         "secondary_decisions": secondary_decisions,
         "decisions_by_group": decisions_by_group,
         "used_status_fallback": used_fallback,
@@ -614,6 +629,8 @@ def select(
         "overall_champion": selection["overall_champion"],
         "overall_metric": selection["overall_metric"],
         "overall_metric_value": selection["overall_metric_value"],
+        "overall_metric_seed_n": selection["overall_metric_seed_n"],
+        "secondary_metric_seed_n": selection["secondary_metric_seed_n"],
         "overall_decisions": selection["overall_decisions"],
         "secondary_champion_kind": selection["secondary_champion_kind"],
         "secondary_metric": selection["secondary_metric"],
