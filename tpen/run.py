@@ -111,13 +111,13 @@ def prepare_run_context(
     OmegaConf.update(source_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
     resolved_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=False))
     OmegaConf.update(resolved_cfg, "run.timezone", run_clock.timezone, merge=False, force_add=True)
-    run_name = str(
-        OmegaConf.select(
-            resolved_cfg,
-            "experiment.run_name",
-            default=OmegaConf.select(resolved_cfg, "experiment.name", default="tpen_run"),
-        )
-    )
+    run_name = OmegaConf.select(resolved_cfg, "experiment.run_name")
+    if run_name is None:
+        run_name = OmegaConf.select(resolved_cfg, "experiment.name")
+    if run_name is None:
+        run_name = "tpen_run"
+    run_name = str(run_name)
+    OmegaConf.update(resolved_cfg, "experiment.run_name", run_name, merge=False, force_add=True)
     run_id = OmegaConf.select(resolved_cfg, "run.run_id", default=None)
     if run_id is None:
         run_id = generate_run_id(run_name, clock=run_clock)
