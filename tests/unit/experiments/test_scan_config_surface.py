@@ -661,6 +661,49 @@ def test_accelerator_synchronize_defaults_false_and_flips_from_one_path(stage: s
             assert entry.accelerator_synchronize is expected, f"{entry._target_} ignored the knob"
 
 
+def test_the_terminal_checkpoint_is_not_cadence_gated() -> None:
+    """Validation must be able to restore whatever `max_steps` the probe picks.
+
+    `Checkpoint` shares ONE `StepCadenceGate` between its periodic and its
+    terminal write (``callback/checkpoint.py:190,218``), and ``_write_terminal``
+    consults that gate with the final iteration index. An `every_n_steps: N`
+    therefore suppresses the terminal checkpoint whenever ``max_steps`` is not a
+    multiple of N — silently: training reports ``completed``, and the checkpoints
+    directory is empty. A 60-step smoke against ``every_n_steps: 100`` reproduced
+    it, and validation died on the missing COMPLETE marker.
+
+    Since the P0-e probe owns ``max_steps``, no arithmetic relationship between
+    two independently-chosen numbers is acceptable here. The gate is left at its
+    default window instead, so the terminal write always fires.
+    """
+
+    checkpoint = [
+        entry
+        for entry in _raw("train").callbacks
+        if entry._target_ == "tpen.callback.Checkpoint"
+    ]
+
+    assert len(checkpoint) == 1
+    assert checkpoint[0].terminal is True
+    assert "every_n_steps" not in checkpoint[0], (
+        "every_n_steps on Checkpoint gates the TERMINAL write too, so validation "
+        "silently has nothing to restore unless max_steps divides it"
+    )
+    assert "every_n_steps" not in _raw("train").checkpoint
+
+
+def test_the_eval_stage_requires_an_injected_checkpoint_path() -> None:
+    """`load.path` is mandatory-missing, so a forgotten injection fails loudly.
+
+    A default would be worse than no value: validation would restore some other
+    run's model and report plausible numbers for the wrong row.
+    """
+
+    assert OmegaConf.is_missing(_raw("eval").load, "path")
+    assert _raw("eval").load.mode == "model_only"
+    assert _raw("eval").load.strict is True
+
+
 def test_train_timing_cadence_does_not_log_every_step() -> None:
     """A rolling mean already carries the signal; 500 x 288 rows do not add to it.
 
