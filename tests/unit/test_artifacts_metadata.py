@@ -184,6 +184,57 @@ def test_prepare_run_context_null_run_name_falls_back_to_experiment_name(tmp_pat
     assert context.metadata.run_id.split("_")[2] == "metadata"
 
 
+@pytest.mark.parametrize("run_name", [None, "", "   "])
+@pytest.mark.parametrize("experiment_name", [None, "", "   "])
+def test_prepare_run_context_normalizes_blank_durable_names(
+    tmp_path: Path, run_name: str | None, experiment_name: str | None
+) -> None:
+    cfg = _run_cfg(tmp_path)
+    cfg.experiment.run_name = run_name
+    cfg.experiment.name = experiment_name
+
+    context = prepare_run_context(cfg, config_path="test.yaml", command="pytest")
+
+    assert context.metadata.run_name == "tpen_run"
+    assert context.cfg.experiment.run_name == "tpen_run"
+    assert "_tpen_run_" in context.metadata.run_id
+    run_start = json.loads((context.run_dir / "run_start.json").read_text())
+    assert run_start["run_id"] == context.metadata.run_id
+    assert all(part and part != "None" for part in context.run_dir.parts)
+    assert context.artifact_manager.experiment == "experiment"
+
+
+@pytest.mark.parametrize("run_name", [None, "", "   "])
+def test_prepare_run_context_uses_nonblank_experiment_name_for_namespace(
+    tmp_path: Path, run_name: str | None
+) -> None:
+    cfg = _run_cfg(tmp_path)
+    cfg.experiment.run_name = run_name
+    cfg.experiment.name = "  named experiment  "
+
+    context = prepare_run_context(cfg, config_path="test.yaml", command="pytest")
+
+    assert context.metadata.run_name == "named experiment"
+    assert context.artifact_manager.experiment == "named experiment"
+    assert context.run_dir.parts[-3] == "named experiment"
+    assert "_named_experiment_" in context.metadata.run_id
+
+
+def test_prepare_run_context_prefers_nonblank_run_name_and_strips_it(tmp_path: Path) -> None:
+    cfg = _run_cfg(tmp_path)
+    cfg.experiment.run_name = "  configured run  "
+    cfg.experiment.name = "experiment family"
+
+    context = prepare_run_context(cfg, config_path="test.yaml", command="pytest")
+
+    assert context.metadata.run_name == "configured run"
+    assert context.cfg.experiment.run_name == "configured run"
+    assert context.artifact_manager.experiment == "experiment family"
+    assert "_configured_run_" in context.metadata.run_id
+    run_start = json.loads((context.run_dir / "run_start.json").read_text())
+    assert run_start["run_id"] == context.metadata.run_id
+
+
 def _run_cfg(tmp_path: Path) -> DictConfig:
     return OmegaConf.create(
         {
