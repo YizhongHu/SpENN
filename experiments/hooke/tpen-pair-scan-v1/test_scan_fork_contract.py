@@ -518,13 +518,57 @@ def test_the_frozen_v3_study_still_holds_every_dropped_file(relative_path):
     assert (V3_STUDY_DIR / relative_path).is_file()
 
 
+def _defined_names(path: Path) -> set[str]:
+    """Return the top-level function and class names a module defines."""
+
+    return {
+        node.name
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
 def test_the_forked_report_is_a_rewrite_not_a_copy_of_the_v3_report():
-    forked = (STUDY_DIR / "final_report.py").read_text()
-    original = (V3_STUDY_DIR / "final_report.py").read_text()
-    assert forked != original
-    assert len(forked) < len(original) / 4
-    for absent in ("feature_trace_stability", "readout_trace_stability", "basis_update"):
-        assert absent not in forked, absent
+    forked = STUDY_DIR / "final_report.py"
+    original = V3_STUDY_DIR / "final_report.py"
+    assert forked.read_text() != original.read_text()
+    # A retarget would have kept the v3 figure/section builders. A rewrite shares
+    # only the stage entry points.
+    shared = _defined_names(forked) & _defined_names(original)
+    assert shared <= {"main", "parse_args", "build_report"}, sorted(shared)
+    assert len(_defined_names(original)) > 4 * len(_defined_names(forked))
+
+
+def _live_strings_and_identifiers(path: Path) -> set[str]:
+    """Return a module's non-docstring string constants and identifier names.
+
+    Comments are absent from the AST and module/class/function docstrings are
+    excluded deliberately: a comment or docstring that explains WHY a v3 metric
+    was dropped is documentation, not a live reference to it. What must not
+    survive is a metric name the code still reads, writes, or iterates.
+    """
+
+    tree = ast.parse(path.read_text())
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", None)
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstrings.add(id(body[0].value))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            names.add(node.value)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    return names
 
 
 @pytest.mark.parametrize(
@@ -537,15 +581,27 @@ def test_the_forked_report_is_a_rewrite_not_a_copy_of_the_v3_report():
         "eval/energy/",
         "update_normalization",
         "feature_normalization",
+        "basis_update",
     ],
 )
 def test_no_forked_module_names_a_metric_or_axis_the_tpen_suite_lacks(absent):
+    # Test modules are excluded: they must be able to name a dropped metric in
+    # order to assert it is gone.
     offenders = [
         str(path.relative_to(STUDY_DIR))
         for path in _study_python_files()
-        if absent in path.read_text()
+        if not path.name.startswith("test_")
+        and any(absent in name for name in _live_strings_and_identifiers(path))
     ]
     assert offenders == []
+
+
+def test_the_dropped_metric_scan_would_notice_a_live_reference():
+    # Guards the parametrized test above: it must be able to see a name that IS
+    # live in the study, otherwise its empty result proves nothing.
+    live = _live_strings_and_identifiers(STUDY_DIR / "final_collect.py")
+    assert any("eval/mcmc_energy/" in name for name in live)
+    assert "full_model_antisymmetry" in live
 
 
 def test_final_collect_projects_exactly_the_tpen_eval_suite():

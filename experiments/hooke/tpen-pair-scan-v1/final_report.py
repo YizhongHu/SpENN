@@ -348,7 +348,8 @@ def save_training_curve_figure(
         y_label="train/energy (Ha)",
         title="training energy by report axis",
         panel_keys=sorted({point["panel_key"] for point in series}),
-        panel_title=row_label,
+        # `panel_title` is a key -> title callable, not a label string.
+        panel_title=lambda key: f"{row_label}={key}",
         legend_title=col_label,
     )
 

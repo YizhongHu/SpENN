@@ -1,4 +1,4 @@
-"""Study-level tests for the pair-stability V3 major/minor grid."""
+"""Study-level tests for the TPEN pair-scan major/minor grid."""
 
 from __future__ import annotations
 
@@ -19,10 +19,86 @@ from omegaconf import OmegaConf
 
 STUDY_DIR = Path(__file__).resolve().parent
 CONFIGS = STUDY_DIR / "configs"
-GRID = CONFIGS / "grid.yaml"
-PILOT_GRID = CONFIGS / "pilot.yaml"
-PILOT_SMOKE_GRID = CONFIGS / "pilot_smoke.yaml"
-SMOKE_GRID = CONFIGS / "smoke.yaml"
+
+# The study ships no checked-in grid -- a later layer owns the real one -- so the
+# tests compile the scan grid themselves under ``tmp_path`` (see ``_write_grid``).
+# ``config``/``validation_config`` stay repo-root-relative, so ``plan.main`` still
+# has to run with the repo root as cwd, which is where pytest is invoked from.
+_GRID_BODY = """\
+study: tpen_pair_scan_v1
+config: experiments/hooke/tpen-pair-scan-v1/configs/train.yaml
+validation_config: experiments/hooke/tpen-pair-scan-v1/configs/eval.yaml
+
+choice_libraries:
+  - path: experiments/hooke/choices/basis_levels.yaml
+    provides: choices.basis
+
+config_snapshots:
+  train: train_config.yaml
+  validation: validation_config.yaml
+
+major_grid:
+  basis: [no-basis, hooke-total-shell]
+  activation: [SiLU, Tanh]
+
+minor_grid:
+  lr: [1.0e-3, 3.0e-4]
+  channels: [8, 16]
+
+scan_seed_axis: seed_index
+scan_seed_rows:
+  - {seed_index: 0, training_model_seed: 0, training_sampler_seed: 10, validation_sampler_seed: 20}
+  - {seed_index: 1, training_model_seed: 1, training_sampler_seed: 11, validation_sampler_seed: 21}
+
+blinding:
+  enabled_by_default: true
+  slot_prefixes: {basis: B, activation: A}
+
+axis_id_labels: {basis: b, activation: act, lr: lr, channels: ch, seed_index: seed}
+
+axis_overrides:
+  basis: run_parameters.basis_slot
+  activation: run_parameters.activation_slot
+  lr: run_parameters.lr
+  channels: run_parameters.channels
+
+choice_validation:
+  basis: {choices_path: choices.basis, tags_path: 'choices.basis.{value}.tags'}
+  activation: {choices_path: choices.activation, tags_path: 'choices.activation.{value}.tags'}
+
+seed_overrides:
+  scan_train:
+    run_parameters.training_model_seed: training_model_seed
+    run_parameters.training_sampler_seed: training_sampler_seed
+  validation:
+    run_parameters.training_model_seed: training_model_seed
+    run_parameters.validation_sampler_seed: validation_sampler_seed
+  final_train:
+    run_parameters.training_model_seed: final_train_model_seed
+    run_parameters.training_sampler_seed: final_train_sampler_seed
+  final_eval:
+    run_parameters.validation_sampler_seed: final_eval_sampler_seed
+
+final_seed_sequences:
+  final_train_model_seed: {start: 100, step: 1}
+  final_train_sampler_seed: {start: 1000, step: 1}
+  final_eval_sampler_seed: {start: 10000, step: 1}
+
+champions:
+  - name: energy
+    selector: metric_ladder
+    tasks: [mcmc_energy]
+    metric_template: 'eval/{task}/local_energy_mean'
+    mode: min
+    fallback_metric: 'eval/mcmc_energy/local_energy_mean'
+    fallback_mode: min
+
+champion_reference_metrics:
+  - {label: mcmc_energy, metric: 'eval/mcmc_energy/local_energy_mean'}
+  - {label: stratified_variance, metric: 'eval/stratified_geometry/local_energy_variance'}
+
+final_replicates: 9
+"""
 
 while str(STUDY_DIR) in sys.path:
     sys.path.remove(str(STUDY_DIR))
@@ -40,7 +116,6 @@ _STUDY_TOP_LEVEL_MODULES = {
     "run_ids",
     "select_champions",
     "stats",
-    "sync",
     "train",
     "utils",
     "validate",
@@ -52,7 +127,7 @@ for module_name in list(sys.modules):
 
 def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
     path = STUDY_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"pair_stability_v3_{name}", path)
+    spec = importlib.util.spec_from_file_location(f"tpen_pair_scan_v1_{name}", path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -98,9 +173,19 @@ def _write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
+def _write_grid(tmp_path: Path) -> Path:
+    # Deterministic: repeated calls rewrite the same bytes, so a test that needs
+    # both the planned results and the grid values can call this again.
+    grid_path = tmp_path / "grid.yaml"
+    grid_path.write_text(f"results_root: {tmp_path / 'results'}\n{_GRID_BODY}")
+    return grid_path
+
+
 def _planned_results(tmp_path: Path) -> Path:
     results_root = tmp_path / "results"
-    code = plan.main(["--grid", str(GRID), "--results-root", str(results_root), "--attempt-id", ATTEMPT])
+    code = plan.main(
+        ["--grid", str(_write_grid(tmp_path)), "--results-root", str(results_root), "--attempt-id", ATTEMPT]
+    )
     assert code == 0
     return results_root
 
@@ -520,7 +605,7 @@ def test_v2_train_and_validation_default_through_latest_pointers(tmp_path: Path)
     planned, skipped = validate.plan_validation_jobs(
         [job],
         args=args,
-        study="pair_stability_v3",
+        study="tpen_pair_scan_v1",
         results_root=results_root,
         grid_attempt_id=ATTEMPT,
         validation_config="validation.yaml",
@@ -566,20 +651,20 @@ def test_v3_train_main_writes_toolkit_stage_plan(tmp_path: Path, monkeypatch: py
     )
 
     assert code == 0
-    assert len(submitted_commands) == 1152
+    assert len(submitted_commands) == 32
     assert captured["kwargs"]["backend"] == "local"
     plan_dir = results_root / "01_train" / "stage_plans" / ATTEMPT
     stage_plan = StagePlan.read(plan_dir)
     manifest = json.loads((plan_dir / "stage_manifest.json").read_text())
     tasks = [json.loads(line) for line in (plan_dir / "tasks.jsonl").read_text().splitlines()]
     executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
-    assert stage_plan.n_tasks == 1152
+    assert stage_plan.n_tasks == 32
     assert stage_plan.tasks[0].stage == "01_train"
-    assert manifest["study"] == "pair_stability_v3"
+    assert manifest["study"] == "tpen_pair_scan_v1"
     assert manifest["stage"] == "01_train"
-    assert manifest["n_tasks"] == 1152
-    assert len(tasks) == 1152
-    assert len(executions) == 1152
+    assert manifest["n_tasks"] == 32
+    assert len(tasks) == 32
+    assert len(executions) == 32
     assert tasks[0]["completion"]["policy"] == "status_completed_with_checkpoint"
     assert executions[0]["launcher_job_id"] == "local-train-0"
 
@@ -601,7 +686,7 @@ def test_v2_validation_defaults_to_single_latest_train_attempt(tmp_path: Path) -
     planned, skipped = validate.plan_validation_jobs(
         [job],
         args=args,
-        study="pair_stability_v3",
+        study="tpen_pair_scan_v1",
         results_root=results_root,
         grid_attempt_id=ATTEMPT,
         validation_config="validation.yaml",
@@ -618,7 +703,7 @@ def test_v2_validation_defaults_to_single_latest_train_attempt(tmp_path: Path) -
     planned, skipped = validate.plan_validation_jobs(
         [job],
         args=args,
-        study="pair_stability_v3",
+        study="tpen_pair_scan_v1",
         results_root=results_root,
         grid_attempt_id=ATTEMPT,
         validation_config="validation.yaml",
@@ -644,7 +729,7 @@ def test_v3_validation_attempt_id_agrees_across_plan_and_stage_plan(tmp_path: Pa
     planned, skipped = validate.plan_validation_jobs(
         [job],
         args=args,
-        study="pair_stability_v3",
+        study="tpen_pair_scan_v1",
         results_root=results_root,
         grid_attempt_id=ATTEMPT,
         validation_config="validation.yaml",
@@ -695,7 +780,7 @@ def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> 
         job_name="pair-stability-v2-validate-launcher",
         partition="test",
         timeout_min=19,
-        study="pair_stability_v3",
+        study="tpen_pair_scan_v1",
     )
 
     command, kwargs = calls[0]
@@ -715,11 +800,12 @@ def test_v2_wait_job_submits_dependent_launcher(tmp_path: Path, monkeypatch) -> 
 
 def test_v2_blinding_is_reproducible_by_seed(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
+    grid_path = _write_grid(tmp_path)
     for attempt, seed in (("SAME1", 811), ("SAME2", 811), ("DIFF", 812)):
         code = plan.main(
             [
                 "--grid",
-                str(GRID),
+                str(grid_path),
                 "--results-root",
                 str(results_root),
                 "--attempt-id",
@@ -744,7 +830,7 @@ def test_v3_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     grid_attempt = layout.grid_attempt_dir(results_root, ATTEMPT)
     manifest = json.loads((grid_attempt / "manifest.json").read_text())
 
-    assert manifest["study"] == "pair_stability_v3"
+    assert manifest["study"] == "tpen_pair_scan_v1"
     assert manifest["config_snapshots"] == {
         "train": "train_config.yaml",
         "validation": "validation_config.yaml",
@@ -752,11 +838,11 @@ def test_v3_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     assert (grid_attempt / "train_config.yaml").is_file()
     assert (grid_attempt / "validation_config.yaml").is_file()
     assert not (grid_attempt / "smoke_config.yaml").exists()
-    assert not (grid_attempt / "pair_stability.yaml").exists()
-    assert not (grid_attempt / "pair_validation.yaml").exists()
+    assert not (grid_attempt / "train.yaml").exists()
+    assert not (grid_attempt / "eval.yaml").exists()
     assert manifest["grid_schema"] == "major_minor_scan"
-    assert manifest["major_axes"] == ["basis", "update_normalization", "feature_normalization"]
-    assert manifest["minor_axes"] == ["lr", "channels", "activation"]
+    assert manifest["major_axes"] == ["basis", "activation"]
+    assert manifest["minor_axes"] == ["lr", "channels"]
     assert manifest["scan_seed_axis"] == "seed_index"
     assert manifest["scan_seed_rows"] == [
         {
@@ -771,51 +857,35 @@ def test_v3_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
             "training_sampler_seed": 11,
             "validation_sampler_seed": 21,
         },
-        {
-            "seed_index": 2,
-            "training_model_seed": 2,
-            "training_sampler_seed": 12,
-            "validation_sampler_seed": 22,
-        },
     ]
     assert manifest["axis_id_labels"] == {
         "basis": "b",
-        "update_normalization": "u",
-        "feature_normalization": "f",
+        "activation": "act",
         "lr": "lr",
         "channels": "ch",
-        "activation": "act",
         "seed_index": "seed",
     }
     assert manifest["axis_overrides"] == {
         "basis": "run_parameters.basis_slot",
-        "update_normalization": "run_parameters.update_normalization_slot",
-        "feature_normalization": "run_parameters.feature_normalization_slot",
+        "activation": "run_parameters.activation_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
-        "activation": "run_parameters.activation_slot",
     }
     assert manifest["choice_validation"]["basis"]["choices_path"] == "choices.basis"
-    assert manifest["choice_validation"]["update_normalization"]["choices_path"] == "choices.update_normalization"
-    assert manifest["choice_validation"]["feature_normalization"]["choices_path"] == "choices.feature_normalization"
     assert manifest["choice_validation"]["activation"]["choices_path"] == "choices.activation"
     assert [champion["name"] for champion in manifest["champions"]] == ["energy"]
     assert manifest["champion_kinds"] == ["energy"]
     assert manifest["champions"][0]["selector"] == "metric_ladder"
     assert manifest["seed_overrides"]["scan_train"] == {
-        "run_parameters.seed": "training_model_seed",
-        "runtime.seed": "training_model_seed",
-        "sampler.seed": "training_sampler_seed",
+        "run_parameters.training_model_seed": "training_model_seed",
+        "run_parameters.training_sampler_seed": "training_sampler_seed",
     }
     assert manifest["seed_overrides"]["validation"] == {
-        "run_parameters.seed": "training_model_seed",
-        "runtime.seed": "training_model_seed",
-        "evaluation.seed": "validation_sampler_seed",
+        "run_parameters.training_model_seed": "training_model_seed",
+        "run_parameters.validation_sampler_seed": "validation_sampler_seed",
     }
     assert manifest["seed_overrides"]["final_eval"] == {
-        "run_parameters.seed": "final_eval_sampler_seed",
-        "runtime.seed": "final_eval_sampler_seed",
-        "evaluation.seed": "final_eval_sampler_seed",
+        "run_parameters.validation_sampler_seed": "final_eval_sampler_seed",
     }
     assert manifest["final_seed_sequences"] == {
         "final_train_model_seed": {"start": 100, "step": 1},
@@ -824,59 +894,51 @@ def test_v3_plan_records_major_minor_scan_manifest(tmp_path: Path) -> None:
     }
     assert manifest["static_overrides"] == {}
     assert manifest["final_replicates"] == 9
-    assert manifest["n_jobs"] == 1152
+    assert manifest["n_jobs"] == 32
     assert manifest["blinding"]["enabled"] is True
     assert manifest["blinding"]["blind_seed"] == 0
 
+    grid = OmegaConf.load(_write_grid(tmp_path))
     unblind = json.loads((grid_attempt / "unblind.json").read_text())
-    assert set(unblind["axes"]) == {"basis", "update_normalization", "feature_normalization"}
-    assert set(unblind["axes"]["basis"]["slot_to_value"].values()) == set(OmegaConf.load(GRID).major_grid.basis)
-    assert set(unblind["axes"]["update_normalization"]["slot_to_value"].values()) == set(
-        OmegaConf.load(GRID).major_grid.update_normalization
-    )
-    assert set(unblind["axes"]["feature_normalization"]["slot_to_value"].values()) == set(
-        OmegaConf.load(GRID).major_grid.feature_normalization
-    )
+    assert set(unblind["axes"]) == {"basis", "activation"}
+    assert set(unblind["axes"]["basis"]["slot_to_value"].values()) == set(grid.major_grid.basis)
+    assert set(unblind["axes"]["activation"]["slot_to_value"].values()) == set(grid.major_grid.activation)
 
-    grid = OmegaConf.load(GRID)
     jobs = manifest["jobs"]
     assert {job["choices"]["basis"] for job in jobs} == set(unblind["axes"]["basis"]["slot_to_value"])
-    assert {job["choices"]["update_normalization"] for job in jobs} == set(
-        unblind["axes"]["update_normalization"]["slot_to_value"]
-    )
-    assert {job["choices"]["feature_normalization"] for job in jobs} == set(
-        unblind["axes"]["feature_normalization"]["slot_to_value"]
+    assert {job["choices"]["activation"] for job in jobs} == set(
+        unblind["axes"]["activation"]["slot_to_value"]
     )
     assert {float(job["choices"]["lr"]) for job in jobs} == {float(value) for value in grid.minor_grid.lr}
     assert {job["choices"]["channels"] for job in jobs} == {int(value) for value in grid.minor_grid.channels}
-    assert {job["choices"]["activation"] for job in jobs} == set(grid.minor_grid.activation)
-    assert {job["choices"]["seed_index"] for job in jobs} == {0, 1, 2}
+    assert {job["choices"]["seed_index"] for job in jobs} == {0, 1}
 
     job = jobs[0]
     assert job["run_id"].startswith("b-")
-    assert "_u-" in job["run_id"]
-    assert "_f-" in job["run_id"]
+    assert "_act-" in job["run_id"]
     assert job["minor_id"].startswith("lr-")
     assert job["minor_choices"]["channels"] == 8
-    assert job["scan_seed"] in {0, 1, 2}
+    assert job["scan_seed"] in {0, 1}
     assert {
         key: job["seed_values"][key]
         for key in ("seed_index", "training_model_seed", "training_sampler_seed", "validation_sampler_seed")
     } in manifest["scan_seed_rows"]
     assert job["seed_overrides"]["scan_train"] == {
-        "run_parameters.seed": job["seed_values"]["training_model_seed"],
-        "runtime.seed": job["seed_values"]["training_model_seed"],
-        "sampler.seed": job["seed_values"]["training_sampler_seed"],
+        "run_parameters.training_model_seed": job["seed_values"]["training_model_seed"],
+        "run_parameters.training_sampler_seed": job["seed_values"]["training_sampler_seed"],
     }
-    assert "study.name=pair_stability_v3" in job["overrides"]
-    assert "experiment.name=pair_stability_v3" in job["overrides"]
-    assert "experiment.run_name=pair_stability_v3_train" in job["overrides"]
-    assert f"runtime.seed={job['seed_values']['training_model_seed']}" in job["overrides"]
-    assert f"sampler.seed={job['seed_values']['training_sampler_seed']}" in job["overrides"]
+    assert "study.name=tpen_pair_scan_v1" in job["overrides"]
+    assert "experiment.name=tpen_pair_scan_v1" in job["overrides"]
+    assert "experiment.run_name=tpen_pair_scan_v1_train" in job["overrides"]
+    assert (
+        f"run_parameters.training_model_seed={job['seed_values']['training_model_seed']}" in job["overrides"]
+    )
+    assert (
+        f"run_parameters.training_sampler_seed={job['seed_values']['training_sampler_seed']}"
+        in job["overrides"]
+    )
     assert any(str(override).startswith("run_parameters.basis_slot=B") for override in job["overrides"])
-    assert any(str(override).startswith("run_parameters.update_normalization_slot=U") for override in job["overrides"])
-    assert any(str(override).startswith("run_parameters.feature_normalization_slot=F") for override in job["overrides"])
-    assert any(str(override).startswith("run_parameters.activation_slot=") for override in job["overrides"])
+    assert any(str(override).startswith("run_parameters.activation_slot=A") for override in job["overrides"])
 
 
 def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) -> None:
@@ -891,190 +953,20 @@ def test_v2_validation_config_resolves_from_manifest_snapshot(tmp_path: Path) ->
     assert resolved == str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml")
 
 
-def test_v3_config_choices_cover_grid_axes() -> None:
-    grid = OmegaConf.load(GRID)
-    config_paths = [CONFIGS / "pair_stability.yaml", CONFIGS / "pair_validation.yaml"]
+# The study configs own only the activation choice table now; `choices.basis` is
+# merged in from the shared library the grid declares, and that composition is
+# the fork-contract file's subject.
+def test_v3_config_choices_cover_activation_grid_axis(tmp_path: Path) -> None:
+    grid = OmegaConf.load(_write_grid(tmp_path))
+    config_paths = [CONFIGS / "train.yaml", CONFIGS / "eval.yaml"]
     for config_path in config_paths:
         cfg = OmegaConf.load(config_path)
-        assert set(grid.major_grid.basis) <= set(cfg.choices.basis)
-        assert set(grid.major_grid.update_normalization) <= set(cfg.choices.update_normalization)
-        assert set(grid.major_grid.feature_normalization) <= set(cfg.choices.feature_normalization)
-        assert set(grid.minor_grid.activation) <= set(cfg.choices.activation)
+        assert set(grid.major_grid.activation) <= set(cfg.choices.activation)
 
-        for basis in grid.major_grid.basis:
-            resolved = _config_with_overrides(config_path, [f"run_parameters.basis_slot={basis}"])
-            assert OmegaConf.select(resolved, "model.basis._target_")
-
-        for update in grid.major_grid.update_normalization:
-            resolved = _config_with_overrides(config_path, [f"run_parameters.update_normalization_slot={update}"])
-            update_norm = OmegaConf.select(resolved, "model.layers.0.update_normalization")
-            update_envelope = OmegaConf.select(resolved, "model.layers.0.update_envelope")
-            assert update_norm is not None or update_envelope is not None or update == "no-update-normalization"
-
-        for feature in grid.major_grid.feature_normalization:
-            resolved = _config_with_overrides(config_path, [f"run_parameters.feature_normalization_slot={feature}"])
-            feature_norm = OmegaConf.select(resolved, "model.layers.0.feature_normalization")
-            feature_envelope = OmegaConf.select(resolved, "model.layers.0.feature_envelope")
-            assert feature_norm is not None or feature_envelope is not None or feature == "no-feature-normalization"
-
-        for activation in grid.minor_grid.activation:
+        for activation in grid.major_grid.activation:
             resolved = _config_with_overrides(config_path, [f"run_parameters.activation_slot={activation}"])
-            assert OmegaConf.select(resolved, "model.layers.0.irrep_activation.gate._target_")
-
-
-@pytest.mark.parametrize("config_name", ["pair_stability.yaml", "pair_validation.yaml"])
-def test_v3_configs_expose_opposite_spin_cusp_range_override(config_name: str) -> None:
-    config_path = CONFIGS / config_name
-    cusp_path = "model.envelope.envelopes.1"
-
-    default = _config_with_overrides(config_path, [])
-    assert OmegaConf.select(default, f"{cusp_path}._target_") == "spenn.nn.ElectronElectronCusp"
-    assert OmegaConf.select(default, f"{cusp_path}.opposite_range_parameter") == pytest.approx(0.25)
-    assert OmegaConf.select(default, f"{cusp_path}.trainable_range", default=False) is False
-
-    overridden = _config_with_overrides(config_path, ["model_params.cusp_opposite_range_parameter=0.5"])
-    assert OmegaConf.select(overridden, f"{cusp_path}.opposite_range_parameter") == pytest.approx(0.5)
-
-def test_v3_pilot_grid_scans_training_budget_with_fixed_channel_and_activation(tmp_path: Path) -> None:
-    results_root = tmp_path / "results"
-    code = plan.main(["--grid", str(PILOT_GRID), "--results-root", str(results_root), "--attempt-id", "PILOT"])
-    assert code == 0
-
-    grid_attempt = results_root / "00_grid" / "PILOT"
-    manifest = json.loads((grid_attempt / "manifest.json").read_text())
-    assert manifest["major_axes"] == ["max_steps", "sampler_n_steps"]
-    assert manifest["minor_axes"] == ["basis", "mechanism", "lr", "channels"]
-    assert manifest["major_grid"] == {"max_steps": [100, 200, 500], "sampler_n_steps": [5, 10]}
-    assert manifest["minor_grid"]["mechanism"] == [
-        "baseline",
-        "feature_gaussian_norm",
-        "update_gaussian_norm",
-    ]
-    assert manifest["minor_grid"]["channels"] == [8]
-    assert manifest["scan_seed_axis"] == "seed_index"
-    assert manifest["n_jobs"] == 216
-    assert manifest["final_replicates"] == 9
-    assert not (grid_attempt / "unblind.json").exists()
-    assert manifest["axis_overrides"]["max_steps"] == {
-        "train": "training.max_steps",
-        "final_train": "training.max_steps",
-    }
-    assert isinstance(manifest["axis_overrides"]["mechanism"], dict)
-    assert set(manifest["static_overrides"]) == {"train", "validation", "final_train", "final_eval"}
-    assert manifest["static_overrides"]["train"] == {"run_parameters.activation_slot": "Tanh"}
-
-    job = manifest["jobs"][0]
-    assert job["major_choices"] == {"max_steps": 100, "sampler_n_steps": 5}
-    assert job["minor_choices"]["channels"] == 8
-    assert "training.max_steps=100" in job["overrides"]
-    assert "sampler_params.n_steps=5" in job["overrides"]
-    assert "run_parameters.activation_slot=Tanh" in job["overrides"]
-    assert "run_parameters.update_normalization_slot=no-update-normalization" in job["overrides"]
-    assert "run_parameters.feature_normalization_slot=no-feature-normalization" in job["overrides"]
-    assert "activation" not in job["choices"]
-
-    feature_norm_job = next(
-        row for row in manifest["jobs"] if row["choices"]["mechanism"] == "feature_gaussian_norm"
-    )
-    assert "run_parameters.update_normalization_slot=no-update-normalization" in feature_norm_job["overrides"]
-    assert "run_parameters.feature_normalization_slot=feature-gaussian-norm" in feature_norm_job["overrides"]
-
-    update_norm_job = next(
-        row for row in manifest["jobs"] if row["choices"]["mechanism"] == "update_gaussian_norm"
-    )
-    assert "run_parameters.update_normalization_slot=update-gaussian-norm" in update_norm_job["overrides"]
-    assert "run_parameters.feature_normalization_slot=no-feature-normalization" in update_norm_job["overrides"]
-
-
-def test_v3_pilot_grid_rejects_blinding_numeric_major_axes(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="cannot blind major axes"):
-        plan.main(
-            [
-                "--grid",
-                str(PILOT_GRID),
-                "--results-root",
-                str(tmp_path / "results"),
-                "--attempt-id",
-                "PILOT",
-                "--blind",
-            ]
-        )
-
-
-def test_v3_pilot_smoke_grid_is_smaller_full_pilot(tmp_path: Path) -> None:
-    results_root = tmp_path / "results"
-    code = plan.main(["--grid", str(PILOT_SMOKE_GRID), "--results-root", str(results_root), "--attempt-id", "PSMOKE"])
-    assert code == 0
-
-    manifest = json.loads((results_root / "00_grid" / "PSMOKE" / "manifest.json").read_text())
-    assert manifest["major_axes"] == ["max_steps", "sampler_n_steps"]
-    assert manifest["minor_axes"] == ["basis", "mechanism", "lr", "channels"]
-    assert manifest["major_grid"] == {"max_steps": [2, 3], "sampler_n_steps": [1, 2]}
-    assert manifest["minor_grid"]["basis"] == ["raw-envelope", "hooke-s1-envelope"]
-    assert manifest["minor_grid"]["mechanism"] == [
-        "baseline",
-        "feature_gaussian_norm",
-        "update_gaussian_norm",
-    ]
-    assert manifest["minor_grid"]["lr"] == [1.0e-3]
-    assert manifest["minor_grid"]["channels"] == [8]
-    assert manifest["n_jobs"] == 24
-    assert manifest["final_replicates"] == 1
-    assert manifest["scan_seed_rows"] == [
-        {
-            "seed_index": 0,
-            "training_model_seed": 0,
-            "training_sampler_seed": 10,
-            "validation_sampler_seed": 20,
-        }
-    ]
-
-    train_static = manifest["static_overrides"]["train"]
-    assert train_static["run_parameters.activation_slot"] == "Tanh"
-    assert train_static["training.log_every_n_steps"] == 1
-    assert "training.max_steps" not in train_static
-    assert "sampler_params.n_steps" not in train_static
-    assert manifest["static_overrides"]["validation"] == {"run_parameters.activation_slot": "Tanh"}
-    assert manifest["static_overrides"]["final_eval"] == {"run_parameters.activation_slot": "Tanh"}
-
-    job = manifest["jobs"][0]
-    assert "training.max_steps=2" in job["overrides"]
-    assert "sampler_params.n_steps=1" in job["overrides"]
-    assert "run_parameters.activation_slot=Tanh" in job["overrides"]
-
-
-def test_v3_smoke_grid_is_smaller_full_grid(tmp_path: Path) -> None:
-    results_root = tmp_path / "results"
-    code = plan.main(["--grid", str(SMOKE_GRID), "--results-root", str(results_root), "--attempt-id", "SMOKE"])
-    assert code == 0
-
-    manifest = json.loads((results_root / "00_grid" / "SMOKE" / "manifest.json").read_text())
-    assert manifest["major_axes"] == ["basis", "update_normalization", "feature_normalization"]
-    assert manifest["minor_axes"] == ["lr", "channels", "activation"]
-    assert manifest["scan_seed_axis"] == "seed_index"
-    assert manifest["n_jobs"] == 64
-    assert manifest["final_replicates"] == 1
-    assert manifest["scan_seed_rows"] == [
-        {
-            "seed_index": 0,
-            "training_model_seed": 0,
-            "training_sampler_seed": 10,
-            "validation_sampler_seed": 20,
-        }
-    ]
-    assert set(manifest["static_overrides"]) == {"train", "final_train"}
-    assert "validation" not in manifest["static_overrides"]
-    assert "final_eval" not in manifest["static_overrides"]
-
-    job = manifest["jobs"][0]
-    assert "training.max_steps=2" in job["overrides"]
-    assert "training.log_every_n_steps=1" in job["overrides"]
-    assert "sampler_params.n_walkers=16" in job["overrides"]
-    assert job["seed_overrides"]["scan_train"] == {
-        "run_parameters.seed": 0,
-        "runtime.seed": 0,
-        "sampler.seed": 10,
-    }
+            assert OmegaConf.select(resolved, "model.layers.0.mixing.activation._target_")
+            assert OmegaConf.select(resolved, "model.layers.0.path_aggregation.activation._target_")
 
 
 @pytest.mark.parametrize(
@@ -1199,12 +1091,12 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     script = submitted_commands[0][-1]
     assert str(results_root / "00_grid" / ATTEMPT / "validation_config.yaml") in script
     assert "run_parameters.basis_slot=" in script
-    assert "run_parameters.update_normalization_slot=" in script
-    assert "run_parameters.feature_normalization_slot=" in script
     assert "run_parameters.activation_slot=" in script
-    assert f"evaluation.seed={job['seed_values']['validation_sampler_seed']}" in script
+    assert (
+        f"run_parameters.validation_sampler_seed={job['seed_values']['validation_sampler_seed']}" in script
+    )
     assert "load.path=" in script
-    assert "study.name=pair_stability_v3" in script
+    assert "study.name=tpen_pair_scan_v1" in script
 
     validation_attempt = results_root / "02_validation" / str(job["run_id"]) / "V1"
     source_train = json.loads((validation_attempt / "source_train_attempt.json").read_text())
@@ -1222,7 +1114,7 @@ def test_v2_validate_main_consumes_planned_manifest_snapshot(tmp_path: Path, mon
     executions = [json.loads(line) for line in (plan_dir / "execution_records.jsonl").read_text().splitlines()]
     assert stage_plan.n_tasks == 1
     assert stage_plan.tasks[0].stage == "02_validation"
-    assert manifest["study"] == "pair_stability_v3"
+    assert manifest["study"] == "tpen_pair_scan_v1"
     assert manifest["stage"] == "02_validation"
     assert manifest["n_tasks"] == 1
     assert tasks[0]["completion"]["policy"] == "status_completed"
@@ -1237,9 +1129,10 @@ def _write_collection_summary(results_root: Path) -> None:
         lr = float(point["lr"])
         seed = int(point["seed_index"])
         channel = int(point["channels"])
-        activation_penalty = {"SiLU": 0.0, "Tanh": 0.02, "Sigmoid": 0.03, "Exponential": 0.04}[str(point["activation"])]
-        energy = 2.0 + (0.0 if lr == 3.0e-4 else 0.2) + (0.0 if channel == 8 else 0.01) + activation_penalty
-        feature = 0.01 if lr == 1.0e-3 else 0.03
+        # Only the minor axes move the energy: the major axes (basis, activation)
+        # are grouping keys, and their blinded slot values are not comparable.
+        energy = 2.0 + (0.0 if lr == 3.0e-4 else 0.2) + (0.0 if channel == 8 else 0.01)
+        variance = 0.01 if lr == 1.0e-3 else 0.03
         rows.append(
             {
                 "run_id": job["run_id"],
@@ -1248,8 +1141,8 @@ def _write_collection_summary(results_root: Path) -> None:
                 "major_id": job["major_id"],
                 "minor_id": job["minor_id"],
                 "config_id": job["config_id"],
-                "eval/stratified_geometry/local_energy_mean": str(energy + 0.001 * seed),
-                "eval/feature_trace_stability/feature_rms_q95": str(feature + 0.001 * seed),
+                "eval/mcmc_energy/local_energy_mean": str(energy + 0.001 * seed),
+                "eval/stratified_geometry/local_energy_variance": str(variance + 0.001 * seed),
             }
         )
     collect_dir = results_root / "03_collect" / "C1"
@@ -1327,8 +1220,7 @@ def test_collect_defaults_to_latest_grid_plan_not_newest_validation(tmp_path: Pa
     assert len(result["rows"]) == 1
     assert result["rows"][0]["run_id"] == job["run_id"]
     assert result["rows"][0]["basis"].startswith("B")
-    assert result["rows"][0]["update_normalization"].startswith("U")
-    assert result["rows"][0]["feature_normalization"].startswith("F")
+    assert result["rows"][0]["activation"].startswith("A")
 
     parallel = collect.collect(results_root=results_root, collect_attempt_id="C1")
     assert parallel["report"]["grid_attempt_id"] == ATTEMPT
@@ -1470,7 +1362,7 @@ def test_v3_selects_energy_champions_per_major_and_plans_nine_final_seeds_by_def
     final_dir = results_root / "05_final_grid" / "F1"
     manifest = json.loads((final_dir / "manifest.json").read_text())
     jobs = [json.loads(path.read_text()) for path in sorted((final_dir / "jobs").glob("*.json"))]
-    assert manifest["study"] == "pair_stability_v3"
+    assert manifest["study"] == "tpen_pair_scan_v1"
     assert manifest["final_replicates"] == 9
     assert manifest["n_jobs"] == 216
     assert manifest["axis_overrides"] == {
@@ -1606,10 +1498,10 @@ def test_v2_final_train_rejects_empty_final_grid(tmp_path: Path) -> None:
     json_io.write_json(
         attempt / "manifest.json",
         {
-            "study": "pair_stability_v3",
+            "study": "tpen_pair_scan_v1",
             "stage": layout.STAGE_FINAL_GRID,
             "attempt_id": "F0",
-            "train_config": str(CONFIGS / "pair_stability.yaml"),
+            "train_config": str(CONFIGS / "train.yaml"),
             "major_axes": [],
             "minor_axes": [],
             "axis_overrides": {},
@@ -1656,10 +1548,10 @@ def test_v2_final_train_excludes_completed_and_resumes_partial(
     json_io.write_json(
         final_grid_dir / "manifest.json",
         {
-            "study": "pair_stability_v3",
+            "study": "tpen_pair_scan_v1",
             "stage": layout.STAGE_FINAL_GRID,
             "attempt_id": final_grid_id,
-            "train_config": str(CONFIGS / "pair_stability.yaml"),
+            "train_config": str(CONFIGS / "train.yaml"),
             "major_axes": [],
             "minor_axes": [],
             "axis_overrides": {},
@@ -1805,7 +1697,7 @@ def test_final_collect_defaults_to_latest_final_grid_plan(tmp_path: Path) -> Non
         _write_json(
             grid_dir / "manifest.json",
             {
-                "study": "pair_stability_v3",
+                "study": "tpen_pair_scan_v1",
                 "stage": layout.STAGE_FINAL_GRID,
                 "attempt_id": grid_id,
                 "major_axes": [],
@@ -1974,7 +1866,7 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
     _write_json(
         final_grid_dir / "manifest.json",
         {
-            "study": "pair_stability_v3",
+            "study": "tpen_pair_scan_v1",
             "stage": layout.STAGE_FINAL_GRID,
             "attempt_id": final_grid_attempt_id,
             "major_axes": ["basis", "update_normalization", "feature_normalization"],
@@ -2120,7 +2012,7 @@ def test_v3_report_markdown_lists_every_architecture_summary_row() -> None:
         for feature in range(4)
     ]
     report = {
-        "study": "pair_stability_v3",
+        "study": "tpen_pair_scan_v1",
         "final_collect_attempt_id": "FC0",
         "report_axes": {"row": "basis_update", "column": "feature_normalization"},
         "tables": {},

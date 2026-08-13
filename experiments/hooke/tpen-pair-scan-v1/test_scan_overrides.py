@@ -17,7 +17,17 @@ for module_name in list(sys.modules):
     if module_name.split(".", maxsplit=1)[0] == "utils":
         del sys.modules[module_name]
 
+from utils import overrides as _overrides_module  # noqa: E402
 from utils.overrides import axis_value_overrides, format_override_value, rewrite_cli_overrides  # noqa: E402
+
+
+def test_this_module_tests_this_study_not_the_sibling_v3_copy():
+    # Both studies define a top-level `utils` package and both are collected in
+    # one pytest run, so `sys.modules` can hand back the sibling's copy. The
+    # purge above prevents that; this asserts it worked, because the two
+    # `utils/overrides.py` files are currently identical and a mix-up would
+    # otherwise be silent.
+    assert Path(_overrides_module.__file__).resolve().parent.parent == STUDY_DIR
 
 
 def _parse_back(key: str, formatted: str) -> object:
