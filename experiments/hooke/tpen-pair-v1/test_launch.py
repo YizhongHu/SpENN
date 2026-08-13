@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from experiments.toolkit import (
     AllocationPoolExecutor,
     CompletionSpec,
+    ExecutionRecord,
     ResourceSpec,
     StagePlan,
     SubmissionRequest,
@@ -157,6 +158,55 @@ def test_deadline_arguments_are_forwarded_to_allocation_executor(tmp_path: Path,
     assert captured["n_workers"] == 1
     assert captured["visibility_values"] == ("0",)
     assert captured["allocation_id"] == "allocation-deadline"
+
+
+@pytest.mark.parametrize("returncode, expected", [(7, 1), (0, 0), (None, 1)])
+def test_execution_record_returncode_controls_launcher_exit(
+    tmp_path: Path, monkeypatch, returncode: int | None, expected: int
+) -> None:
+    args = _args(tmp_path, run_id="failed-task", pass_id="pass-1")
+    plan, request = launch.build_plan(args, checkout=tmp_path / "checkout")
+    task = plan.tasks[0]
+    record = ExecutionRecord(
+        task_id=task.task_id,
+        run_id=task.run_id,
+        stage=task.stage,
+        attempt_id=task.attempt_id,
+        backend="allocation_pool",
+        launcher_job_id="allocation-test",
+        submitted_command=task.command,
+        metadata={"returncode": returncode},
+    )
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, submitted_plan, tasks, submitted_request):
+            assert submitted_plan == plan
+            assert tasks == (task,)
+            assert submitted_request == request
+            return (record,)
+
+    monkeypatch.setattr(launch, "AllocationPoolExecutor", FakeExecutor)
+    assert launch.main(
+        [
+            "--python",
+            sys.executable,
+            "--results-root",
+            str(tmp_path / "results"),
+            "--run-id",
+            "failed-task",
+            "--device",
+            "cuda",
+            "--visibility-variable",
+            "CUDA_VISIBLE_DEVICES",
+            "--visibility-values",
+            "0",
+            "--allocation-id",
+            "allocation-test",
+        ]
+    ) == expected
 
 
 def test_single_visibility_value_binds_one_deterministic_worker(tmp_path: Path, monkeypatch) -> None:
