@@ -1332,22 +1332,20 @@ def test_v3_selects_energy_champions_per_major_and_plans_nine_final_seeds_by_def
     assert report["champion_kinds"] == ["energy"]
     assert latest["attempt_id"] == "S1"
     assert [spec["selector"] for spec in report["champion_specs"]] == ["metric_ladder"]
-    assert report["group_by"] == ["basis", "update_normalization", "feature_normalization"]
-    assert report["n_champions"] == 24
+    assert report["group_by"] == ["basis", "activation"]
+    assert report["n_champions"] == 4
 
     champions = _read_csv(results_root / "04_select" / "S1" / "champions.csv")
-    major_counter = Counter((row["basis"], row["update_normalization"], row["feature_normalization"]) for row in champions)
-    assert len(major_counter) == 24
+    major_counter = Counter((row["basis"], row["activation"]) for row in champions)
+    assert len(major_counter) == 4
     assert set(major_counter.values()) == {1}
     assert {row["winner_kind"] for row in champions} == {"energy"}
-    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-8_act-SiLU"}
-    true_grid = OmegaConf.load(GRID)
+    assert {row["minor_id"] for row in champions} == {"lr-3e-4_ch-8"}
+    true_grid = OmegaConf.load(_write_grid(tmp_path))
     assert not ({row["basis"] for row in champions} & set(true_grid.major_grid.basis))
-    assert not ({row["update_normalization"] for row in champions} & set(true_grid.major_grid.update_normalization))
-    assert not ({row["feature_normalization"] for row in champions} & set(true_grid.major_grid.feature_normalization))
+    assert not ({row["activation"] for row in champions} & set(true_grid.major_grid.activation))
     assert {row["basis"][0] for row in champions} == {"B"}
-    assert {row["update_normalization"][0] for row in champions} == {"U"}
-    assert {row["feature_normalization"][0] for row in champions} == {"F"}
+    assert {row["activation"][0] for row in champions} == {"A"}
 
     code = final_plan.main(
         [
@@ -1364,16 +1362,14 @@ def test_v3_selects_energy_champions_per_major_and_plans_nine_final_seeds_by_def
     jobs = [json.loads(path.read_text()) for path in sorted((final_dir / "jobs").glob("*.json"))]
     assert manifest["study"] == "tpen_pair_scan_v1"
     assert manifest["final_replicates"] == 9
-    assert manifest["n_jobs"] == 216
+    assert manifest["n_jobs"] == 36
     assert manifest["axis_overrides"] == {
         "basis": "run_parameters.basis_slot",
-        "update_normalization": "run_parameters.update_normalization_slot",
-        "feature_normalization": "run_parameters.feature_normalization_slot",
+        "activation": "run_parameters.activation_slot",
         "lr": "run_parameters.lr",
         "channels": "run_parameters.channels",
-        "activation": "run_parameters.activation_slot",
     }
-    assert len(jobs) == 216
+    assert len(jobs) == 36
     assert set(Counter(job["source_champion_id"] for job in jobs).values()) == {9}
     assert {int(job["replicate_index"]) for job in jobs} == set(range(9))
     assert {job["final_train_model_seed"] for job in jobs} == set(range(100, 109))
@@ -1395,14 +1391,11 @@ def test_v3_selects_energy_champions_per_major_and_plans_nine_final_seeds_by_def
     assert code == 0
     final_job = json.loads(next((results_root / "05_final_grid" / "F2" / "jobs").glob("*.json")).read_text())
     assert final_job["basis"].startswith("B")
-    assert final_job["update_normalization"].startswith("U")
-    assert final_job["feature_normalization"].startswith("F")
+    assert final_job["activation"].startswith("A")
     assert final_job["choices"]["basis"] == final_job["basis"]
-    assert final_job["choices"]["update_normalization"] == final_job["update_normalization"]
-    assert final_job["choices"]["feature_normalization"] == final_job["feature_normalization"]
+    assert final_job["choices"]["activation"] == final_job["activation"]
     assert final_job["basis"] not in set(true_grid.major_grid.basis)
-    assert final_job["update_normalization"] not in set(true_grid.major_grid.update_normalization)
-    assert final_job["feature_normalization"] not in set(true_grid.major_grid.feature_normalization)
+    assert final_job["activation"] not in set(true_grid.major_grid.activation)
 
 
 def test_v3_final_plan_chains_task_lineage_from_selection_sidecar(tmp_path: Path) -> None:
@@ -1734,114 +1727,22 @@ def test_final_collect_defaults_to_latest_final_grid_plan(tmp_path: Path) -> Non
     assert (results_root / "08_final_collect" / "FC1" / "run_index.csv").is_file()
 
 
-def test_v3_final_collect_merges_basis_and_update_for_report_axes() -> None:
+def test_v3_final_collect_report_axes_follow_planned_major_axes() -> None:
     manifest = {
-        "major_axes": ["basis", "update_normalization", "feature_normalization"],
-        "minor_axes": ["lr", "channels", "activation"],
+        "major_axes": ["basis", "activation"],
+        "minor_axes": ["lr", "channels"],
     }
     job = {
         "choices": {
-            "basis": "raw-envelope",
-            "update_normalization": "update-gaussian-norm",
-            "feature_normalization": "feature-gaussian-norm",
+            "basis": "hooke-total-shell",
+            "activation": "SiLU",
+            "lr": "1.0e-3",
+            "channels": 8,
         }
     }
 
-    assert final_collect._report_axes(manifest) == ("basis_update", "feature_normalization")
-    assert final_collect._report_axis_values(job, manifest) == (
-        "raw-envelope+update-gaussian-norm",
-        "feature-gaussian-norm",
-    )
-
-
-def test_v3_figure_1b_splits_basis_within_winner_panels_and_encodes_major_axes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def capture_scatter_grid(path: Path, points: Sequence[dict[str, Any]], **kwargs: Any) -> None:
-        captured.update({"path": path, "points": points, **kwargs})
-
-    monkeypatch.setattr(final_report.plot, "save_loglog_scatter_grid", capture_scatter_grid)
-    final_report._save_energy_variance_scatter(
-        tmp_path / "1B.png",
-        [
-            {
-                "winner_kind": "energy",
-                "energy_error": 0.1,
-                "local_energy_var": 0.2,
-                "basis": "raw",
-                "update_normalization": "baseline",
-                "basis_update": "raw+baseline",
-                "feature_normalization": "baseline",
-            },
-            {
-                "winner_kind": "energy",
-                "energy_error": -0.05,
-                "local_energy_var": 0.1,
-                "basis": "envelope",
-                "update_normalization": "update_gaussian_norm",
-                "basis_update": "envelope+update_gaussian_norm",
-                "feature_normalization": "feature_gaussian_norm",
-            },
-        ],
-        row_key="basis_update",
-        col_key="feature_normalization",
-        title="Figure 1B",
-    )
-
-    assert captured["panel_key"] == "panel_axis"
-    assert captured["panel_keys"] == [("energy", "envelope"), ("energy", "raw")]
-    assert captured["panel_titles"] == {
-        ("energy", "envelope"): "basis=envelope\nenergy winners",
-        ("energy", "raw"): "basis=raw\nenergy winners",
-    }
-    assert captured["marker_key"] == "primary_axis"
-    assert captured["marker_title"] == "update_normalization"
-    assert {point["primary_axis"] for point in captured["points"]} == {
-        "baseline",
-        "update_gaussian_norm",
-    }
-    assert captured["color_key"] == "secondary_axis"
-    assert captured["color_title"] == "feature_normalization"
-
-
-def test_v3_pilot_figure_1b_keeps_pilot_major_axis_encodings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def capture_scatter_grid(path: Path, points: Sequence[dict[str, Any]], **kwargs: Any) -> None:
-        captured.update({"path": path, "points": points, **kwargs})
-
-    monkeypatch.setattr(final_report.plot, "save_loglog_scatter_grid", capture_scatter_grid)
-    final_report._save_energy_variance_scatter(
-        tmp_path / "1B.png",
-        [
-            {
-                "winner_kind": "energy",
-                "energy_error": 0.1,
-                "local_energy_var": 0.2,
-                "basis": basis,
-                "max_steps": max_steps,
-                "sampler_n_steps": sampler_n_steps,
-            }
-            for basis, max_steps, sampler_n_steps in (
-                ("raw-envelope", 100, 5),
-                ("hooke-s1-envelope", 200, 10),
-            )
-        ],
-        row_key="max_steps",
-        col_key="sampler_n_steps",
-        title="Figure 1B",
-    )
-
-    assert captured["panel_keys"] == ["energy"]
-    assert captured["panel_titles"] == {"energy": "energy winners"}
-    assert captured["marker_title"] == "max_steps"
-    assert {point["primary_axis"] for point in captured["points"]} == {"100", "200"}
-    assert captured["color_title"] == "sampler_n_steps"
-    assert {point["secondary_axis"] for point in captured["points"]} == {"5", "10"}
+    assert final_collect._report_axes(manifest) == ("basis", "activation")
+    assert final_collect._report_axis_values(job, manifest) == ("hooke-total-shell", "SiLU")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -1869,8 +1770,8 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
             "study": "tpen_pair_scan_v1",
             "stage": layout.STAGE_FINAL_GRID,
             "attempt_id": final_grid_attempt_id,
-            "major_axes": ["basis", "update_normalization", "feature_normalization"],
-            "minor_axes": ["lr", "channels", "activation"],
+            "major_axes": ["basis", "activation"],
+            "minor_axes": ["lr", "channels"],
             "final_replicates": 1,
         },
     )
@@ -1879,16 +1780,14 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
         "source_champion_id": "champion-0",
         "winner_kind": "energy",
         "replicate_index": 0,
-        "major_id": "b-B00_u-U00_f-F00",
-        "minor_id": "lr-1e-3_ch-8_a-SiLU",
-        "config_id": "b-B00_u-U00_f-F00_lr-1e-3_ch-8_a-SiLU",
+        "major_id": "b-B00_act-A00",
+        "minor_id": "lr-1e-3_ch-8",
+        "config_id": "b-B00_act-A00_lr-1e-3_ch-8",
         "choices": {
-            "basis": "raw-envelope",
-            "update_normalization": "update-gaussian-norm",
-            "feature_normalization": "feature-gaussian-norm",
+            "basis": "hooke-total-shell",
+            "activation": "SiLU",
             "lr": "1.0e-3",
             "channels": 8,
-            "activation": "SiLU",
         },
         "final_train_model_seed": 100,
         "final_train_sampler_seed": 1000,
@@ -1928,8 +1827,8 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
     _append_metrics(
         final_eval_dir / "metrics.jsonl",
         [
-            {"namespace": "eval/energy", "step": 0, "metrics": {"local_energy_mean": 2.01, "local_energy_stderr": 0.02, "local_energy_variance": 0.03, "local_energy_n_finite": 2, "local_energy_n_total": 2, "local_energy_finite_fraction": 1.0, "local_energy_pathology_count": 0}},
-            {"namespace": "eval/energy/term", "step": 0, "metrics": {"kinetic_mean": 1.0, "harmonic_trap_mean": 0.5, "electron_electron_mean": 1.0}},
+            {"namespace": "eval/mcmc_energy", "step": 0, "metrics": {"local_energy_mean": 2.01, "local_energy_stderr": 0.02, "local_energy_variance": 0.03, "local_energy_n_finite": 2, "local_energy_n_total": 2, "local_energy_finite_fraction": 1.0, "local_energy_pathology_count": 0}},
+            {"namespace": "eval/mcmc_energy/term", "step": 0, "metrics": {"kinetic_mean": 1.0, "harmonic_trap_mean": 0.5, "electron_electron_mean": 1.0}},
             {"namespace": "eval/stratified_geometry/status", "step": 0, "metrics": {"task_success": True, "task_failed": False}},
             {"namespace": "diagnostics/cusp", "step": 0, "metrics": {"time_sec": 1.0}},
             {"namespace": "eval/perf/cusp", "step": 0, "metrics": {"generator_time_sec": 0.1, "calculator/local_energy_time_sec": 0.2, "summary/profile_time_sec": 0.3}},
@@ -1937,14 +1836,14 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
         ],
     )
 
-    _write_csv(final_eval_dir / "energy" / "mcmc_energy_samples.csv", [{"local_energy": 2.0}, {"local_energy": 2.1}])
+    _write_csv(final_eval_dir / "mcmc_energy" / "mcmc_energy_samples.csv", [{"local_energy": 2.0}, {"local_energy": 2.1}])
     _write_csv(final_eval_dir / "cusp" / "cusp_profiles.csv", [{"center_of_mass_id": "com0", "direction_id": "dir0", "r12": 0.1, "local_energy": 2.0, "logabs": -0.2, "d_logabs_dr": 0.5, "finite": True}])
     _write_csv(final_eval_dir / "tail" / "tail_profiles.csv", [{"com_id": "com0", "tail_path": "path0", "radius": 4.0, "local_energy": 2.0, "logabs": -4.0, "exact_logabs": -4.1, "finite": True}])
     _write_csv(final_eval_dir / "stratified_geometry" / "stratified_metrics.csv", [{"stratum": "near", "local_energy": 2.0, "finite": True}])
     _write_csv(final_eval_dir / "hooke_orbital" / "hooke_orbital_metrics.csv", [{"radius": 1.0, "r12": 0.5, "local_energy": 2.0, "finite": True}])
-    for task in ("full_model_antisymmetry", "spatial_exchange_symmetry", "rotation_consistency"):
+    for task in final_collect.SYMMETRY_TASKS:
         _write_csv(final_eval_dir / task / "transform_records.csv", [{"logabs_abs_error": 0.0, "sign_mismatch": False, "parity_mismatch": False, "finite": True}])
-    for task in ("trace_equivariance", "feature_trace_stability", "readout_trace_stability"):
+    for task in final_collect.TRACE_TASKS:
         _write_csv(final_eval_dir / task / "trace_records.csv", [{"entry_key": "layers.0.mixing/value", "q95_abs": 0.01, "q99_abs": 0.02, "max_abs_error": 0.03, "nonfinite_count": 0, "compared_entry_count": 4, "comparison_error_count": 0}])
     (final_eval_dir / "unused_task").mkdir()
     (final_eval_dir / "unused_task" / "all_metrics_dump.csv").write_text("not,a,real,table\n")
@@ -1952,7 +1851,7 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
     return final_eval_attempt_id, final_run_id
 
 
-def test_v3_final_collect_writes_report_contract_and_explicit_plot_axis(
+def test_v3_final_collect_writes_report_contract_and_explicit_report_axes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results_root = tmp_path / "results"
@@ -1976,54 +1875,18 @@ def test_v3_final_collect_writes_report_contract_and_explicit_plot_axis(
     run_index = _read_csv(collect_dir / "run_index.csv")
     architecture = _read_csv(collect_dir / "architecture_summary.csv")
 
-    assert tuple(manifest["tables"]) == final_report.COMPACT_TABLES
-    assert manifest["report_row_key"] == "basis_update"
-    assert manifest["report_col_key"] == "feature_normalization"
-    assert manifest["major_axes"] == ["basis", "update_normalization", "feature_normalization"]
-    assert run_index[0]["basis"] == "raw-envelope"
-    assert run_index[0]["update_normalization"] == "update-gaussian-norm"
-    assert run_index[0]["feature_normalization"] == "feature-gaussian-norm"
-    assert run_index[0]["basis_update"] == "raw-envelope+update-gaussian-norm"
-    assert architecture[0]["basis_update"] == "raw-envelope+update-gaussian-norm"
+    assert tuple(manifest["tables"]) == final_collect.COMPACT_TABLES
+    assert manifest["report_row_key"] == "basis"
+    assert manifest["report_col_key"] == "activation"
+    assert manifest["major_axes"] == ["basis", "activation"]
+    assert run_index[0]["basis"] == "hooke-total-shell"
+    assert run_index[0]["activation"] == "SiLU"
+    assert run_index[0][final_collect.REPORT_ROW_COLUMN] == "hooke-total-shell"
+    assert run_index[0][final_collect.REPORT_COL_COLUMN] == "SiLU"
+    assert architecture[0][final_collect.REPORT_ROW_COLUMN] == "hooke-total-shell"
+    assert architecture[0][final_collect.REPORT_COL_COLUMN] == "SiLU"
     assert all("unused_task" not in str(path) for path in read_paths)
 
-    report = final_report.build_report(
-        results_root=results_root,
-        final_collect_attempt_id="FC0",
-        report_attempt_id="FR0",
-    )["report"]
-
-    assert report["report_axes"] == {"row": "basis_update", "column": "feature_normalization"}
-
-
-def test_v3_report_markdown_lists_every_architecture_summary_row() -> None:
-    architecture = [
-        {
-            "basis_update": f"B{basis:02d}+U{update:02d}",
-            "feature_normalization": f"F{feature:02d}",
-            "winner_kind": "energy",
-            "n_success": "9",
-            "n_expected": "9",
-            "energy_error_median": "0.01",
-            "local_energy_var_median": "0.02",
-        }
-        for basis in range(2)
-        for update in range(3)
-        for feature in range(4)
-    ]
-    report = {
-        "study": "tpen_pair_scan_v1",
-        "final_collect_attempt_id": "FC0",
-        "report_axes": {"row": "basis_update", "column": "feature_normalization"},
-        "tables": {},
-        "figures": [],
-        "caveats": [],
-    }
-
-    markdown = final_report._report_markdown(report, {"architecture_summary.csv": architecture})
-
-    assert markdown.count("| B01+U02 |") == 4
-    assert sum(markdown.count(f"| B{basis:02d}+U{update:02d} | F{feature:02d} |") for basis in range(2) for update in range(3) for feature in range(4)) == 24
 
 def test_v2_final_eval_defaults_to_single_latest_final_train_attempt(tmp_path: Path) -> None:
     results_root = tmp_path / "results"
@@ -2064,34 +1927,48 @@ def _callback_targets(entries: list[dict[str, Any]]) -> set[str]:
 
 
 def test_train_config_wires_profiling_callbacks() -> None:
-    entries = _callback_entries("pair_stability.yaml")
+    entries = _callback_entries("train.yaml")
     targets = _callback_targets(entries)
 
-    assert "spenn.callback.TrainPhaseTiming" in targets
-    assert "spenn.callback.ResourceUsage" in targets
-    phase_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.TrainPhaseTiming")
+    assert "tpen.callback.RunTiming" in targets
+    assert "tpen.callback.TrainStepTiming" in targets
+    assert "tpen.callback.TrainPhaseTiming" in targets
+    phase_timing = next(entry for entry in entries if entry["_target_"] == "tpen.callback.TrainPhaseTiming")
     assert "triggers" not in phase_timing
 
 
-def test_train_config_writes_periodic_and_final_checkpoints() -> None:
-    entries = _callback_entries("pair_stability.yaml")
-    checkpoints = [entry for entry in entries if entry["_target_"] == "spenn.callback.Checkpoint"]
+def test_train_config_writes_only_the_terminal_checkpoint() -> None:
+    entries = _callback_entries("train.yaml")
+    checkpoints = [entry for entry in entries if entry["_target_"] == "tpen.callback.Checkpoint"]
 
-    periodic = next(entry for entry in checkpoints if "every_n_steps" in entry)
-    final = next(entry for entry in checkpoints if "every_n_steps" not in entry)
-    assert periodic["keep_last"] == "${checkpoint.keep_last}"
-    assert "keep_last" not in final
+    # One entry owns both writes, and it must carry no `every_n_steps`: the
+    # cadence gate is shared with the terminal write, so a cadence suppresses the
+    # terminal checkpoint whenever max_steps is not a multiple of it. Periodic
+    # writes are therefore off and the terminal write is unconditional -- the
+    # opposite of v3, which kept a periodic entry alongside the final one.
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint["periodic"] == "${checkpoint.periodic}"
+    assert checkpoint["terminal"] == "${checkpoint.terminal}"
+    assert checkpoint["keep_last"] == "${checkpoint.keep_last}"
+    assert "every_n_steps" not in checkpoint
+
+    config = OmegaConf.load(CONFIGS / "train.yaml")
+    assert config.checkpoint.periodic is False
+    assert config.checkpoint.terminal is True
 
 
 def test_validation_config_wires_profiling_callbacks() -> None:
-    entries = _callback_entries("pair_validation.yaml")
+    entries = _callback_entries("eval.yaml")
     targets = _callback_targets(entries)
 
-    assert "spenn.callback.EvaluationComponentTiming" in targets
-    assert "spenn.callback.ResourceUsage" in targets
-    diagnostic_timing = next(entry for entry in entries if entry["_target_"] == "spenn.callback.DiagnosticTiming")
-    assert "triggers" not in diagnostic_timing
+    assert "tpen.callback.EvaluationTiming" in targets
+    assert "tpen.callback.EvaluationComponentTiming" in targets
+    evaluation_timing = next(
+        entry for entry in entries if entry["_target_"] == "tpen.callback.EvaluationTiming"
+    )
+    assert "triggers" not in evaluation_timing
     component_timing = next(
-        entry for entry in entries if entry["_target_"] == "spenn.callback.EvaluationComponentTiming"
+        entry for entry in entries if entry["_target_"] == "tpen.callback.EvaluationComponentTiming"
     )
     assert "triggers" not in component_timing
