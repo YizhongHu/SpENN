@@ -1755,14 +1755,36 @@ def _append_metrics(path: Path, records: Sequence[dict[str, Any]]) -> None:
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
 
-def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
-    final_run_id = "final-run-0"
+def _write_minimal_final_artifacts(
+    results_root: Path,
+    *,
+    n_final_runs: int = 1,
+    write_transform_records: bool = True,
+    extra_eval_metrics: Sequence[dict[str, Any]] = (),
+) -> tuple[str, list[str]]:
+    """Write the smallest final-stage artifact tree ``final_collect`` accepts.
+
+    Parameters
+    ----------
+    n_final_runs
+        Number of planned final runs (seed replicates) to materialize. Seed
+        aggregations such as ``antisymmetry_sign_mismatch_total`` are only
+        meaningfully exercised with more than one row.
+    write_transform_records
+        When ``False``, omit every symmetry task's ``transform_records.csv``.
+        This is what the scan's own `eval.yaml` produces, because it runs at
+        ``artifact_level: summaries`` and per-sample transform records are only
+        written at ``artifact_level: records``.
+    extra_eval_metrics
+        Extra ``metrics.jsonl`` records appended to every final-eval attempt,
+        used to inject summary-only task metrics.
+    """
+
     final_grid_attempt_id = "FG0"
     final_train_attempt_id = "FT0"
     final_eval_attempt_id = "FE0"
+    final_run_ids = [f"final-run-{index}" for index in range(n_final_runs)]
     final_grid_dir = layout.stage_dir(results_root, layout.STAGE_FINAL_GRID) / final_grid_attempt_id
-    final_train_dir = layout.final_train_attempt_dir(results_root, final_run_id, final_train_attempt_id)
-    final_eval_dir = layout.final_eval_attempt_dir(results_root, final_run_id, final_eval_attempt_id)
 
     _write_json(
         final_grid_dir / "manifest.json",
@@ -1772,90 +1794,100 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
             "attempt_id": final_grid_attempt_id,
             "major_axes": ["basis", "activation"],
             "minor_axes": ["lr", "channels"],
-            "final_replicates": 1,
+            "final_replicates": n_final_runs,
         },
     )
-    job = {
-        "final_run_id": final_run_id,
-        "source_champion_id": "champion-0",
-        "winner_kind": "energy",
-        "replicate_index": 0,
-        "major_id": "b-B00_act-A00",
-        "minor_id": "lr-1e-3_ch-8",
-        "config_id": "b-B00_act-A00_lr-1e-3_ch-8",
-        "choices": {
-            "basis": "hooke-total-shell",
-            "activation": "SiLU",
-            "lr": "1.0e-3",
-            "channels": 8,
-        },
-        "final_train_model_seed": 100,
-        "final_train_sampler_seed": 1000,
-        "final_eval_sampler_seed": 10000,
-    }
-    _write_csv(final_grid_dir / "final_jobs.csv", [job])
+    jobs = [
+        {
+            "final_run_id": final_run_id,
+            "source_champion_id": "champion-0",
+            "winner_kind": "energy",
+            "replicate_index": index,
+            "major_id": "b-B00_act-A00",
+            "minor_id": "lr-1e-3_ch-8",
+            "config_id": "b-B00_act-A00_lr-1e-3_ch-8",
+            "choices": {
+                "basis": "hooke-total-shell",
+                "activation": "SiLU",
+                "lr": "1.0e-3",
+                "channels": 8,
+            },
+            "final_train_model_seed": 100 + index,
+            "final_train_sampler_seed": 1000 + index,
+            "final_eval_sampler_seed": 10000 + index,
+        }
+        for index, final_run_id in enumerate(final_run_ids)
+    ]
+    _write_csv(final_grid_dir / "final_jobs.csv", jobs)
     layout.write_latest(layout.stage_dir(results_root, layout.STAGE_FINAL_GRID), final_grid_attempt_id)
-    _write_json(final_eval_dir / "source_final_job.json", job)
-    _write_json(
-        final_eval_dir / "source_final_grid_attempt.json",
-        {
-            "final_grid_attempt_id": final_grid_attempt_id,
-            "final_grid_attempt_dir": str(final_grid_dir),
-        },
-    )
-    _write_json(final_eval_dir / "evaluated_checkpoint.json", {"resolved_checkpoint_dir": str(final_train_dir / "checkpoints" / "step_000000")})
-    _write_json(
-        final_eval_dir / "source_final_train_attempt.json",
-        {
-            "final_train_attempt_id": final_train_attempt_id,
-            "final_train_attempt_dir": str(final_train_dir),
-        },
-    )
-    _write_json(final_eval_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:10+00:00"})
-    _write_json(final_train_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:05+00:00"})
-    _write_json(final_train_dir / "metadata.json", {"runtime": {"device": "cuda"}, "peak_memory_mb": 123})
-    _append_metrics(
-        final_train_dir / "metrics.jsonl",
-        [
-            {"namespace": "train", "step": 0, "metrics": {"energy": 2.1, "energy_stderr": 0.01, "energy_variance": 0.02, "grad_norm": 1.5}},
-            {"namespace": "train/sampler", "step": 0, "metrics": {"acceptance_rate": 0.7}},
-            {"namespace": "train/perf", "step": 0, "metrics": {"step_time_sec": 1.0, "local_energy_time_sec": 0.2, "forward_time_sec": 0.3, "backward_time_sec": 0.4}},
-            {"namespace": "runtime", "step": 0, "metrics": {"wall_time_sec": 5.0, "peak_memory_mb": 123}},
-            {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
-        ],
-    )
-    _append_metrics(
-        final_eval_dir / "metrics.jsonl",
-        [
-            {"namespace": "eval/mcmc_energy", "step": 0, "metrics": {"local_energy_mean": 2.01, "local_energy_stderr": 0.02, "local_energy_variance": 0.03, "local_energy_n_finite": 2, "local_energy_n_total": 2, "local_energy_finite_fraction": 1.0, "local_energy_pathology_count": 0}},
-            {"namespace": "eval/mcmc_energy/term", "step": 0, "metrics": {"kinetic_mean": 1.0, "harmonic_trap_mean": 0.5, "electron_electron_mean": 1.0}},
-            {"namespace": "eval/stratified_geometry/status", "step": 0, "metrics": {"task_success": True, "task_failed": False}},
-            {"namespace": "diagnostics/cusp", "step": 0, "metrics": {"time_sec": 1.0}},
-            {"namespace": "eval/perf/cusp", "step": 0, "metrics": {"generator_time_sec": 0.1, "calculator/local_energy_time_sec": 0.2, "summary/profile_time_sec": 0.3}},
-            {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
-        ],
-    )
 
-    _write_csv(final_eval_dir / "mcmc_energy" / "mcmc_energy_samples.csv", [{"local_energy": 2.0}, {"local_energy": 2.1}])
-    _write_csv(final_eval_dir / "cusp" / "cusp_profiles.csv", [{"center_of_mass_id": "com0", "direction_id": "dir0", "r12": 0.1, "local_energy": 2.0, "logabs": -0.2, "d_logabs_dr": 0.5, "finite": True}])
-    _write_csv(final_eval_dir / "tail" / "tail_profiles.csv", [{"com_id": "com0", "tail_path": "path0", "radius": 4.0, "local_energy": 2.0, "logabs": -4.0, "exact_logabs": -4.1, "finite": True}])
-    _write_csv(final_eval_dir / "stratified_geometry" / "stratified_metrics.csv", [{"stratum": "near", "local_energy": 2.0, "finite": True}])
-    _write_csv(final_eval_dir / "hooke_orbital" / "hooke_orbital_metrics.csv", [{"radius": 1.0, "r12": 0.5, "local_energy": 2.0, "finite": True}])
-    for task in final_collect.SYMMETRY_TASKS:
-        _write_csv(final_eval_dir / task / "transform_records.csv", [{"logabs_abs_error": 0.0, "sign_mismatch": False, "parity_mismatch": False, "finite": True}])
-    for task in final_collect.TRACE_TASKS:
-        _write_csv(final_eval_dir / task / "trace_records.csv", [{"entry_key": "layers.0.mixing/value", "q95_abs": 0.01, "q99_abs": 0.02, "max_abs_error": 0.03, "nonfinite_count": 0, "compared_entry_count": 4, "comparison_error_count": 0}])
-    (final_eval_dir / "unused_task").mkdir()
-    (final_eval_dir / "unused_task" / "all_metrics_dump.csv").write_text("not,a,real,table\n")
-    layout.write_latest(layout.final_eval_run_dir(results_root, final_run_id), final_eval_attempt_id)
-    return final_eval_attempt_id, final_run_id
+    for job in jobs:
+        final_run_id = str(job["final_run_id"])
+        final_train_dir = layout.final_train_attempt_dir(results_root, final_run_id, final_train_attempt_id)
+        final_eval_dir = layout.final_eval_attempt_dir(results_root, final_run_id, final_eval_attempt_id)
+        _write_json(final_eval_dir / "source_final_job.json", job)
+        _write_json(
+            final_eval_dir / "source_final_grid_attempt.json",
+            {
+                "final_grid_attempt_id": final_grid_attempt_id,
+                "final_grid_attempt_dir": str(final_grid_dir),
+            },
+        )
+        _write_json(final_eval_dir / "evaluated_checkpoint.json", {"resolved_checkpoint_dir": str(final_train_dir / "checkpoints" / "step_000000")})
+        _write_json(
+            final_eval_dir / "source_final_train_attempt.json",
+            {
+                "final_train_attempt_id": final_train_attempt_id,
+                "final_train_attempt_dir": str(final_train_dir),
+            },
+        )
+        _write_json(final_eval_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:10+00:00"})
+        _write_json(final_train_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:05+00:00"})
+        _write_json(final_train_dir / "metadata.json", {"runtime": {"device": "cuda"}, "peak_memory_mb": 123})
+        _append_metrics(
+            final_train_dir / "metrics.jsonl",
+            [
+                {"namespace": "train", "step": 0, "metrics": {"energy": 2.1, "energy_stderr": 0.01, "energy_variance": 0.02, "grad_norm": 1.5}},
+                {"namespace": "train/sampler", "step": 0, "metrics": {"acceptance_rate": 0.7}},
+                {"namespace": "train/perf", "step": 0, "metrics": {"step_time_sec": 1.0, "local_energy_time_sec": 0.2, "forward_time_sec": 0.3, "backward_time_sec": 0.4}},
+                {"namespace": "runtime", "step": 0, "metrics": {"wall_time_sec": 5.0, "peak_memory_mb": 123}},
+                {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
+            ],
+        )
+        _append_metrics(
+            final_eval_dir / "metrics.jsonl",
+            [
+                {"namespace": "eval/mcmc_energy", "step": 0, "metrics": {"local_energy_mean": 2.01, "local_energy_stderr": 0.02, "local_energy_variance": 0.03, "local_energy_n_finite": 2, "local_energy_n_total": 2, "local_energy_finite_fraction": 1.0, "local_energy_pathology_count": 0}},
+                {"namespace": "eval/mcmc_energy/term", "step": 0, "metrics": {"kinetic_mean": 1.0, "harmonic_trap_mean": 0.5, "electron_electron_mean": 1.0}},
+                {"namespace": "eval/stratified_geometry/status", "step": 0, "metrics": {"task_success": True, "task_failed": False}},
+                {"namespace": "diagnostics/cusp", "step": 0, "metrics": {"time_sec": 1.0}},
+                {"namespace": "eval/perf/cusp", "step": 0, "metrics": {"generator_time_sec": 0.1, "calculator/local_energy_time_sec": 0.2, "summary/profile_time_sec": 0.3}},
+                {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
+                *extra_eval_metrics,
+            ],
+        )
+
+        _write_csv(final_eval_dir / "mcmc_energy" / "mcmc_energy_samples.csv", [{"local_energy": 2.0}, {"local_energy": 2.1}])
+        _write_csv(final_eval_dir / "cusp" / "cusp_profiles.csv", [{"center_of_mass_id": "com0", "direction_id": "dir0", "r12": 0.1, "local_energy": 2.0, "logabs": -0.2, "d_logabs_dr": 0.5, "finite": True}])
+        _write_csv(final_eval_dir / "tail" / "tail_profiles.csv", [{"com_id": "com0", "tail_path": "path0", "radius": 4.0, "local_energy": 2.0, "logabs": -4.0, "exact_logabs": -4.1, "finite": True}])
+        _write_csv(final_eval_dir / "stratified_geometry" / "stratified_metrics.csv", [{"stratum": "near", "local_energy": 2.0, "finite": True}])
+        _write_csv(final_eval_dir / "hooke_orbital" / "hooke_orbital_metrics.csv", [{"radius": 1.0, "r12": 0.5, "local_energy": 2.0, "finite": True}])
+        if write_transform_records:
+            for task in final_collect.SYMMETRY_TASKS:
+                _write_csv(final_eval_dir / task / "transform_records.csv", [{"logabs_abs_error": 0.0, "sign_mismatch": False, "parity_mismatch": False, "finite": True}])
+        for task in final_collect.TRACE_TASKS:
+            _write_csv(final_eval_dir / task / "trace_records.csv", [{"entry_key": "layers.0.mixing/value", "q95_abs": 0.01, "q99_abs": 0.02, "max_abs_error": 0.03, "nonfinite_count": 0, "compared_entry_count": 4, "comparison_error_count": 0}])
+        (final_eval_dir / "unused_task").mkdir()
+        (final_eval_dir / "unused_task" / "all_metrics_dump.csv").write_text("not,a,real,table\n")
+        layout.write_latest(layout.final_eval_run_dir(results_root, final_run_id), final_eval_attempt_id)
+    return final_eval_attempt_id, final_run_ids
 
 
 def test_v3_final_collect_writes_report_contract_and_explicit_report_axes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     results_root = tmp_path / "results"
-    final_eval_attempt_id, _final_run_id = _write_minimal_final_artifacts(results_root)
+    final_eval_attempt_id, _final_run_ids = _write_minimal_final_artifacts(results_root)
     read_paths: list[Path] = []
     real_read_csv = final_collect._read_csv
 
@@ -1886,6 +1918,172 @@ def test_v3_final_collect_writes_report_contract_and_explicit_report_axes(
     assert architecture[0][final_collect.REPORT_ROW_COLUMN] == "hooke-total-shell"
     assert architecture[0][final_collect.REPORT_COL_COLUMN] == "SiLU"
     assert all("unused_task" not in str(path) for path in read_paths)
+
+
+# ---------------------------------------------------------------------------
+# Antisymmetry at `artifact_level: summaries`
+#
+# The scan's `configs/eval.yaml` sets `artifact_level: summaries`, so
+# `full_model_antisymmetry/transform_records.csv` is NEVER written. Antisymmetry
+# is a core correctness invariant of a fermionic ansatz, so a collector that
+# reads only those records reports a blank `antisymmetry_logabs_error_max` and a
+# `antisymmetry_sign_mismatch_total` summed over zero rows -- indistinguishable
+# from "measured, no violations". These tests pin the summary-metric path.
+# ---------------------------------------------------------------------------
+def _antisymmetry_summary_metrics(
+    *, logabs_max_abs_error: float, sign_failure_count: int
+) -> list[dict[str, Any]]:
+    """Return the metrics `TransformConsistencySummary` writes for the task.
+
+    Mirrors `tpen.evaluation.summaries.TransformConsistencySummary` under the
+    task namespace the scan's `configs/eval.yaml` assigns
+    (`eval/full_model_antisymmetry`). These four scalars are the whole surviving
+    record of the invariant at `artifact_level: summaries`.
+    """
+
+    return [
+        {
+            "namespace": "eval/full_model_antisymmetry",
+            "step": 0,
+            "metrics": {
+                "logabs_max_abs_error": logabs_max_abs_error,
+                "logabs_mean_abs_error": logabs_max_abs_error / 2.0,
+                "sign_failure_count": sign_failure_count,
+                "failure_count": sign_failure_count,
+            },
+        },
+        {
+            "namespace": "eval/full_model_antisymmetry/status",
+            "step": 0,
+            "metrics": {"task_success": True, "task_failed": False},
+        },
+    ]
+
+
+def test_antisymmetry_summary_metric_survives_the_collector_metric_filter() -> None:
+    # `_keep_eval_metric` drops every eval metric not explicitly retained, so
+    # the fallback is only reachable if the metric is whitelisted. `sign_failure_count`
+    # rides the `failure_count` needle; `logabs_max_abs_error` matches no needle
+    # and must be named exactly, like its trace-equivariance counterpart.
+    assert final_collect._keep_eval_metric("eval/full_model_antisymmetry/logabs_max_abs_error")
+    assert final_collect._keep_eval_metric("eval/full_model_antisymmetry/sign_failure_count")
+
+
+def test_final_collect_reports_antisymmetry_from_summaries_when_records_are_absent(
+    tmp_path: Path,
+) -> None:
+    results_root = tmp_path / "results"
+    final_eval_attempt_id, final_run_ids = _write_minimal_final_artifacts(
+        results_root,
+        n_final_runs=2,
+        write_transform_records=False,
+        extra_eval_metrics=_antisymmetry_summary_metrics(
+            logabs_max_abs_error=0.0, sign_failure_count=0
+        ),
+    )
+    result = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC0",
+        final_eval_attempt_id=final_eval_attempt_id,
+    )
+    symmetry = _read_csv(Path(result["attempt_dir"]) / "symmetry_summary.csv")
+
+    # One row per final run, not zero rows: the table is the report's only input.
+    assert result["manifest"]["tables"]["symmetry_summary.csv"] == len(final_run_ids)
+    assert [row["final_run_id"] for row in symmetry] == final_run_ids
+    assert all(row["symmetry_task"] == "full_model_antisymmetry" for row in symmetry)
+    # Populated, not blank -- a blank field is what the defect produced.
+    assert all(row["logabs_error_max"] != "" for row in symmetry)
+    assert all(float(row["logabs_error_max"]) == 0.0 for row in symmetry)
+    assert all(row["sign_mismatch_count"] == "0" for row in symmetry)
+
+
+def test_a_nonzero_antisymmetry_violation_reaches_the_rendered_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # THE anti-vacuity test. Asserting that "0.0" appears would also pass while
+    # the collector measures nothing, so inject a violation the report must not
+    # be able to swallow, and follow it all the way to `report.md`.
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    results_root = tmp_path / "results"
+    final_eval_attempt_id, _final_run_ids = _write_minimal_final_artifacts(
+        results_root,
+        write_transform_records=False,
+        extra_eval_metrics=_antisymmetry_summary_metrics(
+            logabs_max_abs_error=0.375, sign_failure_count=7
+        ),
+    )
+    collected = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC0",
+        final_eval_attempt_id=final_eval_attempt_id,
+    )
+    symmetry = _read_csv(Path(collected["attempt_dir"]) / "symmetry_summary.csv")
+    assert [float(row["logabs_error_max"]) for row in symmetry] == [0.375]
+    assert [row["sign_mismatch_count"] for row in symmetry] == ["7"]
+
+    report = final_report.build_report(results_root=results_root, attempt_id=ATTEMPT)
+    report_dir = layout.stage_dir(results_root, layout.STAGE_FINAL_REPORT) / ATTEMPT
+    invariants = _read_csv(report_dir / "tables" / "invariants_by_axis.csv")
+    assert [row["antisymmetry_logabs_error_max"] for row in invariants] == ["0.375"]
+    assert [row["antisymmetry_sign_mismatch_total"] for row in invariants] == ["7"]
+    assert "0.375" in (report_dir / "report.md").read_text()
+    assert report["warnings"] == []
+
+
+def test_antisymmetry_sign_mismatch_total_sums_over_every_collected_seed(
+    tmp_path: Path,
+) -> None:
+    # `antisymmetry_sign_mismatch_total` is a sum, so an empty row set and a
+    # clean run both render 0. Pin the row count the sum is taken over.
+    results_root = tmp_path / "results"
+    final_eval_attempt_id, final_run_ids = _write_minimal_final_artifacts(
+        results_root,
+        n_final_runs=3,
+        write_transform_records=False,
+        extra_eval_metrics=_antisymmetry_summary_metrics(
+            logabs_max_abs_error=0.125, sign_failure_count=2
+        ),
+    )
+    collected = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC0",
+        final_eval_attempt_id=final_eval_attempt_id,
+    )
+    symmetry = _read_csv(Path(collected["attempt_dir"]) / "symmetry_summary.csv")
+    assert len(symmetry) == len(final_run_ids) == 3
+
+    invariants = final_report.invariants_by_axis_rows(symmetry, [])
+    assert len(invariants) == 1
+    assert invariants[0]["antisymmetry_sign_mismatch_total"] == 3 * 2
+    # The worst case survives the reduction rather than being averaged away.
+    assert invariants[0]["antisymmetry_logabs_error_max"] == "0.125"
+
+
+def test_transform_records_still_win_over_summary_metrics_when_present(
+    tmp_path: Path,
+) -> None:
+    # `artifact_level: records` remains supported: per-sample records are richer
+    # (median, parity, finite fraction), so they must not be shadowed by the
+    # coarser fallback.
+    results_root = tmp_path / "results"
+    final_eval_attempt_id, _final_run_ids = _write_minimal_final_artifacts(
+        results_root,
+        write_transform_records=True,
+        extra_eval_metrics=_antisymmetry_summary_metrics(
+            logabs_max_abs_error=0.5, sign_failure_count=9
+        ),
+    )
+    collected = final_collect.collect_final_outputs(
+        results_root=results_root,
+        collect_attempt_id="FC0",
+        final_eval_attempt_id=final_eval_attempt_id,
+    )
+    symmetry = _read_csv(Path(collected["attempt_dir"]) / "symmetry_summary.csv")
+    assert len(symmetry) == 1
+    assert float(symmetry[0]["logabs_error_max"]) == 0.0
+    assert symmetry[0]["logabs_error_median"] == "0"
+    assert symmetry[0]["finite_fraction"] == "1"
 
 
 def test_v2_final_eval_defaults_to_single_latest_final_train_attempt(tmp_path: Path) -> None:
