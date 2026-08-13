@@ -430,41 +430,6 @@ with `--wait-launcher-partition` if needed. The real validation/final-eval array
 uses the Slurm partition flags from the command that the dependent launcher
 reruns.
 
-### Run-And-Forget Stack
-
-`submit_stack.sh` self-submits one CPU controller job that runs the complete
-stage stack in order. The controller submits each GPU stage, waits for every
-recorded Slurm job to finish, verifies row counts, and then advances to the
-next stage.
-
-```bash
-$STUDY/submit_stack.sh full
-$STUDY/submit_stack.sh smoke
-$STUDY/submit_stack.sh pilot
-$STUDY/submit_stack.sh pilot-smoke
-```
-
-`full`, `smoke`, `pilot`, and `pilot-smoke` use the matching checked-in grid
-and the launcher resources shown above. Pilot smoke intentionally uses the
-production pilot launch profile; non-pilot smoke uses `gpu_test`.
-
-The command prints the controller job id and stack directory, then exits. All
-controller output, child job ids, Slurm accounting records, copied submission
-script, manifest, and final status are retained under:
-
-```text
-results/stack/<stack_id>/
-```
-
-The controller requests four CPUs and `8G` per CPU using `--mem-per-cpu`. It
-holds that CPU allocation while polling, favoring operational simplicity over
-allocation efficiency. Override controller placement or walltime when needed:
-
-```bash
-STACK_CONTROLLER_PARTITION=kozinsky \
-STACK_CONTROLLER_TIME=7-00:00:00 \
-$STUDY/submit_stack.sh full
-```
 
 ## Archive a completed V3 lineage
 
