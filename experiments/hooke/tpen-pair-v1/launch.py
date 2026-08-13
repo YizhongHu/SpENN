@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Sequence
 
@@ -23,6 +24,7 @@ import yaml
 from experiments.toolkit import (
     AllocationPoolExecutor,
     CompletionSpec,
+    ExecutionRecord,
     ResourceSpec,
     StagePlan,
     SubmissionRequest,
@@ -32,6 +34,27 @@ from experiments.toolkit import (
 
 
 CONFIG_PATH = "experiments/hooke/tpen-pair-v1/configs/train.yaml"
+
+
+def _receipts_succeeded(records: object) -> bool:
+    """Return whether an executor result is a valid all-success receipt batch."""
+
+    if records == ():
+        return True
+    try:
+        receipt_iter = iter(records)  # type: ignore[arg-type]
+    except TypeError:
+        return False
+    for record in receipt_iter:
+        if not isinstance(record, ExecutionRecord):
+            return False
+        metadata = record.metadata
+        if not isinstance(metadata, Mapping):
+            return False
+        returncode = metadata.get("returncode")
+        if type(returncode) is not int or returncode != 0:
+            return False
+    return True
 
 
 def repository_root() -> Path:
@@ -218,15 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             deadline_env_var=args.deadline_env_var,
             allocation_id=args.allocation_id,
         ).submit(plan, plan.tasks, request)
-        if not records:
-            return 0
-        return int(
-            not all(
-                type(record.metadata.get("returncode")) is int
-                and record.metadata["returncode"] == 0
-                for record in records
-            )
-        )
+        return int(not _receipts_succeeded(records))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 

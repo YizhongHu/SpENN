@@ -209,6 +209,130 @@ def test_execution_record_returncode_controls_launcher_exit(
     ) == expected
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "non-iterable",
+        "not-an-execution-record",
+        "missing-metadata",
+        "none-metadata",
+        "non-mapping-metadata",
+        "missing-returncode",
+        "bool-returncode",
+        "float-returncode",
+        "nonzero-returncode",
+        "mixed-valid-invalid",
+        "mixed-success-failure",
+    ],
+)
+def test_malformed_execution_receipts_fail_closed(
+    tmp_path: Path, monkeypatch, shape: str
+) -> None:
+    args = _args(tmp_path, run_id=f"malformed-{shape}", pass_id="pass-1")
+    plan, request = launch.build_plan(args, checkout=tmp_path / "checkout")
+    task = plan.tasks[0]
+    valid = ExecutionRecord(
+        task_id=task.task_id,
+        run_id=task.run_id,
+        stage=task.stage,
+        attempt_id=task.attempt_id,
+        backend="allocation_pool",
+        launcher_job_id="allocation-test",
+        submitted_command=task.command,
+        metadata={"returncode": 0},
+    )
+    if shape == "non-iterable":
+        records = 1
+    elif shape == "not-an-execution-record":
+        records = (object(),)
+    elif shape == "missing-metadata":
+        records = (
+            ExecutionRecord(
+                task_id=task.task_id,
+                run_id=task.run_id,
+                stage=task.stage,
+                attempt_id=task.attempt_id,
+                backend="allocation_pool",
+                launcher_job_id="allocation-test",
+                submitted_command=task.command,
+            ),
+        )
+    elif shape == "none-metadata":
+        records = (valid.__class__(**{**valid.__dict__, "metadata": None}),)
+    elif shape == "non-mapping-metadata":
+        records = (valid.__class__(**{**valid.__dict__, "metadata": ["returncode", 0]}),)
+    elif shape == "missing-returncode":
+        records = (valid.__class__(**{**valid.__dict__, "metadata": {}}),)
+    elif shape == "bool-returncode":
+        records = (valid.__class__(**{**valid.__dict__, "metadata": {"returncode": False}}),)
+    elif shape == "float-returncode":
+        records = (valid.__class__(**{**valid.__dict__, "metadata": {"returncode": 0.0}}),)
+    elif shape == "nonzero-returncode":
+        records = (valid.__class__(**{**valid.__dict__, "metadata": {"returncode": 2}}),)
+    elif shape == "mixed-valid-invalid":
+        records = (valid, object())
+    else:
+        failed = valid.__class__(**{**valid.__dict__, "metadata": {"returncode": 2}})
+        records = (valid, failed)
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, submitted_plan, tasks, submitted_request):
+            assert submitted_plan == plan
+            assert tasks == (task,)
+            assert submitted_request == request
+            return records
+
+    monkeypatch.setattr(launch, "AllocationPoolExecutor", FakeExecutor)
+    assert launch.main(
+        [
+            "--python", sys.executable,
+            "--results-root", str(tmp_path / "results"),
+            "--run-id", f"malformed-{shape}",
+            "--device", "cuda",
+            "--visibility-variable", "CUDA_VISIBLE_DEVICES",
+            "--visibility-values", "0",
+            "--allocation-id", "allocation-test",
+        ]
+    ) == 1
+
+
+def test_empty_and_exact_zero_execution_receipts_succeed(tmp_path: Path, monkeypatch) -> None:
+    args = _args(tmp_path, run_id="empty-or-zero")
+    plan, request = launch.build_plan(args, checkout=tmp_path / "checkout")
+    task = plan.tasks[0]
+    record = ExecutionRecord(
+        task_id=task.task_id,
+        run_id=task.run_id,
+        stage=task.stage,
+        attempt_id=task.attempt_id,
+        backend="allocation_pool",
+        launcher_job_id="allocation-test",
+        submitted_command=task.command,
+        metadata={"returncode": 0},
+    )
+    batches = iter(((), (record,)))
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, submitted_plan, tasks, submitted_request):
+            return next(batches)
+
+    monkeypatch.setattr(launch, "AllocationPoolExecutor", FakeExecutor)
+    common = [
+        "--python", sys.executable, "--results-root", str(tmp_path / "results"),
+        "--run-id", "empty-or-zero", "--device", "cuda",
+        "--visibility-variable", "CUDA_VISIBLE_DEVICES", "--visibility-values", "0",
+        "--allocation-id", "allocation-test",
+    ]
+    assert launch.main(common) == 0
+    assert launch.main(common) == 0
+
+
 def test_single_visibility_value_binds_one_deterministic_worker(tmp_path: Path, monkeypatch) -> None:
     captured = {}
 
