@@ -65,6 +65,7 @@ from torch import nn
 
 from tpen.data.batch import ElectronBatch
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations, LocalEnergyValues
+from tpen.evaluation.protocols import EvaluationContext
 from tpen.run import run_from_config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -679,8 +680,14 @@ def test_train_timing_cadence_does_not_log_every_step() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _local_energy_metrics(summary_cfg: DictConfig, values: torch.Tensor) -> dict[str, Any]:
-    """Return the metrics one configured summary emits for given local energies."""
+def _local_energy_metrics(
+    summary_cfg: DictConfig, values: torch.Tensor, tmp_path: Path
+) -> dict[str, Any]:
+    """Return the metrics one configured summary emits for given local energies.
+
+    A real `EvaluationContext` rather than ``None``: the suite runs under typeguard,
+    which enforces the annotated parameter type at the call boundary.
+    """
 
     bundle = EvaluationBundle(
         generated=GeneratedConfigurations(
@@ -692,10 +699,22 @@ def _local_energy_metrics(summary_cfg: DictConfig, values: torch.Tensor) -> dict
         ),
         local_energy=LocalEnergyValues(local_energy=values, finite_mask=torch.isfinite(values)),
     )
-    return dict(instantiate(summary_cfg).summarize(bundle=bundle, context=None, namespace="eval").metrics)
+    context = EvaluationContext(
+        namespace="eval",
+        artifact_level="metrics_only",
+        task_failure_policy="fail_fast",
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        seed=0,
+        run_dir=tmp_path,
+        task_output_dir=tmp_path,
+        metadata={},
+    )
+    summary = instantiate(summary_cfg)
+    return dict(summary.summarize(bundle=bundle, context=context, namespace="eval").metrics)
 
 
-def test_the_primary_metric_comes_from_a_task_that_samples_the_wavefunction() -> None:
+def test_the_primary_metric_comes_from_a_task_that_samples_the_wavefunction(tmp_path: Path) -> None:
     """``mcmc_energy`` supplies ``local_energy_mean``, and it is the variational one.
 
     ``MCMCGenerator`` draws from the trained sampler, i.e. from |psi|^2
@@ -711,11 +730,15 @@ def test_the_primary_metric_comes_from_a_task_that_samples_the_wavefunction() ->
     assert cfg.evaluator.tasks[0].name == "mcmc_energy"
     assert task.generator._target_ == "tpen.evaluation.generators.MCMCGenerator"
     assert task.generator.sampler._target_ == "tpen.sampling.metropolis.MetropolisSampler"
-    metrics = _local_energy_metrics(task.summaries[0], torch.tensor([2.0, 2.5, 1.5], dtype=torch.float64))
+    metrics = _local_energy_metrics(
+        task.summaries[0], torch.tensor([2.0, 2.5, 1.5], dtype=torch.float64), tmp_path
+    )
     assert "local_energy_mean" in metrics
 
 
-def test_the_secondary_metric_is_a_variance_and_the_task_that_emits_it_is_kept() -> None:
+def test_the_secondary_metric_is_a_variance_and_the_task_that_emits_it_is_kept(
+    tmp_path: Path,
+) -> None:
     """``stratified_geometry`` supplies ``local_energy_variance``, never its mean.
 
     ``StratifiedGeometryGenerator.generate`` begins ``del model``
@@ -733,7 +756,9 @@ def test_the_secondary_metric_is_a_variance_and_the_task_that_emits_it_is_kept()
     task = _config("eval").evaluation_tasks.stratified_geometry
 
     assert task.generator._target_ == "tpen.evaluation.generators.StratifiedGeometryGenerator"
-    metrics = _local_energy_metrics(task.summaries[0], torch.tensor([2.0, 2.5, 1.5], dtype=torch.float64))
+    metrics = _local_energy_metrics(
+        task.summaries[0], torch.tensor([2.0, 2.5, 1.5], dtype=torch.float64), tmp_path
+    )
     assert "local_energy_variance" in metrics
 
 
