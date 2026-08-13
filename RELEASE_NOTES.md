@@ -1,5 +1,71 @@
 # Release Notes
 
+## v0.3.0 - TPEN public API, typed event clock, and four-facility verification
+
+### Added
+
+- Typed occurrence foundation: a typed callback cadence, typed occurrence
+  records, and delivery of a domain's own state object to typed callbacks, with
+  the four health observers moved onto typed state delivery.
+- Typed training phases with explicit update outcomes, and a typed
+  `SamplerStats` record in place of dictionary probing.
+- Durable checkpoint update state on `tpen.checkpoint` schema v2, with an
+  update-driven checkpoint cadence.
+- Portable pair-v1 allocation launcher
+  (`experiments/hooke/tpen-pair-v1/launch.py`) that runs one task per explicitly
+  bound accelerator through `AllocationPoolExecutor`, using the scheduler job ID
+  as the allocation identifier and pass-scoped row claims that are never
+  released.
+- Pinned `rocm71` Torch extra so OLCF Frontier resolves an AMD ROCm stack.
+- Authoritative-edit guard (`tools/check_authoritative_edit.py`) and a native
+  unbounded linear pull-request stack workflow.
+
+### Changed
+
+- **Breaking:** the public runtime surface completes the SpENN to TPEN rename.
+  Importers must use `tpen`, and the default run name no longer falls back to
+  the former branding.
+- The accelerator backend is resolved from the runtime instead of naming CUDA
+  directly, so CUDA, Intel XPU, and ROCm share one code path.
+- A whole training record is attributed to a single model version.
+- The shell stack launcher is removed in favour of the tracked Python launcher.
+
+### Fixed
+
+- Launcher and receipt truthfulness: allocation receipts are required, task
+  failures propagate to the process exit code, malformed execution receipts are
+  rejected instead of silently accepted, evaluation failures are reported
+  truthfully, completion truth is enforced, and any nested dataclass field is
+  serialized rather than only `Event` and `Operation`.
+- Durable run identifiers are normalized and required to be non-empty before
+  they reach artifact paths.
+- Test-time logger isolation: `tpen.bootstrap` no longer leaks its private
+  terminal handler or `propagate=False` between tests, so the bootstrap-channel
+  assertion no longer depends on test order. Runtime logging is unchanged.
+
+### Validation
+
+- `uv lock --check`
+- Package and runtime metadata agree on `0.3.0`.
+- Four-facility same-source hardware gate at tree
+  `585df3187b14a017e23b6cf0d1cdb23970218125`, one fresh detached checkout and
+  exactly one scheduler job per facility: Cannon CPU `38807293` (`1004 passed`,
+  `2 skipped`) and GPU `38807314` on one A100 MIG; Polaris PBS `7438353`
+  (A100-SXM4-40GB); Aurora PBS `8751664` (Intel Max 1550 tile, flat device
+  hierarchy); Frontier Slurm `5250416` (AMD Instinct MI250X). Every accelerator
+  lane produced identical science: `95` metric records, `2310` recursively
+  finite numeric leaves with zero non-finite, `25/25` data-integrity checks,
+  five COMPLETE `tpen.checkpoint` v2 manifests, `505` typed `tpen.*`
+  occurrences, exactly one `run_start` and one `run_end`, and no `spenn`
+  leakage.
+- Merged integration tree `41004485cb61d5d60584134bc8650314ebcd34fa`
+  re-verified on Cannon as Slurm `38838638` (`COMPLETED 0:0`): the accepted
+  baseline invocation reproduced `1004 passed`, `2 skipped`; the full `tests`
+  tree gave `1014 passed`, `2 skipped`, `6 subtests passed`; and the
+  authoritative-edit guard alone gave `10 passed`, `6 subtests passed`.
+- This release commit adds only version metadata and these notes on top of the
+  verified tree above.
+
 ## v0.2.3 - Pair Stability v3 diagnostics and durable execution
 
 ### Added

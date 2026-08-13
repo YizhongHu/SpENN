@@ -4,6 +4,6 @@ Importing :mod:`tpen` must remain lightweight and free of training side
 effects.
 """
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 __all__ = ["__version__"]
