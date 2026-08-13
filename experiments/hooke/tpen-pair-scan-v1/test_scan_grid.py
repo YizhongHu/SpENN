@@ -654,8 +654,81 @@ def test_the_holdout_seed_never_influences_the_champion_it_measures(tmp_path: Pa
         assert row["holdout_metric"] == "eval/mcmc_energy/local_energy_mean_seed_median"
         assert float(row["holdout_metric_value"]) == pytest.approx(2.01)
         assert int(row["holdout_metric_seed_n"]) == 1
-        # Two seed rows chose it; one measured it.
+        # Two seed rows chose it; one measured it. This is the count that catches a
+        # leak the median would absorb: a seed-median over three rows is robust to
+        # one excursion, so identity alone is not a sensitive test of the split.
         assert int(row["metric_seed_n"]) == len(SELECTION_SEEDS)
+
+
+def test_perturbing_the_holdout_row_changes_no_selection_decision(tmp_path: Path) -> None:
+    """The exhaustive form: seed row 2 cannot move ANY selection output.
+
+    Two selections over the same collection, differing only in the holdout row's
+    numbers, must agree on every champion, every ladder decision, and both
+    cross-bucket champions. Any path that reads the holdout while deciding -- a
+    per-bucket aggregate over all seeds, a cross-bucket champion taken from the
+    full sample, a seed filter that silently does nothing -- changes one of those
+    and fails here, including paths a champion-identity assertion would miss
+    because a three-row median absorbs one excursion.
+
+    The final assertion is the anti-vacuity guard: the perturbation must still
+    reach the REPORTED holdout value, or the test would also pass on a
+    configuration that never reads seed row 2 at all.
+    """
+
+    def summary(perturbed: bool) -> Any:
+        def mcmc(minor_id: str, seed: int) -> float:
+            if perturbed and seed == 2:
+                # Absurdly favourable, and favourable to a different configuration.
+                return -1.0e6 if minor_id == BEST_ON_HOLDOUT else 1.0e6
+            return 2.01 if minor_id == BEST_ON_SELECTION else 2.50
+
+        return {
+            "mcmc": mcmc,
+            "variance": lambda minor_id, seed: (
+                -1.0e6 if (perturbed and seed == 2 and minor_id == BEST_ON_HOLDOUT) else 0.01
+            ),
+            "abs_error": lambda minor_id, seed: (
+                -1.0e6
+                if (perturbed and seed == 2 and minor_id == BEST_ON_HOLDOUT)
+                else (0.01 if minor_id == BEST_ON_SELECTION else 0.50)
+            ),
+        }
+
+    reports = {}
+    champions = {}
+    for label, perturbed in (("base", False), ("perturbed", True)):
+        results_root = _plan(tmp_path / label, GRID)
+        _collection(results_root, _summary_rows(_manifest(results_root), **summary(perturbed)))
+        reports[label] = select_champions.select(
+            results_root=results_root, select_attempt_id="S1"
+        )["report"]
+        champions[label] = _read_csv(results_root / "04_select" / "S1" / "champions.csv")
+
+    holdout_columns = set(select_champions.HOLDOUT_COLUMNS)
+    decided = [
+        [{key: value for key, value in row.items() if key not in holdout_columns} for row in rows]
+        for rows in (champions["base"], champions["perturbed"])
+    ]
+
+    assert decided[0] == decided[1]
+    for key in (
+        "overall_champion",
+        "overall_metric",
+        "overall_metric_value",
+        "secondary_champion",
+        "secondary_metric",
+        "decisions_by_group",
+        "bucket_distributions",
+    ):
+        assert reports["base"][key] == reports["perturbed"][key], key
+
+    # The perturbation did reach the artifact -- through the reported holdout
+    # measurement, which is the only place it is allowed to appear.
+    base_holdout = {row["holdout_metric_value"] for row in champions["base"]}
+    perturbed_holdout = {row["holdout_metric_value"] for row in champions["perturbed"]}
+    assert base_holdout != perturbed_holdout
+    assert all(float(value) == pytest.approx(1.0e6) for value in perturbed_holdout)
 
 
 def test_a_seed_that_selects_the_champion_cannot_also_evaluate_it(tmp_path: Path) -> None:
