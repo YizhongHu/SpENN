@@ -292,6 +292,21 @@ def test_require_choice_paths_rejects_a_config_that_never_got_the_merge():
         study_config.require_choice_paths(raw, ["choices.basis"], context="unmerged train config")
 
 
+def test_require_choice_paths_rejects_a_scalar_at_a_required_path():
+    # A choice library is a table of levels. A scalar there is a merge that went
+    # wrong, not a merge that succeeded, and it must not pass merely by being
+    # non-None.
+    cfg = OmegaConf.create({"choices": {"basis": 4}})
+    with pytest.raises(ValueError, match="missing required choice path"):
+        study_config.require_choice_paths(cfg, ["choices.basis"], context="scalar basis")
+
+
+def test_require_choice_paths_rejects_a_list_at_a_required_path():
+    cfg = OmegaConf.create({"choices": {"basis": ["no-basis"]}})
+    with pytest.raises(ValueError, match="missing required choice path"):
+        study_config.require_choice_paths(cfg, ["choices.basis"], context="list basis")
+
+
 def test_require_choice_paths_rejects_an_empty_choice_table():
     # A merge against a fragment defining an empty `choices.basis:` would
     # otherwise look like a successful merge.
@@ -418,23 +433,83 @@ def test_planning_with_a_missing_library_file_fails_instead_of_planning(tmp_path
         plan.main(["--grid", str(grid_path), "--attempt-id", ATTEMPT])
 
 
-def test_write_grid_attempt_rejects_a_snapshot_that_lost_the_merged_library(tmp_path):
-    # The on-disk check: the snapshot the commands load is what gets verified,
-    # so a materialization step that drops a choice block cannot ship.
-    results_root = tmp_path / "results"
-    grid_data = _grid_data(results_root)
+def _write_attempt(tmp_path: Path, grid_data: dict, config_snapshot_data: dict) -> None:
+    plan.write_grid_attempt(
+        results_root=tmp_path / "results",
+        attempt_id=ATTEMPT,
+        created_at="2026-08-13T12:00:00-04:00",
+        config=CONFIGS / "train.yaml",
+        grid=tmp_path / "grid.yaml",
+        grid_data=grid_data,
+        jobs=[],
+        config_snapshot_data=config_snapshot_data,
+    )
+
+
+def test_write_grid_attempt_rejects_a_train_snapshot_that_lost_the_library(tmp_path):
+    # The on-disk check on the TRAIN snapshot, isolated: no validation_config, so
+    # only the train verification can fire.
+    grid_data = _grid_data(tmp_path / "results")
+    grid_data.pop("validation_config")
     grid_data["required_choice_paths"] = ["choices.basis"]
-    with pytest.raises(ValueError, match="choices.basis"):
-        plan.write_grid_attempt(
-            results_root=results_root,
-            attempt_id=ATTEMPT,
-            created_at="2026-08-13T12:00:00-04:00",
-            config=CONFIGS / "train.yaml",
-            grid=tmp_path / "grid.yaml",
-            grid_data=grid_data,
-            jobs=[],
-            config_snapshot_data={"train": OmegaConf.load(CONFIGS / "train.yaml")},
+    with pytest.raises(ValueError, match="train config snapshot"):
+        _write_attempt(tmp_path, grid_data, {"train": OmegaConf.load(CONFIGS / "train.yaml")})
+
+
+def test_write_grid_attempt_rejects_a_validation_snapshot_that_lost_the_library(tmp_path):
+    # The on-disk check on the VALIDATION snapshot, isolated: the train snapshot
+    # is correctly merged, so only the validation verification can fire.
+    grid_data = _grid_data(tmp_path / "results")
+    grid_data["required_choice_paths"] = ["choices.basis"]
+    merged_train = study_config.load_composed_config(
+        CONFIGS / "train.yaml",
+        study_config.choice_library_specs(BASIS_LIBRARY_SPECS),
+        required_paths=["choices.basis"],
+        repo_root=REPO_ROOT,
+    )
+    with pytest.raises(ValueError, match="validation config snapshot"):
+        _write_attempt(
+            tmp_path,
+            grid_data,
+            {"train": merged_train, "validation": OmegaConf.load(CONFIGS / "eval.yaml")},
         )
+
+
+def test_write_grid_attempt_accepts_snapshots_that_carry_the_library(tmp_path):
+    # Keeps the two rejection tests honest: the same call path succeeds when both
+    # snapshots are properly merged.
+    grid_data = _grid_data(tmp_path / "results")
+    grid_data["required_choice_paths"] = ["choices.basis"]
+    specs = study_config.choice_library_specs(BASIS_LIBRARY_SPECS)
+    merged = {
+        stage: study_config.load_composed_config(
+            CONFIGS / name,
+            specs,
+            required_paths=["choices.basis"],
+            repo_root=REPO_ROOT,
+        )
+        for stage, name in (("train", "train.yaml"), ("validation", "eval.yaml"))
+    }
+    _write_attempt(tmp_path, grid_data, merged)
+    assert (tmp_path / "results" / "00_grid" / ATTEMPT / "manifest.json").is_file()
+
+
+def test_composition_is_validated_before_any_durable_artifact_is_written(tmp_path, monkeypatch):
+    # A required path that no `choice_validation` entry covers, so `validate_grid`
+    # cannot catch it, and no validation config, so only the TRAIN composition
+    # check can. It must fire before the grid attempt directory exists: a failed
+    # plan must leave no half-written lineage for a later stage to pick up.
+    grid = _grid_data(tmp_path / "results")
+    grid.pop("validation_config")
+    grid["choice_libraries"] = [
+        {"path": "experiments/hooke/choices/basis_levels.yaml", "provides": "choices.unvalidated"}
+    ]
+    grid_path = tmp_path / "grid.yaml"
+    OmegaConf.save(OmegaConf.create(grid), grid_path)
+    monkeypatch.chdir(REPO_ROOT)
+    with pytest.raises(ValueError, match="choices.unvalidated"):
+        plan.main(["--grid", str(grid_path), "--attempt-id", ATTEMPT])
+    assert not (tmp_path / "results" / "00_grid" / ATTEMPT).exists()
 
 
 def test_blinding_reslots_the_basis_library_self_reference(tmp_path, monkeypatch):
