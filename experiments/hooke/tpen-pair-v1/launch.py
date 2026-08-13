@@ -18,8 +18,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 
-from omegaconf import OmegaConf
-from tpen.artifacts import ArtifactManager
+import yaml
 
 from experiments.toolkit import (
     AllocationPoolExecutor,
@@ -49,6 +48,15 @@ def _non_empty(value: str, name: str) -> str:
     return value
 
 
+def _absolute_interpreter(value: str) -> str:
+    """Require the operator to select an already-provisioned interpreter."""
+
+    interpreter = _non_empty(value, "--python")
+    if not Path(interpreter).is_absolute():
+        raise ValueError("--python must be an absolute path to a provisioned interpreter")
+    return interpreter
+
+
 def _visibility_values(raw: Sequence[str]) -> tuple[str, ...]:
     """Normalize the one visibility value required by the smoke."""
 
@@ -75,26 +83,31 @@ def _outside_checkout(results_root: Path, checkout: Path) -> Path:
 
 
 def run_directory(results_root: Path, run_id: str) -> Path:
-    """Resolve the configured TPEN artifact directory for one pair-v1 run."""
+    """Resolve the configured artifact directory without importing TPEN code."""
 
-    config = OmegaConf.load(repository_root() / CONFIG_PATH)
-    experiment_name = str(OmegaConf.select(config, "experiment.name"))
-    sector = str(OmegaConf.select(config, "experiment.sector"))
-    layout = str(OmegaConf.select(config, "run.layout", default="nested"))
-    return ArtifactManager(
-        results_root,
-        experiment_name,
-        sector,
-        run_id,
-        layout=layout,
-    ).run_dir
+    with (repository_root() / CONFIG_PATH).open(encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    if not isinstance(config, dict):
+        raise ValueError(f"launcher config must contain a mapping: {CONFIG_PATH}")
+    experiment = config.get("experiment")
+    run = config.get("run", {})
+    if not isinstance(experiment, dict) or not isinstance(run, dict):
+        raise ValueError(f"launcher config has invalid artifact metadata: {CONFIG_PATH}")
+    experiment_name = _non_empty(str(experiment.get("name", "")), "experiment.name")
+    sector = _non_empty(str(experiment.get("sector", "")), "experiment.sector")
+    layout = str(run.get("layout", "nested"))
+    if layout == "flat":
+        return results_root / run_id
+    if layout == "nested":
+        return results_root / experiment_name / sector / run_id
+    raise ValueError(f"unsupported artifact layout {layout!r}; expected 'nested' or 'flat'")
 
 
 def build_command(args: argparse.Namespace, results_root: Path) -> tuple[str, ...]:
     """Build the exact argv used for one pair-v1 smoke task."""
 
     return (
-        _non_empty(str(args.python), "--python"),
+        _absolute_interpreter(str(args.python)),
         "run.py",
         "--config",
         CONFIG_PATH,
@@ -124,6 +137,7 @@ def build_plan(args: argparse.Namespace, *, checkout: Path | None = None) -> tup
     command = build_command(args, results_root)
     stage = "01_train"
     attempt_id = str(args.pass_id)
+    allocation_id = _non_empty(str(args.allocation_id), "--allocation-id")
     task = TaskSpec(
         task_id=task_id_from_parts(stage=stage, run_id=run_id, attempt_id=attempt_id),
         stage=stage,
@@ -134,7 +148,14 @@ def build_plan(args: argparse.Namespace, *, checkout: Path | None = None) -> tup
         logs=(str(run_root / "launcher-status.json"),),
         resources=ResourceSpec(profile="gpu", device=args.device, threads=1, gpus=1),
         completion=CompletionSpec(policy="status_completed", status_path=str(run_root / "status.json")),
-        metadata={"config": CONFIG_PATH, "runtime_device": args.device},
+        metadata={
+            "config": CONFIG_PATH,
+            "runtime_device": args.device,
+            "interpreter": _absolute_interpreter(str(args.python)),
+            "visibility_variable": visibility_variable,
+            "visibility_value": values[0],
+            "allocation_id": allocation_id,
+        },
     )
     plan = StagePlan(
         study="tpen_pair_v1",
@@ -165,6 +186,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deadline")
     parser.add_argument("--deadline-env-var")
     parser.add_argument("--pass-id", default="pass-1")
+    parser.add_argument(
+        "--allocation-id",
+        required=True,
+        help="scheduler-provided allocation/job identifier for truthful receipts",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -190,6 +216,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             working_directory=str(repository_root()),
             deadline=args.deadline,
             deadline_env_var=args.deadline_env_var,
+            allocation_id=args.allocation_id,
         ).submit(plan, plan.tasks, request)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
