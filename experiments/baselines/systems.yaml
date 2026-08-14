@@ -66,15 +66,24 @@ systems:
               charge: 2
               position_bohr: [0.0, 0.0, 0.0]
         - term: electron_electron
-    reference_energy_hartree: null
-    reference_source: null
-    confidence: unverified
+    reference_energy_hartree: -2.903724377034119598
+    reference_source: >-
+      Aznabaev, Bekbaev and Korobov, "Nonrelativistic energy levels of helium
+      atom", arXiv:1810.11288, Table 3, which reports the 1 1S
+      infinite-nuclear-mass nonrelativistic energy as
+      -2.90372 43770 34119 59831 11592 45194 40444 66969 25310 a.u. and
+      attributes it to Schwartz (2006); their own N = 22000 basis calculation
+      agrees to 33 significant digits.
+    confidence: transcribed
     notes: >-
-      He is absent from the FermiNet table (its atom sequence starts at Li), so
-      no transcribed value exists in this program yet. The intended reference is
-      the standard exact non-relativistic infinite-nuclear-mass ground-state
-      energy, which must be transcribed from a primary source before it is
-      written here.
+      Exact nonrelativistic energy at infinite nuclear mass, so it excludes
+      relativistic, QED and finite-mass corrections; compare against it only
+      with a Hamiltonian that also omits them. He is absent from the FermiNet
+      table (that atom sequence starts at Li), so this value comes from the
+      helium literature rather than from any NN-QMC paper. The stored value is
+      truncated to what float64 can hold - the source carries roughly 46
+      significant digits, far beyond double precision, and far beyond any
+      variational Monte Carlo error bar this program will produce.
 
   - id: li_atom
     description: Lithium atom, doublet ground state.
