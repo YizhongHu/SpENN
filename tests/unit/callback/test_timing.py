@@ -213,6 +213,46 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     assert state.timing.step_time_sec_rolling_mean == 0.75
 
 
+
+def test_train_step_timing_applies_legacy_step_cadence_to_typed_boundaries() -> None:
+    """The paired lifecycle gate admits the same one-based cadence as legacy steps."""
+
+    context = RecordingContext()
+    callback = TrainStepTiming(
+        every_n_steps=2, clock=FakeClock([1.0, 1.5])
+    )
+    state = training_state()
+
+    for count, step in ((1, 1), (2, 2)):
+        iteration = TrainingIteration(step=step)
+        callback.handle_occurrence(Occurrence(event=Started(iteration), count=count), context, state)
+        callback.handle_occurrence(Occurrence(event=Ended(iteration), count=count), context, state)
+
+    assert context.by_namespace("train/perf") == [
+        {
+            "metrics": {"step_time_sec": 0.5, "step_time_sec_rolling_mean": 0.5},
+            "step": 2,
+            "namespace": "train/perf",
+        }
+    ]
+
+
+def test_train_step_timing_discards_a_failed_iteration_boundary() -> None:
+    """A partial iteration is not a completed-step performance sample."""
+
+    context = RecordingContext()
+    callback = TrainStepTiming(clock=FakeClock([1.0, 2.0]))
+    state = training_state()
+    iteration = TrainingIteration(step=1)
+
+    callback.handle_occurrence(Occurrence(event=Started(iteration), count=1), context, state)
+    callback.handle_occurrence(
+        Occurrence(event=Ended(iteration, succeeded=False), count=1), context, state
+    )
+
+    assert context.by_namespace("train/perf") == []
+    assert state.timing is None
+
 def test_train_step_timing_feeds_status_line_through_typed_state(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

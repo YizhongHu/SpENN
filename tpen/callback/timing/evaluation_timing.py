@@ -11,7 +11,7 @@ from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunFailed
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class EvaluationTiming(Callback):
@@ -87,26 +87,30 @@ class EvaluationTiming(Callback):
 
         event = occurrence.event
         if isinstance(event, self._started_type):
-            self._start_timing()
+            self._start_timing(occurrence)
             return
         if isinstance(event, self._completed_type):
-            self._log_end(context, failed=event.status == "failed")
+            self._log_end(occurrence, context, failed=event.status == "failed")
             return
         # A run that failed before or without evaluating never started the clock,
         # and `_log_end` returns early for it, so this reports only a suite that
         # was genuinely in flight.
         if isinstance(event, RunFailed):
-            self._log_end(context, failed=True)
+            self._log_end(occurrence, context, failed=True)
 
-    def _start_timing(self) -> None:
+    def _start_timing(self, occurrence: Occurrence[TypedEvent]) -> None:
         _sync_device(self.accelerator_synchronize)
-        self._start = self.clock()
+        self._start = _occurrence_time(occurrence, self.clock)
 
-    def _log_end(self, context: RunContext, *, failed: bool) -> None:
+    def _log_end(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext, *, failed: bool
+    ) -> None:
         if self._start is None:
             return
         _sync_device(self.accelerator_synchronize)
-        metrics: dict[str, float | bool] = {"wall_time_sec": self.clock() - self._start}
+        metrics: dict[str, float | bool] = {
+            "wall_time_sec": _occurrence_time(occurrence, self.clock) - self._start
+        }
         if failed:
             metrics["failed"] = True
         # Evaluation has no step coordinate: its coordinate is a task namespace

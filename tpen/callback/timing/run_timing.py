@@ -11,7 +11,7 @@ from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class RunTiming(Callback):
@@ -84,23 +84,25 @@ class RunTiming(Callback):
 
         event = occurrence.event
         if isinstance(event, RunStarted):
-            self._start(context)
+            self._start(occurrence, context)
             return
         if isinstance(event, RunCompleted):
-            self._log_end(context, failed=event.status == "failed")
+            self._log_end(occurrence, context, failed=event.status == "failed")
             return
         if isinstance(event, RunFailed):
-            self._log_end(context, failed=True)
+            self._log_end(occurrence, context, failed=True)
 
-    def _start(self, context: RunContext) -> None:
+    def _start(self, occurrence: Occurrence[TypedEvent], context: RunContext) -> None:
         _sync_device(self.accelerator_synchronize)
-        self._start_perf = self.clock()
+        self._start_perf = _occurrence_time(occurrence, self.clock)
         if self.log_start_end_timestamps:
             context.log({"start_time_unix": self.wall_clock()}, step=0, namespace="runtime")
 
-    def _log_end(self, context: RunContext, *, failed: bool) -> None:
+    def _log_end(
+        self, occurrence: Occurrence[TypedEvent], context: RunContext, *, failed: bool
+    ) -> None:
         _sync_device(self.accelerator_synchronize)
-        now = self.clock()
+        now = _occurrence_time(occurrence, self.clock)
         metrics: dict[str, float | bool] = {}
         if self.log_start_end_timestamps:
             metrics["end_time_unix"] = self.wall_clock()

@@ -265,6 +265,31 @@ def test_emit_counts_by_concrete_type_and_dispatches_in_callback_order(tmp_path:
     ]
 
 
+def test_run_context_stamps_each_occurrence_before_callback_delivery(tmp_path: Path) -> None:
+    """A stamped boundary is shared by every callback but never serialized."""
+
+    order: list[tuple[str, Occurrence[Any]]] = []
+    first = _Recorder("first", order)
+    second = _Recorder("second", order)
+    context = _context(tmp_path, callbacks=[first, second])
+    timestamps = iter((10.0, 12.5, 15.0))
+    context._monotonic_clock = lambda: next(timestamps)
+
+    emitted = context.emit(_Pulse("one"))
+    with context.scope(_Work("scoped")) as started:
+        assert started.monotonic_time == 12.5
+
+    assert emitted.monotonic_time == 10.0
+    assert order[:2] == [("first", emitted), ("second", emitted)]
+    assert order[2][1] is started
+    assert order[3][1].monotonic_time is not None
+    assert order[3][1].monotonic_time > started.monotonic_time
+    records = [
+        json.loads(line) for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert all("monotonic_time" not in record for record in records)
+
+
 def test_scope_start_and_end_share_one_operation_count(tmp_path: Path) -> None:
     order: list[tuple[str, Occurrence[Any]]] = []
     recorder = _Recorder("recorder", order)
@@ -317,6 +342,7 @@ def test_scope_emits_end_when_the_body_raises(tmp_path: Path) -> None:
 
     assert [type(item.event) for item in recorder.occurrences] == [Started, Ended]
     assert [item.count for item in recorder.occurrences] == [1, 1]
+    assert recorder.occurrences[-1].event == Ended(_Work("failing"), succeeded=False)
 
 
 def test_scope_does_not_emit_end_when_started_dispatch_fails(tmp_path: Path) -> None:

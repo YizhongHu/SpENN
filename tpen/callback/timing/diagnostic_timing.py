@@ -20,7 +20,7 @@ from tpen.events import Occurrence, Started, ended, started
 
 from ..base import StatefulCallback
 from ..cadence import SubscriptionGroup
-from .base import _sync_device
+from .base import _occurrence_time, _sync_device
 
 
 class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
@@ -97,7 +97,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
         key = (type(operation), occurrence.count)
         if isinstance(event, Started):
             _sync_device(self.accelerator_synchronize)
-            self._starts[key] = self.clock()
+            self._starts[key] = _occurrence_time(occurrence, self.clock)
             return
         if key not in self._starts:
             return
@@ -112,7 +112,9 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
             self._starts.pop(key)
             return
         _sync_device(self.accelerator_synchronize)
-        metrics: dict[str, float | bool] = {"time_sec": self.clock() - self._starts.pop(key)}
+        metrics: dict[str, float | bool] = {
+            "time_sec": _occurrence_time(occurrence, self.clock) - self._starts.pop(key)
+        }
         if result.failed:
             metrics["failed"] = True
         # The task identity rides the typed operation, and evaluation's step
