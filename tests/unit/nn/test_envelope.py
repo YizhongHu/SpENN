@@ -35,6 +35,16 @@ class ConstantReadout(nn.Module):
         return WavefunctionOutput(logabs=logabs, sign=sign)
 
 
+class CountingReadout(ConstantReadout):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
+        self.calls += 1
+        return super().forward(features, batch)
+
+
 class AntisymmetricReadout(nn.Module):
     def forward(self, features: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         sign = torch.sign(batch.positions[:, 0, 0] - batch.positions[:, 1, 0])
@@ -227,6 +237,37 @@ def test_factorized_nuclear_wavefunction_keeps_atom_ownership_explicit() -> None
             envelope=AdditiveEnvelope(),
             nuclear_envelope=factorized,
         )
+
+    legacy = TPENWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=ConstantReadout(),
+        envelope=AdditiveEnvelope(),
+    )
+    with pytest.raises(ValueError, match="no NuclearFactorizedEnvelope"):
+        legacy.nuclear_factorization(batch)
+
+
+def test_factorized_nuclear_wavefunction_constructs_one_readout_per_top_level_call() -> None:
+    batch = ElectronBatch(
+        positions=torch.tensor([[[0.0], [2.0]], [[1.0], [3.0]]], dtype=torch.float64),
+        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
+        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    readout = CountingReadout()
+    model = TPENWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=readout,
+        nuclear_envelope=NuclearFactorizedEnvelope(AdditiveEnvelope(), NuclearConfinement()),
+    )
+
+    parts = model.nuclear_factorization(batch)
+    assert readout.calls == 1
+    output = model(batch)
+    assert readout.calls == 2
+    assert output.validate(batch_size=batch.batch_size) is output
+    assert parts.nuclear.validate(batch) is parts.nuclear
 
 
 def test_wavefunction_requires_envelope() -> None:
