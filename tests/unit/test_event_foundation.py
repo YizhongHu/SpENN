@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import torch
@@ -265,6 +266,31 @@ def test_emit_counts_by_concrete_type_and_dispatches_in_callback_order(tmp_path:
     ]
 
 
+def test_run_context_stamps_each_occurrence_before_callback_delivery(tmp_path: Path) -> None:
+    """A stamped boundary is shared by every callback but never serialized."""
+
+    order: list[tuple[str, Occurrence[Any]]] = []
+    first = _Recorder("first", order)
+    second = _Recorder("second", order)
+    context = _context(tmp_path, callbacks=[first, second])
+    timestamps = iter((10.0, 12.5, 15.0))
+    context.monotonic_clock = lambda: next(timestamps)
+
+    emitted = context.emit(_Pulse("one"))
+    with context.scope(_Work("scoped")) as started:
+        assert started.monotonic_time == 12.5
+
+    assert emitted.monotonic_time == 10.0
+    assert order[:2] == [("first", emitted), ("second", emitted)]
+    assert order[2][1] is started
+    assert order[4][1].monotonic_time is not None
+    assert order[4][1].monotonic_time > started.monotonic_time
+    records = [
+        json.loads(line) for line in context.path("occurrences.jsonl").read_text().splitlines()
+    ]
+    assert all("monotonic_time" not in record for record in records)
+
+
 def test_scope_start_and_end_share_one_operation_count(tmp_path: Path) -> None:
     order: list[tuple[str, Occurrence[Any]]] = []
     recorder = _Recorder("recorder", order)
@@ -317,6 +343,7 @@ def test_scope_emits_end_when_the_body_raises(tmp_path: Path) -> None:
 
     assert [type(item.event) for item in recorder.occurrences] == [Started, Ended]
     assert [item.count for item in recorder.occurrences] == [1, 1]
+    assert recorder.occurrences[-1].event == Ended(_Work("failing"), succeeded=False)
 
 
 def test_scope_does_not_emit_end_when_started_dispatch_fails(tmp_path: Path) -> None:
@@ -744,6 +771,7 @@ def test_train_phase_timing_reports_successful_typed_iteration(tmp_path: Path) -
     logger = _Logger()
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25]))
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 3.0])
 
     _complete_timed_iteration(context, 3)
 
@@ -765,6 +793,9 @@ def test_train_phase_timing_converts_zero_based_start_to_occurrence_cadence(
         clock=_Clock([0.0, 0.1, 1.0, 1.1, 2.0, 2.2]),
     )
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock(
+        [-1.0, 0.0, 0.1, 0.2, 0.3, 0.9, 1.0, 1.1, 1.2, 1.3, 1.9, 2.0, 2.2, 2.3, 2.4]
+    )
 
     _complete_timed_iteration(context, 0)
     _complete_timed_iteration(context, 1)
@@ -786,6 +817,7 @@ def test_train_phase_timing_none_interval_reports_every_success(
         clock=_Clock([0.0, 0.1, 1.0, 1.2]),
     )
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock([-.1, 0.0, 0.1, 0.2, 0.3, 0.9, 1.0, 1.2, 1.3, 1.4])
 
     _complete_timed_iteration(context, 0)
     _complete_timed_iteration(context, 1)
@@ -799,6 +831,7 @@ def test_train_phase_timing_failed_body_cleans_up_without_reporting(
     logger = _Logger()
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0, 2.5]))
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 2.5, 3.0])
     iteration = TrainingIteration(step=3)
 
     with pytest.raises(RuntimeError, match="training failed"):
@@ -818,6 +851,7 @@ def test_train_phase_timing_cleanup_does_not_mask_reporting_error(
 ) -> None:
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25]))
     context = _context(tmp_path, callbacks=[callback], loggers=[_RaisingLogger()])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 3.0])
     iteration = TrainingIteration(step=4)
 
     with pytest.raises(RuntimeError, match="timing report failed"):
@@ -836,6 +870,8 @@ def test_train_phase_timing_context_identity_change_clears_all_caches(
     callback = TrainPhaseTiming(clock=_Clock([1.0, 2.0]))
     first = _context(tmp_path / "first", callbacks=[callback])
     second = _context(tmp_path / "second", callbacks=[callback])
+    first.monotonic_clock = _Clock([0.0, 1.0])
+    second.monotonic_clock = _Clock([2.0, 3.0])
 
     # Measure a phase in the first context without ever ending its iteration.
     with first.scope(Backward(step=8)):
@@ -851,6 +887,7 @@ def test_train_phase_timing_context_identity_change_clears_all_caches(
 def test_train_phase_timing_rejects_duplicate_sampling_duration(tmp_path: Path) -> None:
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0, 2.5]))
     context = _context(tmp_path, callbacks=[callback])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 2.5, 3.0])
     iteration = TrainingIteration(step=3)
 
     with pytest.raises(RuntimeError, match="duplicate sampling_time_sec"):
@@ -869,6 +906,7 @@ def _context(
     *,
     callbacks: list[Any] | None = None,
     loggers: list[Any] | None = None,
+    monotonic_clock: Callable[[], float] | None = None,
 ) -> RunContext:
     artifact_manager = ArtifactManager(
         tmp_path,
@@ -902,4 +940,5 @@ def _context(
         clock=RunClock(timezone="UTC", tzinfo=UTC),
         callbacks=[] if callbacks is None else callbacks,
         loggers=[] if loggers is None else loggers,
+        monotonic_clock=time.perf_counter if monotonic_clock is None else monotonic_clock,
     )

@@ -11,7 +11,7 @@ from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Operation, Started, ended, started
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class EvaluationComponentTiming(Callback):
@@ -111,11 +111,13 @@ class EvaluationComponentTiming(Callback):
             return
         key = (type(operation), occurrence.count)
         if isinstance(event, Started):
-            self._record_start(key, operation)
+            self._record_start(key, operation, _occurrence_time(occurrence, self.clock))
         else:
-            self._record_end(key)
+            self._record_end(key, _occurrence_time(occurrence, self.clock))
 
-    def _record_start(self, key: tuple[type[object], int], operation: Operation) -> None:
+    def _record_start(
+        self, key: tuple[type[object], int], operation: Operation, timestamp: float
+    ) -> None:
         """Record one component start time under its scope coordinate."""
 
         task = self._task
@@ -125,9 +127,9 @@ class EvaluationComponentTiming(Callback):
             )
         metric_key = self._metric_key(operation)
         _sync_device(self.accelerator_synchronize)
-        self._starts[key] = (task, metric_key, self.clock())
+        self._starts[key] = (task, metric_key, timestamp)
 
-    def _record_end(self, key: tuple[type[object], int]) -> None:
+    def _record_end(self, key: tuple[type[object], int], timestamp: float) -> None:
         """Accumulate one component duration under its task."""
 
         start_record = self._starts.pop(key, None)
@@ -136,7 +138,7 @@ class EvaluationComponentTiming(Callback):
         _sync_device(self.accelerator_synchronize)
         task, metric_key, start = start_record
         durations = self._durations.setdefault(task, {})
-        durations[metric_key] = durations.get(metric_key, 0.0) + (self.clock() - start)
+        durations[metric_key] = durations.get(metric_key, 0.0) + (timestamp - start)
 
     def _metric_key(self, operation: Operation) -> str:
         """Return the durable metric key for one component operation."""

@@ -148,8 +148,11 @@ def test_both_snapshots_write_once_at_the_start_boundary(tmp_path: Path) -> None
 
 def test_run_timing_measures_the_successful_run(tmp_path: Path) -> None:
     logger = RecordingLogger()
-    callback = RunTiming(clock=FakeClock([10.0, 12.5]), wall_clock=FakeClock([100.0, 103.0]))
-    context = make_run_context(tmp_path, callbacks=[callback], loggers=[logger])
+    clock = FakeClock([10.0, 12.5])
+    callback = RunTiming(wall_clock=FakeClock([100.0, 103.0]))
+    context = make_run_context(
+        tmp_path, callbacks=[callback], loggers=[logger], monotonic_clock=clock
+    )
 
     context.emit(RunStarted())
     context.emit(RunCompleted())
@@ -172,8 +175,11 @@ def test_run_timing_reports_failed_exactly_once_per_failed_run(tmp_path: Path) -
     """
 
     logger = RecordingLogger()
-    callback = RunTiming(clock=FakeClock([1.0, 4.0]), wall_clock=FakeClock([10.0, 13.0]))
-    context = make_run_context(tmp_path, callbacks=[callback], loggers=[logger])
+    clock = FakeClock([1.0, 4.0])
+    callback = RunTiming(wall_clock=FakeClock([10.0, 13.0]))
+    context = make_run_context(
+        tmp_path, callbacks=[callback], loggers=[logger], monotonic_clock=clock
+    )
 
     context.emit(RunStarted())
     context.emit(_failure())
@@ -213,8 +219,11 @@ def test_evaluation_timing_reports_failed_off_the_typed_run_event(tmp_path: Path
     """
 
     logger = RecordingLogger()
-    callback = EvaluationTiming(clock=FakeClock([2.0, 6.0]))
-    context = make_run_context(tmp_path, callbacks=[callback], loggers=[logger])
+    clock = FakeClock([2.0, 6.0])
+    callback = EvaluationTiming()
+    context = make_run_context(
+        tmp_path, callbacks=[callback], loggers=[logger], monotonic_clock=clock
+    )
 
     context.emit(EvaluationStarted())
     context.emit(_failure())

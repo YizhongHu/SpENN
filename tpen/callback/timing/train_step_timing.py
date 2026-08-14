@@ -19,8 +19,8 @@ from tpen.events import (
 )
 
 from ..base import StatefulCallback
-from ..cadence import SubscriptionGroup
-from .base import _sync_device
+from ..cadence import Cadence, SubscriptionGroup
+from .base import _occurrence_time, _sync_device
 
 
 class TrainStepTiming(StatefulCallback[TrainingTimingState]):
@@ -38,9 +38,24 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
     ) -> None:
         from tpen.training.events import TrainingIteration
 
+        every_n_steps = kwargs.pop("every_n_steps", None)
+        start_step = int(kwargs.pop("start_step", 0))
+        max_calls = kwargs.pop("max_calls", None)
+        probability = kwargs.pop("probability", 1.0)
+        seed = kwargs.pop("seed", None)
+        cadence = Cadence(
+            every_n=1 if every_n_steps is None else int(every_n_steps),
+            start=start_step + 1,
+            max_calls=max_calls,
+            probability=probability,
+            seed=seed,
+        )
         super().__init__(
             typed_groups=(
-                SubscriptionGroup(selectors=(started(TrainingIteration), ended(TrainingIteration))),
+                SubscriptionGroup(
+                    selectors=(started(TrainingIteration), ended(TrainingIteration)),
+                    cadence=cadence,
+                ),
             ),
             **kwargs,
         )
@@ -61,7 +76,7 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
             _sync_device(self.accelerator_synchronize)
             self._starts[(type(event.operation), occurrence.count)] = (
                 event.operation.step,
-                self.clock(),
+                _occurrence_time(occurrence, self.clock),
             )
             return
         if not isinstance(event, Ended) or not isinstance(event.operation, self._iteration_type):
@@ -71,7 +86,9 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
             return
         _sync_device(self.accelerator_synchronize)
         step, start = record
-        duration = self.clock() - start
+        if not event.succeeded:
+            return
+        duration = _occurrence_time(occurrence, self.clock) - start
         self._durations.append(duration)
         metrics = {
             "step_time_sec": duration,
@@ -81,7 +98,9 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
         context.log(metrics, step=step, namespace="train/perf")
 
     def _reset_typed_state(self) -> None:
-        self._starts.clear()
+        """Clear timing history when the owning run context changes."""
 
+        self._starts.clear()
+        self._durations.clear()
 
 __all__ = ["TrainStepTiming"]

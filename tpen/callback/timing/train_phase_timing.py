@@ -10,7 +10,7 @@ from tpen.events import Ended, Event as TypedEvent, Occurrence, Started
 from tpen.events import Subscription, ended, started
 
 from ..cadence import Cadence, SubscriptionGroup
-from .base import Callback, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class TrainPhaseTiming(Callback):
@@ -95,46 +95,38 @@ class TrainPhaseTiming(Callback):
         self._phase_type = TrainingPhase
         self._training_iteration_type = TrainingIteration
         self._completion_type = TrainingIterationCompleted
-        # Keyed by the paired scope coordinate ``(concrete phase type, count)``
-        # so Started and Ended always match; the value carries the durable step.
         self._phase_starts: dict[tuple[type[object], int], tuple[int, float]] = {}
         self._durations: dict[int, dict[str, float]] = {}
 
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
     ) -> None:
-        """Measure, report, or clean up one admitted training occurrence."""
+        """Record phase boundaries and publish admitted completed iterations."""
 
         event = occurrence.event
-        if isinstance(event, Started) and isinstance(event.operation, self._phase_type):
+        if isinstance(event, (Started, Ended)) and isinstance(event.operation, self._phase_type):
             key = (type(event.operation), occurrence.count)
-            _sync_device(self.accelerator_synchronize)
-            self._phase_starts[key] = (int(event.operation.step), self.clock())
-            return
-        if isinstance(event, Ended) and isinstance(event.operation, self._phase_type):
-            key = (type(event.operation), occurrence.count)
-            start_record = self._phase_starts.pop(key, None)
-            if start_record is None:
-                return
-            _sync_device(self.accelerator_synchronize)
-            step, start = start_record
-            # The metric fragment is owned by the phase type, never re-spelled
-            # here, so timing keys cannot drift away from the phase contract.
-            metric_key = f"{type(event.operation).phase_name}_time_sec"
-            metrics = self._durations.setdefault(step, {})
-            if metric_key in metrics:
-                raise RuntimeError(f"duplicate {metric_key} for training step {step}")
-            metrics[metric_key] = self.clock() - start
+            if isinstance(event, Started):
+                _sync_device(self.accelerator_synchronize)
+                self._phase_starts[key] = (
+                    int(event.operation.step),
+                    _occurrence_time(occurrence, self.clock),
+                )
+            else:
+                start = self._phase_starts.pop(key, None)
+                if start is not None and event.succeeded:
+                    _sync_device(self.accelerator_synchronize)
+                    step, timestamp = start
+                    metric_key = f"{event.operation.phase_name}_time_sec"
+                    metrics = self._durations.setdefault(step, {})
+                    if metric_key in metrics:
+                        raise RuntimeError(f"duplicate {metric_key} for training step {step}")
+                    metrics[metric_key] = _occurrence_time(occurrence, self.clock) - timestamp
             return
         if isinstance(event, self._completion_type):
-            self._report_completed_iteration(
-                int(event.iteration.step),
-                context,
-            )
+            self._report_completed_iteration(int(event.iteration.step), context)
             return
-        if isinstance(event, Ended) and isinstance(
-            event.operation, self._training_iteration_type
-        ):
+        if isinstance(event, Ended) and isinstance(event.operation, self._training_iteration_type):
             self._cleanup_iteration(int(event.operation.step))
 
     def _report_completed_iteration(self, step: int, context: RunContext) -> None:
