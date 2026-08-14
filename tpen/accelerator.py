@@ -18,6 +18,7 @@ makes devices comparable so callers can detect a mismatch and fail loudly.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from tpen.dependencies import require_torch
@@ -153,6 +154,63 @@ def synchronize(device: Any = None, *, feature: str = "device synchronization") 
         synchronize_fn()
 
 
+@dataclass
+class DeviceEventTimer:
+    """Measure elapsed device time with one accelerator event pair.
+
+    Instances are deliberately single-use between `start` and `stop`: one
+    operation scope owns one timer, so accepting nested starts would silently
+    associate the wrong device interval with a metric.
+    """
+
+    _module: Any
+    _event_factory: Any
+    _start_event: Any | None = None
+
+    def start(self) -> None:
+        """Record the beginning of one device interval."""
+
+        if self._start_event is not None:
+            raise RuntimeError("device event timer is already running")
+        start_event = self._event_factory(enable_timing=True)
+        start_event.record()
+        self._start_event = start_event
+
+    def stop(self) -> float:
+        """Synchronize and return elapsed device seconds for one interval."""
+
+        start_event = self._start_event
+        if start_event is None:
+            raise RuntimeError("device event timer was not started")
+        try:
+            end_event = self._event_factory(enable_timing=True)
+            end_event.record()
+            self._module.synchronize()
+            return float(start_event.elapsed_time(end_event)) / 1_000.0
+        finally:
+            self._start_event = None
+
+
+def device_event_timer(
+    device: Any = None, *, feature: str = "device event timing"
+) -> DeviceEventTimer:
+    """Return a fail-loud event timer for an available accelerator.
+
+    Unlike `synchronize`, this never degrades to a host timer: callers opt in
+    precisely because they need device elapsed time.
+    """
+
+    module = device_module(device, feature=feature)
+    available = getattr(module, "is_available", None)
+    if not callable(available) or not available():
+        raise RuntimeError(f"{feature} requires an available accelerator")
+    event_factory = getattr(module, "Event", None)
+    synchronize_fn = getattr(module, "synchronize", None)
+    if not callable(event_factory) or not callable(synchronize_fn):
+        raise RuntimeError(f"{feature} requires timing-event support from the accelerator backend")
+    return DeviceEventTimer(_module=module, _event_factory=event_factory)
+
+
 def seed_all(seed: int, *, feature: str = "seeded run") -> None:
     """Seed the accelerator's global RNG for every visible device.
 
@@ -176,8 +234,10 @@ def seed_all(seed: int, *, feature: str = "seeded run") -> None:
 
 
 __all__ = [
+    "DeviceEventTimer",
     "canonical_device",
     "current_accelerator_type",
+    "device_event_timer",
     "device_module",
     "seed_all",
     "synchronize",

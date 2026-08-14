@@ -129,3 +129,53 @@ def test_seed_all_does_not_disturb_component_generators() -> None:
     seed_all(999999)
     observed = torch.randn(4, generator=generator, dtype=torch.float64)
     assert torch.equal(expected, observed)
+
+
+def test_device_event_timer_uses_backend_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Elapsed device time comes from events, never a host clock."""
+
+    import tpen.accelerator as accelerator
+
+    class Event:
+        def __init__(self, *, enable_timing: bool) -> None:
+            assert enable_timing
+            self.recorded = False
+
+        def record(self) -> None:
+            self.recorded = True
+
+        def elapsed_time(self, other: object) -> float:
+            assert self.recorded
+            assert isinstance(other, Event) and other.recorded
+            return 250.0
+
+    class Backend:
+        Event = Event
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def synchronize() -> None:
+            return None
+
+    monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
+    timer = accelerator.device_event_timer()
+    timer.start()
+    assert timer.stop() == 0.25
+
+
+def test_device_event_timer_rejects_unavailable_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt-in device timing must not silently fall back to host duration."""
+
+    import tpen.accelerator as accelerator
+
+    class Backend:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
+    with pytest.raises(RuntimeError, match="available accelerator"):
+        accelerator.device_event_timer()
