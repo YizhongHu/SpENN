@@ -19,10 +19,22 @@ _ODD_PADDING_IRREP = Partition((1,))
 
 
 def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:
-    """Compute one Pfaffian by recursive expansion.
+    """Compute one Pfaffian by recursive expansion along the first row.
 
-    This path is intentionally simple and suited to small scaffold tests. A
-    production implementation should replace it with a stable batched routine.
+    Slow, unbatched reference implementation. It is deliberately retained as the
+    correctness oracle for the batched routine below (CLAUDE.md, "Implement slow
+    reference versions first": vectorized code must be tested against the slow
+    reference). Production code paths call :func:`pfaffian`, never this.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        One skew-symmetric matrix with shape ``[n, n]``.
+
+    Returns
+    -------
+    torch.Tensor
+        Zero-dimensional Pfaffian.
     """
 
     n = matrix.shape[-1]
@@ -42,31 +54,81 @@ def _pfaffian_single(matrix: torch.Tensor) -> torch.Tensor:
     return total
 
 
-def pfaffian(matrix: torch.Tensor) -> torch.Tensor:
-    """Compute Pfaffians for skew-symmetric matrices.
+def _pfaffian_batched(matrix: torch.Tensor) -> torch.Tensor:
+    """Compute Pfaffians for a whole leading batch by recursive expansion.
+
+    Term-for-term the same first-row expansion as :func:`_pfaffian_single`, with
+    the same column order and the same ``(-1)**(col + 1)`` signs, but every
+    arithmetic operation is applied to the full leading batch at once. The
+    number of Python iterations therefore depends only on ``n`` (it is the
+    double factorial ``(n - 1)!!`` of leaf terms), never on the batch size.
+
+    At ``n == 2`` the expansion bottoms out immediately, so the whole routine is
+    the single gather ``matrix[..., 0, 1]`` — the same element the reference
+    returns, hence bitwise identical rather than merely close.
 
     Parameters
     ----------
     matrix : torch.Tensor
-        Matrix with shape ``[n, n]`` or batched matrices with shape
-        ``[batch, n, n]``.
+        Skew-symmetric matrices with shape ``[..., n, n]``. Any number of
+        leading dimensions is accepted, including none.
 
     Returns
     -------
     torch.Tensor
-        Scalar Pfaffian for an unbatched input or shape ``[batch]`` for a
-        batched input.
+        Pfaffians with the leading shape ``matrix.shape[:-2]``.
     """
 
-    if matrix.ndim == 2:
-        if matrix.shape[-1] != matrix.shape[-2]:
-            raise ValueError("Pfaffian matrix must be square")
-        return _pfaffian_single(matrix)
-    if matrix.ndim != 3:
-        raise ValueError(f"Expected matrix rank 2 or 3, got shape {tuple(matrix.shape)}")
+    n = matrix.shape[-1]
+    # An empty matrix has Pfaffian 1 by the empty-product convention, and an
+    # odd-dimensional skew-symmetric matrix has Pfaffian 0. Both mirror the
+    # reference exactly, broadcast over the leading batch shape.
+    if n == 0:
+        return matrix.new_ones(matrix.shape[:-2])
+    if n == 2:
+        return matrix[..., 0, 1]
+    if n % 2 == 1:
+        return matrix.new_zeros(matrix.shape[:-2])
+    remaining = torch.arange(n, device=matrix.device)
+    total = matrix.new_zeros(matrix.shape[:-2])
+    for col in range(1, n):
+        sign = 1.0 if col % 2 == 1 else -1.0
+        idx = remaining[(remaining != 0) & (remaining != col)]
+        # Drop row/column 0 and row/column ``col`` from every batch member at
+        # once; ``index_select`` on the trailing axes leaves the batch intact.
+        submatrix = matrix.index_select(-2, idx).index_select(-1, idx)
+        total = total + sign * matrix[..., 0, col] * _pfaffian_batched(submatrix)
+    return total
+
+
+def pfaffian(matrix: torch.Tensor) -> torch.Tensor:
+    """Compute Pfaffians for skew-symmetric matrices.
+
+    The routine is batched over every leading dimension, so the caller does not
+    pay one Python iteration per matrix. This matters because the readout runs
+    inside the autodiff Laplacian's double backward, where a per-matrix Python
+    loop over ``batch * channels`` matrices would be replayed by every backward
+    pass.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Skew-symmetric matrices with shape ``[..., n, n]``: a single ``[n, n]``
+        matrix, a batch ``[batch, n, n]``, or any higher-rank batch such as
+        ``[batch, channels, n, n]``.
+
+    Returns
+    -------
+    torch.Tensor
+        Pfaffians with shape ``matrix.shape[:-2]``: zero-dimensional for an
+        unbatched input, ``[batch]`` for a batched input.
+    """
+
+    if matrix.ndim < 2:
+        raise ValueError(f"Expected matrix rank at least 2, got shape {tuple(matrix.shape)}")
     if matrix.shape[-1] != matrix.shape[-2]:
         raise ValueError("Pfaffian matrices must be square")
-    return torch.stack([_pfaffian_single(item) for item in matrix], dim=0)
+    return _pfaffian_batched(matrix)
 
 
 class PfaffianReadout(nn.Module):
@@ -166,9 +228,10 @@ class PfaffianReadout(nn.Module):
         """Return the signed-log weighted sum of per-channel Pfaffians."""
 
         kernel = self.build_skew_kernel(features, batch)
-        batch_size, channels = kernel.shape[0], kernel.shape[1]
-        flat = kernel.reshape(batch_size * channels, kernel.shape[-2], kernel.shape[-1])
-        channel_pfaffians = pfaffian(flat).reshape(batch_size, channels)
+        # `pfaffian` batches over every leading dimension, so the walker and
+        # channel axes are passed through directly. The old flatten-to-rank-3
+        # round trip existed only to feed a per-matrix Python loop.
+        channel_pfaffians = pfaffian(kernel)
         psi = (channel_pfaffians * self._weights().reshape(1, -1)).sum(dim=1)
         sign = torch.sign(psi)
         logabs = torch.where(sign == 0, torch.full_like(psi, -torch.inf), 0.5 * torch.log(psi.square().clamp_min(self.eps)))
