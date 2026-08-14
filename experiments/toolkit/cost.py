@@ -35,6 +35,10 @@ COST_BY_RUN_BASE_COLUMNS = [
     "status",
     "wall_time_sec",
     "peak_memory_mb",
+    "timing_mode",
+    "hostname",
+    "slurm_job_id",
+    "device_uuid",
     "n_steps",
     "mean_step_time_sec",
     "median_step_time_sec",
@@ -131,6 +135,7 @@ def cost_by_run_row(
     status: str = "",
     device_type: str = "",
     axes: Mapping[str, Any] | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return one ``cost_by_run.csv`` row projected from run metrics rows.
 
@@ -141,6 +146,9 @@ def cost_by_run_row(
         :func:`experiments.toolkit.artifacts.read_metrics_jsonl`.
     axes
         Optional configured-axis columns appended verbatim to the row.
+    provenance
+        Optional execution metadata. The supported timing and placement fields
+        are projected verbatim; absent fields remain blank.
     """
 
     metric_values = metric_map(metrics_rows)
@@ -157,6 +165,10 @@ def cost_by_run_row(
         "mean_step_time_sec": _format(_mean(step_times)),
         "median_step_time_sec": _format(_median(step_times)),
         "p95_step_time_sec": _format(_quantile(step_times, 0.95)),
+        **{
+            key: (provenance or {}).get(key, "")
+            for key in ("timing_mode", "hostname", "slurm_job_id", "device_uuid")
+        },
     }
     for phase in TRAIN_PHASES:
         values = _per_step_values(metrics_rows, "train/perf", f"{phase}_time_sec")
