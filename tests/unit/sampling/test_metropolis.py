@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from tpen.data.permutation import Permutation
 from tpen.sampling import MALASampler
 from tpen.sampling.metropolis import MetropolisSampler
 from tpen.sampling.moves import GaussianMove
@@ -76,6 +77,48 @@ def test_metropolis_initialize_without_partition_has_no_spins() -> None:
 
     assert walkers.positions.shape == (4, 2, 2)
     assert walkers.spins is None
+
+
+def test_sampler_propagates_fixed_nuclear_context_through_batches_and_restore() -> None:
+    nuclear_positions = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    sampler = MetropolisSampler(
+        n_walkers=3,
+        n_electrons=2,
+        spatial_dim=3,
+        seed=7,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+
+    walkers = sampler.reset(device="cpu")
+    batch = walkers.make_batch()
+    assert torch.equal(batch.nuclear_positions, nuclear_positions)
+    assert torch.equal(batch.nuclear_charges, nuclear_charges)
+    permuted = batch.permute(Permutation((1, 0)))
+    assert torch.equal(permuted.nuclear_positions, nuclear_positions)
+    assert torch.equal(permuted.nuclear_charges, nuclear_charges)
+
+    resumed = MetropolisSampler(n_walkers=3, n_electrons=2, spatial_dim=3, seed=7, dtype=torch.float64)
+    resumed.load_mcmc_state_dict(sampler.mcmc_state_dict(), device="cpu")
+    restored = resumed.walkers
+    assert restored is not None
+    assert torch.equal(restored.make_batch().nuclear_positions, nuclear_positions)
+    assert torch.equal(restored.make_batch().nuclear_charges, nuclear_charges)
+
+
+def test_sampler_rejects_partial_or_malformed_nuclear_context() -> None:
+    import pytest
+
+    positions = torch.zeros(1, 3, dtype=torch.float64)
+    charges = torch.ones(1, dtype=torch.float64)
+    with pytest.raises(ValueError, match="provided together"):
+        MetropolisSampler(nuclear_positions=positions)
+    with pytest.raises(ValueError, match="spatial_dim"):
+        MetropolisSampler(nuclear_positions=positions, nuclear_charges=charges, spatial_dim=2)
+    with pytest.raises(ValueError, match="n_nuclei"):
+        MetropolisSampler(nuclear_positions=positions, nuclear_charges=torch.ones(2))
 
 
 def test_gaussian_single_electron_move_preserves_shape_and_changes_one_electron_per_walker() -> None:
