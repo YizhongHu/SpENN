@@ -150,7 +150,6 @@ def test_device_event_timer_uses_backend_events(monkeypatch: pytest.MonkeyPatch)
             return 250.0
 
     class Backend:
-        Event = Event
 
         @staticmethod
         def is_available() -> bool:
@@ -159,6 +158,7 @@ def test_device_event_timer_uses_backend_events(monkeypatch: pytest.MonkeyPatch)
         @staticmethod
         def synchronize() -> None:
             return None
+    Backend.Event = Event
 
     monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
     timer = accelerator.device_event_timer()
