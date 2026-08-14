@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import torch
@@ -273,7 +274,7 @@ def test_run_context_stamps_each_occurrence_before_callback_delivery(tmp_path: P
     second = _Recorder("second", order)
     context = _context(tmp_path, callbacks=[first, second])
     timestamps = iter((10.0, 12.5, 15.0))
-    context._monotonic_clock = lambda: next(timestamps)
+    context.monotonic_clock = lambda: next(timestamps)
 
     emitted = context.emit(_Pulse("one"))
     with context.scope(_Work("scoped")) as started:
@@ -770,6 +771,7 @@ def test_train_phase_timing_reports_successful_typed_iteration(tmp_path: Path) -
     logger = _Logger()
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25]))
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 3.0])
 
     _complete_timed_iteration(context, 3)
 
@@ -791,6 +793,9 @@ def test_train_phase_timing_converts_zero_based_start_to_occurrence_cadence(
         clock=_Clock([0.0, 0.1, 1.0, 1.1, 2.0, 2.2]),
     )
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock(
+        [-1.0, 0.0, 0.1, 0.2, 0.3, 0.9, 1.0, 1.1, 1.2, 1.3, 1.9, 2.0, 2.2, 2.3, 2.4]
+    )
 
     _complete_timed_iteration(context, 0)
     _complete_timed_iteration(context, 1)
@@ -812,6 +817,7 @@ def test_train_phase_timing_none_interval_reports_every_success(
         clock=_Clock([0.0, 0.1, 1.0, 1.2]),
     )
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock([-.1, 0.0, 0.1, 0.2, 0.3, 0.9, 1.0, 1.2, 1.3, 1.4])
 
     _complete_timed_iteration(context, 0)
     _complete_timed_iteration(context, 1)
@@ -825,6 +831,7 @@ def test_train_phase_timing_failed_body_cleans_up_without_reporting(
     logger = _Logger()
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0, 2.5]))
     context = _context(tmp_path, callbacks=[callback], loggers=[logger])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 2.5, 3.0])
     iteration = TrainingIteration(step=3)
 
     with pytest.raises(RuntimeError, match="training failed"):
@@ -844,6 +851,7 @@ def test_train_phase_timing_cleanup_does_not_mask_reporting_error(
 ) -> None:
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25]))
     context = _context(tmp_path, callbacks=[callback], loggers=[_RaisingLogger()])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 3.0])
     iteration = TrainingIteration(step=4)
 
     with pytest.raises(RuntimeError, match="timing report failed"):
@@ -862,6 +870,8 @@ def test_train_phase_timing_context_identity_change_clears_all_caches(
     callback = TrainPhaseTiming(clock=_Clock([1.0, 2.0]))
     first = _context(tmp_path / "first", callbacks=[callback])
     second = _context(tmp_path / "second", callbacks=[callback])
+    first.monotonic_clock = _Clock([0.0, 1.0])
+    second.monotonic_clock = _Clock([2.0, 3.0])
 
     # Measure a phase in the first context without ever ending its iteration.
     with first.scope(Backward(step=8)):
@@ -877,6 +887,7 @@ def test_train_phase_timing_context_identity_change_clears_all_caches(
 def test_train_phase_timing_rejects_duplicate_sampling_duration(tmp_path: Path) -> None:
     callback = TrainPhaseTiming(clock=_Clock([1.0, 1.25, 2.0, 2.5]))
     context = _context(tmp_path, callbacks=[callback])
+    context.monotonic_clock = _Clock([0.0, 1.0, 1.25, 2.0, 2.5, 3.0])
     iteration = TrainingIteration(step=3)
 
     with pytest.raises(RuntimeError, match="duplicate sampling_time_sec"):
@@ -895,6 +906,7 @@ def _context(
     *,
     callbacks: list[Any] | None = None,
     loggers: list[Any] | None = None,
+    monotonic_clock: Callable[[], float] | None = None,
 ) -> RunContext:
     artifact_manager = ArtifactManager(
         tmp_path,
@@ -928,4 +940,5 @@ def _context(
         clock=RunClock(timezone="UTC", tzinfo=UTC),
         callbacks=[] if callbacks is None else callbacks,
         loggers=[] if loggers is None else loggers,
+        monotonic_clock=time.perf_counter if monotonic_clock is None else monotonic_clock,
     )

@@ -170,8 +170,8 @@ class RunContext:
     _occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = field(
         default_factory=dict, init=False, repr=False
     )
-    _monotonic_clock: Callable[[], float] = field(
-        default=time.perf_counter, init=False, repr=False
+    monotonic_clock: Callable[[], float] = field(
+        default=time.perf_counter, repr=False
     )
 
     @property
@@ -288,7 +288,7 @@ class RunContext:
     def _occurrence(self, *, event: _EventT, count: int) -> Occurrence[_EventT]:
         """Create one delivery-stamped occurrence before any observer runs."""
 
-        return Occurrence(event=event, count=count, monotonic_time=self._monotonic_clock())
+        return Occurrence(event=event, count=count, monotonic_time=self.monotonic_clock())
 
 
     def _dispatch_occurrence(

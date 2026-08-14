@@ -79,8 +79,11 @@ def test_diagnostic_timing_receives_state_at_the_task_boundary(tmp_path: Path) -
     """A real evaluator run delivers the task result, so the record is written."""
 
     logger = RecordingLogger()
-    callback = DiagnosticTiming(clock=FakeClock([0.0, 2.5]))
-    context = make_run_context(tmp_path, callbacks=[callback], loggers=[logger])
+    clock = FakeClock([0.0, 2.5])
+    callback = DiagnosticTiming()
+    context = make_run_context(
+        tmp_path, callbacks=[callback], loggers=[logger], monotonic_clock=clock
+    )
 
     single_task_evaluator(tmp_path).evaluate(model=_model(), context=context)
 
@@ -206,12 +209,17 @@ def test_the_state_free_callbacks_observe_the_same_run(tmp_path: Path) -> None:
 
     logger = RecordingLogger()
     callbacks = [
-        EvaluationComponentTiming(clock=FakeClock([0.0, 1.0, 2.0, 2.5, 4.0, 4.25])),
+        EvaluationComponentTiming(),
         FailureLog(),
-        DiagnosticTiming(clock=FakeClock([0.0, 9.0])),
+        DiagnosticTiming(),
         ArtifactIndex(),
     ]
-    context = make_run_context(tmp_path, callbacks=callbacks, loggers=[logger])
+    context = make_run_context(
+        tmp_path,
+        callbacks=callbacks,
+        loggers=[logger],
+        monotonic_clock=FakeClock([0.0, 0.0, 1.0, 2.0, 2.5, 4.0, 4.25, 9.0]),
+    )
 
     single_task_evaluator(tmp_path).evaluate(model=_model(), context=context)
 
@@ -230,8 +238,12 @@ def test_evaluation_timing_is_delivered_its_suite_boundaries(tmp_path: Path) -> 
     from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
 
     logger = RecordingLogger()
+    clock = FakeClock([2.0, 5.5])
     context = make_run_context(
-        tmp_path, callbacks=[EvaluationTiming(clock=FakeClock([2.0, 5.5]))], loggers=[logger]
+        tmp_path,
+        callbacks=[EvaluationTiming()],
+        loggers=[logger],
+        monotonic_clock=clock,
     )
 
     context.emit(EvaluationStarted())
@@ -312,7 +324,10 @@ def test_the_task_ended_boundary_carries_the_failed_result(tmp_path: Path) -> No
 def test_diagnostic_timing_publishes_failed_for_a_failed_task(tmp_path: Path) -> None:
     logger = RecordingLogger()
     context = make_run_context(
-        tmp_path, callbacks=[DiagnosticTiming(clock=FakeClock([0.0, 3.0]))], loggers=[logger]
+        tmp_path,
+        callbacks=[DiagnosticTiming()],
+        loggers=[logger],
+        monotonic_clock=FakeClock([0.0, 3.0]),
     )
 
     single_task_evaluator(tmp_path, calculators=[FailingCalculator()]).evaluate(
@@ -330,9 +345,11 @@ def test_diagnostic_timing_publishes_failed_for_a_partially_failed_task(tmp_path
     place that set is now spelled.
     """
 
-    logger = RecordingLogger()
     context = make_run_context(
-        tmp_path, callbacks=[DiagnosticTiming(clock=FakeClock([0.0, 1.5]))], loggers=[logger]
+        tmp_path,
+        callbacks=[DiagnosticTiming()],
+        loggers=[logger],
+        monotonic_clock=FakeClock([0.0, 1.5]),
     )
 
     result = single_task_evaluator(tmp_path, summaries=[MissingFieldSummary()]).evaluate(
