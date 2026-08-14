@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import torch
 import yaml
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
+
+from tpen.data.batch import ElectronBatch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -80,3 +85,25 @@ def test_he_eval_invariant_tasks_use_mcmc_batches_that_preserve_nuclear_context(
         generator = config["evaluation_tasks"][name]["generator"]
         assert generator["_target_"] == "tpen.evaluation.generators.PermutationOrbitGenerator"
         assert generator["base_generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"
+
+
+def test_he_train_targets_instantiate_and_consume_the_same_nuclear_context() -> None:
+    """Resolve Hydra targets through one actual nuclear-context forward pass."""
+
+    config = OmegaConf.load(TRAIN)
+    model = instantiate(config.model)
+    sampler = instantiate(config.sampler)
+    terms = instantiate(config.hamiltonian_terms)
+    assert sampler.nuclear_positions is not None
+    assert sampler.nuclear_charges is not None
+    assert torch.equal(sampler.nuclear_positions, torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64))
+    assert torch.equal(sampler.nuclear_charges, torch.tensor([2.0], dtype=torch.float64))
+    batch = ElectronBatch(
+        positions=torch.tensor([[[0.2, 0.0, 0.0], [-0.2, 0.0, 0.0]]], dtype=torch.float64),
+        spins=torch.tensor([[1, -1]]),
+        nuclear_positions=sampler.nuclear_positions,
+        nuclear_charges=sampler.nuclear_charges,
+    )
+    output = model(batch)
+    output.validate(batch_size=batch.batch_size)
+    assert set(terms) == {"kinetic", "electron_nucleus", "electron_electron"}
