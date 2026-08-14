@@ -58,8 +58,14 @@ def test_he_train_config_owns_batch_nuclear_context_and_coulomb_terms() -> None:
     _assert_he_system(config)
     _assert_factorized_model(config)
     sampler = config["sampler"]
-    assert sampler["nuclear_positions"] == "${system.nuclei.positions}"
-    assert sampler["nuclear_charges"] == "${system.nuclei.charges}"
+    assert sampler["nuclear_positions"] == {
+        "_target_": "torch.tensor",
+        "data": "${system.nuclei.positions}",
+    }
+    assert sampler["nuclear_charges"] == {
+        "_target_": "torch.tensor",
+        "data": "${system.nuclei.charges}",
+    }
     assert set(config["hamiltonian_terms"]) == {"kinetic", "electron_nucleus", "electron_electron"}
 
 
