@@ -207,8 +207,8 @@ choices:
 # `run_parameters.channels`; a width that differs between the embedding output
 # and the mixing input is not representable.
 #
-# The axis is a cost axis as well as a capacity axis: B1
-# (`TPEN-MIGRATION.md:67`) makes readout cost O(C n^3), and
+# The axis is a cost axis as well as a capacity axis: decision B1 (Task
+# Orchestrator note `decision-log-D1-D9`) makes readout cost O(C n^3), and
 # `PfaffianReadout.forward` loops over batch*channels in Python
 # (`readout/pfaffian.py:69`) inside a double backward, so wall time is expected
 # to scale roughly linearly in channels rather than being free.
@@ -378,8 +378,9 @@ model:
     # MLP is pinned to SiLU at every level of the activation axis, which is the
     # `tpen/nn/mlp.py:61` default written out rather than inherited.
     #
-    # Why: D2 (`TPEN-MIGRATION.md:60`) defines the TPEN activation contract as
-    # owned by `EquivariantMixing` and `PathAggregation`. The embedding MLP is a
+    # Why: decision D2 (Task Orchestrator note `decision-log-D1-D9`) defines the
+    # TPEN activation contract as owned by `EquivariantMixing` and
+    # `PathAggregation`. The embedding MLP is a
     # plain feedforward net that merely happens to accept an `activation` kwarg
     # — a separate concept. Sweeping both would move two unrelated things per
     # axis step and make the axis uninterpretable; held fixed, the embedding is
