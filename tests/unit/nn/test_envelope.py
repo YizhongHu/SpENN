@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.permutation import Permutation
 from tpen.data.real import Feature
 from tpen.nn import (
     AdditiveEnvelope,
@@ -14,6 +15,8 @@ from tpen.nn import (
     Envelope,
     GaussianConfinement,
     HookeGaussianConfinement,
+    NuclearConfinement,
+    NuclearFactorizedEnvelope,
     TPENWaveFunction,
 )
 from tests.helpers.equivariance import assert_equivariant_all
@@ -160,6 +163,70 @@ def test_empty_additive_envelope_returns_zero_batch_vector() -> None:
     values = AdditiveEnvelope()(batch)
 
     torch.testing.assert_close(values, torch.zeros(4, dtype=torch.float64))
+
+
+def test_nuclear_confinement_exposes_raw_he_radial_factorization() -> None:
+    positions = torch.tensor(
+        [[[0.0, 0.0], [1.0e-14, 0.0]], [[3.0, 4.0], [0.0, 2.0]]], dtype=torch.float64
+    )
+    nuclei = torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64)
+    charges = torch.tensor([2.0, 1.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
+
+    evaluation = NuclearConfinement().evaluate(batch)
+
+    expected_distance = torch.linalg.vector_norm(positions.unsqueeze(2) - nuclei.view(1, 1, 2, 2), dim=-1)
+    torch.testing.assert_close(evaluation.distance, expected_distance)
+    assert evaluation.distance[0, 1, 0] < 1.0e-12  # Proves no clamped-distance helper was used.
+    torch.testing.assert_close(evaluation.value, -expected_distance * charges.view(1, 1, 2))
+    torch.testing.assert_close(evaluation.radial_first_derivative, -charges.view(1, 1, 2).expand_as(expected_distance))
+    torch.testing.assert_close(evaluation.radial_second_derivative, torch.zeros_like(expected_distance))
+    torch.testing.assert_close(evaluation.origin_radial_derivative, -charges.view(1, 2).expand(2, 2))
+    assert evaluation.validate(batch) is evaluation
+
+
+def test_nuclear_confinement_typed_permutation_leaves_origin_derivative_fixed() -> None:
+    batch = ElectronBatch(
+        positions=torch.tensor([[[0.0], [2.0]]], dtype=torch.float64),
+        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
+        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    evaluation = NuclearConfinement().evaluate(batch)
+    permuted = evaluation.permute(Permutation((1, 0)))
+
+    torch.testing.assert_close(permuted.distance, evaluation.distance[:, [1, 0]])
+    torch.testing.assert_close(permuted.origin_radial_derivative, evaluation.origin_radial_derivative)
+    close, metrics = evaluation.compare(permuted.permute(Permutation((1, 0))))
+    assert close, metrics
+
+
+def test_factorized_nuclear_wavefunction_keeps_atom_ownership_explicit() -> None:
+    batch = ElectronBatch(
+        positions=torch.tensor([[[0.0], [2.0]], [[1.0], [3.0]]], dtype=torch.float64),
+        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
+        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    factorized = NuclearFactorizedEnvelope(AdditiveEnvelope(), NuclearConfinement())
+    model = TPENWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=ConstantReadout(),
+        nuclear_envelope=factorized,
+    )
+
+    parts = model.nuclear_factorization(batch)
+    output = parts.as_output()
+    output.aux["mutation"] = True
+    assert "mutation" not in parts.aux
+    assert parts.validate(batch) is parts
+    with pytest.raises(ValueError, match="exactly one"):
+        TPENWaveFunction(
+            embedding=EmptyEncoder(),
+            layers=[nn.Identity()],
+            readout=ConstantReadout(),
+            envelope=AdditiveEnvelope(),
+            nuclear_envelope=factorized,
+        )
 
 
 def test_wavefunction_requires_envelope() -> None:
