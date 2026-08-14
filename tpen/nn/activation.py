@@ -3,10 +3,14 @@
 This module owns the ``Gamma`` / ``Gamma_c`` pointwise functions that
 :class:`tpen.nn.EquivariantMixing`, :class:`tpen.nn.PathAggregation`, and
 :class:`tpen.nn.MLP` accept through their ``activation`` argument. Per decision
-D2 (``TPEN-MIGRATION.md``) activation is an arbitrary function on the index
-axes owned by those stages, and there is no gated activation anywhere in TPEN.
-Per decision D3 the first activation form is elementwise with ``C_out == C_in``;
-channel mixing stays in the mixing weights ``W``.
+D2 activation is an arbitrary function on the index axes owned by those stages,
+and there is no gated activation anywhere in TPEN. Per decision D3 the first
+activation form is elementwise with ``C_out == C_in``; channel mixing stays in
+the mixing weights ``W``.
+
+The D-series decision log lives in Task Orchestrator notes on the TPEN project
+root (``decision-log-D1-D9`` and ``decision-log-D10-D18``); the former
+``TPEN-MIGRATION.md`` was folded into them and removed on 2026-08-14.
 
 Modules here are therefore plain :class:`torch.nn.Module` pointwise maps, *not*
 :class:`tpen.equivariance.EquivariantMap` subclasses: they carry no typed
