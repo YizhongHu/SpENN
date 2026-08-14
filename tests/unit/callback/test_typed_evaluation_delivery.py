@@ -327,7 +327,7 @@ def test_diagnostic_timing_publishes_failed_for_a_failed_task(tmp_path: Path) ->
         tmp_path,
         callbacks=[DiagnosticTiming()],
         loggers=[logger],
-        monotonic_clock=FakeClock([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 3.0]),
+        monotonic_clock=FakeClock([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]),
     )
 
     single_task_evaluator(tmp_path, calculators=[FailingCalculator()]).evaluate(
@@ -350,7 +350,7 @@ def test_diagnostic_timing_publishes_failed_for_a_partially_failed_task(tmp_path
         tmp_path,
         callbacks=[DiagnosticTiming()],
         loggers=[logger],
-        monotonic_clock=FakeClock([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.4, 1.5]),
+        monotonic_clock=FakeClock([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]),
     )
 
     result = single_task_evaluator(tmp_path, summaries=[MissingFieldSummary()]).evaluate(
