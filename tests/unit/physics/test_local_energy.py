@@ -394,6 +394,12 @@ def test_electron_nucleus_interaction_uses_batch_context_and_rejects_legacy_mism
     with pytest.raises(ValueError, match="batch.nuclear_positions"):
         ElectronNucleusInteraction().local_energy(None, ElectronBatch(positions=positions))
 
+    with pytest.raises(ValueError, match="batch.nuclear_charges"):
+        ElectronNucleusInteraction().local_energy(
+            None,
+            ElectronBatch(positions=positions, nuclear_positions=nuclei),
+        )
+
 
 def test_electron_nucleus_interaction_respects_batch_dtype() -> None:
     positions = torch.tensor([[[1.0], [2.0]]], dtype=torch.float32)
