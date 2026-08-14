@@ -271,10 +271,29 @@ experiments/baselines/
   test_systems.py           # registry schema + evidence-discipline test (landed)
   adapters/ferminet.py      # + lapnet.py, deepqmc.py: run, then emit the common record
   adapters/tpen.py          # wraps tpen.run.run_from_config (the one sanctioned import)
-  collect.py                # scan run roots -> results.jsonl
+  records.py                # the common (system, code, run) results record (landed)
+  collect.py                # scan run roots -> results.jsonl (landed)
+  test_records.py           # record schema + collector tests (landed)
   compare.py                # per-system table + E-vs-cost plots
   local_energy/harmonic.py  # make_local_energy for FermiNet-family trap runs
 ```
+
+Collection contract: **the emitter owns code-specific knowledge, not the
+collector.** Any run — TPEN, FermiNet, LapNet — drops one
+`baseline_record.json` in its run directory; `collect.py` walks a run root,
+validates each file against `records.BaselineRecord`, and writes
+`results.jsonl`. That is why there is no adapter framework or plugin registry
+here. Unknown quantities stay `null`; a malformed record is reported with its
+path and makes the run exit non-zero rather than shrinking the output file.
+
+```
+uv run python -m pytest experiments/baselines
+uv run python -m experiments.baselines.collect --run-root <dir> --output results.jsonl
+```
+
+Use `python -m pytest` rather than bare `pytest` under `experiments/`: the test
+modules import `experiments.<package>`, which needs the repository root on
+`sys.path`.
 
 Constraints already binding: `experiments/` must not import `tpen` except
 `tpen.run.run_from_config`; experiment tests live under `experiments/`;
