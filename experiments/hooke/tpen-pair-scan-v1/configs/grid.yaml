@@ -76,9 +76,10 @@ major_grid:
 # fixed batch and seed the initial log|psi| moves -3.945 / -5.351 / -6.374 across
 # 8 / 16 / 32 (layer-4 measurement), i.e. ~2.43 nats, which the two lr levels a
 # factor of 3.3 apart cannot span. A measured "channels" effect is substantially
-# an initialization-scale effect. `channels` is also a cost axis: the Pfaffian
-# readout loops over batch*channels in Python (`readout/pfaffian.py:69`) inside a
-# double backward, so wall time scales roughly linearly in it.
+# an initialization-scale effect. `PfaffianReadout` batches its leading walker
+# and channel dimensions, so its Python recursion depends only on particle
+# count. Channel cost must be measured on the target hardware, not inferred
+# from a former per-matrix Python loop.
 minor_grid:
   lr:
     - 1.0e-3

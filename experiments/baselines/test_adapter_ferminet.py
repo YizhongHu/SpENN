@@ -8,6 +8,7 @@ import random
 from pathlib import Path
 
 import pytest
+from experiments.baselines.collect import collect
 
 from experiments.baselines.adapters.ferminet import (
     AdapterError,
@@ -147,6 +148,33 @@ def test_build_record_round_trips_and_carries_estimator_caveat(tmp_path: Path) -
 
     path = write_record(record, run_dir)
     assert json.loads(path.read_text(encoding="utf-8"))["system_id"] == "li_atom"
+
+
+def test_adapter_records_preserve_nested_run_provenance_on_collection(tmp_path: Path) -> None:
+    """Collector stamps distinct root-relative paths for duplicate run basenames."""
+
+    run_root = tmp_path / "runs"
+    first = _write_stats(
+        run_root / "system-a" / "seed-0",
+        [-7.4 + 0.0001 * i for i in range(100)],
+    )
+    second = _write_stats(
+        run_root / "system-b" / "seed-0",
+        [-7.5 + 0.0001 * i for i in range(100)],
+    )
+
+    for run_dir in (first, second):
+        record = build_record(run_dir, system_id="li_atom", batch_size=256)
+        assert record.run_dir is None
+        write_record(record, run_dir)
+
+    report = collect(run_root)
+
+    assert report.failures == []
+    assert sorted(record.run_dir for record in report.records) == [
+        "system-a/seed-0",
+        "system-b/seed-0",
+    ]
 
 
 def test_build_record_rejects_a_tail_too_short_to_estimate(tmp_path: Path) -> None:

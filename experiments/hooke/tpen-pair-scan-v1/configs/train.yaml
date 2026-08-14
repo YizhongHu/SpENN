@@ -207,11 +207,10 @@ choices:
 # `run_parameters.channels`; a width that differs between the embedding output
 # and the mixing input is not representable.
 #
-# The axis is a cost axis as well as a capacity axis: decision B1 (Task
-# Orchestrator note `decision-log-D1-D9`) makes readout cost O(C n^3), and
-# `PfaffianReadout.forward` loops over batch*channels in Python
-# (`readout/pfaffian.py:69`) inside a double backward, so wall time is expected
-# to scale roughly linearly in channels rather than being free.
+# The axis is a cost axis as well as a capacity axis. `PfaffianReadout` batches
+# its leading walker and channel dimensions, so its Python recursion depends
+# only on particle count. Channel cost must be measured on the target hardware;
+# it is not assumed free.
 model_params:
   max_order: 2
   max_virtual_order: 2

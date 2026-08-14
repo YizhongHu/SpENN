@@ -249,7 +249,9 @@ def build_record(
         parameter_count=parameter_count,
         seed=seed,
         run_id=run_id or run_dir.name,
-        run_dir=run_dir.name,
+        # The adapter cannot know the collector's scan root. Leave this blank
+        # so collect() stamps the collision-free path relative to that root.
+        run_dir=None,
         collected_at=None,
         notes=(
             f"Training-tail average over the last {tail_fraction:.0%} of steps "
