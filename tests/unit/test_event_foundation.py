@@ -283,8 +283,8 @@ def test_run_context_stamps_each_occurrence_before_callback_delivery(tmp_path: P
     assert emitted.monotonic_time == 10.0
     assert order[:2] == [("first", emitted), ("second", emitted)]
     assert order[2][1] is started
-    assert order[3][1].monotonic_time is not None
-    assert order[3][1].monotonic_time > started.monotonic_time
+    assert order[4][1].monotonic_time is not None
+    assert order[4][1].monotonic_time > started.monotonic_time
     records = [
         json.loads(line) for line in context.path("occurrences.jsonl").read_text().splitlines()
     ]
