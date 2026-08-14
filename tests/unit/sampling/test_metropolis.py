@@ -96,6 +96,9 @@ def test_sampler_propagates_fixed_nuclear_context_through_batches_and_restore() 
     batch = walkers.make_batch()
     assert torch.equal(batch.nuclear_positions, nuclear_positions)
     assert torch.equal(batch.nuclear_charges, nuclear_charges)
+    stepped = sampler.step(NoGradLinearModel(), walkers)
+    assert torch.equal(stepped.make_batch().nuclear_positions, nuclear_positions)
+    assert torch.equal(stepped.make_batch().nuclear_charges, nuclear_charges)
     permuted = batch.permute(Permutation((1, 0)))
     assert torch.equal(permuted.nuclear_positions, nuclear_positions)
     assert torch.equal(permuted.nuclear_charges, nuclear_charges)
@@ -289,8 +292,18 @@ def test_mala_sampler_initializes_configured_spin_partition() -> None:
 
 def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
     model = QuadraticLogAbsModel()
-    sampler = MALASampler(proposal_scale=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)
-    walkers = Walkers(positions=torch.zeros(4, 2, 1, dtype=torch.float64))
+    nuclear_positions = torch.tensor([[0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    sampler = MALASampler(
+        proposal_scale=0.05,
+        n_walkers=4,
+        n_electrons=2,
+        spatial_dim=1,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+    walkers = sampler.reset()
 
     stepped = sampler.step(model, walkers)
 
@@ -300,5 +313,7 @@ def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
     assert stepped.sign is not None and stepped.sign.shape == (4,)
     assert stepped.aux["accepted"].shape == (4,)
     assert stepped.aux["log_accept_ratio"].shape == (4,)
+    assert torch.equal(stepped.nuclear_positions, nuclear_positions)
+    assert torch.equal(stepped.nuclear_charges, nuclear_charges)
     assert torch.isfinite(stepped.logabs).all()
     assert 0.0 <= sampler.acceptance_rate <= 1.0

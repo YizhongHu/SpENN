@@ -270,7 +270,13 @@ class MetropolisSampler(nn.Module):
         if current_logabs is None or current_sign is None:
             current_logabs, current_sign = self._evaluate(model, walkers)
         proposals, log_q_ratio = self._propose(model, walkers)
-        proposal_walkers = Walkers(positions=proposals, spins=walkers.spins, aux=dict(walkers.aux))
+        proposal_walkers = Walkers(
+            positions=proposals,
+            spins=walkers.spins,
+            nuclear_positions=walkers.nuclear_positions,
+            nuclear_charges=walkers.nuclear_charges,
+            aux=dict(walkers.aux),
+        )
         proposed_logabs, proposed_sign = self._evaluate(model, proposal_walkers)
         log_accept_ratio = torch.nan_to_num(2.0 * (proposed_logabs - current_logabs) + log_q_ratio, nan=-torch.inf)
         log_accept = torch.clamp(log_accept_ratio, max=0.0)
@@ -297,6 +303,8 @@ class MetropolisSampler(nn.Module):
             logabs=logabs.detach(),
             sign=sign.detach(),
             spins=None if walkers.spins is None else walkers.spins.detach(),
+            nuclear_positions=None if walkers.nuclear_positions is None else walkers.nuclear_positions.detach(),
+            nuclear_charges=None if walkers.nuclear_charges is None else walkers.nuclear_charges.detach(),
             aux={
                 **walkers.aux,
                 "accepted": accepted.detach(),
