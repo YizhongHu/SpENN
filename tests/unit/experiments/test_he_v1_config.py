@@ -67,6 +67,7 @@ def test_he_train_config_owns_batch_nuclear_context_and_coulomb_terms() -> None:
         "data": "${system.nuclei.charges}",
     }
     assert set(config["hamiltonian_terms"]) == {"kinetic", "electron_nucleus", "electron_electron"}
+    assert config["hamiltonian_terms"]["electron_nucleus"]["eps"] == 0.0
 
 
 def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> None:
@@ -75,6 +76,7 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     _assert_he_system(evaluation)
     _assert_factorized_model(evaluation)
     assert evaluation["model"] == train["model"]
+    assert evaluation["hamiltonian_terms"]["electron_nucleus"]["eps"] == 0.0
     assert evaluation["load"]["strict"] is True
     task = evaluation["evaluation_tasks"]["mcmc_energy"]
     assert task["generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"

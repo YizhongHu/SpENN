@@ -107,6 +107,8 @@ hamiltonian_terms:
     _target_: tpen.physics.kinetic.KineticEnergy
   electron_nucleus:
     _target_: tpen.physics.potential.ElectronNucleusInteraction
+    # Match train: evaluation must not reintroduce a hidden distance floor.
+    eps: 0.0
   electron_electron:
     _target_: tpen.physics.potential.ElectronElectronInteraction
 
