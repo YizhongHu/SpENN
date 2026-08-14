@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 from typeguard import TypeCheckError
@@ -10,7 +12,7 @@ from tpen.data.batch import ElectronBatch
 from tpen.data.permutation import all_permutations
 from tpen.data.real import Feature, zero_block
 from tpen.nn.readout import PfaffianReadout
-from tpen.nn.readout.pfaffian import _ODD_PADDING_IRREP, pfaffian
+from tpen.nn.readout.pfaffian import _ODD_PADDING_IRREP, _pfaffian_single, pfaffian
 
 
 class BlockContainer:
@@ -48,6 +50,136 @@ def test_pfaffian_matches_known_four_by_four_formula() -> None:
         pfaffian(matrix),
         torch.tensor(2.0 * 13.0 - 3.0 * 11.0 + 7.0 * 5.0, dtype=torch.float64),
     )
+
+
+def _random_skew(shape: tuple[int, ...], n: int, seed: int) -> torch.Tensor:
+    """Draw skew-symmetric matrices with leading batch shape ``shape``."""
+
+    generator = torch.Generator().manual_seed(seed)
+    raw = torch.randn(*shape, n, n, generator=generator, dtype=torch.float64)
+    return raw - raw.transpose(-1, -2)
+
+
+def _reference_pfaffian(matrix: torch.Tensor) -> torch.Tensor:
+    """Apply the slow unbatched reference to every matrix in a batch.
+
+    This is the oracle CLAUDE.md requires the vectorized routine to reproduce:
+    one `_pfaffian_single` call per matrix, reassembled into the batch shape.
+    """
+
+    leading = tuple(matrix.shape[:-2])
+    # Spelled out rather than inferred with -1: an n == 0 matrix has zero
+    # elements, which makes an inferred dimension ambiguous and raises.
+    count = math.prod(leading)
+    flat = matrix.reshape(count, matrix.shape[-2], matrix.shape[-1])
+    return torch.stack([_pfaffian_single(item) for item in flat], dim=0).reshape(leading)
+
+
+# Distinct batch and channel extents so a transposed leading axis cannot pass.
+_FAST_SLOW_SHAPES = [(), (5,), (3, 2)]
+
+
+@pytest.mark.parametrize("n", [0, 2, 3, 4, 6])
+@pytest.mark.parametrize("leading", _FAST_SLOW_SHAPES)
+def test_pfaffian_batched_matches_slow_reference(n: int, leading: tuple[int, ...]) -> None:
+    # CLAUDE.md, "Implement slow reference versions first": fast(x) == slow(x).
+    # Covers n=2 (the production Hooke pair), n=3 (odd, Pf == 0), n=4 and n=6
+    # (deeper recursion), unbatched and batched, in float64.
+    matrix = _random_skew(leading, n, seed=1000 + n + 7 * len(leading))
+
+    result = pfaffian(matrix)
+
+    assert result.shape == leading
+    torch.testing.assert_close(result, _reference_pfaffian(matrix))
+
+
+def test_pfaffian_two_by_two_is_bitwise_identical_to_reference() -> None:
+    # n == 2 must be the same gather the reference performs, not merely a close
+    # numeric answer: the acceptance contract forbids any numerics change there.
+    matrix = _random_skew((3, 2), 2, seed=17)
+
+    assert torch.equal(pfaffian(matrix), _reference_pfaffian(matrix))
+
+
+def test_pfaffian_batched_shape_is_the_leading_batch_shape() -> None:
+    # Guards the [batch, channels, n, n] -> [batch, channels] contract the
+    # readout depends on, with batch != channels so an axis swap is visible.
+    matrix = _random_skew((3, 2), 4, seed=23)
+
+    assert pfaffian(matrix).shape == (3, 2)
+
+
+def test_pfaffian_rejects_malformed_matrix_ranks_and_shapes() -> None:
+    with pytest.raises(ValueError, match="rank at least 2"):
+        pfaffian(torch.zeros(4, dtype=torch.float64))
+    with pytest.raises(ValueError, match="must be square"):
+        pfaffian(torch.zeros(3, 4, dtype=torch.float64))
+    with pytest.raises(ValueError, match="must be square"):
+        pfaffian(torch.zeros(2, 3, 4, dtype=torch.float64))
+
+
+@pytest.mark.parametrize("n", [2, 4])
+def test_pfaffian_first_and_second_derivatives_match_slow_reference(n: int) -> None:
+    # The readout runs inside the autodiff Laplacian, which is a DOUBLE
+    # backward, so first-order agreement is not sufficient evidence.
+    raw = _random_skew((3, 2), n, seed=31).requires_grad_(True)
+
+    def gradients(routine) -> tuple[torch.Tensor, torch.Tensor]:
+        skew = raw - raw.transpose(-1, -2)
+        value = routine(skew).sum()
+        (first,) = torch.autograd.grad(value, raw, create_graph=True)
+        # `first` must stay attached to `raw`, so this second grad genuinely
+        # exercises the double-backward graph. At n == 2 the Pfaffian is linear
+        # in the kernel and its true Hessian is zero, so the functional is
+        # chosen to stay nonzero there too rather than pass vacuously.
+        (second,) = torch.autograd.grad((first * raw).sum(), raw)
+        return first, second
+
+    fast_first, fast_second = gradients(pfaffian)
+    slow_first, slow_second = gradients(_reference_pfaffian)
+
+    torch.testing.assert_close(fast_first, slow_first)
+    torch.testing.assert_close(fast_second, slow_second)
+    assert fast_first.abs().sum() > 0
+    assert fast_second.abs().sum() > 0
+
+
+def test_pfaffian_readout_channel_pfaffians_match_slow_reference() -> None:
+    # End-to-end at the readout boundary: the batched call must reproduce the
+    # reference per (walker, channel) entry, including the odd-n border.
+    generator = torch.Generator().manual_seed(41)
+    for n_electrons in (2, 3, 4):
+        pair = torch.randn(3, 2, n_electrons, n_electrons, generator=generator, dtype=torch.float64)
+        one_body = torch.randn(3, 2, n_electrons, generator=generator, dtype=torch.float64)
+        features = Feature([zero_block(batch_size=3, dtype=torch.float64), one_body, pair])
+        readout = PfaffianReadout(channels=2)
+        batch = ElectronBatch(positions=torch.zeros(3, n_electrons, 1, dtype=torch.float64))
+
+        output = readout(features, batch)
+
+        kernel = readout.build_skew_kernel(features, batch)
+        torch.testing.assert_close(
+            output.aux["channel_pfaffians"], _reference_pfaffian(kernel)
+        )
+
+
+def test_pfaffian_readout_second_derivative_reaches_positions() -> None:
+    # T12 extended to second order: the Laplacian path differentiates the
+    # readout twice, so a batched routine that silently detaches a graph must
+    # fail here rather than only in a training run.
+    generator = torch.Generator().manual_seed(53)
+    raw = torch.randn(3, 2, 4, 4, generator=generator, dtype=torch.float64, requires_grad=True)
+    features = Feature([zero_block(batch_size=3, dtype=torch.float64), torch.empty(3, 0, 4, dtype=torch.float64), raw])
+    readout = PfaffianReadout(channels=2)
+
+    batch = ElectronBatch(positions=torch.zeros(3, 4, 1, dtype=torch.float64))
+
+    logabs = readout(features, batch).logabs.sum()
+    (first,) = torch.autograd.grad(logabs, raw, create_graph=True)
+    (second,) = torch.autograd.grad(first.square().sum(), raw)
+
+    assert torch.all(torch.isfinite(second))
+    assert second.abs().sum() > 0
 
 
 def test_pfaffian_readout_weights_are_fixed_by_default() -> None:

@@ -90,6 +90,12 @@ EVAL_EXACT_METRICS = {
     "eval/mcmc_energy/term/kinetic_mean",
     "eval/mcmc_energy/term/harmonic_trap_mean",
     "eval/mcmc_energy/term/electron_electron_mean",
+    # `TransformConsistencySummary` on `full_model_antisymmetry`. Retained
+    # exactly like the trace-equivariance pair below because the scan runs at
+    # `artifact_level: summaries`, so this metric is the ONLY surviving carrier
+    # of the antisymmetry invariant. `sign_failure_count` already survives the
+    # `failure_count` needle in `FAILURE_METRIC_NEEDLES`.
+    "eval/full_model_antisymmetry/logabs_max_abs_error",
     "eval/trace_equivariance/compared_entry_count",
     "eval/trace_equivariance/comparison_error_count",
     "eval/trace_equivariance/max_abs_error",
@@ -1039,12 +1045,32 @@ def _hooke_orbital_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
 def _symmetry_summary(context: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     base = _base_row(context)
+    metrics = context["eval_metric_map"]
     # The TPEN eval suite's only symmetry task. v3 also projected
     # `spatial_exchange_symmetry` and `rotation_consistency`, which the scan's
     # eval config does not register.
     for task in SYMMETRY_TASKS:
         rows = _task_records(context, task, "transform_records.csv")
         if not rows:
+            # `artifact_level: summaries` (what the scan's `eval.yaml` sets)
+            # suppresses `transform_records.csv` entirely, so per-sample records
+            # never exist. Fall back to `TransformConsistencySummary` metrics --
+            # the same shape of fallback `_trace_summary` uses below -- because
+            # dropping the row instead would silently delete a core correctness
+            # invariant from the report: an empty `symmetry_summary.csv` renders
+            # a blank `antisymmetry_logabs_error_max` and makes
+            # `antisymmetry_sign_mismatch_total` a sum over zero rows, which
+            # reads as "no violations found" rather than "never measured".
+            # Record-only columns stay blank; they have no summary counterpart.
+            out.append({
+                **base,
+                "symmetry_task": task,
+                "logabs_error_max": metrics.get(f"eval/{task}/logabs_max_abs_error", ""),
+                "logabs_error_median": "",
+                "sign_mismatch_count": metrics.get(f"eval/{task}/sign_failure_count", ""),
+                "parity_mismatch_count": "",
+                "finite_fraction": "",
+            })
             continue
         errors = [_as_float(row.get("logabs_abs_error", row.get("logabs_error", row.get("max_abs_error")))) for row in rows]
         out.append({
