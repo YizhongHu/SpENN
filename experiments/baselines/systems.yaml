@@ -1,0 +1,159 @@
+# Canonical comparison systems for the SOTA NN-QMC baseline program.
+#
+# Evidence discipline (see README.md section 0). Every reference energy in this
+# file was copied from a source that was actually read; none came from model
+# memory. A value that could not be sourced is `null` with
+# `confidence: unverified`. Do not fill a null in without recording where the
+# digits came from.
+#
+# confidence:
+#   transcribed - digits copied from the cited source by a reading pass.
+#   unverified  - not sourced yet; the value is null and must stay null.
+#
+# Atomic units throughout: energies in hartree, lengths in bohr.
+
+schema_version: 1
+units:
+  energy: hartree
+  length: bohr
+
+# Applies to every entry whose reference_source names the FermiNet table.
+caveats:
+  ferminet_table_ar5iv: >-
+    The FermiNet reference column was extracted from the ar5iv HTML rendering of
+    arXiv:1909.02487 on 2026-08-12 by an HTML-reading pass, not read by hand off
+    the published PDF. These digits still need a PDF spot-check before they
+    enter a plot, a paper, or a pass/fail accuracy claim.
+
+systems:
+  - id: hooke_pair_singlet_omega0.5
+    description: >-
+      Two-electron Hooke atom (3D isotropic harmonic trap plus Coulomb
+      repulsion) at the Taut-solvable omega = 1/2, singlet. The only system TPEN
+      runs today; see experiments/hooke/tpen-pair-v1/configs/train.yaml.
+    n_up: 1
+    n_down: 1
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: harmonic_trap
+          omega: 0.5
+        - term: electron_electron
+    reference_energy_hartree: 2.0
+    reference_source: >-
+      tpen/physics/hooke.py::HookeSingletExact (exact_energy = 2.0 at
+      omega = 0.5), which encodes the closed-form solution of Taut,
+      Phys. Rev. A 48, 3561 (1993); the module also carries the closed-form
+      wavefunction psi = (1 + r12/2) exp(-(r1^2 + r2^2)/4), so the value is
+      independently checkable in-repo.
+    confidence: transcribed
+    notes: >-
+      Exact, not variational-best-estimate: at the Taut omegas the two-electron
+      relative-motion problem is solvable in closed form.
+
+  - id: he_atom
+    description: Helium atom, singlet ground state.
+    n_up: 1
+    n_down: 1
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: He
+              charge: 2
+              position_bohr: [0.0, 0.0, 0.0]
+        - term: electron_electron
+    reference_energy_hartree: null
+    reference_source: null
+    confidence: unverified
+    notes: >-
+      He is absent from the FermiNet table (its atom sequence starts at Li), so
+      no transcribed value exists in this program yet. The intended reference is
+      the standard exact non-relativistic infinite-nuclear-mass ground-state
+      energy, which must be transcribed from a primary source before it is
+      written here.
+
+  - id: li_atom
+    description: Lithium atom, doublet ground state.
+    n_up: 2
+    n_down: 1
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: Li
+              charge: 3
+              position_bohr: [0.0, 0.0, 0.0]
+        - term: electron_electron
+    reference_energy_hartree: -7.47806032
+    reference_source: >-
+      Reference column, FermiNet atomic/molecular results table, Pfau et al.
+      2020, arXiv:1909.02487, transcribed via ar5iv HTML 2026-08-12; mirrored in
+      experiments/baselines/README.md section 5.1. See
+      caveats.ferminet_table_ar5iv.
+    confidence: transcribed
+    notes: >-
+      FermiNet's own reported energy for this row is -7.47798(1) Ha
+      (99.82(3)% of the correlation energy), i.e. about 0.08 mHa above the
+      reference.
+
+  - id: be_atom
+    description: Beryllium atom, singlet ground state.
+    n_up: 2
+    n_down: 2
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: Be
+              charge: 4
+              position_bohr: [0.0, 0.0, 0.0]
+        - term: electron_electron
+    reference_energy_hartree: -14.66736
+    reference_source: >-
+      Reference column, FermiNet atomic/molecular results table, Pfau et al.
+      2020, arXiv:1909.02487, transcribed via ar5iv HTML 2026-08-12; mirrored in
+      experiments/baselines/README.md section 5.1. See
+      caveats.ferminet_table_ar5iv.
+    confidence: transcribed
+    notes: >-
+      FermiNet reports -14.66733(3) Ha (99.97(3)% of the correlation energy).
+
+  - id: lih_molecule
+    description: Lithium hydride at its equilibrium geometry, singlet ground state.
+    n_up: 2
+    n_down: 2
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: Li
+              charge: 3
+              position_bohr: null
+            - element: H
+              charge: 1
+              position_bohr: null
+        - term: electron_electron
+    reference_energy_hartree: -8.070696
+    reference_source: >-
+      Reference column, FermiNet atomic/molecular results table, Pfau et al.
+      2020, arXiv:1909.02487, transcribed via ar5iv HTML 2026-08-12; mirrored in
+      experiments/baselines/README.md section 5.1. See
+      caveats.ferminet_table_ar5iv.
+    confidence: transcribed
+    notes: >-
+      UNRESOLVED: the nuclear geometry was not transcribed, so both
+      position_bohr entries are null and this system is not yet runnable. The
+      reference energy is only meaningful at the geometry FermiNet used; that
+      bond length must be transcribed from the paper before any run uses this
+      entry. FermiNet reports -8.07050(1) Ha (99.94(1)% of the correlation
+      energy).
