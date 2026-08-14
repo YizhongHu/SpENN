@@ -49,6 +49,25 @@ def test_cost_by_run_row_projects_runtime_and_step_statistics() -> None:
     assert row["lr"] == "3e-4"
 
 
+def test_cost_by_run_row_projects_explicit_timing_provenance() -> None:
+    provenance = {
+        "timing_mode": "device_event",
+        "hostname": "holy8a24101",
+        "slurm_job_id": "39221900",
+        "device_uuid": "GPU-123",
+    }
+
+    row = cost_by_run_row(
+        [],
+        run_id="run-a",
+        attempt_id="A0",
+        stage="train",
+        provenance=provenance,
+    )
+
+    assert {key: row[key] for key in provenance} == provenance
+
+
 def test_cost_by_run_row_without_metrics_leaves_blanks() -> None:
     row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="validation")
 
