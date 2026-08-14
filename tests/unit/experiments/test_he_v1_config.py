@@ -98,6 +98,9 @@ def test_he_train_targets_instantiate_and_consume_the_same_nuclear_context() -> 
 
     config = OmegaConf.load(TRAIN)
     model = instantiate(config.model)
+    # Runner owns the configured floating-point policy.  Mirror that launch
+    # boundary for this direct target-instantiation contract test.
+    model.to(dtype=torch.float64)
     sampler = instantiate(config.sampler)
     terms = instantiate(config.hamiltonian_terms)
     assert sampler.nuclear_positions is not None
