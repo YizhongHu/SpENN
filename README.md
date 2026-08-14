@@ -531,7 +531,7 @@ uv run --extra cpu python -m http.server --directory docs/_build/html 8000
 
 ## Versioning
 
-The current Hooke integration release is `v0.2.3`; release notes live in
+The current Hooke integration release is `v0.3.0`; release notes live in
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 The backwards compatibility of this repository is only with respect to the behavior
