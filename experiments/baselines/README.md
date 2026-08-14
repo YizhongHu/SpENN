@@ -228,7 +228,23 @@ Protocol: 4 hidden layers, 256 units (one-electron stream) / 32 units
 electrons, 16 GPUs above. Ethene ~2 days on 8 GPUs; bicyclobutane (30 e-)
 ~1 month on 16 GPUs.
 
-| System | FermiNet (Ha) | Reference (Ha) | % corr. |
+**Corrected 2026-08-13.** The first extraction of this table was wrong in a way
+worth recording, because the failure mode generalizes. FermiNet's tables are
+*wide multi-method* tables, not `method | reference` pairs:
+
+```text
+Table 1 (atoms):     Atom | FermiNet | VMC | DMC | CCSD(T)/CBS | HF/CBS | Exact | %corr
+Table 2 (molecules): System | R | FermiNet | VMC | DMC | CCSD(T)/CBS | HF/CBS | Exact | %corr
+```
+
+The HTML-reading pass collapsed them and, for the molecules, read the
+**CCSD(T)/CBS** column and stored it as the exact reference. An independent
+re-read confirmed the column ordering two ways that do not depend on parsing:
+the HF/CBS column holds the known Hartree-Fock limits (LiH `-7.98737`, Li2
+`-14.87155`, N2 `-108.9940`), and the VMC/DMC columns reproduce
+[arXiv:1012.0709](https://arxiv.org/abs/1012.0709) character-for-character.
+
+| System | FermiNet (Ha) | Exact (Ha) | % corr. |
 |---|---|---|---|
 | Li | -7.47798(1) | -7.47806032 | 99.82(3) |
 | Be | -14.66733(3) | -14.66736 | 99.97(3) |
@@ -238,15 +254,33 @@ electrons, 16 GPUs above. Ethene ~2 days on 8 GPUs; bicyclobutane (30 e-)
 | O | -75.06655(7) | -75.0673 | 99.70(3) |
 | F | -99.7329(1) | -99.7339 | 99.69(3) |
 | Ne | -128.9366(1) | -128.9376 | 99.74(3) |
-| LiH | -8.07050(1) | -8.070696 | 99.94(1) |
-| Li2 | -14.99475(1) | -14.99507 | 99.47(1) |
-| N2 | -109.5388(1) | -109.5425 | 99.36(2) |
-| Ethene | -78.5844(1) | -78.5888 | 99.16(2) |
-| Bicyclobutane | -155.9263(6) | -155.9575 | 96.94(5) |
+| LiH | -8.07050(1) | **-8.070548** | 99.94(1) |
+| Li2 | -14.99475(1) | **-14.9954** | 99.47(1) |
+| N2 | -109.5388(1) | **-109.5423** | 99.36(2) |
+| Ethene | -78.5844(1) | -78.5888 **(CCSD(T)/CBS)** | 99.16(2) |
+| Bicyclobutane | -155.9263(6) | -155.9575 **(CCSD(T)/CBS)** | 96.94(5) |
 
-He is not in this table — FermiNet's atom sequence starts at Li. For a TPEN
-He-atom slice the reference is the standard exact non-relativistic value, which
-must be transcribed separately (**[T]**).
+All thirteen FermiNet energies and all eight atomic reference values survived
+the re-read digit-for-digit. Four things changed:
+
+1. LiH, Li2 and N2 now carry the exact column, not CCSD(T)/CBS. Sources are
+   Cencek & Rychlewski (2000) for LiH and Filippi & Umrigar (1996) for Li2/N2,
+   at R = 3.015, 5.051 and 2.068 bohr respectively.
+2. **Ethene and bicyclobutane have no exact value in the source at all.** Their
+   entries are CCSD(T)/CBS, so the 99.16% and 96.94% figures are correlation
+   energy relative to a *computed* reference, not an exact one.
+3. Li's reference is right but misattributed in FermiNet's own footnote, which
+   cites Chakravorty et al. for the whole column. Li is Puchalski & Pachucki,
+   *Phys. Rev. A* **73**, 022503 (2006); Be through Ne genuinely are Chakravorty.
+4. FermiNet **never states its dtype** (only "TensorFlow 1 built with CUDA 9"),
+   and these table values are a *post-training evaluation* — O(1e5) MCMC steps
+   sampling the mean local energy every 10 steps, with Flyvbjerg-Petersen
+   blocking error bars — not a training-tail average. Anything this program
+   compares against them must match that estimator or declare the difference.
+
+He and H2 are not in this table — the atom sequence starts at Li, and H2 is not
+among the molecules. Their references come from the atomic and molecular
+literature instead and are recorded in `systems.yaml`.
 
 Two consequences for planning. First, the % correlation figures are *not*
 uniformly 99.8%: bicyclobutane is 96.9%, so "SOTA" degrades with system size and

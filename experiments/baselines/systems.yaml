@@ -20,10 +20,17 @@ units:
 # Applies to every entry whose reference_source names the FermiNet table.
 caveats:
   ferminet_table_ar5iv: >-
-    The FermiNet reference column was extracted from the ar5iv HTML rendering of
-    arXiv:1909.02487 on 2026-08-12 by an HTML-reading pass, not read by hand off
-    the published PDF. These digits still need a PDF spot-check before they
-    enter a plot, a paper, or a pass/fail accuracy claim.
+    NARROWED 2026-08-13 after an independent re-read. The first extraction, on
+    2026-08-12, collapsed a wide multi-method table and read the wrong column
+    for molecules; that error is corrected in this file and in
+    experiments/baselines/README.md section 5.1. The re-read confirmed all
+    thirteen FermiNet energies and all eight atomic reference values
+    digit-for-digit, cross-checking against arXiv:1011.4343 and arXiv:1012.0709.
+    What remains: APS and the published PDF still block automated retrieval, so
+    every value here rests on ar5iv renderings plus corroborating papers, never
+    on a publisher PDF. That is stronger than the original pass but is not the
+    same as a hand check, so a spot-check against the published PDF is still
+    owed before these digits enter a plot or a paper.
 
 systems:
   - id: hooke_pair_singlet_omega0.5
@@ -42,11 +49,12 @@ systems:
         - term: electron_electron
     reference_energy_hartree: 2.0
     reference_source: >-
-      tpen/physics/hooke.py::HookeSingletExact (exact_energy = 2.0 at
-      omega = 0.5), which encodes the closed-form solution of Taut,
-      Phys. Rev. A 48, 3561 (1993); the module also carries the closed-form
-      wavefunction psi = (1 + r12/2) exp(-(r1^2 + r2^2)/4), so the value is
-      independently checkable in-repo.
+      Taut, Phys. Rev. A 48, 3561 (1993). APS blocks automated retrieval, so the
+      primary was not read; the value and its closed form are reproduced in
+      Savin, arXiv:2010.13776 (SECONDARY source, read 2026-08-13). The same
+      closed form is encoded independently in tpen/physics/hooke.py
+      ::HookeSingletExact, giving an in-repo cross-check that agrees:
+      psi = (1 + r12/2) exp(-(r1^2 + r2^2)/4) with exact_energy = 2.0.
     confidence: transcribed
     notes: >-
       Exact, not variational-best-estimate: at the Taut omegas the two-electron
@@ -101,15 +109,21 @@ systems:
         - term: electron_electron
     reference_energy_hartree: -7.47806032
     reference_source: >-
-      Reference column, FermiNet atomic/molecular results table, Pfau et al.
-      2020, arXiv:1909.02487, transcribed via ar5iv HTML 2026-08-12; mirrored in
-      experiments/baselines/README.md section 5.1. See
-      caveats.ferminet_table_ar5iv.
+      Puchalski and Pachucki, Phys. Rev. A 73, 022503 (2006). Re-checked
+      2026-08-13 and confirmed digit-for-digit against the exact column of the
+      FermiNet atomic table (Pfau et al. 2020, arXiv:1909.02487), and
+      independently reproduced from arXiv:1011.4343 and arXiv:1012.0709.
     confidence: transcribed
     notes: >-
-      FermiNet's own reported energy for this row is -7.47798(1) Ha
-      (99.82(3)% of the correlation energy), i.e. about 0.08 mHa above the
-      reference.
+      ATTRIBUTION CORRECTED 2026-08-13. The value is right, but its source is
+      not Chakravorty et al. (1993) -- that is a misattribution in FermiNet's
+      own footnote, which cites Chakravorty for the whole exact column. Li comes
+      from Puchalski and Pachucki (2006); Be through Ne genuinely are
+      Chakravorty and are unaffected. FermiNet reports -7.47798(1) Ha
+      (99.82(3)% of the correlation energy), about 0.08 mHa above the reference.
+      This program reproduced that run on one A100 and obtained -7.477892(9) Ha
+      (Slurm 38985858_0); see the R2 receipt on Task Orchestrator item
+      c762e330.
 
   - id: be_atom
     description: Beryllium atom, singlet ground state.
@@ -147,22 +161,65 @@ systems:
           nuclei:
             - element: Li
               charge: 3
-              position_bohr: null
+              position_bohr: [-1.5075, 0.0, 0.0]
             - element: H
               charge: 1
-              position_bohr: null
+              position_bohr: [1.5075, 0.0, 0.0]
         - term: electron_electron
-    reference_energy_hartree: -8.070696
+    reference_energy_hartree: -8.070548
     reference_source: >-
-      Reference column, FermiNet atomic/molecular results table, Pfau et al.
-      2020, arXiv:1909.02487, transcribed via ar5iv HTML 2026-08-12; mirrored in
-      experiments/baselines/README.md section 5.1. See
-      caveats.ferminet_table_ar5iv.
+      Cencek and Rychlewski, Chem. Phys. Lett. 320, 549-552 (2000), the
+      explicitly-correlated-Gaussian Born-Oppenheimer value at R = 3.015 bohr.
+      Quoted with this attribution by both the FermiNet table (Pfau et al. 2020,
+      arXiv:1909.02487) and the PauliNet table (Hermann et al.,
+      arXiv:1909.08423). Re-read 2026-08-13.
     confidence: transcribed
     notes: >-
-      UNRESOLVED: the nuclear geometry was not transcribed, so both
-      position_bohr entries are null and this system is not yet runnable. The
-      reference energy is only meaningful at the geometry FermiNet used; that
-      bond length must be transcribed from the paper before any run uses this
-      entry. FermiNet reports -8.07050(1) Ha (99.94(1)% of the correlation
+      CORRECTED 2026-08-13. This entry previously held -8.070696, which is the
+      CCSD(T)/CBS cell, not the exact reference: the FermiNet molecular table is
+      a wide multi-method table (System, R, FermiNet, VMC, DMC, CCSD(T)/CBS,
+      HF/CBS, Exact, %corr) and the original ar5iv pass collapsed it and read
+      the wrong column. Column identity is pinned two independent ways -- the
+      HF/CBS column holds -7.98737 for LiH, and the VMC/DMC columns reproduce
+      arXiv:1012.0709 character-for-character. The geometry gap is also closed:
+      R = 3.015 bohr, nuclei placed symmetrically about the origin on x.
+      FermiNet itself reports -8.07050(1) Ha (99.94(1)% of the correlation
       energy).
+
+  - id: h2_molecule
+    description: >-
+      Hydrogen molecule at R = 1.4 bohr, singlet ground state. The smallest
+      molecular Coulomb system, and the only one in this registry at TPEN's
+      current two-electron size -- so it is the shortest bridge from the Hooke
+      pair to a system every NN-QMC baseline also reports.
+    n_up: 1
+    n_down: 1
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: H
+              charge: 1
+              position_bohr: [-0.7, 0.0, 0.0]
+            - element: H
+              charge: 1
+              position_bohr: [0.7, 0.0, 0.0]
+        - term: electron_electron
+    reference_energy_hartree: -1.17447
+    reference_source: >-
+      Kolos and Wolniewicz (1965), the standard Born-Oppenheimer reference,
+      quoted as the exact column of the PauliNet results table (Hermann et al.,
+      arXiv:1909.08423, Table 1). Read 2026-08-13.
+    confidence: transcribed
+    notes: >-
+      Geometry is load-bearing here and does not match the baseline default. The
+      value above is the R = 1.4 bohr reference, whereas FermiNet's built-in
+      diatomic table uses 0.737164 angstrom = 1.393 bohr, a different geometry.
+      Runs against this entry must pin the bond length explicitly rather than
+      accepting that default. The energy difference between the two geometries
+      is second order at the minimum and small (order 0.01 mHa), but it is a
+      systematic offset, not noise, and it is silent if unstated. Only five
+      digits were transcribed; the Kolos-Wolniewicz value is quoted to more
+      precision in the primary source, which has not been read here.
