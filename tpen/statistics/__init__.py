@@ -35,6 +35,7 @@ from tpen.statistics.autocorrelation import (
     IntegratedAutocorrelation,
     TAU_CONVENTION,
     integrated_autocorrelation_time,
+    per_chain_integrated_autocorrelation,
     pooled_autocorrelation,
 )
 from tpen.statistics.mixing import MixingDiagnostics, split_r_hat
@@ -46,6 +47,7 @@ from tpen.statistics.producer import (
     produce_trajectory_statistics,
 )
 from tpen.statistics.receipt import (
+    ChainStatistics,
     PlateauDiagnostics,
     TrajectoryShape,
     TrajectoryStatisticsIdentity,
@@ -64,6 +66,7 @@ __all__ = [
     "DEFAULT_R_HAT_THRESHOLD",
     "ESTIMATOR_ID",
     "ESTIMATOR_VERSION",
+    "ChainStatistics",
     "DuplicateReceiptError",
     "IntegratedAutocorrelation",
     "MixingDiagnostics",
@@ -77,6 +80,7 @@ __all__ = [
     "TrajectoryStatisticsSidecar",
     "TrajectoryStatisticsStatus",
     "integrated_autocorrelation_time",
+    "per_chain_integrated_autocorrelation",
     "pooled_autocorrelation",
     "produce_trajectory_statistics",
     "split_r_hat",

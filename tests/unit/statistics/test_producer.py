@@ -462,3 +462,93 @@ def test_matching_checkpoint_contents_are_accepted(tmp_path) -> None:
 
     assert receipt.identity.checkpoint_sha256 == digest
     assert receipt.status in ("available", "unresolved")
+
+
+def test_one_unresolved_chain_forces_the_whole_receipt_unresolved() -> None:
+    """Refuse a pooled number when any single walker failed to resolve.
+
+    This is the masking case. A constant chain has zero variance and no defined
+    autocorrelation, but pooling autocovariances before the nonlinear IPS
+    truncation lets the well-behaved chains carry it, producing a confident
+    payload for a trajectory containing a walker that never moved. Deciding per
+    chain makes that impossible, and the failing chain is named rather than
+    dropped -- pooling the survivors would silently redefine the estimand as
+    "the walkers that behaved".
+    """
+    base = _ar1_trajectory(seed=1401, n_draws=256, n_walkers=4)
+    values = base.values.clone()
+    values[:, 2] = 3.5  # a stuck walker: zero variance, undefined correlation
+    trajectory = ObservableTrajectory(
+        observable=base.observable,
+        values=values,
+        draw_stride=base.draw_stride,
+        burn_in_draws=base.burn_in_draws,
+    )
+
+    receipt = produce_trajectory_statistics(trajectory, _identity())
+
+    assert receipt.status == "unresolved"
+    assert receipt.payload is None
+    assert "chain 2" in receipt.reason
+    # Every chain is retained, including the three that were fine.
+    assert len(receipt.chains) == 4
+    assert [chain.status for chain in receipt.chains].count("unresolved") == 1
+    assert receipt.chains[2].tau_int is None
+    assert receipt.chains[0].tau_int is not None
+
+
+def test_pooled_statistics_are_recomputable_from_the_per_chain_records() -> None:
+    """Make the pooled payload a checkable function of the retained chains.
+
+    ESS is the sum of per-chain N_i/tau_i, and the pooled mean's variance is
+    ``sum_i w_i^2 * s_i^2 * tau_i / N_i`` with ``w_i = N_i / N_total``. The
+    shortcut ``sqrt(mean(s_i^2) / ess)`` is a different quantity that assumes
+    one shared variance and one shared tau, so it is wrong precisely when the
+    walkers disagree. Recomputing here pins the correct one.
+    """
+    receipt = produce_trajectory_statistics(
+        _ar1_trajectory(seed=1402, n_draws=512, n_walkers=4, phi=0.6), _identity()
+    )
+
+    assert receipt.status == "available"
+    chains = receipt.chains
+    assert len(chains) == 4
+    assert all(chain.status == "available" for chain in chains)
+
+    total_draws = receipt.shape.total_draws
+    expected_ess = sum(chain.n_draws / chain.tau_int for chain in chains)
+    expected_mcse = sum(
+        (chain.n_draws / total_draws) ** 2 * chain.variance * chain.tau_int / chain.n_draws
+        for chain in chains
+    ) ** 0.5
+
+    assert receipt.payload.ess == pytest.approx(expected_ess, rel=1e-12)
+    assert receipt.payload.mcse == pytest.approx(expected_mcse, rel=1e-12)
+    # The scalar tau is the value consistent with the pooled ESS, nothing more.
+    assert receipt.payload.tau_int == pytest.approx(total_draws / expected_ess, rel=1e-12)
+
+
+def test_heterogeneous_chains_are_not_given_a_shared_variance_error_bar() -> None:
+    """Separate the correct MCSE from the equal-chains shortcut.
+
+    With one chain scaled up, ``s_i^2`` and ``tau_i`` differ across walkers, so
+    the weighted form and the shared-variance shortcut disagree. If they ever
+    coincide here the fixture has stopped being heterogeneous and the test has
+    stopped discriminating, which the final assertion guards.
+    """
+    base = _ar1_trajectory(seed=1403, n_draws=512, n_walkers=4, phi=0.7)
+    values = base.values.clone()
+    values[:, 0] = values[:, 0] * 6.0
+    trajectory = ObservableTrajectory(
+        observable=base.observable,
+        values=values,
+        draw_stride=base.draw_stride,
+        burn_in_draws=base.burn_in_draws,
+    )
+
+    receipt = produce_trajectory_statistics(trajectory, _identity())
+
+    assert receipt.status == "available"
+    mean_variance = sum(chain.variance for chain in receipt.chains) / len(receipt.chains)
+    shortcut = (mean_variance / receipt.payload.ess) ** 0.5
+    assert receipt.payload.mcse != pytest.approx(shortcut, rel=1e-6)

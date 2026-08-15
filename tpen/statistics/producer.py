@@ -17,9 +17,11 @@ from tpen.checkpoint.hashing import file_sha256
 from tpen.statistics.autocorrelation import (
     TAU_CONVENTION,
     integrated_autocorrelation_time,
+    per_chain_integrated_autocorrelation,
 )
 from tpen.statistics.mixing import split_r_hat
 from tpen.statistics.receipt import (
+    ChainStatistics,
     PlateauDiagnostics,
     TrajectoryShape,
     TrajectoryStatisticsIdentity,
@@ -188,13 +190,39 @@ def produce_trajectory_statistics(
     )
     source_sha256 = trajectory.content_sha256
 
+    # Per-walker first, pooled second. The IPS truncation is nonlinear, so
+    # pooling autocovariances before the decision lets one chain that never
+    # plateaus be absorbed into a well-behaved average and still yield a
+    # confident number. Deciding per chain keeps `unresolved` reachable.
+    per_chain = per_chain_integrated_autocorrelation(
+        trajectory.values,
+        method=method,
+        min_draws_per_chain=min_draws_per_chain,
+    )
+    chain_draws = trajectory.n_draws
+    chain_means = trajectory.values.mean(dim=0)
+    chains = tuple(
+        ChainStatistics(
+            index=index,
+            n_draws=chain_draws,
+            status="available" if result.tau_int is not None else "unresolved",
+            tau_int=result.tau_int,
+            plateau_reached=result.plateau_reached,
+            mean=float(chain_means[index].item()) if result.tau_int is not None else None,
+            variance=result.variance if result.tau_int is not None else None,
+            reason=result.reason,
+        )
+        for index, result in enumerate(per_chain)
+    )
+    # The auxiliary matched-lag pooled estimator is retained for the plateau
+    # block only; it never supplies tau, ESS, or MCSE.
     autocorrelation = integrated_autocorrelation_time(
         trajectory.values,
         method=method,
         min_draws_per_chain=min_draws_per_chain,
     )
     plateau = PlateauDiagnostics(
-        plateau_reached=autocorrelation.plateau_reached,
+        plateau_reached=all(chain.plateau_reached for chain in chains),
         truncation_lag=autocorrelation.truncation_lag,
         pair_count=autocorrelation.pair_count,
         max_lag=autocorrelation.max_lag,
@@ -215,6 +243,7 @@ def produce_trajectory_statistics(
             source_artifact_sha256=source_sha256,
             reason=reason,
             warnings=warnings,
+            chains=chains,
         )
 
     warnings: list[str] = []
@@ -226,10 +255,18 @@ def produce_trajectory_statistics(
             "non-finite draws are never dropped because removing them re-indexes every lag"
         )
 
-    if autocorrelation.tau_int is None or autocorrelation.variance is None:
-        # IntegratedAutocorrelation guarantees a reason whenever tau_int is None;
-        # the fallback keeps the receipt valid even if that ever regresses.
-        return unresolved(autocorrelation.reason or "autocorrelation did not resolve")
+    unresolved_chains = tuple(chain for chain in chains if chain.status != "available")
+    if unresolved_chains:
+        # Every failing chain is named. Dropping them and pooling the survivors
+        # would silently redefine the estimand as "the walkers that behaved",
+        # which is a different and flattering quantity.
+        detail = "; ".join(
+            f"chain {chain.index}: {chain.reason}" for chain in unresolved_chains
+        )
+        return unresolved(
+            f"{len(unresolved_chains)} of {len(chains)} chain(s) did not resolve "
+            f"their own integrated autocorrelation time -- {detail}"
+        )
 
     if mixing.r_hat is None:
         warnings.append(f"split-Rhat unavailable: {mixing.reason}")
@@ -246,24 +283,50 @@ def produce_trajectory_statistics(
             "chains agree only approximately"
         )
 
+    # Pool only resolved per-chain estimates, weighting each chain by the draws
+    # it contributed. Writing the weights explicitly rather than assuming equal
+    # chains keeps the algebra honest if ragged trajectories ever arrive; today
+    # every column has the same length, so w_i == 1 / n_chains.
     total_draws = shape.total_draws
-    ess = total_draws / autocorrelation.tau_int
+    ess = sum(chain.n_draws / chain.tau_int for chain in chains)
     if not (ess > 0.0):
         return unresolved(f"non-positive effective sample size: {ess}", warnings=tuple(warnings))
-    # Correlation-aware standard error: the IID sigma/sqrt(N) with N replaced by
-    # the effective sample size. When tau_int == 1 the two coincide.
-    mcse = (autocorrelation.variance / ess) ** 0.5
+
+    # Var(sum_i w_i * mean_i) = sum_i w_i^2 * Var(mean_i), and for a correlated
+    # chain Var(mean_i) = s_i^2 * tau_i / N_i. The tempting shortcut
+    # sqrt(mean(s_i^2) / ess) is a different quantity: it assumes every chain
+    # shares one variance and one tau, so it is wrong exactly when the walkers
+    # disagree, which is when an honest error bar matters most.
+    mcse_squared = sum(
+        (chain.n_draws / total_draws) ** 2 * chain.variance * chain.tau_int / chain.n_draws
+        for chain in chains
+    )
+    mcse = mcse_squared**0.5
+
+    # A scalar tau is reported only as the value consistent with the pooled ESS,
+    # never as an independently estimated quantity. Per-chain tau_i are retained
+    # on the receipt so this reduction is auditable rather than authoritative.
+    tau_pooled = total_draws / ess
 
     if ess < 1.0:
         warnings.append(
             f"effective sample size {ess:.3f} is below one draw; the mean is not resolved"
         )
+    tau_values = [chain.tau_int for chain in chains]
+    if len(tau_values) > 1 and min(tau_values) > 0.0:
+        spread = max(tau_values) / min(tau_values)
+        if spread >= 2.0:
+            warnings.append(
+                f"per-chain tau_int spans a factor of {spread:.2f} "
+                f"(min {min(tau_values):.3f}, max {max(tau_values):.3f}); "
+                "walkers are not exploring at the same rate"
+            )
     # ESS is a precision statement, never a stationarity statement. Say so on
     # every receipt so no consumer can read a healthy ESS as convergence.
     warnings.append("ESS quantifies precision only and is not evidence of stationarity")
 
     payload = TrajectoryStatisticsPayload(
-        tau_int=autocorrelation.tau_int,
+        tau_int=tau_pooled,
         ess=ess,
         mcse=mcse,
         mean=float(trajectory.values.mean().item()),
@@ -282,4 +345,5 @@ def produce_trajectory_statistics(
         payload=payload,
         source_artifact_sha256=source_sha256,
         warnings=tuple(warnings),
+        chains=chains,
     )

@@ -25,6 +25,7 @@ from tpen.statistics.mixing import MixingDiagnostics
 
 __all__ = [
     "IDENTITY_FIELDS",
+    "ChainStatistics",
     "PlateauDiagnostics",
     "TrajectoryShape",
     "TrajectoryStatisticsIdentity",
@@ -173,6 +174,86 @@ class TrajectoryShape:
 
 
 @dataclass(frozen=True)
+class ChainStatistics:
+    """One walker's own estimate, retained whether or not it resolved.
+
+    Per-chain records are the audit trail behind a pooled number. Every chain
+    appears, including the ones that failed, because a chain dropped from the
+    record is indistinguishable from a chain that was never sampled.
+
+    Parameters
+    ----------
+    index : int
+        Column position of this walker in the trajectory.
+    n_draws : int
+        Retained draws contributed by this chain.
+    status : str
+        ``available`` or ``unresolved`` for this chain alone.
+    tau_int : float or None
+        This chain's integrated autocorrelation time, or ``None`` when it did
+        not resolve. Never substituted by a bound or a default.
+    plateau_reached : bool
+        Whether this chain's own initial positive sequence terminated.
+    mean : float or None
+        Chain mean, present only when the chain resolved.
+    variance : float or None
+        Chain sample variance, present only when the chain resolved.
+    reason : str or None
+        Why this chain did not resolve. Set exactly when ``status`` is
+        ``unresolved``.
+    """
+
+    index: int
+    n_draws: int
+    status: str
+    tau_int: float | None
+    plateau_reached: bool
+    mean: float | None
+    variance: float | None
+    reason: str | None
+
+    def __post_init__(self) -> None:
+        if self.status not in ("available", "unresolved"):
+            raise ValueError(f"chain status must be available|unresolved, got {self.status!r}")
+        resolved = self.status == "available"
+        if resolved and self.tau_int is None:
+            raise ValueError(f"chain {self.index} is available but carries no tau_int")
+        if not resolved and self.tau_int is not None:
+            raise ValueError(f"chain {self.index} is unresolved but carries a tau_int")
+        if resolved == bool((self.reason or "").strip()):
+            raise ValueError(f"chain {self.index} must carry a reason exactly when unresolved")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe mapping for the sidecar."""
+
+        return {
+            "index": self.index,
+            "n_draws": self.n_draws,
+            "status": self.status,
+            "tau_int": self.tau_int,
+            "plateau_reached": self.plateau_reached,
+            "mean": self.mean,
+            "variance": self.variance,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, record: Mapping[str, Any]) -> ChainStatistics:
+        """Rebuild a chain record from its sidecar mapping."""
+
+        return cls(
+            index=int(record["index"]),
+            n_draws=int(record["n_draws"]),
+            status=str(record["status"]),
+            tau_int=record.get("tau_int"),
+            plateau_reached=bool(record.get("plateau_reached", False)),
+            mean=record.get("mean"),
+            variance=record.get("variance"),
+            reason=record.get("reason"),
+        )
+
+
+@dataclass(frozen=True)
 class PlateauDiagnostics:
     """Whether and where the autocorrelation function turned over.
 
@@ -293,6 +374,11 @@ class TrajectoryStatisticsReceipt:
     warnings : tuple of str
         Non-fatal caveats. A warning never suppresses a payload and never
         substitutes for ``unresolved``.
+    chains : tuple of ChainStatistics
+        Every walker's own estimate, in column order, including chains that did
+        not resolve. This is the audit trail behind any pooled number: the
+        pooled value is a function of these, so a reader can recompute it and
+        see which chain, if any, forced the whole receipt to ``unresolved``.
 
     Raises
     ------
@@ -313,6 +399,7 @@ class TrajectoryStatisticsReceipt:
     source_artifact_sha256: str | None = None
     reason: str | None = None
     warnings: tuple[str, ...] = ()
+    chains: tuple[ChainStatistics, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in ("available", "absent", "unresolved"):
@@ -354,6 +441,7 @@ class TrajectoryStatisticsReceipt:
         if self.status != "absent" and self.shape is None:
             raise ValueError(f"status {self.status!r} requires a trajectory shape")
         object.__setattr__(self, "warnings", tuple(str(w) for w in self.warnings))
+        object.__setattr__(self, "chains", tuple(self.chains))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a flat JSON-safe mapping suitable for a JSONL sidecar."""
@@ -368,6 +456,7 @@ class TrajectoryStatisticsReceipt:
             "source_artifact_sha256": self.source_artifact_sha256,
             "reason": self.reason,
             "warnings": list(self.warnings),
+            "chains": [chain.to_dict() for chain in self.chains],
         }
         record["shape"] = None if self.shape is None else self.shape.to_dict()
         record["plateau"] = None if self.plateau is None else self.plateau.to_dict()
@@ -459,4 +548,7 @@ class TrajectoryStatisticsReceipt:
             source_artifact_sha256=record.get("source_artifact_sha256"),
             reason=record.get("reason"),
             warnings=tuple(record.get("warnings") or ()),
+            chains=tuple(
+                ChainStatistics.from_dict(chain) for chain in (record.get("chains") or ())
+            ),
         )

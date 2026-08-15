@@ -28,6 +28,7 @@ __all__ = [
     "TAU_CONVENTION",
     "IntegratedAutocorrelation",
     "integrated_autocorrelation_time",
+    "per_chain_integrated_autocorrelation",
     "pooled_autocorrelation",
 ]
 
@@ -316,4 +317,50 @@ def integrated_autocorrelation_time(
         pair_count=pair_count,
         max_lag=max_lag,
         reason=None,
+    )
+
+
+def per_chain_integrated_autocorrelation(
+    values: torch.Tensor,
+    *,
+    method: str = "fft",
+    min_draws_per_chain: int = _MIN_DRAWS_PER_CHAIN,
+) -> tuple[IntegratedAutocorrelation, ...]:
+    """Estimate ``tau_int`` separately for every walker chain.
+
+    Each chain is truncated by its own initial positive sequence before any
+    pooling happens. This is what makes a single non-mixing walker visible: the
+    IPS truncation is nonlinear, so pooling autocovariances first can let one
+    chain that never plateaus be absorbed into a well-behaved average and still
+    produce a confident number. Deciding per chain and pooling only resolved
+    estimates keeps "unresolved" reachable, which the contract treats as a valid
+    and informative outcome rather than a failure to avoid.
+
+    Parameters
+    ----------
+    values : torch.Tensor
+        Trajectory with shape ``[draw, walker]``.
+    method : {'fft', 'reference'}, optional
+        Autocovariance backend, applied identically to every chain.
+    min_draws_per_chain : int, optional
+        Minimum retained draws before a chain is estimated at all.
+
+    Returns
+    -------
+    tuple of IntegratedAutocorrelation
+        One result per walker, in column order. A chain that does not resolve
+        carries its own reason and no estimate.
+    """
+
+    checked = _validated_values(values)
+    # Each column is handed over as its own [draw, 1] trajectory, so the single
+    # -chain path reuses exactly the estimator the pooled path uses. No second
+    # implementation of the truncation rule can drift from the first.
+    return tuple(
+        integrated_autocorrelation_time(
+            checked[:, index : index + 1],
+            method=method,
+            min_draws_per_chain=min_draws_per_chain,
+        )
+        for index in range(checked.shape[1])
     )
