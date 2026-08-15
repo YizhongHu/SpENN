@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from tpen.data.batch import ElectronBatch, nuclear_potential, pairwise_distances
+from tpen.data.atomic_configuration import AtomicConfiguration
+from tpen.data.batch import ElectronBatch, electron_nuclear_distances, nuclear_potential, pairwise_distances
 from tpen.physics.hamiltonian import LocalEnergyResult
 
 
@@ -188,6 +189,94 @@ class NucleusNucleusInteraction:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+class ElectronNucleusPotential:
+    """Hamiltonian term for Coulomb electron-nucleus attraction.
+
+    .. math:: V_\\mathrm{en} = -\\sum_{i,A} \\frac{Z_A}{|r_i - R_A|}
+
+    Unlike `ElectronNucleusInteraction`, this term is constructed directly
+    from an `AtomicConfiguration`, which is the sole authority for nuclear
+    geometry: values are computed from `atoms`, not from batch-transported
+    tensors. A batch's own transported nuclear context (`nuclear_positions`,
+    `nuclear_charges`, `atomic_configuration`), when present, must agree with
+    `atoms` exactly, or construction-time authority and pipeline transport
+    have silently diverged and evaluation fails loudly instead of picking one
+    side.
+
+    Parameters
+    ----------
+    atoms : AtomicConfiguration
+        Fixed nuclear geometry authority for this term.
+    eps : float, optional
+        Minimum electron-nucleus distance used for numerical safety.
+    """
+
+    name = "electron_nucleus"
+
+    def __init__(self, atoms: AtomicConfiguration, eps: float = 1e-12) -> None:
+        if not isinstance(atoms, AtomicConfiguration):
+            raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
+        self.atoms = atoms
+        self.eps = eps
+
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        flat = batch.flatten_samples()
+        positions = flat.positions
+        if positions.ndim != 3:
+            raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
+        _validate_batch_atoms_context(self.atoms, flat, term_name=type(self).__name__)
+        atoms = self.atoms.to(device=flat.device, dtype=flat.dtype)
+        distances = electron_nuclear_distances(flat, eps=self.eps, nuclear_positions=atoms.positions)
+        charges = atoms.charges.reshape(1, 1, -1)
+        potential = (charges / distances).sum(dim=-1)
+        value = -potential.sum(dim=1)
+        if value.shape != (positions.shape[0],):
+            raise ValueError(f"electron-nucleus energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
+        return LocalEnergyResult(total=value, terms={self.name: value})
+
+
+class NucleusNucleusPotential:
+    r"""Hamiltonian term for Born--Oppenheimer nuclear repulsion.
+
+    .. math:: V_\mathrm{nn} = \sum_{A<B} \frac{Z_A Z_B}{|R_A - R_B|}
+
+    Unlike `NucleusNucleusInteraction`, this term is constructed directly
+    from an `AtomicConfiguration`, which is the sole authority for nuclear
+    geometry: the pairwise sum is computed once from `atoms` and broadcast
+    across the batch. A batch's own transported nuclear context, when
+    present, must agree with `atoms` exactly, or evaluation fails loudly.
+
+    Parameters
+    ----------
+    atoms : AtomicConfiguration
+        Fixed nuclear geometry authority for this term.
+    """
+
+    name = "nucleus_nucleus"
+
+    def __init__(self, atoms: AtomicConfiguration) -> None:
+        if not isinstance(atoms, AtomicConfiguration):
+            raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
+        self.atoms = atoms
+
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        """Return the pairwise nuclear repulsion for each batch sample."""
+
+        flat = batch.flatten_samples()
+        _validate_batch_atoms_context(self.atoms, flat, term_name=type(self).__name__)
+        atoms = self.atoms.to(device=flat.device, dtype=flat.dtype)
+        n_nuclei = atoms.n_nuclei
+        if n_nuclei < 2:
+            pair_sum = torch.zeros((), device=flat.device, dtype=flat.dtype)
+        else:
+            distances = torch.linalg.norm(atoms.positions.unsqueeze(1) - atoms.positions.unsqueeze(0), dim=-1)
+            pair_mask = torch.triu(torch.ones((n_nuclei, n_nuclei), device=flat.device, dtype=torch.bool), diagonal=1)
+            pair_values = atoms.charges.unsqueeze(1) * atoms.charges.unsqueeze(0) / distances
+            pair_sum = pair_values[pair_mask].sum()
+        value = pair_sum.expand(flat.batch_size)
+        return LocalEnergyResult(total=value, terms={self.name: value})
+
+
 def _require_nuclear_context(batch: ElectronBatch) -> None:
     """Require the typed nuclear context owned by an electron batch."""
 
@@ -197,9 +286,47 @@ def _require_nuclear_context(batch: ElectronBatch) -> None:
         raise ValueError("ElectronNucleusInteraction requires batch.nuclear_charges")
 
 
+def _validate_batch_atoms_context(atoms: AtomicConfiguration, batch: ElectronBatch, *, term_name: str) -> None:
+    """Require any transported nuclear context on `batch` to agree with `atoms`.
+
+    `atoms` is the sole construction-time authority; this only guards against
+    the batch's own (optional) transported nuclear tensors or typed
+    `atomic_configuration` reference silently diverging from it.
+    """
+
+    if batch.atomic_configuration is not None:
+        is_close, _ = atoms.compare(batch.atomic_configuration)
+        if not is_close:
+            raise ValueError(f"{term_name} atoms must agree exactly with batch.atomic_configuration")
+    if batch.nuclear_positions is not None:
+        positions = batch.nuclear_positions
+        reference = atoms.positions.to(device=positions.device, dtype=positions.dtype)
+        if positions.ndim == 2:
+            candidate = positions
+        else:
+            candidate = positions[0]
+            if not torch.all(positions == candidate.unsqueeze(0)):
+                raise ValueError(f"{term_name} requires batch.nuclear_positions constant across the batch")
+        if candidate.shape != reference.shape or not torch.equal(candidate, reference):
+            raise ValueError(f"{term_name} atoms must agree exactly with batch.nuclear_positions")
+    if batch.nuclear_charges is not None:
+        charges = batch.nuclear_charges
+        reference = atoms.charges.to(device=charges.device, dtype=charges.dtype)
+        if charges.ndim == 1:
+            candidate = charges
+        else:
+            candidate = charges[0]
+            if not torch.all(charges == candidate.unsqueeze(0)):
+                raise ValueError(f"{term_name} requires batch.nuclear_charges constant across the batch")
+        if candidate.shape != reference.shape or not torch.equal(candidate, reference):
+            raise ValueError(f"{term_name} atoms must agree exactly with batch.nuclear_charges")
+
+
 __all__ = [
     "ElectronElectronInteraction",
     "ElectronNucleusInteraction",
+    "ElectronNucleusPotential",
     "HarmonicTrap",
     "NucleusNucleusInteraction",
+    "NucleusNucleusPotential",
 ]
