@@ -90,7 +90,17 @@ def _summarize_total_energy(
     *,
     quantiles: Sequence[float],
 ) -> dict[str, JsonScalar]:
-    """Summarize finite local-energy samples with VMC-compatible metric names."""
+    """Summarize finite local-energy samples with VMC-compatible metric names.
+
+    Notes
+    -----
+    ``energy_stderr`` is an **IID-only** standard error, matching
+    `tpen.training.vmc.vmc_objective` by design since the metric names are
+    shared. It ignores serial correlation between MCMC walkers and understates
+    the true uncertainty by roughly ``sqrt(tau_int)``. Do not reinterpret it as
+    an MCSE; the correlation-aware quantity comes from
+    :func:`tpen.statistics.produce_trajectory_statistics`.
+    """
 
     finite_mask = torch.isfinite(local_energy)
     n_total = int(local_energy.numel())
