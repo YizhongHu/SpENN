@@ -70,6 +70,10 @@ class MetropolisSampler(nn.Module):
     n_up, n_down : int or None, optional
         Spin partition. When both are given, walkers are initialized with the
         corresponding ``+1``/``-1`` spin labels.
+    nuclear_positions : torch.Tensor or None, optional
+        Fixed nuclear coordinates with shape ``[n_nuclei, spatial_dim]``.
+    nuclear_charges : torch.Tensor or None, optional
+        Fixed nuclear charges with shape ``[n_nuclei]``.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
@@ -89,6 +93,8 @@ class MetropolisSampler(nn.Module):
         spatial_dim: int = 3,
         n_up: int | None = None,
         n_down: int | None = None,
+        nuclear_positions: torch.Tensor | None = None,
+        nuclear_charges: torch.Tensor | None = None,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
@@ -104,8 +110,14 @@ class MetropolisSampler(nn.Module):
         self.spatial_dim = spatial_dim
         self.n_up = n_up
         self.n_down = n_down
-        self.initial_scale = initial_scale
         self.dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
+        self.nuclear_positions, self.nuclear_charges = _fixed_nuclear_context(
+            nuclear_positions,
+            nuclear_charges,
+            spatial_dim=spatial_dim,
+            dtype=self.dtype,
+        )
+        self.initial_scale = initial_scale
         self.acceptance_rate = 0.0
         self.last_metrics: dict[str, float] = {}
 
@@ -166,7 +178,16 @@ class MetropolisSampler(nn.Module):
             device=self._generator_device,
             dtype=self.dtype,
         )
-        return Walkers(positions=positions, spins=spins)
+        return Walkers(
+            positions=positions,
+            spins=spins,
+            nuclear_positions=None
+            if self.nuclear_positions is None
+            else self.nuclear_positions.to(device=self._generator_device, dtype=self.dtype),
+            nuclear_charges=None
+            if self.nuclear_charges is None
+            else self.nuclear_charges.to(device=self._generator_device, dtype=self.dtype),
+        )
 
     def reset(self, n_walkers: int | None = None, device=None) -> Walkers:
         """Re-seed the generator and start a fresh, un-burned-in chain.
@@ -249,7 +270,13 @@ class MetropolisSampler(nn.Module):
         if current_logabs is None or current_sign is None:
             current_logabs, current_sign = self._evaluate(model, walkers)
         proposals, log_q_ratio = self._propose(model, walkers)
-        proposal_walkers = Walkers(positions=proposals, spins=walkers.spins, aux=dict(walkers.aux))
+        proposal_walkers = Walkers(
+            positions=proposals,
+            spins=walkers.spins,
+            nuclear_positions=walkers.nuclear_positions,
+            nuclear_charges=walkers.nuclear_charges,
+            aux=dict(walkers.aux),
+        )
         proposed_logabs, proposed_sign = self._evaluate(model, proposal_walkers)
         log_accept_ratio = torch.nan_to_num(2.0 * (proposed_logabs - current_logabs) + log_q_ratio, nan=-torch.inf)
         log_accept = torch.clamp(log_accept_ratio, max=0.0)
@@ -276,6 +303,8 @@ class MetropolisSampler(nn.Module):
             logabs=logabs.detach(),
             sign=sign.detach(),
             spins=None if walkers.spins is None else walkers.spins.detach(),
+            nuclear_positions=None if walkers.nuclear_positions is None else walkers.nuclear_positions.detach(),
+            nuclear_charges=None if walkers.nuclear_charges is None else walkers.nuclear_charges.detach(),
             aux={
                 **walkers.aux,
                 "accepted": accepted.detach(),
@@ -405,6 +434,38 @@ class MetropolisSampler(nn.Module):
         self._walkers = None if walkers is None else walkers.to(device=self._generator_device)
         self._has_burned_in = bool(state["has_burned_in"])
         self.acceptance_rate = float(state.get("acceptance_rate", 0.0))
+
+
+def _fixed_nuclear_context(
+    nuclear_positions: torch.Tensor | None,
+    nuclear_charges: torch.Tensor | None,
+    *,
+    spatial_dim: int,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Validate immutable nuclear metadata owned by a sampler.
+
+    Nuclear positions and charges form one atomic context: callers either
+    provide both tensors or neither. The sampler keeps this canonical CPU
+    representation and materializes it on the persistent-chain device when it
+    creates walkers.
+    """
+
+    if (nuclear_positions is None) != (nuclear_charges is None):
+        raise ValueError("MetropolisSampler nuclear_positions and nuclear_charges must be provided together")
+    if nuclear_positions is None:
+        return None, None
+    positions = torch.as_tensor(nuclear_positions, dtype=dtype, device="cpu").detach().clone()
+    charges = torch.as_tensor(nuclear_charges, dtype=dtype, device="cpu").detach().clone()
+    if positions.ndim != 2 or positions.shape[1] != spatial_dim:
+        raise ValueError("MetropolisSampler nuclear_positions must have shape [n_nuclei, spatial_dim]")
+    if charges.ndim != 1:
+        raise ValueError("MetropolisSampler nuclear_charges must have shape [n_nuclei]")
+    if positions.shape[0] != charges.shape[0]:
+        raise ValueError("MetropolisSampler nuclear_positions and nuclear_charges must agree on n_nuclei")
+    if not torch.isfinite(positions).all() or not torch.isfinite(charges).all():
+        raise ValueError("MetropolisSampler nuclear context must be finite")
+    return positions, charges
 
 
 def _default_spins(
