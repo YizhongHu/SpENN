@@ -78,6 +78,8 @@ COST_BY_AXIS_COLUMNS = [
     "forward_time_sec_median",
     "backward_time_sec_median",
     "peak_memory_mb_median",
+    "gpu_seconds_median",
+    "n_runs_with_gpu_seconds",
 ]
 
 COST_BY_TASK_COLUMNS = [
@@ -353,7 +355,11 @@ def cost_by_axis_rows(
     *,
     axis_names: Sequence[str],
 ) -> list[dict[str, Any]]:
-    """Return per-(stage, axis, value) medians over ``cost_by_run`` rows."""
+    """Return per-(stage, axis, value) medians over ``cost_by_run`` rows.
+
+    ``gpu_seconds`` is aggregated as supplied by :func:`cost_by_run_row`; it is
+    never recomputed here from ``device_count`` and ``allocated_wall_time_sec``.
+    """
 
     grouped: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for row in cost_rows:
@@ -370,6 +376,7 @@ def cost_by_axis_rows(
     output = []
     for (stage, axis_name, axis_value), rows in sorted(grouped.items()):
         wall = column(rows, "wall_time_sec")
+        gpu_seconds = column(rows, "gpu_seconds")
         output.append(
             {
                 "stage": stage,
@@ -384,6 +391,12 @@ def cost_by_axis_rows(
                 "forward_time_sec_median": _format(_median(column(rows, "mean_forward_time_sec"))),
                 "backward_time_sec_median": _format(_median(column(rows, "mean_backward_time_sec"))),
                 "peak_memory_mb_median": _format(_median(column(rows, "peak_memory_mb"))),
+                "gpu_seconds_median": _format(_median(gpu_seconds)),
+                # A blank cell parses to NaN and is dropped, so a median over two
+                # of nine runs would otherwise be indistinguishable from one over
+                # all nine. ``n_runs`` is the group size; this is how many rows
+                # actually carried a finite ``gpu_seconds``.
+                "n_runs_with_gpu_seconds": str(len(_finite(gpu_seconds))),
             }
         )
     return output

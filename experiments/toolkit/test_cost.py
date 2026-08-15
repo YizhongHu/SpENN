@@ -292,3 +292,51 @@ def test_cost_by_axis_rows_handles_blank_metrics() -> None:
 
     assert rows[0]["wall_time_sec_median"] == ""
     assert rows[0]["n_runs"] == "1"
+
+
+def test_cost_by_axis_rows_rolls_up_gpu_seconds_for_fully_populated_group() -> None:
+    rows = cost_by_axis_rows(
+        [
+            {"stage": "train", "basis": "B00", "gpu_seconds": "400"},
+            {"stage": "train", "basis": "B00", "gpu_seconds": "1200"},
+            {"stage": "train", "basis": "B00", "gpu_seconds": "800"},
+        ],
+        axis_names=["basis"],
+    )
+
+    assert rows[0]["n_runs"] == "3"
+    assert rows[0]["n_runs_with_gpu_seconds"] == "3"
+    assert float(rows[0]["gpu_seconds_median"]) == pytest.approx(800.0)
+
+
+def test_cost_by_axis_rows_counts_only_runs_carrying_gpu_seconds() -> None:
+    rows = cost_by_axis_rows(
+        [
+            {"stage": "train", "basis": "B00", "gpu_seconds": "100"},
+            {"stage": "train", "basis": "B00", "gpu_seconds": ""},
+            {"stage": "train", "basis": "B00", "gpu_seconds": "300"},
+            {"stage": "train", "basis": "B00"},
+        ],
+        axis_names=["basis"],
+    )
+
+    # The median uses only the two finite cells; the count is what tells a reader
+    # the median describes a minority of the group.
+    assert float(rows[0]["gpu_seconds_median"]) == pytest.approx(200.0)
+    assert rows[0]["n_runs"] == "4"
+    assert rows[0]["n_runs_with_gpu_seconds"] == "2"
+    assert int(rows[0]["n_runs_with_gpu_seconds"]) < int(rows[0]["n_runs"])
+
+
+def test_cost_by_axis_rows_reports_zero_gpu_seconds_contributors_when_all_blank() -> None:
+    rows = cost_by_axis_rows(
+        [
+            {"stage": "train", "basis": "B00", "gpu_seconds": ""},
+            {"stage": "train", "basis": "B00", "wall_time_sec": "100"},
+        ],
+        axis_names=["basis"],
+    )
+
+    assert rows[0]["gpu_seconds_median"] == ""
+    assert rows[0]["n_runs_with_gpu_seconds"] == "0"
+    assert rows[0]["n_runs"] == "2"
