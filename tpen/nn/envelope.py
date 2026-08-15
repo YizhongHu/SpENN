@@ -511,7 +511,7 @@ class ElectronNucleusCusp(LogAmplitudeFactor):
         linear-cusp compatibility law.
     """
 
-    def __init__(self, atoms: object, law: ElectronNucleusCuspLaw | None = None) -> None:
+    def __init__(self, atoms: object, law: object = None) -> None:
         super().__init__()
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
