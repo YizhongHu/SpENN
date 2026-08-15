@@ -68,6 +68,71 @@ def test_cost_by_run_row_projects_explicit_timing_provenance() -> None:
     assert {key: row[key] for key in provenance} == provenance
 
 
+def test_cost_by_run_row_derives_gpu_seconds_from_delivered_allocation() -> None:
+    allocation = {
+        "device_name": "NVIDIA A100-SXM4-40GB",
+        "device_count": 4,
+        "allocated_wall_time_sec": 1800.0,
+    }
+
+    row = cost_by_run_row(
+        [],
+        run_id="run-a",
+        attempt_id="A0",
+        stage="train",
+        allocation=allocation,
+    )
+
+    # Delivered facts are echoed, never normalized: the card string in particular
+    # is the delivered device, which can differ from the advertised partition GRES.
+    assert {key: row[key] for key in allocation} == allocation
+    assert float(row["gpu_seconds"]) == pytest.approx(7200.0)
+
+
+def test_cost_by_run_row_without_allocation_leaves_receipt_blank() -> None:
+    row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="train")
+
+    assert row["device_name"] == ""
+    assert row["device_count"] == ""
+    assert row["allocated_wall_time_sec"] == ""
+    assert row["gpu_seconds"] == ""
+
+
+@pytest.mark.parametrize(
+    "allocation",
+    [
+        {"device_count": 4},
+        {"allocated_wall_time_sec": 1800.0},
+        {"device_name": "NVIDIA A100-SXM4-40GB"},
+    ],
+)
+def test_cost_by_run_row_partial_allocation_reports_no_gpu_seconds(allocation) -> None:
+    row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="train", allocation=allocation)
+
+    # Half a receipt must not imply the missing half (e.g. a single device).
+    assert row["gpu_seconds"] == ""
+    assert {key: row[key] for key in allocation} == allocation
+
+
+@pytest.mark.parametrize(
+    ("allocation", "match"),
+    [
+        ({"device_count": 0, "allocated_wall_time_sec": 1800.0}, "device_count"),
+        ({"device_count": -1, "allocated_wall_time_sec": 1800.0}, "device_count"),
+        ({"device_count": 2.5, "allocated_wall_time_sec": 1800.0}, "whole number"),
+        ({"device_count": "four", "allocated_wall_time_sec": 1800.0}, "device_count"),
+        ({"device_count": 4, "allocated_wall_time_sec": 0}, "allocated_wall_time_sec"),
+        ({"device_count": 4, "allocated_wall_time_sec": "30m"}, "allocated_wall_time_sec"),
+        ({"gpu_seconds": 7200.0}, "derived"),
+        ({"devices": 4}, "unsupported allocation field"),
+    ],
+)
+def test_cost_by_run_row_rejects_unusable_allocation(allocation, match: str) -> None:
+    # A broken or misspelled receipt understates cost if it silently blanks.
+    with pytest.raises(ValueError, match=match):
+        cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="train", allocation=allocation)
+
+
 def test_cost_by_run_row_without_metrics_leaves_blanks() -> None:
     row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="validation")
 
