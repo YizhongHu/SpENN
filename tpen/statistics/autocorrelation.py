@@ -267,9 +267,12 @@ def integrated_autocorrelation_time(
     if float(rho[0]) <= 0.0:
         return unresolved("observable has zero pooled variance across all chains")
 
-    # Geyer pairs. Pair m needs lag 2m + 1, so the last usable pair index is
-    # bounded by the largest odd lag available.
-    n_pairs = (n_draws - 1) // 2
+    # Geyer pairs. Pair m spans lags 2m and 2m + 1, so the last complete pair is
+    # bounded by the largest odd lag available, 2m + 1 <= n_draws - 1. That gives
+    # n_draws // 2 pairs: `(n_draws - 1) // 2` silently discards the final
+    # complete pair on even draw counts, which shortens the window examined and
+    # can turn a resolvable plateau into a spurious "no plateau".
+    n_pairs = n_draws // 2
     if n_pairs < 1:
         return unresolved(f"insufficient draws to form a Geyer pair: {n_draws} per chain")
     pairs = rho[: 2 * n_pairs].reshape(n_pairs, 2).sum(dim=1)

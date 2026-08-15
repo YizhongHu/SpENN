@@ -47,10 +47,13 @@ def _ar1_trajectory(
         generator=generator,
         dtype=torch.float64,
     )
-    state = torch.zeros(n_walkers, dtype=torch.float64)
+    # Unit-variance initialization and innovation scaling put the process in
+    # its stationary Gaussian law before the conservative burn-in begins.
+    state = torch.randn(n_walkers, generator=generator, dtype=torch.float64)
+    innovation_scale = (1.0 - phi**2) ** 0.5
     retained: list[torch.Tensor] = []
     for draw_index, innovation in enumerate(innovations):
-        state = phi * state + innovation
+        state = phi * state + innovation_scale * innovation
         if draw_index >= burn_in:
             retained.append(state.clone())
     return torch.stack(retained)
@@ -211,10 +214,29 @@ def test_short_strongly_autocorrelated_chain_reports_no_plateau() -> None:
     values = torch.tensor([1.0, -1.0] * 8, dtype=torch.float64).reshape(-1, 1)
     rho = pooled_autocorrelation(values)
 
-    assert abs(rho[1].item()) == pytest.approx(15.0 / 16.0)
+    assert rho[1].item() == pytest.approx(-15.0 / 16.0)
     reason = _assert_unresolved(integrated_autocorrelation_time(values))
     assert "plateau" in reason.lower()
     assert "short" in reason.lower()
+
+
+def test_even_draw_count_uses_the_final_complete_geyer_pair() -> None:
+    """Let the last odd lag terminate the positive sequence for an even length."""
+    # For this centred 16-draw sequence, the unnormalised Geyer pair sums are
+    # [13, 1, 1, 1, 1, 1, 1, -3] and gamma_0 is 32. Thus the final complete
+    # pair (lags 14 and 15) is the first non-positive pair; omitting it would
+    # falsely report no plateau even though all required values are available.
+    values = torch.tensor(
+        [3.0, *([-1.0, 1.0] * 7), -3.0],
+        dtype=torch.float64,
+    ).reshape(-1, 1)
+
+    result = integrated_autocorrelation_time(values)
+
+    assert result.tau_int == pytest.approx(3.0 / 16.0)
+    assert result.plateau_reached is True
+    assert result.pair_count == 7
+    assert result.truncation_lag == 13
 
 
 def test_integrated_autocorrelation_rejects_both_estimate_and_reason() -> None:

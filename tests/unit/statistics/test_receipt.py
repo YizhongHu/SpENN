@@ -43,7 +43,7 @@ def _receipt(
     plateau: PlateauDiagnostics | None | object = _UNSET,
     mixing: MixingDiagnostics | None | object = _UNSET,
     payload: TrajectoryStatisticsPayload | None | object = _UNSET,
-    reason: str | None = None,
+    reason: str | None | object = _UNSET,
 ) -> TrajectoryStatisticsReceipt:
     """Build a receipt with explicit status-dependent defaults."""
 
@@ -56,18 +56,21 @@ def _receipt(
             if payload is _UNSET
             else payload
         )
+        # `_UNSET` and an explicit None must stay distinguishable: `reason or ...`
+        # would substitute a default and make the missing-reason case untestable.
+        reason = None if reason is _UNSET else reason
     elif status == "unresolved":
         shape = TrajectoryShape(2, 8, 3, 1) if shape is _UNSET else shape
         plateau = None if plateau is _UNSET else plateau
         mixing = None if mixing is _UNSET else mixing
         payload = None if payload is _UNSET else payload
-        reason = reason or "no plateau"
+        reason = "no plateau" if reason is _UNSET else reason
     else:
         shape = None if shape is _UNSET else shape
         plateau = None if plateau is _UNSET else plateau
         mixing = None if mixing is _UNSET else mixing
         payload = None if payload is _UNSET else payload
-        reason = reason or "trajectory was not collected"
+        reason = "trajectory was not collected" if reason is _UNSET else reason
     return TrajectoryStatisticsReceipt(
         identity=identity or _identity(),
         status=status,

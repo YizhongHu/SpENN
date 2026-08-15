@@ -68,7 +68,9 @@ def test_collection_preserves_draw_axis_and_order() -> None:
         n_draws=3,
     )
 
-    expected = torch.tensor([[0.0, 1.0], [10.0, 11.0], [20.0, 21.0]])
+    # float64 on purpose: ObservableTrajectory promotes every trajectory so the
+    # lag sums downstream do not lose their tail to float32 rounding.
+    expected = torch.tensor([[0.0, 1.0], [10.0, 11.0], [20.0, 21.0]], dtype=torch.float64)
     assert trajectory.values.shape == (3, 2)
     torch.testing.assert_close(trajectory.values, expected)
 
@@ -87,7 +89,10 @@ def test_discard_draws_drops_only_leading_draws() -> None:
     )
 
     assert len(sampler.calls) == 4
-    torch.testing.assert_close(trajectory.values, torch.tensor([[20.0, 21.0], [30.0, 31.0]]))
+    torch.testing.assert_close(
+        trajectory.values,
+        torch.tensor([[20.0, 21.0], [30.0, 31.0]], dtype=torch.float64),
+    )
     assert trajectory.burn_in_draws == 2
 
 
