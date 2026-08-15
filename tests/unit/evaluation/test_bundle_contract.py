@@ -17,6 +17,7 @@ def test_evaluation_bundle_fields_are_intentional() -> None:
         "wavefunction",
         "local_energy",
         "derivatives",
+        "electron_nucleus_radial",
         "trace",
         "transform",
         "trace_comparison",
