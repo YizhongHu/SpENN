@@ -157,11 +157,21 @@ def test_h2_train_targets_instantiate_and_consume_the_same_nuclear_context() -> 
     terms = instantiate(config.hamiltonian_terms)
     assert sampler.nuclear_positions is not None
     assert sampler.nuclear_charges is not None
-    assert torch.equal(
+    # The config's `_target_: torch.tensor` nodes (same generic pattern as
+    # he-v1) build at torch's default float32 dtype before this later float64
+    # cast, so a bond-length literal like 0.7 (not exactly representable in
+    # binary) survives only to float32 precision. He's 0.0/2.0 literals never
+    # exposed this because they round exactly in float32; assert_close with a
+    # float32-precision tolerance instead of exact equality.
+    torch.testing.assert_close(
         sampler.nuclear_positions,
         torch.tensor([[-0.7, 0.0, 0.0], [0.7, 0.0, 0.0]], dtype=torch.float64),
+        atol=1e-6,
+        rtol=0,
     )
-    assert torch.equal(sampler.nuclear_charges, torch.tensor([1.0, 1.0], dtype=torch.float64))
+    torch.testing.assert_close(
+        sampler.nuclear_charges, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-6, rtol=0
+    )
     batch = ElectronBatch(
         positions=torch.tensor([[[0.2, 0.0, 0.0], [-0.2, 0.0, 0.0]]], dtype=torch.float64),
         spins=torch.tensor([[1, -1]]),
