@@ -80,6 +80,7 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     assert evaluation["load"]["strict"] is True
     task = evaluation["evaluation_tasks"]["mcmc_energy"]
     assert task["generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"
+    assert task["summaries"][0]["_target_"] == "tpen.evaluation.summaries.LocalEnergySummary"
     reference = task["summaries"][-1]
     assert reference == {
         "_target_": "tpen.evaluation.summaries.ReferenceEnergySummary",
@@ -87,11 +88,72 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     }
 
 
+def test_he_eval_registers_atom_owned_radial_profiles_after_typed_contracts() -> None:
+    config = _load(EVAL)
+    tasks = config["evaluation_tasks"]
+    radial = tasks["he_radial_profiles"]
+    generator = radial["generator"]
+
+    assert generator["_target_"] == "tpen.evaluation.generators.HeliumRadialGridGenerator"
+    assert all(float(radius) > 0.0 for radius in generator["cusp_radii"])
+    assert max(generator["cusp_radii"]) < min(generator["tail_radii"])
+    assert generator["nuclear_positions"] == {
+        "_target_": "torch.tensor",
+        "data": "${system.nuclei.positions}",
+    }
+    assert generator["nuclear_charges"] == {
+        "_target_": "torch.tensor",
+        "data": "${system.nuclei.charges}",
+    }
+    assert radial["calculators"] == [
+        {
+            "_target_": "tpen.evaluation.calculators.ElectronNucleusRadialCalculator",
+            "chunk_size": 32,
+        }
+    ]
+    assert [summary["_target_"] for summary in radial["summaries"]] == [
+        "tpen.evaluation.summaries.ElectronNucleusCuspSummary",
+        "tpen.evaluation.summaries.ElectronNucleusTailSummary",
+        "tpen.evaluation.summaries.ElectronNucleusRadialProfileWriter",
+    ]
+    assert "Hooke" not in str(radial)
+
+
+def test_he_eval_separates_spatial_exchange_from_label_antisymmetry() -> None:
+    config = _load(EVAL)
+    tasks = config["evaluation_tasks"]
+    spatial = tasks["spatial_exchange_symmetry"]
+
+    assert spatial["generator"]["_target_"] == "tpen.evaluation.generators.ExchangeOrbitGenerator"
+    assert spatial["generator"]["exchange"] == "opposite_spin_pair"
+    assert spatial["calculators"] == [
+        {"_target_": "tpen.evaluation.calculators.SpatialExchangeSymmetryCalculator"}
+    ]
+    assert tasks["full_model_antisymmetry"]["calculators"] == [
+        {"_target_": "tpen.evaluation.calculators.FullModelAntisymmetryCalculator"}
+    ]
+
+
+def test_he_eval_external_chain_statistics_remain_explicitly_unwired() -> None:
+    config = _load(EVAL)
+    text = str(config)
+
+    assert "tau_int" not in text
+    assert "ess" not in text.lower()
+    assert "external" not in text.lower()
+    assert not any("Timing" in callback["_target_"] for callback in config["callbacks"])
+
+
 def test_he_eval_invariant_tasks_use_mcmc_batches_that_preserve_nuclear_context() -> None:
     config = _load(EVAL)
-    for name in ("full_model_antisymmetry", "trace_equivariance"):
+    expected_generators = {
+        "full_model_antisymmetry": "tpen.evaluation.generators.PermutationOrbitGenerator",
+        "spatial_exchange_symmetry": "tpen.evaluation.generators.ExchangeOrbitGenerator",
+        "trace_equivariance": "tpen.evaluation.generators.PermutationOrbitGenerator",
+    }
+    for name, expected_generator in expected_generators.items():
         generator = config["evaluation_tasks"][name]["generator"]
-        assert generator["_target_"] == "tpen.evaluation.generators.PermutationOrbitGenerator"
+        assert generator["_target_"] == expected_generator
         assert generator["base_generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"
 
 

@@ -56,7 +56,9 @@ evaluator:
   task_failure_policy: ${evaluation.task_failure_policy}
   tasks:
     - ${evaluation_tasks.mcmc_energy}
+    - ${evaluation_tasks.he_radial_profiles}
     - ${evaluation_tasks.full_model_antisymmetry}
+    - ${evaluation_tasks.spatial_exchange_symmetry}
     - ${evaluation_tasks.trace_equivariance}
 
 model:
@@ -150,6 +152,30 @@ evaluation_tasks:
       - _target_: tpen.evaluation.summaries.LocalEnergySummary
       - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
         reference_energy: ${system.reference_energy}
+  he_radial_profiles:
+    name: he_radial_profiles
+    namespace: ${evaluation.namespace}/he_radial_profiles
+    output_dir: ${run.dir}/he_radial_profiles
+    generator:
+      _target_: tpen.evaluation.generators.HeliumRadialGridGenerator
+      cusp_radii: [0.0001, 0.0002, 0.0005, 0.001]
+      tail_radii: [4.0, 6.0, 8.0]
+      spectator_radius: 1.0
+      n_directions: 3
+      nuclear_positions:
+        _target_: torch.tensor
+        data: ${system.nuclei.positions}
+      nuclear_charges:
+        _target_: torch.tensor
+        data: ${system.nuclei.charges}
+    calculators:
+      - _target_: tpen.evaluation.calculators.ElectronNucleusRadialCalculator
+        chunk_size: 32
+    summaries:
+      - _target_: tpen.evaluation.summaries.ElectronNucleusCuspSummary
+        max_fit_points: 4
+      - _target_: tpen.evaluation.summaries.ElectronNucleusTailSummary
+      - _target_: tpen.evaluation.summaries.ElectronNucleusRadialProfileWriter
   full_model_antisymmetry:
     name: full_model_antisymmetry
     namespace: ${evaluation.namespace}/full_model_antisymmetry
@@ -165,6 +191,22 @@ evaluation_tasks:
         max_samples: 8
     calculators:
       - _target_: tpen.evaluation.calculators.FullModelAntisymmetryCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.TransformConsistencySummary
+  spatial_exchange_symmetry:
+    name: spatial_exchange_symmetry
+    namespace: ${evaluation.namespace}/spatial_exchange_symmetry
+    output_dir: ${run.dir}/spatial_exchange_symmetry
+    generator:
+      _target_: tpen.evaluation.generators.ExchangeOrbitGenerator
+      exchange: opposite_spin_pair
+      base_generator:
+        _target_: tpen.evaluation.generators.MCMCGenerator
+        sampler: ${evaluation_sampler}
+        seed: ${evaluation.seed}
+        max_samples: 8
+    calculators:
+      - _target_: tpen.evaluation.calculators.SpatialExchangeSymmetryCalculator
     summaries:
       - _target_: tpen.evaluation.summaries.TransformConsistencySummary
   trace_equivariance:
