@@ -112,7 +112,7 @@ class RotationOrbitGenerator:
 
 
 class ExchangeOrbitGenerator:
-    """Generate paired original/spatially exchanged Hooke configurations."""
+    """Generate paired original/spatially exchanged configurations."""
 
     name = "exchange_orbit"
 
