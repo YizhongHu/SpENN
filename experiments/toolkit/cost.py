@@ -57,6 +57,8 @@ COST_BY_RUN_BASE_COLUMNS = [
     "allocated_wall_time_sec",
     "gpu_seconds",
     "n_steps",
+    "warmup_steps",
+    "n_steps_measured",
     "mean_step_time_sec",
     "median_step_time_sec",
     "p95_step_time_sec",
@@ -143,6 +145,33 @@ def _per_step_values(metrics_rows: Sequence[Mapping[str, Any]], namespace: str, 
     ]
 
 
+def _warmup_count(value: Any) -> int:
+    """Return the number of leading samples to exclude, rejecting broken input.
+
+    A negative, fractional, or non-numeric warmup count cannot describe a
+    sample position, and silently coercing it would report an aggregate over a
+    window nobody asked for.
+    """
+    parsed = _as_float(value)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        raise ValueError(f"warmup_steps must be a non-negative finite number, got {value!r}")
+    if parsed != int(parsed):
+        raise ValueError(f"warmup_steps must be a whole number, got {value!r}")
+    return int(parsed)
+
+
+def _steady_state(values: Sequence[float], warmup_steps: int) -> list[float]:
+    """Return ``values`` with the first ``warmup_steps`` recorded samples dropped.
+
+    Warmup is defined by POSITION in metrics-file order, never by comparing the
+    ``step`` field against a threshold: cadences differ on whether the first
+    recorded step is 0 or 1, so a positional rule is unambiguous under both.
+    Over-exclusion is not an error; it yields an empty window, which surfaces as
+    blank aggregates next to an explicit zero measured-step count.
+    """
+    return list(values[warmup_steps:])
+
+
 def _allocated_quantity(field: str, value: Any) -> float:
     """Return a delivered allocation quantity, rejecting unusable receipts.
 
@@ -198,6 +227,7 @@ def cost_by_run_row(
     axes: Mapping[str, Any] | None = None,
     provenance: Mapping[str, Any] | None = None,
     allocation: Mapping[str, Any] | None = None,
+    warmup_steps: int = 0,
 ) -> dict[str, Any]:
     """Return one ``cost_by_run.csv`` row projected from run metrics rows.
 
@@ -215,10 +245,19 @@ def cost_by_run_row(
         Optional delivered-hardware receipt (``device_name``, ``device_count``,
         ``allocated_wall_time_sec``) echoed verbatim, from which ``gpu_seconds``
         is derived. A present-yet-unusable receipt raises rather than blanking.
+    warmup_steps
+        Number of leading recorded samples excluded from every ``train/perf``
+        per-step series before aggregation, so the reported statistics describe
+        steady state rather than compile and cache-warming cost. Counted by
+        position in metrics-file order, not by ``step`` value. ``n_steps`` still
+        reports the total recorded samples; ``n_steps_measured`` reports how
+        many survived. A negative, fractional, or non-numeric value raises.
     """
 
+    warmup = _warmup_count(warmup_steps)
     metric_values = metric_map(metrics_rows)
     step_times = _per_step_values(metrics_rows, "train/perf", "step_time_sec")
+    measured_step_times = _steady_state(step_times, warmup)
     row: dict[str, Any] = {
         "run_id": run_id,
         "attempt_id": attempt_id,
@@ -228,9 +267,12 @@ def cost_by_run_row(
         "wall_time_sec": metric_values.get("runtime/wall_time_sec", ""),
         "peak_memory_mb": metric_values.get("runtime/peak_memory_mb", ""),
         "n_steps": str(len(step_times)) if step_times else "",
-        "mean_step_time_sec": _format(_mean(step_times)),
-        "median_step_time_sec": _format(_median(step_times)),
-        "p95_step_time_sec": _format(_quantile(step_times, 0.95)),
+        "warmup_steps": str(warmup),
+        # Blank only when nothing was recorded; an exhausted window reads "0".
+        "n_steps_measured": str(len(measured_step_times)) if step_times else "",
+        "mean_step_time_sec": _format(_mean(measured_step_times)),
+        "median_step_time_sec": _format(_median(measured_step_times)),
+        "p95_step_time_sec": _format(_quantile(measured_step_times, 0.95)),
         **{
             key: (provenance or {}).get(key, "")
             for key in ("timing_mode", "hostname", "slurm_job_id", "device_uuid")
@@ -239,7 +281,8 @@ def cost_by_run_row(
     }
     for phase in TRAIN_PHASES:
         values = _per_step_values(metrics_rows, "train/perf", f"{phase}_time_sec")
-        row[f"mean_{phase}_time_sec"] = _format(_mean(values))
+        # Same exclusion as the total step series, so phase means stay comparable.
+        row[f"mean_{phase}_time_sec"] = _format(_mean(_steady_state(values, warmup)))
     for axis, value in (axes or {}).items():
         row[str(axis)] = value
     return row
