@@ -26,12 +26,21 @@ from tpen.nn.envelope import (
     NuclearFactorizedEnvelope,
 )
 from tpen.nn.equivariant_mixing import EquivariantMixing
+from tpen.nn.h2_nuclear_confinement import (
+    H2NuclearConfinement,
+    H2NuclearConfinementEvaluation,
+    H2NuclearFactorizedEnvelope,
+)
 from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.mlp import MLP
 from tpen.nn.normalization import RMSNorm
 from tpen.nn.path_aggregation import PathAggregation
 from tpen.nn.spenn_layer import TPENLayer
-from tpen.nn.spenn_wave_function import NuclearFactorizedWavefunctionParts, TPENWaveFunction
+from tpen.nn.spenn_wave_function import (
+    H2NuclearFactorizedWavefunctionParts,
+    NuclearFactorizedWavefunctionParts,
+    TPENWaveFunction,
+)
 from tpen.nn.tpen_stack import TPENStack
 from tpen.nn.update import ResidualUpdater, Updater
 
@@ -51,6 +60,10 @@ __all__ = [
     "HookeGaussianConfinement",
     "HookeHermiteBasis",
     "HookeOrbitalBasis",
+    "H2NuclearConfinement",
+    "H2NuclearConfinementEvaluation",
+    "H2NuclearFactorizedEnvelope",
+    "H2NuclearFactorizedWavefunctionParts",
     "MLP",
     "NuclearConfinement",
     "NuclearConfinementEvaluation",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 import torch
 from torch import nn
@@ -16,7 +18,9 @@ from tpen.nn import (
     GaussianConfinement,
     HookeGaussianConfinement,
     NuclearConfinement,
+    NuclearConfinementEvaluation,
     NuclearFactorizedEnvelope,
+    NuclearFactorizedWavefunctionParts,
     TPENWaveFunction,
 )
 from tests.helpers.equivariance import assert_equivariant_all
@@ -208,6 +212,64 @@ def test_nuclear_confinement_typed_permutation_leaves_origin_derivative_fixed() 
     torch.testing.assert_close(permuted.origin_radial_derivative, evaluation.origin_radial_derivative)
     close, metrics = evaluation.compare(permuted.permute(Permutation((1, 0))))
     assert close, metrics
+
+
+def test_legacy_he_nuclear_types_formula_and_factorization_remain_bitwise_exact() -> None:
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[3.0, 4.0, 0.0], [0.0, 0.0, 2.0]], [[4.0, 0.0, 0.0], [1.0, 0.0, 2.0]]],
+            dtype=torch.float64,
+        ),
+        nuclear_positions=torch.tensor(
+            [[[0.0, 0.0, 0.0]], [[1.0, 0.0, 0.0]]], dtype=torch.float64
+        ),
+        nuclear_charges=torch.tensor([[2.0], [2.0]], dtype=torch.float64),
+    )
+    factor = NuclearConfinement()
+    evaluation = factor.evaluate(batch)
+
+    assert type(evaluation) is NuclearConfinementEvaluation
+    assert tuple(field.name for field in fields(NuclearConfinementEvaluation)) == (
+        "distance",
+        "value",
+        "radial_first_derivative",
+        "radial_second_derivative",
+        "origin_radial_derivative",
+    )
+    assert torch.equal(
+        evaluation.distance,
+        torch.tensor([[[5.0], [2.0]], [[3.0], [2.0]]], dtype=torch.float64),
+    )
+    assert torch.equal(
+        evaluation.value,
+        torch.tensor([[[-10.0], [-4.0]], [[-6.0], [-4.0]]], dtype=torch.float64),
+    )
+    assert torch.equal(
+        evaluation.radial_first_derivative,
+        torch.tensor([[[-2.0], [-2.0]], [[-2.0], [-2.0]]], dtype=torch.float64),
+    )
+    assert torch.equal(evaluation.radial_second_derivative, torch.zeros(2, 2, 1, dtype=torch.float64))
+    assert torch.equal(evaluation.origin_radial_derivative, torch.tensor([[-2.0], [-2.0]], dtype=torch.float64))
+    assert torch.equal(factor(batch), torch.tensor([-14.0, -10.0], dtype=torch.float64))
+    assert factor.state_dict() == {}
+
+    model = TPENWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=ConstantReadout(),
+        nuclear_envelope=NuclearFactorizedEnvelope(AdditiveEnvelope(), factor),
+    )
+    parts = model.nuclear_factorization(batch)
+    assert type(parts) is NuclearFactorizedWavefunctionParts
+    assert tuple(field.name for field in fields(NuclearFactorizedWavefunctionParts)) == (
+        "regular_logabs",
+        "nuclear",
+        "sign",
+        "phase",
+        "aux",
+    )
+    assert torch.equal(parts.as_output().logabs, torch.tensor([-14.0, -10.0], dtype=torch.float64))
+    assert torch.equal(model(batch).logabs, torch.tensor([-14.0, -10.0], dtype=torch.float64))
 
 
 def test_factorized_nuclear_wavefunction_keeps_atom_ownership_explicit() -> None:
