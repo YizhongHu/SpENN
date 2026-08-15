@@ -49,6 +49,78 @@ def test_cost_by_run_row_projects_runtime_and_step_statistics() -> None:
     assert row["lr"] == "3e-4"
 
 
+def test_cost_by_run_row_default_warmup_excludes_nothing() -> None:
+    default = cost_by_run_row(_train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train")
+    explicit = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=0
+    )
+
+    assert default == explicit
+    assert default["warmup_steps"] == "0"
+    assert default["n_steps"] == default["n_steps_measured"] == "3"
+    assert float(default["mean_step_time_sec"]) == pytest.approx(2.0)
+
+
+def test_cost_by_run_row_warmup_excludes_leading_samples() -> None:
+    row = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=1
+    )
+
+    # Dropping the first recorded sample leaves step times [3.0, 2.0].
+    assert row["n_steps"] == "3"
+    assert row["n_steps_measured"] == "2"
+    assert row["warmup_steps"] == "1"
+    assert float(row["mean_step_time_sec"]) == pytest.approx(2.5)
+    assert float(row["median_step_time_sec"]) == pytest.approx(2.5)
+    assert float(row["p95_step_time_sec"]) == pytest.approx(2.95)
+
+
+def test_cost_by_run_row_warmup_excludes_phase_series_too() -> None:
+    row = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=1
+    )
+
+    # sampling [0.4, 1.2, 0.8] -> [1.2, 0.8]; forward [0.2, 0.6, 0.4] -> [0.6, 0.4].
+    assert float(row["mean_sampling_time_sec"]) == pytest.approx(1.0)
+    assert float(row["mean_forward_time_sec"]) == pytest.approx(0.5)
+
+
+def test_cost_by_run_row_over_exclusion_blanks_aggregates() -> None:
+    row = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=5
+    )
+
+    # Blank aggregates beside an explicit zero count are visible; an unfiltered
+    # mean silently substituted for the empty window would not be.
+    assert row["n_steps"] == "3"
+    assert row["n_steps_measured"] == "0"
+    assert row["mean_step_time_sec"] == ""
+    assert row["median_step_time_sec"] == ""
+    assert row["p95_step_time_sec"] == ""
+    assert row["mean_sampling_time_sec"] == ""
+
+
+@pytest.mark.parametrize(
+    ("warmup_steps", "match"),
+    [
+        (-1, "non-negative"),
+        (1.5, "whole number"),
+        ("two", "non-negative"),
+        (None, "non-negative"),
+    ],
+)
+def test_cost_by_run_row_rejects_unusable_warmup_steps(warmup_steps, match: str) -> None:
+    # A broken warmup parameter must not silently report a window nobody asked for.
+    with pytest.raises(ValueError, match=match):
+        cost_by_run_row(
+            _train_metrics_rows(),
+            run_id="run-a",
+            attempt_id="A0",
+            stage="train",
+            warmup_steps=warmup_steps,
+        )
+
+
 def test_cost_by_run_row_projects_explicit_timing_provenance() -> None:
     provenance = {
         "timing_mode": "device_event",
