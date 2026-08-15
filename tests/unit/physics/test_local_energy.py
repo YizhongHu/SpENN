@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.permutation import Permutation
 from tpen.nn import ElectronElectronCusp
 from tpen.physics.hamiltonian import (
     LocalEnergyResult,
@@ -82,7 +83,7 @@ def test_potential_terms_match_direct_hand_calculations() -> None:
     )
     nuclei = torch.tensor([[0.0, -1.0], [2.0, 0.0]], dtype=torch.float64)
     charges = torch.tensor([2.0, 0.5], dtype=torch.float64)
-    batch = ElectronBatch(positions=positions)
+    batch = ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
 
     harmonic = HarmonicTrap(omega=1.5).local_energy(None, batch).total
     repulsion = ElectronElectronInteraction().local_energy(None, batch).total
@@ -363,7 +364,7 @@ def test_electron_nucleus_interaction_term_returns_local_energy_result() -> None
     )
     nuclei = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
     charges = torch.tensor([2.0], dtype=torch.float64)
-    batch = ElectronBatch(positions=positions)
+    batch = ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
 
     result = ElectronNucleusInteraction(nuclei, charges).local_energy(None, batch)
 
@@ -374,6 +375,43 @@ def test_electron_nucleus_interaction_term_returns_local_energy_result() -> None
     assert isinstance(result, LocalEnergyResult)
     assert torch.allclose(result.total, expected)
     assert torch.allclose(result.terms["electron_nucleus"], expected)
+
+
+def test_electron_nucleus_interaction_uses_batch_context_and_rejects_legacy_mismatch() -> None:
+    positions = torch.tensor([[[1.0, 0.0], [0.0, 2.0]]], dtype=torch.float64)
+    nuclei = torch.tensor([[0.0, 0.0], [3.0, 0.0]], dtype=torch.float64)
+    charges = torch.tensor([2.0, 1.0], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
+
+    result = ElectronNucleusInteraction().local_energy(None, batch)
+    permuted = ElectronNucleusInteraction().local_energy(None, batch.permute(Permutation((1, 0))))
+    assert torch.equal(result.total, permuted.total)
+
+    mismatched = ElectronNucleusInteraction(nuclei + 1.0, charges)
+    with pytest.raises(ValueError, match="agree exactly"):
+        mismatched.local_energy(None, batch)
+
+    with pytest.raises(ValueError, match="batch.nuclear_positions"):
+        ElectronNucleusInteraction().local_energy(None, ElectronBatch(positions=positions))
+
+    with pytest.raises(ValueError, match="batch.nuclear_charges"):
+        ElectronNucleusInteraction().local_energy(
+            None,
+            ElectronBatch(positions=positions, nuclear_positions=nuclei),
+        )
+
+
+def test_electron_nucleus_interaction_respects_batch_dtype() -> None:
+    positions = torch.tensor([[[1.0], [2.0]]], dtype=torch.float32)
+    batch = ElectronBatch(
+        positions=positions,
+        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
+        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+
+    result = ElectronNucleusInteraction().local_energy(None, batch)
+    assert result.total.dtype is torch.float32
+    assert result.total.device == positions.device
 
 
 def test_kinetic_energy_term_returns_local_energy_result() -> None:

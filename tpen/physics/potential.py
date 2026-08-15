@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from tpen.data.batch import ElectronBatch, pairwise_distances
+from tpen.data.batch import ElectronBatch, nuclear_potential, pairwise_distances
 from tpen.physics.hamiltonian import LocalEnergyResult
 
 
@@ -72,10 +72,11 @@ class ElectronNucleusInteraction:
 
     Parameters
     ----------
-    nuclear_positions : torch.Tensor
-        Nuclear coordinates with shape ``[n_nuclei, spatial_dim]``.
-    nuclear_charges : torch.Tensor
-        Nuclear charges with shape ``[n_nuclei]``.
+    nuclear_positions : torch.Tensor or None, optional
+        Deprecated compatibility metadata. When supplied, it must agree
+        exactly with the nuclear positions carried by every evaluated batch.
+    nuclear_charges : torch.Tensor or None, optional
+        Deprecated compatibility metadata paired with ``nuclear_positions``.
     eps : float, optional
         Minimum electron-nucleus distance used for numerical safety.
     """
@@ -84,34 +85,57 @@ class ElectronNucleusInteraction:
 
     def __init__(
         self,
-        nuclear_positions: torch.Tensor,
-        nuclear_charges: torch.Tensor,
+        nuclear_positions: torch.Tensor | None = None,
+        nuclear_charges: torch.Tensor | None = None,
         eps: float = 1e-12,
     ) -> None:
-        self.nuclear_positions = torch.as_tensor(nuclear_positions)
-        self.nuclear_charges = torch.as_tensor(nuclear_charges)
-        if self.nuclear_positions.ndim != 2:
+        if (nuclear_positions is None) != (nuclear_charges is None):
+            raise ValueError("nuclear_positions and nuclear_charges must be provided together")
+        self.nuclear_positions = None if nuclear_positions is None else torch.as_tensor(nuclear_positions).detach().clone()
+        self.nuclear_charges = None if nuclear_charges is None else torch.as_tensor(nuclear_charges).detach().clone()
+        if self.nuclear_positions is not None and self.nuclear_positions.ndim != 2:
             raise ValueError("nuclear_positions must have shape [n_nuclei, spatial_dim]")
-        if self.nuclear_charges.ndim != 1:
+        if self.nuclear_charges is not None and self.nuclear_charges.ndim != 1:
             raise ValueError("nuclear_charges must have shape [n_nuclei]")
-        if self.nuclear_positions.shape[0] != self.nuclear_charges.shape[0]:
+        if self.nuclear_positions is not None and self.nuclear_positions.shape[0] != self.nuclear_charges.shape[0]:
             raise ValueError("nuclear_positions and nuclear_charges must agree on n_nuclei")
         self.eps = eps
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
-        positions = batch.flatten_samples().positions
+        flat = batch.flatten_samples()
+        positions = flat.positions
         if positions.ndim != 3:
             raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
-        nuclear_positions = self.nuclear_positions.to(device=positions.device, dtype=positions.dtype)
-        nuclear_charges = self.nuclear_charges.to(device=positions.device, dtype=positions.dtype)
-        if nuclear_positions.shape[-1] != positions.shape[-1]:
-            raise ValueError("nuclear_positions spatial dimension must match electron positions")
-        disp = positions.unsqueeze(2) - nuclear_positions.unsqueeze(0).unsqueeze(0)
-        dist = torch.linalg.norm(disp, dim=-1).clamp_min(self.eps)
-        value = -(nuclear_charges.view(1, 1, -1) / dist).sum(dim=(1, 2))
+        _require_nuclear_context(flat)
+        self._validate_legacy_context(flat)
+        potential = nuclear_potential(flat, eps=self.eps)
+        expected_potential = (positions.shape[0], positions.shape[1])
+        if potential.shape != expected_potential:
+            raise ValueError(f"electron-nucleus potential must have shape {expected_potential}, got {tuple(potential.shape)}")
+        value = -potential.sum(dim=1)
         if value.shape != (positions.shape[0],):
             raise ValueError(f"electron-nucleus energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
         return LocalEnergyResult(total=value, terms={self.name: value})
+
+    def _validate_legacy_context(self, batch: ElectronBatch) -> None:
+        """Reject legacy constructor metadata that disagrees with a batch."""
+
+        if self.nuclear_positions is None:
+            return
+        assert self.nuclear_charges is not None
+        positions = self.nuclear_positions.to(device=batch.device, dtype=batch.dtype)
+        charges = self.nuclear_charges.to(device=batch.device, dtype=batch.dtype)
+        if not torch.equal(positions, batch.nuclear_positions) or not torch.equal(charges, batch.nuclear_charges):
+            raise ValueError("legacy ElectronNucleusInteraction nuclear metadata must agree exactly with batch context")
+
+
+def _require_nuclear_context(batch: ElectronBatch) -> None:
+    """Require the typed nuclear context owned by an electron batch."""
+
+    if batch.nuclear_positions is None:
+        raise ValueError("ElectronNucleusInteraction requires batch.nuclear_positions")
+    if batch.nuclear_charges is None:
+        raise ValueError("ElectronNucleusInteraction requires batch.nuclear_charges")
 
 
 __all__ = [
