@@ -95,7 +95,7 @@ def _summarize_total_energy(
     Notes
     -----
     ``energy_stderr`` is an **IID-only** standard error, matching
-    `tpen.training.vmc.vmc_objective` by design since the metric names are
+    `tpen.training.vmc.compute_vmc_objective` by design since the metric names are
     shared. It ignores serial correlation between MCMC walkers and understates
     the true uncertainty by roughly ``sqrt(tau_int)``. Do not reinterpret it as
     an MCSE; the correlation-aware quantity comes from

@@ -302,6 +302,19 @@ def summarize_local_energy(
     dict
         Scalar metrics. When no finite samples exist, ``energy`` and
         ``energy_variance`` are ``nan`` and ``energy_stderr`` is ``inf``.
+
+    Notes
+    -----
+    ``energy_stderr`` and every ``{prefix}_stderr`` here is an **IID-only**
+    standard error, ``sigma / sqrt(N)``, identical in meaning to the metric of
+    the same name from `tpen.training.vmc.compute_vmc_objective`. It ignores serial
+    correlation between MCMC walkers and so understates the true uncertainty by
+    roughly ``sqrt(tau_int)``.
+
+    The correlation-aware quantity is the MCSE from
+    :func:`tpen.statistics.produce_trajectory_statistics`, which needs a
+    ``[draw, walker]`` trajectory rather than the flat sample tensor available
+    here. Do not reinterpret this metric as an MCSE.
     """
 
     if isinstance(result, LocalEnergyResult):
@@ -316,7 +329,11 @@ def summarize_local_energy(
 
 
 def _summarize_values(prefix: str, values: torch.Tensor) -> dict[str, Any]:
-    """Return canonical finite-aware energy metrics for one value tensor."""
+    """Return canonical finite-aware energy metrics for one value tensor.
+
+    ``{prefix}_stderr`` is an **IID-only** standard error; see the Notes on
+    `summarize_local_energy`. It is never an MCSE.
+    """
 
     n_total = int(values.numel())
     finite_mask = torch.isfinite(values)

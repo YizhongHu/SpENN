@@ -175,7 +175,7 @@ def summarize_local_energy_terms(
     Notes
     -----
     Each ``{prefix}_stderr`` is an **IID-only** standard error, exactly as in
-    `vmc_objective`: it ignores serial correlation between MCMC walkers and so
+    `compute_vmc_objective`: it ignores serial correlation between MCMC walkers and so
     understates the true uncertainty. Per-term error bars are diagnostic only.
     Do not reinterpret them as MCSE; there is no per-term trajectory producer.
     """
