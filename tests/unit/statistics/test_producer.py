@@ -131,10 +131,20 @@ def test_available_receipt_preserves_end_to_end_producer_contract() -> None:
     # Assert definitions as relations between emitted fields so estimator
     # changes cannot leave internally inconsistent wire data.
     assert payload.ess == pytest.approx(shape.total_draws / payload.tau_int, rel=1e-12)
-    assert payload.mcse == pytest.approx(
-        math.sqrt(payload.variance / payload.ess),
-        rel=1e-12,
+    # MCSE is the variance of the draw-weighted pooled mean, recomputed here
+    # from the emitted per-chain records. The old sqrt(variance / ess) shortcut
+    # is a different quantity that assumes one shared variance and one shared
+    # tau across walkers, so it is only right when the chains agree.
+    expected_mcse = math.sqrt(
+        sum(
+            (chain.n_draws / shape.total_draws) ** 2
+            * chain.variance
+            * chain.tau_int
+            / chain.n_draws
+            for chain in receipt.chains
+        )
     )
+    assert payload.mcse == pytest.approx(expected_mcse, rel=1e-12)
     assert payload.mean == pytest.approx(float(trajectory.values.mean().item()), rel=1e-12)
 
     # The spelling prevents a consumer from silently choosing the half-IAT convention.
@@ -185,9 +195,14 @@ def test_mcse_exceeds_iid_standard_error_for_autocorrelated_trajectory() -> None
     # Positive AR(1) persistence is exactly the case where IID error understates risk.
     assert payload.tau_int > 1.0
     assert payload.mcse > naive_iid_stderr
+    # Under the per-chain weighted MCSE this is no longer an identity: each
+    # walker contributes its own s_i^2 and tau_i, so the ratio only approaches
+    # sqrt(tau) as the chains become homogeneous. Asserting the order of the
+    # inflation still discriminates -- a collapse to the IID bar, or an
+    # inflation by tau rather than its square root, both fail here.
     assert payload.mcse / naive_iid_stderr == pytest.approx(
         math.sqrt(payload.tau_int),
-        rel=1e-12,
+        rel=0.20,
     )
 
 
