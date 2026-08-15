@@ -173,9 +173,10 @@ def build_record(
     system_id: str,
     batch_size: int,
     tail_fraction: float = 0.1,
+    ansatz: str,
+    estimator: str = "training_tail",
     log_path: Path | None = None,
     code_commit: str | None = None,
-    ansatz: str = "ferminet",
     optimizer: str = "kfac",
     dtype: str | None = None,
     seed: int | None = None,
@@ -192,8 +193,19 @@ def build_record(
         Key into ``experiments/baselines/systems.yaml``.
     batch_size : int
         Walkers per step, needed to convert steps into local-energy evaluations.
+    ansatz : str
+        Which network actually ran, e.g. ``"ferminet"`` or ``"psiformer"``.
+        Required rather than defaulted: this was previously hardcoded, and the
+        resulting records claimed FermiNet for Psiformer runs.
+    estimator : str, optional
+        ``"training_tail"`` (default) or ``"inference"``. A fixed-parameter
+        evaluation pass must be recorded as ``"inference"``; it is a different
+        quantity from a training-tail average and the two must not be mixed
+        silently.
     tail_fraction : float, optional
-        Fraction of the trailing run averaged for the energy estimate.
+        Fraction of the trailing run averaged for the energy estimate. Use
+        ``1.0`` for an inference run, where the whole trace is the estimate and
+        there is no optimization transient to discard.
     log_path : pathlib.Path or None, optional
         Job stdout log, used for device identity and wall clock.
     dtype : str or None, optional
@@ -241,6 +253,7 @@ def build_record(
         steps=len(energies),
         samples=len(energies) * batch_size,
         wall_clock_seconds=wall_clock,
+        estimator=estimator,
         device_type=device_type,
         gpu_model=gpu_model,
         n_gpus=1 if device_type == "cuda" else None,
@@ -254,12 +267,19 @@ def build_record(
         run_dir=None,
         collected_at=None,
         notes=(
-            f"Training-tail average over the last {tail_fraction:.0%} of steps "
-            f"({len(tail)} samples), blocked standard error from {n_blocks} blocks. "
-            "NOT the estimator FermiNet's published table uses: those values come "
-            "from a separate post-training evaluation phase, so this number is "
-            "expected to sit slightly high and the two must not be compared as "
-            "though they were the same quantity."
+            (
+                f"Training-tail average over the last {tail_fraction:.0%} of steps "
+                f"({len(tail)} samples), blocked standard error from {n_blocks} "
+                "blocks. NOT the estimator FermiNet's published table uses: those "
+                "values come from a separate post-training evaluation phase, so "
+                "this number is expected to sit slightly high."
+            )
+            if estimator == "training_tail"
+            else (
+                f"Fixed-parameter inference pass over {len(tail)} steps, blocked "
+                f"standard error from {n_blocks} blocks. This matches the estimator "
+                "behind FermiNet's published table."
+            )
         ),
     )
 
@@ -279,6 +299,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--system-id", required=True)
     parser.add_argument("--batch-size", type=int, required=True)
+    # Required, not defaulted: this was hardcoded to "ferminet", so Psiformer
+    # runs emitted records claiming FermiNet. A wrong value should now take
+    # deliberate effort rather than inattention.
+    parser.add_argument("--ansatz", required=True)
+    parser.add_argument(
+        "--estimator",
+        choices=("training_tail", "inference"),
+        default="training_tail",
+        help="use 'inference' for a fixed-parameter evaluation pass",
+    )
     parser.add_argument("--tail-fraction", type=float, default=0.1)
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)
@@ -291,6 +321,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.run_dir,
             system_id=args.system_id,
             batch_size=args.batch_size,
+            ansatz=args.ansatz,
+            estimator=args.estimator,
             tail_fraction=args.tail_fraction,
             log_path=args.log_path,
             code_commit=args.code_commit,

@@ -38,6 +38,7 @@ def _valid_payload(**overrides: Any) -> dict[str, Any]:
         "samples": 3200,
         "wall_clock_seconds": 91.5,
         "device_type": "cuda",
+        "estimator": "training_tail",
         "gpu_model": "NVIDIA A100-SXM4-80GB",
         "n_gpus": 1,
         "dtype": "float64",
@@ -80,7 +81,7 @@ def test_round_trip_preserves_every_field() -> None:
 def test_all_schema_fields_are_emitted() -> None:
     """Every field appears on every line, so the JSONL has a stable header set."""
 
-    record = BaselineRecord(system_id="he_atom", code="ferminet")
+    record = BaselineRecord(system_id="he_atom", code="ferminet", estimator="training_tail")
     assert set(record.to_json_dict()) == set(BaselineRecord.field_names())
 
 
@@ -108,7 +109,7 @@ def test_scorecard_axes_are_present() -> None:
 def test_unknown_quantities_stay_none() -> None:
     """Unmeasured fields default to None rather than to a placeholder number."""
 
-    record = BaselineRecord(system_id="he_atom", code="ferminet")
+    record = BaselineRecord(system_id="he_atom", code="ferminet", estimator="training_tail")
     assert record.energy_hartree is None
     assert record.wall_clock_seconds is None
     assert record.parameter_count is None
