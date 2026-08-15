@@ -129,6 +129,65 @@ class ElectronNucleusInteraction:
             raise ValueError("legacy ElectronNucleusInteraction nuclear metadata must agree exactly with batch context")
 
 
+class NucleusNucleusInteraction:
+    r"""Hamiltonian term for Born--Oppenheimer nuclear repulsion.
+
+    .. math:: V_\mathrm{nn} = \sum_{A<B} \frac{Z_A Z_B}{|R_A - R_B|}
+
+    Nuclear coordinates and charges are read from the explicit metadata on
+    ``ElectronBatch``.  Shared ``[n_nuclei, spatial_dim]`` metadata and
+    per-configuration ``[batch, n_nuclei, spatial_dim]`` metadata are both
+    supported.
+    """
+
+    name = "nucleus_nucleus"
+
+    def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
+        """Return the pairwise nuclear repulsion for each batch sample."""
+
+        flat = batch.flatten_samples()
+        positions = flat.nuclear_positions
+        charges = flat.nuclear_charges
+        if positions is None:
+            raise ValueError("NucleusNucleusInteraction requires batch.nuclear_positions")
+        if charges is None:
+            raise ValueError("NucleusNucleusInteraction requires batch.nuclear_charges")
+
+        positions = positions.to(device=flat.device, dtype=flat.dtype)
+        charges = charges.to(device=flat.device, dtype=flat.dtype)
+        if positions.ndim == 2:
+            if positions.shape[-1] != flat.spatial_dim:
+                raise ValueError("nuclear positions must match batch spatial dimension")
+            positions = positions.unsqueeze(0).expand(flat.batch_size, -1, -1)
+        elif positions.ndim == 3:
+            if positions.shape[0] != flat.batch_size or positions.shape[-1] != flat.spatial_dim:
+                raise ValueError("batched nuclear positions must match batch size and spatial dimension")
+        else:
+            raise ValueError("nuclear positions must have shape [n_nuclei, dim] or [batch, n_nuclei, dim]")
+
+        if charges.ndim == 1:
+            charges = charges.unsqueeze(0).expand(flat.batch_size, -1)
+        elif charges.ndim != 2 or charges.shape[0] != flat.batch_size:
+            raise ValueError("nuclear charges must have shape [n_nuclei] or [batch, n_nuclei]")
+        if positions.shape[1] != charges.shape[1]:
+            raise ValueError("nuclear positions and charges must agree on n_nuclei")
+        if not torch.isfinite(positions).all() or not torch.isfinite(charges).all():
+            raise ValueError("nuclear positions and charges must be finite")
+
+        n_nuclei = positions.shape[1]
+        if n_nuclei < 2:
+            value = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
+        else:
+            distances = torch.linalg.norm(positions.unsqueeze(2) - positions.unsqueeze(1), dim=-1)
+            pair_mask = torch.triu(torch.ones((n_nuclei, n_nuclei), device=flat.device, dtype=torch.bool), diagonal=1)
+            if (distances[:, pair_mask] <= 0).any():
+                raise ValueError("nuclear positions contain colliding nuclei")
+            pair_values = charges.unsqueeze(2) * charges.unsqueeze(1) / distances
+            value = pair_values[:, pair_mask].sum(dim=1)
+
+        return LocalEnergyResult(total=value, terms={self.name: value})
+
+
 def _require_nuclear_context(batch: ElectronBatch) -> None:
     """Require the typed nuclear context owned by an electron batch."""
 
@@ -142,4 +201,5 @@ __all__ = [
     "ElectronElectronInteraction",
     "ElectronNucleusInteraction",
     "HarmonicTrap",
+    "NucleusNucleusInteraction",
 ]
