@@ -6,15 +6,22 @@ import pytest
 import torch
 from torch import nn
 
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.data.permutation import Permutation
 from tpen.data.real import Feature
 from tpen.nn import (
+    AdditiveCusp,
     AdditiveEnvelope,
+    AsymptoticDecay,
     ElectronElectronCusp,
+    ElectronNucleusCusp,
+    ElectronNucleusCuspLaw,
     Envelope,
     GaussianConfinement,
     HookeGaussianConfinement,
+    LinearElectronNucleusCuspLaw,
+    LogAmplitudeFactor,
     NuclearConfinement,
     NuclearFactorizedEnvelope,
     TPENWaveFunction,
@@ -402,3 +409,230 @@ def test_wavefunction_logabs_decays_along_radial_rays_beyond_documented_radius()
     assert torch.all(torch.isfinite(logabs))
     differences = logabs[1:] - logabs[:-1]
     assert torch.all(differences < 0), f"log|psi| must decay along the radial ray beyond r=4, got {logabs.tolist()}"
+
+
+# --- A4: generic post-readout LogAmplitudeFactor / AdditiveCusp / ElectronNucleusCusp ---
+
+
+class ConstantLogAmplitudeFactor(LogAmplitudeFactor):
+    def __init__(self, value: float) -> None:
+        super().__init__()
+        self.value = value
+
+    def factor_value(self, batch: ElectronBatch) -> torch.Tensor:
+        return torch.full((batch.batch_size,), self.value, device=batch.device, dtype=batch.dtype)
+
+
+class BadShapeLogAmplitudeFactor(LogAmplitudeFactor):
+    def factor_value(self, batch: ElectronBatch) -> torch.Tensor:
+        return torch.zeros(batch.batch_size, 1, device=batch.device, dtype=batch.dtype)
+
+
+class ConstantAsymptoticDecay(AsymptoticDecay):
+    def __init__(self, value: float) -> None:
+        super().__init__()
+        self.value = value
+
+    def decay_value(self, batch: ElectronBatch) -> torch.Tensor:
+        return torch.full((batch.batch_size,), self.value, device=batch.device, dtype=batch.dtype)
+
+
+def test_log_amplitude_factor_base_requires_subclass_implementation() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(NotImplementedError):
+        LogAmplitudeFactor()(batch)
+
+
+def test_log_amplitude_factor_rejects_malformed_component_output() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(ValueError, match="must have shape"):
+        BadShapeLogAmplitudeFactor()(batch)
+
+
+def test_additive_cusp_sums_component_outputs() -> None:
+    batch = ElectronBatch(positions=torch.zeros(3, 2, 1, dtype=torch.float64))
+    composed = AdditiveCusp([ConstantLogAmplitudeFactor(0.5), ConstantLogAmplitudeFactor(1.5)])
+
+    torch.testing.assert_close(composed(batch), torch.full((3,), 2.0, dtype=torch.float64))
+
+
+def test_empty_additive_cusp_returns_zero_batch_vector() -> None:
+    batch = ElectronBatch(positions=torch.ones(4, 2, 1, dtype=torch.float64))
+
+    torch.testing.assert_close(AdditiveCusp()(batch), torch.zeros(4, dtype=torch.float64))
+
+
+def test_additive_cusp_rejects_non_log_amplitude_factor_component() -> None:
+    with pytest.raises(TypeError, match="LogAmplitudeFactor"):
+        AdditiveCusp([GaussianConfinement(coefficient=0.1)])
+
+
+def test_additive_cusp_is_itself_a_log_amplitude_factor() -> None:
+    composed = AdditiveCusp([ConstantLogAmplitudeFactor(1.0)])
+
+    assert isinstance(composed, LogAmplitudeFactor)
+
+
+def test_electron_electron_cusp_joins_log_amplitude_factor_interface() -> None:
+    cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
+
+    assert isinstance(cusp, LogAmplitudeFactor)
+    composed = AdditiveCusp([cusp])
+    batch = ElectronBatch(positions=torch.tensor([[[0.0], [2.0]]], dtype=torch.float64))
+
+    torch.testing.assert_close(composed(batch), cusp(batch))
+
+
+def test_electron_electron_cusp_state_dict_keys_are_unchanged_by_new_base_class() -> None:
+    cusp = ElectronElectronCusp(range_parameter=0.5, trainable_range=True)
+
+    assert set(cusp.state_dict().keys()) == {"raw_same_range", "raw_opposite_range"}
+
+
+def test_electron_nucleus_cusp_requires_atomic_configuration() -> None:
+    with pytest.raises(TypeError, match="AtomicConfiguration"):
+        ElectronNucleusCusp(atoms=object())
+
+
+def test_electron_nucleus_cusp_rejects_law_of_wrong_type() -> None:
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0, 0.0]], dtype=torch.float64),
+        charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+
+    with pytest.raises(TypeError, match="ElectronNucleusCuspLaw"):
+        ElectronNucleusCusp(atoms=atoms, law=object())
+
+
+def test_electron_nucleus_cusp_defaults_to_linear_compatibility_law_matching_nuclear_confinement() -> None:
+    positions = torch.tensor(
+        [[[0.0, 0.0], [1.0e-14, 0.0]], [[3.0, 4.0], [0.0, 2.0]]], dtype=torch.float64
+    )
+    nuclei = torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64)
+    charges = torch.tensor([2.0, 1.0], dtype=torch.float64)
+    atoms = AtomicConfiguration(positions=nuclei, charges=charges)
+    batch = ElectronBatch(positions=positions)
+
+    cusp = ElectronNucleusCusp(atoms=atoms)
+    legacy = NuclearConfinement().evaluate(
+        ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
+    )
+
+    torch.testing.assert_close(cusp(batch), legacy.value.sum(dim=(1, 2)))
+    assert isinstance(cusp.law, LinearElectronNucleusCuspLaw)
+
+
+def test_electron_nucleus_cusp_uses_raw_distance_with_no_clamp() -> None:
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0]], dtype=torch.float64),
+        charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    batch = ElectronBatch(positions=torch.tensor([[[1.0e-14]]], dtype=torch.float64))
+    cusp = ElectronNucleusCusp(atoms=atoms)
+
+    # An exactly-coalescent electron-nucleus pair must produce a value whose
+    # magnitude tracks the true (unclamped) distance, proving no distance
+    # floor was applied.
+    assert abs(cusp(batch).item()) < 1.0e-12
+
+
+def test_electron_nucleus_cusp_satisfies_kato_slope_for_arbitrary_charge() -> None:
+    # Independent Kato cusp-condition test: d(value)/dr at r -> 0 must equal
+    # -Z, for the linear compatibility law, for an arbitrary (non-He) charge.
+    # Isolated to a single nucleus/electron pair, matching the established
+    # ElectronElectronCusp slope-test pattern: with more than one pair, the
+    # other (non-coalescing) pairs contribute their own generically nonzero
+    # slope and would contaminate the measurement.
+    tiny_r = torch.tensor(1.0e-7, dtype=torch.float64)
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0]], dtype=torch.float64),
+        charges=torch.tensor([3.0], dtype=torch.float64),
+    )
+    cusp = ElectronNucleusCusp(atoms=atoms)
+    batch = ElectronBatch(positions=tiny_r.view(1, 1, 1))
+
+    slope = cusp(batch) / tiny_r
+
+    torch.testing.assert_close(slope, torch.tensor([-3.0], dtype=torch.float64), atol=1.0e-6, rtol=0.0)
+
+
+def test_electron_nucleus_cusp_is_permutation_invariant() -> None:
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0, 0.0], [2.0, 0.0]], dtype=torch.float64),
+        charges=torch.tensor([1.0, 1.0], dtype=torch.float64),
+    )
+    cusp = ElectronNucleusCusp(atoms=atoms)
+    positions = torch.tensor([[[0.1, 0.2], [0.7, -0.4], [-0.3, 0.9]]], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions)
+    permuted = ElectronBatch(positions=positions[:, [2, 0, 1]])
+
+    torch.testing.assert_close(cusp(batch), cusp(permuted))
+
+
+def test_electron_nucleus_cusp_composes_with_electron_electron_cusp_via_additive_cusp() -> None:
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0, 0.0]], dtype=torch.float64),
+        charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    en_cusp = ElectronNucleusCusp(atoms=atoms)
+    ee_cusp = ElectronElectronCusp(spinless_coefficient=0.25, range_parameter=0.5, eps=0.0)
+    composed = AdditiveCusp([en_cusp, ee_cusp])
+    batch = ElectronBatch(positions=torch.tensor([[[0.5, 0.0], [1.5, 0.5]]], dtype=torch.float64))
+
+    torch.testing.assert_close(composed(batch), en_cusp(batch) + ee_cusp(batch))
+
+
+class _LiteralElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
+    def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
+        return -2.0 * charges * distance
+
+
+def test_electron_nucleus_cusp_accepts_custom_law() -> None:
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0]], dtype=torch.float64),
+        charges=torch.tensor([1.0], dtype=torch.float64),
+    )
+    linear = ElectronNucleusCusp(atoms=atoms)
+    doubled = ElectronNucleusCusp(atoms=atoms, law=_LiteralElectronNucleusCuspLaw())
+    batch = ElectronBatch(positions=torch.tensor([[[3.0]]], dtype=torch.float64))
+
+    torch.testing.assert_close(doubled(batch), 2.0 * linear(batch))
+
+
+def test_asymptotic_decay_base_requires_subclass_implementation() -> None:
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+
+    with pytest.raises(NotImplementedError):
+        AsymptoticDecay()(batch)
+
+
+def test_asymptotic_decay_is_separate_from_cusp_and_envelope_interfaces() -> None:
+    decay = ConstantAsymptoticDecay(0.25)
+
+    assert not isinstance(decay, LogAmplitudeFactor)
+    assert not isinstance(decay, Envelope)
+    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
+    torch.testing.assert_close(decay(batch), torch.full((2,), 0.25, dtype=torch.float64))
+
+
+def test_additive_envelope_hydra_target_and_constructor_are_unchanged() -> None:
+    # Minor-release compatibility: AdditiveEnvelope keeps its exact public
+    # identity (import path, constructor signature, ModuleList child name).
+    assert AdditiveEnvelope.__module__ == "tpen.nn.envelope"
+    envelope = AdditiveEnvelope(envelopes=[GaussianConfinement(coefficient=0.1)], enabled=True)
+    assert isinstance(envelope.envelopes, nn.ModuleList)
+    assert list(envelope.state_dict().keys()) == []
+
+
+def test_additive_envelope_state_dict_round_trips_with_trainable_component() -> None:
+    envelope = AdditiveEnvelope([GaussianConfinement(coefficient=0.1, trainable=True)])
+    state = envelope.state_dict()
+    assert set(state.keys()) == {"envelopes.0.raw_coefficient"}
+
+    restored = AdditiveEnvelope([GaussianConfinement(coefficient=0.0, trainable=True)])
+    restored.load_state_dict(state)
+    batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
+
+    torch.testing.assert_close(restored(batch), envelope(batch))
