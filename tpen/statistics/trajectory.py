@@ -8,7 +8,6 @@ does not define its own.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 
 import torch
@@ -57,9 +56,6 @@ class ObservableTrajectory:
         Number of non-finite entries. Non-finite draws are never dropped:
         removing an element from a time series silently re-indexes every lag
         after it, so the producer reports ``unresolved`` instead.
-    content_sha256 : str
-        Content address of the exact numbers these statistics were computed
-        from, used as ``source_artifact_sha256`` on the emitted receipt.
 
     Raises
     ------
@@ -125,26 +121,3 @@ class ObservableTrajectory:
         """Return the number of non-finite entries in the trajectory."""
         return int((~torch.isfinite(self.values)).sum().item())
 
-    @property
-    def content_sha256(self) -> str:
-        """Return a sha256 over the trajectory's identity and exact values.
-
-        The digest covers the observable name, shape, stride and burn-in as
-        well as the raw ``float64`` bytes, so two trajectories collide only if
-        they carry the same numbers under the same layout.
-        """
-
-        digest = hashlib.sha256()
-        header = (
-            f"observable={self.observable}\n"
-            f"n_draws={self.n_draws}\n"
-            f"n_walkers={self.n_walkers}\n"
-            f"draw_stride={self.draw_stride}\n"
-            f"burn_in_draws={self.burn_in_draws}\n"
-        )
-        digest.update(header.encode("utf-8"))
-        # Little-endian float64 on CPU: a fixed wire layout, so the digest does
-        # not change when the same trajectory is produced on a different device.
-        contiguous = self.values.cpu().contiguous().numpy()
-        digest.update(contiguous.astype("<f8", copy=False).tobytes())
-        return digest.hexdigest()

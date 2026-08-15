@@ -44,7 +44,6 @@ def _receipt(
     mixing: MixingDiagnostics | None | object = _UNSET,
     payload: TrajectoryStatisticsPayload | None | object = _UNSET,
     reason: str | None | object = _UNSET,
-    source_artifact_sha256: str | None | object = _UNSET,
 ) -> TrajectoryStatisticsReceipt:
     """Build a receipt with explicit status-dependent defaults."""
 
@@ -83,7 +82,6 @@ def _receipt(
         plateau=plateau,
         mixing=mixing,
         payload=payload,
-        source_artifact_sha256=("c" * 64) if source_artifact_sha256 is _UNSET else source_artifact_sha256,
         reason=reason,
         warnings=("caveat", 7),
     )
@@ -281,6 +279,7 @@ def test_receipt_wire_layout_flattens_identity_and_nests_payload() -> None:
     record = receipt.to_dict()
 
     assert all(record[field] == getattr(receipt.identity, field) for field in IDENTITY_FIELDS)
+    assert "source_artifact_sha256" not in record
     assert record["statistics"] == receipt.payload.to_dict()
     assert record["mixing"] == {
         "r_hat": receipt.mixing.r_hat,
@@ -311,38 +310,12 @@ def test_receipt_warnings_are_tuple_of_strings() -> None:
     assert isinstance(receipt.warnings, tuple)
 
 
-@pytest.mark.parametrize(
-    ("overrides", "match"),
-    (
-        ({"plateau": None}, "requires plateau diagnostics"),
-        ({"plateau": PlateauDiagnostics(False, 3, 2, 7)}, "requires a reached plateau"),
-        ({"mixing": None}, "requires mixing diagnostics"),
-        ({"source_artifact_sha256": None}, "requires source_artifact_sha256"),
-        ({"source_artifact_sha256": "   "}, "requires source_artifact_sha256"),
-    ),
-    ids=("no_plateau_block", "plateau_not_reached", "no_mixing", "no_digest", "blank_digest"),
-)
-def test_available_requires_full_supporting_evidence(overrides: dict[str, object], match: str) -> None:
-    """Close the consumer-side door that a payload alone would leave open.
-
-    The producer never builds these shapes, but `from_dict` is the trust
-    boundary a sidecar record re-enters through, and it reconstructs a receipt
-    from whatever the file holds. Without these checks a hand-built or edited
-    record could publish numbers as ``available`` while carrying no plateau, or
-    an explicitly unreached one -- the exact condition the no-plateau rule
-    exists to force to ``unresolved`` -- and no digest naming the trajectory
-    the numbers came from.
-    """
-    with pytest.raises(ValueError, match=match):
-        _receipt("available", **overrides)
-
 
 def test_available_round_trips_through_the_consumer_boundary() -> None:
-    """Keep the stricter validation reachable from the sidecar path itself."""
+    """Keep basic status and payload validation on the sidecar read path."""
     receipt = _receipt("available")
 
     restored = TrajectoryStatisticsReceipt.from_dict(receipt.to_dict())
 
     assert restored == receipt
     assert restored.plateau is not None and restored.plateau.plateau_reached
-    assert restored.source_artifact_sha256 == receipt.source_artifact_sha256

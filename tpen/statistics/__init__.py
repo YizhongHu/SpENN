@@ -19,8 +19,8 @@ Three quantities are produced, and they answer different questions:
     independent draws is this worth"; it is *not* evidence of stationarity.
 ``mcse``
     Monte-Carlo standard error of the mean, ``sqrt(variance / ess)``. This is
-    the correlation-aware replacement for the IID ``sigma / sqrt(N)`` that the
-    evaluation summaries still publish.
+    the correlation-aware companion to the IID ``sigma / sqrt(N)`` that the
+    evaluation summaries continue to publish for like-for-like comparison.
 
 Mixing is deliberately a *separate* diagnostic (:mod:`tpen.statistics.mixing`).
 A short, well-mixed chain and a long, badly-mixed chain fail in different ways,

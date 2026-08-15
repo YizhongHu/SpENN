@@ -74,46 +74,6 @@ def test_nonfinite_count_counts_nan_and_infinity() -> None:
     assert clean.nonfinite_count == 0
 
 
-def test_content_sha256_is_stable_equal_and_lowercase_hex() -> None:
-    """Equal trajectory identities must address the same durable content."""
-    values = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    first = ObservableTrajectory("energy", values, 2, 1)
-    second = ObservableTrajectory("energy", values.clone(), 2, 1)
-
-    assert first.content_sha256 == first.content_sha256
-    assert first.content_sha256 == second.content_sha256
-    assert len(first.content_sha256) == 64
-    assert first.content_sha256 == first.content_sha256.lower()
-    assert all(character in "0123456789abcdef" for character in first.content_sha256)
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        lambda values: ObservableTrajectory("other", values, 2, 1),
-        lambda values: ObservableTrajectory("energy", values, 3, 1),
-        lambda values: ObservableTrajectory("energy", values, 2, 2),
-        lambda values: ObservableTrajectory("energy", values + torch.tensor([[0.0, 1.0], [0.0, 0.0]]), 2, 1),
-    ],
-)
-def test_content_sha256_changes_for_each_identity_or_value_change(change) -> None:
-    """Prevent distinct measurements from silently sharing receipt content."""
-    values = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    baseline = ObservableTrajectory("energy", values, 2, 1)
-
-    assert change(values).content_sha256 != baseline.content_sha256
-
-
-def test_content_sha256_is_independent_of_tensor_layout() -> None:
-    """Canonical bytes must not depend on whether the input view is contiguous."""
-    contiguous = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    noncontiguous = torch.tensor([[1.0, 3.0], [2.0, 4.0]]).transpose(0, 1)
-    assert noncontiguous.is_contiguous() is False
-
-    first = ObservableTrajectory("energy", contiguous, 1, 0)
-    second = ObservableTrajectory("energy", noncontiguous, 1, 0)
-
-    assert first.content_sha256 == second.content_sha256
 
 
 def test_trajectory_is_frozen() -> None:

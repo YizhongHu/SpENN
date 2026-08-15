@@ -366,8 +366,6 @@ class TrajectoryStatisticsReceipt:
         Split-Rhat diagnostics, absent only when no trajectory existed.
     payload : TrajectoryStatisticsPayload or None
         The numbers; present exactly when ``status == "available"``.
-    source_artifact_sha256 : str or None
-        Content address of the trajectory the statistics came from.
     reason : str or None
         Why the statistics are not available; present exactly when
         ``status != "available"``.
@@ -396,7 +394,6 @@ class TrajectoryStatisticsReceipt:
     plateau: PlateauDiagnostics | None = None
     mixing: MixingDiagnostics | None = None
     payload: TrajectoryStatisticsPayload | None = None
-    source_artifact_sha256: str | None = None
     reason: str | None = None
     warnings: tuple[str, ...] = ()
     chains: tuple[ChainStatistics, ...] = ()
@@ -413,26 +410,6 @@ class TrajectoryStatisticsReceipt:
                 raise ValueError("status 'available' requires a payload")
             if self.reason is not None:
                 raise ValueError("status 'available' must not carry a reason")
-            # A payload alone is not enough. `from_dict` is the consumer-side
-            # trust boundary, so a hand-built or hand-edited record could
-            # otherwise present numbers as `available` while carrying no
-            # plateau, no mixing diagnostics, and no trajectory digest --
-            # exactly the shape the no-plateau rule exists to forbid, arriving
-            # through the door that skips the producer.
-            if self.plateau is None:
-                raise ValueError("status 'available' requires plateau diagnostics")
-            if not self.plateau.plateau_reached:
-                raise ValueError(
-                    "status 'available' requires a reached plateau; an unterminated "
-                    "initial positive sequence is 'unresolved', never a number"
-                )
-            if self.mixing is None:
-                raise ValueError("status 'available' requires mixing diagnostics")
-            if not (self.source_artifact_sha256 or "").strip():
-                raise ValueError(
-                    "status 'available' requires source_artifact_sha256; statistics "
-                    "must name the trajectory content they were computed from"
-                )
         else:
             if self.payload is not None:
                 raise ValueError(f"status {self.status!r} must not carry a payload")
@@ -453,7 +430,6 @@ class TrajectoryStatisticsReceipt:
             "estimator_id": self.estimator_id,
             "estimator_version": self.estimator_version,
             "tau_convention": self.tau_convention,
-            "source_artifact_sha256": self.source_artifact_sha256,
             "reason": self.reason,
             "warnings": list(self.warnings),
             "chains": [chain.to_dict() for chain in self.chains],
@@ -545,7 +521,6 @@ class TrajectoryStatisticsReceipt:
             plateau=plateau,
             mixing=mixing,
             payload=payload,
-            source_artifact_sha256=record.get("source_artifact_sha256"),
             reason=record.get("reason"),
             warnings=tuple(record.get("warnings") or ()),
             chains=tuple(

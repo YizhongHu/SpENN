@@ -188,7 +188,6 @@ def produce_trajectory_statistics(
         draw_stride=trajectory.draw_stride,
         burn_in_draws=trajectory.burn_in_draws,
     )
-    source_sha256 = trajectory.content_sha256
 
     # Per-walker first, pooled second. The IPS truncation is nonlinear, so
     # pooling autocovariances before the decision lets one chain that never
@@ -240,7 +239,6 @@ def produce_trajectory_statistics(
             shape=shape,
             plateau=plateau,
             mixing=mixing,
-            source_artifact_sha256=source_sha256,
             reason=reason,
             warnings=warnings,
             chains=chains,
@@ -343,7 +341,6 @@ def produce_trajectory_statistics(
         plateau=plateau,
         mixing=mixing,
         payload=payload,
-        source_artifact_sha256=source_sha256,
         warnings=tuple(warnings),
         chains=chains,
     )

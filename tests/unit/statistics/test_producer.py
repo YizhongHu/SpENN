@@ -153,7 +153,6 @@ def test_available_receipt_preserves_end_to_end_producer_contract() -> None:
     assert receipt.tau_convention != "tau"
     assert receipt.estimator_id == ESTIMATOR_ID
     assert receipt.estimator_version == ESTIMATOR_VERSION
-    assert receipt.source_artifact_sha256 == trajectory.content_sha256
 
     # Shape metadata preserves chain boundaries and sampling cadence at the join.
     assert shape.to_dict() == {
