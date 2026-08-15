@@ -172,7 +172,7 @@ def test_vectorized_h2_evaluation_matches_slow_reference(sampled_geometry: bool)
     assert close, metrics
     torch.testing.assert_close(
         factor(batch),
-        slow.value.sum(dim=(1, 2)) + slow.smooth_tail_logabs.sum(dim=1),
+        slow.bounded_cusp_logabs() + slow.smooth_tail_logabs.sum(dim=1),
         atol=2.0e-15,
         rtol=2.0e-15,
     )
@@ -390,7 +390,7 @@ def test_h2_factorization_keeps_tail_regular_and_reads_out_once_without_aliasing
     output = parts.as_output()
     torch.testing.assert_close(
         output.logabs,
-        parts.regular_logabs + parts.nuclear.value.sum(dim=(1, 2)),
+        parts.regular_logabs + parts.nuclear.bounded_cusp_logabs(),
         atol=0.0,
         rtol=0.0,
     )
