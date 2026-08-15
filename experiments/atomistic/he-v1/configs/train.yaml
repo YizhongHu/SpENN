@@ -33,14 +33,19 @@ system:
   # baseline registry. Keep this literal coupled to the registry test.
   reference_energy: -2.903724377034119598
 
-# Sole typed nuclear-geometry authority (A5): one `AtomicConfiguration`
-# instance shared by the wavefunction's post-readout ElectronNucleusCusp
-# factor AND the generic Hamiltonian Coulomb terms below (`electron_nucleus`,
-# `nucleus_nucleus`). The sampler still separately constructs its own
-# equal-valued `AtomicConfiguration` from `nuclear_positions`/
-# `nuclear_charges` for batch transport (A2); construction-time `atoms` and
-# transported batch context are reconciled by value (not object identity) at
-# every Hamiltonian term via `_validate_batch_atoms_context`.
+# Sole typed nuclear-geometry authority (A5): one declarative `atoms` source
+# consumed by the wavefunction's post-readout ElectronNucleusCusp factor AND
+# the generic Hamiltonian Coulomb terms below (`electron_nucleus`,
+# `nucleus_nucleus`). Every `${atoms}` reference here materializes its own
+# equal-valued, immutable `AtomicConfiguration` object -- Hydra's recursive
+# `instantiate` re-runs a `_target_` for each tree position it appears at, so
+# referencing one config node does not make separate `instantiate()` sites
+# share one Python object (checked empirically against this repo's pinned
+# hydra-core/omegaconf; see tests/unit/experiments/test_he_v1_config.py). The
+# sampler similarly constructs its own equal-valued `AtomicConfiguration` from
+# `nuclear_positions`/`nuclear_charges` for batch transport (A2). All of these
+# are reconciled by explicit value comparison, not object identity, at every
+# Hamiltonian term via `_validate_batch_atoms_context`.
 atoms:
   _target_: tpen.data.atomic_configuration.AtomicConfiguration
   positions:
@@ -103,9 +108,11 @@ model:
 hamiltonian_terms:
   kinetic:
     _target_: tpen.physics.kinetic.KineticEnergy
-  # Generic, constructor-owned AtomicConfiguration Coulomb terms (A3), sharing
-  # the exact same `atoms` instance as the wavefunction's ElectronNucleusCusp
-  # above -- one typed nuclear-geometry authority for the whole He run.
+  # Generic, constructor-owned AtomicConfiguration Coulomb terms (A3),
+  # declared from the same `${atoms}` source as the wavefunction's
+  # ElectronNucleusCusp above -- one declarative nuclear-geometry authority
+  # for the whole He run, materialized as equal-valued (not identical)
+  # objects per consumer; see the `atoms:` comment near the top of this file.
   electron_nucleus:
     _target_: tpen.physics.potential.ElectronNucleusPotential
     atoms: ${atoms}

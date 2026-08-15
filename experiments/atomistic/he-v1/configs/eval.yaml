@@ -29,10 +29,13 @@ system:
     charges: [2.0]
   reference_energy: -2.903724377034119598
 
-# Sole typed nuclear-geometry authority (A5): shared by the wavefunction's
-# post-readout ElectronNucleusCusp factor and the generic Hamiltonian Coulomb
-# terms below; must stay identical to train.yaml since model-only restore is
-# strict.
+# Sole typed nuclear-geometry authority (A5): one declarative `atoms` source
+# consumed by the wavefunction's post-readout ElectronNucleusCusp factor and
+# the generic Hamiltonian Coulomb terms below; each `${atoms}` reference
+# materializes its own equal-valued, immutable `AtomicConfiguration` object,
+# reconciled by explicit value comparison rather than object identity (see
+# train.yaml's `atoms:` comment). Must stay identical to train.yaml since
+# model-only restore is strict.
 atoms:
   _target_: tpen.data.atomic_configuration.AtomicConfiguration
   positions:
