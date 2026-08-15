@@ -171,6 +171,115 @@ def test_nucleus_nucleus_potential_preserves_dtype_device_and_hamiltonian_aggreg
     torch.testing.assert_close(result.terms["nn"], torch.tensor([3.0, 3.0], dtype=torch.float32))
 
 
+# --- A6: generic N=2 (H2) AtomicConfiguration data coverage ---
+
+
+def _h2_atoms(dtype: torch.dtype = torch.float64) -> AtomicConfiguration:
+    return _atoms([[0.0, 0.0, -0.7], [0.0, 0.0, 0.7]], [1.0, 1.0], dtype=dtype)
+
+
+def _slow_reference_electron_nucleus_energy(
+    positions: torch.Tensor, atoms: AtomicConfiguration
+) -> torch.Tensor:
+    """Un-vectorized double-loop reference for the electron-nucleus Coulomb sum."""
+
+    n_config, n_electrons, _ = positions.shape
+    out = torch.zeros(n_config, dtype=positions.dtype)
+    for c in range(n_config):
+        for i in range(n_electrons):
+            total = 0.0
+            for a in range(atoms.n_nuclei):
+                r = torch.linalg.norm(positions[c, i] - atoms.positions[a]).item()
+                total += atoms.charges[a].item() / r
+            out[c] -= total
+    return out
+
+
+def _slow_reference_nucleus_nucleus_energy(atoms: AtomicConfiguration) -> float:
+    """Un-vectorized double-loop reference for the nuclear repulsion sum."""
+
+    total = 0.0
+    for a in range(atoms.n_nuclei):
+        for b in range(a + 1, atoms.n_nuclei):
+            r = torch.linalg.norm(atoms.positions[a] - atoms.positions[b]).item()
+            total += atoms.charges[a].item() * atoms.charges[b].item() / r
+    return total
+
+
+def test_h2_electron_nucleus_and_nucleus_nucleus_potential_match_slow_reference() -> None:
+    atoms = _h2_atoms()
+    positions = torch.tensor(
+        [[[0.3, 0.1, -0.5], [-0.2, 0.4, 0.6]], [[0.0, 0.0, 0.0], [1.0, -1.0, 2.0]]],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(positions=positions)
+
+    en_result = ElectronNucleusPotential(atoms).local_energy(None, batch)
+    nn_result = NucleusNucleusPotential(atoms).local_energy(None, batch)
+
+    torch.testing.assert_close(en_result.total, _slow_reference_electron_nucleus_energy(positions, atoms))
+    torch.testing.assert_close(
+        nn_result.total,
+        torch.full((positions.shape[0],), _slow_reference_nucleus_nucleus_energy(atoms), dtype=torch.float64),
+    )
+
+
+def test_h2_electron_nucleus_and_nucleus_nucleus_potential_are_nucleus_relabel_invariant() -> None:
+    atoms = _h2_atoms()
+    relabeled = _atoms(atoms.positions.flip(0).tolist(), atoms.charges.flip(0).tolist())
+    positions = torch.tensor([[[0.3, 0.1, -0.5], [-0.2, 0.4, 0.6]]], dtype=torch.float64)
+    batch = ElectronBatch(positions=positions)
+
+    en_result = ElectronNucleusPotential(atoms).local_energy(None, batch)
+    en_relabeled = ElectronNucleusPotential(relabeled).local_energy(None, batch)
+    nn_result = NucleusNucleusPotential(atoms).local_energy(None, batch)
+    nn_relabeled = NucleusNucleusPotential(relabeled).local_energy(None, batch)
+
+    torch.testing.assert_close(en_result.total, en_relabeled.total)
+    torch.testing.assert_close(nn_result.total, nn_relabeled.total)
+
+
+def test_h2_electron_nucleus_potential_raw_exact_zero_boundary_at_one_nucleus() -> None:
+    # An electron exactly coincident with one of H2's two nuclei must diverge
+    # from that nucleus's raw (unfloored) term while the other nucleus's term
+    # stays finite and exact -- proving the divergence is per-pair, not a
+    # global clamp or an H2-specific special case.
+    atoms = _h2_atoms()
+    positions = atoms.positions[0].clone().view(1, 1, 3)
+    batch = ElectronBatch(positions=positions)
+
+    result = ElectronNucleusPotential(atoms, eps=0.0).local_energy(None, batch)
+
+    assert torch.isinf(result.total).all()
+    assert (result.total < 0).all()
+
+
+def test_h2_electron_nucleus_potential_default_eps_floor_matches_hand_calculation_at_coincidence() -> None:
+    atoms = _h2_atoms()
+    positions = atoms.positions[0].clone().view(1, 1, 3)
+    batch = ElectronBatch(positions=positions)
+
+    result = ElectronNucleusPotential(atoms, eps=1e-12).local_energy(None, batch)
+
+    distance_to_far_nucleus = torch.linalg.norm(atoms.positions[0] - atoms.positions[1])
+    expected = -(1.0 / 1e-12 + 1.0 / distance_to_far_nucleus)
+    torch.testing.assert_close(result.total, expected.view(1))
+
+
+def test_h2_electron_nucleus_and_nucleus_nucleus_potential_respect_dtype_and_device() -> None:
+    atoms = _h2_atoms(dtype=torch.float32)
+    positions = torch.tensor([[[0.3, 0.1, -0.5], [-0.2, 0.4, 0.6]]], dtype=torch.float32)
+    batch = ElectronBatch(positions=positions)
+
+    en_result = ElectronNucleusPotential(atoms).local_energy(None, batch)
+    nn_result = NucleusNucleusPotential(atoms).local_energy(None, batch)
+
+    assert en_result.total.dtype is torch.float32
+    assert en_result.total.device == positions.device
+    assert nn_result.total.dtype is torch.float32
+    assert nn_result.total.device == positions.device
+
+
 def test_electron_nucleus_and_nucleus_nucleus_potential_compose_via_naive_evaluator() -> None:
     atoms = _atoms([[0.0, 0.0], [2.0, 0.0]], [1.0, 1.0])
     positions = torch.tensor([[[0.0, 0.0], [2.0, 0.0]]], dtype=torch.float64)

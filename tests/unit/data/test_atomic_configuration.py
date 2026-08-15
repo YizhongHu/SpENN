@@ -95,6 +95,34 @@ def test_to_materializes_dtype() -> None:
     assert config.dtype == torch.float32
 
 
+def test_hydrogen_molecule_to_materializes_dtype_and_preserves_n_nuclei() -> None:
+    config = _hydrogen_molecule()
+
+    moved = config.to(dtype=torch.float64)
+
+    assert moved.dtype == torch.float64
+    assert moved.n_nuclei == 2
+    assert moved.positions.dtype == torch.float64
+    assert moved.charges.dtype == torch.float64
+    assert config.dtype == torch.float32
+
+
+def test_hydrogen_molecule_nucleus_relabel_produces_a_distinct_but_valid_configuration() -> None:
+    # Relabeling (permuting) the nucleus axis is ordinary data reordering, not
+    # a physically different molecule; both orderings must independently
+    # validate and compare unequal only because AtomicConfiguration equality
+    # is positional, not set-based.
+    config = _hydrogen_molecule()
+    relabeled = AtomicConfiguration(
+        positions=config.positions.flip(0),
+        charges=config.charges.flip(0),
+    )
+
+    assert relabeled.validate() is relabeled
+    assert relabeled.n_nuclei == config.n_nuclei
+    torch.testing.assert_close(relabeled.positions, config.positions.flip(0))
+
+
 def test_compare_detects_close_and_far_configurations() -> None:
     config = _helium()
     close = AtomicConfiguration(positions=torch.zeros(1, 3) + 1e-9, charges=torch.tensor([2.0]))
