@@ -198,9 +198,7 @@ class MetropolisSampler(nn.Module):
         return Walkers(
             positions=positions,
             spins=spins,
-            atomic_configuration=None
-            if self.atomic_configuration is None
-            else self.atomic_configuration.to(device=self._generator_device, dtype=self.dtype),
+            atomic_configuration=_configuration_on(self.atomic_configuration, self._generator_device, self.dtype),
         )
 
     def reset(self, n_walkers: int | None = None, device=None) -> Walkers:
@@ -476,8 +474,7 @@ class MetropolisSampler(nn.Module):
             self._generator.set_state(state["generator_state"])
         elif self.seed is not None:
             self._generator.manual_seed(int(self.seed))
-        if self.atomic_configuration is not None:
-            self.atomic_configuration = self.atomic_configuration.to(device=self._generator_device, dtype=self.dtype)
+        self.atomic_configuration = _configuration_on(self.atomic_configuration, self._generator_device, self.dtype)
         walkers = state["walkers"]
         self._walkers = None if walkers is None else walkers.to(device=self._generator_device)
         if self._walkers is not None and self.atomic_configuration is not None:
@@ -486,6 +483,28 @@ class MetropolisSampler(nn.Module):
             self._walkers = replace(self._walkers, atomic_configuration=self.atomic_configuration)
         self._has_burned_in = bool(state["has_burned_in"])
         self.acceptance_rate = float(state.get("acceptance_rate", 0.0))
+
+
+def _configuration_on(
+    configuration: AtomicConfiguration | None,
+    device: "torch.device",
+    dtype: "torch.dtype",
+) -> AtomicConfiguration | None:
+    """Return `configuration` materialized on `device`/`dtype`, by reference when already there.
+
+    `AtomicConfiguration.to()` always constructs a new instance, even when
+    the device and dtype already match. The sampler owns one persistent
+    `atomic_configuration`; callers (`initialize`, `load_mcmc_state_dict`)
+    must carry that exact object by reference whenever no conversion is
+    actually needed, so it is not silently replaced by an equal-but-distinct
+    instance on every chain reset or restore.
+    """
+
+    if configuration is None:
+        return None
+    if configuration.device == _canonical_device(device) and configuration.dtype == dtype:
+        return configuration
+    return configuration.to(device=device, dtype=dtype)
 
 
 def _fixed_nuclear_context(
