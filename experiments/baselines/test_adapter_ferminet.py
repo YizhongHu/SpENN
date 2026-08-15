@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from experiments.baselines.collect import collect
 
+from experiments.baselines.records import BaselineRecord, RecordValidationError
 from experiments.baselines.adapters.ferminet import (
     AdapterError,
     blocking_stderr,
@@ -129,6 +130,7 @@ def test_build_record_round_trips_and_carries_estimator_caveat(tmp_path: Path) -
         run_dir,
         system_id="li_atom",
         batch_size=4096,
+        ansatz="ferminet",
         log_path=tmp_path / "job.out",
         code_commit="deadbeef",
     )
@@ -164,7 +166,7 @@ def test_adapter_records_preserve_nested_run_provenance_on_collection(tmp_path: 
     )
 
     for run_dir in (first, second):
-        record = build_record(run_dir, system_id="li_atom", batch_size=256)
+        record = build_record(run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet")
         assert record.run_dir is None
         write_record(record, run_dir)
 
@@ -182,20 +184,75 @@ def test_build_record_rejects_a_tail_too_short_to_estimate(tmp_path: Path) -> No
 
     run_dir = _write_stats(tmp_path / "tiny", [-1.0, -1.1, -1.2])
     with pytest.raises(AdapterError, match="need >= 2"):
-        build_record(run_dir, system_id="he_atom", batch_size=16, tail_fraction=0.01)
+        build_record(run_dir, system_id="he_atom", batch_size=16, ansatz="ferminet", tail_fraction=0.01)
 
 
 def test_build_record_rejects_out_of_range_tail_fraction(tmp_path: Path) -> None:
     run_dir = _write_stats(tmp_path / "run", [-1.0] * 100)
     with pytest.raises(AdapterError, match="tail_fraction"):
-        build_record(run_dir, system_id="he_atom", batch_size=16, tail_fraction=0.0)
+        build_record(run_dir, system_id="he_atom", batch_size=16, ansatz="ferminet", tail_fraction=0.0)
 
 
 def test_missing_log_leaves_device_fields_null(tmp_path: Path) -> None:
     """Without a log, device fields stay None rather than being guessed."""
 
     run_dir = _write_stats(tmp_path / "run", [-2.9 + 0.001 * (i % 5) for i in range(500)])
-    record = build_record(run_dir, system_id="he_atom", batch_size=256)
+    record = build_record(run_dir, system_id="he_atom", batch_size=256, ansatz="ferminet")
     assert record.device_type is None
     assert record.gpu_model is None
     assert record.wall_clock_seconds is None
+
+
+def test_ansatz_is_recorded_not_assumed(tmp_path: Path) -> None:
+    """A Psiformer run must not emit a record claiming FermiNet.
+
+    `ansatz` was previously hardcoded, so every record said "ferminet"
+    regardless of what ran, and two merged Psiformer records were mislabelled.
+    """
+
+    run_dir = _write_stats(tmp_path / "He", [-2.9 + 1e-4 * (i % 7) for i in range(500)])
+    record = build_record(run_dir, system_id="he_atom", batch_size=4096, ansatz="psiformer")
+    assert record.ansatz == "psiformer"
+
+
+def test_estimator_distinguishes_training_tail_from_inference(tmp_path: Path) -> None:
+    """Two runs of one system must be separable by estimator, not by step count.
+
+    Before this field, a training run and a fixed-parameter inference pass over
+    the same system were structurally identical in the record; they could only
+    be told apart by noticing `steps` differed, which is inference from a
+    coincidence rather than a recorded fact.
+    """
+
+    run_dir = _write_stats(tmp_path / "Li", [-7.4779 + 1e-4 * (i % 5) for i in range(1000)])
+
+    train = build_record(run_dir, system_id="li_atom", batch_size=4096, ansatz="ferminet")
+    infer = build_record(
+        run_dir,
+        system_id="li_atom",
+        batch_size=4096,
+        ansatz="ferminet",
+        estimator="inference",
+        tail_fraction=1.0,
+    )
+
+    assert train.estimator == "training_tail"
+    assert infer.estimator == "inference"
+    # The caveat text must follow the estimator rather than always claiming a
+    # training-tail average.
+    assert "post-training evaluation" in (train.notes or "")
+    assert "Fixed-parameter inference" in (infer.notes or "")
+
+
+def test_record_without_estimator_is_rejected() -> None:
+    """An estimator-less record cannot be compared, so it must not validate."""
+
+    with pytest.raises(RecordValidationError, match="estimator must be one of"):
+        BaselineRecord(system_id="he_atom", code="ferminet")
+
+
+def test_record_with_unknown_estimator_is_rejected() -> None:
+    """The vocabulary is closed; a plausible-looking string is still wrong."""
+
+    with pytest.raises(RecordValidationError, match="estimator must be one of"):
+        BaselineRecord(system_id="he_atom", code="ferminet", estimator="training-tail")

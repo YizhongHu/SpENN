@@ -36,6 +36,11 @@ _NON_NEGATIVE_INT_FIELDS = (
     "n_gpus",
 )
 _REQUIRED_TEXT_FIELDS = ("system_id", "code")
+
+#: How the energy estimate was produced. Not free text: a training-tail average
+#: and a fixed-parameter inference pass are different quantities, and a table
+#: that mixes them silently is wrong in a way no reader can detect.
+_ESTIMATORS = ("training_tail", "inference")
 _OPTIONAL_TEXT_FIELDS = (
     "code_commit",
     "ansatz",
@@ -83,6 +88,14 @@ class BaselineRecord:
         hardware-free).
     wall_clock_seconds : float or None, optional
         Measured wall clock for the run (efficiency denominator 3).
+    estimator : str
+        How ``energy_hartree`` was produced: ``"training_tail"`` for an average
+        over the final steps of optimization, or ``"inference"`` for a
+        fixed-parameter evaluation pass. Required, and validated against that
+        set. These are different quantities -- FermiNet's published table uses
+        inference while a training-tail average carries optimization noise and
+        any clipping bias -- so a table that mixes them without saying so is
+        wrong in a way a reader cannot detect.
     device_type : str or None, optional
         Accelerator family the run executed on, e.g. ``"cpu"``, ``"cuda"``,
         ``"rocm"``, ``"xpu"``. Recorded separately from ``gpu_model`` because a
@@ -131,6 +144,7 @@ class BaselineRecord:
     steps: int | None = None
     samples: int | None = None
     wall_clock_seconds: float | None = None
+    estimator: str | None = None
     device_type: str | None = None
     gpu_model: str | None = None
     n_gpus: int | None = None
@@ -153,6 +167,15 @@ class BaselineRecord:
             value = getattr(self, name)
             if value is not None and not isinstance(value, str):
                 raise RecordValidationError(f"{name} must be a string or None")
+
+        # `estimator` is required and closed-vocabulary. It carries a default of
+        # None only so the dataclass field order stays stable; omitting it is an
+        # error, not a permitted "unknown". A row that cannot say how its energy
+        # was produced cannot be compared against one that can.
+        if self.estimator not in _ESTIMATORS:
+            raise RecordValidationError(
+                f"estimator must be one of {_ESTIMATORS}, got {self.estimator!r}"
+            )
 
         # `energy_hartree` is signed; the rest are magnitudes and cannot be
         # negative. All of them must be real numbers when present.
