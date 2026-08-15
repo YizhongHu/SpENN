@@ -461,9 +461,16 @@ can be two-body (electron-electron) or summed one-particle-at-a-time over
 fixed external centers (electron-nucleus); both are cusps because both enforce
 a short-range Kato condition. The Gaussian confinement below, and its
 generalizations, are decay/confinement terms because they govern long-range
-normalizability, not short-range coalescence. In code these components compose
-through `tpen.nn.AdditiveEnvelope`, which the wavefunction takes as a required
-argument:
+normalizability, not short-range coalescence. In code these components
+currently compose through `tpen.nn.AdditiveEnvelope`, which the wavefunction
+takes as a required argument. `AdditiveEnvelope` is a *compatibility name*: the
+word "envelope" is reserved above for the multiplicative coordinate factors,
+so the shipped class name does not match the terminology it implements. The
+target generic post-readout log-amplitude interface is `LogAmplitudeFactor`,
+composing any mix of cusp and decay/confinement terms; `AdditiveCusp` is the
+narrower composition specifically over cusp factors (e.g. electron-electron
+and, later, electron-nucleus). Renaming `AdditiveEnvelope` to `LogAmplitudeFactor`
+is tracked separately and is not part of this terminology-only change.
 
 $
 J (br)
@@ -473,7 +480,9 @@ $
 
 Here $J_"ee"$ is the two-body electron-electron cusp and $J_"conf"$ is a one-body
 confinement. The shipped Hooke stack is
-`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`.
+`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`, i.e. a
+`LogAmplitudeFactor` composing one `AdditiveCusp` term (`ElectronElectronCusp`)
+and one decay/confinement term (`GaussianConfinement`).
 
 === Electron-electron cusp
 
@@ -653,8 +662,11 @@ Implemented in `tpen.nn.TPENWaveFunction`.
     $
 + Readout with `tpen.nn.PfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c)_(i j) - bx^(T c)_(j i)] $
-+ Applied additive log-amplitude envelope with `tpen.nn.AdditiveEnvelope`,
-  required as `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`
++ Applied additive post-readout log-amplitude factor with
+  `tpen.nn.AdditiveEnvelope` (compatibility name for the target
+  `LogAmplitudeFactor` interface), required as
+  `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)` --- an
+  `AdditiveCusp`-composed cusp term plus a decay/confinement term
   $ psi(bv) = exp(J (br))Psi(bv), quad J (br) = J_"ee" (br) + J_"conf" (br) $
 + Output: $psi(bv)$
 
