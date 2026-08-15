@@ -213,7 +213,7 @@ class ElectronNucleusPotential:
 
     name = "electron_nucleus"
 
-    def __init__(self, atoms: AtomicConfiguration, eps: float = 1e-12) -> None:
+    def __init__(self, atoms: object, eps: float = 1e-12) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
         self.atoms = atoms
@@ -254,7 +254,7 @@ class NucleusNucleusPotential:
 
     name = "nucleus_nucleus"
 
-    def __init__(self, atoms: AtomicConfiguration) -> None:
+    def __init__(self, atoms: object) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
         self.atoms = atoms
