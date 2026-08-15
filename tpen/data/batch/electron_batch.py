@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch.base import _coerce_optional_tensor
 from tpen.data.indices import permute_particle_axis
 from tpen.data.permutation import Permutation
@@ -16,6 +17,17 @@ from tpen.data.permutation import Permutation
 @dataclass
 class ElectronBatch:
     """Store batched electron coordinates and optional context.
+
+    ``nuclear_positions``/``nuclear_charges`` remain the raw, possibly
+    per-sample pipeline-transport tensors consumed by physics/nn code (e.g.
+    evaluation-orbit generators that vary nuclear geometry per sample); they
+    are not collapsed into `AtomicConfiguration` because that type is
+    strictly unbatched (one fixed system). ``atomic_configuration`` is an
+    additive typed reference to the constructor/config-owned fixed system,
+    carried through the pipeline for identity/comparison; when both are
+    given for an unbatched (non-per-sample) batch, they must agree exactly
+    so the typed reference is never a competing authority over the raw
+    tensors.
 
     Parameters
     ----------
@@ -30,6 +42,10 @@ class ElectronBatch:
     nuclear_charges : torch.Tensor or None, optional
         Nuclear charges with shape ``[n_nuclei]`` or
         ``[*sample_shape, n_nuclei]``.
+    atomic_configuration : AtomicConfiguration or None, optional
+        Fixed, unbatched nuclear geometry owned by the constructor/config,
+        carried alongside the raw nuclear tensors for typed pipeline
+        transport.
     spins : torch.Tensor or None, optional
         Spin labels with shape ``[*sample_shape, n_electrons]`` and entries
         exactly equal to ``+1`` or ``-1``.
@@ -41,6 +57,7 @@ class ElectronBatch:
     system: Any | None = None
     nuclear_positions: torch.Tensor | None = None
     nuclear_charges: torch.Tensor | None = None
+    atomic_configuration: AtomicConfiguration | None = None
     spins: torch.Tensor | None = None
     aux: dict[str, Any] = field(default_factory=dict)
 
@@ -84,6 +101,17 @@ class ElectronBatch:
         if self.nuclear_positions is not None and self.nuclear_charges is not None:
             if self.nuclear_positions.shape[-2] != self.nuclear_charges.shape[-1]:
                 raise ValueError("ElectronBatch.nuclear_positions and nuclear_charges must agree on n_nuclei")
+        if self.atomic_configuration is not None:
+            if not isinstance(self.atomic_configuration, AtomicConfiguration):
+                raise TypeError("ElectronBatch.atomic_configuration must be an AtomicConfiguration or None")
+            if self.atomic_configuration.device != self.positions.device:
+                raise ValueError("ElectronBatch.atomic_configuration must be on the positions device")
+            if self.nuclear_positions is not None and self.nuclear_positions.ndim == 2:
+                if not torch.equal(self.nuclear_positions, self.atomic_configuration.positions):
+                    raise ValueError("ElectronBatch.atomic_configuration must match unbatched nuclear_positions")
+            if self.nuclear_charges is not None and self.nuclear_charges.ndim == 1:
+                if not torch.equal(self.nuclear_charges, self.atomic_configuration.charges):
+                    raise ValueError("ElectronBatch.atomic_configuration must match unbatched nuclear_charges")
 
     def validate(self) -> "ElectronBatch":
         """Validate this batch using the constructor invariants.
@@ -99,6 +127,7 @@ class ElectronBatch:
             system=self.system,
             nuclear_positions=self.nuclear_positions,
             nuclear_charges=self.nuclear_charges,
+            atomic_configuration=self.atomic_configuration,
             spins=self.spins,
             aux=self.aux,
         )
@@ -251,6 +280,7 @@ class ElectronBatch:
             positions=self.positions.to(device=device, dtype=dtype),
             nuclear_positions=None if self.nuclear_positions is None else self.nuclear_positions.to(device=device, dtype=dtype),
             nuclear_charges=None if self.nuclear_charges is None else self.nuclear_charges.to(device=device, dtype=dtype),
+            atomic_configuration=None if self.atomic_configuration is None else self.atomic_configuration.to(device=device, dtype=dtype),
             spins=None if self.spins is None else self.spins.to(device=device, dtype=dtype),
         )
 
