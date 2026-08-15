@@ -50,9 +50,13 @@ def _load_study_module(name: str) -> ModuleType:
     return module
 
 
-plan = _load_study_module("plan")
 launch = _load_study_module("launch")
-strata = _load_study_module("strata")
+
+# Taken from the subject: a second importlib load would give these modules their
+# own exception classes, and an assertion about the launcher's failures would
+# then test a different class than the one it raises.
+plan = launch.plan_stage
+strata = launch.strata
 
 UV_BIN = "/opt/uv/bin/uv"
 

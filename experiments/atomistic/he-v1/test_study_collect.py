@@ -47,11 +47,15 @@ def _load_study_module(name: str) -> ModuleType:
     return module
 
 
-plan = _load_study_module("plan")
-launch = _load_study_module("launch")
 collect = _load_study_module("collect")
-absence = _load_study_module("absence")
 report = _load_study_module("report")
+
+# Taken from the subject, so the sentinel and the exception classes asserted here
+# are the same objects the collector uses. A second importlib load would create a
+# second ABSENT singleton, and "is absent" would silently stop meaning anything.
+plan = collect.plan_stage
+launch = collect.launch_stage
+absence = collect.absence
 
 GRID: dict[str, Any] = {
     "study": "tpen_he_v1",

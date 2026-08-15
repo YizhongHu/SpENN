@@ -39,8 +39,12 @@ def _load_study_module(name: str) -> ModuleType:
 
 
 driver = _load_study_module("driver")
-strata = _load_study_module("strata")
 eval_driver = _load_study_module("eval")
+
+# Taken from the subject rather than loaded again: a second importlib load would
+# create a SECOND module object with its own exception classes, and
+# ``pytest.raises`` would then miss the mismatch this file exists to prove.
+strata = driver.strata
 
 ROW: dict[str, Any] = {
     "row_id": "eval-seed0000-step000000010-chain00",
