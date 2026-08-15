@@ -8,7 +8,6 @@ from torch import nn
 
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
-from tpen.data.permutation import Permutation
 from tpen.data.real import Feature
 from tpen.nn import (
     AdditiveCusp,
@@ -22,8 +21,6 @@ from tpen.nn import (
     HookeGaussianConfinement,
     LinearElectronNucleusCuspLaw,
     LogAmplitudeFactor,
-    NuclearConfinement,
-    NuclearFactorizedEnvelope,
     TPENWaveFunction,
 )
 from tests.helpers.equivariance import assert_equivariant_all
@@ -182,109 +179,62 @@ def test_empty_additive_envelope_returns_zero_batch_vector() -> None:
     torch.testing.assert_close(values, torch.zeros(4, dtype=torch.float64))
 
 
-def test_nuclear_confinement_exposes_raw_he_radial_factorization() -> None:
-    positions = torch.tensor(
-        [[[0.0, 0.0], [1.0e-14, 0.0]], [[3.0, 4.0], [0.0, 2.0]]], dtype=torch.float64
-    )
-    nuclei = torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64)
-    charges = torch.tensor([2.0, 1.0], dtype=torch.float64)
-    batch = ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
-
-    evaluation = NuclearConfinement().evaluate(batch)
-
-    expected_distance = torch.linalg.vector_norm(positions.unsqueeze(2) - nuclei.view(1, 1, 2, 2), dim=-1)
-    torch.testing.assert_close(evaluation.distance, expected_distance)
-    assert evaluation.distance[0, 1, 0] < 1.0e-12  # Proves no clamped-distance helper was used.
-    torch.testing.assert_close(evaluation.value, -expected_distance * charges.view(1, 1, 2))
-    torch.testing.assert_close(evaluation.radial_first_derivative, -charges.view(1, 1, 2).expand_as(expected_distance))
-    torch.testing.assert_close(evaluation.radial_second_derivative, torch.zeros_like(expected_distance))
-    torch.testing.assert_close(evaluation.origin_radial_derivative, -charges.view(1, 2).expand(2, 2))
-    assert evaluation.validate(batch) is evaluation
-
-
-def test_nuclear_confinement_typed_permutation_leaves_origin_derivative_fixed() -> None:
-    batch = ElectronBatch(
-        positions=torch.tensor([[[0.0], [2.0]]], dtype=torch.float64),
-        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
-        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
-    )
-    evaluation = NuclearConfinement().evaluate(batch)
-    permuted = evaluation.permute(Permutation((1, 0)))
-
-    torch.testing.assert_close(permuted.distance, evaluation.distance[:, [1, 0]])
-    torch.testing.assert_close(permuted.origin_radial_derivative, evaluation.origin_radial_derivative)
-    close, metrics = evaluation.compare(permuted.permute(Permutation((1, 0))))
-    assert close, metrics
-
-
-def test_factorized_nuclear_wavefunction_keeps_atom_ownership_explicit() -> None:
-    batch = ElectronBatch(
-        positions=torch.tensor([[[0.0], [2.0]], [[1.0], [3.0]]], dtype=torch.float64),
-        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
-        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
-    )
-    factorized = NuclearFactorizedEnvelope(AdditiveEnvelope(), NuclearConfinement())
+def test_wavefunction_allows_no_post_readout_factors() -> None:
+    batch = ElectronBatch(positions=torch.tensor([[[0.0], [2.0]]], dtype=torch.float64))
     model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=ConstantReadout(),
-        nuclear_envelope=factorized,
     )
 
-    parts = model.nuclear_factorization(batch)
-    output = parts.as_output()
-    output.aux["mutation"] = True
-    assert "mutation" not in parts.aux
-    assert parts.validate(batch) is parts
-    with pytest.raises(ValueError, match="exactly one"):
-        TPENWaveFunction(
-            embedding=EmptyEncoder(),
-            layers=[nn.Identity()],
-            readout=ConstantReadout(),
-            envelope=AdditiveEnvelope(),
-            nuclear_envelope=factorized,
-        )
+    output = model(batch)
 
-    legacy = TPENWaveFunction(
-        embedding=EmptyEncoder(),
-        layers=[nn.Identity()],
-        readout=ConstantReadout(),
-        envelope=AdditiveEnvelope(),
-    )
-    with pytest.raises(ValueError, match="no NuclearFactorizedEnvelope"):
-        legacy.nuclear_factorization(batch)
+    torch.testing.assert_close(output.logabs, torch.zeros(1, dtype=torch.float64))
+    torch.testing.assert_close(output.sign, torch.tensor([-1.0], dtype=torch.float64))
 
 
-def test_factorized_nuclear_wavefunction_constructs_one_readout_per_top_level_call() -> None:
+def test_wavefunction_composes_legacy_envelope_and_generic_factors_in_one_pipeline() -> None:
+    # A5: envelope/nuclear_envelope mutual exclusion is retired -- both a
+    # legacy `envelope` and generic post-readout `factors` may be supplied
+    # together and sum into one pipeline.
     batch = ElectronBatch(
         positions=torch.tensor([[[0.0], [2.0]], [[1.0], [3.0]]], dtype=torch.float64),
         nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
         nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
     )
+    atoms = AtomicConfiguration(positions=torch.tensor([[0.0]], dtype=torch.float64), charges=torch.tensor([2.0], dtype=torch.float64))
+    envelope = AdditiveEnvelope([GaussianConfinement(coefficient=0.1)])
+    en_cusp = ElectronNucleusCusp(atoms=atoms)
+    model = TPENWaveFunction(
+        embedding=EmptyEncoder(),
+        layers=[nn.Identity()],
+        readout=ConstantReadout(),
+        envelope=envelope,
+        factors=[en_cusp],
+    )
+
+    output = model(batch)
+
+    torch.testing.assert_close(output.logabs, envelope(batch) + en_cusp(batch))
+
+
+def test_wavefunction_factors_pipeline_calls_readout_once_and_does_not_alias_aux() -> None:
+    batch = ElectronBatch(positions=torch.tensor([[[0.0], [2.0]], [[1.0], [3.0]]], dtype=torch.float64))
     readout = CountingReadout()
+    atoms = AtomicConfiguration(positions=torch.tensor([[0.0]], dtype=torch.float64), charges=torch.tensor([2.0], dtype=torch.float64))
     model = TPENWaveFunction(
         embedding=EmptyEncoder(),
         layers=[nn.Identity()],
         readout=readout,
-        nuclear_envelope=NuclearFactorizedEnvelope(AdditiveEnvelope(), NuclearConfinement()),
+        factors=[ElectronElectronCusp(eps=0.0), ElectronNucleusCusp(atoms=atoms)],
     )
 
-    parts = model.nuclear_factorization(batch)
-    assert readout.calls == 1
     output = model(batch)
-    assert readout.calls == 2
-    assert output.validate(batch_size=batch.batch_size) is output
-    assert parts.nuclear.validate(batch) is parts.nuclear
 
-
-def test_wavefunction_requires_envelope() -> None:
-    with pytest.raises(ValueError, match="envelope"):
-        TPENWaveFunction(
-            embedding=EmptyEncoder(),
-            layers=[nn.Identity()],
-            readout=ConstantReadout(),
-            envelope=None,  # type: ignore[arg-type]
-        )
+    assert readout.calls == 1
+    output.aux["mutation"] = True
+    output2 = model(batch)
+    assert "mutation" not in output2.aux
 
 
 def test_wavefunction_envelope_adds_only_to_logabs_and_preserves_sign() -> None:
@@ -506,7 +456,10 @@ def test_electron_nucleus_cusp_rejects_law_of_wrong_type() -> None:
         ElectronNucleusCusp(atoms=atoms, law=object())
 
 
-def test_electron_nucleus_cusp_defaults_to_linear_compatibility_law_matching_nuclear_confinement() -> None:
+def test_electron_nucleus_cusp_defaults_to_linear_compatibility_law_matching_legacy_formula() -> None:
+    # The linear compatibility law must reproduce the He linear cusp formerly
+    # hard-coded by the retired `NuclearConfinement` envelope: `-Z * r`,
+    # summed over electron-nucleus pairs.
     positions = torch.tensor(
         [[[0.0, 0.0], [1.0e-14, 0.0]], [[3.0, 4.0], [0.0, 2.0]]], dtype=torch.float64
     )
@@ -516,11 +469,10 @@ def test_electron_nucleus_cusp_defaults_to_linear_compatibility_law_matching_nuc
     batch = ElectronBatch(positions=positions)
 
     cusp = ElectronNucleusCusp(atoms=atoms)
-    legacy = NuclearConfinement().evaluate(
-        ElectronBatch(positions=positions, nuclear_positions=nuclei, nuclear_charges=charges)
-    )
+    expected_distance = torch.linalg.vector_norm(positions.unsqueeze(2) - nuclei.view(1, 1, 2, 2), dim=-1)
+    expected_value = (-expected_distance * charges.view(1, 1, 2)).sum(dim=(1, 2))
 
-    torch.testing.assert_close(cusp(batch), legacy.value.sum(dim=(1, 2)))
+    torch.testing.assert_close(cusp(batch), expected_value)
     assert isinstance(cusp.law, LinearElectronNucleusCuspLaw)
 
 
