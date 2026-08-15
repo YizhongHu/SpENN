@@ -9,7 +9,12 @@ from tpen.data import AtomicConfiguration
 from tpen.data.batch import ElectronBatch
 from tpen.data.permutation import Permutation
 from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
-from tpen.physics.potential import ElectronNucleusPotential, NucleusNucleusPotential
+from tpen.physics.potential import (
+    ElectronNucleusInteraction,
+    ElectronNucleusPotential,
+    NucleusNucleusInteraction,
+    NucleusNucleusPotential,
+)
 
 
 def _atoms(nuclei, charges, dtype=torch.float64) -> AtomicConfiguration:
@@ -294,3 +299,43 @@ def test_electron_nucleus_and_nucleus_nucleus_potential_compose_via_naive_evalua
 
     assert isinstance(result, LocalEnergyResult)
     torch.testing.assert_close(result.total, result.terms["en"] + result.terms["nn"])
+
+
+# --- A7: generic-vs-legacy potential parity under a matching AtomicConfiguration ---
+
+
+def test_h2_generic_and_legacy_electron_nucleus_potentials_agree_by_value() -> None:
+    # `ElectronNucleusPotential(atoms)` (constructor-owned) and legacy
+    # `ElectronNucleusInteraction` (batch-transported) must produce
+    # equal-valued electron-nucleus energies for the same H2 geometry --
+    # reconciled by value equality, not by sharing a Python object.
+    atoms = _h2_atoms()
+    positions = torch.tensor(
+        [[[0.3, 0.1, -0.5], [-0.2, 0.4, 0.6]], [[0.0, 0.0, 0.0], [1.0, -1.0, 2.0]]],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(
+        positions=positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+
+    generic_result = ElectronNucleusPotential(atoms).local_energy(None, batch)
+    legacy_result = ElectronNucleusInteraction().local_energy(None, batch)
+
+    torch.testing.assert_close(generic_result.total, legacy_result.total)
+
+
+def test_h2_generic_and_legacy_nucleus_nucleus_potentials_agree_by_value() -> None:
+    atoms = _h2_atoms()
+    positions = torch.tensor([[[0.3, 0.1, -0.5], [-0.2, 0.4, 0.6]]], dtype=torch.float64)
+    batch = ElectronBatch(
+        positions=positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+
+    generic_result = NucleusNucleusPotential(atoms).local_energy(None, batch)
+    legacy_result = NucleusNucleusInteraction().local_energy(None, batch)
+
+    torch.testing.assert_close(generic_result.total, legacy_result.total)
