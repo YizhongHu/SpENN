@@ -71,6 +71,19 @@ def compute_vmc_objective(
     ValueError
         If ``logabs`` and ``local_energy`` shapes differ, or if no finite
         local-energy sample remains.
+
+    Notes
+    -----
+    ``energy_stderr`` is an **IID-only** standard error: ``sigma / sqrt(N)``
+    over finite samples. The batch is a set of correlated MCMC walkers, so this
+    understates the true uncertainty by roughly ``sqrt(tau_int)``. It is a
+    training progress signal, not a reportable error bar, and is retained
+    unchanged because it has existing consumers.
+
+    The correlation-aware quantity is the MCSE from
+    :func:`tpen.statistics.produce_trajectory_statistics`, which requires a
+    ``[draw, walker]`` trajectory that does not exist at this call site. Do not
+    reinterpret this metric as an MCSE.
     """
 
     if logabs.shape != local_energy.shape:
@@ -158,6 +171,13 @@ def summarize_local_energy_terms(
     ------
     ValueError
         If any term has no finite samples.
+
+    Notes
+    -----
+    Each ``{prefix}_stderr`` is an **IID-only** standard error, exactly as in
+    `compute_vmc_objective`: it ignores serial correlation between MCMC walkers and so
+    understates the true uncertainty. Per-term error bars are diagnostic only.
+    Do not reinterpret them as MCSE; there is no per-term trajectory producer.
     """
 
     metrics: dict[str, float | int] = {}

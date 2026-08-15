@@ -6,14 +6,22 @@ from tpen.sampling.mala import MALASampler
 from tpen.sampling.metropolis import MetropolisSampler
 from tpen.sampling.moves import GaussianMove, gaussian_proposal
 from tpen.sampling.stats import SamplerStats
+from tpen.sampling.trajectory import (
+    ModelDriftError,
+    collect_observable_trajectory,
+    parameter_fingerprint,
+)
 
 __all__ = [
     "GaussianMove",
     "MALASampler",
     "MetropolisSampler",
+    "ModelDriftError",
     "SamplerStats",
+    "collect_observable_trajectory",
     "equilibrate",
     "gaussian_proposal",
+    "parameter_fingerprint",
     "summarize_walker_geometry",
     "warmup",
 ]

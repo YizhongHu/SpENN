@@ -225,6 +225,29 @@ wall_time_sec
 step_time_sec
 ```
 
+### Uncertainty keys: `*_stderr` is IID-only
+
+Every `*_stderr` key in this document — `energy_stderr`, `energy_term_<name>_stderr`,
+and any `{prefix}_stderr` — is an **IID-only** standard error, `sigma / sqrt(N)`
+over finite samples. Five call sites compute it and all agree:
+`tpen.training.vmc.compute_vmc_objective`, `tpen.training.vmc.summarize_local_energy_terms`,
+`tpen.physics.hamiltonian.summarize_local_energy`,
+`tpen.diagnostics.energy._summarize_total_energy`, and
+`tpen.evaluation.summaries.local_energy.summarize_values`.
+
+MCMC walkers are serially correlated, so `sigma / sqrt(N)` understates the true
+uncertainty by roughly `sqrt(tau_int)`. These keys are progress and diagnostic
+signals. **They are not reportable error bars, and none of them is an MCSE.**
+
+The correlation-aware quantity is produced by
+`tpen.statistics.produce_trajectory_statistics` and is **not** a metric key. It is
+emitted as an immutable sidecar receipt keyed on
+`(stage, run_id, attempt_id, checkpoint_sha256, config_sha256, observable, evaluator_id)`,
+carrying `tau_int`, `ess` and `mcse` together with a `status` of
+`available`/`unresolved`/`absent`. A consumer wanting a defensible error bar reads
+that receipt; it must never rescale a `*_stderr` key and call the result an MCSE,
+and must never read a missing receipt as zero correlation.
+
 Sampler geometry keys (the `position_*`/`radius_*`/`electron_distance_*`/
 `center_of_mass_rms` block above) come from
 `tpen.sampling.summarize_walker_geometry` and appear under whichever namespace

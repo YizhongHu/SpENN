@@ -1,4 +1,4 @@
-"""Stable config hashing for checkpoint manifests."""
+"""Stable config and checkpoint-content hashing for checkpoint manifests."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from omegaconf import OmegaConf
@@ -15,6 +16,47 @@ RESOLVED_CONFIG_HASH_EXCLUSIONS = (
     ("run", "run_id"),
     ("run", "dir"),
 )
+
+
+_FILE_HASH_CHUNK_BYTES = 1 << 20
+
+
+def file_sha256(path: Path | str) -> str:
+    """Return the sha256 of a file's contents.
+
+    Used to identify a checkpoint by what it *is* rather than by where it sits.
+    A path-keyed identity breaks the moment a run tree is moved, re-collected,
+    or archived, and two different checkpoints can occupy the same path over
+    the life of a run.
+
+    Parameters
+    ----------
+    path : pathlib.Path or str
+        File to hash.
+
+    Returns
+    -------
+    str
+        Lowercase 64-character hex digest.
+
+    Raises
+    ------
+    FileNotFoundError
+        If `path` does not exist.
+    IsADirectoryError
+        If `path` is a directory. Checkpoint identity is per file; hashing a
+        directory would depend on traversal order.
+    """
+
+    resolved = Path(path)
+    if resolved.is_dir():
+        raise IsADirectoryError(f"checkpoint hash needs a file, got directory: {resolved}")
+    digest = hashlib.sha256()
+    # Chunked so a multi-gigabyte checkpoint is never held in memory at once.
+    with resolved.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_FILE_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def stable_config_hash(config: Any) -> str:
