@@ -34,6 +34,11 @@ class H2NuclearConfinementEvaluation:
     cusp_residual: torch.Tensor
     smooth_tail_logabs: torch.Tensor
 
+    def bounded_cusp_logabs(self) -> torch.Tensor:
+        """Reduce identical-H pair values without label-order roundoff."""
+
+        return _sum_identical_h_pair_values(self.value)
+
     def validate(self, batch: ElectronBatch) -> "H2NuclearConfinementEvaluation":
         """Validate the explicit H2 shapes, devices, and finite limits."""
 
@@ -307,7 +312,7 @@ class H2NuclearConfinement(Envelope):
         """Return the complete H2 log-amplitude contribution value-only."""
 
         cusp_value, smooth_tail = self.value_parts(batch)
-        output = cusp_value.sum(dim=(1, 2)) + smooth_tail.sum(dim=1)
+        output = _sum_identical_h_pair_values(cusp_value) + smooth_tail.sum(dim=1)
         assert output.shape == (batch.flatten_samples().batch_size,)
         return output
 
@@ -356,7 +361,7 @@ class H2NuclearFactorizedEnvelope(Envelope):
         _check_envelope_tensor(regular, flat, name="regular_envelope")
         cusp_value, smooth_tail = self.nuclear_confinement.value_parts(flat)
         regular_with_tail = regular + smooth_tail.sum(dim=1)
-        cusp = cusp_value.sum(dim=(1, 2))
+        cusp = _sum_identical_h_pair_values(cusp_value)
         return regular_with_tail, cusp
 
     def envelope_value(self, batch: ElectronBatch) -> torch.Tensor:
@@ -410,6 +415,14 @@ def _smooth_tail_logabs(
     fraction = radius_squared[..., 0] * radius_squared[..., 1] / radius_squared.sum(dim=-1)
     root = torch.sqrt(a.square() + 2.0 * fraction)
     return -kappa * (2.0 * fraction / (root + a))
+
+
+def _sum_identical_h_pair_values(value: torch.Tensor) -> torch.Tensor:
+    """Sum each H pair symmetrically before reducing over electrons."""
+
+    if value.ndim != 3 or value.shape[-1] != 2:
+        raise ValueError("H2 pair values must have shape [batch, n_electrons, 2]")
+    return (value[..., 0] + value[..., 1]).sum(dim=1)
 
 
 def _positive_scalar(value: float, name: str) -> torch.Tensor:

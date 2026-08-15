@@ -183,7 +183,7 @@ class H2NuclearFactorizedWavefunctionParts:
         """Materialize the output by adding only the bounded cusp factor."""
 
         return WavefunctionOutput(
-            logabs=self.regular_logabs + self.nuclear.value.sum(dim=(1, 2)),
+            logabs=self.regular_logabs + self.nuclear.bounded_cusp_logabs(),
             sign=self.sign,
             phase=self.phase,
             aux=dict(self.aux),
