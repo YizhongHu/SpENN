@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from tpen.accelerator import canonical_device
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import Walkers, WavefunctionOutput
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.sampling.diagnostics import summarize_walker_geometry
@@ -111,11 +113,14 @@ class MetropolisSampler(nn.Module):
         self.n_up = n_up
         self.n_down = n_down
         self.dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
-        self.nuclear_positions, self.nuclear_charges = _fixed_nuclear_context(
+        fixed_positions, fixed_charges = _fixed_nuclear_context(
             nuclear_positions,
             nuclear_charges,
             spatial_dim=spatial_dim,
             dtype=self.dtype,
+        )
+        self.atomic_configuration: AtomicConfiguration | None = (
+            None if fixed_positions is None else AtomicConfiguration(positions=fixed_positions, charges=fixed_charges)
         )
         self.initial_scale = initial_scale
         self.acceptance_rate = 0.0
@@ -140,6 +145,18 @@ class MetropolisSampler(nn.Module):
         """Return whether the current chain has completed burn-in."""
 
         return self._has_burned_in
+
+    @property
+    def nuclear_positions(self) -> torch.Tensor | None:
+        """Return the configured nuclear positions, derived from `atomic_configuration`."""
+
+        return None if self.atomic_configuration is None else self.atomic_configuration.positions
+
+    @property
+    def nuclear_charges(self) -> torch.Tensor | None:
+        """Return the configured nuclear charges, derived from `atomic_configuration`."""
+
+        return None if self.atomic_configuration is None else self.atomic_configuration.charges
 
     def initialize(self, n_walkers: int | None = None, device=None) -> Walkers:
         """Initialize normally distributed walkers using the sampler generator.
@@ -181,12 +198,9 @@ class MetropolisSampler(nn.Module):
         return Walkers(
             positions=positions,
             spins=spins,
-            nuclear_positions=None
-            if self.nuclear_positions is None
-            else self.nuclear_positions.to(device=self._generator_device, dtype=self.dtype),
-            nuclear_charges=None
-            if self.nuclear_charges is None
-            else self.nuclear_charges.to(device=self._generator_device, dtype=self.dtype),
+            atomic_configuration=None
+            if self.atomic_configuration is None
+            else self.atomic_configuration.to(device=self._generator_device, dtype=self.dtype),
         )
 
     def reset(self, n_walkers: int | None = None, device=None) -> Walkers:
@@ -273,8 +287,7 @@ class MetropolisSampler(nn.Module):
         proposal_walkers = Walkers(
             positions=proposals,
             spins=walkers.spins,
-            nuclear_positions=walkers.nuclear_positions,
-            nuclear_charges=walkers.nuclear_charges,
+            atomic_configuration=walkers.atomic_configuration,
             aux=dict(walkers.aux),
         )
         proposed_logabs, proposed_sign = self._evaluate(model, proposal_walkers)
@@ -303,8 +316,7 @@ class MetropolisSampler(nn.Module):
             logabs=logabs.detach(),
             sign=sign.detach(),
             spins=None if walkers.spins is None else walkers.spins.detach(),
-            nuclear_positions=None if walkers.nuclear_positions is None else walkers.nuclear_positions.detach(),
-            nuclear_charges=None if walkers.nuclear_charges is None else walkers.nuclear_charges.detach(),
+            atomic_configuration=walkers.atomic_configuration,
             aux={
                 **walkers.aux,
                 "accepted": accepted.detach(),
@@ -404,10 +416,14 @@ class MetropolisSampler(nn.Module):
         keeps its normal module-parameter semantics. MCMC state (walkers,
         burn-in flag, running acceptance, and generator state) is persisted here
         instead so checkpointing does not abuse the standard module API.
+        `atomic_configuration` is serialized explicitly and unconditionally
+        (not only via `walkers`), so the configured system round-trips even
+        before the chain has ever been reset/initialized.
         """
 
         return {
             "walkers": self._walkers,
+            "atomic_configuration": self.atomic_configuration,
             "has_burned_in": self._has_burned_in,
             "acceptance_rate": float(self.acceptance_rate),
             "generator_state": self._generator.get_state(),
@@ -421,8 +437,38 @@ class MetropolisSampler(nn.Module):
         otherwise on the checkpointed device. Exact generator state is restored
         only when the checkpoint and target generator devices match; CPU/CUDA
         generators do not share a portable state representation.
+
+        The checkpoint's canonical `atomic_configuration` entry is the source
+        of truth; a restored `walkers.atomic_configuration` (if present) must
+        agree with it exactly, guarding against a hand-built or malformed
+        checkpoint carrying divergent context (this cannot arise from
+        `mcmc_state_dict`, which always serializes the same reference for
+        both). The canonical entry is adopted only when this sampler is not
+        already configured (legacy Hooke neither/neither stays `None` when
+        the checkpoint also carries none). When this sampler is already
+        configured, a present canonical entry must agree exactly
+        (`AtomicConfiguration.__eq__`); a mismatch raises `ValueError` rather
+        than silently overriding the constructor-owned system. A checkpoint
+        carrying no context never clears an already-configured sampler.
         """
 
+        restored_configuration = state.get("atomic_configuration")
+        restored_walkers = state["walkers"]
+        if restored_walkers is not None and restored_walkers.atomic_configuration is not None:
+            if restored_configuration is None:
+                restored_configuration = restored_walkers.atomic_configuration
+            elif restored_walkers.atomic_configuration != restored_configuration:
+                raise ValueError(
+                    "MetropolisSampler checkpoint's walkers.atomic_configuration does not match "
+                    "its canonical atomic_configuration entry"
+                )
+        if self.atomic_configuration is None:
+            self.atomic_configuration = restored_configuration
+        elif restored_configuration is not None and restored_configuration != self.atomic_configuration:
+            raise ValueError(
+                "MetropolisSampler is configured with an atomic_configuration that does not "
+                "match the restored checkpoint's atomic_configuration"
+            )
         checkpoint_device = _canonical_device(state["generator_device"])
         self._generator_device = _canonical_device(device) if device is not None else checkpoint_device
         self._generator = torch.Generator(device=self._generator_device)
@@ -430,8 +476,14 @@ class MetropolisSampler(nn.Module):
             self._generator.set_state(state["generator_state"])
         elif self.seed is not None:
             self._generator.manual_seed(int(self.seed))
+        if self.atomic_configuration is not None:
+            self.atomic_configuration = self.atomic_configuration.to(device=self._generator_device, dtype=self.dtype)
         walkers = state["walkers"]
         self._walkers = None if walkers is None else walkers.to(device=self._generator_device)
+        if self._walkers is not None and self.atomic_configuration is not None:
+            # Normalize to the single resolved reference so reset()/inference
+            # never see two distinct-but-equal AtomicConfiguration instances.
+            self._walkers = replace(self._walkers, atomic_configuration=self.atomic_configuration)
         self._has_burned_in = bool(state["has_burned_in"])
         self.acceptance_rate = float(state.get("acceptance_rate", 0.0))
 

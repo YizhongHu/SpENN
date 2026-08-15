@@ -112,8 +112,7 @@ class MALASampler(MetropolisSampler):
         gradient_walkers = Walkers(
             positions=positions,
             spins=walkers.spins,
-            nuclear_positions=walkers.nuclear_positions,
-            nuclear_charges=walkers.nuclear_charges,
+            atomic_configuration=walkers.atomic_configuration,
             aux=dict(walkers.aux),
         )
         with torch.enable_grad():
