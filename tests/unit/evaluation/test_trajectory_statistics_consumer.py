@@ -21,6 +21,7 @@ from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.data.batch.geometry import electron_nuclear_displacements
 from tpen.data.batch.walkers import Walkers
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
+from tpen.evaluation.calculators import LocalEnergyCalculator
 from tpen.evaluation.generators import TRAJECTORY_METADATA_KEY, TrajectoryMCMCGenerator
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.summaries import LocalEnergySummary, TrajectoryStatisticsSummary
@@ -228,8 +229,13 @@ def test_mcse_and_iid_stderr_are_both_published_and_distinct(tmp_path: Path) -> 
 
     # The pre-existing snapshot IID stderr is a different sample and is left
     # untouched by this consumer: it must still be emitted under its own name.
-    snapshot = LocalEnergySummary().summarize(
+    calculated = LocalEnergyCalculator(hamiltonian_terms=_terms(), chunk_size=2).calculate(
+        model=HeliumSlaterModel(),
         bundle=EvaluationBundle(generated=generated),
+        context=context,
+    )
+    snapshot = LocalEnergySummary().summarize(
+        bundle=calculated,
         context=context,
         namespace="eval/mcmc_energy",
     )
@@ -254,16 +260,20 @@ def test_exactly_one_receipt_is_written_and_matches_the_identity(tmp_path: Path)
     lines = [line for line in sidecar_path.read_text().splitlines() if line.strip()]
     assert len(lines) == 1
 
+    # The sidecar record is flat: identity fields sit at the top level.
     record = json.loads(lines[0])
-    assert record["identity"]["checkpoint_sha256"] == file_sha256(checkpoint)
-    assert record["identity"]["stage"] == STAGE
-    assert record["identity"]["run_id"] == RUN_ID
-    assert record["identity"]["attempt_id"] == ATTEMPT_ID
-    assert record["identity"]["observable"] == "local_energy"
-    assert record["identity"]["evaluator_id"] == EVALUATOR_ID
+    assert record["checkpoint_sha256"] == file_sha256(checkpoint)
+    assert record["stage"] == STAGE
+    assert record["run_id"] == RUN_ID
+    assert record["attempt_id"] == ATTEMPT_ID
+    assert record["observable"] == "local_energy"
+    assert record["evaluator_id"] == EVALUATOR_ID
+    assert record["status"] == "available"
+    assert record["statistics"]["mcse"] > 0.0
     # Content-addressed, never path-derived: no part of the checkpoint location
     # may appear in the key.
-    assert str(checkpoint) not in json.dumps(record["identity"])
+    identity_values = {field: record[field] for field in ("stage", "run_id", "attempt_id", "checkpoint_sha256", "config_sha256", "observable", "evaluator_id")}
+    assert str(checkpoint) not in json.dumps(identity_values)
 
 
 def test_moved_run_tree_still_joins(tmp_path: Path) -> None:
@@ -300,8 +310,8 @@ def test_moved_run_tree_still_joins(tmp_path: Path) -> None:
         attempt_id=ATTEMPT_ID,
         checkpoint_sha256=file_sha256(moved / "checkpoint.pt"),
         config_sha256=json.loads((moved / DEFAULT_SIDECAR_NAME).read_text().splitlines()[0])[
-            "identity"
-        ]["config_sha256"],
+            "config_sha256"
+        ],
         observable="local_energy",
         evaluator_id=EVALUATOR_ID,
     )
