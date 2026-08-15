@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 import torch
 
+from tpen.checkpoint.hashing import file_sha256
 from tpen.statistics.autocorrelation import TAU_CONVENTION
 from tpen.statistics.producer import (
     DEFAULT_R_HAT_THRESHOLD,
@@ -418,3 +419,46 @@ def test_reference_and_fft_producers_agree_on_tau_int() -> None:
         rel=1e-10,
         abs=1e-12,
     )
+
+
+def test_checkpoint_path_mismatch_is_rejected_before_any_statistics(tmp_path) -> None:
+    """Refuse to file one model's samples under another model's identity.
+
+    ``identity.checkpoint_sha256`` is caller-supplied, so unverified it asserts
+    provenance rather than establishing it. Without this binding a receipt for
+    model B can be written under model A's key: well-formed, joinable, and
+    wrong. The whole join key is content-addressed to make that impossible, so
+    the check must run before any statistic is computed.
+    """
+    checkpoint = tmp_path / "model-b.pt"
+    checkpoint.write_bytes(b"model-b weights")
+
+    with pytest.raises(ValueError, match="checkpoint_sha256 does not match"):
+        produce_trajectory_statistics(
+            _ar1_trajectory(seed=1301),
+            _identity(),  # claims "a" * 64
+            checkpoint_path=checkpoint,
+        )
+
+
+def test_matching_checkpoint_contents_are_accepted(tmp_path) -> None:
+    """Admit the receipt when the claimed digest is the file's real digest."""
+    checkpoint = tmp_path / "model-a.pt"
+    checkpoint.write_bytes(b"model-a weights")
+    digest = file_sha256(checkpoint)
+    identity = TrajectoryStatisticsIdentity(
+        stage="evaluation",
+        run_id="he-seeded-run",
+        attempt_id="attempt-1",
+        checkpoint_sha256=digest,
+        config_sha256="b" * 64,
+        observable="local_energy",
+        evaluator_id="local_energy/v1",
+    )
+
+    receipt = produce_trajectory_statistics(
+        _ar1_trajectory(seed=1302), identity, checkpoint_path=checkpoint
+    )
+
+    assert receipt.identity.checkpoint_sha256 == digest
+    assert receipt.status in ("available", "unresolved")

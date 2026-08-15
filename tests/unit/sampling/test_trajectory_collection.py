@@ -3,7 +3,10 @@
 import pytest
 import torch
 
+from tpen.data.batch.electron_batch import ElectronBatch
 from tpen.data.batch.walkers import Walkers
+from tpen.data.batch.wavefunction_output import WavefunctionOutput
+from tpen.physics.kinetic import autograd_laplacian
 from tpen.sampling.stats import SamplerStats
 from tpen.sampling.trajectory import (
     ModelDriftError,
@@ -150,20 +153,31 @@ def test_model_drift_is_rejected_by_default_but_can_be_disabled() -> None:
 
 
 @pytest.mark.parametrize("initial_training", [True, False])
-def test_collection_uses_eval_without_grad_and_restores_training_mode(initial_training: bool) -> None:
-    """Make inference semantics temporary and observable to the callback."""
+def test_collection_freezes_parameters_but_leaves_autograd_enabled(initial_training: bool) -> None:
+    """Freeze the model without disabling the autograd the energy depends on.
+
+    This previously asserted ``torch.is_grad_enabled()`` was False, which
+    codified a defect rather than a contract: the local energy's kinetic term
+    differentiates twice with respect to positions, so a collector that disables
+    autograd cannot serve the acceptance contract's first observable at all.
+    Freezing is expressed on the parameters instead.
+    """
     model = TinyModel()
     model.train(initial_training)
-    seen: list[tuple[bool, bool]] = []
+    seen: list[tuple[bool, bool, bool]] = []
 
     def observable(walkers: Walkers) -> torch.Tensor:
-        seen.append((model.training, torch.is_grad_enabled()))
+        any_parameter_trainable = any(p.requires_grad for p in model.parameters())
+        seen.append((model.training, torch.is_grad_enabled(), any_parameter_trainable))
         return _position_observable(walkers)
 
     collect_observable_trajectory(FakeSampler(), model, observable, observable_name="position", n_draws=2)
 
-    assert seen == [(False, False), (False, False)]
+    # eval mode, autograd live, no parameter able to accumulate a gradient.
+    assert seen == [(False, True, False), (False, True, False)]
     assert model.training is initial_training
+    # Parameter flags are restored, not forced on.
+    assert all(p.requires_grad for p in model.parameters())
 
 
 @pytest.mark.parametrize("sampler", [object(), None])
@@ -234,3 +248,75 @@ def test_returned_stats_are_from_final_draw() -> None:
     )
 
     assert stats == _stats(2, 3, seed=2)
+
+
+class GaussianWavefunction(torch.nn.Module):
+    """Analytic ``log|psi| = -alpha/2 * sum(r^2)`` with an exact Laplacian.
+
+    Real enough to exercise `tpen.physics.kinetic`: it is differentiated twice
+    with respect to positions by the same autograd path the local energy uses.
+    Its Laplacian of ``logabs`` is ``-alpha * n_electrons * spatial_dim``,
+    independent of position, so the oracle is exact rather than statistical.
+    """
+
+    def __init__(self, alpha: float = 0.75) -> None:
+        super().__init__()
+        self.alpha = torch.nn.Parameter(torch.tensor(alpha, dtype=torch.float64))
+
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        squared = (batch.positions.to(torch.float64) ** 2).sum(dim=(-2, -1))
+        logabs = -0.5 * self.alpha * squared
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
+def test_collection_supports_an_observable_needing_position_derivatives() -> None:
+    """Serve the local energy's autograd path, not just gradient-free values.
+
+    This is the regression test for a defect that three independent clean
+    verifications missed: the collector ran the observable under
+    ``torch.no_grad()``, so every fixture that passed was a gradient-free toy.
+    `tpen.physics.kinetic.autograd_laplacian` calls
+    ``torch.autograd.grad(..., create_graph=True)``, which RAISES under
+    ``no_grad``. Energy is the acceptance contract's first observable, so the
+    contract's primary path was unreachable while the suite stayed green.
+    """
+    alpha, n_electrons, spatial_dim = 0.75, 1, 1
+    model = GaussianWavefunction(alpha)
+
+    def laplacian_observable(walkers: Walkers) -> torch.Tensor:
+        batch = ElectronBatch(positions=walkers.positions.to(torch.float64))
+        return autograd_laplacian(model, batch)
+
+    trajectory, _ = collect_observable_trajectory(
+        FakeSampler(n_walkers=2),
+        model,
+        laplacian_observable,
+        observable_name="laplacian",
+        n_draws=3,
+    )
+
+    # Exact and position-independent: every draw and walker sees -alpha*N*D.
+    expected = torch.full((3, 2), -alpha * n_electrons * spatial_dim, dtype=torch.float64)
+    torch.testing.assert_close(trajectory.values, expected)
+
+
+def test_frozen_collection_leaves_no_parameter_gradient_behind() -> None:
+    """Differentiate through the model without accumulating parameter grads.
+
+    Freezing is what makes "fixed model" true while autograd stays live. If the
+    collector merely enabled grad without clearing ``requires_grad``, a caller
+    that later stepped an optimizer would apply gradients accumulated during
+    evaluation -- silently training on its own diagnostic.
+    """
+    model = GaussianWavefunction()
+
+    def laplacian_observable(walkers: Walkers) -> torch.Tensor:
+        batch = ElectronBatch(positions=walkers.positions.to(torch.float64))
+        return autograd_laplacian(model, batch)
+
+    collect_observable_trajectory(
+        FakeSampler(n_walkers=2), model, laplacian_observable, observable_name="laplacian", n_draws=2
+    )
+
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(parameter.requires_grad for parameter in model.parameters())

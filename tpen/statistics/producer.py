@@ -11,7 +11,9 @@ correlated it was with its predecessor.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
+from tpen.checkpoint.hashing import file_sha256
 from tpen.statistics.autocorrelation import (
     TAU_CONVENTION,
     integrated_autocorrelation_time,
@@ -109,6 +111,7 @@ def produce_trajectory_statistics(
     r_hat_threshold: float = DEFAULT_R_HAT_THRESHOLD,
     r_hat_warn_threshold: float = DEFAULT_R_HAT_WARN_THRESHOLD,
     method: str = "fft",
+    checkpoint_path: Path | str | None = None,
     recorded_at_utc: str | None = None,
 ) -> TrajectoryStatisticsReceipt:
     """Produce the immutable statistics receipt for one observable trajectory.
@@ -130,6 +133,12 @@ def produce_trajectory_statistics(
         published.
     method : {'fft', 'reference'}, optional
         Autocovariance backend.
+    checkpoint_path : Path or str or None, optional
+        Checkpoint file whose contents must hash to
+        ``identity.checkpoint_sha256``. When given, the claim is verified rather
+        than trusted, so samples from one model cannot be filed under another
+        model's key. Omit only when the checkpoint file is genuinely
+        unavailable to the caller.
     recorded_at_utc : str or None, optional
         Override the timestamp; defaults to now.
 
@@ -142,7 +151,9 @@ def produce_trajectory_statistics(
     Raises
     ------
     ValueError
-        If ``identity.observable`` does not match ``trajectory.observable``.
+        If ``identity.observable`` does not match ``trajectory.observable``, or
+        ``checkpoint_path`` is given and its contents do not hash to
+        ``identity.checkpoint_sha256``.
     """
 
     if identity.observable != trajectory.observable:
@@ -152,6 +163,21 @@ def produce_trajectory_statistics(
             "Autocorrelation is observable-specific; a mismatched receipt would "
             "join onto the wrong measurement."
         )
+
+    # The identity's checkpoint_sha256 is caller-supplied, so on its own it
+    # asserts provenance rather than establishing it: nothing stops model-B
+    # samples being filed under checkpoint-A's key, and the sidecar would then
+    # hold a well-formed receipt joining onto the wrong model. When the caller
+    # can name the checkpoint file, bind the claim to its actual contents.
+    if checkpoint_path is not None:
+        actual = file_sha256(checkpoint_path)
+        if actual != identity.checkpoint_sha256:
+            raise ValueError(
+                "identity.checkpoint_sha256 does not match the checkpoint contents: "
+                f"claimed {identity.checkpoint_sha256}, found {actual} at "
+                f"{checkpoint_path}. The join key is content-addressed precisely so "
+                "that this cannot pass silently."
+            )
 
     timestamp = recorded_at_utc or _utc_now()
     shape = TrajectoryShape(

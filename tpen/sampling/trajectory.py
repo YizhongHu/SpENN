@@ -11,8 +11,10 @@ estimate an autocorrelation time from.
 meaningless -- the target distribution is moving, so a lag-k correlation mixes
 the chain's memory with the model's -- and a trajectory silently collected while
 parameters drifted would produce a confident number for a quantity that does not
-exist. The collector therefore evaluates under `torch.no_grad()` in eval mode
-and, by default, verifies that no parameter moved.
+exist. The collector therefore evaluates in eval mode with every parameter
+frozen and, by default, verifies that no parameter moved. It does not disable
+autograd: the local energy needs position derivatives, so `torch.no_grad()`
+would make the contract's first observable raise rather than run.
 """
 
 from __future__ import annotations
@@ -61,14 +63,39 @@ def parameter_fingerprint(model: torch.nn.Module) -> str:
 
 @contextmanager
 def _frozen_eval(model: torch.nn.Module) -> Iterator[None]:
-    """Run a block with `model` in eval mode, restoring the prior mode after."""
+    """Run a block with `model` in eval mode and every parameter frozen.
+
+    Deliberately does NOT use `torch.no_grad()`. The first observable this
+    collector must serve is the local energy, whose kinetic term differentiates
+    ``logabs`` twice with respect to positions (`tpen.physics.kinetic` calls
+    ``requires_grad_(True)`` then ``torch.autograd.grad(..., create_graph=True)``).
+    Under `torch.no_grad()` no graph is recorded, so that call raises rather than
+    merely running slower, and the energy path -- the observable the acceptance
+    contract names first -- becomes unreachable.
+
+    "Fixed model" is a claim about parameters, not about autograd. It is enforced
+    here by clearing ``requires_grad`` on every parameter, so no parameter
+    gradient can accumulate while the trajectory is collected, and separately by
+    the caller's parameter fingerprint check. Position derivatives stay available
+    because they are what the observable is entitled to need.
+
+    The caller detaches each draw before retaining it, so the per-draw graph is
+    released immediately and collection does not accumulate autograd state.
+    """
 
     was_training = model.training
+    parameters = list(model.parameters())
+    previously_required = [parameter.requires_grad for parameter in parameters]
     model.eval()
+    for parameter in parameters:
+        parameter.requires_grad_(False)
     try:
-        with torch.no_grad():
-            yield
+        yield
     finally:
+        # Restore per-parameter flags rather than setting them all True: the
+        # caller may legitimately have had some frozen before we were invoked.
+        for parameter, required in zip(parameters, previously_required):
+            parameter.requires_grad_(required)
         model.train(was_training)
 
 
