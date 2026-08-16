@@ -194,6 +194,21 @@ checkpoint_steps: [100000, 200000, 300000]
 
 # Four independent fixed-model chains per retained checkpoint, per
 # `production-grid-v0`. 3 seeds x 3 checkpoints x 4 chains = 36 eval rows.
+#
+# DRAWS-PER-CHAIN MARGIN AGAINST THE ESTIMATOR'S FLOOR, measured from the config
+# rather than asserted. `eval.yaml` sets the energy task's `n_draws: 256`;
+# `tpen.statistics.producer.DEFAULT_MIN_DRAWS_PER_CHAIN` is 8. That is a 32x
+# margin, so the producer's per-chain gate CANNOT fire for want of draws on this
+# arm, and the correlation-aware bar the study's uncertainty claim rests on is
+# not sitting near a cliff.
+#
+# The gate is real and it is checked FIRST, before split-Rhat: every walker must
+# resolve its own integrated autocorrelation time on its own draws, so one short
+# chain returns `unresolved` for the whole receipt -- correctly, with a reason,
+# never a fabricated bar. The symptom of falling under the floor is an eval row
+# with NO MCSE rather than an error, which is why the relationship is asserted
+# in `tests/unit/experiments/test_he_v1_config.py` against the IMPORTED constant
+# and not against a literal 8: if the floor ever rises, the check moves with it.
 eval_chains: 4
 # Keeps every derived chain seed clear of the training seeds, so no "fresh"
 # chain replays the sampler that trained the model. `plan.py` rejects a
