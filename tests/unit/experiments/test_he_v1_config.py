@@ -275,6 +275,72 @@ def test_every_summary_field_is_produced_by_a_calculator(task_name: str) -> None
         )
 
 
+#: Positional overrides the H-F1 job scripts depend on, as (config, list key,
+#: index, dotted target). These indices are addressed by NUMBER from outside the
+#: repository -- ``callbacks.7.every_n_steps=1`` and
+#: ``summaries.4.max_samples=64`` -- so the repo must own the fact, not a script
+#: in a swept directory.
+_POSITIONAL_OVERRIDE_TARGETS = (
+    (TRAIN, "callbacks", 7, "tpen.callback.FactorScalars"),
+    (TRAIN, "callbacks", 9, "tpen.callback.Checkpoint"),
+    (EVAL, None, 4, "tpen.evaluation.summaries.SampledRecordWriter"),
+)
+
+
+@pytest.mark.parametrize(
+    ("config_path", "list_key", "index", "dotted"),
+    _POSITIONAL_OVERRIDE_TARGETS,
+    ids=["callbacks.7=FactorScalars", "callbacks.9=Checkpoint", "summaries.4=SampledRecordWriter"],
+)
+def test_positional_override_indices_hold_the_class_the_job_scripts_assume(
+    config_path: Path, list_key: str | None, index: int, dotted: str
+) -> None:
+    """Pin the three list positions that are addressed by number from outside.
+
+    THE FAILURE THIS PREVENTS IS SILENT SUCCESS, not an error. The GPU pilot
+    sets ``callbacks.7.every_n_steps=1`` to trace the cusp scalars every step.
+    ``callbacks[6]`` is ``SamplerHealth``. Insert one callback above position 7
+    and the override retunes sampler-health reporting instead, the run completes
+    cleanly, and the pilot produces NO SCALAR TRACE AND NO ERROR -- on the exact
+    measurement the zero-gradient-trap check depends on. The same shape applies
+    to ``summaries.4.max_samples`` and to the checkpoint cadence at 9.
+
+    Asserted against the imported CLASS rather than the dotted string, so
+    renaming or relocating the class fails here too instead of leaving a string
+    that matches nothing.
+    """
+
+    config = _load(config_path)
+    if list_key is None:
+        entries = config["evaluation_tasks"]["mcmc_energy"]["summaries"]
+        where = "evaluation_tasks.mcmc_energy.summaries"
+    else:
+        entries = config[list_key]
+        where = list_key
+
+    assert index < len(entries), (
+        f"{where} has only {len(entries)} entries, so index {index} is addressable "
+        "by no override at all"
+    )
+    assert _import_target(entries[index]["_target_"]) is _import_target(dotted), (
+        f"{where}[{index}] is {entries[index]['_target_']}, not {dotted}. A job script "
+        f"overriding {where}.{index}.* now retunes the wrong component silently."
+    )
+
+
+def test_the_callback_above_the_factor_scalars_index_is_still_sampler_health() -> None:
+    """Names the neighbour that makes the off-by-one silent rather than loud.
+
+    If ``callbacks[6]`` were something without an ``every_n_steps`` field, an
+    off-by-one would raise and be cheap. It is ``SamplerHealth``, which accepts
+    that key happily -- so the mistake costs a GPU pilot instead of a traceback.
+    This test exists to keep that reasoning attached to the code.
+    """
+
+    callbacks = _load(TRAIN)["callbacks"]
+    assert _import_target(callbacks[6]["_target_"]) is _import_target("tpen.callback.SamplerHealth")
+
+
 def test_the_calculator_field_mapping_covers_every_configured_calculator() -> None:
     # A calculator whose `name` is not its bundle field, and which is missing
     # from the mapping, would be credited with producing a field it does not --
