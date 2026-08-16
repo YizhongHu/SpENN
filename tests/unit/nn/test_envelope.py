@@ -660,3 +660,36 @@ def test_additive_envelope_state_dict_round_trips_with_trainable_component() -> 
     batch = ElectronBatch(positions=torch.ones(2, 2, 1, dtype=torch.float64))
 
     torch.testing.assert_close(restored(batch), envelope(batch))
+
+
+def test_feature_envelope_name_is_reserved_and_unused() -> None:
+    # C0 terminology contract: `FeatureEnvelope` is reserved for a future
+    # typed feature-space transform and must never exist as an alias/rename
+    # of the current multiplicative `Envelope`.
+    import tpen.nn as tpen_nn
+    import tpen.nn.envelope as envelope_module
+
+    assert not hasattr(envelope_module, "FeatureEnvelope")
+    assert not hasattr(tpen_nn, "FeatureEnvelope")
+
+
+def test_envelope_module_docstring_documents_compatibility_terminology() -> None:
+    # C0 terminology contract: the module docstring is the load-bearing
+    # source for the Envelope/LogAmplitudeFactor compatibility split; pin its
+    # key claims so a future edit cannot silently drop them.
+    import tpen.nn.envelope as envelope_module
+
+    doc = envelope_module.__doc__
+    assert "compatibility surface" in doc
+    assert "runtime deprecation warning" in doc
+    assert "FeatureEnvelope" in doc
+    assert "TPENWaveFunction.factors" in doc
+
+
+def test_electron_nucleus_cusp_law_documents_future_regular_component_contract() -> None:
+    # C0 terminology contract: the future optional trainable regular radial
+    # component for second-order curvature is documented, not implemented.
+    doc = ElectronNucleusCuspLaw.__doc__
+    assert "not yet implemented" in doc
+    assert "second-order" in doc
+    assert "w_A" in doc
