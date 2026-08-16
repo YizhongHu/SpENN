@@ -390,11 +390,18 @@ def test_two_timescale_plateau_is_not_truncated_at_the_fast_decay() -> None:
     # would suggest, and for a mechanism rather than an order statistic: the
     # distribution is right-skewed because a longer stop both accumulates more
     # noise and forfeits less tail, so the two effects push tau_int up
-    # together. At the longest stop observed (lag 187) the window formula
+    # together, and that is measured rather than assumed: over the 24 seeds
+    # corr(truncation_lag, tau_int) = +0.393, and stops at lag >= 120 average
+    # tau 8.9077 against 8.3615 for stops at lag <= 100.
+    # MODELLED, and labelled as such because the sample cannot settle it: at the
+    # longest stop observed (lag 187, n=1) the window formula
     # sqrt(2 * (2K + 1) / N) * tau gives sd 0.70 about a conditional mean near
-    # 9.0, so this bound is ~3 sd above the worst regime the estimator actually
-    # visits -- not 4.8 sd above an unconditional mean it is not drawn from
-    # when the stop runs long.
+    # 9.0, putting this bound ~3.2 sd above that regime. COUNTED where the
+    # sample does reach, the long-stop group (lag >= 120, n=9) has mean 8.9077
+    # and sd 0.6457, giving 3.43 sd -- so the real margin is WIDER than the
+    # model claims. Either way the bound is far above the worst regime the
+    # estimator actually visits, rather than 4.8 sd above an unconditional mean
+    # it is not drawn from when the stop runs long.
     assert 0.70 * theoretical_tau <= result.tau_int <= 1.20 * theoretical_tau
     assert result.plateau_reached is True
     # The more direct statement of the same property, and the sharper
@@ -418,10 +425,17 @@ def test_two_timescale_plateau_is_not_truncated_at_the_fast_decay() -> None:
     # FALSE-ALARM GROUNDS rather than arithmetic ones, and two thresholds answer
     # two different questions: reaching the healthy-stop regime K >= 75 needs
     # f > 0.92894, whose lower bound 8.6082 sits 0.012 sd ABOVE the observed mean
-    # of 8.6018 (50.5% of correct runs rejected); merely closing the [30, 75)
-    # gap needs f > 0.92674, lower bound 8.5878, 0.027 sd below the mean (48.9%
-    # rejected). Either way about half of all correct runs fail, so the gap is
-    # closable only through truncation_lag.
+    # of 8.6018 and is exceeded by 16 of the 24 calibration seeds; merely closing
+    # the [30, 75) gap needs f > 0.92674, lower bound 8.5878, which 15 of 24
+    # exceed. Either way a clear majority of correct runs -- roughly two thirds
+    # of the measured seeds -- would fail, so the gap is closable only through
+    # truncation_lag. Those counts are EMPIRICAL, and deliberately so: earlier
+    # revisions of this comment quoted 50.5% and 48.9% from a normal tail
+    # probability, which understates the rejection rate by about 15 points
+    # because the tau_int distribution is right-skewed (mean 8.6018, median
+    # 8.5033) -- the same skew this comment invokes twelve lines above to justify
+    # the asymmetric bound. Count where you can, model where you must, and label
+    # which you did.
     # THE LIMIT THAT FOLLOWS, measured: a defect truncating at 50 lags reports
     # 7.8565 and passes both assertions, as does one at 75 (8.6082), while the
     # smallest healthy stop over 24 seeds was 75 and the median 107. So
