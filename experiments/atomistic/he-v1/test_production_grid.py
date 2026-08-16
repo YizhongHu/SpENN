@@ -164,6 +164,43 @@ class TestSingletPurityNamespaceBinding:
         assert outcomes["triplet_fraction_mean_at_most"].status == "fail"
         assert outcomes["triplet_fraction_max_at_most"].status == "fail"
 
+    def test_production_purity_gates_are_bound_AND_armed_not_absent(
+        self, thresholds: dict, bindings: dict
+    ) -> None:
+        """The shipped config must leave purity ENFORCING, never silently absent.
+
+        This is the test that closes the hazard the collector's leniency
+        creates. An auto-requested gate metric that collides and is UNBOUND
+        resolves to absent so an unrequested collision cannot fail a row -- but
+        the purity metrics collide with `full_model_antisymmetry` BY
+        CONSTRUCTION, so if the production grid ever loses its
+        `metric_namespaces` binding all three purity gates become no-ops: every
+        row passes, the CSV lists every outcome, and the physics check does not
+        happen. "Gate absent" is not "gate failed", so nothing would look wrong.
+
+        Asserted against the SHIPPED grid, not a fixture, so it fails when
+        someone edits the config rather than when someone edits a helper.
+        """
+
+        for metric, threshold_key in (
+            ("triplet_fraction_mean_under_psi_orig_sq", "triplet_fraction_mean_max"),
+            ("triplet_fraction_max_under_psi_orig_sq", "triplet_fraction_max_max"),
+            (
+                "triplet_fraction_finite_sample_count",
+                "triplet_fraction_finite_sample_count_min",
+            ),
+        ):
+            assert bindings.get(metric) == PURITY_NAMESPACE, (
+                f"{metric} is not bound; it collides with full_model_antisymmetry "
+                "by construction, so an unbound purity gate is a silent no-op"
+            )
+            assert thresholds.get(threshold_key) is not None, (
+                f"{threshold_key} is undeclared, so its gate is not armed"
+            )
+            # Armed means the collector treats an unresolved collision on it as a
+            # ROW FAILURE rather than tolerating it.
+            assert metric in gates.enforcing_metrics(thresholds)
+
     def test_purity_center_is_analytic_zero(self, thresholds: dict) -> None:
         # A true spatial singlet has triplet fraction 0 exactly, so a perfectly
         # pure row must pass. A bound that a perfect value cannot satisfy would

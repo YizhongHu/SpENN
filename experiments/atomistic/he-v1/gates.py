@@ -313,6 +313,42 @@ ATOM_GATE_SPEC_KEYS: tuple[str, ...] = (_CHARGE_KEY,) + tuple(
 )
 
 
+def enforcing_metrics(spec: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the metrics whose gates are ARMED by a declared threshold.
+
+    A declared threshold is a statement of intent to enforce. That makes it the
+    signal a caller needs in order to tell two kinds of ``absent`` apart:
+
+    - a metric nobody declared a tolerance for is legitimately ungated, and a
+      row that cannot resolve it has lost nothing;
+    - a metric whose tolerance IS declared and which still cannot be gated means
+      THE CHECK THE CALLER ASKED FOR DID NOT RUN, which must not read as a pass.
+
+    Without this distinction the only safe policies are "fail every unresolved
+    collision", which failed all three smoke rows at merged dev, and "tolerate
+    every unresolved collision", which silently disables gates that were
+    declared. The threshold tells you which case you are in.
+
+    Parameters
+    ----------
+    spec : Mapping[str, Any]
+        Tolerance mapping, already stripped of any binding block.
+
+    Returns
+    -------
+    tuple of str
+        Metric keys read by at least one gate with a declared threshold.
+    """
+
+    return tuple(
+        dict.fromkeys(
+            definition.metric
+            for definition in _GATE_DEFINITIONS
+            if spec.get(definition.threshold_key) is not None
+        )
+    )
+
+
 def undeclared_spec_keys(spec: Mapping[str, Any]) -> tuple[str, ...]:
     """Return the recognized threshold keys ``spec`` does not declare.
 

@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
-from types import ModuleType
 
 import torch
 import yaml
@@ -29,26 +26,37 @@ def _load(path: Path) -> dict:
     return value
 
 
-def _load_study_module(name: str) -> ModuleType:
-    """Load one He-v1 study module by path under a study-unique name.
+#: Reserved gate-spec block holding namespace bindings, stripped before the spec
+#: reaches the gates. Spelled here rather than imported for the reason below.
+_METRIC_NAMESPACE_SPEC_KEY = "metric_namespaces"
 
-    A bare ``import collect`` resolves to whichever study got onto ``sys.path``
-    first: ``experiments/`` holds four ``collect.py`` and three ``plan.py``, and
-    each study inserts its own directory at ``sys.path[0]``. Measured: this test
-    passed in isolation and failed in the full suite for exactly that reason,
-    which is the signature of the bug and the reason a bare import is wrong here
-    even though it works when you run the file alone.
+
+def _grid_thresholds() -> dict:
+    """Return the production grid's gate thresholds, bindings removed.
+
+    Deliberately reads the YAML instead of calling the study's
+    ``collect.split_gate_spec``/``plan.load_grid_config``. THE STUDY MODULES ARE
+    NOT SAFELY IMPORTABLE FROM HERE, and loading them by path is not sufficient:
+    ``experiments/`` holds four ``collect.py`` and three ``plan.py``, and
+    ``collect.py`` reaches its siblings through BARE imports (``import plan as
+    plan_stage``), so whichever study populated ``sys.modules['plan']`` first
+    wins for every study afterwards. A path-based loader fixes the name this
+    file imports and cannot fix the names the loaded module imports.
+
+    Measured, not assumed: at fff76631 this test passed alone and failed in the
+    composed suite with ``AttributeError: module 'plan' has no attribute
+    'load_grid_config'`` -- an error naming a function that demonstrably exists,
+    which reads as a broken function rather than a wrong module.
+
+    The study-local suite still exercises the real ``split_gate_spec`` against
+    this same file, so the parsing contract is covered where it can be imported
+    safely; the repo-wide bare-sibling-import defect is filed separately.
     """
 
-    path = STUDY / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"he_v1_{name}", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Registered BEFORE exec: an unregistered module breaks `@dataclass`, which
-    # fails inside the standard library and reads as an interpreter fault.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    payload = _load(STUDY / "configs" / "production_grid.yaml")
+    spec = dict(payload["gate_spec"])
+    spec.pop(_METRIC_NAMESPACE_SPEC_KEY, None)
+    return spec
 
 
 def _he_reference() -> float:
@@ -383,9 +391,7 @@ def test_he_tail_band_brackets_the_law_s_own_outer_tail_slope() -> None:
     assumed it returns.
     """
 
-    collect = _load_study_module("collect")
-    grid = collect.plan_stage.load_grid_config(STUDY / "configs" / "production_grid.yaml")
-    thresholds, _ = collect.split_gate_spec(grid["gate_spec"])
+    thresholds = _grid_thresholds()
 
     law = instantiate(OmegaConf.create(_load(TRAIN)["model"]["factors"][1]["law"]))
     charges = torch.tensor(_load(TRAIN)["system"]["nuclei"]["charges"], dtype=torch.float64)

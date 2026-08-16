@@ -975,3 +975,61 @@ def test_report_round_trips_through_disk(study: dict[str, Any]) -> None:
     reread = report.read_collected(study["root"], "C1")
     path = report.write_report(reread, results_root=study["root"], attempt_id="R1")
     assert path.read_text(encoding="utf-8") == report.render(collected)
+
+
+PURITY_METRIC = "triplet_fraction_mean_under_psi_orig_sq"
+PURITY_THRESHOLD = {"triplet_fraction_mean_max": 0.05}
+
+
+def test_armed_purity_gate_without_a_binding_fails_the_row(
+    transform_study: dict[str, Any],
+) -> None:
+    """A DECLARED tolerance that cannot be gated must fail, never read as pass.
+
+    The purity metrics collide with ``full_model_antisymmetry`` by construction.
+    Tolerating an unresolved collision is right when nobody armed the metric --
+    that is what keeps an unrequested collision from failing a sound row. It is
+    WRONG once a threshold is declared, because then the caller asked for a
+    check and the check did not run, and ``absent`` does not read as ``failed``.
+
+    Concretely: this is what protects the production study if a future edit
+    drops the purity ``metric_namespaces`` binding. Without this the run would
+    pass every gate while the singlet-purity check silently never happened.
+    """
+
+    collected = _collect(transform_study, gate_spec=PURITY_THRESHOLD)
+    eval_rows = [row for row in collected["rows"] if row["identity"]["kind"] == "eval"]
+    assert eval_rows
+    for row in eval_rows:
+        assert row["status"] == "fail"
+        assert any(PURITY_METRIC in reason for reason in row["reasons"]), row["reasons"]
+
+
+def test_armed_purity_gate_with_a_binding_enforces_instead_of_failing(
+    transform_study: dict[str, Any],
+) -> None:
+    """Bound, the same armed gate resolves and decides on the right namespace."""
+
+    collected = _collect(
+        transform_study,
+        gate_spec=PURITY_THRESHOLD,
+        metric_namespaces={PURITY_METRIC: SPATIAL_NS},
+    )
+    assert collected["n_fail"] == 0, [row["reasons"] for row in collected["rows"]]
+    eval_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "eval")
+    outcome = next(
+        gate for gate in eval_row["gates"] if gate["name"] == "triplet_fraction_mean_at_most"
+    )
+    # Enforcing on the spatial-exchange value (0.01506), NOT absent, and NOT the
+    # by-construction 1.0 that the full-model namespace carries.
+    assert outcome["status"] == "pass"
+    assert outcome["value"] == {"status": "present", "value": 0.01506}
+
+
+def test_unarmed_purity_metric_still_does_not_fail_the_row(
+    transform_study: dict[str, Any],
+) -> None:
+    """The leniency this pairs with: no threshold declared, no row failure."""
+
+    collected = _collect(transform_study, gate_spec={})
+    assert collected["n_fail"] == 0, [row["reasons"] for row in collected["rows"]]

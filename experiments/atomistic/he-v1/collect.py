@@ -519,7 +519,19 @@ def collect_row(
     # This became load-bearing when the singlet-purity gates were added: their
     # metric names are shared with `full_model_antisymmetry`, so every gate
     # metric key they introduced collides on every eval row by construction.
+    #
+    # BUT TOLERATING THE COLLISION IS ITSELF THE DANGEROUS DIRECTION when the
+    # caller declared a tolerance for that metric. A declared threshold is a
+    # statement of intent to enforce, so an unresolved collision on it means THE
+    # DECLARED CHECK DID NOT RUN -- and `absent` does not read as `failed`. That
+    # is how the singlet-purity gates could silently become no-ops if a future
+    # edit dropped their `metric_namespaces` binding: every gate would report
+    # absent, every row would pass, and the physics check H-R5's namespace
+    # mechanism exists to enable would quietly not happen.
+    # So leniency is scoped to metrics NOBODY ARMED. An armed metric that cannot
+    # be resolved fails the row and names the namespaces, as it always did.
     auto_requested = set(GATE_METRIC_KEYS) - set(extra_metric_keys)
+    armed = set(gates.enforcing_metrics(gate_spec))
     metrics: dict[str, Any] = {}
     for key in metric_keys:
         namespace, name = split_metric_request(key)
@@ -536,7 +548,8 @@ def collect_row(
             ambiguous=ambiguous,
             namespaces=namespaces,
         )
-        if reason is not None and not (namespace is None and key in auto_requested):
+        tolerated = namespace is None and key in auto_requested and key not in armed
+        if reason is not None and not tolerated:
             reasons.append(reason)
         metrics[key] = absence.cell(value)
 
