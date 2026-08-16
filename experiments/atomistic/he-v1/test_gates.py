@@ -83,6 +83,13 @@ HEALTHY_METRICS: dict[str, Any] = {
     "tail_outer_radius_min": 4.0,
     "tail_outer_radius_max": 6.0,
     "tail_negative_slope_fraction": 1.0,
+    # Purity values as they arrive under the SPATIAL-EXCHANGE namespace, which
+    # is the only namespace where they are interpretable. Under
+    # full_model_antisymmetry the same names carry an identical-by-construction
+    # 1.0 that would fail these gates -- which is the point of binding them.
+    "triplet_fraction_mean_under_psi_orig_sq": 0.015,
+    "triplet_fraction_max_under_psi_orig_sq": 0.079,
+    "triplet_fraction_finite_sample_count": 4096,
 }
 
 # Tolerances loose enough that HEALTHY_METRICS passes every gate. These are test
@@ -107,6 +114,12 @@ PERMISSIVE_SPEC: dict[str, Any] = {
     "tail_outer_slope_min_min": -8.0,
     "tail_outer_radius_min_min": 3.0,
     "tail_outer_radius_max_max": 12.0,
+    # Singlet purity. The center is analytic -- a true spatial singlet has
+    # triplet fraction 0 exactly -- so these permissive bounds are distances
+    # from zero, not a band around a measured value.
+    "triplet_fraction_mean_max": 0.10,
+    "triplet_fraction_max_max": 0.30,
+    "triplet_fraction_finite_sample_count_min": 16,
 }
 
 

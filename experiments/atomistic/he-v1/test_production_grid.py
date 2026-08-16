@@ -12,19 +12,44 @@ need torch live in ``tests/unit/experiments/test_he_v1_config.py``.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import yaml
 
 STUDY_DIR = Path(__file__).resolve().parent
-if str(STUDY_DIR) not in sys.path:
-    sys.path.insert(0, str(STUDY_DIR))
 
-import collect  # noqa: E402
-import gates  # noqa: E402
-import plan  # noqa: E402
+
+def _load_study_module(name: str) -> ModuleType:
+    """Load one study module by path under a study-unique module name.
+
+    A bare ``import collect`` is NOT safe here. Four ``collect.py`` and three
+    ``plan.py`` modules exist under ``experiments/``, each study inserting its
+    own directory at ``sys.path[0]``, so in a full-suite run the bare name
+    resolves to whichever study was imported first -- and the resulting
+    ``AttributeError`` looks like a broken function rather than a wrong module.
+    Registering the module in ``sys.modules`` BEFORE executing it is also
+    required: exec'ing an unregistered module breaks ``@dataclass``, which
+    fails inside the standard library and reads as an interpreter fault.
+    """
+
+    path = STUDY_DIR / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"he_v1_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+collect = _load_study_module("collect")
+# Taken from the subject so there is exactly one `gates` module in play: a
+# second import would be a different object whose tables could disagree.
+gates = collect.gates
+plan = collect.plan_stage
 
 GRID = STUDY_DIR / "configs" / "production_grid.yaml"
 EVAL = STUDY_DIR / "configs" / "eval.yaml"

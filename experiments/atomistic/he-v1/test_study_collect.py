@@ -913,14 +913,25 @@ def test_rows_csv_never_writes_a_blank_cell(study: dict[str, Any]) -> None:
 
 
 def test_gates_csv_lists_every_outcome(study: dict[str, Any]) -> None:
-    """Seventeen outcomes per evaluation row, absent ones included."""
+    """EVERY declared gate appears per evaluation row, absent ones included.
+
+    The count is derived from the gate table rather than restated, so adding a
+    gate cannot leave this test asserting a stale number. It previously read
+    ``17``; adding the three singlet-purity gates made that literal wrong while
+    the property it was protecting -- every declared gate reaches the CSV --
+    remained true.
+    """
 
     collected = _collect(study)
     directory = collect.write_collected(collected, results_root=study["root"])
     with (directory / collect.GATES_CSV).open(newline="", encoding="utf-8") as handle:
         table = list(csv.DictReader(handle))
     eval_rows = [row for row in collected["rows"] if row["identity"]["kind"] == "eval"]
-    assert len(table) == 17 * len(eval_rows)
+    # Taken from the subject, for the same reason ABSENT is: a second import of
+    # `gates` would be a different module object and could disagree.
+    n_gates = len(collect.gates.evaluate_atom_gates({}, spec={}))
+    assert n_gates > 0
+    assert len(table) == n_gates * len(eval_rows)
     assert {record["status"] for record in table} <= {"pass", "fail", "absent"}
 
 
