@@ -4,10 +4,13 @@ This development study is the first all-electron TPEN surface: infinite-mass
 helium in the nonrelativistic singlet ground state. It is a smoke/contract
 study, not a production comparison.
 
-The model uses `NuclearFactorizedEnvelope`: the existing electron-electron
-cusp stays in the regular factor, while `NuclearConfinement` supplies the
-fixed electron-nucleus Kato factor `-Z_A |r_i-R_A|`. It intentionally has no
-Gaussian confinement.
+The model composes two generic post-readout `LogAmplitudeFactor`s directly:
+`ElectronElectronCusp` and `ElectronNucleusCusp`. `ElectronNucleusCusp` is
+constructed from a declarative `atoms:` `AtomicConfiguration` (the sole
+nuclear-geometry authority, also consumed by the Hamiltonian's
+`ElectronNucleusPotential`/`NucleusNucleusPotential` terms) and its default
+linear cusp law reproduces the fixed electron-nucleus Kato factor
+`-Z_A |r_i-R_A|`. It intentionally has no Gaussian confinement.
 
 The reference is -2.903724377034119598 Ha, mirrored from the canonical
 `he_atom` record in `experiments/baselines/systems.yaml`. Train and eval must

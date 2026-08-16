@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from tpen.checkpoint.hashing import file_sha256
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.data.batch.geometry import electron_nuclear_displacements
 from tpen.data.batch.walkers import Walkers
@@ -72,8 +73,13 @@ class CorrelatedHeliumSampler:
         self.n_steps = n_steps
         self.rho = rho
         self.generator = torch.Generator().manual_seed(seed)
-        self.nuclear_positions = torch.zeros(1, 3, dtype=torch.float64)
-        self.nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+        # A2 replaced the partial nuclear_positions/nuclear_charges pair with one
+        # typed value. AtomicConfiguration is immutable and carried by reference,
+        # so it is built once here and never reconstructed per draw.
+        self.atomic_configuration = AtomicConfiguration(
+            positions=torch.zeros(1, 3, dtype=torch.float64),
+            charges=torch.tensor([2.0], dtype=torch.float64),
+        )
         # Start well away from the nucleus: the Coulomb terms diverge at r = 0
         # and a non-finite draw would be reported as `unresolved`, masking the
         # behaviour under test.
@@ -98,8 +104,7 @@ class CorrelatedHeliumSampler:
         self.positions = 1.0 + self.rho * (self.positions - 1.0) + noise
         walkers = Walkers(
             positions=self.positions.clone(),
-            nuclear_positions=self.nuclear_positions,
-            nuclear_charges=self.nuclear_charges,
+            atomic_configuration=self.atomic_configuration,
         )
         stats = SamplerStats(0.6, self.n_walkers, 0, self.n_steps, 0.1, seed=self.call_count)
         return walkers, stats
