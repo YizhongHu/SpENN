@@ -336,6 +336,32 @@ def test_positional_override_indices_hold_the_class_the_job_scripts_assume(
     )
 
 
+def test_the_energy_task_draws_enough_per_chain_for_the_estimator_to_resolve() -> None:
+    """Pin the RELATIONSHIP between configured draws and the estimator's floor.
+
+    `produce_trajectory_statistics` refuses per chain below
+    ``DEFAULT_MIN_DRAWS_PER_CHAIN``, and that refusal is correct behaviour rather
+    than a fault -- it returns ``unresolved`` with a reason instead of a
+    fabricated bar. But a config that drops under the floor produces an eval row
+    with NO MCSE, and the visible symptom is an absent key rather than an error.
+
+    Compared against the imported constant, never a literal 8, so the two move
+    together. Production currently draws 256 per chain, a 32x margin; the
+    rehearsal override in the job script sits at exactly the floor, which is why
+    that script asserts the same relationship before it spends anything.
+    """
+
+    from tpen.statistics.producer import DEFAULT_MIN_DRAWS_PER_CHAIN  # noqa: PLC0415
+
+    generator = _load(EVAL)["evaluation_tasks"]["mcmc_energy"]["generator"]
+    assert generator["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    assert generator["n_draws"] >= DEFAULT_MIN_DRAWS_PER_CHAIN, (
+        f"n_draws {generator['n_draws']} is below the estimator's per-chain floor "
+        f"{DEFAULT_MIN_DRAWS_PER_CHAIN}; every eval row would report an unresolved "
+        "receipt and carry no MCSE at all"
+    )
+
+
 def test_the_callback_above_the_factor_scalars_index_is_still_sampler_health() -> None:
     """Names the neighbour that makes the off-by-one silent rather than loud.
 
