@@ -53,6 +53,47 @@ study: he-v1-production
 train_config: experiments/atomistic/he-v1/configs/train.yaml
 eval_config: experiments/atomistic/he-v1/configs/eval.yaml
 
+# WHAT THIS STUDY MAY CONCLUDE. Predeclared here because it is a decision rule
+# about the CONCLUSION, and a conclusion rule written after seeing the energy it
+# constrains is worthless -- it would be chosen knowing which side of the line
+# the result fell on.
+#
+# `production-grid-v0` permits no chemical-accuracy claim where the COMBINED
+# uncertainty exceeds 1.6 mHa. Combined means the correlation-aware bar and the
+# seed spread together, not the MCSE alone: three seeds resolve to three means,
+# and quoting a single chain's MCSE as the study's uncertainty would understate
+# it by whatever the seeds disagree by.
+#
+# The rule is one-directional and that is deliberate. Exceeding the threshold
+# forbids the CLAIM; it does not invalidate the energy, which is still reported
+# with its bar. Falling under the threshold does not oblige the claim either --
+# it removes one obstacle to it.
+reporting_rules:
+  chemical_accuracy_max_combined_uncertainty_mha: 1.6
+  combined_uncertainty_includes_seed_spread: true
+
+# REQUIREMENTS THIS ARM CANNOT DISCHARGE, recorded as an explicit `absent` with
+# its reason rather than left to a reader's grep. Missing is never zero, and a
+# requirement nobody wrote down as unmet reads as met.
+#
+# THE MINIMUM ELECTRON-NUCLEUS RADIUS REACHED BY THE SAMPLER HAS NO EMITTER.
+# Do not mistake `tail_outer_radius_min_min` above for it: that is the tail
+# PROBE GRID's declared-geometry floor, read off `tail_radii: [4.0, 6.0, 8.0]`,
+# and it is a different quantity entirely -- a property of where we chose to
+# measure, not of where the walkers went. The near-miss name is the trap: a
+# reader scanning for "radius min" finds it and stops.
+#
+# Verified absent at this SHA, three citations: SamplerStats composes
+# acceptance, walkers, burn-in, stride, proposal scale and geometry, emitting
+# radius max/mean/q50/q90/q99/std and electron_distance_min but NO radius_min;
+# `SampledRecordWriter` retains observables, not positions; and the trajectory
+# collector retains the observable series only. H-C2's phrasing is exact: "one
+# geometry key away from existing, not missing by design." Follow-up item
+# `27003f91` carries it, and it is two changes away rather than one -- the
+# emitter and the retention both have to move.
+unemitted_requirements:
+  min_sampled_electron_nucleus_radius: not_emitted
+
 # Three independent training seeds. Seed 0 is deliberately the seed the
 # convergence pilot runs, so the pilot is literally seed 0 of this set rather
 # than a separate configuration whose plateau might not transfer.
@@ -198,17 +239,22 @@ checkpoint_steps: [100000, 200000, 300000]
 # DRAWS-PER-CHAIN MARGIN AGAINST THE ESTIMATOR'S FLOOR, measured from the config
 # rather than asserted. `eval.yaml` sets the energy task's `n_draws: 256`;
 # `tpen.statistics.producer.DEFAULT_MIN_DRAWS_PER_CHAIN` is 8. That is a 32x
-# margin, so the producer's per-chain gate CANNOT fire for want of draws on this
-# arm, and the correlation-aware bar the study's uncertainty claim rests on is
-# not sitting near a cliff.
+# margin, so the producer's per-chain gate cannot fire FOR WANT OF DRAWS.
 #
-# The gate is real and it is checked FIRST, before split-Rhat: every walker must
-# resolve its own integrated autocorrelation time on its own draws, so one short
-# chain returns `unresolved` for the whole receipt -- correctly, with a reason,
-# never a fabricated bar. The symptom of falling under the floor is an eval row
-# with NO MCSE rather than an error, which is why the relationship is asserted
-# in `tests/unit/experiments/test_he_v1_config.py` against the IMPORTED constant
-# and not against a literal 8: if the floor ever rises, the check moves with it.
+# READ THAT SCOPE EXACTLY: the 32x buys immunity from ONE failure mode of at
+# least FOUR. The per-chain gate can still fire at 256 draws for STRUCTURE
+# reasons -- zero pooled variance, a non-positive initial Geyer pair, no plateau
+# within max_lag, non-positive tau, zero within-chain variance -- and A STUCK
+# WALKER AT 256 DRAWS FAILS EXACTLY AS IT WOULD AT 8. H-F3 must carry this
+# rather than the headline margin.
+#
+# The gate is PER-CHAIN and ANY ONE failing walker unresolves the WHOLE receipt,
+# which then publishes NO correlation-aware bar at all. It is the second of four
+# unresolved gates (nonfinite, per-chain IAT, split-Rhat THIRD, non-positive
+# ESS), so it pre-empts the Rhat check rather than following it. The symptom is
+# an eval row with no MCSE rather than an error, which is why the relationship
+# is asserted in `tests/unit/experiments/test_he_v1_config.py` against the
+# IMPORTED constant and not a literal 8: if the floor rises, the check moves.
 eval_chains: 4
 # Keeps every derived chain seed clear of the training seeds, so no "fresh"
 # chain replays the sampler that trained the model. `plan.py` rejects a

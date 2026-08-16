@@ -164,6 +164,21 @@ model:
   # -Z + c/d = -1.99, a 0.5% shift, far inside the unenforced physics bound
   # c/d < Z that a decaying tail requires. Both scalars are O(1), so the
   # inverse-softplus overflow above x ~ 709.78 (U1) is nowhere near.
+  #
+  # ONE OF THE FOUR TRAINABLE SCALARS IS EXPECTED TO STAY BITWISE FROZEN, AND
+  # THAT IS CORRECT RATHER THAN THE TRAP. `ElectronElectronCusp` carries a
+  # same-spin range and an opposite-spin range. Helium is `n_up: 1, n_down: 1`,
+  # so THERE ARE NO SAME-SPIN ELECTRON PAIRS -- the same-spin channel contributes
+  # nothing to the log-amplitude, receives no gradient, and its raw parameter is
+  # unchanged at the last step exactly as at the first.
+  #
+  # Predeclared here because a frozen trainable parameter is INDISTINGUISHABLE
+  # BY INSPECTION from the zero-gradient trap the nonzero `curvature_coefficient`
+  # exists to avoid, and anyone auditing "did every scalar settle" will find it
+  # and reasonably suspect a defect. The discriminator is which parameter: a
+  # frozen `raw_same_range` on a two-electron singlet is a property of the
+  # SYSTEM; a frozen `raw_curvature_range` would be the trap, because that
+  # channel does carry gradient here.
   factors:
     - _target_: tpen.nn.ElectronElectronCusp
       trainable_range: true

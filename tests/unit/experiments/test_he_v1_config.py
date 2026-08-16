@@ -362,6 +362,56 @@ def test_the_energy_task_draws_enough_per_chain_for_the_estimator_to_resolve() -
     )
 
 
+def test_both_he_configs_declare_float64() -> None:
+    """float64 is set in both configs and asserted, not merely present.
+
+    The DONE clause names float64 alongside eps=0.0 and the reference literal,
+    and the other two were pinned while this one was not. A local-energy
+    evaluation in float32 loses the tail of the autocorrelation function to
+    rounding well before the plateau, so the correlation-aware bar would be
+    quietly wrong rather than absent.
+    """
+
+    for path in (TRAIN, EVAL):
+        config = _load(path)
+        assert config["runtime"]["dtype"] == "float64", path.name
+
+
+def test_the_reference_energy_digit_string_is_pinned_in_a_test() -> None:
+    """Pin the literal itself, closing the coordinated-drift hole.
+
+    The symbolic cross-check asserts eval.yaml's `system.reference_energy`
+    equals systems.yaml's `he_atom.reference_energy_hartree`, and a mutation
+    kill proves it catches ONE-SIDED drift. It cannot catch a COORDINATED wrong
+    change of both copies, which stays green because the two still agree with
+    each other while agreeing on the wrong number.
+
+    So the value is pinned here as well, to the digit string Aznabaev, Bekbaev
+    and Korobov (arXiv:1810.11288, Table 3, attributed to Schwartz 2006) give
+    for the nonrelativistic infinite-nuclear-mass helium ground state. This is a
+    literal, not a computed value, so exact string equality is the right claim.
+
+    THE COMPARISON'S VALIDITY BOUND, worth stating where the number lives: this
+    reference EXCLUDES relativistic, QED and finite-mass corrections. TPEN's He
+    Hamiltonian is kinetic + electron-nucleus + electron-electron at infinite
+    nuclear mass, which omits them too, so the comparison is sound. A reader
+    comparing against an EXPERIMENTAL helium energy would find a discrepancy
+    that is physics rather than error.
+    """
+
+    expected = "-2.903724377034119598"
+
+    registry_text = REGISTRY.read_text(encoding="utf-8")
+    assert f"reference_energy_hartree: {expected}" in registry_text
+
+    eval_text = EVAL.read_text(encoding="utf-8")
+    assert f"reference_energy: {expected}" in eval_text
+
+    # And the parsed values still agree with each other and with the literal.
+    assert float(expected) == _he_reference()
+    assert float(_load(EVAL)["system"]["reference_energy"]) == float(expected)
+
+
 def test_the_callback_above_the_factor_scalars_index_is_still_sampler_health() -> None:
     """Names the neighbour that makes the off-by-one silent rather than loud.
 

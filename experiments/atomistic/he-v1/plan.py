@@ -62,8 +62,30 @@ GRID_KEYS: frozenset[str] = frozenset(
         "gate_spec",
         "seed_stages",
         "convergence_assessment",
+        "reporting_rules",
+        "unemitted_requirements",
     }
 )
+
+#: Required keys of the `reporting_rules` block. A limit on what the study may
+#: CONCLUDE, predeclared before the energy that would be judged against it.
+REPORTING_KEYS: frozenset[str] = frozenset(
+    {
+        "chemical_accuracy_max_combined_uncertainty_mha",
+        "combined_uncertainty_includes_seed_spread",
+    }
+)
+
+#: Requirements of `production-grid-v0` this arm cannot discharge, each carrying
+#: an explicit disposition. Recorded as data so the statement cannot be
+#: separated from the artifact it qualifies.
+UNEMITTED_REQUIREMENT_KEYS: frozenset[str] = frozenset(
+    {"min_sampled_electron_nucleus_radius"}
+)
+
+#: Admissible dispositions. `not_emitted` says the quantity has no emitter at
+#: all; a metric NAME would say which metric discharges it instead.
+UNEMITTED_DISPOSITIONS: frozenset[str] = frozenset({"not_emitted"})
 
 #: Required keys of the `convergence_assessment` block. Predeclared BEFORE any
 #: production data exists, which is the only thing that makes the rule
@@ -148,6 +170,8 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         )
     seed_stages = _validate_seed_stages(payload["seed_stages"], seeds)
     convergence = _validate_convergence_assessment(payload["convergence_assessment"])
+    reporting = _validate_reporting_rules(payload["reporting_rules"])
+    unemitted = _validate_unemitted_requirements(payload["unemitted_requirements"])
 
     if any(step <= 0 for step in checkpoint_steps):
         raise PlanError(f"checkpoint_steps must be positive: {checkpoint_steps}")
@@ -182,7 +206,80 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         "gate_spec": dict(gate_spec),
         "seed_stages": seed_stages,
         "convergence_assessment": convergence,
+        "reporting_rules": reporting,
+        "unemitted_requirements": unemitted,
     }
+
+
+def _validate_reporting_rules(payload: Any) -> dict[str, Any]:
+    """Validate the predeclared limits on what this study may CONCLUDE.
+
+    A conclusion rule is worthless if it can be written after the energy it
+    constrains is known, so it is validated here as a required grid key rather
+    than left to a report author's discretion.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise PlanError("reporting_rules must be a mapping")
+    missing = sorted(REPORTING_KEYS - set(payload))
+    unknown = sorted(set(payload) - REPORTING_KEYS)
+    if missing:
+        raise PlanError(f"reporting_rules is missing required keys: {missing}")
+    if unknown:
+        raise PlanError(f"reporting_rules carries unknown keys: {unknown}")
+
+    threshold = payload["chemical_accuracy_max_combined_uncertainty_mha"]
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+        raise PlanError(
+            "reporting_rules.chemical_accuracy_max_combined_uncertainty_mha must be a real number"
+        )
+    if not (float(threshold) > 0.0):
+        raise PlanError(
+            f"chemical_accuracy_max_combined_uncertainty_mha must be positive, got {threshold}"
+        )
+    if payload["combined_uncertainty_includes_seed_spread"] is not True:
+        # The MCSE of one chain is not the study's uncertainty. Three seeds
+        # resolve to three means, and excluding their spread would understate
+        # the bar by exactly the quantity replication exists to measure.
+        raise PlanError(
+            "reporting_rules.combined_uncertainty_includes_seed_spread must be true: a "
+            "single chain's MCSE is not the combined uncertainty of a three-seed study"
+        )
+    return {
+        "chemical_accuracy_max_combined_uncertainty_mha": float(threshold),
+        "combined_uncertainty_includes_seed_spread": True,
+    }
+
+
+def _validate_unemitted_requirements(payload: Any) -> dict[str, str]:
+    """Validate the explicit `absent` dispositions for requirements not met.
+
+    A requirement nobody wrote down as unmet reads as met. Recording the
+    disposition as DATA rather than prose is what stops it being separated from
+    the artifact it qualifies.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise PlanError("unemitted_requirements must be a mapping")
+    missing = sorted(UNEMITTED_REQUIREMENT_KEYS - set(payload))
+    unknown = sorted(set(payload) - UNEMITTED_REQUIREMENT_KEYS)
+    if missing:
+        raise PlanError(
+            f"unemitted_requirements is missing required keys: {missing}; a requirement "
+            "this arm cannot discharge must be recorded, not omitted"
+        )
+    if unknown:
+        raise PlanError(f"unemitted_requirements carries unknown keys: {unknown}")
+    resolved: dict[str, str] = {}
+    for key in sorted(UNEMITTED_REQUIREMENT_KEYS):
+        value = _require_text(payload[key], f"unemitted_requirements.{key}")
+        if value not in UNEMITTED_DISPOSITIONS:
+            raise PlanError(
+                f"unemitted_requirements.{key} must be one of {sorted(UNEMITTED_DISPOSITIONS)}, "
+                f"got {value!r}"
+            )
+        resolved[key] = value
+    return resolved
 
 
 def _validate_seed_stages(payload: Any, seeds: Sequence[int]) -> list[list[int]]:
@@ -470,6 +567,8 @@ def build_manifest(
         "gate_spec_declared": bool(config["gate_spec"]),
         "seed_stages": [list(stage) for stage in config["seed_stages"]],
         "convergence_assessment": dict(config["convergence_assessment"]),
+        "reporting_rules": dict(config["reporting_rules"]),
+        "unemitted_requirements": dict(config["unemitted_requirements"]),
         "plan_hash": plan_hash(rows),
         "n_rows": len(rows),
         "n_train_rows": sum(1 for row in rows if row["kind"] == "train"),

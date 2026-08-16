@@ -87,6 +87,11 @@ GRID: dict[str, Any] = {
         "on_inadequate": "report_only",
         "may_reselect": False,
     },
+    "reporting_rules": {
+        "chemical_accuracy_max_combined_uncertainty_mha": 1.6,
+        "combined_uncertainty_includes_seed_spread": True,
+    },
+    "unemitted_requirements": {"min_sampled_electron_nucleus_radius": "not_emitted"},
 }
 
 
@@ -167,6 +172,87 @@ def test_every_grid_key_is_required(missing: str) -> None:
     payload.pop(missing)
     with pytest.raises(plan.PlanError, match="missing required keys"):
         plan.validate_grid_config(payload)
+
+
+def test_the_chemical_accuracy_rule_is_predeclared_and_enforced_as_a_number() -> None:
+    """The conclusion rule is data in the artifact, not prose in a report.
+
+    A rule about what the study may CONCLUDE is worthless if it can be written
+    after the energy it constrains is known: it would be chosen knowing which
+    side of the line the result fell on. Validating it as a required grid key is
+    what makes "predeclared" checkable.
+    """
+
+    config = plan.validate_grid_config(_grid())
+    rules = config["reporting_rules"]
+    assert rules["chemical_accuracy_max_combined_uncertainty_mha"] == 1.6
+    assert rules["combined_uncertainty_includes_seed_spread"] is True
+
+    # A single chain's MCSE is not a three-seed study's uncertainty; excluding
+    # the seed spread would understate the bar by exactly the quantity
+    # replication exists to measure.
+    with pytest.raises(plan.PlanError, match="includes_seed_spread must be true"):
+        plan.validate_grid_config(
+            _grid(
+                reporting_rules={
+                    "chemical_accuracy_max_combined_uncertainty_mha": 1.6,
+                    "combined_uncertainty_includes_seed_spread": False,
+                }
+            )
+        )
+    with pytest.raises(plan.PlanError, match="must be positive"):
+        plan.validate_grid_config(
+            _grid(
+                reporting_rules={
+                    "chemical_accuracy_max_combined_uncertainty_mha": 0.0,
+                    "combined_uncertainty_includes_seed_spread": True,
+                }
+            )
+        )
+
+
+def test_an_undischargeable_requirement_is_recorded_rather_than_omitted() -> None:
+    """`absent` with a reason, never silence.
+
+    The minimum electron-nucleus radius REACHED BY THE SAMPLER has no emitter.
+    The trap this guards is a near-miss NAME: `tail_outer_radius_min_min` is the
+    tail probe grid's declared-geometry floor, a property of where we chose to
+    measure rather than of where the walkers went, so a reader grepping for
+    "radius min" finds it and stops. Recording the disposition as DATA is what
+    stops the statement being separated from the artifact it qualifies.
+    """
+
+    config = plan.validate_grid_config(_grid())
+    assert config["unemitted_requirements"]["min_sampled_electron_nucleus_radius"] == "not_emitted"
+
+    # Dropping it is an error, not a default: a requirement nobody wrote down as
+    # unmet reads as met.
+    with pytest.raises(plan.PlanError, match="missing required keys"):
+        plan.validate_grid_config(_grid(unemitted_requirements={}))
+    # And an unrecognised disposition cannot pass as one.
+    with pytest.raises(plan.PlanError, match="must be one of"):
+        plan.validate_grid_config(
+            _grid(unemitted_requirements={"min_sampled_electron_nucleus_radius": "probably_fine"})
+        )
+
+
+def test_both_new_declarations_survive_into_the_manifest() -> None:
+    """A declaration that does not reach the durable plan is not predeclared."""
+
+    config = plan.validate_grid_config(_grid())
+    manifest = plan.build_manifest(
+        config=config,
+        rows=plan.expand_rows(config),
+        attempt_id="20260816T120000",
+        results_root="/tmp/results",
+        grid_config_path=None,
+        grid_config_sha256=None,
+        created_at="2026-08-16T12:00:00-04:00",
+    )
+    assert manifest["reporting_rules"]["chemical_accuracy_max_combined_uncertainty_mha"] == 1.6
+    assert manifest["unemitted_requirements"] == {
+        "min_sampled_electron_nucleus_radius": "not_emitted"
+    }
 
 
 def test_unknown_grid_key_is_rejected() -> None:
