@@ -382,6 +382,81 @@ def test_too_few_draws_reports_unresolved_with_reason(tmp_path: Path) -> None:
     assert receipt.reason
 
 
+def test_resolved_receipt_projects_all_four_geyer_diagnostics(tmp_path: Path) -> None:
+    """The four truncation fields reach the row, carrying the receipt's values.
+
+    Asserted against the receipt rather than against literals, so this checks
+    PROJECTION FIDELITY and not that someone transcribed four numbers correctly
+    on one fixture.
+    """
+
+    checkpoint = _checkpoint(tmp_path)
+    generated = _generate(tmp_path)
+
+    result = _summary(tmp_path, checkpoint).summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=_context(tmp_path),
+        namespace="eval/mcmc_energy",
+    )
+
+    (receipt,) = TrajectoryStatisticsSidecar(tmp_path / DEFAULT_SIDECAR_NAME).read()
+    assert receipt.status == "available"
+    assert receipt.plateau is not None
+
+    assert result.metrics["local_energy_plateau_reached"] == receipt.plateau.plateau_reached
+    assert result.metrics["local_energy_truncation_lag"] == receipt.plateau.truncation_lag
+    assert result.metrics["local_energy_geyer_pair_count"] == receipt.plateau.pair_count
+    assert result.metrics["local_energy_max_lag"] == receipt.plateau.max_lag
+
+    # `truncation_lag` is only interpretable against the window that was
+    # available, which is why `max_lag` travels with it: 2*pairs - 1 lags were
+    # summed out of max_lag possible.
+    assert receipt.plateau.truncation_lag == 2 * receipt.plateau.pair_count - 1
+    assert result.metrics["local_energy_max_lag"] == 47
+
+
+def test_unresolved_receipt_still_projects_its_truncation_diagnostics(tmp_path: Path) -> None:
+    """The diagnostics survive the case they exist to explain.
+
+    THIS IS THE TEST THAT PROVES THE HOIST. `_receipt_metrics` returns early on
+    ``payload is None``, but `producer.py` builds `PlateauDiagnostics`
+    unconditionally at line 223 and passes it into every ``unresolved(...)``
+    return, so an unresolved receipt genuinely carries these fields. A
+    projection placed below that early return drops them precisely when the
+    producer withheld tau and ESS -- which is exactly when a reader needs to
+    know whether an unterminated Geyer sequence is the reason.
+
+    Three draws against a minimum of eight is the deterministic way to reach an
+    unresolved receipt; the ``no plateau within N lags`` outcome is the same
+    code path and the same early return.
+    """
+
+    checkpoint = _checkpoint(tmp_path)
+    generated = _generate(tmp_path, n_draws=3)
+
+    result = _summary(tmp_path, checkpoint).summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=_context(tmp_path),
+        namespace="eval/mcmc_energy",
+    )
+
+    (receipt,) = TrajectoryStatisticsSidecar(tmp_path / DEFAULT_SIDECAR_NAME).read()
+    assert receipt.status == "unresolved"
+    assert receipt.payload is None
+    assert receipt.plateau is not None
+
+    # No payload, so no tau and no MCSE -- and yet the reason the estimator
+    # refused is still on the row.
+    assert "local_energy_mcse" not in result.metrics
+    assert result.metrics["local_energy_plateau_reached"] is False
+    assert result.metrics["local_energy_max_lag"] == 2
+
+    # Absent rather than zero-filled: no pair was ever summed, and a 0 here
+    # would read as "truncated at lag zero" instead of "never got that far".
+    assert "local_energy_truncation_lag" not in result.metrics
+    assert "local_energy_geyer_pair_count" not in result.metrics
+
+
 def test_summary_requires_a_config_identity(tmp_path: Path) -> None:
     """The join key admits no blanks, so a missing config hash fails loudly."""
 
