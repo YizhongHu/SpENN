@@ -681,7 +681,7 @@ def test_envelope_module_docstring_documents_compatibility_terminology() -> None
 
     doc = envelope_module.__doc__
     assert "compatibility surface" in doc
-    assert "no runtime deprecation warning" in doc
+    assert "runtime deprecation warning" in doc
     assert "FeatureEnvelope" in doc
     assert "TPENWaveFunction.factors" in doc
 

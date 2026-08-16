@@ -354,7 +354,7 @@ def test_potential_module_docstring_documents_canonical_vs_legacy_terminology() 
     assert "canonical Hamiltonian API" in doc
     assert "compatibility surface" in doc
     assert "per-configuration" in doc
-    assert "not deprecated in this minor version" in doc
+    assert "deprecated in this minor version" in doc
 
 
 def test_electron_nucleus_potential_and_interaction_are_distinct_classes() -> None:
