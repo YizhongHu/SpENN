@@ -32,7 +32,7 @@ class TPENWaveFunction(EquivariantMap):
     log-amplitude contributions: every one of them accepts an
     :class:`ElectronBatch` and returns a ``[batch]``-shaped tensor (the
     contract shared by both `tpen.nn.envelope.Envelope` and
-    `tpen.nn.envelope.LogAmplitudeFactor`). There is no mutual exclusion
+    `tpen.nn.factor.LogAmplitudeFactor`). There is no mutual exclusion
     between them -- they compose in one pipeline, and either (or both) may be
     omitted for a bare readout output.
 

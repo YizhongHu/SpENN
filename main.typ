@@ -471,15 +471,21 @@ composing any mix of cusp and decay/confinement terms; `AdditiveCusp` is the
 narrower composition specifically over cusp factors (e.g. electron-electron
 and, later, electron-nucleus). Renaming `AdditiveEnvelope` to `LogAmplitudeFactor`
 is tracked separately and is not part of this terminology-only change.
-`Envelope`, `AdditiveEnvelope`, and `AdditiveCusp` are all supported legacy or
-current output-factor/composition APIs for the current minor version, not a
-feature-normalization step; none of them carries a runtime deprecation
-warning yet. `tpen.nn.TPENWaveFunction.factors` is the canonical composition
-seam for `LogAmplitudeFactor` terms (see Model Workflow below). The name
-`FeatureEnvelope` is reserved for a future typed feature-space transform ---
-a distinct concept from the multiplicative coordinate `Envelope` of the
-Normalization and Envelopes section --- and must never be introduced as an
-alias or rename of that existing `Envelope`.
+`Envelope` and `AdditiveEnvelope` (module `tpen.nn.envelope`) are legacy
+output-factor/composition APIs for the current minor version, not a
+feature-normalization step; neither carries a runtime deprecation warning
+yet. The canonical `LogAmplitudeFactor`/`AdditiveCusp`/`AsymptoticDecay`
+interfaces live in `tpen.nn.factor`, and the concrete cusp factors
+(`ElectronElectronCusp`, `ElectronNucleusCusp`, and their laws) live in
+`tpen.nn.cusp`; `AdditiveCusp` is retained only as a legacy compatibility
+compositor, not for use in new configs or docs. Every name that previously
+resolved through `tpen.nn.envelope` still does, via re-export, so this module
+split changes no import path. `tpen.nn.TPENWaveFunction.factors` is the
+canonical composition seam for `LogAmplitudeFactor` terms (see Model Workflow
+below). The name `FeatureEnvelope` is reserved for a future typed
+feature-space transform --- a distinct concept from the multiplicative
+coordinate `Envelope` of the Normalization and Envelopes section --- and must
+never be introduced as an alias or rename of that existing `Envelope`.
 
 $
 J (br)
@@ -645,20 +651,21 @@ $
 constrained positive by $b_A = "softplus"(tilde(b)_A) + epsilon$. A global $b$ or
 one $b_(Z)$ per nuclear charge is the recommended starting point.
 
-*Future contract, not implemented here:* every electron-nucleus cusp law must
-keep fixing the first-order Kato slope $v_A'(0) = -Z_A$ by nuclear charge
-alone. A law may separately expose an *optional* trainable regular radial
-component $w_A (r)$ that contributes only to second-order (and higher)
-curvature, i.e. satisfying $w_A (0) = 0$ and $w_A'(0) = 0$ so it cannot perturb
-the enforced cusp slope:
+Every electron-nucleus cusp law must keep fixing the first-order Kato slope
+$v_A'(0) = -Z_A$ by nuclear charge alone. A law may separately expose an
+*optional* trainable regular radial component $w_A (r)$ that contributes only
+to second-order (and higher) curvature, i.e. satisfying $w_A (0) = 0$ and
+$w_A'(0) = 0$ so it cannot perturb the enforced cusp slope:
 
 $
-v_A (r) = frac(-Z_A r, 1 + b_A r) + w_A (r), quad w_A (0) = 0, quad w_A'(0) = 0.
+v_A (r) = -Z_A r + w_A (r), quad w_A (0) = 0, quad w_A'(0) = 0.
 $
 
 This lets curvature near the nucleus be learned without touching the
-mandatory cusp condition. This is a documented contract for a future
-`ElectronNucleusCuspLaw`; no concrete law implements $w_A$ yet.
+mandatory cusp condition. `tpen.nn.cusp.TrainableCurvatureElectronNucleusCuspLaw`
+implements this contract with $w_A (r) = c r^2 slash (1 + d r)$ for a trainable
+(unconstrained-sign) $c$ and positive $d$; `LinearElectronNucleusCuspLaw`
+remains the exact compatibility default ($w_A = 0$).
 
 == Loss function
 
