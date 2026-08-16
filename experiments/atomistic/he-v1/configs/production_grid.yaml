@@ -358,8 +358,23 @@ gate_spec:
   # PRODUCTION ROW WOULD HAVE FAILED THE CUSP GATE -- a predeclared bound that
   # fails healthy work, discovered after 146 GPU-hours rather than before.
   #
-  # Scales are 1.5x the measured error, which is deliberately PERMISSIVE and the
-  # reason is worth stating: these bounds exist to catch a GROSSLY broken cusp,
+  # METHOD AND RESULT, STATED SEPARATELY because they differ and the difference
+  # runs in the direction that misleads a reader:
+  #   method  : 1.5x the measured error, then ROUNDED UP to a round number.
+  #             1.5x would give 0.329627 and 0.334299.
+  #   declared: 0.35, 0.35, 0.40
+  #   EFFECTIVE ratios: 0.35/0.2197513145207614 = 1.592709 (both mean bounds)
+  #                     0.40/0.2228658133058481 = 1.794802
+  # So the gate is LOOSER than "1.5x" says. The bounds themselves are
+  # conservative for THIS RUN's purpose -- a wider bound cannot fail healthy work
+  # -- but a reader judging whether the gate is TOO PERMISSIVE is the one who
+  # needs the true number, and for that purpose "1.5x" understates by up to 20%.
+  # A figure wrong in the safe direction is only safe relative to the use its
+  # author imagined. The bounds are NOT adjusted: they are predeclared, and the
+  # breakage analysis below used these actual declared values.
+  #
+  # These scales are deliberately PERMISSIVE and the reason is worth stating:
+  # these bounds exist to catch a GROSSLY broken cusp,
   # not to certify convergence. The measurement is the FULL MODEL's one-sided
   # slope at finite r, so it carries the network's contribution as well as the
   # analytic factor's, and it is taken at 15,000 updates against a production
