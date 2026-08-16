@@ -94,16 +94,22 @@ def test_below_floor_inputs_are_bitwise_unchanged() -> None:
 
 
 def test_branch_is_continuous_at_the_crossover() -> None:
-    """The two forms agree to sub-ulp accuracy where the branch switches.
+    """The two forms agree to within a few ulp where the branch switches.
 
     A discontinuity at the crossover would mean two configurations either side
     of an implementation detail initialize measurably differently.
+
+    The tolerance is expressed in ULP of the value rather than as an absolute
+    literal. The seam is ~1 ulp wide by construction -- that is the whole
+    claim about the large-x form being sub-ulp accurate -- and at x = 20 one
+    ulp is about 3.6e-15, so an absolute bound like 1e-15 is tighter than the
+    representation itself and fails on correct code.
     """
 
     crossover = _INVERSE_SOFTPLUS_LARGE_INPUT
     below = _inverse_softplus(crossover).item()
     just_above = _inverse_softplus(math.nextafter(crossover, math.inf)).item()
-    assert just_above == pytest.approx(below, rel=0.0, abs=1e-15)
+    assert abs(just_above - below) <= 4.0 * math.ulp(below)
 
 
 @pytest.mark.parametrize("range_value", [710.0, 1e4])
