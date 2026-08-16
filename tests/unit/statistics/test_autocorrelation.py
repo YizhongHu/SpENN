@@ -390,18 +390,24 @@ def test_two_timescale_plateau_is_not_truncated_at_the_fast_decay() -> None:
     # would suggest, and for a mechanism rather than an order statistic: the
     # distribution is right-skewed because a longer stop both accumulates more
     # noise and forfeits less tail, so the two effects push tau_int up
-    # together, and that is measured rather than assumed: over the 24 seeds
-    # corr(truncation_lag, tau_int) = +0.393, and stops at lag >= 120 average
-    # tau 8.9077 against 8.3615 for stops at lag <= 100.
-    # MODELLED, and labelled as such because the sample cannot settle it: at the
-    # longest stop observed (lag 187, n=1) the window formula
-    # sqrt(2 * (2K + 1) / N) * tau gives sd 0.70 about a conditional mean near
-    # 9.0, putting this bound ~3.2 sd above that regime. COUNTED where the
-    # sample does reach, the long-stop group (lag >= 120, n=9) has mean 8.9077
-    # and sd 0.6457, giving 3.43 sd -- so the real margin is WIDER than the
-    # model claims. Either way the bound is far above the worst regime the
-    # estimator actually visits, rather than 4.8 sd above an unconditional mean
-    # it is not drawn from when the stop runs long.
+    # together. COUNTED over the 24 calibration seeds:
+    # corr(truncation_lag, tau_int) = +0.385; the long-stop group (lag >= 120,
+    # n=9: seeds 1803 1804 1805 1806 1807 1808 1811 1816 1821) has mean tau
+    # 8.8501, against 8.3270 for the short-stop group (lag <= 100, n=9: seeds
+    # 1801 1802 1809 1810 1813 1814 1815 1819 1823). No seed sits at lag 100, so
+    # the inclusion rule cannot move one.
+    # THE MARGIN ITSELF IS MODELLED, not counted, and the sample cannot settle
+    # it: the window formula sqrt(2 * (2K + 1) / N) * tau puts this bound ~3.24
+    # sd above the long-stop mean. The measured alternative does NOT adjudicate
+    # that, because at n=9 the sample sd 0.7317 carries a standard error of
+    # s/sqrt(2(n-1)) = 0.1829 -- 25% relative -- so the implied margin spans 2.48
+    # to 4.14 and the modelled value sits inside. Model and measurement agree to
+    # within the precision available; neither supports a claim that one is wider.
+    # Earlier revisions of this comment asserted +0.393, 8.9077, 8.3615, 0.6457
+    # and "wider than the model". Those came from a HAND-TRANSCRIBED copy of the
+    # calibration table that dropped one row's lag and padded the end, silently
+    # mispairing 10 of 24 rows -- a length check passed because the pad restored
+    # the length. Read such columns from the retained log programmatically.
     assert 0.70 * theoretical_tau <= result.tau_int <= 1.20 * theoretical_tau
     assert result.plateau_reached is True
     # The more direct statement of the same property, and the sharper
