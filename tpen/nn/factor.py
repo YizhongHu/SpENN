@@ -169,11 +169,44 @@ def _check_factor_tensor(value: object, batch: ElectronBatch, *, name: str) -> N
         raise ValueError(f"{name} output must have shape {expected}, got {tuple(value.shape)}")
 
 
+#: Input above which the large-``x`` form of the inverse softplus is used.
+#: ``expm1(x)`` overflows to ``inf`` for ``x`` above roughly 709.78 in float64,
+#: which used to make this function return a non-finite raw parameter that
+#: turned every downstream value and gradient into NaN -- silently, because
+#: construction still succeeded. The crossover is far below that bound: by
+#: ``x = 20`` the large-``x`` form is already sub-ulp accurate, while below it
+#: ``expm1`` is what avoids the ``1 - exp(-x)`` cancellation.
+_INVERSE_SOFTPLUS_LARGE_INPUT = 20.0
+
+
 def _inverse_softplus(value: float) -> "torch.Tensor":
-    """Return the softplus inverse used to initialize positive trainable parameters."""
+    """Return the softplus inverse used to initialize positive trainable parameters.
+
+    Uses the algebraically exact identity ``log(expm1(x)) = x + log1p(-exp(-x))``
+    for large ``x``, which is finite for every representable positive input, so
+    a legitimate initial value is never rejected and never silently poisoned.
+
+    The branch is taken on the Python float rather than with `torch.where`,
+    which evaluates BOTH branches and would therefore still compute the
+    overflowing form. That matters only if this is ever called inside a graph;
+    today it is called on a Python float in ``__init__``.
+
+    Parameters
+    ----------
+    value : float
+        Positive target value of the parameter being initialized. Values below
+        ``1e-12`` are floored, preserving the previous behaviour.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar float64 raw parameter whose softplus is ``value``.
+    """
 
     value = max(value, 1e-12)
     tensor = torch.tensor(value, dtype=torch.float64)
+    if value > _INVERSE_SOFTPLUS_LARGE_INPUT:
+        return tensor + torch.log1p(-torch.exp(-tensor))
     return torch.log(torch.expm1(tensor))
 
 
