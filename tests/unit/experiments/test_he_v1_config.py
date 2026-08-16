@@ -44,12 +44,14 @@ def _assert_he_system(config: dict) -> None:
 def _assert_factorized_model(config: dict) -> None:
     model = config["model"]
     assert "envelope" not in model
-    nuclear = model["nuclear_envelope"]
-    assert nuclear["_target_"] == "tpen.nn.NuclearFactorizedEnvelope"
-    assert nuclear["nuclear_confinement"]["_target_"] == "tpen.nn.NuclearConfinement"
-    regular = nuclear["regular_envelope"]
-    assert regular["_target_"] == "tpen.nn.AdditiveEnvelope"
-    assert [entry["_target_"] for entry in regular["envelopes"]] == ["tpen.nn.ElectronElectronCusp"]
+    assert "nuclear_envelope" not in model
+    factors = model["factors"]
+    assert [entry["_target_"] for entry in factors] == [
+        "tpen.nn.ElectronElectronCusp",
+        "tpen.nn.ElectronNucleusCusp",
+    ]
+    assert factors[1]["atoms"] == "${atoms}"
+    assert config["atoms"]["_target_"] == "tpen.data.atomic_configuration.AtomicConfiguration"
     assert "GaussianConfinement" not in str(model)
 
 
@@ -66,8 +68,15 @@ def test_he_train_config_owns_batch_nuclear_context_and_coulomb_terms() -> None:
         "_target_": "torch.tensor",
         "data": "${system.nuclei.charges}",
     }
-    assert set(config["hamiltonian_terms"]) == {"kinetic", "electron_nucleus", "electron_electron"}
-    assert config["hamiltonian_terms"]["electron_nucleus"]["eps"] == 0.0
+    hamiltonian_terms = config["hamiltonian_terms"]
+    assert set(hamiltonian_terms) == {"kinetic", "electron_nucleus", "electron_electron", "nucleus_nucleus"}
+    assert hamiltonian_terms["electron_nucleus"]["_target_"] == "tpen.physics.potential.ElectronNucleusPotential"
+    assert hamiltonian_terms["electron_nucleus"]["atoms"] == "${atoms}"
+    assert hamiltonian_terms["electron_nucleus"]["eps"] == 0.0
+    assert hamiltonian_terms["nucleus_nucleus"] == {
+        "_target_": "tpen.physics.potential.NucleusNucleusPotential",
+        "atoms": "${atoms}",
+    }
 
 
 def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> None:
@@ -77,6 +86,7 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     _assert_factorized_model(evaluation)
     assert evaluation["model"] == train["model"]
     assert evaluation["hamiltonian_terms"]["electron_nucleus"]["eps"] == 0.0
+    assert evaluation["hamiltonian_terms"]["electron_nucleus"]["atoms"] == "${atoms}"
     assert evaluation["load"]["strict"] is True
     task = evaluation["evaluation_tasks"]["mcmc_energy"]
     assert task["generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"
@@ -179,4 +189,27 @@ def test_he_train_targets_instantiate_and_consume_the_same_nuclear_context() -> 
     )
     output = model(batch)
     output.validate(batch_size=batch.batch_size)
-    assert set(terms) == {"kinetic", "electron_nucleus", "electron_electron"}
+    assert set(terms) == {"kinetic", "electron_nucleus", "electron_electron", "nucleus_nucleus"}
+    from tpen.physics.hamiltonian import local_energy
+
+    result = local_energy(terms, model, batch, return_terms=True)
+    assert torch.equal(result.terms["nucleus_nucleus"], torch.zeros_like(result.total))
+
+    # A5 ownership resolution: the wavefunction's ElectronNucleusCusp and the
+    # Hamiltonian's ElectronNucleusPotential/NucleusNucleusPotential each
+    # instantiate their own `AtomicConfiguration` from the same declarative
+    # `${atoms}` config source -- Hydra's recursive `instantiate` re-runs a
+    # `_target_` for every tree position it appears at, so this is NOT one
+    # shared Python object. Assert both facts explicitly: the objects are
+    # distinct, and no code path anywhere relies on them being identical --
+    # every Hamiltonian term instead reconciles construction-time `atoms`
+    # against transported batch context by explicit value comparison
+    # (`_validate_batch_atoms_context`, exercised above via `local_energy`).
+    en_cusp = next(f for f in model.factors if type(f).__name__ == "ElectronNucleusCusp")
+    hamiltonian_en_atoms = terms["electron_nucleus"].atoms
+    hamiltonian_nn_atoms = terms["nucleus_nucleus"].atoms
+    assert en_cusp.atoms is not hamiltonian_en_atoms
+    assert en_cusp.atoms is not hamiltonian_nn_atoms
+    assert hamiltonian_en_atoms is not hamiltonian_nn_atoms
+    assert en_cusp.atoms == hamiltonian_en_atoms
+    assert en_cusp.atoms == hamiltonian_nn_atoms

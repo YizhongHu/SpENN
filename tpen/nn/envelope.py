@@ -6,20 +6,18 @@ constructor, forward behavior, Hydra target, and `ModuleList` state-dict keys
 must not change. `LogAmplitudeFactor`, `AdditiveCusp`, `ElectronNucleusCusp`,
 and `AsymptoticDecay` are the new generic, atom-system-facing types (see
 `main.typ`, "Electron-nucleus cusp (deferred)"); they compose independently
-and do not replace the legacy envelope stack.
+and do not replace the legacy envelope stack. `TPENWaveFunction` sums both
+generations in one post-readout factor pipeline (see
+`tpen/nn/spenn_wave_function.py`).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass
 
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, electron_nuclear_displacements, pairwise_distances
-from tpen.data.equivariant_state import compare_tensor_blocks
-from tpen.data.indices import permute_particle_axis
-from tpen.data.permutation import Permutation
 from tpen.dependencies import require_torch, require_torch_functional, require_torch_nn
 
 torch = require_torch(feature="TPEN envelope modules")
@@ -135,155 +133,6 @@ class AdditiveEnvelope(Envelope):
             _check_envelope_tensor(value, batch, name=f"envelopes[{index}]")
             total = total + value
         return total
-
-
-@dataclass(frozen=True)
-class NuclearConfinementEvaluation:
-    """Explicit radial values and derivatives of a nuclear envelope.
-
-    Pair fields have shape ``[batch, n_electrons, n_nuclei]``.  The origin
-    radial derivative is electron-independent and consequently has canonical
-    shape ``[batch, n_nuclei]``; consumers must broadcast it explicitly.
-    """
-
-    distance: torch.Tensor
-    value: torch.Tensor
-    radial_first_derivative: torch.Tensor
-    radial_second_derivative: torch.Tensor
-    origin_radial_derivative: torch.Tensor
-
-    def validate(self, batch: ElectronBatch) -> "NuclearConfinementEvaluation":
-        """Validate explicit geometry and radial-derivative semantics."""
-
-        flat = batch.flatten_samples()
-        if flat.nuclear_positions is None or flat.nuclear_charges is None:
-            raise ValueError("NuclearConfinementEvaluation requires batch nuclear positions and charges")
-        pair_shape = (flat.batch_size, flat.n_electrons, flat.nuclear_positions.shape[-2])
-        for name, value in (
-            ("distance", self.distance),
-            ("value", self.value),
-            ("radial_first_derivative", self.radial_first_derivative),
-            ("radial_second_derivative", self.radial_second_derivative),
-        ):
-            if value.shape != pair_shape:
-                raise ValueError(f"NuclearConfinementEvaluation.{name} must have shape {pair_shape}")
-            if value.device != flat.device or value.dtype != flat.dtype or not torch.isfinite(value).all():
-                raise ValueError(f"NuclearConfinementEvaluation.{name} must be finite and match batch dtype/device")
-        origin_shape = (flat.batch_size, pair_shape[-1])
-        if self.origin_radial_derivative.shape != origin_shape:
-            raise ValueError(f"NuclearConfinementEvaluation.origin_radial_derivative must have shape {origin_shape}")
-        if (
-            self.origin_radial_derivative.device != flat.device
-            or self.origin_radial_derivative.dtype != flat.dtype
-            or not torch.isfinite(self.origin_radial_derivative).all()
-        ):
-            raise ValueError("NuclearConfinementEvaluation.origin_radial_derivative must be finite and match batch dtype/device")
-        if torch.any(self.distance < 0):
-            raise ValueError("NuclearConfinementEvaluation.distance must be nonnegative")
-        charges = flat.nuclear_charges
-        assert charges is not None
-        expected_origin = charges.reshape(1, -1).expand(flat.batch_size, -1) if charges.ndim == 1 else charges
-        if not torch.equal(self.origin_radial_derivative, -expected_origin):
-            raise ValueError("NuclearConfinementEvaluation.origin_radial_derivative must equal -batch.nuclear_charges")
-        return self
-
-    def permute(self, permutation: Permutation) -> "NuclearConfinementEvaluation":
-        """Apply an electron permutation to pair fields only."""
-
-        return type(self)(
-            distance=permute_particle_axis(self.distance, permutation, axis=1),
-            value=permute_particle_axis(self.value, permutation, axis=1),
-            radial_first_derivative=permute_particle_axis(self.radial_first_derivative, permutation, axis=1),
-            radial_second_derivative=permute_particle_axis(self.radial_second_derivative, permutation, axis=1),
-            origin_radial_derivative=self.origin_radial_derivative.clone(),
-        )
-
-    def compare(
-        self, other: "NuclearConfinementEvaluation", *, atol: float = 1.0e-6, rtol: float = 1.0e-6
-    ) -> tuple[bool, dict[str, float]]:
-        """Compare all radial fields with explicit field ordering."""
-
-        if type(self) is not type(other):
-            return False, {"max_abs_error": float("inf")}
-        return compare_tensor_blocks(
-            [
-                self.distance,
-                self.value,
-                self.radial_first_derivative,
-                self.radial_second_derivative,
-                self.origin_radial_derivative,
-            ],
-            [
-                other.distance,
-                other.value,
-                other.radial_first_derivative,
-                other.radial_second_derivative,
-                other.origin_radial_derivative,
-            ],
-            atol=atol,
-            rtol=rtol,
-        )
-
-
-class NuclearConfinement(Envelope):
-    """Fixed electron-nucleus Kato cusp factor ``u_iA(r) = -Z_A r``.
-
-    This atom-facing factor intentionally uses raw radial distances.  It never
-    calls the clamped distance helper because the local-energy evaluator must
-    observe exact coalescence and decide when that domain is invalid.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(enabled=True)
-
-    def evaluate(self, batch: ElectronBatch) -> NuclearConfinementEvaluation:
-        """Return raw pairwise values and radial derivatives for a flat batch."""
-
-        flat = batch.flatten_samples()
-        if flat.nuclear_positions is None:
-            raise ValueError("NuclearConfinement requires batch.nuclear_positions")
-        if flat.nuclear_charges is None:
-            raise ValueError("NuclearConfinement requires batch.nuclear_charges")
-        distance = electron_nuclear_displacements(flat).norm(dim=-1)
-        charges = flat.nuclear_charges
-        origin = charges.reshape(1, -1).expand(flat.batch_size, -1) if charges.ndim == 1 else charges
-        pair_charges = origin.unsqueeze(1).expand(-1, flat.n_electrons, -1)
-        evaluation = NuclearConfinementEvaluation(
-            distance=distance,
-            value=-pair_charges * distance,
-            radial_first_derivative=-pair_charges,
-            radial_second_derivative=torch.zeros_like(distance),
-            origin_radial_derivative=-origin,
-        )
-        return evaluation.validate(flat)
-
-    def envelope_value(self, batch: ElectronBatch) -> torch.Tensor:
-        """Return the summed nuclear log-amplitude contribution."""
-
-        value = self.evaluate(batch).value.sum(dim=(1, 2))
-        assert value.shape == (batch.flatten_samples().batch_size,)
-        return value
-
-
-class NuclearFactorizedEnvelope(Envelope):
-    """Explicit atom envelope ownership for regular and nuclear factors.
-
-    ``regular_envelope`` may include electron-electron cusp terms; the nuclear
-    factor is stored separately so the local-energy evaluator can consume its
-    analytic derivatives without inspecting an opaque additive container.
-    """
-
-    def __init__(self, regular_envelope: nn.Module, nuclear_confinement: NuclearConfinement) -> None:
-        super().__init__(enabled=True)
-        self.regular_envelope = regular_envelope
-        self.nuclear_confinement = nuclear_confinement
-
-    def envelope_value(self, batch: ElectronBatch) -> torch.Tensor:
-        """Return the complete envelope while preserving explicit ownership."""
-
-        regular = self.regular_envelope(batch)
-        _check_envelope_tensor(regular, batch.flatten_samples(), name="regular_envelope")
-        return regular + self.nuclear_confinement.envelope_value(batch)
 
 
 class GaussianConfinement(Envelope):
@@ -483,9 +332,10 @@ class ElectronNucleusCuspLaw(ABC):
 class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
     """Compatibility law reproducing the existing He linear cusp ``-Z r``.
 
-    This is the same radial law used by `NuclearConfinement`, preserved here
-    as a `ElectronNucleusCuspLaw` so existing systems have a like-for-like
-    generic counterpart.
+    This is the He linear cusp formerly hard-coded by the retired
+    ``NuclearConfinement`` envelope, preserved here as a
+    `ElectronNucleusCuspLaw` so existing systems have a like-for-like generic
+    counterpart.
     """
 
     def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
@@ -497,10 +347,10 @@ class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
 class ElectronNucleusCusp(LogAmplitudeFactor):
     """Generic electron-nucleus Kato cusp factor for arbitrary nuclei.
 
-    Unlike `NuclearConfinement`, this factor is constructed directly from an
-    `AtomicConfiguration` -- the sole authority for nuclear geometry -- and
-    never infers nuclear context from a batch. It uses raw, unclamped pair
-    distances so the cusp condition is observed exactly at coalescence.
+    This factor is constructed directly from an `AtomicConfiguration` -- the
+    sole authority for nuclear geometry -- and never infers nuclear context
+    from a batch. It uses raw, unclamped pair distances so the cusp condition
+    is observed exactly at coalescence.
 
     Parameters
     ----------
@@ -709,8 +559,5 @@ __all__ = [
     "HookeGaussianConfinement",
     "LinearElectronNucleusCuspLaw",
     "LogAmplitudeFactor",
-    "NuclearConfinement",
-    "NuclearConfinementEvaluation",
-    "NuclearFactorizedEnvelope",
     "rational_pair_cusp",
 ]
