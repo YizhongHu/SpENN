@@ -14,6 +14,13 @@ nuclear geometry that varies within one batch (shape
 ``[batch, n_nuclei, spatial_dim]``/``[batch, n_nuclei]``) -- a broader batch
 geometry capability the canonical API does not need. Neither legacy class is
 deprecated in this minor version; there is no runtime warning yet.
+
+Each pair (`ElectronNucleusInteraction`/`ElectronNucleusPotential`,
+`NucleusNucleusInteraction`/`NucleusNucleusPotential`) shares one private,
+pure Coulomb arithmetic kernel (`_electron_nucleus_coulomb_potential`,
+`_nucleus_nucleus_coulomb_energy`). The kernels take already-normalized
+tensors; each class keeps its own distinct shape validation, error contract,
+and geometry-authority semantics around the shared arithmetic.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ from __future__ import annotations
 import torch
 
 from tpen.data.atomic_configuration import AtomicConfiguration
-from tpen.data.batch import ElectronBatch, electron_nuclear_distances, nuclear_potential, pairwise_distances
+from tpen.data.batch import ElectronBatch, electron_nuclear_distances, pairwise_distances
 from tpen.physics.hamiltonian import LocalEnergyResult
 
 
@@ -125,7 +132,8 @@ class ElectronNucleusInteraction:
             raise ValueError("positions must have shape [batch, n_electrons, spatial_dim]")
         _require_nuclear_context(flat)
         self._validate_legacy_context(flat)
-        potential = nuclear_potential(flat, eps=self.eps)
+        distances = electron_nuclear_distances(flat, eps=self.eps)
+        potential = _electron_nucleus_coulomb_potential(distances, flat.nuclear_charges)
         expected_potential = (positions.shape[0], positions.shape[1])
         if potential.shape != expected_potential:
             raise ValueError(f"electron-nucleus potential must have shape {expected_potential}, got {tuple(potential.shape)}")
@@ -191,17 +199,7 @@ class NucleusNucleusInteraction:
         if not torch.isfinite(positions).all() or not torch.isfinite(charges).all():
             raise ValueError("nuclear positions and charges must be finite")
 
-        n_nuclei = positions.shape[1]
-        if n_nuclei < 2:
-            value = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
-        else:
-            distances = torch.linalg.norm(positions.unsqueeze(2) - positions.unsqueeze(1), dim=-1)
-            pair_mask = torch.triu(torch.ones((n_nuclei, n_nuclei), device=flat.device, dtype=torch.bool), diagonal=1)
-            if (distances[:, pair_mask] <= 0).any():
-                raise ValueError("nuclear positions contain colliding nuclei")
-            pair_values = charges.unsqueeze(2) * charges.unsqueeze(1) / distances
-            value = pair_values[:, pair_mask].sum(dim=1)
-
+        value = _nucleus_nucleus_coulomb_energy(positions, charges, check_collisions=True)
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
@@ -243,8 +241,7 @@ class ElectronNucleusPotential:
         _validate_batch_atoms_context(self.atoms, flat, term_name=type(self).__name__)
         atoms = self.atoms.to(device=flat.device, dtype=flat.dtype)
         distances = electron_nuclear_distances(flat, eps=self.eps, nuclear_positions=atoms.positions)
-        charges = atoms.charges.reshape(1, 1, -1)
-        potential = (charges / distances).sum(dim=-1)
+        potential = _electron_nucleus_coulomb_potential(distances, atoms.charges)
         value = -potential.sum(dim=1)
         if value.shape != (positions.shape[0],):
             raise ValueError(f"electron-nucleus energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
@@ -281,16 +278,75 @@ class NucleusNucleusPotential:
         flat = batch.flatten_samples()
         _validate_batch_atoms_context(self.atoms, flat, term_name=type(self).__name__)
         atoms = self.atoms.to(device=flat.device, dtype=flat.dtype)
-        n_nuclei = atoms.n_nuclei
-        if n_nuclei < 2:
-            pair_sum = torch.zeros((), device=flat.device, dtype=flat.dtype)
-        else:
-            distances = torch.linalg.norm(atoms.positions.unsqueeze(1) - atoms.positions.unsqueeze(0), dim=-1)
-            pair_mask = torch.triu(torch.ones((n_nuclei, n_nuclei), device=flat.device, dtype=torch.bool), diagonal=1)
-            pair_values = atoms.charges.unsqueeze(1) * atoms.charges.unsqueeze(0) / distances
-            pair_sum = pair_values[pair_mask].sum()
+        pair_sum = _nucleus_nucleus_coulomb_energy(
+            atoms.positions.unsqueeze(0), atoms.charges.unsqueeze(0), check_collisions=False
+        )[0]
         value = pair_sum.expand(flat.batch_size)
         return LocalEnergyResult(total=value, terms={self.name: value})
+
+
+def _electron_nucleus_coulomb_potential(distances: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
+    """Return ``sum_A Z_A / |r_i - R_A|`` per electron.
+
+    Shared Coulomb arithmetic behind `ElectronNucleusInteraction` (batch-transported
+    charges) and `ElectronNucleusPotential` (`AtomicConfiguration`-owned charges).
+
+    Parameters
+    ----------
+    distances : torch.Tensor
+        Electron-nucleus distances, shape ``[batch, n_electrons, n_nuclei]``.
+    charges : torch.Tensor
+        Nuclear charges, shape ``[n_nuclei]`` (shared across the batch) or
+        ``[batch, n_nuclei]`` (per-sample).
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor with shape ``[batch, n_electrons]``.
+    """
+
+    if charges.ndim == 1:
+        charge_view = charges.reshape(1, 1, -1)
+    elif charges.ndim == 2:
+        charge_view = charges.unsqueeze(1)
+    else:
+        raise ValueError("nuclear charges must have shape [n_nuclei] or [batch, n_nuclei]")
+    return (charge_view / distances).sum(dim=-1)
+
+
+def _nucleus_nucleus_coulomb_energy(positions: torch.Tensor, charges: torch.Tensor, *, check_collisions: bool) -> torch.Tensor:
+    """Return ``sum_{A<B} Z_A Z_B / |R_A - R_B|`` per batch sample.
+
+    Shared Coulomb arithmetic behind `NucleusNucleusInteraction` (batch-transported
+    geometry) and `NucleusNucleusPotential` (`AtomicConfiguration`-owned geometry).
+
+    Parameters
+    ----------
+    positions : torch.Tensor
+        Nuclear positions, shape ``[batch, n_nuclei, spatial_dim]``.
+    charges : torch.Tensor
+        Nuclear charges, shape ``[batch, n_nuclei]``.
+    check_collisions : bool
+        Whether to raise when any nuclear pair distance is non-positive. Legacy
+        batch-transported geometry may vary per sample and is checked; canonical
+        `AtomicConfiguration`-owned geometry is validated at construction and is
+        not re-checked here.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor with shape ``[batch]``.
+    """
+
+    batch_size, n_nuclei = positions.shape[0], positions.shape[1]
+    if n_nuclei < 2:
+        return torch.zeros(batch_size, device=positions.device, dtype=positions.dtype)
+    distances = torch.linalg.norm(positions.unsqueeze(2) - positions.unsqueeze(1), dim=-1)
+    pair_mask = torch.triu(torch.ones((n_nuclei, n_nuclei), device=positions.device, dtype=torch.bool), diagonal=1)
+    if check_collisions and (distances[:, pair_mask] <= 0).any():
+        raise ValueError("nuclear positions contain colliding nuclei")
+    pair_values = charges.unsqueeze(2) * charges.unsqueeze(1) / distances
+    return pair_values[:, pair_mask].sum(dim=1)
 
 
 def _require_nuclear_context(batch: ElectronBatch) -> None:
