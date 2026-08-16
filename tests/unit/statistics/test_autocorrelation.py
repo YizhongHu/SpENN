@@ -240,6 +240,12 @@ def test_pooled_autocorrelation_survives_a_nine_hundred_fold_variance_spread() -
     # pooled one moves rho[1] to 202 (first chain) or 0.224 (largest chain).
     assert rho[1].item() == pytest.approx(phi, abs=0.05)
     assert rho[2].item() == pytest.approx(phi**2, abs=0.06)
+    # WHAT THIS DOES NOT CATCH, measured rather than assumed: replacing the
+    # variance-proportional pooling with equal weighting, or with amplitude
+    # weighting, leaves every test in the suite passing. Chains that share one
+    # phi cannot separate the weightings at all, since each returns phi**k
+    # regardless. Amplitude heterogeneity is therefore the wrong axis for that
+    # property; it needs chains with differing correlation times.
 
 
 @pytest.mark.parametrize(
@@ -399,6 +405,22 @@ def test_two_timescale_plateau_is_not_truncated_at_the_fast_decay() -> None:
     # claim through a noisy derived scalar.
     assert result.truncation_lag is not None
     assert result.truncation_lag >= 30
+    # DETECTION REACH, stated because a coverage test that reports only its
+    # successes is as misleading as one that checks only the side it expects to
+    # fail. A truncation at K lags reports 1 + 2 * sum_{k<=K} rho(k) here, so
+    # the band alone catches K <= 27 (tau 6.4254) and passes K >= 28 (tau
+    # 6.5106), while the truncation_lag bound catches any cap of 15 pairs or
+    # fewer, i.e. K <= 29. Total reach is K <= 29, and truncation_lag -- not the
+    # band -- is what sets it: the band's reach is capped at 27 by the fixture's
+    # own arithmetic, so no tolerance choice moves it. Anyone needing more
+    # sensitivity must tighten truncation_lag, not the band.
+    # THE LIMIT THAT FOLLOWS, measured: a defect truncating at 50 lags reports
+    # 7.8565 and passes both assertions, as does one at 75 (8.6082), while the
+    # smallest healthy stop over 24 seeds was 75 and the median 107. So
+    # K in [30, 75) is UNDETECTED. This catches gross early truncation, not
+    # moderate early truncation. Verified by mutation: a 12-pair cap (23 lags)
+    # fails this test and nothing else in the suite, and a 16-pair cap (31 lags)
+    # fails nothing at all.
 
 
 def test_iid_white_noise_has_unit_integrated_autocorrelation_time() -> None:
