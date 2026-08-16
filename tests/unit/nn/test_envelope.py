@@ -22,6 +22,7 @@ from tpen.nn import (
     LinearElectronNucleusCuspLaw,
     LogAmplitudeFactor,
     TPENWaveFunction,
+    TrainableCurvatureElectronNucleusCuspLaw,
 )
 from tests.helpers.equivariance import assert_equivariant_all
 from tests.helpers.hooke_models import build_tiny_spenn
@@ -625,6 +626,62 @@ def test_electron_nucleus_cusp_accepts_custom_law() -> None:
     torch.testing.assert_close(doubled(batch), 2.0 * linear(batch))
 
 
+def test_trainable_curvature_law_preserves_charge_fixed_kato_slope() -> None:
+    # The curvature term must contribute only at second order, so the
+    # first-order Kato slope stays exactly -Z regardless of curvature params.
+    tiny_r = torch.tensor(1.0e-7, dtype=torch.float64)
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0]], dtype=torch.float64),
+        charges=torch.tensor([3.0], dtype=torch.float64),
+    )
+    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=5.0, curvature_range=2.0)
+    cusp = ElectronNucleusCusp(atoms=atoms, law=law)
+    batch = ElectronBatch(positions=tiny_r.view(1, 1, 1))
+
+    slope = cusp(batch) / tiny_r
+
+    torch.testing.assert_close(slope, torch.tensor([-3.0], dtype=torch.float64), atol=1.0e-6, rtol=0.0)
+
+
+def test_trainable_curvature_law_is_second_order_and_trainable() -> None:
+    # The curvature contribution w_A(r) = c r^2 / (1 + d r) must match its
+    # analytic value away from coalescence, and both c and d must be
+    # differentiable when trainable.
+    distance = torch.tensor(0.5, dtype=torch.float64)
+    charges = torch.tensor(2.0, dtype=torch.float64)
+    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.3, curvature_range=1.5)
+
+    value = law.value(distance, charges)
+    expected_linear = -charges * distance
+    expected_curvature = 0.3 * distance.square() / (1.0 + 1.5 * distance)
+    torch.testing.assert_close(value, expected_linear + expected_curvature)
+
+    value.backward()
+    assert law.raw_curvature_coefficient.grad is not None
+    assert law.raw_curvature_range.grad is not None
+    assert law.curvature_range > 0.0
+
+
+def test_trainable_curvature_law_zero_coefficient_matches_linear_law() -> None:
+    atoms = AtomicConfiguration(
+        positions=torch.tensor([[0.0]], dtype=torch.float64),
+        charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    linear = ElectronNucleusCusp(atoms=atoms, law=LinearElectronNucleusCuspLaw())
+    curved = ElectronNucleusCusp(
+        atoms=atoms,
+        law=TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0, curvature_range=1.0, trainable=False),
+    )
+    batch = ElectronBatch(positions=torch.tensor([[[0.7]]], dtype=torch.float64))
+
+    torch.testing.assert_close(curved(batch), linear(batch))
+
+
+def test_trainable_curvature_law_rejects_nonpositive_range() -> None:
+    with pytest.raises(ValueError, match="curvature_range"):
+        TrainableCurvatureElectronNucleusCuspLaw(curvature_range=0.0)
+
+
 def test_asymptotic_decay_base_requires_subclass_implementation() -> None:
     batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
 
@@ -686,10 +743,10 @@ def test_envelope_module_docstring_documents_compatibility_terminology() -> None
     assert "TPENWaveFunction.factors" in doc
 
 
-def test_electron_nucleus_cusp_law_documents_future_regular_component_contract() -> None:
-    # C0 terminology contract: the future optional trainable regular radial
-    # component for second-order curvature is documented, not implemented.
+def test_electron_nucleus_cusp_law_documents_regular_component_contract() -> None:
+    # C2 terminology contract: the optional trainable regular radial
+    # component for second-order curvature is documented on the base law.
     doc = ElectronNucleusCuspLaw.__doc__
-    assert "not yet implemented" in doc
     assert "second-order" in doc
     assert "w_A" in doc
+    assert "TrainableCurvatureElectronNucleusCuspLaw" in doc

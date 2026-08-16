@@ -14,21 +14,22 @@ from tpen.nn.coordinate_envelopes import (
     GaussianCoordinateEnvelope,
     GaussianDecayGate,
 )
-from tpen.nn.embedding import Embedding
-from tpen.nn.envelope import (
-    AdditiveCusp,
-    AdditiveEnvelope,
-    AsymptoticDecay,
+from tpen.nn.cusp import (
     ElectronElectronCusp,
     ElectronNucleusCusp,
     ElectronNucleusCuspLaw,
+    LinearElectronNucleusCuspLaw,
+    TrainableCurvatureElectronNucleusCuspLaw,
+)
+from tpen.nn.embedding import Embedding
+from tpen.nn.envelope import (
+    AdditiveEnvelope,
     Envelope,
     GaussianConfinement,
     HookeGaussianConfinement,
-    LinearElectronNucleusCuspLaw,
-    LogAmplitudeFactor,
 )
 from tpen.nn.equivariant_mixing import EquivariantMixing
+from tpen.nn.factor import AdditiveCusp, AsymptoticDecay, LogAmplitudeFactor
 from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.mlp import MLP
 from tpen.nn.normalization import RMSNorm
@@ -71,5 +72,6 @@ __all__ = [
     "TPENWaveFunction",
     "TPENStack",
     "TorchInitializer",
+    "TrainableCurvatureElectronNucleusCuspLaw",
     "Updater",
 ]
