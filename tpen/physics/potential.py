@@ -1,4 +1,20 @@
-"""Potential-energy Hamiltonian terms."""
+"""Potential-energy Hamiltonian terms.
+
+This module keeps two API generations side by side for the electron-nucleus
+and nucleus-nucleus terms. `ElectronNucleusPotential` and
+`NucleusNucleusPotential` are the canonical Hamiltonian API: each is
+constructed once from a fixed `AtomicConfiguration` -- the sole nuclear-
+geometry authority for that term -- and one shared geometry applies to every
+sample in a batch. `ElectronNucleusInteraction` and `NucleusNucleusInteraction`
+are the legacy, supported minor-release compatibility surface: they read
+nuclear geometry from batch-transported metadata
+(`ElectronBatch.nuclear_positions`/`nuclear_charges`) and, unlike the
+constructor-owned `*Potential` API, additionally accept *per-configuration*
+nuclear geometry that varies within one batch (shape
+``[batch, n_nuclei, spatial_dim]``/``[batch, n_nuclei]``) -- a broader batch
+geometry capability the canonical API does not need. Neither legacy class is
+deprecated in this minor version; there is no runtime warning yet.
+"""
 
 from __future__ import annotations
 

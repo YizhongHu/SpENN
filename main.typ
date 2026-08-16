@@ -471,6 +471,15 @@ composing any mix of cusp and decay/confinement terms; `AdditiveCusp` is the
 narrower composition specifically over cusp factors (e.g. electron-electron
 and, later, electron-nucleus). Renaming `AdditiveEnvelope` to `LogAmplitudeFactor`
 is tracked separately and is not part of this terminology-only change.
+`Envelope`, `AdditiveEnvelope`, and `AdditiveCusp` are all supported legacy or
+current output-factor/composition APIs for the current minor version, not a
+feature-normalization step; none of them carries a runtime deprecation
+warning yet. `tpen.nn.TPENWaveFunction.factors` is the canonical composition
+seam for `LogAmplitudeFactor` terms (see Model Workflow below). The name
+`FeatureEnvelope` is reserved for a future typed feature-space transform ---
+a distinct concept from the multiplicative coordinate `Envelope` of the
+Normalization and Envelopes section --- and must never be introduced as an
+alias or rename of that existing `Envelope`.
 
 $
 J (br)
@@ -549,15 +558,17 @@ exposed by the $omega$-parametrized convenience subclass
 but it is still additive in $log abs(psi)$ and is applied through the additive
 log-amplitude interface, not inside the antisymmetric readout.
 
-=== Electron-nucleus cusp (deferred)
+=== Electron-nucleus cusp
 
 For all-electron Hamiltonians, electron-nucleus coalescence also needs explicit
 handling. Although it sums one particle at a time against fixed external
 centers, it is named by short-range Kato behavior, not body order: it is a
-*cusp*, `ElectronNucleusCusp`, not a confinement. It is *deferred to a future
-all-electron milestone* --- the Hooke systems studied here contain no nuclei,
-so this term would be permanently inactive and is not shipped. The math is
-recorded here for that milestone.
+*cusp*, `tpen.nn.ElectronNucleusCusp`, not a confinement. It is shipped: it
+composes a typed `ElectronNucleusCuspLaw` (default
+`LinearElectronNucleusCuspLaw`, reproducing the legacy He linear cusp $-Z r$)
+against a constructor-owned `AtomicConfiguration`. The Hooke systems studied
+elsewhere in this document contain no nuclei, so the term is simply absent
+from their factor list rather than deferred.
 
 Fixed nuclei are described generically: a constructor-owned
 `AtomicConfiguration` holds the nuclear positions $R_A$ and charges $Z_A$ for
@@ -570,6 +581,19 @@ subclasses or branches. There is no He- or H2-specific wavefunction path;
 from typed `.permute(...)`, `.compare(...)`, and `.validate(...)` contracts and
 explicit `n_electrons`/nuclear metadata --- never from recursively probing an
 arbitrary container.
+
+The same canonical/legacy split applies on the Hamiltonian side. A `*Potential`
+class (`tpen.physics.potential.ElectronNucleusPotential`,
+`tpen.physics.potential.NucleusNucleusPotential`) is the canonical fixed-
+`AtomicConfiguration` Hamiltonian API: it is constructed once from one
+`AtomicConfiguration` and applies that single geometry to every sample. The
+legacy `*Interaction` classes
+(`ElectronNucleusInteraction`, `NucleusNucleusInteraction`) are a supported
+minor-release compatibility surface: they read nuclear geometry from
+batch-transported metadata and additionally support *per-configuration*
+geometry that varies within one batch --- a broader batch geometry capability
+the constructor-owned `*Potential` API does not need. Neither generation is
+deprecated in this minor version.
 
 `tpen.physics.hamiltonian.NaiveLocalEnergyEvaluator` remains the reference
 local-energy evaluator for every Hamiltonian, cusp, and decay/confinement term,
@@ -620,6 +644,21 @@ $
 
 constrained positive by $b_A = "softplus"(tilde(b)_A) + epsilon$. A global $b$ or
 one $b_(Z)$ per nuclear charge is the recommended starting point.
+
+*Future contract, not implemented here:* every electron-nucleus cusp law must
+keep fixing the first-order Kato slope $v_A'(0) = -Z_A$ by nuclear charge
+alone. A law may separately expose an *optional* trainable regular radial
+component $w_A (r)$ that contributes only to second-order (and higher)
+curvature, i.e. satisfying $w_A (0) = 0$ and $w_A'(0) = 0$ so it cannot perturb
+the enforced cusp slope:
+
+$
+v_A (r) = frac(-Z_A r, 1 + b_A r) + w_A (r), quad w_A (0) = 0, quad w_A'(0) = 0.
+$
+
+This lets curvature near the nucleus be learned without touching the
+mandatory cusp condition. This is a documented contract for a future
+`ElectronNucleusCuspLaw`; no concrete law implements $w_A$ yet.
 
 == Loss function
 

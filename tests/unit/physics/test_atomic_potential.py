@@ -339,3 +339,34 @@ def test_h2_generic_and_legacy_nucleus_nucleus_potentials_agree_by_value() -> No
     legacy_result = NucleusNucleusInteraction().local_energy(None, batch)
 
     torch.testing.assert_close(generic_result.total, legacy_result.total)
+
+
+# --- C0: canonical *Potential* vs legacy *Interaction* terminology contract ---
+
+
+def test_potential_module_docstring_documents_canonical_vs_legacy_terminology() -> None:
+    # C0 terminology contract: the module docstring is the load-bearing
+    # source for the Potential/Interaction compatibility split; pin its key
+    # claims so a future edit cannot silently drop them.
+    import tpen.physics.potential as potential_module
+
+    doc = potential_module.__doc__
+    assert "canonical Hamiltonian API" in doc
+    assert "compatibility surface" in doc
+    assert "per-configuration" in doc
+    assert "not deprecated in this minor version" in doc
+
+
+def test_electron_nucleus_potential_and_interaction_are_distinct_classes() -> None:
+    # Canonical fixed-AtomicConfiguration API and legacy batch-transported
+    # API must remain two distinct, independently constructible classes, not
+    # one aliasing the other.
+    assert ElectronNucleusPotential is not ElectronNucleusInteraction
+    assert not issubclass(ElectronNucleusPotential, ElectronNucleusInteraction)
+    assert not issubclass(ElectronNucleusInteraction, ElectronNucleusPotential)
+
+
+def test_nucleus_nucleus_potential_and_interaction_are_distinct_classes() -> None:
+    assert NucleusNucleusPotential is not NucleusNucleusInteraction
+    assert not issubclass(NucleusNucleusPotential, NucleusNucleusInteraction)
+    assert not issubclass(NucleusNucleusInteraction, NucleusNucleusPotential)

@@ -3,12 +3,18 @@
 This module keeps two API generations side by side. `Envelope` and
 `AdditiveEnvelope` are a supported minor-release compatibility surface: their
 constructor, forward behavior, Hydra target, and `ModuleList` state-dict keys
-must not change. `LogAmplitudeFactor`, `AdditiveCusp`, `ElectronNucleusCusp`,
+must not change, and neither carries a runtime deprecation warning in this
+minor version. `LogAmplitudeFactor`, `AdditiveCusp`, `ElectronNucleusCusp`,
 and `AsymptoticDecay` are the new generic, atom-system-facing types (see
-`main.typ`, "Electron-nucleus cusp (deferred)"); they compose independently
-and do not replace the legacy envelope stack. `TPENWaveFunction` sums both
-generations in one post-readout factor pipeline (see
-`tpen/nn/spenn_wave_function.py`).
+`main.typ`, "Electron-nucleus cusp"); they compose independently and do not
+replace the legacy envelope stack. `TPENWaveFunction` sums both generations in
+one post-readout factor pipeline (see `tpen/nn/spenn_wave_function.py`), and
+`TPENWaveFunction.factors` is the canonical composition seam for
+`LogAmplitudeFactor` terms.
+
+`FeatureEnvelope` is reserved for a future typed feature-space transform (a
+distinct concept from the multiplicative coordinate `Envelope` above). It must
+never be introduced as an alias or rename of `Envelope`.
 """
 
 from __future__ import annotations
@@ -309,6 +315,15 @@ class ElectronNucleusCuspLaw(ABC):
     Concrete laws are independently tested against the Kato cusp condition
     (the required ``d/dr`` slope at coalescence); this base class enforces no
     formula, only the typed value contract.
+
+    Future contract (documented here, not yet implemented): every law must
+    fix its first-order Kato slope at ``r = 0`` by nuclear charge alone
+    (``d/dr v_A(0) = -Z_A``, matching `LinearElectronNucleusCuspLaw` below). A
+    law may separately expose an *optional* trainable regular radial
+    component ``w_A(r)`` contributing only to second-order (and higher)
+    curvature -- i.e. satisfying ``w_A(0) = 0`` and ``d/dr w_A(0) = 0`` -- so
+    curvature can be learned without perturbing the enforced cusp condition.
+    No concrete law adds this term yet.
     """
 
     @abstractmethod
