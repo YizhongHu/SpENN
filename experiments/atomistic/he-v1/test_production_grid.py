@@ -45,6 +45,25 @@ def _load_study_module(name: str) -> ModuleType:
     return module
 
 
+def _load_torch_side_config_test() -> ModuleType:
+    """Load the torch-side He config test so its own stripper can be compared.
+
+    Skips when torch is unavailable, which is the local case: this repo has no
+    x86_64 macOS torch wheel, so the comparison runs on Cannon. Skipping is
+    honest here -- the assertion is about two implementations agreeing, and it
+    cannot be evaluated at all without the module that holds the second one.
+    """
+
+    pytest.importorskip("torch", reason="torch-side config test cannot import without torch")
+    path = STUDY_DIR.parents[2] / "tests" / "unit" / "experiments" / "test_he_v1_config.py"
+    spec = importlib.util.spec_from_file_location("he_v1_torch_side_config_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 collect = _load_study_module("collect")
 # Taken from the subject so there is exactly one `gates` module in play: a
 # second import would be a different object whose tables could disagree.
@@ -124,6 +143,36 @@ class TestGateSpecCompleteness:
         # already clean so the raise is never how we find out.
         assert sorted(set(thresholds) - set(gates.ATOM_GATE_SPEC_KEYS)) == []
         gates.evaluate_atom_gates({}, spec=thresholds)
+
+
+class TestNoSecondImplementationOfSpecStripping:
+    """Pin the torch-side test's own stripper to the real `split_gate_spec`.
+
+    `tests/unit/experiments/test_he_v1_config.py` cannot import the study
+    modules -- `collect.py` reaches its siblings by bare import, so a
+    path-based loader cannot fix what the loaded module imports -- and it
+    therefore strips the reserved binding block itself. That is the right
+    call, and it creates a SECOND IMPLEMENTATION of production's stripping
+    logic living in a test.
+
+    Left unpinned it drifts silently: if the reserved-block semantics change,
+    that test keeps passing against a spec PRODUCTION WOULD NEVER PRODUCE, and
+    every assertion built on it validates the wrong object while looking fully
+    cited. Same class as attaching H-C1's memory figure to a model whose
+    `hidden_channels` was never set.
+
+    So the two are compared directly, on the SHIPPED grid, here in the suite
+    where the real function imports safely.
+    """
+
+    def test_test_side_stripper_matches_the_real_split_gate_spec(self) -> None:
+        torch_side = _load_torch_side_config_test()
+        expected, _ = collect.split_gate_spec(plan.load_grid_config(GRID)["gate_spec"])
+        assert torch_side._grid_thresholds() == expected
+
+    def test_the_reserved_key_literal_agrees(self) -> None:
+        torch_side = _load_torch_side_config_test()
+        assert torch_side._METRIC_NAMESPACE_SPEC_KEY == collect.METRIC_NAMESPACE_SPEC_KEY
 
 
 class TestSingletPurityNamespaceBinding:
