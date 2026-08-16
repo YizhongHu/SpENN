@@ -24,6 +24,7 @@ from tpen.evaluation.summaries.trace import (
     TraceEquivarianceSummary,
     TransformConsistencySummary,
 )
+from tpen.evaluation.summaries.trajectory_statistics import TrajectoryStatisticsSummary
 
 __all__ = [
     "CoalescenceDivergenceSummary",
@@ -42,6 +43,7 @@ __all__ = [
     "SamplerStatsSummary",
     "TraceRecordWriter",
     "TraceEquivarianceSummary",
+    "TrajectoryStatisticsSummary",
     "TransformConsistencySummary",
     "TransformRecordWriter",
 ]
