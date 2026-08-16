@@ -130,8 +130,8 @@ class TrainableCurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw
 
     - At ``c = 0`` the law is exactly ``-Z_A r`` and the outer-tail slope is
       exactly ``-Z_A``. At ``c != 0`` the tail slope is SHIFTED by ``c / d``,
-      so outer-tail tolerances calibrated against the pure ``-Z r`` law must
-      not be applied unchanged to a trained curvature law.
+      so outer-tail tolerances calibrated against the pure ``-Z r`` law
+      must not be applied unchanged to a trained curvature law.
     - A decaying (normalizable) tail needs a negative slope, i.e.
       ``c / d < Z_A``. This class does not enforce that bound; a caller that
       trains ``c`` and ``d`` owns choosing an initialization, and if needed a
