@@ -89,9 +89,15 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     assert evaluation["hamiltonian_terms"]["electron_nucleus"]["atoms"] == "${atoms}"
     assert evaluation["load"]["strict"] is True
     task = evaluation["evaluation_tasks"]["mcmc_energy"]
-    assert task["generator"]["_target_"] == "tpen.evaluation.generators.MCMCGenerator"
+    assert task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
     assert task["summaries"][0]["_target_"] == "tpen.evaluation.summaries.LocalEnergySummary"
-    reference = task["summaries"][-1]
+    targets = [summary["_target_"] for summary in task["summaries"]]
+    assert "tpen.evaluation.summaries.ReferenceEnergySummary" in targets
+    reference = next(
+        summary
+        for summary in task["summaries"]
+        if summary["_target_"] == "tpen.evaluation.summaries.ReferenceEnergySummary"
+    )
     assert reference == {
         "_target_": "tpen.evaluation.summaries.ReferenceEnergySummary",
         "reference_energy": "${system.reference_energy}",
@@ -144,14 +150,94 @@ def test_he_eval_separates_spatial_exchange_from_label_antisymmetry() -> None:
     ]
 
 
-def test_he_eval_external_chain_statistics_remain_explicitly_unwired() -> None:
-    config = _load(EVAL)
-    text = str(config)
+def test_he_eval_wires_correlation_aware_chain_statistics() -> None:
+    """A6-C is wired, inverting the pre-H-F1 "explicitly unwired" contract.
 
-    assert "tau_int" not in text
-    assert "ess" not in text.lower()
-    assert "external" not in text.lower()
-    assert not any("Timing" in callback["_target_"] for callback in config["callbacks"])
+    This assertion used to require that no external chain statistics appeared,
+    because no fixed-model trajectory producer existed. The producer merged and
+    then sat unreferenced for a day: "A6-C done" did NOT mean "He runs have
+    MCSE", and a He run at dev tip emitted none at all. H-F1 wires it, so the
+    contract flips from "must be absent" to "must be present and joinable".
+    """
+
+    config = _load(EVAL)
+    task = config["evaluation_tasks"]["mcmc_energy"]
+    summaries = {summary["_target_"]: summary for summary in task["summaries"]}
+
+    trajectory = summaries["tpen.evaluation.summaries.TrajectoryStatisticsSummary"]
+    # The join identity admits no blanks: every field is supplied, and each
+    # resolves to a `???` the driver must override rather than to a default.
+    identity = config["trajectory_identity"]
+    for field in ("stage", "run_id", "attempt_id", "evaluator_id", "checkpoint_file", "config_sha256"):
+        assert identity[field] == "???", field
+        assert trajectory[field.replace("checkpoint_file", "checkpoint_path")] == (
+            "${trajectory_identity." + field + "}"
+        )
+
+    # The checkpoint FILE and the restore DIRECTORY are different paths on
+    # purpose. Passing the directory where the file is wanted raises
+    # IsADirectoryError inside the summary, after the chain has been sampled.
+    assert trajectory["checkpoint_path"] == "${trajectory_identity.checkpoint_file}"
+    assert config["load"]["path"] == "???"
+
+    # The generator must be the trajectory one: only it publishes the explicit
+    # [draw, walker] ObservableTrajectory the producer consumes.
+    assert task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    assert int(task["generator"]["n_draws"]) >= 128
+
+
+def test_he_eval_energy_task_keeps_the_calculator_its_summaries_consume() -> None:
+    """`calculators: []` fails at the SUMMARY stage, after all sampling is paid.
+
+    That defect cannot fail early by construction -- it must first do every
+    expensive thing correctly and then die last -- and it cost this lane about
+    three GPU-hours. Pinned here so the empty list cannot come back.
+    """
+
+    task = _load(EVAL)["evaluation_tasks"]["mcmc_energy"]
+    calculators = [entry["_target_"] for entry in task["calculators"]]
+    assert "tpen.evaluation.calculators.LocalEnergyCalculator" in calculators
+    summaries = [entry["_target_"] for entry in task["summaries"]]
+    assert "tpen.evaluation.summaries.LocalEnergySummary" in summaries
+
+
+def test_he_eval_reports_sampler_health_and_retains_raw_records() -> None:
+    """Two capabilities that existed, were exported, and were never named.
+
+    `production-grid-v0` requires MCMC health beside every evaluation and raw
+    [draw, walker] retention. Both were satisfiable by config alone and neither
+    was configured, so an eval row carried no acceptance rate and a
+    records-level run retained nothing.
+    """
+
+    config = _load(EVAL)
+    task = config["evaluation_tasks"]["mcmc_energy"]
+    summaries = {entry["_target_"]: entry for entry in task["summaries"]}
+
+    assert "tpen.evaluation.summaries.SamplerStatsSummary" in summaries
+
+    # artifact_level ALONE retains nothing: every raw-record writer returns
+    # early unless the level is `records`, but each only runs if it is in a
+    # task's summaries list. Setting the level without the writer satisfies the
+    # contract's letter and keeps no records at all.
+    assert config["evaluation"]["artifact_level"] == "records"
+    writer = summaries["tpen.evaluation.summaries.SampledRecordWriter"]
+
+    # max_samples must cover the whole [draw, walker] product. The default
+    # 100000 would silently keep 9.5% of it and look entirely healthy.
+    draws = int(task["generator"]["n_draws"])
+    walkers = int(config["evaluation_sampler"]["n_walkers"])
+    assert int(writer["max_samples"]) >= draws * walkers
+
+
+def test_he_eval_sampler_carries_the_predeclared_stride_and_burn_in() -> None:
+    sampler = _load(EVAL)["evaluation_sampler"]
+    # Stride 20 is a DECLARED TIE-BREAK on MCSE and inflation, not a throughput
+    # winner: ESS/second could not distinguish 10 from 20 at the measured noise
+    # floor. Burn-in 100 was demonstrated sufficient ON THE MEAN.
+    assert sampler["n_steps"] == 20
+    assert sampler["burn_in"] == 100
+    assert sampler["proposal_scale"] == 0.5
 
 
 def test_he_eval_invariant_tasks_use_mcmc_batches_that_preserve_nuclear_context() -> None:
@@ -213,3 +299,130 @@ def test_he_train_targets_instantiate_and_consume_the_same_nuclear_context() -> 
     assert hamiltonian_en_atoms is not hamiltonian_nn_atoms
     assert en_cusp.atoms == hamiltonian_en_atoms
     assert en_cusp.atoms == hamiltonian_nn_atoms
+
+
+def test_he_production_width_reproduces_the_calibrated_mapping() -> None:
+    """The measured capacity numbers describe THIS model, not a similar one.
+
+    H-C1 measured 38921.1 MB and 1.7107 steps/s for "c32" using its own
+    `apply_width` mapping. A different spelling of c32 -- most easily by leaving
+    `hidden_channels` behind -- would leave those numbers perfectly true about
+    H-C1's model and perfectly false about the production arm, with no test
+    catching it and the capacity argument still reading as fully cited.
+    """
+
+    channels = 32
+    for config in (_load(TRAIN), _load(EVAL)):
+        model = config["model"]
+        assert model["embedding"]["out_channels"] == channels
+        # The one knob most easily forgotten. `hidden_channels = channels * 4`
+        # is the mapping H-C1 actually ran; the pre-production 4/16 pair was
+        # already this same ratio.
+        assert model["embedding"]["hidden_channels"] == channels * 4
+        assert model["readout"]["channels"] == channels
+        for layer in model["layers"]:
+            assert layer["mixing"]["channels"] == channels
+            assert layer["path_aggregation"]["channels"] == channels
+
+
+def test_he_configs_enable_both_trainable_cusp_ranges_identically() -> None:
+    train = _load(TRAIN)["model"]["factors"]
+    evaluation = _load(EVAL)["model"]["factors"]
+    # Enabling the trainable law adds exactly two state-dict keys, so a strict
+    # model-only restore fails in BOTH directions across the change. A
+    # train/eval mismatch is not a degraded run, it is a run that cannot start.
+    assert train == evaluation
+
+    ee = next(f for f in train if f["_target_"] == "tpen.nn.ElectronElectronCusp")
+    assert ee["trainable_range"] is True
+
+    en = next(f for f in train if f["_target_"] == "tpen.nn.ElectronNucleusCusp")
+    law = en["law"]
+    assert law["_target_"] == "tpen.nn.TrainableCurvatureElectronNucleusCuspLaw"
+    assert law["trainable"] is True
+    # NONZERO on purpose. At exactly c = 0 the gradient with respect to the
+    # range parameter d is identically zero, so a defaults-instantiated
+    # trainable range cannot move on step one -- and the law's own defaults
+    # (trainable=True, curvature_coefficient=0.0) land in that trap.
+    assert float(law["curvature_coefficient"]) != 0.0
+    assert float(law["curvature_range"]) > 0.0
+
+
+def test_he_tail_band_brackets_the_law_s_own_outer_tail_slope() -> None:
+    """The tail gate is centered on `outer_tail_slope`, never on a hardcoded -Z.
+
+    At c = 0 the law is exactly `-Z r` and the expected slope is -Z. The moment
+    c != 0 it is `-Z + c/d`, so a band calibrated against the pure linear law
+    must not be applied unchanged. This asserts the predeclared band actually
+    contains the value the configured law returns, rather than a value someone
+    assumed it returns.
+    """
+
+    import sys
+
+    study_dir = STUDY
+    if str(study_dir) not in sys.path:
+        sys.path.insert(0, str(study_dir))
+    import collect  # noqa: PLC0415
+    import plan  # noqa: PLC0415
+
+    grid = plan.load_grid_config(STUDY / "configs" / "production_grid.yaml")
+    thresholds, _ = collect.split_gate_spec(grid["gate_spec"])
+
+    law = instantiate(OmegaConf.create(_load(TRAIN)["model"]["factors"][1]["law"]))
+    charges = torch.tensor(_load(TRAIN)["system"]["nuclei"]["charges"], dtype=torch.float64)
+    expected = float(law.outer_tail_slope(charges).reshape(-1)[0].item())
+
+    # The configured initialization must sit inside the band the gate declares,
+    # or the gate would fail a correctly initialized model on step one.
+    assert thresholds["tail_outer_slope_mean_min"] <= expected
+    assert expected <= thresholds["tail_outer_slope_mean_max"]
+    # And it must NOT be -Z: asserting that keeps this test honest about the
+    # fact that the curved law shifted the center at all.
+    assert expected != -float(charges[0].item())
+    assert abs(expected - (-float(charges[0].item()))) < 0.1
+
+    # A decaying tail requires c/d < Z. The law does not enforce it; the gate's
+    # sign requirement is the executable proxy, so it must demand every ray.
+    assert thresholds["tail_negative_slope_fraction_min"] == 1.0
+
+
+def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
+    """The predeclared checkpoint break, asserted rather than discovered.
+
+    H-C2's pilot checkpoint was trained with the linear law, so it cannot be
+    restored under the production config and its measured tau describes a
+    different model. Pinning the break here means a future config change that
+    silently reverts the law fails a test instead of failing a restore inside an
+    allocation.
+    """
+
+    from tpen.nn import ElectronNucleusCusp, TrainableCurvatureElectronNucleusCuspLaw
+
+    atoms_cfg = OmegaConf.create(_load(TRAIN)["atoms"])
+    OmegaConf.update(atoms_cfg, "positions.data", _load(TRAIN)["system"]["nuclei"]["positions"])
+    OmegaConf.update(atoms_cfg, "charges.data", _load(TRAIN)["system"]["nuclei"]["charges"])
+    atoms = instantiate(atoms_cfg)
+
+    linear = ElectronNucleusCusp(atoms)
+    trainable = ElectronNucleusCusp(
+        atoms,
+        law=TrainableCurvatureElectronNucleusCuspLaw(
+            curvature_coefficient=0.01, curvature_range=1.0, trainable=True
+        ),
+    )
+
+    # Exactly two keys, and the default law contributes none -- which is why
+    # A5's bit-identity guarantee holds until a config actually switches.
+    assert linear.state_dict() == {}
+    assert sorted(trainable.state_dict()) == [
+        "law.raw_curvature_coefficient",
+        "law.raw_curvature_range",
+    ]
+
+    import pytest  # noqa: PLC0415
+
+    with pytest.raises(RuntimeError):
+        linear.load_state_dict(trainable.state_dict(), strict=True)
+    with pytest.raises(RuntimeError):
+        trainable.load_state_dict(linear.state_dict(), strict=True)

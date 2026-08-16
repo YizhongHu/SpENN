@@ -52,6 +52,10 @@ def __getattr__(name: str) -> object:
         from .health import SamplerHealth
 
         return SamplerHealth
+    if name == "FactorScalars":
+        from .factor_scalars import FactorScalars
+
+        return FactorScalars
     if name == "DiagnosticTiming":
         from .timing import DiagnosticTiming
 
@@ -94,6 +98,7 @@ __all__ = [
     "EvaluationComponentTiming",
     "EvaluationTiming",
     "FailureLog",
+    "FactorScalars",
     "GradientStats",
     "Metadata",
     "ResolvedConfigSnapshot",

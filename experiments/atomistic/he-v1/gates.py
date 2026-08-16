@@ -260,6 +260,45 @@ _GATE_DEFINITIONS: tuple[_GateDefinition, ...] = (
         availability_key=_TAIL_AVAILABLE,
         rationale="past the declared radius the amplitude is numerical noise",
     ),
+    # --- singlet purity ----------------------------------------------------
+    # THESE GATES ARE MEANINGLESS UNDER THE WRONG NAMESPACE, which is why the
+    # spec's reserved `metric_namespaces` block must bind them to
+    # `eval/spatial_exchange_symmetry`. `full_model_antisymmetry` shares the
+    # same summary class and therefore the same metric names, but there the
+    # triplet fraction is identically 1.0 BY CONSTRUCTION: a full label exchange
+    # sends Psi -> -Psi, so u = 0, the sign ratio is -1, and f = 1 exactly.
+    # That is the HEALTHY value for a correctly antisymmetric wave function, so
+    # a purity bound applied there does not merely mismeasure -- it gates a
+    # constant, and would pass or fail for reasons unrelated to purity.
+    #
+    # The center of these bounds is ANALYTIC and it is zero: a true spatial
+    # singlet has triplet fraction 0 exactly, and the fraction is clamped to
+    # [0, 1], so an `at_most` bound is literally a distance from the analytic
+    # center. Only the SCALE is empirical.
+    _GateDefinition(
+        name="triplet_fraction_mean_at_most",
+        metric="triplet_fraction_mean_under_psi_orig_sq",
+        comparison="at_most",
+        threshold_key="triplet_fraction_mean_max",
+        availability_key=None,
+        rationale="a spatial singlet has triplet fraction 0; the mean bounds contamination",
+    ),
+    _GateDefinition(
+        name="triplet_fraction_max_at_most",
+        metric="triplet_fraction_max_under_psi_orig_sq",
+        comparison="at_most",
+        threshold_key="triplet_fraction_max_max",
+        availability_key=None,
+        rationale="worst single sample, so localized contamination cannot average away",
+    ),
+    _GateDefinition(
+        name="triplet_fraction_finite_sample_count_at_least",
+        metric="triplet_fraction_finite_sample_count",
+        comparison="at_least",
+        threshold_key="triplet_fraction_finite_sample_count_min",
+        availability_key=None,
+        rationale="too few usable samples makes the reported fraction coarser than its bound",
+    ),
 )
 
 #: Metric keys this module reads. A collector should retain all of them in the
@@ -272,6 +311,37 @@ ATOM_GATE_METRIC_KEYS: tuple[str, ...] = tuple(
 ATOM_GATE_SPEC_KEYS: tuple[str, ...] = (_CHARGE_KEY,) + tuple(
     dict.fromkeys(definition.threshold_key for definition in _GATE_DEFINITIONS)
 )
+
+
+def undeclared_spec_keys(spec: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the recognized threshold keys ``spec`` does not declare.
+
+    THE FAILURE MODES HERE ARE ASYMMETRIC, and that asymmetry is the whole
+    reason this function exists. A MISTYPED key raises ``ValueError`` from
+    `evaluate_atom_gates` -- loud and safe. A FORGOTTEN key goes quietly
+    ``absent`` with its observed value retained, which is honest per-row
+    rendering but means a gate someone intended to enforce simply never
+    enforces, in a receipt that otherwise looks complete. A typo cannot slip
+    through; an omission can.
+
+    So a caller that intends full coverage asserts against this rather than
+    trusting that its spec parsed. Parsing proves the keys are spelled right,
+    not that they are all present.
+
+    Parameters
+    ----------
+    spec : Mapping[str, Any]
+        Tolerance mapping to audit. Unknown keys are not reported here; they
+        are `evaluate_atom_gates`'s error to raise.
+
+    Returns
+    -------
+    tuple of str
+        Recognized keys absent from ``spec``, in ``ATOM_GATE_SPEC_KEYS`` order.
+        Empty when the spec covers every gate.
+    """
+
+    return tuple(key for key in ATOM_GATE_SPEC_KEYS if key not in spec)
 
 
 def evaluate_atom_gates(
@@ -595,4 +665,5 @@ __all__ = [
     "GateOutcome",
     "GateStatus",
     "evaluate_atom_gates",
+    "undeclared_spec_keys",
 ]

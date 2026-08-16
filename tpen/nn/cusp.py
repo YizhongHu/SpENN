@@ -240,6 +240,27 @@ class TrainableCurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw
         curvature = coefficient * distance.square() / (1.0 + range_parameter * distance)
         return linear + curvature
 
+    def scalar_diagnostics(self) -> dict[str, float]:
+        """Return ``c`` and ``d`` as constrained values, with the raws beside them.
+
+        ``d`` is stored as ``raw_curvature_range`` behind a softplus, so the raw
+        and constrained axes are different: a raw value can crawl while the
+        effective range has settled, or sit nearly still while the constrained
+        value moves. Both are reported so a convergence assessment reads the
+        physical parameter and can still see whether the optimizer is touching
+        the stored one at all -- which is the observable that distinguishes a
+        genuinely converged range from the ``c = 0`` zero-gradient trap.
+        """
+
+        scalars = {
+            "curvature_coefficient": float(self.curvature_coefficient.item()),
+            "curvature_range": float(self.curvature_range.item()),
+        }
+        if self.trainable:
+            scalars["raw_curvature_coefficient"] = float(self.raw_curvature_coefficient.item())
+            scalars["raw_curvature_range"] = float(self.raw_curvature_range.item())
+        return scalars
+
 
 class ElectronNucleusCusp(LogAmplitudeFactor):
     """Generic electron-nucleus Kato cusp factor for arbitrary nuclei.
@@ -282,6 +303,28 @@ class ElectronNucleusCusp(LogAmplitudeFactor):
                 f"{type(self.law).__name__}.value must have shape {tuple(distance.shape)}, got {tuple(value.shape)}"
             )
         return value.sum(dim=(1, 2))
+
+    def scalar_diagnostics(self) -> dict[str, float]:
+        """Return the law's trainable scalars, and the tail slope they imply.
+
+        The factor owns no scalars of its own -- the radial law does -- so this
+        delegates and prefixes. `outer_tail_slope` is included when the law
+        exposes it because the asymptotic slope is the quantity a tail gate is
+        centered on, and recomputing it downstream from ``c`` and ``d`` would
+        duplicate the law's own definition.
+        """
+
+        law_scalars = getattr(self.law, "scalar_diagnostics", None)
+        if not callable(law_scalars):
+            return {}
+        scalars = {f"law.{name}": value for name, value in law_scalars().items()}
+        tail_slope = getattr(self.law, "outer_tail_slope", None)
+        if callable(tail_slope):
+            charges = self.atoms.charges.reshape(-1)
+            slopes = tail_slope(charges).reshape(-1)
+            for index, slope in enumerate(slopes.tolist()):
+                scalars[f"law.outer_tail_slope.{index}"] = float(slope)
+        return scalars
 
 
 class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
@@ -355,6 +398,23 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
         if self.trainable_range:
             return F.softplus(self.raw_opposite_range) + self.eps
         return self.opposite_range
+
+    def scalar_diagnostics(self) -> dict[str, float]:
+        """Return both range parameters as constrained values, raws beside them.
+
+        Same reasoning as the electron-nucleus law: the softplus makes the raw
+        and effective axes different, so a convergence assessment that read only
+        the raws could mistake a settled range for a moving one.
+        """
+
+        scalars = {
+            "same_range_parameter": float(self.same_range_parameter.item()),
+            "opposite_range_parameter": float(self.opposite_range_parameter.item()),
+        }
+        if self.trainable_range:
+            scalars["raw_same_range"] = float(self.raw_same_range.item())
+            scalars["raw_opposite_range"] = float(self.raw_opposite_range.item())
+        return scalars
 
     def envelope_value(self, batch: ElectronBatch) -> torch.Tensor:
         """Return the electron-electron cusp contribution."""

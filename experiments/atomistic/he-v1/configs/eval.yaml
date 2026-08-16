@@ -48,9 +48,34 @@ atoms:
 evaluation:
   namespace: eval
   seed: ${runtime.seed}
-  artifact_level: summaries
+  # `production-grid-v0` requires raw [draw, walker] retention. Note that this
+  # level ALONE retains nothing: every raw-record writer returns early unless
+  # `artifact_level == "records"`, but each only runs if it is IN a task's
+  # summaries list, and none was. Setting the level without adding the writer
+  # satisfies the contract's letter and keeps no records at all -- the same
+  # shape as A6-C sitting merged-but-unreferenced. `SampledRecordWriter` is
+  # therefore wired into the energy task below, and the test asserts the FILE
+  # EXISTS after a records-level run rather than that this key is set.
+  artifact_level: records
   task_failure_policy: continue
   return_terms: true
+
+# A6-C join identity, supplied per row by `eval.py` and MISSING by default.
+# Every field is `???` on purpose: the trajectory statistics producer refuses to
+# construct without a complete identity ("the join identity admits no blanks"),
+# so a run that forgot to supply one must fail loudly at config resolution
+# rather than emit a sidecar nobody can join. `checkpoint_file` is the model.pt
+# FILE while `load.path` below is the checkpoint DIRECTORY -- they are different
+# paths on purpose, because content hashing reads the file and restore reads the
+# directory. Passing the directory raises IsADirectoryError inside the summary,
+# which is a wiring asymmetry this lane has already paid for once.
+trajectory_identity:
+  stage: ???
+  run_id: ???
+  attempt_id: ???
+  evaluator_id: ???
+  checkpoint_file: ???
+  config_sha256: ???
 
 load:
   path: ???
@@ -84,8 +109,8 @@ model:
     _target_: tpen.nn.Embedding
     max_order: 2
     spatial_dim: ${system.spatial_dim}
-    out_channels: 4
-    hidden_channels: 16
+    out_channels: 32
+    hidden_channels: 128
     num_hidden_layers: 1
     include_spins: true
   layers:
@@ -94,7 +119,7 @@ model:
         _target_: tpen.nn.EquivariantMixing
         max_order: 2
         max_virtual_order: 2
-        channels: 4
+        channels: 32
         implementation: vectorized
         initial_weight: 0.5
         activation:
@@ -103,18 +128,30 @@ model:
         _target_: tpen.nn.PathAggregation
         max_order: 2
         max_virtual_order: 2
-        channels: 4
+        channels: 32
         activation:
           _target_: torch.nn.SiLU
       update:
         _target_: tpen.nn.ResidualUpdater
+  # BYTE-IDENTICAL to train.yaml's factors block, and a config test asserts the
+  # whole `model:` subtree structurally rather than trusting hand-sync. Enabling
+  # the trainable en law adds exactly two state-dict keys, so `strict: true`
+  # restore fails in BOTH directions across this change: a train/eval mismatch
+  # here is not a degraded run, it is a run that cannot start. See train.yaml
+  # for the full predeclared-break note and the c != 0 rationale.
   factors:
     - _target_: tpen.nn.ElectronElectronCusp
+      trainable_range: true
     - _target_: tpen.nn.ElectronNucleusCusp
       atoms: ${atoms}
+      law:
+        _target_: tpen.nn.TrainableCurvatureElectronNucleusCuspLaw
+        curvature_coefficient: 0.01
+        curvature_range: 1.0
+        trainable: true
   readout:
     _target_: tpen.nn.readout.PfaffianReadout
-    channels: 4
+    channels: 32
 
 hamiltonian_terms:
   kinetic:
@@ -132,9 +169,28 @@ hamiltonian_terms:
 
 evaluation_sampler:
   _target_: tpen.sampling.metropolis.MetropolisSampler
-  n_walkers: 1024
+  n_walkers: 4096
+  # BURN-IN 100, demonstrated sufficient ON THE MEAN, which is the only
+  # quantity that can see initialization bias -- tau and split-Rhat cannot.
+  # H-C2 job 39533419: across burn_in 100/200/400/800 every mean local energy
+  # differs from the burn-in-100 value by less than the median MCSE (1.69e-4)
+  # AND less than the within-arm cross-chain spread (2.3e-4 to 4.0e-4).
+  # This does not contradict the analytic hydrogenic probe (job 39213047,
+  # ~400 steps at 0.23 acceptance); it FAILS TO TRANSFER from it. On the
+  # trained He target the same proposal 0.5 gives 0.30-0.31 acceptance across
+  # all 32 chains -- a different target with different mixing.
   burn_in: 100
-  n_steps: 10
+  # STRIDE 20 IS A DECLARED TIE-BREAK, NOT A THROUGHPUT WINNER. H-C2 job
+  # 39533396 measured ESS/second 2340.2 at stride 10 against 2295.8 at stride
+  # 20 -- 1.9% apart, INSIDE the 2.2% spread H-C1 measured between two nodes of
+  # the same stratum. So ESS/second could not distinguish them and decided
+  # nothing. Strides 1 and 5 are decisively excluded (643.0 and 1898.8).
+  # The tie is broken on a stated non-throughput ground: stride 20 gives lower
+  # MCSE (1.508e-4 vs 1.687e-4), lower inflation (1.110 vs 1.243) and tighter
+  # split-Rhat (1.0006 vs 1.0020), i.e. less sensitivity to error in tau, at
+  # the cost of 15% more evaluation wall time -- which falls on the cheap side
+  # of the study and does not touch the training budget at all.
+  n_steps: 20
   proposal_scale: 0.5
   seed: ${evaluation.seed}
   n_electrons: ${system.n_particles}
@@ -154,11 +210,24 @@ evaluation_tasks:
     name: mcmc_energy
     namespace: ${evaluation.namespace}/mcmc_energy
     output_dir: ${run.dir}/mcmc_energy
+    # TrajectoryMCMCGenerator, not the one-snapshot MCMCGenerator: only the
+    # trajectory path publishes the explicit [draw, walker] ObservableTrajectory
+    # the A6-C producer needs, and without it a He run emits NO MCSE at all.
+    # 256 draws x 4096 walkers. At the pilot's measured tau this is far past the
+    # ~100 effective samples the QMC audit requires (H-C2 pooled ESS 911,949 at
+    # stride 20), and if the production tau is larger the correlation-aware bar
+    # simply widens -- it does not become wrong.
     generator:
-      _target_: tpen.evaluation.generators.MCMCGenerator
+      _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
       sampler: ${evaluation_sampler}
+      hamiltonian_terms: ${hamiltonian_terms}
+      n_draws: 256
       seed: ${evaluation.seed}
-      max_samples: 1024
+      chunk_size: 256
+    # NOT EMPTY. `LocalEnergySummary` consumes what `LocalEnergyCalculator`
+    # produces, and a task wired `calculators: []` fails at the SUMMARY stage --
+    # after every expensive thing has already been paid for. That defect cannot
+    # fail early by construction and cost this lane ~3 GPU-hours.
     calculators:
       - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
         hamiltonian_terms: ${hamiltonian_terms}
@@ -168,6 +237,31 @@ evaluation_tasks:
       - _target_: tpen.evaluation.summaries.LocalEnergySummary
       - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
         reference_energy: ${system.reference_energy}
+      # The correlation-aware bar. MCSE inflation at stride 20 is 1.110, so an
+      # IID bar would understate the uncertainty by ~11%; both are emitted side
+      # by side and distinctly labelled, which is what makes the factor visible
+      # rather than inferred. The pre-existing snapshot `local_energy_stderr`
+      # keeps its name and meaning.
+      - _target_: tpen.evaluation.summaries.TrajectoryStatisticsSummary
+        stage: ${trajectory_identity.stage}
+        run_id: ${trajectory_identity.run_id}
+        attempt_id: ${trajectory_identity.attempt_id}
+        evaluator_id: ${trajectory_identity.evaluator_id}
+        checkpoint_path: ${trajectory_identity.checkpoint_file}
+        config_sha256: ${trajectory_identity.config_sha256}
+        observable: local_energy
+        prefix: local_energy
+      # MCMC health beside every evaluation, as production-grid-v0 requires.
+      # The record already rides in generated metadata and this summary is
+      # already exported -- it was simply never named by a config, so an eval
+      # row reported no acceptance rate at all.
+      - _target_: tpen.evaluation.summaries.SamplerStatsSummary
+      # Raw [draw, walker] retention. max_samples covers the full product
+      # (256 x 4096 = 1048576); the default 100000 would silently keep 9.5% and
+      # look entirely healthy.
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
+        max_samples: 1048576
+        include_term_energies: true
   he_radial_profiles:
     name: he_radial_profiles
     namespace: ${evaluation.namespace}/he_radial_profiles
@@ -204,7 +298,11 @@ evaluation_tasks:
         _target_: tpen.evaluation.generators.MCMCGenerator
         sampler: ${evaluation_sampler}
         seed: ${evaluation.seed}
-        max_samples: 8
+        # Raised off the smoke value of 8. At 8 samples a reported fraction
+        # moves in steps of 0.125, so the singlet-purity number this lane gates
+        # on could not resolve its own bound. 4096 gives a resolution of
+        # 2.4e-4, finer than the tolerance being applied to it.
+        max_samples: 4096
     calculators:
       - _target_: tpen.evaluation.calculators.FullModelAntisymmetryCalculator
     summaries:
@@ -220,7 +318,11 @@ evaluation_tasks:
         _target_: tpen.evaluation.generators.MCMCGenerator
         sampler: ${evaluation_sampler}
         seed: ${evaluation.seed}
-        max_samples: 8
+        # Raised off the smoke value of 8. At 8 samples a reported fraction
+        # moves in steps of 0.125, so the singlet-purity number this lane gates
+        # on could not resolve its own bound. 4096 gives a resolution of
+        # 2.4e-4, finer than the tolerance being applied to it.
+        max_samples: 4096
     calculators:
       - _target_: tpen.evaluation.calculators.SpatialExchangeSymmetryCalculator
     summaries:

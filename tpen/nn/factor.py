@@ -74,6 +74,30 @@ class LogAmplitudeFactor(nn.Module):
 
         raise NotImplementedError("LogAmplitudeFactor.factor_value must be implemented by subclasses")
 
+    def scalar_diagnostics(self) -> dict[str, float]:
+        """Return this factor's trainable scalars as flat named floats.
+
+        A factor that owns trainable scalars reports them here so a training
+        callback can trace them without inspecting parameter containers. The
+        contract is explicit and typed: the factor names its own quantities,
+        and a consumer reads names rather than guessing which entry of
+        ``named_parameters()`` means what.
+
+        Reporting the CONSTRAINED value is the point. A range parameter held
+        positive through a softplus reparameterization moves on a raw axis that
+        is not the physical one, so a raw trace can show motion where the
+        effective parameter has settled, or stillness where it has not. A
+        factor that reports a reparameterized scalar should report the
+        constrained value, and may report the raw value beside it.
+
+        Returns
+        -------
+        dict
+            Flat scalar mapping, empty for a factor that owns no scalars.
+        """
+
+        return {}
+
 
 class AdditiveCusp(LogAmplitudeFactor):
     """Generic composition summing typed `LogAmplitudeFactor` components.
@@ -109,6 +133,19 @@ class AdditiveCusp(LogAmplitudeFactor):
             _check_factor_tensor(value, batch, name=f"factors[{index}]")
             total = total + value
         return total
+
+    def scalar_diagnostics(self) -> dict[str, float]:
+        """Return every component's scalars, prefixed by component position.
+
+        The index prefix keeps two components of the same class distinguishable,
+        which a bare name would not.
+        """
+
+        scalars: dict[str, float] = {}
+        for index, factor in enumerate(self.factors):
+            for name, value in factor.scalar_diagnostics().items():
+                scalars[f"factors.{index}.{name}"] = value
+        return scalars
 
 
 class AsymptoticDecay(nn.Module):
