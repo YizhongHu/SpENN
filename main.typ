@@ -451,10 +451,26 @@ the determinant/Pfaffian readout and preserves the antisymmetry of $psi_theta$.
 
 The factor $J$ is *additive* in $log abs(psi)$. We reserve the word *envelope*
 for the *multiplicative* coordinate factors of the Normalization and Envelopes
-section and name the additive-to-$log abs(psi)$ factors by body order: two-body
-terms are *cusps*, one-body terms are *confinements*. In code these components
-compose through `tpen.nn.AdditiveEnvelope`, which the wavefunction takes as a
-required argument:
+section. Within the additive-to-$log abs(psi)$ factors, terminology is fixed
+by *behavior*, not body order: a *cusp* enforces the short-range Kato condition
+at a coalescence point --- the required derivative discontinuity of $psi$ as
+two particles, or a particle and a fixed nucleus, approach each other. *Decay*
+(equivalently *confinement*) supplies the long-range guarantee that
+$|psi|^2$ stays normalizable as particles move away from the system. A cusp
+can be two-body (electron-electron) or summed one-particle-at-a-time over
+fixed external centers (electron-nucleus); both are cusps because both enforce
+a short-range Kato condition. The Gaussian confinement below, and its
+generalizations, are decay/confinement terms because they govern long-range
+normalizability, not short-range coalescence. In code these components
+currently compose through `tpen.nn.AdditiveEnvelope`, which the wavefunction
+takes as a required argument. `AdditiveEnvelope` is a *compatibility name*: the
+word "envelope" is reserved above for the multiplicative coordinate factors,
+so the shipped class name does not match the terminology it implements. The
+target generic post-readout log-amplitude interface is `LogAmplitudeFactor`,
+composing any mix of cusp and decay/confinement terms; `AdditiveCusp` is the
+narrower composition specifically over cusp factors (e.g. electron-electron
+and, later, electron-nucleus). Renaming `AdditiveEnvelope` to `LogAmplitudeFactor`
+is tracked separately and is not part of this terminology-only change.
 
 $
 J (br)
@@ -464,7 +480,9 @@ $
 
 Here $J_"ee"$ is the two-body electron-electron cusp and $J_"conf"$ is a one-body
 confinement. The shipped Hooke stack is
-`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`.
+`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`, i.e. a
+`LogAmplitudeFactor` composing one `AdditiveCusp` term (`ElectronElectronCusp`)
+and one decay/confinement term (`GaussianConfinement`).
 
 === Electron-electron cusp
 
@@ -508,8 +526,9 @@ $
 === Gaussian confinement
 
 Because the Pfaffian readout is polynomial in the features, a trapped system
-needs a guaranteed-by-construction decay factor for $|psi|^2$ normalizability.
-The one-body Gaussian confinement (`tpen.nn.GaussianConfinement`) supplies it:
+needs a guaranteed-by-construction decay factor for $|psi|^2$ normalizability
+--- a *decay/confinement* term, not a cusp. The one-body Gaussian confinement
+(`tpen.nn.GaussianConfinement`) supplies it:
 
 $
 J_"conf"(br)
@@ -530,13 +549,35 @@ exposed by the $omega$-parametrized convenience subclass
 but it is still additive in $log abs(psi)$ and is applied through the additive
 log-amplitude interface, not inside the antisymmetric readout.
 
-=== Electron-nucleus confinement (deferred)
+=== Electron-nucleus cusp (deferred)
 
 For all-electron Hamiltonians, electron-nucleus coalescence also needs explicit
-handling. Because it is a *one-body* factor it is a *confinement*, not a cusp:
-`NuclearConfinement`. It is *deferred to a future all-electron milestone* --- the
-Hooke systems studied here contain no nuclei, so this term would be permanently
-inactive and is not shipped. The math is recorded here for that milestone.
+handling. Although it sums one particle at a time against fixed external
+centers, it is named by short-range Kato behavior, not body order: it is a
+*cusp*, `ElectronNucleusCusp`, not a confinement. It is *deferred to a future
+all-electron milestone* --- the Hooke systems studied here contain no nuclei,
+so this term would be permanently inactive and is not shipped. The math is
+recorded here for that milestone.
+
+Fixed nuclei are described generically: a constructor-owned
+`AtomicConfiguration` holds the nuclear positions $R_A$ and charges $Z_A$ for
+one system, and is passed once, at construction, to whichever `HamiltonianTerm`,
+cusp, or decay/confinement module needs it. Helium and molecular hydrogen are
+two `AtomicConfiguration` instances --- *data*, not distinct wavefunction
+subclasses or branches. There is no He- or H2-specific wavefunction path;
+`tpen.nn.TPENWaveFunction` and its consumers stay generic over any
+`AtomicConfiguration`. Particle counts, permutations, and validation come only
+from typed `.permute(...)`, `.compare(...)`, and `.validate(...)` contracts and
+explicit `n_electrons`/nuclear metadata --- never from recursively probing an
+arbitrary container.
+
+`tpen.physics.hamiltonian.NaiveLocalEnergyEvaluator` remains the reference
+local-energy evaluator for every Hamiltonian, cusp, and decay/confinement term,
+including any future all-electron system built on `AtomicConfiguration`. A
+future analytic electron-nucleus cusp capability must be introduced as its own
+typed `LocalEnergyEvaluator`/context pair that fails loudly when misapplied ---
+it must not silently fall back to container traversal or branch on which
+molecule is present.
 
 Use
 
@@ -621,8 +662,11 @@ Implemented in `tpen.nn.TPENWaveFunction`.
     $
 + Readout with `tpen.nn.PfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c)_(i j) - bx^(T c)_(j i)] $
-+ Applied additive log-amplitude envelope with `tpen.nn.AdditiveEnvelope`,
-  required as `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`
++ Applied additive post-readout log-amplitude factor with
+  `tpen.nn.AdditiveEnvelope` (compatibility name for the target
+  `LogAmplitudeFactor` interface), required as
+  `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)` --- an
+  `AdditiveCusp`-composed cusp term plus a decay/confinement term
   $ psi(bv) = exp(J (br))Psi(bv), quad J (br) = J_"ee" (br) + J_"conf" (br) $
 + Output: $psi(bv)$
 
