@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from tpen.data.batch import ElectronBatch
+from tpen.evaluation.bundle import EvaluationBundle
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -227,10 +229,16 @@ _GENERATOR_SUPPLIED_FIELDS = frozenset({"generated"})
 #: Calculators whose ``name`` is not the bundle field they populate. Transform
 #: calculators all write ``bundle.transform``. Asserted complete below, so a new
 #: calculator cannot silently bypass the coverage check by not being listed.
+#: Calculators whose bundle field is not their ``name``. Every entry here is a
+#: place the coverage test below would otherwise credit a calculator with
+#: producing a field it does not write.
 _CALCULATOR_BUNDLE_FIELD = {
     "FullModelAntisymmetryCalculator": "transform",
     "SpatialExchangeSymmetryCalculator": "transform",
     "RotationConsistencyCalculator": "transform",
+    # name="trace_equivariance", but it writes `trace_comparison`
+    # (tpen/evaluation/calculators/trace.py:128).
+    "TraceEquivarianceCalculator": "trace_comparison",
 }
 
 
@@ -341,17 +349,38 @@ def test_the_callback_above_the_factor_scalars_index_is_still_sampler_health() -
     assert _import_target(callbacks[6]["_target_"]) is _import_target("tpen.callback.SamplerHealth")
 
 
-def test_the_calculator_field_mapping_covers_every_configured_calculator() -> None:
-    # A calculator whose `name` is not its bundle field, and which is missing
-    # from the mapping, would be credited with producing a field it does not --
-    # turning the coverage test above into one that cannot fail.
-    for task in _load(EVAL)["evaluation_tasks"].values():
+def test_the_calculator_field_mapping_names_real_bundle_fields() -> None:
+    """Every calculator resolves to a field `EvaluationBundle` actually has.
+
+    THE PREVIOUS VERSION OF THIS TEST COULD NOT FAIL. Its comment named the
+    hazard exactly -- "a calculator whose `name` is not its bundle field, and
+    which is missing from the mapping, would be credited with producing a field
+    it does not" -- and then asserted only ``hasattr(calculator, "name")``, which
+    every calculator satisfies by construction. It was an instrument pointed at a
+    failure it could not see, and it duly failed to see one:
+    `TraceEquivarianceCalculator` has ``name = "trace_equivariance"`` and writes
+    ``trace_comparison``, so the coverage test above was crediting it with a
+    field that does not exist and demanding one nothing supplied.
+
+    Checking the resolved name against `EvaluationBundle`'s real fields is what
+    makes this discriminating: a bundle field is a typed attribute, so a
+    fabricated one is detectable rather than merely unlikely.
+    """
+
+    bundle_fields = {field.name for field in dataclasses.fields(EvaluationBundle)}
+    for task_name, task in _load(EVAL)["evaluation_tasks"].items():
         for entry in task["calculators"]:
             calculator = _import_target(entry["_target_"])
-            name = calculator.__name__
-            if name in _CALCULATOR_BUNDLE_FIELD:
-                continue
-            assert hasattr(calculator, "name"), name
+            resolved = _CALCULATOR_BUNDLE_FIELD.get(
+                calculator.__name__, getattr(calculator, "name", None)
+            )
+            assert resolved in bundle_fields, (
+                f"{task_name}: {calculator.__name__} resolves to bundle field "
+                f"{resolved!r}, which EvaluationBundle does not have. Either the "
+                f"calculator's name differs from the field it writes and belongs in "
+                f"_CALCULATOR_BUNDLE_FIELD, or the field is misspelled. Known fields: "
+                f"{sorted(bundle_fields)}"
+            )
 
 
 def test_he_eval_energy_task_keeps_the_calculator_its_summaries_consume() -> None:

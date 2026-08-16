@@ -26,6 +26,12 @@ non-monotone. Bar magnitude is unreliable in BOTH directions; the sign pattern
 is the discriminator, which is why cumulative drift is reported here as context
 and decides nothing.
 
+RUN THIS IN A SLURM ALLOCATION, NOT ON A LOGIN NODE. It is cheap enough to
+tempt otherwise. It gates roughly 97 GPU-hours, and H-F3's receipt is required
+to carry its full output, so it deserves a job ID and a durable log on its own
+merits. That also makes the torch import below a non-issue rather than a
+tolerated exception.
+
 THIS MODULE IMPORTS ``tpen``, unlike `plan.py`, `launch.py` and `collect.py`,
 and does so LAZILY inside :func:`loss_series_tau` so the module still imports on
 a login node. It is the second sanctioned exception to the ``experiments/``
