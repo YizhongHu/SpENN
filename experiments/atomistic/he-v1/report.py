@@ -73,6 +73,19 @@ def _header_lines(collected: Mapping[str, Any]) -> list[str]:
         "- resume/restart: forbidden; rows are sized to finish",
         "",
     ]
+    bindings = collected.get("metric_namespaces") or {}
+    if bindings:
+        lines += [
+            "Metric namespace bindings. Each metric below was read from one task's",
+            "namespace and from nowhere else, for the reported column and for the gates",
+            "alike, so a tolerance cannot land on a different task that happens to emit",
+            "the same metric name.",
+            "",
+        ]
+        lines += [
+            f"- `{metric}` read from namespace `{bindings[metric]}`" for metric in sorted(bindings)
+        ]
+        lines.append("")
     if not declared:
         lines += [
             "> No tolerance was predeclared for this attempt, so every value gate reports",
@@ -131,7 +144,9 @@ def _aggregate_lines(collected: Mapping[str, Any]) -> list[str]:
         "## Aggregates over evaluation rows",
         "",
         "Every aggregate names how many rows supplied a value. Absent rows are excluded",
-        "from the statistic and counted, never treated as zero.",
+        "from the statistic and counted, never treated as zero. A metric written",
+        "`<namespace>.<key>` was collected from that task alone: several tasks can share",
+        "a summary class and therefore a metric name while measuring different things.",
         "",
         "| metric | coverage | mean | median | min | max |",
         "|---|---|---|---|---|---|",

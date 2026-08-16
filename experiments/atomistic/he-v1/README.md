@@ -69,6 +69,34 @@ Three properties are enforced rather than trusted:
 - **Absence is not zero.** A missing value renders as `absent` in JSON, CSV and
   the report, never as `0.0` and never as a blank cell, and every aggregate
   carries how many rows actually supplied a value.
+- **A metric name is not a metric.** Two evaluation tasks can share a summary
+  class and therefore a metric name. `full_model_antisymmetry` and
+  `spatial_exchange_symmetry` both use `TransformConsistencySummary`, so four
+  names exist twice per evaluation row. A request may name its namespace, and an
+  unqualified request for a colliding name fails and names the namespaces rather
+  than being resolved by guesswork.
+
+### Naming one task's metric
+
+```bash
+python collect.py --results-root <results> \
+    --metric-key eval/spatial_exchange_symmetry.triplet_fraction_mean_under_psi_orig_sq \
+    --metric-namespace triplet_fraction_mean_under_psi_orig_sq=eval/spatial_exchange_symmetry
+```
+
+`--metric-key <namespace>.<key>` retains one task's value under its own column;
+`--metric-namespace <key>=<namespace>` (or a `metric_namespaces:` block in the
+gate spec) binds a bare name to one namespace for its column and for the gates
+alike, so a tolerance decides on that task's number and no other. A qualified
+name that no row's namespace matches is an error, not an absent column.
+
+This matters physically: under `eval/full_model_antisymmetry` the triplet
+fraction is identically `1.0` by construction, because a full label exchange
+sends `Psi -> -Psi`, so `u = 0`, the sign ratio is `-1` and
+`f = (1 - s*sech(u))/2 = 1`. That is the healthy value for a correctly
+antisymmetric wave function, not contamination. Singlet purity is interpretable
+only under `eval/spatial_exchange_symmetry`, so a purity tolerance must name
+that namespace.
 
 Gating is delegated in full to `gates.py`. Until the tolerances are predeclared
 in H-F1 every value gate reports `absent` with its observed value retained,

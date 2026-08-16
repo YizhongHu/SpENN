@@ -17,6 +17,21 @@ rows are joined on identity, not on position
     checkpoint does not hash to its training row's retained checkpoint fails
     too, because that number belongs to a different model than the one claimed.
 
+a metric name is not a metric
+    Two evaluation tasks can share a summary class and therefore share every
+    metric NAME while measuring different things. In the He config
+    ``full_model_antisymmetry`` and ``spatial_exchange_symmetry`` both use
+    ``TransformConsistencySummary``, so ``triplet_fraction_mean_under_psi_orig_sq``
+    exists twice and means two different things: under full label exchange it is
+    identically ``1.0`` by construction (``Psi -> -Psi`` gives ``u = 0`` and sign
+    ratio ``-1``, so ``f = (1 - s*sech(u))/2 = 1``), while under spatial exchange
+    it is the singlet-purity diagnostic. A request may therefore be qualified --
+    ``eval/spatial_exchange_symmetry.triplet_fraction_mean_under_psi_orig_sq``
+    names one task -- and an UNQUALIFIED request for a colliding name still
+    fails loudly and names the namespaces rather than picking one. The collector
+    never resolves that ambiguity by guessing; it only lets the caller express
+    which task was meant.
+
 Gating is delegated in full to ``gates.evaluate_atom_gates`` (layer L2); this
 module adds no gate logic of its own. Before the tolerances are predeclared in
 H-F1 every value gate legitimately reports ``absent`` with its observed value
@@ -88,6 +103,19 @@ ENERGY_METRIC_KEYS: tuple[str, ...] = (
 #: Every metric the gates read, retained whether or not it gated.
 GATE_METRIC_KEYS: tuple[str, ...] = tuple(gates.ATOM_GATE_METRIC_KEYS)
 
+#: Separator between a namespace and a metric name in a qualified request, as in
+#: ``eval/spatial_exchange_symmetry.triplet_fraction_mean_under_psi_orig_sq``.
+#: The namespace itself is slash-separated, exactly as the run logs it, so the
+#: last ``.`` is the split point and a bare name never contains one.
+NAMESPACE_SEPARATOR = "."
+
+#: Reserved gate-spec key: a mapping from a bare metric name to the single
+#: namespace it must be read from, for the retained column and for the gates
+#: alike. It is stripped before the spec reaches ``gates.evaluate_atom_gates``,
+#: which owns its own strict threshold-key check and must not be handed a key it
+#: does not recognize.
+METRIC_NAMESPACE_SPEC_KEY = "metric_namespaces"
+
 COLLECTED_FILENAME = "collected.json"
 ROWS_CSV = "rows.csv"
 GATES_CSV = "gates.csv"
@@ -97,7 +125,9 @@ class CollectError(RuntimeError):
     """The collected rows do not form a table that can be reported honestly."""
 
 
-def read_metrics_jsonl(path: str | Path) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+def read_metrics_jsonl(
+    path: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[str]]]:
     """Read one ``metrics.jsonl`` into namespaced and flat mappings.
 
     Returns
@@ -105,18 +135,22 @@ def read_metrics_jsonl(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]
     namespaced : dict
         ``"<namespace>/<key>" -> value`` for every logged record.
     flat : dict
-        ``"<key>" -> value`` for keys that appear under exactly one namespace.
-    ambiguous : list of str
-        Keys logged under more than one namespace with differing values. They
-        are excluded from ``flat`` rather than resolved by guesswork: picking
-        one silently would attribute a number to the wrong task.
+        ``"<key>" -> value`` for keys that carry one value across every
+        namespace that logged them. A name logged twice with the SAME value is
+        not ambiguous: either namespace answers the question identically.
+    ambiguous : dict
+        ``"<key>" -> [namespace, ...]`` for keys logged under more than one
+        namespace with differing values. They are excluded from ``flat`` rather
+        than resolved by guesswork: picking one silently would attribute a
+        number to the wrong task. The namespaces are carried here so a failure
+        can name them instead of only naming the key.
     """
 
     path = Path(path)
     namespaced: dict[str, Any] = {}
     by_key: dict[str, list[tuple[str, Any]]] = {}
     if not path.is_file():
-        return {}, {}, []
+        return {}, {}, {}
     for line in path.read_text(encoding="utf-8").splitlines():
         text = line.strip()
         if not text:
@@ -131,14 +165,206 @@ def read_metrics_jsonl(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]
             namespaced[full] = value
             by_key.setdefault(str(key), []).append((namespace, value))
     flat: dict[str, Any] = {}
-    ambiguous: list[str] = []
+    ambiguous: dict[str, list[str]] = {}
     for key, entries in by_key.items():
         values = {json.dumps(value, sort_keys=True) for _namespace, value in entries}
         if len(values) == 1:
             flat[key] = entries[0][1]
         else:
-            ambiguous.append(key)
-    return namespaced, flat, sorted(ambiguous)
+            ambiguous[key] = sorted({namespace for namespace, _value in entries})
+    return namespaced, flat, ambiguous
+
+
+def logged_namespaces(namespaced: Mapping[str, Any]) -> set[str]:
+    """Return every namespace one row actually logged under."""
+
+    return {str(full).rpartition("/")[0] for full in namespaced}
+
+
+def split_metric_request(request: str) -> tuple[str | None, str]:
+    """Split ``"<namespace>.<key>"`` into its parts.
+
+    A bare request yields ``(None, request)``. The split is on the LAST
+    :data:`NAMESPACE_SEPARATOR`, because the namespace is slash-separated and
+    the metric names emitted by the summaries carry no dot.
+    """
+
+    text = str(request)
+    namespace, separator, key = text.rpartition(NAMESPACE_SEPARATOR)
+    if not separator or not namespace or not key:
+        return None, text
+    return namespace, key
+
+
+def resolve_metric_request(
+    request: str,
+    *,
+    namespaced: Mapping[str, Any],
+    flat: Mapping[str, Any],
+    ambiguous: Mapping[str, Sequence[str]],
+    namespaces: set[str],
+) -> tuple[Any, str | None]:
+    """Resolve one requested metric against one row's logged metrics.
+
+    Returns
+    -------
+    value : Any
+        The measured value, or :data:`absence.ABSENT` when this row has none.
+    reason : str or None
+        A row failure reason when the request cannot be honoured, else ``None``.
+
+    Notes
+    -----
+    Three cases are deliberately distinct, because collapsing any two of them
+    is how a number gets attributed to the wrong task:
+
+    - a bare name that collides FAILS and names the colliding namespaces; the
+      caller must say which task it meant. This is the pre-existing refusal to
+      guess, now scoped to the metrics actually requested rather than fired by
+      any collision anywhere in the log;
+    - a qualified name whose namespace THIS row logged, but which that
+      namespace never emitted, FAILS -- the row ran the task and the metric is
+      still missing, so the request is wrong or the task is broken;
+    - a qualified name whose namespace this row never logged is ABSENT, not a
+      failure. A train row does not run the evaluation tasks, and an eval-only
+      column must not fail every train row. A request naming a namespace that
+      NO row logged is caught once, study-wide, by
+      :func:`require_requested_namespaces`.
+    """
+
+    namespace, key = split_metric_request(request)
+    if namespace is None:
+        if key in ambiguous:
+            return absence.ABSENT, (
+                f"metric key {key!r} is logged under several namespaces "
+                f"{list(ambiguous[key])} with differing values; request it as "
+                f"'<namespace>{NAMESPACE_SEPARATOR}{key}' to say which task is meant"
+            )
+        return flat.get(key), None
+    full = f"{namespace}/{key}"
+    if full in namespaced:
+        return namespaced[full], None
+    if namespace in namespaces:
+        return absence.ABSENT, (
+            f"qualified metric key {request!r} names namespace {namespace!r}, which this "
+            f"row logged, but that namespace emitted no {key!r}"
+        )
+    return absence.ABSENT, None
+
+
+def require_requested_namespaces(
+    rows: Sequence[Mapping[str, Any]], requests: Iterable[str]
+) -> None:
+    """Reject a qualified request whose namespace no row in the attempt logged.
+
+    Per row, an unlogged namespace is honest absence (a train row runs no
+    evaluation task). Across the whole attempt it is a mis-typed or stale
+    request, and letting it render ``absent`` in every row would look exactly
+    like a metric nobody emitted -- the silent failure this stage exists to
+    prevent. It is therefore raised, not recorded: re-collecting is cheap and
+    the request has to be corrected.
+    """
+
+    logged: set[str] = set()
+    for row in rows:
+        logged.update(str(name) for name in row["logged_namespaces"])
+    unmatched = sorted(
+        request
+        for request in requests
+        if (namespace := split_metric_request(request)[0]) is not None
+        and namespace not in logged
+    )
+    if unmatched:
+        raise CollectError(
+            f"qualified metric requests name namespaces no row logged: {unmatched}; "
+            f"namespaces logged in this attempt: {sorted(logged)}"
+        )
+
+
+def split_gate_spec(spec: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Split a gate spec into thresholds and namespace bindings.
+
+    ``gates.evaluate_atom_gates`` rejects any spec key it does not recognize --
+    a mistyped threshold would otherwise disable exactly the gate it was meant
+    to set. The namespace bindings are therefore removed here rather than
+    passed through, and the thresholds reach the gates untouched.
+    """
+
+    thresholds = {
+        key: value for key, value in spec.items() if key != METRIC_NAMESPACE_SPEC_KEY
+    }
+    raw = spec.get(METRIC_NAMESPACE_SPEC_KEY)
+    if raw is None:
+        return thresholds, {}
+    if not isinstance(raw, Mapping):
+        raise CollectError(
+            f"gate spec {METRIC_NAMESPACE_SPEC_KEY!r} must be a mapping of "
+            f"'<metric>: <namespace>', got {raw!r}"
+        )
+    bindings: dict[str, str] = {}
+    for metric, namespace in raw.items():
+        if not isinstance(namespace, str) or not namespace.strip():
+            raise CollectError(
+                f"gate spec {METRIC_NAMESPACE_SPEC_KEY}[{metric!r}] must be a namespace "
+                f"string, got {namespace!r}"
+            )
+        bindings[str(metric)] = namespace.strip().strip("/")
+    return thresholds, bindings
+
+
+def resolve_metric_bindings(
+    bindings: Mapping[str, str],
+    *,
+    namespaced: Mapping[str, Any],
+    flat: Mapping[str, Any],
+    ambiguous: Mapping[str, Sequence[str]],
+    namespaces: set[str],
+    reasons: list[str],
+) -> dict[str, Any]:
+    """Resolve every bound bare metric to the value of its declared namespace.
+
+    A binding is a caller stating which task a name refers to. It is resolved
+    once per row and then used both for the retained column and for the mapping
+    the gates read, so a bound name can never gate one task's value while
+    reporting another's.
+    """
+
+    bound: dict[str, Any] = {}
+    for metric, namespace in sorted(bindings.items()):
+        value, reason = resolve_metric_request(
+            f"{namespace}{NAMESPACE_SEPARATOR}{metric}",
+            namespaced=namespaced,
+            flat=flat,
+            ambiguous=ambiguous,
+            namespaces=namespaces,
+        )
+        if reason is not None:
+            reasons.append(reason)
+        bound[metric] = value
+    return bound
+
+
+def gate_metric_view(flat: Mapping[str, Any], bound: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the metrics mapping the gates read, with bindings applied.
+
+    A bound metric is read from its declared namespace and from nowhere else,
+    which is what lets a tolerance gate spatial-exchange singlet purity without
+    ever seeing the full-model triplet fraction that is ``1.0`` by construction.
+    An unbound metric keeps today's behaviour: unambiguous names resolve, and a
+    colliding name is simply absent from the view, so its gate reports
+    ``absent`` rather than gating a guess.
+    """
+
+    view = dict(flat)
+    for metric, value in bound.items():
+        # The raw value is handed on unchanged: the gates own what a non-finite
+        # or wrongly typed metric means, and they fail closed on it. Only a
+        # metric this row never logged is removed from the view.
+        if value is absence.ABSENT or value is None:
+            view.pop(metric, None)
+        else:
+            view[metric] = value
+    return view
 
 
 def file_sha256(path: str | Path) -> str | Any:
@@ -194,10 +420,18 @@ def collect_row(
     plan_attempt_id: str,
     manifest: Mapping[str, Any],
     gate_spec: Mapping[str, Any],
+    metric_namespaces: Mapping[str, str] | None = None,
     extra_metric_keys: Sequence[str] = (),
     hash_checkpoints: bool = True,
 ) -> dict[str, Any]:
-    """Collect one planned row into a table row with explicit absence."""
+    """Collect one planned row into a table row with explicit absence.
+
+    ``gate_spec`` carries thresholds only; the namespace bindings arrive
+    separately as ``metric_namespaces`` because the gates reject any spec key
+    outside their own recognized set. A binding decides both the retained
+    column and the value the gates read, so one name cannot report one task's
+    number while gating another's.
+    """
 
     row_id = str(row["row_id"])
     kind = str(row["kind"])
@@ -210,8 +444,7 @@ def collect_row(
     metadata = _read_json_or_absent(run_dir / "metadata.json", reasons)
     status = _read_json_or_absent(run_dir / "status.json", reasons)
     namespaced, flat, ambiguous = read_metrics_jsonl(run_dir / "metrics.jsonl")
-    if ambiguous:
-        reasons.append(f"metric keys logged under several namespaces: {ambiguous}")
+    namespaces = logged_namespaces(namespaced)
     if not namespaced:
         reasons.append("no metrics were logged")
 
@@ -263,12 +496,39 @@ def collect_row(
         "checkpoint_sha256": absence.cell(checkpoint_hash),
     }
 
+    bound = resolve_metric_bindings(
+        dict(metric_namespaces or {}),
+        namespaced=namespaced,
+        flat=flat,
+        ambiguous=ambiguous,
+        namespaces=namespaces,
+        reasons=reasons,
+    )
+
     metric_keys = list(dict.fromkeys([*ENERGY_METRIC_KEYS, *GATE_METRIC_KEYS, *extra_metric_keys]))
-    metrics = {key: absence.cell(flat.get(key)) for key in metric_keys}
+    metrics: dict[str, Any] = {}
+    for key in metric_keys:
+        namespace, name = split_metric_request(key)
+        if namespace is None and name in bound:
+            # An explicit binding answers the collision for the retained column
+            # too. Reporting a bound name as unresolved while gating it would
+            # put two different numbers under one heading.
+            metrics[key] = absence.cell(bound[name])
+            continue
+        value, reason = resolve_metric_request(
+            key,
+            namespaced=namespaced,
+            flat=flat,
+            ambiguous=ambiguous,
+            namespaces=namespaces,
+        )
+        if reason is not None:
+            reasons.append(reason)
+        metrics[key] = absence.cell(value)
 
     gate_rows: list[dict[str, Any]] = []
     if kind == "eval":
-        for outcome in gates.evaluate_atom_gates(flat, spec=gate_spec):
+        for outcome in gates.evaluate_atom_gates(gate_metric_view(flat, bound), spec=gate_spec):
             gate_rows.append(
                 {
                     "name": outcome.name,
@@ -298,7 +558,12 @@ def collect_row(
         "metrics": metrics,
         "gates": gate_rows,
         "gate_counts": _gate_counts(gate_rows),
-        "ambiguous_metric_keys": ambiguous,
+        # Diagnostic, not a verdict: every colliding name this row logged,
+        # whether or not anything asked for it. Only a REQUESTED collision
+        # fails the row, and it fails with its namespaces named.
+        "ambiguous_metric_keys": sorted(ambiguous),
+        "ambiguous_metric_namespaces": {key: list(ambiguous[key]) for key in sorted(ambiguous)},
+        "logged_namespaces": sorted(namespaces),
         "namespaced_metric_count": len(namespaced),
     }
 
@@ -373,19 +638,29 @@ def collect(
     collect_attempt_id: str,
     gate_spec: Mapping[str, Any],
     gate_spec_source: str,
+    metric_namespaces: Mapping[str, str] | None = None,
     extra_metric_keys: Sequence[str] = (),
     hash_checkpoints: bool = True,
 ) -> dict[str, Any]:
-    """Collect one plan attempt into a durable table."""
+    """Collect one plan attempt into a durable table.
+
+    ``gate_spec`` may carry the reserved ``metric_namespaces`` binding block; it
+    is split out here so the gates receive thresholds only. Bindings passed in
+    ``metric_namespaces`` win over the ones declared in the spec, which is
+    what lets a re-collect qualify a metric without editing a config.
+    """
 
     manifest = plan_stage.read_manifest(results_root, plan_attempt_id)
+    thresholds, spec_bindings = split_gate_spec(gate_spec)
+    bindings = {**spec_bindings, **dict(metric_namespaces or {})}
     rows = [
         collect_row(
             row,
             results_root=results_root,
             plan_attempt_id=plan_attempt_id,
             manifest=manifest,
-            gate_spec=gate_spec,
+            gate_spec=thresholds,
+            metric_namespaces=bindings,
             extra_metric_keys=extra_metric_keys,
             hash_checkpoints=hash_checkpoints,
         )
@@ -394,14 +669,25 @@ def collect(
     require_unique_identities(rows)
     cross_check_checkpoint_identity(rows)
     metric_keys = list(dict.fromkeys([*ENERGY_METRIC_KEYS, *GATE_METRIC_KEYS, *extra_metric_keys]))
+    require_requested_namespaces(
+        rows,
+        [
+            *metric_keys,
+            *(f"{namespace}{NAMESPACE_SEPARATOR}{metric}" for metric, namespace in bindings.items()),
+        ],
+    )
     collected = {
         "schema_version": plan_stage.SCHEMA_VERSION,
         "study": str(manifest["study"]),
         "plan_attempt_id": str(plan_attempt_id),
         "plan_hash": str(manifest["plan_hash"]),
         "collect_attempt_id": str(collect_attempt_id),
-        "gate_spec": dict(gate_spec),
-        "gate_spec_declared": bool(gate_spec),
+        "gate_spec": dict(thresholds),
+        # Bindings are not tolerances: a spec that only says WHICH namespace a
+        # metric comes from still declares no threshold, and every value gate
+        # must keep reporting 'absent' with its observed value retained.
+        "gate_spec_declared": bool(thresholds),
+        "metric_namespaces": dict(bindings),
         "gate_spec_source": gate_spec_source,
         "checkpoint_hashing": bool(hash_checkpoints),
         "metric_keys": metric_keys,
@@ -546,7 +832,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--metric-key",
         action="append",
         default=[],
-        help="Additional metric key to retain per row; repeatable.",
+        help=(
+            "Additional metric key to retain per row; repeatable. Qualify a name that "
+            "several tasks emit as '<namespace>.<key>', e.g. "
+            "'eval/spatial_exchange_symmetry.triplet_fraction_mean_under_psi_orig_sq'. "
+            "An unqualified colliding name fails the row and names its namespaces."
+        ),
+    )
+    parser.add_argument(
+        "--metric-namespace",
+        action="append",
+        default=[],
+        metavar="METRIC=NAMESPACE",
+        help=(
+            "Bind one bare metric name to the single namespace it is read from, for its "
+            "retained column and for the gates alike; repeatable. Overrides the gate "
+            "spec's 'metric_namespaces' block."
+        ),
     )
     parser.add_argument(
         "--skip-checkpoint-hash",
@@ -554,6 +856,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip checkpoint hashing; the hash then renders as absent, never as matching.",
     )
     return parser.parse_args(argv)
+
+
+def parse_metric_namespace_arguments(entries: Sequence[str]) -> dict[str, str]:
+    """Parse ``METRIC=NAMESPACE`` bindings from the command line."""
+
+    bindings: dict[str, str] = {}
+    for entry in entries:
+        metric, separator, namespace = str(entry).partition("=")
+        if not separator or not metric.strip() or not namespace.strip():
+            raise CollectError(
+                f"--metric-namespace expects 'METRIC=NAMESPACE', got {entry!r}"
+            )
+        bindings[metric.strip()] = namespace.strip().strip("/")
+    return bindings
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -570,6 +886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         collect_attempt_id=args.collect_attempt_id or plan_stage.now_attempt_id(),
         gate_spec=gate_spec,
         gate_spec_source=str(args.gate_spec) if args.gate_spec else "plan_manifest",
+        metric_namespaces=parse_metric_namespace_arguments(args.metric_namespace),
         extra_metric_keys=args.metric_key,
         hash_checkpoints=not args.skip_checkpoint_hash,
     )
@@ -578,6 +895,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"[he-v1] collected {collected['n_rows']} rows "
         f"({collected['n_pass']} pass, {collected['n_fail']} fail) into {directory}"
     )
+    for metric, namespace in sorted(collected["metric_namespaces"].items()):
+        print(f"[he-v1] metric {metric!r} is read from namespace {namespace!r} only")
     if not collected["gate_spec_declared"]:
         print(
             "[he-v1] no tolerances declared: value gates report 'absent' with observed "

@@ -17,6 +17,16 @@ identity, not position
     Rows join on run id, checkpoint hash, config hash, seed and stratum. A
     delivered card that is not the requested one fails the row, and four chains
     over one checkpoint that hash differently fail together.
+
+a metric name is not a metric
+    ``full_model_antisymmetry`` and ``spatial_exchange_symmetry`` share
+    ``TransformConsistencySummary``, so four metric names exist twice per
+    evaluation row and mean different things under each task. A request may name
+    its namespace; an unqualified request for a colliding name still fails and
+    names the namespaces; and a collision nobody asked about is not a failure at
+    all. The measured regression these tests pin: at merged dev every one of the
+    three smoke rows failed collection on collisions in metrics nothing had
+    requested.
 """
 
 from __future__ import annotations
@@ -105,6 +115,54 @@ HEALTHY_METRICS: dict[str, Any] = {
     "tail_outer_radius_max": 8.0,
 }
 
+#: The four names ``TransformConsistencySummary`` emits under BOTH
+#: ``eval/full_model_antisymmetry`` and ``eval/spatial_exchange_symmetry`` in the
+#: real He evaluation config. Values are the ones the 2026-08-15 smoke measured
+#: at its 25-step checkpoint. Under full label exchange the triplet fraction is
+#: identically 1.0 by construction -- ``Psi -> -Psi`` gives ``u = 0`` and sign
+#: ratio ``-1``, so ``f = (1 - s*sech(u))/2 = 1`` -- and that is the healthy
+#: value, not contamination. Only the spatial-exchange numbers are singlet
+#: purity.
+TRANSFORM_CONSISTENCY_KEYS: tuple[str, ...] = (
+    "logabs_max_abs_error",
+    "logabs_mean_abs_error",
+    "triplet_fraction_max_under_psi_orig_sq",
+    "triplet_fraction_mean_under_psi_orig_sq",
+)
+
+FULL_MODEL_METRICS: dict[str, Any] = {
+    "logabs_max_abs_error": 0.0,
+    "logabs_mean_abs_error": 0.0,
+    "triplet_fraction_max_under_psi_orig_sq": 1.0,
+    "triplet_fraction_mean_under_psi_orig_sq": 1.0,
+    "sign_failure_count": 0,
+}
+
+SPATIAL_EXCHANGE_METRICS: dict[str, Any] = {
+    "logabs_max_abs_error": 0.6049,
+    "logabs_mean_abs_error": 0.1908,
+    "triplet_fraction_max_under_psi_orig_sq": 0.07934,
+    "triplet_fraction_mean_under_psi_orig_sq": 0.01506,
+    "sign_failure_count": 0,
+}
+
+#: The two colliding evaluation namespaces, as the real config names them.
+FULL_MODEL_NS = "eval/full_model_antisymmetry"
+SPATIAL_NS = "eval/spatial_exchange_symmetry"
+
+#: What the real eval rows log: the two tasks above, sharing one summary class.
+TRANSFORM_NAMESPACES: dict[str, dict[str, Any]] = {
+    FULL_MODEL_NS: FULL_MODEL_METRICS,
+    SPATIAL_NS: SPATIAL_EXCHANGE_METRICS,
+}
+
+
+def qualified(namespace: str, key: str) -> str:
+    """Return the collector's qualified form of one metric request."""
+
+    return f"{namespace}{collect.NAMESPACE_SEPARATOR}{key}"
+
+
 ENERGY_METRICS: dict[str, Any] = {
     "local_energy_mean": -2.85,
     "local_energy_stderr": 0.004,
@@ -138,6 +196,7 @@ def _materialize_row(
     row: dict[str, Any],
     *,
     metrics: dict[str, Any] | None = None,
+    extra_namespaces: dict[str, dict[str, Any]] | None = None,
     delivered_device: str | None = None,
     matches: bool = True,
     status: str = "completed",
@@ -200,6 +259,12 @@ def _materialize_row(
             }
         ),
     ]
+    # Extra namespaces reproduce the real config's shape: several tasks logging
+    # into one metrics.jsonl, some of them sharing metric NAMES.
+    for namespace, payload_metrics in (extra_namespaces or {}).items():
+        lines.append(
+            json.dumps({"step": 0, "namespace": namespace, "metrics": dict(payload_metrics)})
+        )
     (run_dir / "metrics.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     if row["kind"] == "eval":
@@ -501,10 +566,327 @@ def test_metrics_logged_under_two_namespaces_are_not_guessed(tmp_path: Path) -> 
         encoding="utf-8",
     )
     namespaced, flat, ambiguous = collect.read_metrics_jsonl(path)
-    assert ambiguous == ["shared"]
+    # The namespaces travel with the collision, so a failure can name them.
+    assert ambiguous == {"shared": ["eval/a", "eval/b"]}
     assert "shared" not in flat
     assert flat["unique"] == 3.0
     assert namespaced["eval/a/shared"] == 1.0
+
+
+def test_one_name_logged_twice_with_one_value_is_not_ambiguous(tmp_path: Path) -> None:
+    """Two namespaces agreeing on a value leave nothing to disambiguate."""
+
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps({"step": 0, "namespace": "eval/a", "metrics": {"agreed": 7.0}}),
+                json.dumps({"step": 0, "namespace": "eval/b", "metrics": {"agreed": 7.0}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _namespaced, flat, ambiguous = collect.read_metrics_jsonl(path)
+    assert ambiguous == {}
+    assert flat["agreed"] == 7.0
+
+
+@pytest.fixture()
+def transform_study(tmp_path: Path) -> dict[str, Any]:
+    """A study whose evaluation rows log the real config's colliding tasks.
+
+    Both transform tasks share ``TransformConsistencySummary``, so every one of
+    ``TRANSFORM_CONSISTENCY_KEYS`` exists twice per evaluation row with
+    different values. The train row logs neither task, exactly as a training
+    run does not run the evaluation stack.
+    """
+
+    manifest = _write_plan(tmp_path)
+    for row in manifest["rows"]:
+        _materialize_row(
+            tmp_path,
+            manifest,
+            row,
+            extra_namespaces=TRANSFORM_NAMESPACES if row["kind"] == "eval" else None,
+        )
+    return {"manifest": manifest, "root": tmp_path}
+
+
+def test_unrequested_collision_does_not_fail_the_row(transform_study: dict[str, Any]) -> None:
+    """The measured regression: at merged dev this failed all three smoke rows.
+
+    Four names collide on every evaluation row because two tasks share a summary
+    class. Nothing requested them. A collector that fails the row anyway collects
+    zero usable rows from a study whose physics was sound.
+    """
+
+    collected = _collect(transform_study)
+    assert collected["n_fail"] == 0, [row["reasons"] for row in collected["rows"]]
+    eval_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "eval")
+    # The collision is still reported -- as diagnostics, not as a verdict.
+    assert eval_row["ambiguous_metric_keys"] == sorted(TRANSFORM_CONSISTENCY_KEYS)
+    assert eval_row["ambiguous_metric_namespaces"]["logabs_max_abs_error"] == [
+        FULL_MODEL_NS,
+        SPATIAL_NS,
+    ]
+
+
+def test_qualified_key_resolves_to_exactly_one_namespace(
+    transform_study: dict[str, Any],
+) -> None:
+    """Both sides of the collision are collectable, each under its own name."""
+
+    spatial = qualified(SPATIAL_NS, "triplet_fraction_mean_under_psi_orig_sq")
+    full_model = qualified(FULL_MODEL_NS, "triplet_fraction_mean_under_psi_orig_sq")
+    collected = _collect(transform_study, extra_metric_keys=[spatial, full_model])
+    eval_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "eval")
+    assert eval_row["metrics"][spatial] == {"status": "present", "value": 0.01506}
+    # 1.0 under full label exchange is definitional for an antisymmetric wave
+    # function, not contamination; it is retained under its own name so it can
+    # never be mistaken for the singlet-purity number above.
+    assert eval_row["metrics"][full_model] == {"status": "present", "value": 1.0}
+    assert eval_row["status"] == "pass"
+
+
+def test_all_four_colliding_config_keys_collect_under_qualification(
+    transform_study: dict[str, Any],
+) -> None:
+    """Every key the real He config collides on is collectable from both tasks."""
+
+    requests = [
+        qualified(namespace, key)
+        for namespace in (FULL_MODEL_NS, SPATIAL_NS)
+        for key in TRANSFORM_CONSISTENCY_KEYS
+    ]
+    collected = _collect(transform_study, extra_metric_keys=requests)
+    assert collected["n_fail"] == 0, [row["reasons"] for row in collected["rows"]]
+    eval_rows = [row for row in collected["rows"] if row["identity"]["kind"] == "eval"]
+    for eval_row in eval_rows:
+        for key in TRANSFORM_CONSISTENCY_KEYS:
+            assert eval_row["metrics"][qualified(FULL_MODEL_NS, key)] == {
+                "status": "present",
+                "value": FULL_MODEL_METRICS[key],
+            }
+            assert eval_row["metrics"][qualified(SPATIAL_NS, key)] == {
+                "status": "present",
+                "value": SPATIAL_EXCHANGE_METRICS[key],
+            }
+    # Coverage is per qualified column, so the two tasks aggregate separately.
+    for key in TRANSFORM_CONSISTENCY_KEYS:
+        summary = collected["summaries"][qualified(SPATIAL_NS, key)]
+        assert summary["n_present"] == len(eval_rows)
+        assert summary["mean"]["value"] == SPATIAL_EXCHANGE_METRICS[key]
+
+
+def test_unqualified_colliding_request_still_fails_and_names_its_namespaces(
+    transform_study: dict[str, Any],
+) -> None:
+    """The refusal to guess survives: only the way to express intent is new."""
+
+    collected = _collect(
+        transform_study,
+        extra_metric_keys=["triplet_fraction_mean_under_psi_orig_sq"],
+    )
+    eval_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "eval")
+    assert eval_row["status"] == "fail"
+    reason = next(
+        reason
+        for reason in eval_row["reasons"]
+        if "triplet_fraction_mean_under_psi_orig_sq" in reason
+    )
+    assert FULL_MODEL_NS in reason and SPATIAL_NS in reason
+    assert eval_row["metrics"]["triplet_fraction_mean_under_psi_orig_sq"] == {
+        "status": "absent",
+        "value": None,
+    }
+
+
+def test_qualified_key_matching_no_namespace_is_a_failure(
+    transform_study: dict[str, Any],
+) -> None:
+    """A mis-typed namespace must not render as a column of honest absence."""
+
+    with pytest.raises(collect.CollectError, match="namespaces no row logged"):
+        _collect(
+            transform_study,
+            extra_metric_keys=[
+                qualified("eval/spatial_exchange_symetry", "logabs_mean_abs_error")
+            ],
+        )
+
+
+def test_qualified_key_missing_under_a_logged_namespace_fails_that_row(
+    transform_study: dict[str, Any],
+) -> None:
+    """The task ran and the metric is still not there: that is not absence."""
+
+    collected = _collect(
+        transform_study,
+        extra_metric_keys=[qualified(SPATIAL_NS, "triplet_fraction_p95")],
+    )
+    eval_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "eval")
+    assert eval_row["status"] == "fail"
+    assert any("emitted no 'triplet_fraction_p95'" in reason for reason in eval_row["reasons"])
+
+
+def test_eval_only_qualified_key_leaves_the_train_row_absent_not_failed(
+    transform_study: dict[str, Any],
+) -> None:
+    """A train row runs no evaluation task; an eval column may not fail it."""
+
+    request = qualified(SPATIAL_NS, "triplet_fraction_mean_under_psi_orig_sq")
+    collected = _collect(transform_study, extra_metric_keys=[request])
+    train_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "train")
+    assert train_row["status"] == "pass", train_row["reasons"]
+    assert train_row["metrics"][request] == {"status": "absent", "value": None}
+
+
+def test_gate_spec_namespace_binding_gates_only_that_namespace(tmp_path: Path) -> None:
+    """H-F1's mechanism: a tolerance reads one task and never the other.
+
+    ``tail_negative_slope_fraction`` is logged here under two namespaces with
+    values that fall on opposite sides of the declared floor, which is the shape
+    of the singlet-purity hazard: an unbound tolerance would land on whichever
+    namespace happened to be picked, and gate the wrong task's number.
+    """
+
+    manifest = _write_plan(tmp_path)
+    for row in manifest["rows"]:
+        _materialize_row(
+            tmp_path,
+            manifest,
+            row,
+            extra_namespaces={"eval/decoy_task": {"tail_negative_slope_fraction": 0.0}},
+        )
+    study = {"manifest": manifest, "root": tmp_path}
+
+    # Unbound, the colliding name is excluded from the gate view entirely: the
+    # gate reports absent rather than gating a guess.
+    unbound = _collect(study, gate_spec={"tail_negative_slope_fraction_min": 0.9})
+    eval_row = next(row for row in unbound["rows"] if row["identity"]["kind"] == "eval")
+    by_name = {gate["name"]: gate for gate in eval_row["gates"]}
+    assert by_name["tail_negative_slope_fraction_at_least"]["status"] == "absent"
+
+    # Bound to the healthy task, the same threshold decides on that task's value.
+    bound = _collect(
+        study,
+        gate_spec={
+            "tail_negative_slope_fraction_min": 0.9,
+            collect.METRIC_NAMESPACE_SPEC_KEY: {
+                "tail_negative_slope_fraction": "eval/he_radial_profiles"
+            },
+        },
+    )
+    eval_row = next(row for row in bound["rows"] if row["identity"]["kind"] == "eval")
+    by_name = {gate["name"]: gate for gate in eval_row["gates"]}
+    gate = by_name["tail_negative_slope_fraction_at_least"]
+    assert gate["status"] == "pass"
+    assert gate["value"] == {"status": "present", "value": 1.0}
+    assert bound["metric_namespaces"] == {
+        "tail_negative_slope_fraction": "eval/he_radial_profiles"
+    }
+
+    # Bound to the decoy, the same threshold fails on the decoy's value. Same
+    # spec, same row, different task: the binding is what decides.
+    decoyed = _collect(
+        study,
+        gate_spec={
+            "tail_negative_slope_fraction_min": 0.9,
+            collect.METRIC_NAMESPACE_SPEC_KEY: {
+                "tail_negative_slope_fraction": "eval/decoy_task"
+            },
+        },
+    )
+    eval_row = next(row for row in decoyed["rows"] if row["identity"]["kind"] == "eval")
+    by_name = {gate["name"]: gate for gate in eval_row["gates"]}
+    assert by_name["tail_negative_slope_fraction_at_least"]["status"] == "fail"
+    assert by_name["tail_negative_slope_fraction_at_least"]["value"] == {
+        "status": "present",
+        "value": 0.0,
+    }
+
+
+def test_bindings_alone_are_not_a_declared_tolerance(transform_study: dict[str, Any]) -> None:
+    """Saying WHICH namespace a metric comes from declares no threshold."""
+
+    collected = _collect(
+        transform_study,
+        gate_spec={
+            collect.METRIC_NAMESPACE_SPEC_KEY: {
+                "tail_negative_slope_fraction": "eval/he_radial_profiles"
+            }
+        },
+    )
+    assert collected["gate_spec_declared"] is False
+    assert collected["gate_spec"] == {}
+    eval_row = next(row for row in collected["rows"] if row["identity"]["kind"] == "eval")
+    by_name = {gate["name"]: gate for gate in eval_row["gates"]}
+    assert by_name["tail_negative_slope_fraction_at_least"]["status"] == "absent"
+
+
+def test_gate_binding_is_not_passed_through_to_the_gates() -> None:
+    """The gates reject unknown spec keys; the binding must never reach them."""
+
+    thresholds, bindings = collect.split_gate_spec(
+        {
+            "nuclear_charge": 2.0,
+            collect.METRIC_NAMESPACE_SPEC_KEY: {"m": "eval/a"},
+        }
+    )
+    assert thresholds == {"nuclear_charge": 2.0}
+    assert bindings == {"m": "eval/a"}
+    # The unstripped spec is exactly what gates.py is built to reject.
+    with pytest.raises(ValueError, match="unknown atom gate spec keys"):
+        collect.gates.evaluate_atom_gates(
+            {}, spec={collect.METRIC_NAMESPACE_SPEC_KEY: {"m": "eval/a"}}
+        )
+
+
+def test_malformed_namespace_binding_is_rejected() -> None:
+    """A binding that is not '<metric>: <namespace>' is a typo, not a setting."""
+
+    with pytest.raises(collect.CollectError, match="must be a mapping"):
+        collect.split_gate_spec({collect.METRIC_NAMESPACE_SPEC_KEY: ["eval/a"]})
+    with pytest.raises(collect.CollectError, match="must be a namespace string"):
+        collect.split_gate_spec({collect.METRIC_NAMESPACE_SPEC_KEY: {"m": 3}})
+    with pytest.raises(collect.CollectError, match="METRIC=NAMESPACE"):
+        collect.parse_metric_namespace_arguments(["tail_negative_slope_fraction"])
+    assert collect.parse_metric_namespace_arguments(["m=eval/a"]) == {"m": "eval/a"}
+
+
+def test_qualified_columns_reach_the_csv_and_the_report(
+    transform_study: dict[str, Any],
+) -> None:
+    """A reader must see which task produced a number without the config."""
+
+    spatial = qualified(SPATIAL_NS, "triplet_fraction_mean_under_psi_orig_sq")
+    full_model = qualified(FULL_MODEL_NS, "triplet_fraction_mean_under_psi_orig_sq")
+    collected = _collect(
+        transform_study,
+        extra_metric_keys=[spatial, full_model],
+        gate_spec={
+            collect.METRIC_NAMESPACE_SPEC_KEY: {
+                "tail_negative_slope_fraction": "eval/he_radial_profiles"
+            }
+        },
+    )
+    directory = collect.write_collected(collected, results_root=transform_study["root"])
+    with (directory / collect.ROWS_CSV).open(newline="", encoding="utf-8") as handle:
+        table = list(csv.DictReader(handle))
+    eval_record = next(record for record in table if record["kind"] == "eval")
+    assert eval_record[spatial] == "0.01506"
+    assert eval_record[full_model] == "1.0"
+    train_record = next(record for record in table if record["kind"] == "train")
+    assert train_record[spatial] == "absent"
+
+    text = report.render(collected)
+    assert f"`{spatial}`" in text
+    assert f"`{full_model}`" in text
+    assert (
+        "`tail_negative_slope_fraction` read from namespace `eval/he_radial_profiles`"
+        in text
+    )
 
 
 def test_rows_csv_never_writes_a_blank_cell(study: dict[str, Any]) -> None:
