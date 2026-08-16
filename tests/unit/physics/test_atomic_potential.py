@@ -459,15 +459,21 @@ def test_legacy_nucleus_nucleus_interaction_still_rejects_colliding_nuclei() -> 
         NucleusNucleusInteraction().local_energy(None, batch)
 
 
-def test_canonical_nucleus_nucleus_potential_does_not_check_collisions() -> None:
-    # Asymmetry by design: `AtomicConfiguration` geometry is validated at
-    # construction, so `NucleusNucleusPotential` must not re-run the legacy
-    # collision check -- coincident nuclei silently produce +inf rather than
-    # a `ValueError`, unlike the legacy `NucleusNucleusInteraction` above.
-    atoms = _atoms([[0.0, 0.0], [0.0, 0.0]], [1.0, 1.0])
-    batch = ElectronBatch(positions=torch.zeros(1, 1, 2, dtype=torch.float64))
+def test_shared_nucleus_nucleus_kernel_check_collisions_flag_is_asymmetric() -> None:
+    # Asymmetry by design: `AtomicConfiguration` already rejects coincident
+    # nuclei at construction (see `_validate_distinct_nuclei`), so
+    # `NucleusNucleusPotential` cannot reach the collision check through
+    # normal construction. Exercise the shared private kernel directly with
+    # `check_collisions=False` (canonical's call) versus `True` (legacy's
+    # call) on the same coincident-nuclei input to pin the asymmetry itself.
+    from tpen.physics.potential import _nucleus_nucleus_coulomb_energy
 
-    result = NucleusNucleusPotential(atoms).local_energy(None, batch)
+    positions = torch.tensor([[[0.0, 0.0], [0.0, 0.0]]], dtype=torch.float64)
+    charges = torch.tensor([[1.0, 1.0]], dtype=torch.float64)
 
-    assert torch.isinf(result.total).all()
-    assert (result.total > 0).all()
+    result = _nucleus_nucleus_coulomb_energy(positions, charges, check_collisions=False)
+    assert torch.isinf(result).all()
+    assert (result > 0).all()
+
+    with pytest.raises(ValueError, match="colliding nuclei"):
+        _nucleus_nucleus_coulomb_energy(positions, charges, check_collisions=True)
