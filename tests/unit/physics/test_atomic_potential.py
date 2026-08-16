@@ -370,3 +370,110 @@ def test_nucleus_nucleus_potential_and_interaction_are_distinct_classes() -> Non
     assert NucleusNucleusPotential is not NucleusNucleusInteraction
     assert not issubclass(NucleusNucleusPotential, NucleusNucleusInteraction)
     assert not issubclass(NucleusNucleusInteraction, NucleusNucleusPotential)
+
+
+# --- C1: shared private Coulomb kernel regression, legacy batched-geometry, and error parity ---
+
+
+def test_h2_legacy_electron_nucleus_interaction_matches_slow_reference() -> None:
+    # Legacy `ElectronNucleusInteraction` must satisfy the same slow-loop
+    # reference as canonical `ElectronNucleusPotential` -- proof the shared
+    # private kernel reproduces the un-vectorized double-loop Coulomb sum,
+    # not just agreement between the two vectorized paths.
+    atoms = _h2_atoms()
+    positions = torch.tensor(
+        [[[0.3, 0.1, -0.5], [-0.2, 0.4, 0.6]], [[0.0, 0.0, 0.0], [1.0, -1.0, 2.0]]],
+        dtype=torch.float64,
+    )
+    batch = ElectronBatch(positions=positions, nuclear_positions=atoms.positions, nuclear_charges=atoms.charges)
+
+    result = ElectronNucleusInteraction().local_energy(None, batch)
+
+    torch.testing.assert_close(result.total, _slow_reference_electron_nucleus_energy(positions, atoms))
+
+
+def test_h2_legacy_nucleus_nucleus_interaction_matches_slow_reference() -> None:
+    atoms = _h2_atoms()
+    batch = ElectronBatch(
+        positions=torch.zeros(2, 1, 3, dtype=torch.float64),
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+
+    result = NucleusNucleusInteraction().local_energy(None, batch)
+
+    expected = torch.full((2,), _slow_reference_nucleus_nucleus_energy(atoms), dtype=torch.float64)
+    torch.testing.assert_close(result.total, expected)
+
+
+def test_legacy_electron_nucleus_interaction_supports_per_configuration_batched_nuclear_metadata() -> None:
+    # Legacy-only capability: nuclear geometry that varies *within* one
+    # batch, shape [batch, n_nuclei, spatial_dim] -- the canonical
+    # constructor-owned API does not support this.
+    atoms_a = _h2_atoms()
+    atoms_b = _atoms([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]], [1.0, 1.0])
+    positions = torch.tensor([[[0.3, 0.1, -0.5]], [[0.3, 0.1, -0.5]]], dtype=torch.float64)
+    batch = ElectronBatch(
+        positions=positions,
+        nuclear_positions=torch.stack([atoms_a.positions, atoms_b.positions]),
+        nuclear_charges=torch.stack([atoms_a.charges, atoms_b.charges]),
+    )
+
+    result = ElectronNucleusInteraction().local_energy(None, batch)
+
+    expected_a = _slow_reference_electron_nucleus_energy(positions[:1], atoms_a)
+    expected_b = _slow_reference_electron_nucleus_energy(positions[1:], atoms_b)
+    torch.testing.assert_close(result.total, torch.cat([expected_a, expected_b]))
+
+
+def test_legacy_nucleus_nucleus_interaction_supports_per_configuration_batched_nuclear_metadata() -> None:
+    atoms_a = _h2_atoms()
+    atoms_b = _atoms([[0.0, 0.0, -1.0], [0.0, 0.0, 1.0]], [1.0, 1.0])
+    batch = ElectronBatch(
+        positions=torch.zeros(2, 1, 3, dtype=torch.float64),
+        nuclear_positions=torch.stack([atoms_a.positions, atoms_b.positions]),
+        nuclear_charges=torch.stack([atoms_a.charges, atoms_b.charges]),
+    )
+
+    result = NucleusNucleusInteraction().local_energy(None, batch)
+
+    expected = torch.tensor(
+        [_slow_reference_nucleus_nucleus_energy(atoms_a), _slow_reference_nucleus_nucleus_energy(atoms_b)],
+        dtype=torch.float64,
+    )
+    torch.testing.assert_close(result.total, expected)
+
+
+def test_legacy_nucleus_nucleus_interaction_still_rejects_colliding_nuclei() -> None:
+    # Regression: the shared kernel's `check_collisions` flag must stay wired
+    # to `True` for the legacy path -- coincident batched nuclei must still
+    # raise, exactly as before the kernel was factored out.
+    positions = torch.tensor([[0.0, 0.0], [0.0, 0.0]], dtype=torch.float64)
+    batch = ElectronBatch(
+        positions=torch.zeros(1, 1, 2, dtype=torch.float64),
+        nuclear_positions=positions,
+        nuclear_charges=torch.tensor([1.0, 1.0], dtype=torch.float64),
+    )
+
+    with pytest.raises(ValueError, match="colliding nuclei"):
+        NucleusNucleusInteraction().local_energy(None, batch)
+
+
+def test_shared_nucleus_nucleus_kernel_check_collisions_flag_is_asymmetric() -> None:
+    # Asymmetry by design: `AtomicConfiguration` already rejects coincident
+    # nuclei at construction (see `_validate_distinct_nuclei`), so
+    # `NucleusNucleusPotential` cannot reach the collision check through
+    # normal construction. Exercise the shared private kernel directly with
+    # `check_collisions=False` (canonical's call) versus `True` (legacy's
+    # call) on the same coincident-nuclei input to pin the asymmetry itself.
+    from tpen.physics.potential import _nucleus_nucleus_coulomb_energy
+
+    positions = torch.tensor([[[0.0, 0.0], [0.0, 0.0]]], dtype=torch.float64)
+    charges = torch.tensor([[1.0, 1.0]], dtype=torch.float64)
+
+    result = _nucleus_nucleus_coulomb_energy(positions, charges, check_collisions=False)
+    assert torch.isinf(result).all()
+    assert (result > 0).all()
+
+    with pytest.raises(ValueError, match="colliding nuclei"):
+        _nucleus_nucleus_coulomb_energy(positions, charges, check_collisions=True)
