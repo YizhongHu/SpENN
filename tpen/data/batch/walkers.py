@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch.base import _coerce_optional_tensor
 from tpen.data.batch.electron_batch import ElectronBatch
 from tpen.data.batch.wavefunction_output import WavefunctionOutput
@@ -28,10 +29,10 @@ class Walkers:
     spins : torch.Tensor or None, optional
         Fixed spin labels with shape ``[batch, n_electrons]`` and entries
         exactly equal to ``+1`` or ``-1``.
-    nuclear_positions : torch.Tensor or None, optional
-        Fixed nuclear coordinates with shape ``[n_nuclei, spatial_dim]``.
-    nuclear_charges : torch.Tensor or None, optional
-        Fixed nuclear charges with shape ``[n_nuclei]``.
+    atomic_configuration : AtomicConfiguration or None, optional
+        Fixed nuclear geometry owned by the sampler/constructor, carried by
+        reference (never reconstructed) for typed pipeline transport. There
+        is no separate partial positions/charges pair to go out of sync.
     aux : dict, optional
         Auxiliary sampler state and metadata.
     """
@@ -40,8 +41,7 @@ class Walkers:
     logabs: torch.Tensor | None = None
     sign: torch.Tensor | None = None
     spins: torch.Tensor | None = None
-    nuclear_positions: torch.Tensor | None = None
-    nuclear_charges: torch.Tensor | None = None
+    atomic_configuration: AtomicConfiguration | None = None
     aux: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -49,8 +49,6 @@ class Walkers:
         self.logabs = _coerce_optional_tensor(self.logabs, dtype=self.positions.dtype)
         self.sign = _coerce_optional_tensor(self.sign, dtype=self.positions.dtype)
         self.spins = _coerce_optional_tensor(self.spins, dtype=self.positions.dtype)
-        self.nuclear_positions = _coerce_optional_tensor(self.nuclear_positions, dtype=self.positions.dtype)
-        self.nuclear_charges = _coerce_optional_tensor(self.nuclear_charges, dtype=self.positions.dtype)
         if self.positions.ndim != 3:
             raise ValueError("Walkers.positions must have shape [batch, n_electrons, spatial_dim]")
         if self.spins is not None:
@@ -62,21 +60,13 @@ class Walkers:
             raise ValueError("Walkers.logabs must have shape [batch]")
         if self.sign is not None and tuple(self.sign.shape) != (self.positions.shape[0],):
             raise ValueError("Walkers.sign must have shape [batch]")
-        if self.nuclear_positions is not None:
-            if self.nuclear_positions.ndim != 2:
-                raise ValueError("Walkers.nuclear_positions must have shape [n_nuclei, spatial_dim]")
-            if self.nuclear_positions.shape[1] != self.positions.shape[-1]:
-                raise ValueError("Walkers.nuclear_positions must have shape [n_nuclei, spatial_dim]")
-            if self.nuclear_positions.device != self.positions.device:
-                raise ValueError("Walkers.nuclear_positions must be on the positions device")
-        if self.nuclear_charges is not None:
-            if self.nuclear_charges.ndim != 1:
-                raise ValueError("Walkers.nuclear_charges must have shape [n_nuclei]")
-            if self.nuclear_charges.device != self.positions.device:
-                raise ValueError("Walkers.nuclear_charges must be on the positions device")
-        if self.nuclear_positions is not None and self.nuclear_charges is not None:
-            if self.nuclear_positions.shape[0] != self.nuclear_charges.shape[0]:
-                raise ValueError("Walkers.nuclear_positions and nuclear_charges must agree on n_nuclei")
+        if self.atomic_configuration is not None:
+            if not isinstance(self.atomic_configuration, AtomicConfiguration):
+                raise TypeError("Walkers.atomic_configuration must be an AtomicConfiguration or None")
+            if self.atomic_configuration.spatial_dim != self.positions.shape[-1]:
+                raise ValueError("Walkers.atomic_configuration spatial_dim must match positions")
+            if self.atomic_configuration.device != self.positions.device:
+                raise ValueError("Walkers.atomic_configuration must be on the positions device")
 
     def validate(self) -> "Walkers":
         """Validate this walker state using the constructor invariants.
@@ -92,8 +82,7 @@ class Walkers:
             logabs=self.logabs,
             sign=self.sign,
             spins=self.spins,
-            nuclear_positions=self.nuclear_positions,
-            nuclear_charges=self.nuclear_charges,
+            atomic_configuration=self.atomic_configuration,
             aux=self.aux,
         )
         return self
@@ -158,8 +147,7 @@ class Walkers:
             logabs=None if self.logabs is None else self.logabs.to(device=device, dtype=dtype),
             sign=None if self.sign is None else self.sign.to(device=device, dtype=dtype),
             spins=None if self.spins is None else self.spins.to(device=device, dtype=dtype),
-            nuclear_positions=None if self.nuclear_positions is None else self.nuclear_positions.to(device=device, dtype=dtype),
-            nuclear_charges=None if self.nuclear_charges is None else self.nuclear_charges.to(device=device, dtype=dtype),
+            atomic_configuration=None if self.atomic_configuration is None else self.atomic_configuration.to(device=device, dtype=dtype),
         )
 
     def clone(self) -> "Walkers":
@@ -169,7 +157,8 @@ class Walkers:
         -------
         Walkers
             Cloned walker state. Tensor fields are cloned, while auxiliary
-            metadata is shallow-copied.
+            metadata is shallow-copied. `atomic_configuration` is immutable
+            and carried by reference, not cloned.
         """
 
         return replace(
@@ -178,8 +167,6 @@ class Walkers:
             logabs=None if self.logabs is None else self.logabs.clone(),
             sign=None if self.sign is None else self.sign.clone(),
             spins=None if self.spins is None else self.spins.clone(),
-            nuclear_positions=None if self.nuclear_positions is None else self.nuclear_positions.clone(),
-            nuclear_charges=None if self.nuclear_charges is None else self.nuclear_charges.clone(),
             aux=dict(self.aux),
         )
 
@@ -190,7 +177,8 @@ class Walkers:
         -------
         Walkers
             Detached walker state with the same values and shallow-copied
-            auxiliary metadata.
+            auxiliary metadata. `atomic_configuration` is already
+            constructed detached and no-grad, so it is carried by reference.
         """
 
         return replace(
@@ -199,8 +187,6 @@ class Walkers:
             logabs=None if self.logabs is None else self.logabs.detach(),
             sign=None if self.sign is None else self.sign.detach(),
             spins=None if self.spins is None else self.spins.detach(),
-            nuclear_positions=None if self.nuclear_positions is None else self.nuclear_positions.detach(),
-            nuclear_charges=None if self.nuclear_charges is None else self.nuclear_charges.detach(),
             aux=dict(self.aux),
         )
 
@@ -246,8 +232,9 @@ class Walkers:
         return ElectronBatch(
             positions=self.positions,
             system=self.aux.get("system"),
-            nuclear_positions=self.nuclear_positions,
-            nuclear_charges=self.nuclear_charges,
+            nuclear_positions=None if self.atomic_configuration is None else self.atomic_configuration.positions,
+            nuclear_charges=None if self.atomic_configuration is None else self.atomic_configuration.charges,
+            atomic_configuration=self.atomic_configuration,
             spins=self.spins,
             aux=dict(self.aux),
         )
