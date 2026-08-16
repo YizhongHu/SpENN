@@ -7,7 +7,11 @@ legacy `AdditiveEnvelope` compatibility stack. Electron-nucleus cusp laws
 separate the charge-fixed Kato first radial slope (`LinearElectronNucleusCuspLaw`,
 the exact compatibility default) from an optional trainable regular curvature
 term (`TrainableCurvatureElectronNucleusCuspLaw`) that contributes only at
-second order, so it can never perturb the enforced ``u'(0+) = -Z`` slope.
+second order, so it can never perturb the enforced ``u'(0+) = -Z`` slope. That
+curvature term carries the electron-nucleus counterpart of
+`ElectronElectronCusp`'s trainable ``range_parameter``; its outer-tail
+consequence is stated on the class and is executable through
+`TrainableCurvatureElectronNucleusCuspLaw.outer_tail_slope`.
 """
 
 from __future__ import annotations
@@ -107,20 +111,52 @@ class TrainableCurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw
     """Linear Kato slope plus an optional trainable second-order curvature term.
 
     Computes ``v_A(r) = -Z_A r + w_A(r)`` with ``w_A(r) = c r^2 / (1 + d r)``,
-    which satisfies ``w_A(0) = 0`` and ``d/dr w_A(0) = 0`` for any ``c`` and
-    positive ``d``: the curvature term contributes only from second order, so
-    the charge-fixed Kato slope ``d/dr v_A(0) = -Z_A`` stays exact regardless
-    of ``c`` or ``d``.
+    where ``d`` is the strictly positive, optionally trainable RANGE parameter
+    of the electron-nucleus cusp -- the counterpart of `ElectronElectronCusp`'s
+    ``range_parameter`` -- and ``c`` is an unconstrained-sign curvature
+    coefficient. ``w_A`` satisfies ``w_A(0) = 0`` and ``d/dr w_A(0) = 0`` for
+    any ``c`` and positive ``d``: the curvature term contributes only from
+    second order, so the charge-fixed Kato slope ``d/dr v_A(0) = -Z_A`` stays
+    exact regardless of ``c`` or ``d``, before and after any optimizer step.
+
+    Functional-form decision, recorded here because it moves outer-tail
+    diagnostics by construction. Kato constrains only the ``r -> 0`` slope, so
+    a saturating Pade law ``-Z r / (1 + a r)`` satisfies it too; but that law
+    tends to the constant ``-Z / a``, i.e. ``log |psi|`` stops decreasing and
+    the factor stops confining. This law is deliberately NON-saturating:
+    ``w_A(r) -> (c / d) r`` at large ``r``, so ``v_A`` keeps growing linearly
+    and its outer-tail slope is ``-Z_A + c / d`` (see `outer_tail_slope`). Two
+    consequences bind consumers:
+
+    - At ``c = 0`` the law is exactly ``-Z_A r`` and the outer-tail slope is
+      exactly ``-Z_A``. At ``c != 0`` the tail slope is SHIFTED by ``c / d``,
+      so outer-tail tolerances calibrated against the pure ``-Z r`` law must
+      not be applied unchanged to a trained curvature law.
+    - A decaying (normalizable) tail needs a negative slope, i.e.
+      ``c / d < Z_A``. This class does not enforce that bound; a caller that
+      trains ``c`` and ``d`` owns choosing an initialization, and if needed a
+      constraint, that keeps ``c / d`` well below the nuclear charge.
+
+    Gradient reachability, which matters when enabling training from a config:
+    ``d`` enters the value only through ``w_A``, so at exactly ``c = 0`` the
+    gradient with respect to ``d`` is identically zero. ``c`` itself still
+    receives gradient there and moves off zero, which unlocks ``d`` from the
+    next step; a configuration that wants the range trained from the first step
+    should initialize `curvature_coefficient` nonzero.
 
     Parameters
     ----------
     curvature_coefficient : float, optional
         Initial value of the (unconstrained-sign) curvature coefficient ``c``.
     curvature_range : float, optional
-        Positive initial range parameter ``d``.
+        Positive initial value of the range parameter ``d``.
     trainable : bool, optional
         Whether ``c`` and ``d`` are optimized. When ``False`` they are fixed
-        buffers at the constructor values.
+        non-persistent buffers at the constructor values, so the module
+        contributes no checkpoint state; when ``True`` it contributes
+        ``raw_curvature_coefficient`` and ``raw_curvature_range`` to the state
+        dict, which a ``strict=True`` restore will not accept against a
+        differently configured law.
     eps : float, optional
         Positivity offset for the trainable range parameter.
     """
@@ -169,6 +205,31 @@ class TrainableCurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw
         if self.trainable:
             return F.softplus(self.raw_curvature_range) + self.eps
         return self._curvature_range
+
+    def outer_tail_slope(self, charges: torch.Tensor | float) -> torch.Tensor:
+        """Return the large-``r`` limit of ``d/dr v_A``, namely ``-Z + c / d``.
+
+        This makes the recorded outer-tail consequence of the chosen functional
+        form executable: a tail diagnostic calibrated against the pure ``-Z r``
+        law expects ``-Z``, while this law asymptotes to ``-Z + c / d``.
+
+        Parameters
+        ----------
+        charges : torch.Tensor or float
+            Nuclear charges ``Z``.
+
+        Returns
+        -------
+        torch.Tensor
+            Asymptotic radial slope with the shape of `charges`.
+        """
+
+        charge_tensor = torch.as_tensor(charges)
+        if not torch.is_floating_point(charge_tensor):
+            charge_tensor = charge_tensor.to(dtype=torch.get_default_dtype())
+        coefficient = self.curvature_coefficient.to(device=charge_tensor.device, dtype=charge_tensor.dtype)
+        range_parameter = self.curvature_range.to(device=charge_tensor.device, dtype=charge_tensor.dtype)
+        return -charge_tensor + coefficient / range_parameter
 
     def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
         """Return ``-Z r + c r^2 / (1 + d r)`` broadcast to the shape of `distance`."""
