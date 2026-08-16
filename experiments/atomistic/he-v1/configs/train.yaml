@@ -293,6 +293,25 @@ callbacks:
   - _target_: tpen.callback.FactorScalars
     every_n_steps: 5
     fail_fast: false
+  # A PAID CHOICE, NOW THAT THE PRICE IS MEASURED. Every 5 steps at
+  # `permutation_fraction: 1.0` over 300,000 updates is 60,000 full-permutation
+  # checks, and pilot 39559205 shows the callback stack costs part of a 12.2%
+  # throughput shortfall against H-C1's callback-free capacity measurement
+  # (1.5025 vs 1.7107 steps/s). Before that pilot the cost was invisible; it is
+  # now a number, so leaving it unexamined would be a choice nobody made.
+  #
+  # RETAINED DELIBERATELY. The arm is frozen, the wall margin is 2.42x and
+  # viable, and `AGENTS.md` requires equivariance contracts stay executable. A
+  # correctness guard on a 146 GPU-hour study is worth real throughput: catching
+  # a violation at step 5,000 rather than at step 300,000 saves vastly more than
+  # 12%. The cadence and fraction are named here so a future study that wants
+  # the throughput back knows exactly what it is spending and what it would be
+  # giving up, rather than discovering the knob by accident.
+  #
+  # NOT ATTRIBUTED between this callback and the pilot-only
+  # `FactorScalars` override, because attributing it would cost another GPU run
+  # on a frozen SHA. An honestly labelled two-contributor gap beats a clean
+  # attribution bought at that price.
   - _target_: tpen.callback.RuntimeEquivariance
     every_n_steps: 5
     probability: 1.0

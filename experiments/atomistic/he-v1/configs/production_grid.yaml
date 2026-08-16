@@ -40,12 +40,22 @@
 #              appears its circularity is written down beside it.
 #
 # ###########################################################################
-# PROVISIONAL: every bound labelled "pilot scale" is a PLACEHOLDER until the
-# H-F1 convergence/memory pilot reports the metrics it is scaled against. Those
-# values must be re-frozen, with the pilot job id substituted for this notice,
-# BEFORE this file merges. The keys themselves are complete and final -- the
-# completeness assertion over ATOM_GATE_SPEC_KEYS passes today -- but a scale
-# still reading as provisional at merge time is a defect, not a default.
+# SCALES FROZEN FROM PILOT 39559205 (kozinsky_gpu / a100, 15,000 updates, seed 0,
+# COMPLETED 0:0, delivered card asserted in-allocation). Every bound previously
+# labelled "pilot scale" now cites the measurement it was scaled against, beside
+# the value. ANALYTIC centers stay analytic (-Z, outer_tail_slope(charges), 0)
+# and declared-geometry counts stay declared: only the SCALES came from the
+# pilot.
+#
+# ONE SCALE MOVED MATERIALLY. The three cusp bounds were placeholders at
+# 0.05/0.05/0.15 and the pilot measures 0.2198/0.2229 -- so the placeholders
+# would have failed EVERY production row. That is what a pilot is for, and it is
+# the reason a scale still reading as provisional at merge time is a defect
+# rather than a default.
+#
+# The tail, purity and count bounds are RETAINED UNCHANGED, each now citing the
+# pilot value that confirms it brackets trained behaviour rather than only the
+# initialization.
 # ###########################################################################
 
 study: he-v1-production
@@ -122,8 +132,11 @@ seeds: [0, 1, 2]
 # free 5000-update run and this slice's 15,000-update pilot both show the
 # TRANSIENT ENDS EARLY (~2000-2500 updates, 0.8% of the budget) -- a different
 # claim, and one a short probe is structurally incapable of extending to the
-# final step. Staging costs ~98 h of wall instead of ~49 and avoids committing
-# 97 of 146 GPU-hours before a COMPLETE 300k trace for this arm exists.
+# final step. Staging costs ~111 h of wall instead of ~55.5 and avoids
+# committing 111 of 166 GPU-hours before a COMPLETE 300k trace for this arm
+# exists. (Those hours are recomputed from the pilot's MEASURED 1.5025 steps/s,
+# not H-C1's 1.7107 -- the earlier ~98/~49 and 97/146 figures came from the
+# faster rate and are retired. See `train_resources.timeout_min`.)
 #
 # Seed 0 is the natural probe, not a privileged one: it is already the seed
 # H-C2 trained its pilot checkpoint on.
@@ -264,10 +277,24 @@ eval_chain_seed_base: 1000
 train_resources:
   partition: kozinsky_gpu
   stratum: a100
-  # 2922.8 projected minutes at H-C1's measured 1.7107 steps/s. 5760 is 1.97x
-  # that projection and inside the 8064-minute usable ceiling, so a row that
-  # runs slower than projected still finishes: H-C2's checkpoint job ran 8%
-  # over H-C1's projection, and under `--no-requeue` an overrun is a lost row.
+  # SIZED ON THE PILOT'S MEASURED RATE, NOT H-C1's. Pilot 39559205 differenced
+  # 1.5025 steps/s in steady state over six intervals (1.4755-1.5302), against
+  # H-C1's 1.7107 -- a 12.2% shortfall, stable rather than node variation. So
+  # 300,000 updates project to 3327.8 minutes (55.5 h), not the 2922.8 minutes
+  # (48.7 h) H-C1's rate implied. 5760 is 1.73x the measured projection and sits
+  # inside the 8064-minute usable ceiling at a 2.42x margin. Under `--no-requeue`
+  # an overrun is a lost row, and H-C2's checkpoint job already ran 8% over its
+  # projection once.
+  #
+  # THE SHORTFALL HAS AT LEAST TWO CONTRIBUTORS AND PRODUCTION KEEPS ONE. The
+  # pilot forced `callbacks.7.every_n_steps=1` for its cusp trace where this file
+  # declares 5, so that part is pilot-only. But `callbacks.8`
+  # (`RuntimeEquivariance`, two checkers, `permutation_fraction: 1.0`) runs every
+  # 5 steps in PRODUCTION too and the pilot never overrode it. The split between
+  # them is NOT attributed, so this row is sized on the measured rate and no
+  # recovery is assumed: SIZING ON THE RECOVERY WOULD BE ASSUMING THE FAVOURABLE
+  # HALF OF AN UNTESTED SPLIT. If production runs faster, the row finishes early;
+  # that direction is free.
   timeout_min: 5760
   cpus: 4
   mem_gb: 32
@@ -321,10 +348,29 @@ gate_spec:
   # anything, because a drift here means the summary stopped agreeing with the
   # declared charge.
   cusp_expected_slope_tolerance: 1.0e-09
-  # [ANALYTIC center / pilot scale] Center is the Kato value -Z = -2.0.
-  cusp_one_sided_slope_mean_abs_error_max: 0.05
-  cusp_one_sided_slope_abs_error_mean_max: 0.05
-  cusp_one_sided_slope_abs_error_max_max: 0.15
+  # [ANALYTIC center -Z = -2.0 / scale from pilot 39559205]
+  # THE PLACEHOLDERS HERE WERE NOT MERELY PROVISIONAL, THEY WERE WRONG, and the
+  # pilot is what showed it. Measured at the 15,000-update checkpoint:
+  #   cusp_one_sided_slope_mean            -1.7802486854792385
+  #   cusp_one_sided_slope_abs_error_mean   0.2197513145207614
+  #   cusp_one_sided_slope_abs_error_max    0.2228658133058481
+  # against placeholders of 0.05 / 0.05 / 0.15. Frozen unchanged, EVERY
+  # PRODUCTION ROW WOULD HAVE FAILED THE CUSP GATE -- a predeclared bound that
+  # fails healthy work, discovered after 146 GPU-hours rather than before.
+  #
+  # Scales are 1.5x the measured error, which is deliberately PERMISSIVE and the
+  # reason is worth stating: these bounds exist to catch a GROSSLY broken cusp,
+  # not to certify convergence. The measurement is the FULL MODEL's one-sided
+  # slope at finite r, so it carries the network's contribution as well as the
+  # analytic factor's, and it is taken at 15,000 updates against a production
+  # budget of 300,000. The error should shrink with training -- but TIGHTENING ON
+  # THAT EXPECTATION WOULD SIZE THE GATE ON AN UNMEASURED IMPROVEMENT, the same
+  # error as sizing wall time on an unmeasured throughput recovery. If a 300k
+  # checkpoint lands far inside these, that is a result to report, not a bound to
+  # have assumed.
+  cusp_one_sided_slope_mean_abs_error_max: 0.35
+  cusp_one_sided_slope_abs_error_mean_max: 0.35
+  cusp_one_sided_slope_abs_error_max_max: 0.40
 
   # --- tail availability and support ------------------------------------
   require_tail_available: true
@@ -339,8 +385,10 @@ gate_spec:
   # the factor anti-confining. Requiring every outer ray to slope negative is
   # how that shows up as a failed row instead of a plausible-looking energy.
   tail_negative_slope_fraction_min: 1.0
-  # [ANALYTIC center / pilot scale] The least-negative ray must still decay,
-  # i.e. sit below 0 with margin.
+  # [ANALYTIC center / scale confirmed by pilot 39559205] The least-negative ray
+  # must still decay, i.e. sit below 0 with margin. Pilot measured
+  # tail_outer_slope_max = -1.552479920356923, comfortably below this bound, so
+  # it is retained rather than moved.
   tail_outer_slope_max_max: -0.5
 
   # --- tail magnitude, centered on outer_tail_slope(charges) -------------
@@ -350,15 +398,31 @@ gate_spec:
   # shift. Tolerances calibrated against the pure `-Z r` law must not be applied
   # unchanged to this curved law; a test asserts these bounds bracket the value
   # `outer_tail_slope(charges)` returns at the predeclared initialization.
+  # Pilot 39559205 measured tail_outer_slope_mean = -1.564277984860012, inside
+  # this band and BELOW the initialization's -1.99 rather than above it: c and d
+  # trained to c/d < 0, making the factor MORE confining, not less. The band is
+  # retained unchanged because the measurement confirms it brackets the trained
+  # value as well as the initialization.
   tail_outer_slope_mean_max: -1.20
   tail_outer_slope_mean_min: -2.60
-  # [ANALYTIC center / pilot scale] Bounds the steepest single ray, where
-  # amplitudes underflow first.
+  # [ANALYTIC center / scale confirmed by pilot 39559205] Bounds the steepest
+  # single ray, where amplitudes underflow first. Pilot measured
+  # tail_outer_slope_min = -1.5783540410282773, well inside this floor.
   tail_outer_slope_min_min: -3.00
 
   # --- where the tail slope was measured ---------------------------------
-  # [GEOMETRY] tail_radii is [4.0, 6.0, 8.0]; the nearest and furthest outer
-  # rays are exactly its endpoints.
+  # [GEOMETRY] tail_radii is [4.0, 6.0, 8.0]. CORRECTED AGAINST THE PILOT: the
+  # earlier comment here claimed the nearest and furthest outer rays are exactly
+  # the grid's endpoints. They are not. Pilot 39559205 emitted
+  # tail_outer_radius_min = 8.0 AND tail_outer_radius_max = 8.0 -- the "outer"
+  # set is the OUTERMOST radius only, not the whole grid. Both bounds still pass
+  # (8.0 >= 4.0 and 8.0 <= 8.0) so nothing was masked, but the prose described a
+  # geometry the emitter does not produce, and a reader would have taken the
+  # floor of 4.0 as evidence the r = 4 ray was checked. It is not.
+  #
+  # NOTE FOR ANY FUTURE TIGHTENING: raising tail_outer_radius_min_min toward 8.0
+  # would pin current behaviour, but it would also break the moment the emitter
+  # starts reporting the full grid. Left at the declared-geometry floor.
   tail_outer_radius_min_min: 4.0
   tail_outer_radius_max_max: 8.0
 
@@ -366,6 +430,12 @@ gate_spec:
   # [ANALYTIC center / pilot scale] Center is 0: a true spatial singlet has
   # triplet fraction 0 exactly, and the fraction is clamped to [0, 1], so these
   # at_most bounds are literally distances from the analytic center.
+  # Pilot 39559205 measured mean 0.00018372679754640012 and max
+  # 0.0054785106272637885, both roughly two orders of magnitude inside these
+  # bounds, with triplet_fraction_finite_sample_count = 4096 against the declared
+  # floor of 4000. Retained unchanged: the measurement confirms the scale is
+  # permissive enough not to fail healthy work while still an order of magnitude
+  # tighter than the by-construction 1.0 the full-model namespace would report.
   triplet_fraction_mean_max: 0.02
   triplet_fraction_max_max: 0.10
   # [GEOMETRY] The exchange orbit's base generator draws max_samples: 4096.
