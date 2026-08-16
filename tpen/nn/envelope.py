@@ -1,10 +1,21 @@
-"""Additive envelope factors for wavefunction log-amplitudes."""
+"""Additive envelope factors for wavefunction log-amplitudes.
+
+This module keeps two API generations side by side. `Envelope` and
+`AdditiveEnvelope` are a supported minor-release compatibility surface: their
+constructor, forward behavior, Hydra target, and `ModuleList` state-dict keys
+must not change. `LogAmplitudeFactor`, `AdditiveCusp`, `ElectronNucleusCusp`,
+and `AsymptoticDecay` are the new generic, atom-system-facing types (see
+`main.typ`, "Electron-nucleus cusp (deferred)"); they compose independently
+and do not replace the legacy envelope stack.
+"""
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, electron_nuclear_displacements, pairwise_distances
 from tpen.data.equivariant_state import compare_tensor_blocks
 from tpen.data.indices import permute_particle_axis
@@ -361,7 +372,219 @@ class HookeGaussianConfinement(GaussianConfinement):
         self.omega = float(omega)
 
 
-class ElectronElectronCusp(Envelope):
+class LogAmplitudeFactor(nn.Module):
+    """Template for generic additive post-readout log-amplitude factors.
+
+    This is the new-generation counterpart to `Envelope`: a factor accepts an
+    `ElectronBatch` and returns one scalar contribution to `log |psi|` per
+    flattened configuration, with a value-only forward (no auxiliary radial
+    derivative structure). It is deliberately separate from `Envelope` so the
+    legacy compatibility surface never has to change shape to accommodate
+    generic atom-system consumers.
+    """
+
+    def forward(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return a flattened-batch factor contribution.
+
+        Parameters
+        ----------
+        batch : ElectronBatch
+            Electron batch whose sample axes may be higher rank.
+
+        Returns
+        -------
+        torch.Tensor
+            Factor contribution with shape ``[batch]`` after sample
+            flattening.
+        """
+
+        flat_batch = batch.flatten_samples()
+        output = self.factor_value(flat_batch)
+        _check_envelope_tensor(output, flat_batch, name=type(self).__name__)
+        return output
+
+    def factor_value(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return the factor contribution for a flattened batch.
+
+        Parameters
+        ----------
+        batch : ElectronBatch
+            Flattened electron batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Factor contribution with shape ``[batch]``.
+        """
+
+        raise NotImplementedError("LogAmplitudeFactor.factor_value must be implemented by subclasses")
+
+
+class AdditiveCusp(LogAmplitudeFactor):
+    """Generic composition summing typed `LogAmplitudeFactor` components.
+
+    Parameters
+    ----------
+    factors : iterable of LogAmplitudeFactor, optional
+        Cusp (or other additive) factors whose outputs are summed. Each
+        component must be a `LogAmplitudeFactor`; this is a typed-interface
+        check, not container traversal or class-name matching.
+    """
+
+    def __init__(self, factors: Iterable["LogAmplitudeFactor"] = ()) -> None:
+        super().__init__()
+        factors = tuple(factors)
+        for factor in factors:
+            if not isinstance(factor, LogAmplitudeFactor):
+                raise TypeError(
+                    f"AdditiveCusp components must be LogAmplitudeFactor, got {type(factor).__name__}"
+                )
+        self.factors = nn.ModuleList(factors)
+
+    def factor_value(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return the sum of all component factor contributions."""
+
+        total = torch.zeros(batch.batch_size, device=batch.device, dtype=batch.dtype)
+        for index, factor in enumerate(self.factors):
+            value = factor(batch)
+            _check_envelope_tensor(value, batch, name=f"factors[{index}]")
+            total = total + value
+        return total
+
+
+class ElectronNucleusCuspLaw(ABC):
+    """Typed radial law for a generic electron-nucleus cusp factor.
+
+    A law computes the additive pairwise log-amplitude value for one
+    electron-nucleus pair from raw (unclamped) distances and nuclear charges.
+    Concrete laws are independently tested against the Kato cusp condition
+    (the required ``d/dr`` slope at coalescence); this base class enforces no
+    formula, only the typed value contract.
+    """
+
+    @abstractmethod
+    def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
+        """Return the pairwise cusp value with the same shape as `distance`.
+
+        Parameters
+        ----------
+        distance : torch.Tensor
+            Raw, unclamped electron-nucleus pair distances.
+        charges : torch.Tensor
+            Nuclear charges, broadcastable against `distance`.
+
+        Returns
+        -------
+        torch.Tensor
+            Cusp value with the same shape as `distance`.
+        """
+
+
+class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
+    """Compatibility law reproducing the existing He linear cusp ``-Z r``.
+
+    This is the same radial law used by `NuclearConfinement`, preserved here
+    as a `ElectronNucleusCuspLaw` so existing systems have a like-for-like
+    generic counterpart.
+    """
+
+    def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
+        """Return ``-Z r`` broadcast to the shape of `distance`."""
+
+        return -charges * distance
+
+
+class ElectronNucleusCusp(LogAmplitudeFactor):
+    """Generic electron-nucleus Kato cusp factor for arbitrary nuclei.
+
+    Unlike `NuclearConfinement`, this factor is constructed directly from an
+    `AtomicConfiguration` -- the sole authority for nuclear geometry -- and
+    never infers nuclear context from a batch. It uses raw, unclamped pair
+    distances so the cusp condition is observed exactly at coalescence.
+
+    Parameters
+    ----------
+    atoms : AtomicConfiguration
+        Constructor-owned fixed nuclear geometry authority.
+    law : ElectronNucleusCuspLaw or None, optional
+        Cusp radial law. Defaults to `LinearElectronNucleusCuspLaw`, the He
+        linear-cusp compatibility law.
+    """
+
+    def __init__(self, atoms: object, law: object = None) -> None:
+        super().__init__()
+        if not isinstance(atoms, AtomicConfiguration):
+            raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
+        self.atoms = atoms
+        resolved_law = law if law is not None else LinearElectronNucleusCuspLaw()
+        if not isinstance(resolved_law, ElectronNucleusCuspLaw):
+            raise TypeError(
+                f"{type(self).__name__} law must be an ElectronNucleusCuspLaw, got {type(resolved_law).__name__}"
+            )
+        self.law = resolved_law
+
+    def factor_value(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return the summed electron-nucleus cusp contribution."""
+
+        atoms = self.atoms.to(device=batch.device, dtype=batch.dtype)
+        distance = electron_nuclear_displacements(batch, nuclear_positions=atoms.positions).norm(dim=-1)
+        charges = atoms.charges.reshape(1, 1, -1)
+        value = self.law.value(distance, charges)
+        if value.shape != distance.shape:
+            raise ValueError(
+                f"{type(self.law).__name__}.value must have shape {tuple(distance.shape)}, got {tuple(value.shape)}"
+            )
+        return value.sum(dim=(1, 2))
+
+
+class AsymptoticDecay(nn.Module):
+    """Template for an optional long-range log-amplitude decay factor.
+
+    This is a separate, optional capability from cusp factors
+    (`LogAmplitudeFactor`/`AdditiveCusp`) and from legacy feature envelopes
+    (`Envelope`): it exists so a consumer that needs asymptotic decay can
+    require this interface explicitly and fail loudly when it is absent,
+    instead of a decay term being inferred or silently substituted.
+    """
+
+    def forward(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return a flattened-batch decay contribution.
+
+        Parameters
+        ----------
+        batch : ElectronBatch
+            Electron batch whose sample axes may be higher rank.
+
+        Returns
+        -------
+        torch.Tensor
+            Decay contribution with shape ``[batch]`` after sample
+            flattening.
+        """
+
+        flat_batch = batch.flatten_samples()
+        output = self.decay_value(flat_batch)
+        _check_envelope_tensor(output, flat_batch, name=type(self).__name__)
+        return output
+
+    def decay_value(self, batch: ElectronBatch) -> torch.Tensor:
+        """Return the decay contribution for a flattened batch.
+
+        Parameters
+        ----------
+        batch : ElectronBatch
+            Flattened electron batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Decay contribution with shape ``[batch]``.
+        """
+
+        raise NotImplementedError("AsymptoticDecay.decay_value must be implemented by subclasses")
+
+
+class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
     """Spin-aware analytic electron-electron cusp envelope.
 
     Parameters
@@ -475,11 +698,17 @@ def _inverse_softplus(value: float) -> torch.Tensor:
 
 
 __all__ = [
+    "AdditiveCusp",
     "AdditiveEnvelope",
+    "AsymptoticDecay",
     "ElectronElectronCusp",
+    "ElectronNucleusCusp",
+    "ElectronNucleusCuspLaw",
     "Envelope",
     "GaussianConfinement",
     "HookeGaussianConfinement",
+    "LinearElectronNucleusCuspLaw",
+    "LogAmplitudeFactor",
     "NuclearConfinement",
     "NuclearConfinementEvaluation",
     "NuclearFactorizedEnvelope",

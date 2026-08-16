@@ -16,11 +16,17 @@ from tpen.nn.coordinate_envelopes import (
 )
 from tpen.nn.embedding import Embedding
 from tpen.nn.envelope import (
+    AdditiveCusp,
     AdditiveEnvelope,
+    AsymptoticDecay,
     ElectronElectronCusp,
+    ElectronNucleusCusp,
+    ElectronNucleusCuspLaw,
     Envelope,
     GaussianConfinement,
     HookeGaussianConfinement,
+    LinearElectronNucleusCuspLaw,
+    LogAmplitudeFactor,
     NuclearConfinement,
     NuclearConfinementEvaluation,
     NuclearFactorizedEnvelope,
@@ -36,11 +42,15 @@ from tpen.nn.tpen_stack import TPENStack
 from tpen.nn.update import ResidualUpdater, Updater
 
 __all__ = [
+    "AdditiveCusp",
     "AdditiveEnvelope",
+    "AsymptoticDecay",
     "CoordinateEnvelope",
     "ElectronBasis",
     "ElectronBasisFeatures",
     "ElectronElectronCusp",
+    "ElectronNucleusCusp",
+    "ElectronNucleusCuspLaw",
     "Embedding",
     "Envelope",
     "EquivariantMixing",
@@ -51,6 +61,8 @@ __all__ = [
     "HookeGaussianConfinement",
     "HookeHermiteBasis",
     "HookeOrbitalBasis",
+    "LinearElectronNucleusCuspLaw",
+    "LogAmplitudeFactor",
     "MLP",
     "NuclearConfinement",
     "NuclearConfinementEvaluation",
