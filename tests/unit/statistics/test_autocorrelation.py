@@ -410,10 +410,18 @@ def test_two_timescale_plateau_is_not_truncated_at_the_fast_decay() -> None:
     # fail. A truncation at K lags reports 1 + 2 * sum_{k<=K} rho(k) here, so
     # the band alone catches K <= 27 (tau 6.4254) and passes K >= 28 (tau
     # 6.5106), while the truncation_lag bound catches any cap of 15 pairs or
-    # fewer, i.e. K <= 29. Total reach is K <= 29, and truncation_lag -- not the
-    # band -- is what sets it: the band's reach is capped at 27 by the fixture's
-    # own arithmetic, so no tolerance choice moves it. Anyone needing more
-    # sensitivity must tighten truncation_lag, not the band.
+    # fewer, i.e. K <= 29. Total reach is K <= 29 at these bounds, and
+    # truncation_lag is the lever worth reaching for -- but NOT because the band
+    # is immovable. Tightening the lower fraction f DOES raise the band's cap:
+    # f=0.75 reaches K <= 33 with 3.17 sd of margin, f=0.80 reaches 41 at
+    # 2.28 sd, f=0.90 reaches 63 at 0.50 sd. The band becomes useless on
+    # FALSE-ALARM GROUNDS rather than arithmetic ones, and two thresholds answer
+    # two different questions: reaching the healthy-stop regime K >= 75 needs
+    # f > 0.92894, whose lower bound 8.6082 sits 0.012 sd ABOVE the observed mean
+    # of 8.6018 (50.5% of correct runs rejected); merely closing the [30, 75)
+    # gap needs f > 0.92674, lower bound 8.5878, 0.027 sd below the mean (48.9%
+    # rejected). Either way about half of all correct runs fail, so the gap is
+    # closable only through truncation_lag.
     # THE LIMIT THAT FOLLOWS, measured: a defect truncating at 50 lags reports
     # 7.8565 and passes both assertions, as does one at 75 (8.6082), while the
     # smallest healthy stop over 24 seeds was 75 and the median 107. So
