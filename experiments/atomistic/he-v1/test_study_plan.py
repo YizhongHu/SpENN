@@ -286,6 +286,31 @@ def test_eval_rows_depend_on_their_training_row_and_name_its_checkpoint() -> Non
     assert eval_row["checkpoint_dir_name"] == plan.checkpoint_dir_name(eval_row["checkpoint_step"])
 
 
+def test_seed_staging_is_declared_but_not_executed() -> None:
+    """`seed_stages` is a predeclared PROCEDURE; assert only what is true of it.
+
+    The grid declares ``[[0], [1, 2]]``, but nothing sequences the seeds: every
+    training row carries an empty ``depends_on`` whatever stage its seed sits
+    in, and `launch.py` never reads the key, so ``--submit`` fires all three at
+    once. This test pins that reality so the docstrings in `plan.py` and the
+    comment in `production_grid.yaml` cannot drift into implying execution --
+    and so that whoever later WIRES the staging is forced to update the prose
+    in the same change, because this test will go red when they do.
+    """
+
+    config = plan.validate_grid_config(_grid(seeds=[0, 1, 2], seed_stages=[[0], [1, 2]]))
+    rows = plan.expand_rows(config)
+    train_rows = [row for row in rows if row["kind"] == "train"]
+    assert len(train_rows) == 3
+    # Not "the stage-2 rows depend on stage 1" -- no row depends on any other.
+    assert all(row["depends_on"] == [] for row in train_rows)
+    # The declaration still survives into the manifest, which is what makes it
+    # a predeclaration rather than a comment.
+    assert config["seed_stages"] == [[0], [1, 2]]
+    launch_source = (STUDY_DIR / "launch.py").read_text(encoding="utf-8")
+    assert "seed_stages" not in launch_source
+
+
 def test_checkpoint_dir_name_matches_the_writer_format() -> None:
     """Pins ``step_%06d``; drift would point every eval row at nothing."""
 

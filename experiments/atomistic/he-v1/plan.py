@@ -188,9 +188,22 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_seed_stages(payload: Any, seeds: Sequence[int]) -> list[list[int]]:
     """Validate the declared launch staging over the predeclared seeds.
 
-    Staging changes the ORDER seeds are launched in and nothing else. Every
-    declared seed still runs; the stages exist so a complete 300k trace for the
-    first stage is in hand before the remaining GPU-hours are committed.
+    THIS KEY IS A PREDECLARED PROCEDURE, NOT AN EXECUTED DEPENDENCY. Nothing in
+    this repository acts on it. `expand_rows` gives every training row
+    ``depends_on: []``, and `launch.py` contains no reference to `seed_stages`
+    at all, so ``launch.py --submit`` submits all three seeds simultaneously
+    with no Slurm dependency between them. The staging is a commitment H-F3
+    honours by hand: submit stage 1, wait for it to reach terminal, run
+    `assess_convergence.py` on its loss trace, then submit stage 2.
+
+    Validation here therefore establishes only that the declared stages are
+    well-formed and cover exactly the predeclared seeds. It does NOT establish
+    that anything sequences them, and the tests assert only the former.
+
+    WHY STAGE AT ALL: nothing yet shows the loss is not still descending at
+    300,000 updates. Staging costs about 98 h of wall instead of 49 and avoids
+    committing 97 of 146 GPU-hours before a complete 300k trace for this arm
+    exists.
 
     THE STAGING GATE MAY ONLY REPORT ON BUDGET ADEQUACY. It may never re-select
     an arm, a checkpoint, a budget, or a seed -- see `convergence_assessment`,
@@ -216,7 +229,18 @@ def _validate_seed_stages(payload: Any, seeds: Sequence[int]) -> list[list[int]]
 
 
 def _validate_convergence_assessment(payload: Any) -> dict[str, Any]:
-    """Validate the predeclared convergence-assessment rule."""
+    """Validate the predeclared convergence-assessment rule.
+
+    LIKE `seed_stages`, THIS BLOCK IS A PREDECLARED PROCEDURE AND NOT AN
+    EXECUTED GATE. No stage of this pipeline computes a windowed mean or runs a
+    sign test; `collect.py`, `report.py` and `driver.py` never read this key.
+    The rule is carried into the plan manifest so it is frozen before any
+    production data exists, and it is discharged by a human running
+    `assess_convergence.py` on the stage-1 loss trace between stages.
+
+    Validation here establishes that the rule is well-formed and that its
+    parameters are the predeclared ones. The tests assert only that.
+    """
 
     if not isinstance(payload, Mapping):
         raise PlanError("convergence_assessment must be a mapping")

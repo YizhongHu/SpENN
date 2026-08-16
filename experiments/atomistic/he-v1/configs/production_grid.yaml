@@ -58,9 +58,24 @@ eval_config: experiments/atomistic/he-v1/configs/eval.yaml
 # than a separate configuration whose plateau might not transfer.
 seeds: [0, 1, 2]
 
-# LAUNCH ORDER, not membership. All three predeclared seeds run; only their
-# order is staged, and `plan.py` rejects a staging that does not cover exactly
-# the declared seeds, so a stage list cannot quietly shrink the study.
+# A PREDECLARED PROCEDURE, NOT AN EXECUTED DEPENDENCY. Read this before
+# assuming the pipeline sequences anything.
+#
+# Nothing in this repository acts on `seed_stages`. `plan.py` validates it and
+# copies it into the plan manifest; `expand_rows` gives every training row
+# `depends_on: []`; `launch.py` never mentions the key. So `launch.py --submit`
+# submits ALL THREE SEEDS AT ONCE with no Slurm dependency between them. The
+# staging is a commitment H-F3 honours BY HAND:
+#
+#   1. submit stage 1 (seed 0)
+#   2. wait for it to reach terminal
+#   3. run `assess_convergence.py` on its loss trace
+#   4. submit stage 2 (seeds 1, 2)
+#
+# H-F3's receipt is required to record steps 2 and 3 and the verdict before
+# step 4. What `plan.py` DOES enforce is membership: it rejects a staging that
+# does not cover exactly the declared seeds, so a stage list cannot quietly
+# shrink the study. All three predeclared seeds run.
 #
 # WHY: nothing yet shows the loss is not STILL DESCENDING at 300,000. H-C2's
 # free 5000-update run and this slice's 15,000-update pilot both show the
@@ -78,6 +93,13 @@ seed_stages:
 # THE CONVERGENCE-ASSESSMENT RULE, predeclared here BEFORE any production data
 # exists, which is the only thing that makes it legitimate rather than a
 # post-hoc rescue.
+#
+# ALSO A PROCEDURE, NOT AN EXECUTED GATE. No pipeline stage computes a windowed
+# mean or runs a sign test: `collect.py`, `report.py` and `driver.py` never read
+# this key. It is discharged by a human running
+# `experiments/atomistic/he-v1/assess_convergence.py` on the stage-1 loss trace
+# between stages. The rule lives here so it is frozen before the data exists;
+# the script exists so the rule names a real artifact rather than an intention.
 #
 # Applied to the stage-0 loss trace at 300,000 updates: 20 windows, and a SIGN
 # TEST over the differences of the final 8 window means. Monotone descent across
