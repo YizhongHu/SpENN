@@ -102,8 +102,22 @@ seed_stages:
 # the script exists so the rule names a real artifact rather than an intention.
 #
 # Applied to the stage-0 loss trace at 300,000 updates: 20 windows, and a SIGN
-# TEST over the differences of the final 8 window means. Monotone descent across
-# all 7 differences is the inadequacy signal.
+# TEST over the differences of the final 8 window means. A MONOTONE TREND IN
+# EITHER DIRECTION -- all 7 differences sharing a sign -- is the signal. The
+# test is two-sided, which is what the quoted 2*(1/2)^(n-1) rate below assumes;
+# a one-sided descent-only test would have a 0.78% rate, not 1.56%.
+#
+# DETECTION IS TWO-SIDED; CONSEQUENCE IS NOT. The two signs mean different
+# things and the verdicts are deliberately not merged:
+#   monotone DESCENT -> `budget_inadequate`. The model was still improving when
+#     the budget ran out. Report as a stated limitation on the interpretation of
+#     the result, keep the final checkpoint as primary, take NO extension.
+#   monotone ASCENT  -> `training_pathology`. The loss was RISING at the end of
+#     training. Extending the budget would make this worse rather than better:
+#     it is divergence or an unstable step size, and it INVALIDATES the run
+#     rather than annotating it. ESCALATE; do not ship it as a limitation.
+#   neither          -> `adequate`.
+# The 1.56% splits evenly at 0.78% per direction.
 #
 # TWO REJECTED ALTERNATIVES, both measured in a peer lane.
 # A TAIL AVERAGE hid a whole-budget-inside-the-transient failure, found only
