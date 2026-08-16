@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -59,6 +61,98 @@ def _ar1_trajectory(
     return torch.stack(retained)
 
 
+def _two_timescale_trajectory(
+    fast_phi: float,
+    slow_phi: float,
+    slow_weight: float,
+    *,
+    n_draws: int,
+    n_walkers: int,
+    burn_in: int,
+    seed: int,
+) -> torch.Tensor:
+    """Superpose two independent unit-variance AR(1) processes.
+
+    The combination ``sqrt(1 - w) * fast + sqrt(w) * slow`` is again
+    unit-variance, so its autocorrelation is the weighted sum of the two
+    exponentials and the integrated autocorrelation time is
+
+    ``tau_int = 1 + 2 * [ (1 - w) * pf / (1 - pf) + w * ps / (1 - ps) ]``.
+
+    A single AR(1) has exactly one exponential timescale, so any window wider
+    than that decay reproduces its ``tau_int``. Two separated timescales are
+    what make an early truncation visible at all.
+
+    Parameters
+    ----------
+    fast_phi, slow_phi : float
+        Autoregressive coefficients of the two components.
+    slow_weight : float
+        Fraction ``w`` of the total variance carried by the slow component.
+    n_draws : int
+        Retained draws per chain.
+    n_walkers : int
+        Number of independent chains.
+    burn_in : int
+        Updates discarded before retention, sized on the slow component.
+    seed : int
+        Seed of the fast component; the slow component uses ``seed + 10000`` so
+        the two are drawn from disjoint streams.
+
+    Returns
+    -------
+    torch.Tensor
+        Samples with shape ``[n_draws, n_walkers]``.
+    """
+
+    fast = _ar1_trajectory(
+        fast_phi, n_draws=n_draws, n_walkers=n_walkers, burn_in=burn_in, seed=seed
+    )
+    slow = _ar1_trajectory(
+        slow_phi, n_draws=n_draws, n_walkers=n_walkers, burn_in=burn_in, seed=seed + 10_000
+    )
+    return math.sqrt(1.0 - slow_weight) * fast + math.sqrt(slow_weight) * slow
+
+
+_HETEROGENEOUS_SCALES = (1.0, 3.0, 10.0, 30.0)
+"""Per-chain amplitudes spanning a 900-fold range of chain variance."""
+
+
+def _scale_heterogeneous_chains(
+    phi: float,
+    *,
+    scales: tuple[float, ...],
+    n_draws: int,
+    burn_in: int,
+    seed: int,
+) -> torch.Tensor:
+    """Return AR(1) chains sharing one ``phi`` but spanning a wide variance range.
+
+    Parameters
+    ----------
+    phi : float
+        Autoregressive coefficient shared by every chain.
+    scales : tuple of float
+        Per-chain amplitude; chain variance scales as the square.
+    n_draws : int
+        Retained draws per chain.
+    burn_in : int
+        Updates discarded before retention.
+    seed : int
+        Seed for the underlying unit-variance chains.
+
+    Returns
+    -------
+    torch.Tensor
+        Samples with shape ``[n_draws, len(scales)]``.
+    """
+
+    base = _ar1_trajectory(
+        phi, n_draws=n_draws, n_walkers=len(scales), burn_in=burn_in, seed=seed
+    )
+    return base * torch.tensor(scales, dtype=torch.float64)
+
+
 def _assert_unresolved(result: IntegratedAutocorrelation) -> str:
     """Assert that an unresolved result leaks no fabricated estimate.
 
@@ -109,6 +203,115 @@ def test_non_degenerate_autocorrelation_starts_at_one() -> None:
     assert rho[0].item() == pytest.approx(1.0, rel=0.0, abs=1.0e-14)
 
 
+def test_pooled_autocorrelation_survives_a_nine_hundred_fold_variance_spread() -> None:
+    """Recover the shared decay when chain variances span three orders of magnitude.
+
+    ``pooled_autocorrelation`` averages autocovariances and divides by the
+    *pooled* lag-zero term, so a chain contributes in proportion to its own
+    variance -- deliberate, so one stuck walker cannot dominate. With
+    amplitudes [1, 3, 10, 30] the largest chain carries 89% of the pooling
+    weight and the effective chain count is 1.24, not 4, which is why this test
+    pins the correlations and leaves ``tau_int`` to the theoretical fixture.
+
+    Note that per-chain scaling is NOT an exact invariance even in exact
+    arithmetic: it reweights the chains, and
+    ``mean_c(s_c^2 g_c(k)) / mean_c(s_c^2 g_c(0))`` does not reduce to
+    ``mean_c(g_c(k)) / mean_c(g_c(0))``. Only a global factor is invariant, and
+    that is asserted separately.
+    """
+    phi = 0.8
+    values = _scale_heterogeneous_chains(
+        phi,
+        scales=_HETEROGENEOUS_SCALES,
+        n_draws=8192,
+        burn_in=256,
+        # Median seed of a 24-seed calibration ensemble.
+        seed=1914,
+    )
+
+    rho = pooled_autocorrelation(values)
+
+    assert rho[0].item() == pytest.approx(1.0, rel=0.0, abs=1.0e-14)
+    # The tolerance is absolute because the compared quantity is a correlation
+    # bounded by one and does NOT sweep magnitude across this test -- the
+    # 900-fold spread is in the input. Measured over 24 seeds, rho[1] has sd
+    # 0.0064 and rho[2] has sd 0.0113, so these bounds are 7.8 and 5.3 standard
+    # errors. Normalising by any single chain's lag-zero term instead of the
+    # pooled one moves rho[1] to 202 (first chain) or 0.224 (largest chain).
+    assert rho[1].item() == pytest.approx(phi, abs=0.05)
+    assert rho[2].item() == pytest.approx(phi**2, abs=0.06)
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        pytest.param(2.0**-10, id="2**-10"),
+        pytest.param(8.0, id="8"),
+        pytest.param(2.0**20, id="2**20"),
+    ],
+)
+def test_exactly_representable_global_rescaling_is_bitwise_invariant(factor: float) -> None:
+    """Leave the pooled autocorrelation bit-for-bit unchanged under a power of two.
+
+    Multiplying by a power of two is a pure exponent shift, exact for every
+    element and for every partial sum, so numerator and denominator are exactly
+    scaled copies and the ratio is unchanged in the last bit. That makes this
+    the strictest available probe for scale-dependent logic: any coupling
+    between the estimator and the magnitude of its input breaks exact
+    invariance even for an exactly-representable factor.
+
+    This is a different claim from the inexact-factor test below, which bounds
+    rounding rather than excluding structure. The gap between them is a
+    property of binary floating point, not a weakness of the estimator, and
+    neither test subsumes the other.
+    """
+    values = _scale_heterogeneous_chains(
+        0.8, scales=_HETEROGENEOUS_SCALES, n_draws=1024, burn_in=256, seed=1914
+    )
+
+    rescaled = pooled_autocorrelation(values * factor)
+
+    # Measured residual across the calibration ensemble was exactly zero, so
+    # this asserts equality rather than a tolerance.
+    assert torch.equal(rescaled, pooled_autocorrelation(values))
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        pytest.param(3.7, id="3.7"),
+        pytest.param(1.0 / 3.0, id="1/3"),
+        pytest.param(1.0e-3, id="1e-3"),
+    ],
+)
+def test_inexact_global_rescaling_perturbs_only_at_ulp_scale(factor: float) -> None:
+    """Bound the rounding residual of a global factor that is not a power of two.
+
+    A factor that is not exactly representable rounds every scaled element
+    independently, and those errors do not cancel between numerator and
+    denominator because the two are different sums over differently-rounded
+    terms. The ratio therefore moves at ulp scale rather than not at all.
+
+    The bound is stated in ulp of *one*, not of each ``rho[k]``: the residual is
+    inherited from the lag-zero normalisation and is flat in lag, so it stays
+    near 1e-16 even where ``rho[k]`` has decayed to 1e-11. A per-lag
+    ``ulp(rho[k])`` bound is unsatisfiable in the tail for exactly that reason
+    -- measured, it would demand agreement 650000 times tighter than float64
+    can express there.
+    """
+    values = _scale_heterogeneous_chains(
+        0.8, scales=_HETEROGENEOUS_SCALES, n_draws=1024, burn_in=256, seed=1914
+    )
+
+    rescaled = pooled_autocorrelation(values * factor)
+    residual = (rescaled - pooled_autocorrelation(values)).abs()
+
+    # Worst residual measured across nine factors and eight seeds was 1.5 ulp
+    # of one; this bound is 8 ulp, and rejects a scale coupling that would show
+    # up as a relative shift many orders of magnitude larger.
+    assert residual.max().item() <= 8.0 * math.ulp(1.0)
+
+
 def test_known_ar1_matches_theoretical_integrated_autocorrelation_time() -> None:
     """Recover the analytic IAT of a stationary Gaussian AR(1) process."""
     phi = 0.8
@@ -134,6 +337,68 @@ def test_known_ar1_matches_theoretical_integrated_autocorrelation_time() -> None
     assert result.plateau_reached is True
     assert result.pair_count is not None
     assert result.truncation_lag == 2 * result.pair_count - 1
+
+
+def test_two_timescale_plateau_is_not_truncated_at_the_fast_decay() -> None:
+    """Sum the slow tail of a two-timescale process, not just the fast decay.
+
+    Every other fixture here drives a single AR(1), which has one exponential
+    timescale, so none of them can tell a correct truncation from one that
+    merely stops early. Here the slow component carries 10% of the variance but
+    78% of the excess correlation time, so an estimator that stops after the
+    fast decay reports a number that is not merely imprecise but wrong by more
+    than half.
+    """
+    fast_phi, slow_phi, slow_weight = 0.5, 0.97, 0.1
+    values = _two_timescale_trajectory(
+        fast_phi,
+        slow_phi,
+        slow_weight,
+        n_draws=8192,
+        n_walkers=16,
+        # Thirty slow timescales, so the retained draws are stationary in the
+        # component that dominates tau_int rather than only in the fast one.
+        burn_in=1024,
+        # Median seed of a 24-seed calibration ensemble, chosen deliberately:
+        # a seed picked for passing would hide how much margin the bounds have.
+        seed=1819,
+    )
+
+    result = integrated_autocorrelation_time(values)
+
+    theoretical_tau = 1.0 + 2.0 * (
+        (1.0 - slow_weight) * fast_phi / (1.0 - fast_phi)
+        + slow_weight * slow_phi / (1.0 - slow_phi)
+    )
+    assert theoretical_tau == pytest.approx(9.266667, abs=1.0e-6)
+    assert result.tau_int is not None
+    # The band is ASYMMETRIC because the estimator's error here is signed:
+    # initial-positive-sequence truncation and the monotone envelope can only
+    # remove tail mass, never manufacture it. Measured over 24 seeds, tau_int
+    # has mean 8.60 and sd 0.52, i.e. a 7% low bias with four contributions --
+    # the forfeited tail beyond the stop (2.4%), the per-chain mean-subtraction
+    # bias of the biased autocovariance (2.7%), the monotone envelope itself
+    # (1.8%), and the triangular taper (0.3%). The lower bound sits 4.1 sd
+    # below that mean while still rejecting an eight-lag window, which reports
+    # at most 4.30 on this fixture. The upper bound is looser than symmetry
+    # would suggest, and for a mechanism rather than an order statistic: the
+    # distribution is right-skewed because a longer stop both accumulates more
+    # noise and forfeits less tail, so the two effects push tau_int up
+    # together. At the longest stop observed (lag 187) the window formula
+    # sqrt(2 * (2K + 1) / N) * tau gives sd 0.70 about a conditional mean near
+    # 9.0, so this bound is ~3 sd above the worst regime the estimator actually
+    # visits -- not 4.8 sd above an unconditional mean it is not drawn from
+    # when the stop runs long.
+    assert 0.70 * theoretical_tau <= result.tau_int <= 1.20 * theoretical_tau
+    assert result.plateau_reached is True
+    # The more direct statement of the same property, and the sharper
+    # instrument: an eight-lag window truncates at lag 7. The measured stop lag
+    # has median 107 and minimum 75 across the calibration ensemble, so this
+    # bound is far below anything correct code produces and far above the
+    # mutant. It tests "the window did not stop early" without routing that
+    # claim through a noisy derived scalar.
+    assert result.truncation_lag is not None
+    assert result.truncation_lag >= 30
 
 
 def test_iid_white_noise_has_unit_integrated_autocorrelation_time() -> None:
