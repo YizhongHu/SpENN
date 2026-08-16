@@ -78,6 +78,15 @@ GRID: dict[str, Any] = {
         "gpus": 1,
     },
     "gate_spec": {},
+    "seed_stages": [[0], [1, 2]],
+    "convergence_assessment": {
+        "method": "windowed_means_sign_test",
+        "n_windows": 20,
+        "n_trailing_windows": 8,
+        "window_width_min_tau_multiple": 5.0,
+        "on_inadequate": "report_only",
+        "may_reselect": False,
+    },
 }
 
 
@@ -119,7 +128,7 @@ def test_plan_hash_is_deterministic_and_content_addressed() -> None:
     first = plan.plan_hash(plan.expand_rows(config))
     second = plan.plan_hash(plan.expand_rows(plan.validate_grid_config(_grid())))
     assert first == second
-    changed = plan.plan_hash(plan.expand_rows(plan.validate_grid_config(_grid(seeds=[0, 1, 7]))))
+    changed = plan.plan_hash(plan.expand_rows(plan.validate_grid_config(_grid(seeds=[0, 1, 7], seed_stages=[[0], [1, 7]]))))
     assert changed != first
 
 

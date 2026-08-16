@@ -60,8 +60,32 @@ GRID_KEYS: frozenset[str] = frozenset(
         "train_resources",
         "eval_resources",
         "gate_spec",
+        "seed_stages",
+        "convergence_assessment",
     }
 )
+
+#: Required keys of the `convergence_assessment` block. Predeclared BEFORE any
+#: production data exists, which is the only thing that makes the rule
+#: legitimate rather than a post-hoc rescue.
+CONVERGENCE_KEYS: frozenset[str] = frozenset(
+    {
+        "method",
+        "n_windows",
+        "n_trailing_windows",
+        "on_inadequate",
+        "may_reselect",
+        "window_width_min_tau_multiple",
+    }
+)
+
+#: Minimum trailing windows. The sign test's power is set by the NUMBER OF
+#: DIFFERENCES, and under independent symmetric noise the probability that all
+#: differences share a sign is ``2 * (1/2)**(n-1)``: 12.50% at 5 windows,
+#: 6.25% at 6, 1.56% at 8. Five windows would trip this gate on a converged run
+#: one time in eight, which is far too noisy for a criterion that declares a
+#: 146 GPU-hour budget inadequate.
+MIN_TRAILING_WINDOWS = 8
 
 #: Required per-row resource keys.
 RESOURCE_KEYS: frozenset[str] = frozenset(
@@ -122,6 +146,8 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
             "grid config 'gate_spec' must be a mapping; declare it empty to state "
             "explicitly that no tolerance has been predeclared yet"
         )
+    seed_stages = _validate_seed_stages(payload["seed_stages"], seeds)
+    convergence = _validate_convergence_assessment(payload["convergence_assessment"])
 
     if any(step <= 0 for step in checkpoint_steps):
         raise PlanError(f"checkpoint_steps must be positive: {checkpoint_steps}")
@@ -154,6 +180,124 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         "train_resources": train_resources,
         "eval_resources": eval_resources,
         "gate_spec": dict(gate_spec),
+        "seed_stages": seed_stages,
+        "convergence_assessment": convergence,
+    }
+
+
+def _validate_seed_stages(payload: Any, seeds: Sequence[int]) -> list[list[int]]:
+    """Validate the declared launch staging over the predeclared seeds.
+
+    Staging changes the ORDER seeds are launched in and nothing else. Every
+    declared seed still runs; the stages exist so a complete 300k trace for the
+    first stage is in hand before the remaining GPU-hours are committed.
+
+    THE STAGING GATE MAY ONLY REPORT ON BUDGET ADEQUACY. It may never re-select
+    an arm, a checkpoint, a budget, or a seed -- see `convergence_assessment`,
+    whose `may_reselect` must be false.
+    """
+
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
+        raise PlanError("seed_stages must be a sequence of seed lists")
+    stages = [_require_int_sequence(stage, f"seed_stages[{index}]") for index, stage in enumerate(payload)]
+    if not stages:
+        raise PlanError("seed_stages must be non-empty")
+    flat = [seed for stage in stages for seed in stage]
+    if len(set(flat)) != len(flat):
+        raise PlanError(f"seed_stages repeats a seed: {flat}")
+    # EVERY predeclared seed must appear exactly once. A staging that quietly
+    # dropped a seed would turn a three-replicate study into a smaller one while
+    # the `seeds` list still claimed three.
+    if sorted(flat) != sorted(seeds):
+        raise PlanError(
+            f"seed_stages {flat} does not cover exactly the predeclared seeds {list(seeds)}"
+        )
+    return stages
+
+
+def _validate_convergence_assessment(payload: Any) -> dict[str, Any]:
+    """Validate the predeclared convergence-assessment rule."""
+
+    if not isinstance(payload, Mapping):
+        raise PlanError("convergence_assessment must be a mapping")
+    missing = sorted(CONVERGENCE_KEYS - set(payload))
+    unknown = sorted(set(payload) - CONVERGENCE_KEYS)
+    if missing:
+        raise PlanError(f"convergence_assessment is missing required keys: {missing}")
+    if unknown:
+        raise PlanError(f"convergence_assessment carries unknown keys: {unknown}")
+    method = _require_text(payload["method"], "convergence_assessment.method")
+    if method != "windowed_means_sign_test":
+        # Two rejected alternatives, both measured in a peer lane.
+        # A TAIL AVERAGE hid a whole-budget-inside-the-transient failure, found
+        # only after six runs had completed.
+        # AN ERROR-BAR OVERLAP TEST fails toward FALSE REASSURANCE, which is the
+        # dangerous direction: blocking takes the LARGEST standard error across
+        # levels, so "flat within errors" gets EASIER to satisfy exactly when
+        # autocorrelation is worst. Measured case: five windows drifting 37 uHa
+        # monotonically against 10 uHa bars: adjacent steps are 0.93 bars so
+        # EVERY ADJACENT PAIR OVERLAPS and an overlap test passes, while the
+        # cumulative drift is 3.70 bars and the trend is real. The mirror case
+        # scattered 5.8 bars and was pure noise because it was non-monotone.
+        # THE SIGN PATTERN IS THE DISCRIMINATOR; bar magnitude is not.
+        raise PlanError(
+            f"convergence_assessment.method must be 'windowed_means_sign_test', got {method!r}; "
+            "a tail average cannot see a persistent descent, and an error-bar overlap test "
+            "passes one that drifts monotonically inside its own bars"
+        )
+    n_windows = _require_positive_int(payload["n_windows"], "convergence_assessment.n_windows")
+    n_trailing = _require_positive_int(
+        payload["n_trailing_windows"], "convergence_assessment.n_trailing_windows"
+    )
+    if n_trailing < MIN_TRAILING_WINDOWS:
+        raise PlanError(
+            f"convergence_assessment.n_trailing_windows {n_trailing} is below "
+            f"{MIN_TRAILING_WINDOWS}; the sign test's false-alarm rate is "
+            f"2*(1/2)**(n-1), so fewer windows declare a sound budget inadequate too often"
+        )
+    if n_trailing > n_windows:
+        raise PlanError(
+            f"convergence_assessment.n_trailing_windows {n_trailing} exceeds n_windows {n_windows}"
+        )
+    on_inadequate = _require_text(payload["on_inadequate"], "convergence_assessment.on_inadequate")
+    if on_inadequate != "report_only":
+        raise PlanError(
+            f"convergence_assessment.on_inadequate must be 'report_only', got {on_inadequate!r}; "
+            "no extension rule is predeclared, and inventing one after seeing the trace is "
+            "exactly the violation production-grid-v0 forbids"
+        )
+    if payload["may_reselect"] is not False:
+        raise PlanError(
+            "convergence_assessment.may_reselect must be false: the rule may REPORT that the "
+            "budget was inadequate and may never re-select an arm, checkpoint or budget"
+        )
+    tau_multiple = payload["window_width_min_tau_multiple"]
+    if not isinstance(tau_multiple, (int, float)) or isinstance(tau_multiple, bool):
+        raise PlanError(
+            "convergence_assessment.window_width_min_tau_multiple must be a real number"
+        )
+    if float(tau_multiple) < 1.0:
+        # THE SIGN TEST'S FALSE-ALARM RATE ASSUMES INDEPENDENT WINDOW MEANS, and
+        # that assumption fails silently. If the window is narrower than the
+        # LOSS SERIES autocorrelation time, consecutive means are positively
+        # correlated, same-sign runs become far more likely under the null, and
+        # the nominal 1.56% is optimistic by an unknown factor -- a gate whose
+        # false-alarm rate nobody has bounded. The loss-series tau is NOT the
+        # local-energy tau: the loss is a trajectory through parameter space
+        # under an optimizer and its correlation time is a different, probably
+        # much longer quantity, so H-C2's 1.15/5.56 must not be reused for it.
+        raise PlanError(
+            f"convergence_assessment.window_width_min_tau_multiple {tau_multiple} is below 1.0; "
+            "windows narrower than the loss-series autocorrelation time make the sign test's "
+            "false-alarm rate unbounded"
+        )
+    return {
+        "method": method,
+        "n_windows": n_windows,
+        "n_trailing_windows": n_trailing,
+        "on_inadequate": on_inadequate,
+        "may_reselect": False,
+        "window_width_min_tau_multiple": float(tau_multiple),
     }
 
 
@@ -300,6 +444,8 @@ def build_manifest(
         "grid_config": dict(config),
         "gate_spec": dict(config["gate_spec"]),
         "gate_spec_declared": bool(config["gate_spec"]),
+        "seed_stages": [list(stage) for stage in config["seed_stages"]],
+        "convergence_assessment": dict(config["convergence_assessment"]),
         "plan_hash": plan_hash(rows),
         "n_rows": len(rows),
         "n_train_rows": sum(1 for row in rows if row["kind"] == "train"),

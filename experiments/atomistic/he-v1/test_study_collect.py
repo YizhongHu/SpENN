@@ -92,6 +92,15 @@ GRID: dict[str, Any] = {
         "gpus": 1,
     },
     "gate_spec": {},
+    "seed_stages": [[0]],
+    "convergence_assessment": {
+        "method": "windowed_means_sign_test",
+        "n_windows": 20,
+        "n_trailing_windows": 8,
+        "window_width_min_tau_multiple": 5.0,
+        "on_inadequate": "report_only",
+        "may_reselect": False,
+    },
 }
 
 PLAN_ATTEMPT = "20260815T120000"

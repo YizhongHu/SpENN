@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
+import pytest
 import torch
 import yaml
 from hydra.utils import instantiate
@@ -219,6 +221,73 @@ def test_he_eval_wires_correlation_aware_chain_statistics() -> None:
     assert int(task["generator"]["n_draws"]) >= 128
 
 
+#: Bundle fields supplied by the generator rather than by any calculator.
+_GENERATOR_SUPPLIED_FIELDS = frozenset({"generated"})
+
+#: Calculators whose ``name`` is not the bundle field they populate. Transform
+#: calculators all write ``bundle.transform``. Asserted complete below, so a new
+#: calculator cannot silently bypass the coverage check by not being listed.
+_CALCULATOR_BUNDLE_FIELD = {
+    "FullModelAntisymmetryCalculator": "transform",
+    "SpatialExchangeSymmetryCalculator": "transform",
+    "RotationConsistencyCalculator": "transform",
+}
+
+
+def _import_target(dotted: str) -> type:
+    module_name, _, attribute = dotted.rpartition(".")
+    module = importlib.import_module(module_name)
+    return getattr(module, attribute)
+
+
+@pytest.mark.parametrize("task_name", sorted(_load(EVAL)["evaluation_tasks"]))
+def test_every_summary_field_is_produced_by_a_calculator(task_name: str) -> None:
+    """No summary may consume a bundle field nothing in its task produces.
+
+    THIS IS THE DEFECT CLASS, not one instance of it. A summary runs LAST, so a
+    task missing its producer does every expensive thing correctly and then dies
+    at the summary -- it cannot fail early by construction. It has now happened
+    twice in this lane: `calculators: []` cost about three GPU-hours, and adding
+    `SampledRecordWriter` without `WavefunctionCalculator` reproduced the same
+    shape here, emitting every metric including MCSE and acceptance rate before
+    failing at the record writer.
+
+    Both instances were found by a run rather than by reading, because the
+    config looks entirely reasonable either way. This test derives the property
+    instead: whatever a task's summaries declare in ``required_fields`` must be
+    covered by its generator plus its calculators.
+    """
+
+    task = _load(EVAL)["evaluation_tasks"][task_name]
+    produced = set(_GENERATOR_SUPPLIED_FIELDS)
+    for entry in task["calculators"]:
+        calculator = _import_target(entry["_target_"])
+        produced.add(_CALCULATOR_BUNDLE_FIELD.get(calculator.__name__, calculator.name))
+
+    for entry in task["summaries"]:
+        summary = _import_target(entry["_target_"])
+        required = set(getattr(summary, "required_fields", frozenset()))
+        missing = sorted(required - produced)
+        assert not missing, (
+            f"{task_name}: {summary.__name__} requires {missing}, which no calculator in "
+            f"this task produces (produced: {sorted(produced)}). The summary runs last, so "
+            "this fails only after the whole chain has been paid for."
+        )
+
+
+def test_the_calculator_field_mapping_covers_every_configured_calculator() -> None:
+    # A calculator whose `name` is not its bundle field, and which is missing
+    # from the mapping, would be credited with producing a field it does not --
+    # turning the coverage test above into one that cannot fail.
+    for task in _load(EVAL)["evaluation_tasks"].values():
+        for entry in task["calculators"]:
+            calculator = _import_target(entry["_target_"])
+            name = calculator.__name__
+            if name in _CALCULATOR_BUNDLE_FIELD:
+                continue
+            assert hasattr(calculator, "name"), name
+
+
 def test_he_eval_energy_task_keeps_the_calculator_its_summaries_consume() -> None:
     """`calculators: []` fails at the SUMMARY stage, after all sampling is paid.
 
@@ -230,6 +299,7 @@ def test_he_eval_energy_task_keeps_the_calculator_its_summaries_consume() -> Non
     task = _load(EVAL)["evaluation_tasks"]["mcmc_energy"]
     calculators = [entry["_target_"] for entry in task["calculators"]]
     assert "tpen.evaluation.calculators.LocalEnergyCalculator" in calculators
+    assert "tpen.evaluation.calculators.WavefunctionCalculator" in calculators
     summaries = [entry["_target_"] for entry in task["summaries"]]
     assert "tpen.evaluation.summaries.LocalEnergySummary" in summaries
 
@@ -443,8 +513,6 @@ def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
         "law.raw_curvature_coefficient",
         "law.raw_curvature_range",
     ]
-
-    import pytest  # noqa: PLC0415
 
     with pytest.raises(RuntimeError):
         linear.load_state_dict(trainable.state_dict(), strict=True)

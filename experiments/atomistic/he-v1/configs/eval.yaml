@@ -233,6 +233,13 @@ evaluation_tasks:
         hamiltonian_terms: ${hamiltonian_terms}
         return_terms: ${evaluation.return_terms}
         chunk_size: 256
+      # Produces the `wavefunction` bundle field that `SampledRecordWriter`
+      # requires for its logabs/sign columns. MEASURED, not anticipated: without
+      # it the task ran the whole chain, emitted every metric including MCSE and
+      # acceptance, and then FAILED at the record writer -- the identical shape
+      # to the `calculators: []` defect, reintroduced by adding a summary
+      # without its producer.
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
     summaries:
       - _target_: tpen.evaluation.summaries.LocalEnergySummary
       - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
