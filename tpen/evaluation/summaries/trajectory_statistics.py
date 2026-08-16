@@ -269,7 +269,31 @@ def _receipt_metrics(
         stderr_iid = (payload.variance / total_draws) ** 0.5
         metrics[f"{prefix}_stderr_iid"] = stderr_iid
         if stderr_iid > 0.0:
+            # NOT sqrt(tau_int), and deliberately so. `mcse` sums PER-CHAIN
+            # variance*tau terms while `stderr_iid` uses the POOLED variance and
+            # `tau_int` is an N-weighted HARMONIC mean of the per-chain tau. The
+            # producer rejects the shortcut that would make them agree because
+            # it "assumes every chain shares one variance and one tau, so it is
+            # wrong exactly when the walkers differ". Heterogeneous chains can
+            # therefore show tau_int < 1 alongside inflation > 1: the harmonic
+            # mean is pulled down by the best-mixed chains while the MCSE is
+            # dominated by the highest-variance ones. Do not "fix" this into
+            # agreement -- that would substitute the wrong estimator.
             metrics[f"{prefix}_mcse_inflation"] = payload.mcse / stderr_iid
+
+    # Truncation diagnostics for the bar just published. `plateau_reached` is
+    # the quality indicator for the study's PRIMARY uncertainty claim: if
+    # Geyer's initial positive sequence did not terminate inside the data, the
+    # tail was cut at the window edge and the MCSE is UNDERSTATED. Without it on
+    # the row a reader cannot tell a well-estimated bar from a truncated one.
+    # Pure projection of what the receipt already carries -- no new statistic.
+    if receipt.plateau is not None:
+        metrics[f"{prefix}_plateau_reached"] = receipt.plateau.plateau_reached
+        metrics[f"{prefix}_max_lag"] = receipt.plateau.max_lag
+        if receipt.plateau.truncation_lag is not None:
+            metrics[f"{prefix}_truncation_lag"] = receipt.plateau.truncation_lag
+        if receipt.plateau.pair_count is not None:
+            metrics[f"{prefix}_geyer_pair_count"] = receipt.plateau.pair_count
     return metrics
 
 
