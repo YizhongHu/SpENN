@@ -297,12 +297,24 @@ callbacks:
         compare_output: false
         atol: 1.0e-06
         rtol: 1.0e-06
-  # Cadence matches the predeclared retained checkpoints [100k, 200k, 300k].
-  # The final one is the PRIMARY result; 100k and 200k exist for a descriptive
-  # late-slope assessment which is explicitly NOT permission to pick a winner.
+  # WRITE CADENCE IS DECOUPLED FROM THE EVALUATED SET, on purpose.
+  # Writing costs disk; EVALUATING costs GPU (4 chains x 3 checkpoints x 3
+  # seeds = 36 rows, already the bulk of the eval budget). So write often and
+  # evaluate exactly what was predeclared. Since resume is REJECTED, a crash
+  # loses the whole row at any cadence -- what a fine cadence buys is that a run
+  # that dies at 280k still leaves a usable 275k artifact instead of throwing
+  # away 75k updates of completed work.
+  #
+  # PROHIBITION, written here because this is the line that creates the
+  # temptation. Checkpoints outside the predeclared evaluated set
+  # [100000, 200000, 300000] exist for CRASH SALVAGE and post-hoc description
+  # ONLY. They are NOT evaluable without a rule predeclared BEFORE the run.
+  # Evaluating one after seeing the primary result is arm selection on energy
+  # laundered through a file that happened to be on disk, and is a
+  # `production-grid-v0` violation rather than a judgement call.
   - _target_: tpen.callback.Checkpoint
     terminal: false
-    every_n_steps: 100000
+    every_n_steps: 25000
     output_dir: ${run.dir}/checkpoints
 
 loggers:

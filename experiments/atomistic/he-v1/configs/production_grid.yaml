@@ -65,6 +65,17 @@ seeds: [0, 1, 2]
 # is predeclared, so it cannot be moved afterwards. 100k and 200k exist for a
 # descriptive late-slope assessment, which is explicitly NOT permission to pick
 # a winner.
+#
+# THIS IS THE EVALUATED SET, WHICH IS NOT THE WRITTEN SET. train.yaml writes a
+# checkpoint every 25,000 updates (12 per seed) because writing costs disk while
+# evaluating costs GPU, and because a run that dies at 280k should leave a
+# usable 275k artifact rather than discard 75k updates of completed work.
+#
+# THE EXTRA CHECKPOINTS ARE NOT EVALUABLE. They exist for crash salvage and
+# post-hoc description only. Evaluating one that is not in this list requires a
+# rule predeclared BEFORE the run; doing it after seeing the primary result is
+# arm selection on energy laundered through a file that happened to be on disk,
+# and `production-grid-v0` forbids it.
 checkpoint_steps: [100000, 200000, 300000]
 
 # Four independent fixed-model chains per retained checkpoint, per

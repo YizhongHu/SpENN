@@ -243,6 +243,40 @@ class TestArmIsTheMeasuredOne:
             assert row["resources"]["constraint"] == "a100"
             plan.reject_resume_overrides(row)
 
+    def test_every_evaluated_checkpoint_is_actually_written(self, grid: dict) -> None:
+        """The written cadence and the evaluated set are decoupled but not free.
+
+        Writing costs disk and evaluating costs GPU, so the trainer writes far
+        more often than the grid evaluates. The failure that decoupling creates:
+        if an evaluated step is not a multiple of the write cadence it is NEVER
+        WRITTEN, and its eval rows point at a checkpoint directory that does not
+        exist -- 12 rows that fail inside their allocations, after the training
+        row they depend on has already been paid for in full.
+        """
+
+        callbacks = _yaml(TRAIN)["callbacks"]
+        checkpoint = next(
+            entry for entry in callbacks if entry["_target_"] == "tpen.callback.Checkpoint"
+        )
+        cadence = int(checkpoint["every_n_steps"])
+        for step in grid["checkpoint_steps"]:
+            assert int(step) % cadence == 0, (
+                f"evaluated checkpoint {step} is not a multiple of the write cadence "
+                f"{cadence}, so it is never written and its eval rows restore nothing"
+            )
+
+    def test_written_checkpoints_are_a_superset_kept_for_salvage(self, grid: dict) -> None:
+        # The point of the finer cadence: a run that dies mid-budget leaves a
+        # usable partial. Assert it actually writes more than it evaluates,
+        # otherwise the decoupling bought nothing and the comment lies.
+        callbacks = _yaml(TRAIN)["callbacks"]
+        checkpoint = next(
+            entry for entry in callbacks if entry["_target_"] == "tpen.callback.Checkpoint"
+        )
+        cadence = int(checkpoint["every_n_steps"])
+        written = max(grid["checkpoint_steps"]) // cadence
+        assert written > len(grid["checkpoint_steps"])
+
     def test_train_config_max_steps_agrees_with_the_grid(self, grid: dict) -> None:
         # plan.py overrides max_steps from the grid, so a standalone run of
         # train.yaml must not answer a different question than a planned row.
