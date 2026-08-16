@@ -536,6 +536,78 @@ def test_electron_nucleus_cusp_composes_with_electron_electron_cusp_via_additive
     torch.testing.assert_close(composed(batch), en_cusp(batch) + ee_cusp(batch))
 
 
+# --- A6: generic N=2 (H2) ElectronNucleusCusp data coverage ---
+
+
+def _h2_atoms(dtype: torch.dtype = torch.float64) -> AtomicConfiguration:
+    return AtomicConfiguration(
+        positions=torch.tensor([[0.0, 0.0, -0.7], [0.0, 0.0, 0.7]], dtype=dtype),
+        charges=torch.tensor([1.0, 1.0], dtype=dtype),
+    )
+
+
+def test_electron_nucleus_cusp_satisfies_kato_slope_per_nucleus_for_h2() -> None:
+    # H2's two nuclei each independently satisfy the Kato cusp condition. The
+    # far nucleus sits off the coalescence axis (a perpendicular offset), so
+    # its own distance changes only to second order as the electron
+    # approaches the near nucleus; subtracting the exact-coalescence value
+    # before dividing by tiny_r removes that residual background instead of
+    # merely hoping it is small, isolating the near nucleus's own -Z slope.
+    tiny_r = torch.tensor(1.0e-7, dtype=torch.float64)
+    offset = 1.0
+    for near_index, far_index in ((0, 1), (1, 0)):
+        positions = torch.zeros(2, 3, dtype=torch.float64)
+        positions[far_index] = torch.tensor([offset, 0.0, 0.0], dtype=torch.float64)
+        charges = torch.tensor([1.0, 1.0], dtype=torch.float64)
+        charges[near_index] = 3.0
+        atoms = AtomicConfiguration(positions=positions, charges=charges)
+        cusp = ElectronNucleusCusp(atoms=atoms)
+        near_position = positions[near_index]
+        coalescent_batch = ElectronBatch(positions=near_position.clone().view(1, 1, 3))
+        displaced_position = near_position + torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64) * tiny_r
+        displaced_batch = ElectronBatch(positions=displaced_position.view(1, 1, 3))
+
+        slope = (cusp(displaced_batch) - cusp(coalescent_batch)) / tiny_r
+
+        torch.testing.assert_close(slope, torch.tensor([-3.0], dtype=torch.float64), atol=1.0e-6, rtol=0.0)
+
+
+def test_electron_nucleus_cusp_is_nucleus_relabel_invariant_for_h2() -> None:
+    atoms = _h2_atoms()
+    relabeled = AtomicConfiguration(positions=atoms.positions.flip(0), charges=atoms.charges.flip(0))
+    cusp = ElectronNucleusCusp(atoms=atoms)
+    relabeled_cusp = ElectronNucleusCusp(atoms=relabeled)
+    batch = ElectronBatch(positions=torch.tensor([[[0.1, -0.2, 0.3], [-0.4, 0.5, -0.6]]], dtype=torch.float64))
+
+    torch.testing.assert_close(cusp(batch), relabeled_cusp(batch))
+
+
+def test_electron_nucleus_cusp_h2_raw_exact_zero_boundary_at_one_nucleus() -> None:
+    # An electron exactly coincident with one of H2's two nuclei must produce
+    # a cusp value equal to the other nucleus's raw (unclamped) contribution
+    # alone -- proving no distance floor is applied at coalescence even with
+    # more than one nucleus present.
+    atoms = _h2_atoms()
+    cusp = ElectronNucleusCusp(atoms=atoms)
+    batch = ElectronBatch(positions=atoms.positions[0].clone().view(1, 1, 3))
+
+    distance_to_far_nucleus = torch.linalg.norm(atoms.positions[0] - atoms.positions[1])
+    expected = -atoms.charges[1] * distance_to_far_nucleus
+    torch.testing.assert_close(cusp(batch), expected.view(1))
+
+
+def test_electron_nucleus_cusp_respects_dtype_and_device_for_h2() -> None:
+    atoms = _h2_atoms(dtype=torch.float32)
+    cusp = ElectronNucleusCusp(atoms=atoms)
+    positions = torch.tensor([[[0.1, -0.2, 0.3], [-0.4, 0.5, -0.6]]], dtype=torch.float32)
+    batch = ElectronBatch(positions=positions)
+
+    output = cusp(batch)
+
+    assert output.dtype is torch.float32
+    assert output.device == positions.device
+
+
 class _LiteralElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
     def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
         return -2.0 * charges * distance
