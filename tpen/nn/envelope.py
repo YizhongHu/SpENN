@@ -1,9 +1,9 @@
 """Legacy additive envelope factors for wavefunction log-amplitudes.
 
-`Envelope` and `AdditiveEnvelope` are a supported minor-release compatibility
-surface: their constructor, forward behavior, Hydra target, and `ModuleList`
-state-dict keys must not change, and neither carries a runtime deprecation
-warning in this minor version. `GaussianConfinement` and
+`Envelope` and `AdditiveEnvelope` are a supported minor-release
+compatibility surface: their constructor, forward behavior, Hydra target,
+and `ModuleList` state-dict keys must not change, and neither carries a
+runtime deprecation warning in this minor version. `GaussianConfinement` and
 `HookeGaussianConfinement` are the concrete decay/confinement envelopes built
 on this legacy interface.
 
