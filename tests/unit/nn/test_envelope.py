@@ -12,7 +12,6 @@ from tpen.data.real import Feature
 from tpen.nn import (
     AdditiveCusp,
     AdditiveEnvelope,
-    AsymptoticDecay,
     ElectronElectronCusp,
     ElectronNucleusCusp,
     ElectronNucleusCuspLaw,
@@ -379,15 +378,6 @@ class BadShapeLogAmplitudeFactor(LogAmplitudeFactor):
         return torch.zeros(batch.batch_size, 1, device=batch.device, dtype=batch.dtype)
 
 
-class ConstantAsymptoticDecay(AsymptoticDecay):
-    def __init__(self, value: float) -> None:
-        super().__init__()
-        self.value = value
-
-    def decay_value(self, batch: ElectronBatch) -> torch.Tensor:
-        return torch.full((batch.batch_size,), self.value, device=batch.device, dtype=batch.dtype)
-
-
 def test_log_amplitude_factor_base_requires_subclass_implementation() -> None:
     batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
 
@@ -680,22 +670,6 @@ def test_trainable_curvature_law_zero_coefficient_matches_linear_law() -> None:
 def test_trainable_curvature_law_rejects_nonpositive_range() -> None:
     with pytest.raises(ValueError, match="curvature_range"):
         CurvatureElectronNucleusCuspLaw(curvature_range=0.0)
-
-
-def test_asymptotic_decay_base_requires_subclass_implementation() -> None:
-    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
-
-    with pytest.raises(NotImplementedError):
-        AsymptoticDecay()(batch)
-
-
-def test_asymptotic_decay_is_separate_from_cusp_and_envelope_interfaces() -> None:
-    decay = ConstantAsymptoticDecay(0.25)
-
-    assert not isinstance(decay, LogAmplitudeFactor)
-    assert not isinstance(decay, Envelope)
-    batch = ElectronBatch(positions=torch.zeros(2, 2, 1, dtype=torch.float64))
-    torch.testing.assert_close(decay(batch), torch.full((2,), 0.25, dtype=torch.float64))
 
 
 def test_additive_envelope_hydra_target_and_constructor_are_unchanged() -> None:

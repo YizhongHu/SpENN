@@ -474,7 +474,7 @@ is tracked separately and is not part of this terminology-only change.
 `Envelope` and `AdditiveEnvelope` (module `tpen.nn.envelope`) are legacy
 output-factor/composition APIs for the current minor version, not a
 feature-normalization step; neither carries a runtime deprecation warning
-yet. The canonical `LogAmplitudeFactor`/`AdditiveCusp`/`AsymptoticDecay`
+yet. The canonical `LogAmplitudeFactor`/`AdditiveCusp`
 interfaces live in `tpen.nn.factor`, and the concrete cusp factors
 (`ElectronElectronCusp`, `ElectronNucleusCusp`, and their laws) live in
 `tpen.nn.cusp`; `AdditiveCusp` is retained only as a legacy compatibility
