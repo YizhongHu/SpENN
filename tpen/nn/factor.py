@@ -11,9 +11,7 @@ target path for new systems.
 `AdditiveCusp` is retained here only as a legacy compatibility compositor
 that generically sums `LogAmplitudeFactor` components (despite its name, it
 is not cusp-specific): do not use it in new configs or docs, and it carries
-no runtime deprecation warning in this minor version. `AsymptoticDecay` is a
-separate, optional long-range decay interface, independent from both cusp
-factors and legacy feature envelopes.
+no runtime deprecation warning in this minor version.
 """
 
 from __future__ import annotations
@@ -148,54 +146,6 @@ class AdditiveCusp(LogAmplitudeFactor):
         return scalars
 
 
-class AsymptoticDecay(nn.Module):
-    """Template for an optional long-range log-amplitude decay factor.
-
-    This is a separate, optional capability from cusp factors
-    (`LogAmplitudeFactor`/`AdditiveCusp`) and from legacy feature envelopes
-    (`tpen.nn.envelope.Envelope`): it exists so a consumer that needs
-    asymptotic decay can require this interface explicitly and fail loudly
-    when it is absent, instead of a decay term being inferred or silently
-    substituted.
-    """
-
-    def forward(self, batch: ElectronBatch) -> torch.Tensor:
-        """Return a flattened-batch decay contribution.
-
-        Parameters
-        ----------
-        batch : ElectronBatch
-            Electron batch whose sample axes may be higher rank.
-
-        Returns
-        -------
-        torch.Tensor
-            Decay contribution with shape ``[batch]`` after sample
-            flattening.
-        """
-
-        flat_batch = batch.flatten_samples()
-        output = self.decay_value(flat_batch)
-        _check_factor_tensor(output, flat_batch, name=type(self).__name__)
-        return output
-
-    def decay_value(self, batch: ElectronBatch) -> torch.Tensor:
-        """Return the decay contribution for a flattened batch.
-
-        Parameters
-        ----------
-        batch : ElectronBatch
-            Flattened electron batch.
-
-        Returns
-        -------
-        torch.Tensor
-            Decay contribution with shape ``[batch]``.
-        """
-
-        raise NotImplementedError("AsymptoticDecay.decay_value must be implemented by subclasses")
-
-
 def _check_factor_tensor(value: object, batch: ElectronBatch, *, name: str) -> None:
     """Validate the shared additive-factor output value contract."""
 
@@ -249,6 +199,5 @@ def _inverse_softplus(value: float) -> "torch.Tensor":
 
 __all__ = [
     "AdditiveCusp",
-    "AsymptoticDecay",
     "LogAmplitudeFactor",
 ]

@@ -8,7 +8,7 @@ runtime deprecation warning in this minor version. `GaussianConfinement` and
 on this legacy interface.
 
 The canonical, new-generation types --
-`tpen.nn.factor.LogAmplitudeFactor`/`AdditiveCusp`/`AsymptoticDecay` and
+`tpen.nn.factor.LogAmplitudeFactor`/`AdditiveCusp` and
 `tpen.nn.cusp.ElectronNucleusCusp`/`ElectronElectronCusp` -- now live in their
 own modules; this module re-exports them lazily (see `__getattr__` below) so
 every import path that previously resolved through `tpen.nn.envelope` keeps
@@ -210,7 +210,7 @@ class HookeGaussianConfinement(GaussianConfinement):
 # this module (attribute access, `from tpen.nn.envelope import ...`, and
 # `import *`) via lazy re-export so this module never has to import those
 # modules eagerly (which import `Envelope` from here).
-_FACTOR_MODULE_NAMES = frozenset({"LogAmplitudeFactor", "AdditiveCusp", "AsymptoticDecay"})
+_FACTOR_MODULE_NAMES = frozenset({"LogAmplitudeFactor", "AdditiveCusp"})
 _CUSP_MODULE_NAMES = frozenset(
     {
         "ElectronNucleusCuspLaw",
@@ -237,7 +237,6 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "AdditiveCusp",
     "AdditiveEnvelope",
-    "AsymptoticDecay",
     "ElectronElectronCusp",
     "ElectronNucleusCusp",
     "ElectronNucleusCuspLaw",

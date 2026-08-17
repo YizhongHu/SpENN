@@ -29,7 +29,7 @@ from tpen.nn.envelope import (
     HookeGaussianConfinement,
 )
 from tpen.nn.equivariant_mixing import EquivariantMixing
-from tpen.nn.factor import AdditiveCusp, AsymptoticDecay, LogAmplitudeFactor
+from tpen.nn.factor import AdditiveCusp, LogAmplitudeFactor
 from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.mlp import MLP
 from tpen.nn.normalization import RMSNorm
@@ -42,7 +42,6 @@ from tpen.nn.update import ResidualUpdater, Updater
 __all__ = [
     "AdditiveCusp",
     "AdditiveEnvelope",
-    "AsymptoticDecay",
     "CoordinateEnvelope",
     "ElectronBasis",
     "ElectronBasisFeatures",
