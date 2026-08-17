@@ -1,0 +1,459 @@
+# He-v1 FROZEN PRODUCTION GRID (H-F1 predeclaration).
+#
+# After this file merges the arm cannot be re-chosen. Every number below is
+# fixed before any production energy is seen, and each carries the evidence that
+# fixed it. `production-grid-v0` forbids selecting on energy, variance or
+# reference error; nothing here uses any of the three.
+#
+# ---------------------------------------------------------------------------
+# THE ARM, and the ONLY quantities that chose it
+# ---------------------------------------------------------------------------
+# channels 32 / walkers 4096      capacity and MEMORY (H-C1 39515174/78/84)
+# 300,000 updates on kozinsky_gpu wall time against a MEASURED partition ceiling
+# stride 20 / burn_in 100         precision, as a DECLARED TIE-BREAK (H-C2)
+# 3 seeds [0, 1, 2]               replication
+#
+# Width lives in `train_config`, not here, because `OmegaConf.from_dotlist`
+# cannot index a list and `model.layers[0].mixing.channels` is unreachable as an
+# override. See train.yaml for the verbatim H-C1 width mapping.
+#
+# THE PARTITION IS PART OF THE BUDGET. The same c32/w4096 arm supports 300k
+# updates on kozinsky_gpu (7-day wall) and only 100k on seas_gpu (2-day wall),
+# same card model, both delivered-verified. "The a100 budget" is not a
+# well-formed quantity; only "the a100-on-kozinsky_gpu budget" is.
+#
+# ---------------------------------------------------------------------------
+# TOLERANCE PROVENANCE -- every bound below carries one of three labels
+# ---------------------------------------------------------------------------
+# [ANALYTIC]   Center comes from theory, not measurement. Kato fixes the cusp
+#              slope at -Z; the chosen law's asymptotic slope is -Z + c/d and is
+#              computed by `TrainableCurvatureElectronNucleusCuspLaw
+#              .outer_tail_slope(charges)`, never by hardcoding -Z; a true
+#              spatial singlet has triplet fraction 0 exactly. Where only the
+#              SCALE is empirical it is labelled [ANALYTIC center / pilot scale]
+#              and cites the pilot job.
+# [GEOMETRY]   An arithmetic consequence of the generator's own declared grid or
+#              sample count -- neither physics nor measurement. If someone
+#              changes the radial grid, these SHOULD break; a measured tolerance
+#              would not.
+# [NO-REGRESSION] No analytic center available. None currently used. If one
+#              appears its circularity is written down beside it.
+#
+# ###########################################################################
+# SCALES FROZEN FROM PILOT 39559205 (kozinsky_gpu / a100, 15,000 updates, seed 0,
+# COMPLETED 0:0, delivered card asserted in-allocation). Every bound previously
+# labelled "pilot scale" now cites the measurement it was scaled against, beside
+# the value. ANALYTIC centers stay analytic (-Z, outer_tail_slope(charges), 0)
+# and declared-geometry counts stay declared: only the SCALES came from the
+# pilot.
+#
+# ONE SCALE MOVED MATERIALLY. The three cusp bounds were placeholders at
+# 0.05/0.05/0.15 and the pilot measures 0.2198/0.2229 -- so the placeholders
+# would have failed EVERY production row. That is what a pilot is for, and it is
+# the reason a scale still reading as provisional at merge time is a defect
+# rather than a default.
+#
+# The tail, purity and count bounds are RETAINED UNCHANGED, each now citing the
+# pilot value that confirms it brackets trained behaviour rather than only the
+# initialization.
+# ###########################################################################
+
+study: he-v1-production
+
+train_config: experiments/atomistic/he-v1/configs/train.yaml
+eval_config: experiments/atomistic/he-v1/configs/eval.yaml
+
+# WHAT THIS STUDY MAY CONCLUDE. Predeclared here because it is a decision rule
+# about the CONCLUSION, and a conclusion rule written after seeing the energy it
+# constrains is worthless -- it would be chosen knowing which side of the line
+# the result fell on.
+#
+# `production-grid-v0` permits no chemical-accuracy claim where the COMBINED
+# uncertainty exceeds 1.6 mHa. Combined means the correlation-aware bar and the
+# seed spread together, not the MCSE alone: three seeds resolve to three means,
+# and quoting a single chain's MCSE as the study's uncertainty would understate
+# it by whatever the seeds disagree by.
+#
+# The rule is one-directional and that is deliberate. Exceeding the threshold
+# forbids the CLAIM; it does not invalidate the energy, which is still reported
+# with its bar. Falling under the threshold does not oblige the claim either --
+# it removes one obstacle to it.
+reporting_rules:
+  chemical_accuracy_max_combined_uncertainty_mha: 1.6
+  combined_uncertainty_includes_seed_spread: true
+
+# REQUIREMENTS THIS ARM CANNOT DISCHARGE, recorded as an explicit `absent` with
+# its reason rather than left to a reader's grep. Missing is never zero, and a
+# requirement nobody wrote down as unmet reads as met.
+#
+# THE MINIMUM ELECTRON-NUCLEUS RADIUS REACHED BY THE SAMPLER HAS NO EMITTER.
+# Do not mistake `tail_outer_radius_min_min` above for it: that is the tail
+# PROBE GRID's declared-geometry floor, read off `tail_radii: [4.0, 6.0, 8.0]`,
+# and it is a different quantity entirely -- a property of where we chose to
+# measure, not of where the walkers went. The near-miss name is the trap: a
+# reader scanning for "radius min" finds it and stops.
+#
+# Verified absent at this SHA, three citations: SamplerStats composes
+# acceptance, walkers, burn-in, stride, proposal scale and geometry, emitting
+# radius max/mean/q50/q90/q99/std and electron_distance_min but NO radius_min;
+# `SampledRecordWriter` retains observables, not positions; and the trajectory
+# collector retains the observable series only. H-C2's phrasing is exact: "one
+# geometry key away from existing, not missing by design." Follow-up item
+# `27003f91` carries it, and it is two changes away rather than one -- the
+# emitter and the retention both have to move.
+unemitted_requirements:
+  min_sampled_electron_nucleus_radius: not_emitted
+
+# Three independent training seeds. Seed 0 is deliberately the seed the
+# convergence pilot runs, so the pilot is literally seed 0 of this set rather
+# than a separate configuration whose plateau might not transfer.
+seeds: [0, 1, 2]
+
+# A PREDECLARED PROCEDURE, NOT AN EXECUTED DEPENDENCY. Read this before
+# assuming the pipeline sequences anything.
+#
+# Nothing in this repository acts on `seed_stages`. `plan.py` validates it and
+# copies it into the plan manifest; `expand_rows` gives every training row
+# `depends_on: []`; `launch.py` never mentions the key. So `launch.py --submit`
+# submits ALL THREE SEEDS AT ONCE with no Slurm dependency between them. The
+# staging is a commitment H-F3 honours BY HAND:
+#
+#   1. submit stage 1 (seed 0)
+#   2. wait for it to reach terminal
+#   3. run `assess_convergence.py` on its loss trace
+#   4. submit stage 2 (seeds 1, 2)
+#
+# H-F3's receipt is required to record steps 2 and 3 and the verdict before
+# step 4. What `plan.py` DOES enforce is membership: it rejects a staging that
+# does not cover exactly the declared seeds, so a stage list cannot quietly
+# shrink the study. All three predeclared seeds run.
+#
+# WHY: nothing yet shows the loss is not STILL DESCENDING at 300,000. H-C2's
+# free 5000-update run and this slice's 15,000-update pilot both show the
+# TRANSIENT ENDS EARLY (~2000-2500 updates, 0.8% of the budget) -- a different
+# claim, and one a short probe is structurally incapable of extending to the
+# final step. Staging costs ~111 h of wall instead of ~55.5 and avoids
+# committing 111 of 166 GPU-hours before a COMPLETE 300k trace for this arm
+# exists. (Those hours are recomputed from the pilot's MEASURED 1.5025 steps/s,
+# not H-C1's 1.7107 -- the earlier ~98/~49 and 97/146 figures came from the
+# faster rate and are retired. See `train_resources.timeout_min`.)
+#
+# Seed 0 is the natural probe, not a privileged one: it is already the seed
+# H-C2 trained its pilot checkpoint on.
+seed_stages:
+  - [0]
+  - [1, 2]
+
+# THE CONVERGENCE-ASSESSMENT RULE, predeclared here BEFORE any production data
+# exists, which is the only thing that makes it legitimate rather than a
+# post-hoc rescue.
+#
+# ALSO A PROCEDURE, NOT AN EXECUTED GATE. No pipeline stage computes a windowed
+# mean or runs a sign test: `collect.py`, `report.py` and `driver.py` never read
+# this key. It is discharged by a human running
+# `experiments/atomistic/he-v1/assess_convergence.py` on the stage-1 loss trace
+# between stages. The rule lives here so it is frozen before the data exists;
+# the script exists so the rule names a real artifact rather than an intention.
+#
+# Applied to the stage-0 loss trace at 300,000 updates: 20 windows, and a SIGN
+# TEST over the differences of the final 8 window means. A MONOTONE TREND IN
+# EITHER DIRECTION -- all 7 differences sharing a sign -- is the signal. The
+# test is two-sided, which is what the quoted 2*(1/2)^(n-1) rate below assumes;
+# a one-sided descent-only test would have a 0.78% rate, not 1.56%.
+#
+# DETECTION IS TWO-SIDED; CONSEQUENCE IS NOT. The two signs mean different
+# things and the verdicts are deliberately not merged:
+#   monotone DESCENT -> `budget_inadequate`. The model was still improving when
+#     the budget ran out. Report as a stated limitation on the interpretation of
+#     the result, keep the final checkpoint as primary, take NO extension.
+#   monotone ASCENT  -> `training_pathology`. The loss was RISING at the end of
+#     training. Extending the budget would make this worse rather than better:
+#     it is divergence or an unstable step size, and it INVALIDATES the run
+#     rather than annotating it. ESCALATE; do not ship it as a limitation.
+#   neither          -> `adequate`.
+# The 1.56% splits evenly at 0.78% per direction.
+#
+# TWO REJECTED ALTERNATIVES, both measured in a peer lane.
+# A TAIL AVERAGE hid a whole-budget-inside-the-transient failure, found only
+# after six runs had completed; a second run there was quoted for a week as a
+# converged reference while still descending at its final step.
+# AN ERROR-BAR OVERLAP TEST fails toward FALSE REASSURANCE, the dangerous
+# direction. Blocking takes the LARGEST standard error across levels, so "flat
+# within errors" becomes EASIER to satisfy exactly when autocorrelation is
+# worst. Measured: five windows drifting 37 uHa monotonically against 10 uHa
+# bars -- adjacent steps are 0.93 bars, so EVERY ADJACENT PAIR OVERLAPS and an
+# overlap test passes, while the cumulative drift is 3.70 bars and the trend is
+# real. The mirror case scattered 5.8 bars and was pure noise, because it was
+# non-monotone. Bar magnitude is unreliable in BOTH directions; the sign
+# pattern is the discriminator. Cumulative drift in bar units is reported
+# alongside as descriptive context, and decides nothing.
+#
+# ON INADEQUACY THE STUDY REPORTS AND DOES NOT ACT. The final checkpoint stays
+# the primary result, the descent is reported as a stated limitation on its
+# interpretation, and NO extension is taken -- no extension rule is
+# predeclared, and inventing one after seeing the trace is precisely the
+# violation. `may_reselect: false` is enforced by plan.py.
+#
+# WHY THIS IS NOT SELECTION ON ENERGY, and the hazard is real enough to name:
+# "still descending" and "energy disappointing" are CORRELATED, since a run
+# inside a slow descent sits above its own converged value. The test is made
+# scale-free so that correlation cannot leak into the decision. THE GATE READS
+# THE SIGN PATTERN OF SEED 0's OWN LOSS TRACE -- the signs of 7 consecutive
+# differences and nothing else. It never reads an energy VALUE, a variance, or
+# a distance from any reference; it never compares arms or seeds. It fires
+# identically on a trace that is excellent but still falling, and stays silent
+# on one that is poor but flat. That is what keeps the staging gate from being
+# an arm re-selection wearing a different hat, and it has to be legible here
+# rather than merely true in our intentions.
+convergence_assessment:
+  method: windowed_means_sign_test
+  n_windows: 20
+  # EIGHT trailing windows = 7 differences. The sign test's power is set by the
+  # number of differences, and under independent symmetric noise
+  # P(all same sign) = 2*(1/2)^(n-1): 12.50% at 5 windows, 6.25% at 6, 1.56% at
+  # 8. Five would declare a sound 146 GPU-hour budget inadequate one time in
+  # eight.
+  n_trailing_windows: 8
+  # THE SIGN TEST ASSUMES INDEPENDENT WINDOW MEANS and that assumption fails
+  # SILENTLY: windows narrower than the loss-series autocorrelation time make
+  # same-sign runs common under the null, so the nominal 1.56% is optimistic by
+  # an unknown factor. The window width must exceed the MEASURED loss-series tau
+  # by at least this multiple. That tau is measured from the H-F1 pilot's own
+  # trace and is NOT H-C2's local-energy tau -- the loss is a trajectory through
+  # parameter space under an optimizer, a different and probably much longer
+  # correlation time, so 1.15/5.56 must not be reused for it.
+  window_width_min_tau_multiple: 5.0
+  on_inadequate: report_only
+  may_reselect: false
+
+# `plan.py` sets trainer.max_steps = max(checkpoint_steps), so this list IS the
+# update budget. 300,000 is the largest budget H-C1 measured as fitting
+# kozinsky_gpu at this arm: 2922.8 implied wall minutes against 8064 usable at
+# margin 0.2. The final checkpoint is the PRIMARY result and no extension rule
+# is predeclared, so it cannot be moved afterwards. 100k and 200k exist for a
+# descriptive late-slope assessment, which is explicitly NOT permission to pick
+# a winner.
+#
+# THIS IS THE EVALUATED SET, WHICH IS NOT THE WRITTEN SET. train.yaml writes a
+# checkpoint every 25,000 updates (12 per seed) because writing costs disk while
+# evaluating costs GPU, and because a run that dies at 280k should leave a
+# usable 275k artifact rather than discard 75k updates of completed work.
+#
+# THE EXTRA CHECKPOINTS ARE NOT EVALUABLE. They exist for crash salvage and
+# post-hoc description only. Evaluating one that is not in this list requires a
+# rule predeclared BEFORE the run; doing it after seeing the primary result is
+# arm selection on energy laundered through a file that happened to be on disk,
+# and `production-grid-v0` forbids it.
+checkpoint_steps: [100000, 200000, 300000]
+
+# Four independent fixed-model chains per retained checkpoint, per
+# `production-grid-v0`. 3 seeds x 3 checkpoints x 4 chains = 36 eval rows.
+#
+# DRAWS-PER-CHAIN MARGIN AGAINST THE ESTIMATOR'S FLOOR, measured from the config
+# rather than asserted. `eval.yaml` sets the energy task's `n_draws: 256`;
+# `tpen.statistics.producer.DEFAULT_MIN_DRAWS_PER_CHAIN` is 8. That is a 32x
+# margin, so the producer's per-chain gate cannot fire FOR WANT OF DRAWS.
+#
+# READ THAT SCOPE EXACTLY: the 32x buys immunity from ONE failure mode of at
+# least FOUR. The per-chain gate can still fire at 256 draws for STRUCTURE
+# reasons -- zero pooled variance, a non-positive initial Geyer pair, no plateau
+# within max_lag, non-positive tau, zero within-chain variance -- and A STUCK
+# WALKER AT 256 DRAWS FAILS EXACTLY AS IT WOULD AT 8. H-F3 must carry this
+# rather than the headline margin.
+#
+# The gate is PER-CHAIN and ANY ONE failing walker unresolves the WHOLE receipt,
+# which then publishes NO correlation-aware bar at all. It is the second of four
+# unresolved gates (nonfinite, per-chain IAT, split-Rhat THIRD, non-positive
+# ESS), so it pre-empts the Rhat check rather than following it. The symptom is
+# an eval row with no MCSE rather than an error, which is why the relationship
+# is asserted in `tests/unit/experiments/test_he_v1_config.py` against the
+# IMPORTED constant and not a literal 8: if the floor rises, the check moves.
+eval_chains: 4
+# Keeps every derived chain seed clear of the training seeds, so no "fresh"
+# chain replays the sampler that trained the model. `plan.py` rejects a
+# collision rather than trusting this.
+eval_chain_seed_base: 1000
+
+train_resources:
+  partition: kozinsky_gpu
+  stratum: a100
+  # SIZED ON THE PILOT'S MEASURED RATE, NOT H-C1's. Pilot 39559205 differenced
+  # 1.5025 steps/s in steady state over six intervals (1.4755-1.5302), against
+  # H-C1's 1.7107 -- a 12.2% shortfall, stable rather than node variation. So
+  # 300,000 updates project to 3327.8 minutes (55.5 h), not the 2922.8 minutes
+  # (48.7 h) H-C1's rate implied. 5760 is 1.73x the measured projection and sits
+  # inside the 8064-minute usable ceiling at a 2.42x margin. Under `--no-requeue`
+  # an overrun is a lost row, and H-C2's checkpoint job already ran 8% over its
+  # projection once.
+  #
+  # THE SHORTFALL HAS AT LEAST TWO CONTRIBUTORS AND PRODUCTION KEEPS ONE. The
+  # pilot forced `callbacks.7.every_n_steps=1` for its cusp trace where this file
+  # declares 5, so that part is pilot-only. But `callbacks.8`
+  # (`RuntimeEquivariance`, two checkers, `permutation_fraction: 1.0`) runs every
+  # 5 steps in PRODUCTION too and the pilot never overrode it. The split between
+  # them is NOT attributed, so this row is sized on the measured rate and no
+  # recovery is assumed: SIZING ON THE RECOVERY WOULD BE ASSUMING THE FAVOURABLE
+  # HALF OF AN UNTESTED SPLIT. If production runs faster, the row finishes early;
+  # that direction is free.
+  timeout_min: 5760
+  cpus: 4
+  mem_gb: 32
+  gpus: 1
+
+eval_resources:
+  partition: kozinsky_gpu
+  stratum: a100
+  # H-C2 measured 396.7 s per chain at stride 20 with 256 draws x 4096 walkers.
+  # 120 minutes is 18x that, covering the added trajectory statistics, the raw
+  # record write and the four diagnostic tasks.
+  timeout_min: 120
+  cpus: 4
+  mem_gb: 32
+  gpus: 1
+
+gate_spec:
+  # ----------------------------------------------------------------------
+  # NAMESPACE BINDINGS -- reserved block, stripped before the spec reaches
+  # gates.py. A metric NAME IS NOT A METRIC: `full_model_antisymmetry` and
+  # `spatial_exchange_symmetry` share `TransformConsistencySummary` and
+  # therefore share these names.
+  #
+  # SINGLET PURITY IS BOUND TO SPATIAL EXCHANGE AND MUST NEVER BE BOUND TO
+  # full_model_antisymmetry, where the triplet fraction is identically 1.0 BY
+  # CONSTRUCTION (full label exchange sends Psi -> -Psi, so u = 0, the sign
+  # ratio is -1, f = 1 exactly; measured 1.0/1.0 with logabs 0.0). That is the
+  # healthy value for a correct antisymmetric wave function, so a gate there
+  # would decide on a constant and mean nothing.
+  # ----------------------------------------------------------------------
+  metric_namespaces:
+    triplet_fraction_mean_under_psi_orig_sq: eval/spatial_exchange_symmetry
+    triplet_fraction_max_under_psi_orig_sq: eval/spatial_exchange_symmetry
+    triplet_fraction_finite_sample_count: eval/spatial_exchange_symmetry
+
+  # [ANALYTIC] The charge the expected cusp slope is derived from. Owned by the
+  # physical system; a fitted number never gets to redefine what -Z means.
+  nuclear_charge: 2.0
+
+  # --- cusp availability and support ------------------------------------
+  require_cusp_available: true
+  # [GEOMETRY] HeliumRadialGridGenerator declares n_directions: 3, so there are
+  # three one-sided fits, one per ray.
+  cusp_finite_fit_count_min: 3
+  # [GEOMETRY] cusp_radii has 4 entries x 3 directions = 12 measurements.
+  cusp_finite_measurement_count_min: 12
+
+  # --- cusp values, centered on the charge-owned -Z ----------------------
+  # [ANALYTIC] Exactness check, not a tolerance: the summary's own expected
+  # slope must still BE -Z. This one is tight on purpose and is not scaled from
+  # anything, because a drift here means the summary stopped agreeing with the
+  # declared charge.
+  cusp_expected_slope_tolerance: 1.0e-09
+  # [ANALYTIC center -Z = -2.0 / scale from pilot 39559205]
+  # THE PLACEHOLDERS HERE WERE NOT MERELY PROVISIONAL, THEY WERE WRONG, and the
+  # pilot is what showed it. Measured at the 15,000-update checkpoint:
+  #   cusp_one_sided_slope_mean            -1.7802486854792385
+  #   cusp_one_sided_slope_abs_error_mean   0.2197513145207614
+  #   cusp_one_sided_slope_abs_error_max    0.2228658133058481
+  # against placeholders of 0.05 / 0.05 / 0.15. Frozen unchanged, EVERY
+  # PRODUCTION ROW WOULD HAVE FAILED THE CUSP GATE -- a predeclared bound that
+  # fails healthy work, discovered after 146 GPU-hours rather than before.
+  #
+  # METHOD AND RESULT, STATED SEPARATELY because they differ and the difference
+  # runs in the direction that misleads a reader:
+  #   method  : 1.5x the measured error, then ROUNDED UP to a round number.
+  #             1.5x would give 0.329627 and 0.334299.
+  #   declared: 0.35, 0.35, 0.40
+  #   EFFECTIVE ratios: 0.35/0.2197513145207614 = 1.592709 (both mean bounds)
+  #                     0.40/0.2228658133058481 = 1.794802
+  # So the gate is LOOSER than "1.5x" says. The bounds themselves are
+  # conservative for THIS RUN's purpose -- a wider bound cannot fail healthy work
+  # -- but a reader judging whether the gate is TOO PERMISSIVE is the one who
+  # needs the true number, and for that purpose "1.5x" understates by up to 20%.
+  # A figure wrong in the safe direction is only safe relative to the use its
+  # author imagined. The bounds are NOT adjusted: they are predeclared, and the
+  # breakage analysis below used these actual declared values.
+  #
+  # These scales are deliberately PERMISSIVE and the reason is worth stating:
+  # these bounds exist to catch a GROSSLY broken cusp,
+  # not to certify convergence. The measurement is the FULL MODEL's one-sided
+  # slope at finite r, so it carries the network's contribution as well as the
+  # analytic factor's, and it is taken at 15,000 updates against a production
+  # budget of 300,000. The error should shrink with training -- but TIGHTENING ON
+  # THAT EXPECTATION WOULD SIZE THE GATE ON AN UNMEASURED IMPROVEMENT, the same
+  # error as sizing wall time on an unmeasured throughput recovery. If a 300k
+  # checkpoint lands far inside these, that is a result to report, not a bound to
+  # have assumed.
+  cusp_one_sided_slope_mean_abs_error_max: 0.35
+  cusp_one_sided_slope_abs_error_mean_max: 0.35
+  cusp_one_sided_slope_abs_error_max_max: 0.40
+
+  # --- tail availability and support ------------------------------------
+  require_tail_available: true
+  # [GEOMETRY] One outer ray per direction, n_directions: 3.
+  tail_outer_measurement_count_min: 3
+  # [GEOMETRY] tail_radii has 3 entries x 3 directions = 9 measurements.
+  tail_finite_measurement_count_min: 9
+
+  # --- tail sign: the executable proxy for the UNENFORCED physics bound ---
+  # [ANALYTIC] A decaying, normalizable tail requires c/d < Z. The law does not
+  # enforce that, and free training CAN drive the tail slope positive and make
+  # the factor anti-confining. Requiring every outer ray to slope negative is
+  # how that shows up as a failed row instead of a plausible-looking energy.
+  tail_negative_slope_fraction_min: 1.0
+  # [ANALYTIC center / scale confirmed by pilot 39559205] The least-negative ray
+  # must still decay, i.e. sit below 0 with margin. Pilot measured
+  # tail_outer_slope_max = -1.552479920356923, comfortably below this bound, so
+  # it is retained rather than moved.
+  tail_outer_slope_max_max: -0.5
+
+  # --- tail magnitude, centered on outer_tail_slope(charges) -------------
+  # [ANALYTIC center / pilot scale] Center is -Z + c/d, which at the
+  # predeclared initialization (c = 0.01, d = 1.0, Z = 2.0) is -1.99, NOT -2.0.
+  # c and d train, so the band is deliberately wider than the initialization
+  # shift. Tolerances calibrated against the pure `-Z r` law must not be applied
+  # unchanged to this curved law; a test asserts these bounds bracket the value
+  # `outer_tail_slope(charges)` returns at the predeclared initialization.
+  # Pilot 39559205 measured tail_outer_slope_mean = -1.564277984860012, inside
+  # this band and BELOW the initialization's -1.99 rather than above it: c and d
+  # trained to c/d < 0, making the factor MORE confining, not less. The band is
+  # retained unchanged because the measurement confirms it brackets the trained
+  # value as well as the initialization.
+  tail_outer_slope_mean_max: -1.20
+  tail_outer_slope_mean_min: -2.60
+  # [ANALYTIC center / scale confirmed by pilot 39559205] Bounds the steepest
+  # single ray, where amplitudes underflow first. Pilot measured
+  # tail_outer_slope_min = -1.5783540410282773, well inside this floor.
+  tail_outer_slope_min_min: -3.00
+
+  # --- where the tail slope was measured ---------------------------------
+  # [GEOMETRY] tail_radii is [4.0, 6.0, 8.0]. CORRECTED AGAINST THE PILOT: the
+  # earlier comment here claimed the nearest and furthest outer rays are exactly
+  # the grid's endpoints. They are not. Pilot 39559205 emitted
+  # tail_outer_radius_min = 8.0 AND tail_outer_radius_max = 8.0 -- the "outer"
+  # set is the OUTERMOST radius only, not the whole grid. Both bounds still pass
+  # (8.0 >= 4.0 and 8.0 <= 8.0) so nothing was masked, but the prose described a
+  # geometry the emitter does not produce, and a reader would have taken the
+  # floor of 4.0 as evidence the r = 4 ray was checked. It is not.
+  #
+  # NOTE FOR ANY FUTURE TIGHTENING: raising tail_outer_radius_min_min toward 8.0
+  # would pin current behaviour, but it would also break the moment the emitter
+  # starts reporting the full grid. Left at the declared-geometry floor.
+  tail_outer_radius_min_min: 4.0
+  tail_outer_radius_max_max: 8.0
+
+  # --- singlet purity, bound above to spatial exchange -------------------
+  # [ANALYTIC center / pilot scale] Center is 0: a true spatial singlet has
+  # triplet fraction 0 exactly, and the fraction is clamped to [0, 1], so these
+  # at_most bounds are literally distances from the analytic center.
+  # Pilot 39559205 measured mean 0.00018372679754640012 and max
+  # 0.0054785106272637885, both roughly two orders of magnitude inside these
+  # bounds, with triplet_fraction_finite_sample_count = 4096 against the declared
+  # floor of 4000. Retained unchanged: the measurement confirms the scale is
+  # permissive enough not to fail healthy work while still an order of magnitude
+  # tighter than the by-construction 1.0 the full-model namespace would report.
+  triplet_fraction_mean_max: 0.02
+  triplet_fraction_max_max: 0.10
+  # [GEOMETRY] The exchange orbit's base generator draws max_samples: 4096.
+  # The floor allows a small usable-sample exclusion without accepting a
+  # silently truncated diagnostic.
+  triplet_fraction_finite_sample_count_min: 4000

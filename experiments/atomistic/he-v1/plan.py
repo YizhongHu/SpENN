@@ -60,8 +60,54 @@ GRID_KEYS: frozenset[str] = frozenset(
         "train_resources",
         "eval_resources",
         "gate_spec",
+        "seed_stages",
+        "convergence_assessment",
+        "reporting_rules",
+        "unemitted_requirements",
     }
 )
+
+#: Required keys of the `reporting_rules` block. A limit on what the study may
+#: CONCLUDE, predeclared before the energy that would be judged against it.
+REPORTING_KEYS: frozenset[str] = frozenset(
+    {
+        "chemical_accuracy_max_combined_uncertainty_mha",
+        "combined_uncertainty_includes_seed_spread",
+    }
+)
+
+#: Requirements of `production-grid-v0` this arm cannot discharge, each carrying
+#: an explicit disposition. Recorded as data so the statement cannot be
+#: separated from the artifact it qualifies.
+UNEMITTED_REQUIREMENT_KEYS: frozenset[str] = frozenset(
+    {"min_sampled_electron_nucleus_radius"}
+)
+
+#: Admissible dispositions. `not_emitted` says the quantity has no emitter at
+#: all; a metric NAME would say which metric discharges it instead.
+UNEMITTED_DISPOSITIONS: frozenset[str] = frozenset({"not_emitted"})
+
+#: Required keys of the `convergence_assessment` block. Predeclared BEFORE any
+#: production data exists, which is the only thing that makes the rule
+#: legitimate rather than a post-hoc rescue.
+CONVERGENCE_KEYS: frozenset[str] = frozenset(
+    {
+        "method",
+        "n_windows",
+        "n_trailing_windows",
+        "on_inadequate",
+        "may_reselect",
+        "window_width_min_tau_multiple",
+    }
+)
+
+#: Minimum trailing windows. The sign test's power is set by the NUMBER OF
+#: DIFFERENCES, and under independent symmetric noise the probability that all
+#: differences share a sign is ``2 * (1/2)**(n-1)``: 12.50% at 5 windows,
+#: 6.25% at 6, 1.56% at 8. Five windows would trip this gate on a converged run
+#: one time in eight, which is far too noisy for a criterion that declares a
+#: 146 GPU-hour budget inadequate.
+MIN_TRAILING_WINDOWS = 8
 
 #: Required per-row resource keys.
 RESOURCE_KEYS: frozenset[str] = frozenset(
@@ -122,6 +168,10 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
             "grid config 'gate_spec' must be a mapping; declare it empty to state "
             "explicitly that no tolerance has been predeclared yet"
         )
+    seed_stages = _validate_seed_stages(payload["seed_stages"], seeds)
+    convergence = _validate_convergence_assessment(payload["convergence_assessment"])
+    reporting = _validate_reporting_rules(payload["reporting_rules"])
+    unemitted = _validate_unemitted_requirements(payload["unemitted_requirements"])
 
     if any(step <= 0 for step in checkpoint_steps):
         raise PlanError(f"checkpoint_steps must be positive: {checkpoint_steps}")
@@ -154,6 +204,221 @@ def validate_grid_config(payload: Mapping[str, Any]) -> dict[str, Any]:
         "train_resources": train_resources,
         "eval_resources": eval_resources,
         "gate_spec": dict(gate_spec),
+        "seed_stages": seed_stages,
+        "convergence_assessment": convergence,
+        "reporting_rules": reporting,
+        "unemitted_requirements": unemitted,
+    }
+
+
+def _validate_reporting_rules(payload: Any) -> dict[str, Any]:
+    """Validate the predeclared limits on what this study may CONCLUDE.
+
+    A conclusion rule is worthless if it can be written after the energy it
+    constrains is known, so it is validated here as a required grid key rather
+    than left to a report author's discretion.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise PlanError("reporting_rules must be a mapping")
+    missing = sorted(REPORTING_KEYS - set(payload))
+    unknown = sorted(set(payload) - REPORTING_KEYS)
+    if missing:
+        raise PlanError(f"reporting_rules is missing required keys: {missing}")
+    if unknown:
+        raise PlanError(f"reporting_rules carries unknown keys: {unknown}")
+
+    threshold = payload["chemical_accuracy_max_combined_uncertainty_mha"]
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+        raise PlanError(
+            "reporting_rules.chemical_accuracy_max_combined_uncertainty_mha must be a real number"
+        )
+    if not (float(threshold) > 0.0):
+        raise PlanError(
+            f"chemical_accuracy_max_combined_uncertainty_mha must be positive, got {threshold}"
+        )
+    if payload["combined_uncertainty_includes_seed_spread"] is not True:
+        # The MCSE of one chain is not the study's uncertainty. Three seeds
+        # resolve to three means, and excluding their spread would understate
+        # the bar by exactly the quantity replication exists to measure.
+        raise PlanError(
+            "reporting_rules.combined_uncertainty_includes_seed_spread must be true: a "
+            "single chain's MCSE is not the combined uncertainty of a three-seed study"
+        )
+    return {
+        "chemical_accuracy_max_combined_uncertainty_mha": float(threshold),
+        "combined_uncertainty_includes_seed_spread": True,
+    }
+
+
+def _validate_unemitted_requirements(payload: Any) -> dict[str, str]:
+    """Validate the explicit `absent` dispositions for requirements not met.
+
+    A requirement nobody wrote down as unmet reads as met. Recording the
+    disposition as DATA rather than prose is what stops it being separated from
+    the artifact it qualifies.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise PlanError("unemitted_requirements must be a mapping")
+    missing = sorted(UNEMITTED_REQUIREMENT_KEYS - set(payload))
+    unknown = sorted(set(payload) - UNEMITTED_REQUIREMENT_KEYS)
+    if missing:
+        raise PlanError(
+            f"unemitted_requirements is missing required keys: {missing}; a requirement "
+            "this arm cannot discharge must be recorded, not omitted"
+        )
+    if unknown:
+        raise PlanError(f"unemitted_requirements carries unknown keys: {unknown}")
+    resolved: dict[str, str] = {}
+    for key in sorted(UNEMITTED_REQUIREMENT_KEYS):
+        value = _require_text(payload[key], f"unemitted_requirements.{key}")
+        if value not in UNEMITTED_DISPOSITIONS:
+            raise PlanError(
+                f"unemitted_requirements.{key} must be one of {sorted(UNEMITTED_DISPOSITIONS)}, "
+                f"got {value!r}"
+            )
+        resolved[key] = value
+    return resolved
+
+
+def _validate_seed_stages(payload: Any, seeds: Sequence[int]) -> list[list[int]]:
+    """Validate the declared launch staging over the predeclared seeds.
+
+    THIS KEY IS A PREDECLARED PROCEDURE, NOT AN EXECUTED DEPENDENCY. Nothing in
+    this repository acts on it. `expand_rows` gives every training row
+    ``depends_on: []``, and `launch.py` contains no reference to `seed_stages`
+    at all, so ``launch.py --submit`` submits all three seeds simultaneously
+    with no Slurm dependency between them. The staging is a commitment H-F3
+    honours by hand: submit stage 1, wait for it to reach terminal, run
+    `assess_convergence.py` on its loss trace, then submit stage 2.
+
+    Validation here therefore establishes only that the declared stages are
+    well-formed and cover exactly the predeclared seeds. It does NOT establish
+    that anything sequences them, and the tests assert only the former.
+
+    WHY STAGE AT ALL: nothing yet shows the loss is not still descending at
+    300,000 updates. Staging costs about 98 h of wall instead of 49 and avoids
+    committing 97 of 146 GPU-hours before a complete 300k trace for this arm
+    exists.
+
+    THE STAGING GATE MAY ONLY REPORT ON BUDGET ADEQUACY. It may never re-select
+    an arm, a checkpoint, a budget, or a seed -- see `convergence_assessment`,
+    whose `may_reselect` must be false.
+    """
+
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
+        raise PlanError("seed_stages must be a sequence of seed lists")
+    stages = [_require_int_sequence(stage, f"seed_stages[{index}]") for index, stage in enumerate(payload)]
+    if not stages:
+        raise PlanError("seed_stages must be non-empty")
+    flat = [seed for stage in stages for seed in stage]
+    if len(set(flat)) != len(flat):
+        raise PlanError(f"seed_stages repeats a seed: {flat}")
+    # EVERY predeclared seed must appear exactly once. A staging that quietly
+    # dropped a seed would turn a three-replicate study into a smaller one while
+    # the `seeds` list still claimed three.
+    if sorted(flat) != sorted(seeds):
+        raise PlanError(
+            f"seed_stages {flat} does not cover exactly the predeclared seeds {list(seeds)}"
+        )
+    return stages
+
+
+def _validate_convergence_assessment(payload: Any) -> dict[str, Any]:
+    """Validate the predeclared convergence-assessment rule.
+
+    LIKE `seed_stages`, THIS BLOCK IS A PREDECLARED PROCEDURE AND NOT AN
+    EXECUTED GATE. No stage of this pipeline computes a windowed mean or runs a
+    sign test; `collect.py`, `report.py` and `driver.py` never read this key.
+    The rule is carried into the plan manifest so it is frozen before any
+    production data exists, and it is discharged by a human running
+    `assess_convergence.py` on the stage-1 loss trace between stages.
+
+    Validation here establishes that the rule is well-formed and that its
+    parameters are the predeclared ones. The tests assert only that.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise PlanError("convergence_assessment must be a mapping")
+    missing = sorted(CONVERGENCE_KEYS - set(payload))
+    unknown = sorted(set(payload) - CONVERGENCE_KEYS)
+    if missing:
+        raise PlanError(f"convergence_assessment is missing required keys: {missing}")
+    if unknown:
+        raise PlanError(f"convergence_assessment carries unknown keys: {unknown}")
+    method = _require_text(payload["method"], "convergence_assessment.method")
+    if method != "windowed_means_sign_test":
+        # Two rejected alternatives, both measured in a peer lane.
+        # A TAIL AVERAGE hid a whole-budget-inside-the-transient failure, found
+        # only after six runs had completed.
+        # AN ERROR-BAR OVERLAP TEST fails toward FALSE REASSURANCE, which is the
+        # dangerous direction: blocking takes the LARGEST standard error across
+        # levels, so "flat within errors" gets EASIER to satisfy exactly when
+        # autocorrelation is worst. Measured case: five windows drifting 37 uHa
+        # monotonically against 10 uHa bars: adjacent steps are 0.93 bars so
+        # EVERY ADJACENT PAIR OVERLAPS and an overlap test passes, while the
+        # cumulative drift is 3.70 bars and the trend is real. The mirror case
+        # scattered 5.8 bars and was pure noise because it was non-monotone.
+        # THE SIGN PATTERN IS THE DISCRIMINATOR; bar magnitude is not.
+        raise PlanError(
+            f"convergence_assessment.method must be 'windowed_means_sign_test', got {method!r}; "
+            "a tail average cannot see a persistent descent, and an error-bar overlap test "
+            "passes one that drifts monotonically inside its own bars"
+        )
+    n_windows = _require_positive_int(payload["n_windows"], "convergence_assessment.n_windows")
+    n_trailing = _require_positive_int(
+        payload["n_trailing_windows"], "convergence_assessment.n_trailing_windows"
+    )
+    if n_trailing < MIN_TRAILING_WINDOWS:
+        raise PlanError(
+            f"convergence_assessment.n_trailing_windows {n_trailing} is below "
+            f"{MIN_TRAILING_WINDOWS}; the sign test's false-alarm rate is "
+            f"2*(1/2)**(n-1), so fewer windows declare a sound budget inadequate too often"
+        )
+    if n_trailing > n_windows:
+        raise PlanError(
+            f"convergence_assessment.n_trailing_windows {n_trailing} exceeds n_windows {n_windows}"
+        )
+    on_inadequate = _require_text(payload["on_inadequate"], "convergence_assessment.on_inadequate")
+    if on_inadequate != "report_only":
+        raise PlanError(
+            f"convergence_assessment.on_inadequate must be 'report_only', got {on_inadequate!r}; "
+            "no extension rule is predeclared, and inventing one after seeing the trace is "
+            "exactly the violation production-grid-v0 forbids"
+        )
+    if payload["may_reselect"] is not False:
+        raise PlanError(
+            "convergence_assessment.may_reselect must be false: the rule may REPORT that the "
+            "budget was inadequate and may never re-select an arm, checkpoint or budget"
+        )
+    tau_multiple = payload["window_width_min_tau_multiple"]
+    if not isinstance(tau_multiple, (int, float)) or isinstance(tau_multiple, bool):
+        raise PlanError(
+            "convergence_assessment.window_width_min_tau_multiple must be a real number"
+        )
+    if float(tau_multiple) < 1.0:
+        # THE SIGN TEST'S FALSE-ALARM RATE ASSUMES INDEPENDENT WINDOW MEANS, and
+        # that assumption fails silently. If the window is narrower than the
+        # LOSS SERIES autocorrelation time, consecutive means are positively
+        # correlated, same-sign runs become far more likely under the null, and
+        # the nominal 1.56% is optimistic by an unknown factor -- a gate whose
+        # false-alarm rate nobody has bounded. The loss-series tau is NOT the
+        # local-energy tau: the loss is a trajectory through parameter space
+        # under an optimizer and its correlation time is a different, probably
+        # much longer quantity, so H-C2's 1.15/5.56 must not be reused for it.
+        raise PlanError(
+            f"convergence_assessment.window_width_min_tau_multiple {tau_multiple} is below 1.0; "
+            "windows narrower than the loss-series autocorrelation time make the sign test's "
+            "false-alarm rate unbounded"
+        )
+    return {
+        "method": method,
+        "n_windows": n_windows,
+        "n_trailing_windows": n_trailing,
+        "on_inadequate": on_inadequate,
+        "may_reselect": False,
+        "window_width_min_tau_multiple": float(tau_multiple),
     }
 
 
@@ -300,6 +565,10 @@ def build_manifest(
         "grid_config": dict(config),
         "gate_spec": dict(config["gate_spec"]),
         "gate_spec_declared": bool(config["gate_spec"]),
+        "seed_stages": [list(stage) for stage in config["seed_stages"]],
+        "convergence_assessment": dict(config["convergence_assessment"]),
+        "reporting_rules": dict(config["reporting_rules"]),
+        "unemitted_requirements": dict(config["unemitted_requirements"]),
         "plan_hash": plan_hash(rows),
         "n_rows": len(rows),
         "n_train_rows": sum(1 for row in rows if row["kind"] == "train"),

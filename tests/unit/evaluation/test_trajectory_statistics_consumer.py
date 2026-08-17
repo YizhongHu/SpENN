@@ -10,6 +10,7 @@ hand-built record would prove only that the assertion matches the fixture.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -30,7 +31,11 @@ from tpen.evaluation.summaries.trajectory_statistics import DEFAULT_SIDECAR_NAME
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, ElectronNucleusInteraction
 from tpen.sampling.stats import SamplerStats
-from tpen.statistics import TrajectoryStatisticsIdentity, TrajectoryStatisticsSidecar
+from tpen.statistics import (
+    ObservableTrajectory,
+    TrajectoryStatisticsIdentity,
+    TrajectoryStatisticsSidecar,
+)
 
 STAGE = "eval"
 RUN_ID = "he-v1-test"
@@ -380,6 +385,282 @@ def test_too_few_draws_reports_unresolved_with_reason(tmp_path: Path) -> None:
     assert receipt.status == "unresolved"
     assert receipt.payload is None
     assert receipt.reason
+
+
+def test_resolved_receipt_projects_all_four_geyer_diagnostics(tmp_path: Path) -> None:
+    """The four truncation fields reach the row, carrying the receipt's values.
+
+    Asserted against the receipt rather than against literals, so this checks
+    PROJECTION FIDELITY and not that someone transcribed four numbers correctly
+    on one fixture.
+    """
+
+    checkpoint = _checkpoint(tmp_path)
+    generated = _generate(tmp_path)
+
+    result = _summary(tmp_path, checkpoint).summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=_context(tmp_path),
+        namespace="eval/mcmc_energy",
+    )
+
+    (receipt,) = TrajectoryStatisticsSidecar(tmp_path / DEFAULT_SIDECAR_NAME).read()
+    assert receipt.status == "available"
+    assert receipt.plateau is not None
+
+    assert result.metrics["local_energy_plateau_reached"] == receipt.plateau.plateau_reached
+    assert result.metrics["local_energy_truncation_lag"] == receipt.plateau.truncation_lag
+    assert result.metrics["local_energy_geyer_pair_count"] == receipt.plateau.pair_count
+    assert result.metrics["local_energy_max_lag"] == receipt.plateau.max_lag
+
+    # `truncation_lag` is only interpretable against the window that was
+    # available, which is why `max_lag` travels with it: 2*pairs - 1 lags were
+    # summed out of max_lag possible.
+    assert receipt.plateau.truncation_lag == 2 * receipt.plateau.pair_count - 1
+    assert result.metrics["local_energy_max_lag"] == 47
+
+
+def test_unresolved_receipt_still_projects_its_truncation_diagnostics(tmp_path: Path) -> None:
+    """The diagnostics survive the case they exist to explain.
+
+    THIS IS THE TEST THAT PROVES THE HOIST. `_receipt_metrics` returns early on
+    ``payload is None``, but `producer.py` builds `PlateauDiagnostics`
+    unconditionally at line 223 and passes it into every ``unresolved(...)``
+    return, so an unresolved receipt genuinely carries these fields. A
+    projection placed below that early return drops them precisely when the
+    producer withheld tau and ESS -- which is exactly when a reader needs to
+    know whether an unterminated Geyer sequence is the reason.
+
+    Three draws against a minimum of eight is the deterministic way to reach an
+    unresolved receipt; the ``no plateau within N lags`` outcome is the same
+    code path and the same early return.
+    """
+
+    checkpoint = _checkpoint(tmp_path)
+    generated = _generate(tmp_path, n_draws=3)
+
+    result = _summary(tmp_path, checkpoint).summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=_context(tmp_path),
+        namespace="eval/mcmc_energy",
+    )
+
+    (receipt,) = TrajectoryStatisticsSidecar(tmp_path / DEFAULT_SIDECAR_NAME).read()
+    assert receipt.status == "unresolved"
+    assert receipt.payload is None
+    assert receipt.plateau is not None
+
+    # No payload, so no tau and no MCSE -- and yet the reason the estimator
+    # refused is still on the row.
+    assert "local_energy_mcse" not in result.metrics
+    assert result.metrics["local_energy_plateau_reached"] is False
+    assert result.metrics["local_energy_max_lag"] == 2
+
+    # Absent rather than zero-filled: no pair was ever summed, and a 0 here
+    # would read as "truncated at lag zero" instead of "never got that far".
+    assert "local_energy_truncation_lag" not in result.metrics
+    assert "local_energy_geyer_pair_count" not in result.metrics
+
+
+#: Relative tolerance for the homogeneous MCSE/tau identity.
+#:
+#: STATED IN THE UNIT THAT SETS THE ROUNDING ERROR, which is not the order-one
+#: `inflation` in view. On four BITWISE-IDENTICAL columns the four per-chain
+#: variances are bitwise equal to each other, yet `Var_pooled` -- their mean --
+#: differs from them in the last place, because mean-of-C-identical-floats is
+#: not the identity in IEEE. That ~1 ulp perturbation of a VARIANCE is halved by
+#: the square root and lands in `inflation`. A bound expressed in ulps of
+#: `inflation` would therefore have been the wrong unit by construction.
+#:
+#: MEASURED, not guessed (Cannon jobs 39555148 and 39555915, partition `test`):
+#: 1.245 eps at n=64 and 0.520 eps at n=1024. Pinned at 16 eps, roughly 13x the
+#: worst observed, leaving room for a different summation order on another
+#: platform without admitting anything structural. A systematic offset would
+#: show up near C(n-1)/(Cn-1) = 0.98824 at C=4, n=64 -- a 1.18% effect that this
+#: tolerance is deliberately far too tight to swallow.
+_HOMOGENEOUS_REL_TOLERANCE = 16 * 2.220446049250313e-16
+
+
+def _ar1(n_draws: int, *, rho: float, scale: float, seed: int) -> torch.Tensor:
+    """One deterministic zero-mean AR(1) column.
+
+    Synthetic on purpose. The homogeneity and heterogeneity of the chains is the
+    property under test, and a real sampler cannot be asked for chains with
+    prescribed per-chain variance and tau. Note this builds a synthetic
+    TRAJECTORY, never a synthetic RECEIPT: the receipt is produced by the real
+    estimator from these values, so the relations asserted below are the
+    implementation's, not the fixture's.
+    """
+
+    generator = torch.Generator().manual_seed(seed)
+    noise = torch.randn(n_draws, generator=generator, dtype=torch.float64) * scale
+    out = torch.empty(n_draws, dtype=torch.float64)
+    value = 0.0
+    for index in range(n_draws):
+        value = rho * value + float(noise[index])
+        out[index] = value
+    return out - out.mean()
+
+
+def _receipt_for(values: torch.Tensor, tmp_path: Path) -> tuple[dict, object]:
+    """Run a trajectory through the real summary and return (metrics, receipt)."""
+
+    checkpoint = _checkpoint(tmp_path)
+    trajectory = ObservableTrajectory(
+        observable="local_energy", values=values, draw_stride=1, burn_in_draws=0
+    )
+    generated = GeneratedConfigurations(
+        batch=_generate(tmp_path, n_draws=8).batch,
+        metadata={TRAJECTORY_METADATA_KEY: trajectory},
+    )
+    result = _summary(tmp_path, checkpoint).summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=_context(tmp_path),
+        namespace="eval/mcmc_energy",
+    )
+    (receipt,) = TrajectoryStatisticsSidecar(tmp_path / DEFAULT_SIDECAR_NAME).read()
+    return result.metrics, receipt
+
+
+def test_inflation_equals_root_tau_when_the_chains_are_homogeneous(tmp_path: Path) -> None:
+    """The shortcut is CORRECT exactly when its assumptions hold, and this pins that.
+
+    ``mcse = stderr_iid * sqrt(tau_int)`` assumes every chain shares one variance
+    and one tau. Four bitwise-identical columns satisfy that by shared code path
+    rather than by numerical coincidence -- `per_chain_integrated_autocorrelation`
+    hands each column over as its own ``[draw, 1]`` trajectory, so identical input
+    gives identical output. C = 4 is a power of two, so the ``1/C`` weighting is
+    exact.
+
+    This is half a pair. Its partner asserts the two DIVERGE on heterogeneous
+    chains. Asserting only the divergence would be false, and asserting only the
+    agreement would license the very "fix" the producer rejects.
+    """
+
+    column = _ar1(64, rho=0.6, scale=1.0, seed=17)
+    metrics, receipt = _receipt_for(column.unsqueeze(1).repeat(1, 4), tmp_path)
+    assert receipt.status == "available"
+
+    # The fixture IS homogeneous, asserted rather than assumed: if a future
+    # change made the per-chain estimates differ, the identity below would fail
+    # for a reason that has nothing to do with the estimator.
+    variances = {chain.variance for chain in receipt.chains}
+    taus = {chain.tau_int for chain in receipt.chains}
+    assert len(variances) == 1
+    assert len(taus) == 1
+
+    inflation = metrics["local_energy_mcse_inflation"]
+    root_tau = math.sqrt(metrics["local_energy_tau_int"])
+    assert inflation == pytest.approx(root_tau, rel=_HOMOGENEOUS_REL_TOLERANCE)
+
+
+def test_inflation_diverges_from_root_tau_when_the_chains_are_heterogeneous(
+    tmp_path: Path,
+) -> None:
+    """Heterogeneous chains give ``tau_int < 1`` beside ``inflation > 1``.
+
+    That pairing looks like a contradiction on an eval row and is not. `tau_int`
+    is an N-weighted HARMONIC mean of the per-chain tau, so it is dominated by
+    the best-mixed chains and can fall below one; `mcse` sums per-chain
+    ``s_i^2 * tau_i`` terms and is dominated by the worst ones; and `stderr_iid`
+    uses the POOLED variance, which includes between-chain spread that `mcse`
+    excludes. Two slow high-amplitude chains against two fast low-amplitude ones
+    separate all three.
+
+    THIS IS THE MUTATION-SENSITIVE HALF. The dangerous future edit is someone
+    "fixing" the estimator so the two numbers agree -- which would silently
+    substitute the shortcut `producer.py` rejects by name. That edit passes the
+    homogeneous test above and fails here.
+
+    1024 draws, not 64. At 64 the rho=0.90 chains span only ~3.4 of their own
+    tau, split-Rhat reached 1.16, and the producer correctly returned
+    ``unresolved`` rather than publish a bar around a disputed mean. That was a
+    degenerate fixture, not a finding, and the fix is a fixture long enough to
+    mix -- never a widened ``r_hat_threshold``.
+    """
+
+    stacked = torch.stack(
+        [
+            _ar1(1024, rho=0.90, scale=3.0, seed=101),
+            _ar1(1024, rho=0.88, scale=3.0, seed=102),
+            _ar1(1024, rho=-0.5, scale=0.2, seed=103),
+            _ar1(1024, rho=-0.5, scale=0.2, seed=104),
+        ],
+        dim=1,
+    )
+    metrics, receipt = _receipt_for(stacked, tmp_path)
+    assert receipt.status == "available"
+
+    tau_int = metrics["local_energy_tau_int"]
+    inflation = metrics["local_energy_mcse_inflation"]
+    root_tau = math.sqrt(tau_int)
+
+    # The signature that prompted this test: both true at once.
+    assert tau_int < 1.0
+    assert inflation > 1.0
+
+    # Divergence far above the ~1 eps floor the homogeneous case sits at.
+    # Measured on Cannon job 39555915: tau_int 0.6633, inflation 4.5172,
+    # sqrt(tau_int) 0.8144, a ratio of 5.55.
+    assert inflation / root_tau > 3.0
+
+    # ...and the per-chain form is the one actually emitted, not the shortcut.
+    total = receipt.shape.total_draws
+    per_chain_mcse = (
+        sum(
+            (chain.n_draws / total) ** 2 * chain.variance * chain.tau_int / chain.n_draws
+            for chain in receipt.chains
+        )
+        ** 0.5
+    )
+    shortcut_mcse = metrics["local_energy_stderr_iid"] * root_tau
+    assert metrics["local_energy_mcse"] == per_chain_mcse
+    assert abs(metrics["local_energy_mcse"] - shortcut_mcse) / metrics["local_energy_mcse"] > 0.5
+
+
+def test_every_published_relation_is_recomputable_from_the_receipt(tmp_path: Path) -> None:
+    """Assert each implemented relation positively, on a real emitted row.
+
+    Exact ``==`` is legitimate here and is not a floating-point hope: each right
+    side executes the IDENTICAL expression on the IDENTICAL inputs the producer
+    used, so this is bitwise equality by shared code path. Measured residual on
+    Cannon jobs 39555148 and 39555915 was 0.000 ulp for all three on every
+    fixture, homogeneous and heterogeneous.
+    """
+
+    checkpoint = _checkpoint(tmp_path)
+    generated = _generate(tmp_path)
+    result = _summary(tmp_path, checkpoint).summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=_context(tmp_path),
+        namespace="eval/mcmc_energy",
+    )
+    (receipt,) = TrajectoryStatisticsSidecar(tmp_path / DEFAULT_SIDECAR_NAME).read()
+    metrics = result.metrics
+    total = receipt.shape.total_draws
+
+    # ess = sum_i (N_i / tau_i)
+    assert metrics["local_energy_ess"] == sum(
+        chain.n_draws / chain.tau_int for chain in receipt.chains
+    )
+    # tau_int = N / ess -- reported as the value consistent with the pooled ESS,
+    # never independently estimated.
+    assert metrics["local_energy_tau_int"] == total / metrics["local_energy_ess"]
+    # mcse^2 = sum_i (N_i/N)^2 s_i^2 tau_i / N_i
+    assert metrics["local_energy_mcse"] == (
+        sum(
+            (chain.n_draws / total) ** 2 * chain.variance * chain.tau_int / chain.n_draws
+            for chain in receipt.chains
+        )
+        ** 0.5
+    )
+    # stderr_iid = sqrt(Var_pooled / N), from the POOLED variance
+    assert metrics["local_energy_stderr_iid"] == (receipt.payload.variance / total) ** 0.5
+    # inflation = mcse / stderr_iid, and nothing else
+    assert (
+        metrics["local_energy_mcse_inflation"]
+        == metrics["local_energy_mcse"] / metrics["local_energy_stderr_iid"]
+    )
 
 
 def test_summary_requires_a_config_identity(tmp_path: Path) -> None:

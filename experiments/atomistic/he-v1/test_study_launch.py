@@ -85,6 +85,20 @@ GRID: dict[str, Any] = {
         "gpus": 1,
     },
     "gate_spec": {},
+    "seed_stages": [[0], [1]],
+    "convergence_assessment": {
+        "method": "windowed_means_sign_test",
+        "n_windows": 20,
+        "n_trailing_windows": 8,
+        "window_width_min_tau_multiple": 5.0,
+        "on_inadequate": "report_only",
+        "may_reselect": False,
+    },
+    "reporting_rules": {
+        "chemical_accuracy_max_combined_uncertainty_mha": 1.6,
+        "combined_uncertainty_includes_seed_spread": True,
+    },
+    "unemitted_requirements": {"min_sampled_electron_nucleus_radius": "not_emitted"},
 }
 
 

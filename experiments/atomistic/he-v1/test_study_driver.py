@@ -226,6 +226,20 @@ def test_planned_overrides_exist_in_the_checked_in_configs() -> None:
                 "gpus": 1,
             },
             "gate_spec": {},
+    "seed_stages": [[0]],
+    "convergence_assessment": {
+        "method": "windowed_means_sign_test",
+        "n_windows": 20,
+        "n_trailing_windows": 8,
+        "window_width_min_tau_multiple": 5.0,
+        "on_inadequate": "report_only",
+        "may_reselect": False,
+    },
+    "reporting_rules": {
+        "chemical_accuracy_max_combined_uncertainty_mha": 1.6,
+        "combined_uncertainty_includes_seed_spread": True,
+    },
+    "unemitted_requirements": {"min_sampled_electron_nucleus_radius": "not_emitted"},
         }
     )
     for row in plan.expand_rows(config):
@@ -289,7 +303,19 @@ def test_slurm_time_formats_days_and_hours() -> None:
 
 
 def test_experiments_import_boundary_holds() -> None:
-    """``experiments/`` imports exactly one ``tpen`` symbol, and only in the driver."""
+    """``experiments/`` imports ``tpen`` in exactly two enumerated places.
+
+    The exceptions are listed one by one rather than relaxed to a rule, so a
+    third one cannot appear without a deliberate edit here.
+
+    `driver.py` launches runs, so it needs the runner. `assess_convergence.py`
+    needs the SANCTIONED tau estimator: `tpen.statistics` is the single producer
+    of ``tau_int`` in this repository and re-implementing Geyer's initial
+    positive sequence inside the study would create a second estimator that
+    could silently drift from the one the study reports. Both imports are
+    function-local, so both modules still load on a login node without torch --
+    which is the property this boundary exists to protect.
+    """
 
     offenders: dict[str, list[str]] = {}
     for path in sorted(STUDY_DIR.glob("*.py")):
@@ -300,4 +326,58 @@ def test_experiments_import_boundary_holds() -> None:
         ]
         if lines:
             offenders[path.name] = lines
-    assert offenders == {"driver.py": ["from tpen.run import run_from_config  # noqa: PLC0415 - sanctioned launcher exception"]}
+    assert offenders == {
+        "driver.py": [
+            "from tpen.run import run_from_config  # noqa: PLC0415 - sanctioned launcher exception"
+        ],
+        "assess_convergence.py": [
+            "from tpen.statistics.autocorrelation import (  # noqa: PLC0415 - sanctioned exception"
+        ],
+    }
+
+
+def test_the_study_planning_modules_import_without_torch() -> None:
+    """The boundary's PURPOSE, asserted rather than inferred from import lines.
+
+    Enumerating import statements proves what the files say; this proves what
+    they do. Every study module must be importable in an interpreter with no
+    torch, because planning, launching and assessment all run on a login node
+    where torch is absent. A future top-level ``import torch`` in any of them
+    passes the enumeration above only if someone also edits it, but fails here
+    unconditionally.
+
+    A SUBPROCESS is required, not a convenience. In the composed suite torch is
+    already in ``sys.modules`` from earlier tests, so an in-process check of
+    ``"torch" not in sys.modules`` could only ever fail -- an instrument that
+    cannot see the thing it is pointed at. A clean interpreter is the only
+    context in which this claim is decidable.
+    """
+
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    probe = """
+import importlib.util, sys
+names = ["plan", "launch", "collect", "assess_convergence", "layout", "strata"]
+import pathlib
+study = pathlib.Path(sys.argv[1])
+for name in names:
+    path = study / (name + ".py")
+    if not path.exists():
+        continue
+    spec = importlib.util.spec_from_file_location("probe_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    if "torch" in sys.modules:
+        raise SystemExit("%s pulled torch in at import time" % name)
+print("ok")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe, str(STUDY_DIR)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "ok" in completed.stdout

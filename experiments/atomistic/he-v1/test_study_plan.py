@@ -78,6 +78,20 @@ GRID: dict[str, Any] = {
         "gpus": 1,
     },
     "gate_spec": {},
+    "seed_stages": [[0], [1, 2]],
+    "convergence_assessment": {
+        "method": "windowed_means_sign_test",
+        "n_windows": 20,
+        "n_trailing_windows": 8,
+        "window_width_min_tau_multiple": 5.0,
+        "on_inadequate": "report_only",
+        "may_reselect": False,
+    },
+    "reporting_rules": {
+        "chemical_accuracy_max_combined_uncertainty_mha": 1.6,
+        "combined_uncertainty_includes_seed_spread": True,
+    },
+    "unemitted_requirements": {"min_sampled_electron_nucleus_radius": "not_emitted"},
 }
 
 
@@ -119,7 +133,7 @@ def test_plan_hash_is_deterministic_and_content_addressed() -> None:
     first = plan.plan_hash(plan.expand_rows(config))
     second = plan.plan_hash(plan.expand_rows(plan.validate_grid_config(_grid())))
     assert first == second
-    changed = plan.plan_hash(plan.expand_rows(plan.validate_grid_config(_grid(seeds=[0, 1, 7]))))
+    changed = plan.plan_hash(plan.expand_rows(plan.validate_grid_config(_grid(seeds=[0, 1, 7], seed_stages=[[0], [1, 7]]))))
     assert changed != first
 
 
@@ -158,6 +172,87 @@ def test_every_grid_key_is_required(missing: str) -> None:
     payload.pop(missing)
     with pytest.raises(plan.PlanError, match="missing required keys"):
         plan.validate_grid_config(payload)
+
+
+def test_the_chemical_accuracy_rule_is_predeclared_and_enforced_as_a_number() -> None:
+    """The conclusion rule is data in the artifact, not prose in a report.
+
+    A rule about what the study may CONCLUDE is worthless if it can be written
+    after the energy it constrains is known: it would be chosen knowing which
+    side of the line the result fell on. Validating it as a required grid key is
+    what makes "predeclared" checkable.
+    """
+
+    config = plan.validate_grid_config(_grid())
+    rules = config["reporting_rules"]
+    assert rules["chemical_accuracy_max_combined_uncertainty_mha"] == 1.6
+    assert rules["combined_uncertainty_includes_seed_spread"] is True
+
+    # A single chain's MCSE is not a three-seed study's uncertainty; excluding
+    # the seed spread would understate the bar by exactly the quantity
+    # replication exists to measure.
+    with pytest.raises(plan.PlanError, match="includes_seed_spread must be true"):
+        plan.validate_grid_config(
+            _grid(
+                reporting_rules={
+                    "chemical_accuracy_max_combined_uncertainty_mha": 1.6,
+                    "combined_uncertainty_includes_seed_spread": False,
+                }
+            )
+        )
+    with pytest.raises(plan.PlanError, match="must be positive"):
+        plan.validate_grid_config(
+            _grid(
+                reporting_rules={
+                    "chemical_accuracy_max_combined_uncertainty_mha": 0.0,
+                    "combined_uncertainty_includes_seed_spread": True,
+                }
+            )
+        )
+
+
+def test_an_undischargeable_requirement_is_recorded_rather_than_omitted() -> None:
+    """`absent` with a reason, never silence.
+
+    The minimum electron-nucleus radius REACHED BY THE SAMPLER has no emitter.
+    The trap this guards is a near-miss NAME: `tail_outer_radius_min_min` is the
+    tail probe grid's declared-geometry floor, a property of where we chose to
+    measure rather than of where the walkers went, so a reader grepping for
+    "radius min" finds it and stops. Recording the disposition as DATA is what
+    stops the statement being separated from the artifact it qualifies.
+    """
+
+    config = plan.validate_grid_config(_grid())
+    assert config["unemitted_requirements"]["min_sampled_electron_nucleus_radius"] == "not_emitted"
+
+    # Dropping it is an error, not a default: a requirement nobody wrote down as
+    # unmet reads as met.
+    with pytest.raises(plan.PlanError, match="missing required keys"):
+        plan.validate_grid_config(_grid(unemitted_requirements={}))
+    # And an unrecognised disposition cannot pass as one.
+    with pytest.raises(plan.PlanError, match="must be one of"):
+        plan.validate_grid_config(
+            _grid(unemitted_requirements={"min_sampled_electron_nucleus_radius": "probably_fine"})
+        )
+
+
+def test_both_new_declarations_survive_into_the_manifest() -> None:
+    """A declaration that does not reach the durable plan is not predeclared."""
+
+    config = plan.validate_grid_config(_grid())
+    manifest = plan.build_manifest(
+        config=config,
+        rows=plan.expand_rows(config),
+        attempt_id="20260816T120000",
+        results_root="/tmp/results",
+        grid_config_path=None,
+        grid_config_sha256=None,
+        created_at="2026-08-16T12:00:00-04:00",
+    )
+    assert manifest["reporting_rules"]["chemical_accuracy_max_combined_uncertainty_mha"] == 1.6
+    assert manifest["unemitted_requirements"] == {
+        "min_sampled_electron_nucleus_radius": "not_emitted"
+    }
 
 
 def test_unknown_grid_key_is_rejected() -> None:
@@ -275,6 +370,31 @@ def test_eval_rows_depend_on_their_training_row_and_name_its_checkpoint() -> Non
     eval_row = next(row for row in rows if row["kind"] == "eval")
     assert eval_row["depends_on"] == [plan.train_row_id(eval_row["seed"])]
     assert eval_row["checkpoint_dir_name"] == plan.checkpoint_dir_name(eval_row["checkpoint_step"])
+
+
+def test_seed_staging_is_declared_but_not_executed() -> None:
+    """`seed_stages` is a predeclared PROCEDURE; assert only what is true of it.
+
+    The grid declares ``[[0], [1, 2]]``, but nothing sequences the seeds: every
+    training row carries an empty ``depends_on`` whatever stage its seed sits
+    in, and `launch.py` never reads the key, so ``--submit`` fires all three at
+    once. This test pins that reality so the docstrings in `plan.py` and the
+    comment in `production_grid.yaml` cannot drift into implying execution --
+    and so that whoever later WIRES the staging is forced to update the prose
+    in the same change, because this test will go red when they do.
+    """
+
+    config = plan.validate_grid_config(_grid(seeds=[0, 1, 2], seed_stages=[[0], [1, 2]]))
+    rows = plan.expand_rows(config)
+    train_rows = [row for row in rows if row["kind"] == "train"]
+    assert len(train_rows) == 3
+    # Not "the stage-2 rows depend on stage 1" -- no row depends on any other.
+    assert all(row["depends_on"] == [] for row in train_rows)
+    # The declaration still survives into the manifest, which is what makes it
+    # a predeclaration rather than a comment.
+    assert config["seed_stages"] == [[0], [1, 2]]
+    launch_source = (STUDY_DIR / "launch.py").read_text(encoding="utf-8")
+    assert "seed_stages" not in launch_source
 
 
 def test_checkpoint_dir_name_matches_the_writer_format() -> None:
