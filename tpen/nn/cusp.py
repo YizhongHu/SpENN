@@ -6,12 +6,12 @@ additionally remains a `tpen.nn.envelope.Envelope` so it stays usable in the
 legacy `AdditiveEnvelope` compatibility stack. Electron-nucleus cusp laws
 separate the charge-fixed Kato first radial slope (`LinearElectronNucleusCuspLaw`,
 the exact compatibility default) from an optional trainable regular curvature
-term (`TrainableCurvatureElectronNucleusCuspLaw`) that contributes only at
+term (`CurvatureElectronNucleusCuspLaw`) that contributes only at
 second order, so it can never perturb the enforced ``u'(0+) = -Z`` slope. That
 curvature term carries the electron-nucleus counterpart of
 `ElectronElectronCusp`'s trainable ``range_parameter``; its outer-tail
 consequence is stated on the class and is executable through
-`TrainableCurvatureElectronNucleusCuspLaw.outer_tail_slope`.
+`CurvatureElectronNucleusCuspLaw.outer_tail_slope`.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class ElectronNucleusCuspLaw(ABC):
     component ``w_A(r)`` contributing only to second-order (and higher)
     curvature -- i.e. satisfying ``w_A(0) = 0`` and ``d/dr w_A(0) = 0`` -- so
     curvature can be learned without perturbing the enforced cusp condition.
-    `TrainableCurvatureElectronNucleusCuspLaw` implements this ``w_A`` term.
+    `CurvatureElectronNucleusCuspLaw` implements this ``w_A`` term.
     """
 
     @abstractmethod
@@ -99,6 +99,19 @@ class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
     ``NuclearConfinement`` envelope, preserved here as a
     `ElectronNucleusCuspLaw` so existing systems have a like-for-like generic
     counterpart.
+
+    WHY THIS LAW STILL EXISTS, since it is mathematically redundant. It is
+    identical to `CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0,
+    trainable=False)`, because ``w_A(r) = 0 * r^2 / (1 + d r)`` vanishes. Do
+    NOT collapse the two on that basis: this law has NO PARAMETERS AT ALL, so
+    it cannot express the ``c = 0`` degeneracy that the curved law's own
+    defaults (``curvature_coefficient=0.0, trainable=True``) land in, where
+    ``d w_A / d d`` is proportional to ``c`` and a trainable range therefore
+    receives an identically zero gradient and can never move. A parameter-free
+    law makes "I want fixed ``-Z r``" unable to be said wrongly; the curved law
+    relies on `tests/unit/experiments/test_he_v1_config.py` asserting
+    ``c != 0`` to catch the same mistake after the fact. Trap-proof by
+    construction is not the same as trap-caught by assertion.
     """
 
     def value(self, distance: torch.Tensor, charges: torch.Tensor) -> torch.Tensor:
@@ -107,8 +120,16 @@ class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
         return -charges * distance
 
 
-class TrainableCurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw):
+class CurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw):
     """Linear Kato slope plus an optional trainable second-order curvature term.
+
+    NAME STATES THE FUNCTIONAL FORM, NOT THE TRAINABILITY. This class was
+    called ``TrainableCurvatureElectronNucleusCuspLaw``, which named the wrong
+    axis: what distinguishes it from `LinearElectronNucleusCuspLaw` is the
+    CURVATURE TERM, while trainability is the internal ``trainable`` flag below
+    and is available in both states. ``trainable=False`` gives the curved law
+    with FROZEN curvature -- a third configuration the old name made sound
+    contradictory.
 
     Computes ``v_A(r) = -Z_A r + w_A(r)`` with ``w_A(r) = c r^2 / (1 + d r)``,
     where ``d`` is the strictly positive, optionally trainable RANGE parameter
@@ -448,6 +469,6 @@ __all__ = [
     "ElectronNucleusCusp",
     "ElectronNucleusCuspLaw",
     "LinearElectronNucleusCuspLaw",
-    "TrainableCurvatureElectronNucleusCuspLaw",
+    "CurvatureElectronNucleusCuspLaw",
     "rational_pair_cusp",
 ]

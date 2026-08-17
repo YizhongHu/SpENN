@@ -662,7 +662,7 @@ v_A (r) = -Z_A r + w_A (r), quad w_A (0) = 0, quad w_A'(0) = 0.
 $
 
 This lets curvature near the nucleus be learned without touching the
-mandatory cusp condition. `tpen.nn.cusp.TrainableCurvatureElectronNucleusCuspLaw`
+mandatory cusp condition. `tpen.nn.cusp.CurvatureElectronNucleusCuspLaw`
 implements this contract with $w_A (r) = c r^2 slash (1 + d r)$ for a trainable
 (unconstrained-sign) $c$ and positive $d$; `LinearElectronNucleusCuspLaw`
 remains the exact compatibility default ($w_A = 0$).

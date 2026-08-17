@@ -19,7 +19,7 @@ from tpen.nn import (
     ElectronElectronCusp,
     ElectronNucleusCusp,
     LinearElectronNucleusCuspLaw,
-    TrainableCurvatureElectronNucleusCuspLaw,
+    CurvatureElectronNucleusCuspLaw,
 )
 
 
@@ -59,7 +59,7 @@ class TestScalarDiagnosticsContract:
     def test_trainable_en_law_reports_c_d_and_the_tail_slope_it_implies(self) -> None:
         factor = ElectronNucleusCusp(
             _atoms(),
-            law=TrainableCurvatureElectronNucleusCuspLaw(
+            law=CurvatureElectronNucleusCuspLaw(
                 curvature_coefficient=0.01, curvature_range=1.0, trainable=True
             ),
         )
@@ -90,7 +90,7 @@ class TestCollectFactorScalars:
             ElectronElectronCusp(trainable_range=True),
             ElectronNucleusCusp(
                 _atoms(),
-                law=TrainableCurvatureElectronNucleusCuspLaw(
+                law=CurvatureElectronNucleusCuspLaw(
                     curvature_coefficient=0.01, curvature_range=1.0, trainable=True
                 ),
             ),
@@ -127,10 +127,10 @@ class TestCollectFactorScalars:
         distance = torch.tensor([[[1.0]]], dtype=torch.float64)
         charges = torch.tensor([[[2.0]]], dtype=torch.float64)
 
-        trapped = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0)
+        trapped = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0)
         trapped.value(distance, charges).sum().backward()
         assert float(trapped.raw_curvature_range.grad.abs().item()) == 0.0
 
-        chosen = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.01)
+        chosen = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.01)
         chosen.value(distance, charges).sum().backward()
         assert float(chosen.raw_curvature_range.grad.abs().item()) > 0.0

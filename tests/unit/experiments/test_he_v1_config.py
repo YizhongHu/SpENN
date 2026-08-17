@@ -656,7 +656,7 @@ def test_he_configs_enable_both_trainable_cusp_ranges_identically() -> None:
 
     en = next(f for f in train if f["_target_"] == "tpen.nn.ElectronNucleusCusp")
     law = en["law"]
-    assert law["_target_"] == "tpen.nn.TrainableCurvatureElectronNucleusCuspLaw"
+    assert law["_target_"] == "tpen.nn.CurvatureElectronNucleusCuspLaw"
     assert law["trainable"] is True
     # NONZERO on purpose. At exactly c = 0 the gradient with respect to the
     # range parameter d is identically zero, so a defaults-instantiated
@@ -706,7 +706,7 @@ def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
     allocation.
     """
 
-    from tpen.nn import ElectronNucleusCusp, TrainableCurvatureElectronNucleusCuspLaw
+    from tpen.nn import ElectronNucleusCusp, CurvatureElectronNucleusCuspLaw
 
     atoms_cfg = OmegaConf.create(_load(TRAIN)["atoms"])
     OmegaConf.update(atoms_cfg, "positions.data", _load(TRAIN)["system"]["nuclei"]["positions"])
@@ -716,7 +716,7 @@ def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
     linear = ElectronNucleusCusp(atoms)
     trainable = ElectronNucleusCusp(
         atoms,
-        law=TrainableCurvatureElectronNucleusCuspLaw(
+        law=CurvatureElectronNucleusCuspLaw(
             curvature_coefficient=0.01, curvature_range=1.0, trainable=True
         ),
     )

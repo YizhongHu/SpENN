@@ -19,7 +19,7 @@ from tpen.nn.cusp import (
     ElectronNucleusCusp,
     ElectronNucleusCuspLaw,
     LinearElectronNucleusCuspLaw,
-    TrainableCurvatureElectronNucleusCuspLaw,
+    CurvatureElectronNucleusCuspLaw,
 )
 from tpen.nn.embedding import Embedding
 from tpen.nn.envelope import (
@@ -72,6 +72,6 @@ __all__ = [
     "TPENWaveFunction",
     "TPENStack",
     "TorchInitializer",
-    "TrainableCurvatureElectronNucleusCuspLaw",
+    "CurvatureElectronNucleusCuspLaw",
     "Updater",
 ]
