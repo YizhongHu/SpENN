@@ -1,5 +1,84 @@
 # Release Notes
 
+## v0.3.1 - Generic atom API, helium study infrastructure, and correlation-aware statistics
+
+Covers the full `v0.3.0..a9f9f7fa` delta of 55 commits.
+
+### Added
+
+- Generic atom API and nuclear geometry, landed as the eleven-PR atom stack
+  (#258-#274): an immutable `AtomicConfiguration`, its transport through the
+  sampler and checkpoints, batch-owned electron-nucleus data, an explicit
+  nuclear factorization seam, generic Coulomb potentials, nucleus-nucleus
+  repulsion, and the cusp relocation into `tpen/nn/cusp.py`.
+- Helium study infrastructure: the He v1 config (#247), radial diagnostics
+  (#249), tolerance gates over emitted cusp and tail metrics (#263), the study
+  driver (#264), the trajectory consumer (#265), and the log-amplitude oracle
+  with a singlet-purity diagnostic (#262).
+- Fixed-model statistics: the trajectory IAT/ESS/MCSE producer (#257), which is
+  the correlation-aware uncertainty machinery the He study's headline bar depends
+  on, with multi-timescale and heterogeneous-chain coverage for the estimator
+  (#278).
+- Timing and cost accounting: emitted boundary stamps (#240), the device event
+  timer (#243), cost provenance (#246), delivered-allocation GPU-seconds (#250),
+  warmup exclusion from throughput projection (#254), and per-axis GPU-second
+  rollups (#256).
+- NN-QMC baseline comparison surface: the survey (#216), the comparison-system
+  registry with provenance (#217), the common results record and run collector
+  (#218), the transcribed He reference energy (#220), the reference-energy
+  correction with H2 (#232), and the FermiNet run-directory adapter (#233).
+- Hooke scan work: the four-level basis choice library (#225), the scan
+  train/eval slot surface (#226), the `tpen-pair-scan-v1` fork with an enforced
+  choice-library merge (#227), and checked-in scan grids with split-sample
+  champion selection (#228).
+- The frozen He-v1 production arm is predeclared and checkable rather than
+  described (#279).
+- `tests/unit/test_version_agreement.py` asserts that all four version sources
+  agree, reading each from its own file at runtime.
+
+### Changed
+
+- The cusp law is named by its functional form rather than by its trainability
+  (#280).
+- The unused `AsymptoticDecay` interface is removed (#281).
+
+### Fixed
+
+- Batched Pfaffian evaluation over walkers and channels (#234).
+- Antisymmetry is reported from summary metrics at `artifact_level: summaries`
+  (#230).
+- The inverse softplus is stable above the float64 overflow boundary (#277).
+- Shipped he-v1 artifacts no longer claim a byte identity the check never
+  established (#282).
+
+### Validation
+
+- Commit delta measured at the release-prep SHA rather than reused: `v0.3.0..a9f9f7fa`
+  = 55 commits, which is 50 at the earlier `dev` tip `515231a1` plus exactly the
+  five merged layers #278-#282. `origin/main..dev` = 37 was NOT used as the
+  release figure: `main` already carries two post-tag merges, so 37 would
+  understate the release by 18 commits. `dev..origin/main` = 0, so `main` remains
+  a strict ancestor and the promotion stays fast-forwardable.
+- Package metadata, runtime metadata, the `uv.lock` root `tpen` entry, and the
+  README current-release text all agree on `0.3.1`, asserted executably rather
+  than by inspection. `uv.lock` is load-bearing here, not generated noise: the
+  cluster environment is built with `uv sync --extra cpu --locked`, which fails
+  closed, so a stale lock entry stops every scheduler job from starting.
+- `uv.lock` was regenerated with `uv lock`; the resulting diff touches only the
+  root `tpen` version line and no dependency, hash, or resolution marker.
+- Five-stage he-v1 smoke on merged `dev`: Cannon Slurm `39726909`, partition
+  `test`, `COMPLETED 0:0`, `00:05:48`, pinned in-job to `a9f9f7fa` and tree
+  `a246b88f`. Composed `2283 passed`, `8 skipped`, `6 subtests passed`; the
+  study-local suite gave `227 passed`. Restore was exercised across both the
+  renamed Hydra `_target_` of #280 and the added `readout.channel_weights` key
+  of #279, the cross-check mutant went RED and restored clean, and
+  `assess_convergence` refused with verdict `indeterminate` without narrowing
+  windows.
+- That smoke installed `tpen` as `0.3.0` in-job, so it is a PRE-BUMP
+  measurement. It establishes that the tree being bumped was releasable; it does
+  not validate the version change itself, and it predates the version-agreement
+  test.
+
 ## v0.3.0 - TPEN public API, typed event clock, and four-facility verification
 
 ### Added
