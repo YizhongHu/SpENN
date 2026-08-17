@@ -133,8 +133,11 @@ model:
           _target_: torch.nn.SiLU
       update:
         _target_: tpen.nn.ResidualUpdater
-  # BYTE-IDENTICAL to train.yaml's factors block, and a config test asserts the
-  # whole `model:` subtree structurally rather than trusting hand-sync. Enabling
+  # SEMANTICALLY IDENTICAL WHEN PARSED to train.yaml's factors block.
+  # NOT byte-identical: this file carries shortened comment prose. And a
+  # config test asserts the whole `model:` subtree as a PARSED dict rather than
+  # trusting hand-sync. Parsed equality is the property `strict: true` needs,
+  # because Hydra instantiates the parsed tree and never the file text. Enabling
   # the trainable en law adds exactly two state-dict keys, so `strict: true`
   # restore fails in BOTH directions across this change: a train/eval mismatch
   # here is not a degraded run, it is a run that cannot start. See train.yaml

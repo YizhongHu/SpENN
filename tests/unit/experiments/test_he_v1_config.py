@@ -451,8 +451,13 @@ def test_every_declared_trainable_component_is_actually_trainable() -> None:
         assert factors[0]["trainable_range"] is True, path.name
         assert factors[1]["law"]["trainable"] is True, path.name
 
-    # The two model blocks must stay byte-identical, which is what makes the
-    # strict restore survive this change.
+    # The two model blocks must stay SEMANTICALLY IDENTICAL WHEN PARSED, which
+    # is what makes the strict restore survive this change. Deliberately NOT a
+    # text comparison: the blocks differ in comment prose and always have, and
+    # Hydra instantiates the parsed tree rather than the file text. The
+    # assertion below is therefore the correct instrument, and describing it as
+    # "byte-identical" -- as this comment and three config comments did until
+    # 2026-08-17 -- claimed something stronger than the check establishes.
     assert _load(TRAIN)["model"] == _load(EVAL)["model"]
 
 
