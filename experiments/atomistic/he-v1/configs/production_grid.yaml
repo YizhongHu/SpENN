@@ -27,7 +27,7 @@
 # ---------------------------------------------------------------------------
 # [ANALYTIC]   Center comes from theory, not measurement. Kato fixes the cusp
 #              slope at -Z; the chosen law's asymptotic slope is -Z + c/d and is
-#              computed by `TrainableCurvatureElectronNucleusCuspLaw
+#              computed by `CurvatureElectronNucleusCuspLaw
 #              .outer_tail_slope(charges)`, never by hardcoding -Z; a true
 #              spatial singlet has triplet fraction 0 exactly. Where only the
 #              SCALE is empirical it is labelled [ANALYTIC center / pilot scale]

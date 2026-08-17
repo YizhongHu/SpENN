@@ -22,7 +22,7 @@ from tpen.nn import (
     LinearElectronNucleusCuspLaw,
     LogAmplitudeFactor,
     TPENWaveFunction,
-    TrainableCurvatureElectronNucleusCuspLaw,
+    CurvatureElectronNucleusCuspLaw,
 )
 from tests.helpers.equivariance import assert_equivariant_all
 from tests.helpers.hooke_models import build_tiny_spenn
@@ -634,7 +634,7 @@ def test_trainable_curvature_law_preserves_charge_fixed_kato_slope() -> None:
         positions=torch.tensor([[0.0]], dtype=torch.float64),
         charges=torch.tensor([3.0], dtype=torch.float64),
     )
-    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=5.0, curvature_range=2.0)
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=5.0, curvature_range=2.0)
     cusp = ElectronNucleusCusp(atoms=atoms, law=law)
     batch = ElectronBatch(positions=tiny_r.view(1, 1, 1))
 
@@ -649,7 +649,7 @@ def test_trainable_curvature_law_is_second_order_and_trainable() -> None:
     # differentiable when trainable.
     distance = torch.tensor(0.5, dtype=torch.float64)
     charges = torch.tensor(2.0, dtype=torch.float64)
-    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.3, curvature_range=1.5)
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.3, curvature_range=1.5)
 
     value = law.value(distance, charges)
     expected_linear = -charges * distance
@@ -670,7 +670,7 @@ def test_trainable_curvature_law_zero_coefficient_matches_linear_law() -> None:
     linear = ElectronNucleusCusp(atoms=atoms, law=LinearElectronNucleusCuspLaw())
     curved = ElectronNucleusCusp(
         atoms=atoms,
-        law=TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0, curvature_range=1.0, trainable=False),
+        law=CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0, curvature_range=1.0, trainable=False),
     )
     batch = ElectronBatch(positions=torch.tensor([[[0.7]]], dtype=torch.float64))
 
@@ -679,7 +679,7 @@ def test_trainable_curvature_law_zero_coefficient_matches_linear_law() -> None:
 
 def test_trainable_curvature_law_rejects_nonpositive_range() -> None:
     with pytest.raises(ValueError, match="curvature_range"):
-        TrainableCurvatureElectronNucleusCuspLaw(curvature_range=0.0)
+        CurvatureElectronNucleusCuspLaw(curvature_range=0.0)
 
 
 def test_asymptotic_decay_base_requires_subclass_implementation() -> None:
@@ -749,7 +749,17 @@ def test_electron_nucleus_cusp_law_documents_regular_component_contract() -> Non
     doc = ElectronNucleusCuspLaw.__doc__
     assert "second-order" in doc
     assert "w_A" in doc
-    assert "TrainableCurvatureElectronNucleusCuspLaw" in doc
+    assert "CurvatureElectronNucleusCuspLaw" in doc
+    # DISCRIMINATING, NOT MERELY SATISFIABLE. The assertion above cannot fail on
+    # the property this rename exists to establish. The retired name was exactly
+    # this one with a `Trainable` prefix, so that assertion reduces to
+    #     NEW in "Trainable" + NEW  ->  trivially True
+    # and it passes on an un-renamed docstring. Pinning the prefix's ABSENCE is
+    # what lets the pair fail. Scoped to this base-class docstring on purpose:
+    # `CurvatureElectronNucleusCuspLaw.__doc__` deliberately retains one prose
+    # mention of the former name so the rename stays traceable, so a repo-wide
+    # absence check would be wrong here.
+    assert "TrainableCurvature" not in doc
 
 
 # --- H-R6: trainable range parameter in the electron-nucleus cusp ---
@@ -771,7 +781,7 @@ def test_trainable_curvature_kato_slope_converges_to_minus_charge_as_r_goes_to_z
     # parameters that dominate the value at ordinary radii.
     charge = 3.0
     charges = torch.tensor(charge, dtype=torch.float64)
-    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=7.0, curvature_range=0.5)
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=7.0, curvature_range=0.5)
 
     errors = []
     for radius in (1.0e-1, 1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6):
@@ -795,7 +805,7 @@ def test_trainable_curvature_range_is_reachable_from_wavefunction_parameters() -
     # the silent failure this slice exists to prevent. Assert registration
     # through the real TPENWaveFunction factors pipeline AND that a backward
     # pass through the model populates a nonzero gradient on it.
-    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.4, curvature_range=1.25)
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.4, curvature_range=1.25)
     cusp = ElectronNucleusCusp(atoms=_single_nucleus(2.0), law=law)
     model = TPENWaveFunction(
         embedding=EmptyEncoder(),
@@ -822,7 +832,7 @@ def test_trainable_curvature_range_is_reachable_from_wavefunction_parameters() -
 def test_trainable_curvature_range_stays_positive_under_hostile_update() -> None:
     # H-R6 requirement 3: the softplus reparameterization must keep the range
     # strictly positive even after an adverse step far larger than any real one.
-    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.4, curvature_range=1.0)
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.4, curvature_range=1.0)
     with torch.no_grad():
         law.raw_curvature_range.sub_(1.0e6)
 
@@ -841,7 +851,7 @@ def test_trainable_curvature_outer_tail_slope_is_shifted_and_does_not_saturate()
     # growing linearly, unlike the saturating Pade law -Z r / (1 + a r).
     coefficient, range_parameter, charge = 0.5, 2.0, 3.0
     charges = torch.tensor(charge, dtype=torch.float64)
-    law = TrainableCurvatureElectronNucleusCuspLaw(
+    law = CurvatureElectronNucleusCuspLaw(
         curvature_coefficient=coefficient, curvature_range=range_parameter
     )
     expected = -charge + coefficient / range_parameter
@@ -871,7 +881,7 @@ def test_trainable_curvature_zero_coefficient_delays_range_gradient_by_one_step(
     # Documented degeneracy: at exactly c = 0 the range gradient is identically
     # zero, but c itself still moves and unlocks the range from the next step.
     # A config that wants the range trained from step one must init c nonzero.
-    law = TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0, curvature_range=1.0)
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.0, curvature_range=1.0)
     distance = torch.tensor(0.8, dtype=torch.float64)
     charges = torch.tensor(2.0, dtype=torch.float64)
 
@@ -896,13 +906,13 @@ def test_trainable_curvature_changes_checkpoint_state_and_blocks_strict_cross_re
     default_cusp = ElectronNucleusCusp(atoms=atoms)
     fixed_cusp = ElectronNucleusCusp(
         atoms=atoms,
-        law=TrainableCurvatureElectronNucleusCuspLaw(
+        law=CurvatureElectronNucleusCuspLaw(
             curvature_coefficient=0.4, curvature_range=1.25, trainable=False
         ),
     )
     trainable_cusp = ElectronNucleusCusp(
         atoms=atoms,
-        law=TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=0.4, curvature_range=1.25),
+        law=CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.4, curvature_range=1.25),
     )
 
     assert list(default_cusp.state_dict().keys()) == []
@@ -915,7 +925,7 @@ def test_trainable_curvature_changes_checkpoint_state_and_blocks_strict_cross_re
     batch = ElectronBatch(positions=torch.tensor([[[0.7]], [[1.9]]], dtype=torch.float64))
     restored = ElectronNucleusCusp(
         atoms=atoms,
-        law=TrainableCurvatureElectronNucleusCuspLaw(curvature_coefficient=1.0, curvature_range=3.0),
+        law=CurvatureElectronNucleusCuspLaw(curvature_coefficient=1.0, curvature_range=3.0),
     )
     restored.load_state_dict(trainable_cusp.state_dict(), strict=True)
     torch.testing.assert_close(restored(batch), trainable_cusp(batch))
@@ -927,7 +937,7 @@ def test_trainable_curvature_changes_checkpoint_state_and_blocks_strict_cross_re
 def test_trainable_curvature_law_documents_outer_tail_consequence() -> None:
     # The functional-form decision is load-bearing for H-R4 tail tolerances;
     # pin its key claims so a future edit cannot silently drop them.
-    doc = TrainableCurvatureElectronNucleusCuspLaw.__doc__
+    doc = CurvatureElectronNucleusCuspLaw.__doc__
     assert "-Z_A + c / d" in doc
     assert "NON-saturating" in doc
     assert "must not be applied unchanged" in doc

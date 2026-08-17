@@ -19,7 +19,7 @@ import math
 import pytest
 import torch
 
-from tpen.nn.cusp import ElectronElectronCusp, TrainableCurvatureElectronNucleusCuspLaw
+from tpen.nn.cusp import ElectronElectronCusp, CurvatureElectronNucleusCuspLaw
 from tpen.nn.envelope import GaussianConfinement
 from tpen.nn.factor import _INVERSE_SOFTPLUS_LARGE_INPUT, _inverse_softplus
 
@@ -114,9 +114,9 @@ def test_branch_is_continuous_at_the_crossover() -> None:
 
 @pytest.mark.parametrize("range_value", [710.0, 1e4])
 def test_en_cusp_trainable_range_is_finite_at_large_init(range_value: float) -> None:
-    """Call site 1: `TrainableCurvatureElectronNucleusCuspLaw.raw_curvature_range`."""
+    """Call site 1: `CurvatureElectronNucleusCuspLaw.raw_curvature_range`."""
 
-    law = TrainableCurvatureElectronNucleusCuspLaw(
+    law = CurvatureElectronNucleusCuspLaw(
         curvature_coefficient=1e-3, curvature_range=range_value, trainable=True
     )
     assert torch.isfinite(law.raw_curvature_range).all()
