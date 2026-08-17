@@ -751,14 +751,14 @@ def test_electron_nucleus_cusp_law_documents_regular_component_contract() -> Non
     assert "w_A" in doc
     assert "CurvatureElectronNucleusCuspLaw" in doc
     # DISCRIMINATING, NOT MERELY SATISFIABLE. The assertion above cannot fail on
-    # the property this rename exists to establish, because the new name is a
-    # SUBSTRING of the retired `TrainableCurvatureElectronNucleusCuspLaw`:
-    #     "CurvatureElectronNucleusCuspLaw" in "TrainableCurvature...CuspLaw" -> True
-    # so it passes on an un-renamed docstring too. Pinning the old name's
-    # ABSENCE is what lets the pair fail. Scoped to this base-class docstring on
-    # purpose: `CurvatureElectronNucleusCuspLaw.__doc__` deliberately retains one
-    # prose mention of the former name so the rename stays traceable, so a
-    # repo-wide absence check would be wrong here.
+    # the property this rename exists to establish. The retired name was exactly
+    # this one with a `Trainable` prefix, so that assertion reduces to
+    #     NEW in "Trainable" + NEW  ->  trivially True
+    # and it passes on an un-renamed docstring. Pinning the prefix's ABSENCE is
+    # what lets the pair fail. Scoped to this base-class docstring on purpose:
+    # `CurvatureElectronNucleusCuspLaw.__doc__` deliberately retains one prose
+    # mention of the former name so the rename stays traceable, so a repo-wide
+    # absence check would be wrong here.
     assert "TrainableCurvature" not in doc
 
 
