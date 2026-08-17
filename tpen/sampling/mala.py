@@ -39,6 +39,10 @@ class MALASampler(MetropolisSampler):
         Spatial dimension of each electron coordinate.
     n_up, n_down : int or None, optional
         Spin partition passed through to the base Metropolis sampler.
+    nuclear_positions : torch.Tensor or None, optional
+        Fixed nuclear coordinates with shape ``[n_nuclei, spatial_dim]``.
+    nuclear_charges : torch.Tensor or None, optional
+        Fixed nuclear charges with shape ``[n_nuclei]``.
     initial_scale : float, optional
         Standard deviation of normally initialized walker positions.
     dtype : torch.dtype or str, optional
@@ -57,6 +61,8 @@ class MALASampler(MetropolisSampler):
         spatial_dim: int = 3,
         n_up: int | None = None,
         n_down: int | None = None,
+        nuclear_positions: torch.Tensor | None = None,
+        nuclear_charges: torch.Tensor | None = None,
         initial_scale: float = 1.0,
         dtype: torch.dtype | str = torch.float64,
     ) -> None:
@@ -73,6 +79,8 @@ class MALASampler(MetropolisSampler):
             spatial_dim=spatial_dim,
             n_up=n_up,
             n_down=n_down,
+            nuclear_positions=nuclear_positions,
+            nuclear_charges=nuclear_charges,
             initial_scale=initial_scale,
             dtype=dtype,
         )
@@ -104,6 +112,7 @@ class MALASampler(MetropolisSampler):
         gradient_walkers = Walkers(
             positions=positions,
             spins=walkers.spins,
+            atomic_configuration=walkers.atomic_configuration,
             aux=dict(walkers.aux),
         )
         with torch.enable_grad():

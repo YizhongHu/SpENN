@@ -49,6 +49,162 @@ def test_cost_by_run_row_projects_runtime_and_step_statistics() -> None:
     assert row["lr"] == "3e-4"
 
 
+def test_cost_by_run_row_default_warmup_excludes_nothing() -> None:
+    default = cost_by_run_row(_train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train")
+    explicit = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=0
+    )
+
+    assert default == explicit
+    assert default["warmup_steps"] == "0"
+    assert default["n_steps"] == default["n_steps_measured"] == "3"
+    assert float(default["mean_step_time_sec"]) == pytest.approx(2.0)
+
+
+def test_cost_by_run_row_warmup_excludes_leading_samples() -> None:
+    row = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=1
+    )
+
+    # Dropping the first recorded sample leaves step times [3.0, 2.0].
+    assert row["n_steps"] == "3"
+    assert row["n_steps_measured"] == "2"
+    assert row["warmup_steps"] == "1"
+    assert float(row["mean_step_time_sec"]) == pytest.approx(2.5)
+    assert float(row["median_step_time_sec"]) == pytest.approx(2.5)
+    assert float(row["p95_step_time_sec"]) == pytest.approx(2.95)
+
+
+def test_cost_by_run_row_warmup_excludes_phase_series_too() -> None:
+    row = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=1
+    )
+
+    # sampling [0.4, 1.2, 0.8] -> [1.2, 0.8]; forward [0.2, 0.6, 0.4] -> [0.6, 0.4].
+    assert float(row["mean_sampling_time_sec"]) == pytest.approx(1.0)
+    assert float(row["mean_forward_time_sec"]) == pytest.approx(0.5)
+
+
+def test_cost_by_run_row_over_exclusion_blanks_aggregates() -> None:
+    row = cost_by_run_row(
+        _train_metrics_rows(), run_id="run-a", attempt_id="A0", stage="train", warmup_steps=5
+    )
+
+    # Blank aggregates beside an explicit zero count are visible; an unfiltered
+    # mean silently substituted for the empty window would not be.
+    assert row["n_steps"] == "3"
+    assert row["n_steps_measured"] == "0"
+    assert row["mean_step_time_sec"] == ""
+    assert row["median_step_time_sec"] == ""
+    assert row["p95_step_time_sec"] == ""
+    assert row["mean_sampling_time_sec"] == ""
+
+
+@pytest.mark.parametrize(
+    ("warmup_steps", "match"),
+    [
+        (-1, "non-negative"),
+        (1.5, "whole number"),
+        ("two", "non-negative"),
+        (None, "non-negative"),
+    ],
+)
+def test_cost_by_run_row_rejects_unusable_warmup_steps(warmup_steps, match: str) -> None:
+    # A broken warmup parameter must not silently report a window nobody asked for.
+    with pytest.raises(ValueError, match=match):
+        cost_by_run_row(
+            _train_metrics_rows(),
+            run_id="run-a",
+            attempt_id="A0",
+            stage="train",
+            warmup_steps=warmup_steps,
+        )
+
+
+def test_cost_by_run_row_projects_explicit_timing_provenance() -> None:
+    provenance = {
+        "timing_mode": "device_event",
+        "hostname": "holy8a24101",
+        "slurm_job_id": "39221900",
+        "device_uuid": "GPU-123",
+    }
+
+    row = cost_by_run_row(
+        [],
+        run_id="run-a",
+        attempt_id="A0",
+        stage="train",
+        provenance=provenance,
+    )
+
+    assert {key: row[key] for key in provenance} == provenance
+
+
+def test_cost_by_run_row_derives_gpu_seconds_from_delivered_allocation() -> None:
+    allocation = {
+        "device_name": "NVIDIA A100-SXM4-40GB",
+        "device_count": 4,
+        "allocated_wall_time_sec": 1800.0,
+    }
+
+    row = cost_by_run_row(
+        [],
+        run_id="run-a",
+        attempt_id="A0",
+        stage="train",
+        allocation=allocation,
+    )
+
+    # Delivered facts are echoed, never normalized: the card string in particular
+    # is the delivered device, which can differ from the advertised partition GRES.
+    assert {key: row[key] for key in allocation} == allocation
+    assert float(row["gpu_seconds"]) == pytest.approx(7200.0)
+
+
+def test_cost_by_run_row_without_allocation_leaves_receipt_blank() -> None:
+    row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="train")
+
+    assert row["device_name"] == ""
+    assert row["device_count"] == ""
+    assert row["allocated_wall_time_sec"] == ""
+    assert row["gpu_seconds"] == ""
+
+
+@pytest.mark.parametrize(
+    "allocation",
+    [
+        {"device_count": 4},
+        {"allocated_wall_time_sec": 1800.0},
+        {"device_name": "NVIDIA A100-SXM4-40GB"},
+    ],
+)
+def test_cost_by_run_row_partial_allocation_reports_no_gpu_seconds(allocation) -> None:
+    row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="train", allocation=allocation)
+
+    # Half a receipt must not imply the missing half (e.g. a single device).
+    assert row["gpu_seconds"] == ""
+    assert {key: row[key] for key in allocation} == allocation
+
+
+@pytest.mark.parametrize(
+    ("allocation", "match"),
+    [
+        ({"device_count": 0, "allocated_wall_time_sec": 1800.0}, "device_count"),
+        ({"device_count": -1, "allocated_wall_time_sec": 1800.0}, "device_count"),
+        ({"device_count": 2.5, "allocated_wall_time_sec": 1800.0}, "whole number"),
+        ({"device_count": "four", "allocated_wall_time_sec": 1800.0}, "device_count"),
+        ({"device_count": 4, "allocated_wall_time_sec": 0}, "allocated_wall_time_sec"),
+        ({"device_count": 4, "allocated_wall_time_sec": "30m"}, "allocated_wall_time_sec"),
+        ({"gpu_seconds": 7200.0}, "derived"),
+        ({"devices": 4}, "unsupported allocation field"),
+    ],
+)
+def test_cost_by_run_row_rejects_unusable_allocation(allocation, match: str) -> None:
+    # A broken or misspelled receipt understates cost if it silently blanks.
+    with pytest.raises(ValueError, match=match):
+        cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="train", allocation=allocation)
+
+
 def test_cost_by_run_row_without_metrics_leaves_blanks() -> None:
     row = cost_by_run_row([], run_id="run-a", attempt_id="A0", stage="validation")
 
@@ -136,3 +292,51 @@ def test_cost_by_axis_rows_handles_blank_metrics() -> None:
 
     assert rows[0]["wall_time_sec_median"] == ""
     assert rows[0]["n_runs"] == "1"
+
+
+def test_cost_by_axis_rows_rolls_up_gpu_seconds_for_fully_populated_group() -> None:
+    rows = cost_by_axis_rows(
+        [
+            {"stage": "train", "basis": "B00", "gpu_seconds": "400"},
+            {"stage": "train", "basis": "B00", "gpu_seconds": "1200"},
+            {"stage": "train", "basis": "B00", "gpu_seconds": "800"},
+        ],
+        axis_names=["basis"],
+    )
+
+    assert rows[0]["n_runs"] == "3"
+    assert rows[0]["n_runs_with_gpu_seconds"] == "3"
+    assert float(rows[0]["gpu_seconds_median"]) == pytest.approx(800.0)
+
+
+def test_cost_by_axis_rows_counts_only_runs_carrying_gpu_seconds() -> None:
+    rows = cost_by_axis_rows(
+        [
+            {"stage": "train", "basis": "B00", "gpu_seconds": "100"},
+            {"stage": "train", "basis": "B00", "gpu_seconds": ""},
+            {"stage": "train", "basis": "B00", "gpu_seconds": "300"},
+            {"stage": "train", "basis": "B00"},
+        ],
+        axis_names=["basis"],
+    )
+
+    # The median uses only the two finite cells; the count is what tells a reader
+    # the median describes a minority of the group.
+    assert float(rows[0]["gpu_seconds_median"]) == pytest.approx(200.0)
+    assert rows[0]["n_runs"] == "4"
+    assert rows[0]["n_runs_with_gpu_seconds"] == "2"
+    assert int(rows[0]["n_runs_with_gpu_seconds"]) < int(rows[0]["n_runs"])
+
+
+def test_cost_by_axis_rows_reports_zero_gpu_seconds_contributors_when_all_blank() -> None:
+    rows = cost_by_axis_rows(
+        [
+            {"stage": "train", "basis": "B00", "gpu_seconds": ""},
+            {"stage": "train", "basis": "B00", "wall_time_sec": "100"},
+        ],
+        axis_names=["basis"],
+    )
+
+    assert rows[0]["gpu_seconds_median"] == ""
+    assert rows[0]["n_runs_with_gpu_seconds"] == "0"
+    assert rows[0]["n_runs"] == "2"

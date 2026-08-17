@@ -451,10 +451,41 @@ the determinant/Pfaffian readout and preserves the antisymmetry of $psi_theta$.
 
 The factor $J$ is *additive* in $log abs(psi)$. We reserve the word *envelope*
 for the *multiplicative* coordinate factors of the Normalization and Envelopes
-section and name the additive-to-$log abs(psi)$ factors by body order: two-body
-terms are *cusps*, one-body terms are *confinements*. In code these components
-compose through `tpen.nn.AdditiveEnvelope`, which the wavefunction takes as a
-required argument:
+section. Within the additive-to-$log abs(psi)$ factors, terminology is fixed
+by *behavior*, not body order: a *cusp* enforces the short-range Kato condition
+at a coalescence point --- the required derivative discontinuity of $psi$ as
+two particles, or a particle and a fixed nucleus, approach each other. *Decay*
+(equivalently *confinement*) supplies the long-range guarantee that
+$|psi|^2$ stays normalizable as particles move away from the system. A cusp
+can be two-body (electron-electron) or summed one-particle-at-a-time over
+fixed external centers (electron-nucleus); both are cusps because both enforce
+a short-range Kato condition. The Gaussian confinement below, and its
+generalizations, are decay/confinement terms because they govern long-range
+normalizability, not short-range coalescence. In code these components
+currently compose through `tpen.nn.AdditiveEnvelope`, which the wavefunction
+takes as a required argument. `AdditiveEnvelope` is a *compatibility name*: the
+word "envelope" is reserved above for the multiplicative coordinate factors,
+so the shipped class name does not match the terminology it implements. The
+target generic post-readout log-amplitude interface is `LogAmplitudeFactor`,
+composing any mix of cusp and decay/confinement terms; `AdditiveCusp` is the
+narrower composition specifically over cusp factors (e.g. electron-electron
+and, later, electron-nucleus). Renaming `AdditiveEnvelope` to `LogAmplitudeFactor`
+is tracked separately and is not part of this terminology-only change.
+`Envelope` and `AdditiveEnvelope` (module `tpen.nn.envelope`) are legacy
+output-factor/composition APIs for the current minor version, not a
+feature-normalization step; neither carries a runtime deprecation warning
+yet. The canonical `LogAmplitudeFactor`/`AdditiveCusp`
+interfaces live in `tpen.nn.factor`, and the concrete cusp factors
+(`ElectronElectronCusp`, `ElectronNucleusCusp`, and their laws) live in
+`tpen.nn.cusp`; `AdditiveCusp` is retained only as a legacy compatibility
+compositor, not for use in new configs or docs. Every name that previously
+resolved through `tpen.nn.envelope` still does, via re-export, so this module
+split changes no import path. `tpen.nn.TPENWaveFunction.factors` is the
+canonical composition seam for `LogAmplitudeFactor` terms (see Model Workflow
+below). The name `FeatureEnvelope` is reserved for a future typed
+feature-space transform --- a distinct concept from the multiplicative
+coordinate `Envelope` of the Normalization and Envelopes section --- and must
+never be introduced as an alias or rename of that existing `Envelope`.
 
 $
 J (br)
@@ -464,7 +495,9 @@ $
 
 Here $J_"ee"$ is the two-body electron-electron cusp and $J_"conf"$ is a one-body
 confinement. The shipped Hooke stack is
-`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`.
+`AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`, i.e. a
+`LogAmplitudeFactor` composing one `AdditiveCusp` term (`ElectronElectronCusp`)
+and one decay/confinement term (`GaussianConfinement`).
 
 === Electron-electron cusp
 
@@ -508,8 +541,9 @@ $
 === Gaussian confinement
 
 Because the Pfaffian readout is polynomial in the features, a trapped system
-needs a guaranteed-by-construction decay factor for $|psi|^2$ normalizability.
-The one-body Gaussian confinement (`tpen.nn.GaussianConfinement`) supplies it:
+needs a guaranteed-by-construction decay factor for $|psi|^2$ normalizability
+--- a *decay/confinement* term, not a cusp. The one-body Gaussian confinement
+(`tpen.nn.GaussianConfinement`) supplies it:
 
 $
 J_"conf"(br)
@@ -530,13 +564,50 @@ exposed by the $omega$-parametrized convenience subclass
 but it is still additive in $log abs(psi)$ and is applied through the additive
 log-amplitude interface, not inside the antisymmetric readout.
 
-=== Electron-nucleus confinement (deferred)
+=== Electron-nucleus cusp
 
 For all-electron Hamiltonians, electron-nucleus coalescence also needs explicit
-handling. Because it is a *one-body* factor it is a *confinement*, not a cusp:
-`NuclearConfinement`. It is *deferred to a future all-electron milestone* --- the
-Hooke systems studied here contain no nuclei, so this term would be permanently
-inactive and is not shipped. The math is recorded here for that milestone.
+handling. Although it sums one particle at a time against fixed external
+centers, it is named by short-range Kato behavior, not body order: it is a
+*cusp*, `tpen.nn.ElectronNucleusCusp`, not a confinement. It is shipped: it
+composes a typed `ElectronNucleusCuspLaw` (default
+`LinearElectronNucleusCuspLaw`, reproducing the legacy He linear cusp $-Z r$)
+against a constructor-owned `AtomicConfiguration`. The Hooke systems studied
+elsewhere in this document contain no nuclei, so the term is simply absent
+from their factor list rather than deferred.
+
+Fixed nuclei are described generically: a constructor-owned
+`AtomicConfiguration` holds the nuclear positions $R_A$ and charges $Z_A$ for
+one system, and is passed once, at construction, to whichever `HamiltonianTerm`,
+cusp, or decay/confinement module needs it. Helium and molecular hydrogen are
+two `AtomicConfiguration` instances --- *data*, not distinct wavefunction
+subclasses or branches. There is no He- or H2-specific wavefunction path;
+`tpen.nn.TPENWaveFunction` and its consumers stay generic over any
+`AtomicConfiguration`. Particle counts, permutations, and validation come only
+from typed `.permute(...)`, `.compare(...)`, and `.validate(...)` contracts and
+explicit `n_electrons`/nuclear metadata --- never from recursively probing an
+arbitrary container.
+
+The same canonical/legacy split applies on the Hamiltonian side. A `*Potential`
+class (`tpen.physics.potential.ElectronNucleusPotential`,
+`tpen.physics.potential.NucleusNucleusPotential`) is the canonical fixed-
+`AtomicConfiguration` Hamiltonian API: it is constructed once from one
+`AtomicConfiguration` and applies that single geometry to every sample. The
+legacy `*Interaction` classes
+(`ElectronNucleusInteraction`, `NucleusNucleusInteraction`) are a supported
+minor-release compatibility surface: they read nuclear geometry from
+batch-transported metadata and additionally support *per-configuration*
+geometry that varies within one batch --- a broader batch geometry capability
+the constructor-owned `*Potential` API does not need. Neither generation is
+deprecated in this minor version.
+
+`tpen.physics.hamiltonian.NaiveLocalEnergyEvaluator` remains the reference
+local-energy evaluator for every Hamiltonian, cusp, and decay/confinement term,
+including any future all-electron system built on `AtomicConfiguration`. A
+future analytic electron-nucleus cusp capability must be introduced as its own
+typed `LocalEnergyEvaluator`/context pair that fails loudly when misapplied ---
+it must not silently fall back to container traversal or branch on which
+molecule is present.
 
 Use
 
@@ -580,6 +651,22 @@ $
 constrained positive by $b_A = "softplus"(tilde(b)_A) + epsilon$. A global $b$ or
 one $b_(Z)$ per nuclear charge is the recommended starting point.
 
+Every electron-nucleus cusp law must keep fixing the first-order Kato slope
+$v_A'(0) = -Z_A$ by nuclear charge alone. A law may separately expose an
+*optional* trainable regular radial component $w_A (r)$ that contributes only
+to second-order (and higher) curvature, i.e. satisfying $w_A (0) = 0$ and
+$w_A'(0) = 0$ so it cannot perturb the enforced cusp slope:
+
+$
+v_A (r) = -Z_A r + w_A (r), quad w_A (0) = 0, quad w_A'(0) = 0.
+$
+
+This lets curvature near the nucleus be learned without touching the
+mandatory cusp condition. `tpen.nn.cusp.CurvatureElectronNucleusCuspLaw`
+implements this contract with $w_A (r) = c r^2 slash (1 + d r)$ for a trainable
+(unconstrained-sign) $c$ and positive $d$; `LinearElectronNucleusCuspLaw`
+remains the exact compatibility default ($w_A = 0$).
+
 == Loss function
 
 The loss function that we will be using is the following:
@@ -621,8 +708,11 @@ Implemented in `tpen.nn.TPENWaveFunction`.
     $
 + Readout with `tpen.nn.PfaffianReadout`
   $ Psi = sum_(c) w^(c) "Pf"[bx^(T c)_(i j) - bx^(T c)_(j i)] $
-+ Applied additive log-amplitude envelope with `tpen.nn.AdditiveEnvelope`,
-  required as `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)`
++ Applied additive post-readout log-amplitude factor with
+  `tpen.nn.AdditiveEnvelope` (compatibility name for the target
+  `LogAmplitudeFactor` interface), required as
+  `AdditiveEnvelope(ElectronElectronCusp, GaussianConfinement)` --- an
+  `AdditiveCusp`-composed cusp term plus a decay/confinement term
   $ psi(bv) = exp(J (br))Psi(bv), quad J (br) = J_"ee" (br) + J_"conf" (br) $
 + Output: $psi(bv)$
 

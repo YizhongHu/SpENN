@@ -1,42 +1,40 @@
-"""Additive envelope factors for wavefunction log-amplitudes."""
+"""Legacy additive envelope factors for wavefunction log-amplitudes.
+
+`Envelope` and `AdditiveEnvelope` are a supported minor-release
+compatibility surface: their constructor, forward behavior, Hydra target,
+and `ModuleList` state-dict keys must not change, and neither carries a
+runtime deprecation warning in this minor version. `GaussianConfinement` and
+`HookeGaussianConfinement` are the concrete decay/confinement envelopes built
+on this legacy interface.
+
+The canonical, new-generation types --
+`tpen.nn.factor.LogAmplitudeFactor`/`AdditiveCusp` and
+`tpen.nn.cusp.ElectronNucleusCusp`/`ElectronElectronCusp` -- now live in their
+own modules; this module re-exports them lazily (see `__getattr__` below) so
+every import path that previously resolved through `tpen.nn.envelope` keeps
+working unchanged. They compose independently and do not replace the legacy
+envelope stack above. `TPENWaveFunction` sums both generations in one
+post-readout factor pipeline (see `tpen/nn/spenn_wave_function.py`), and
+`TPENWaveFunction.factors` is the canonical composition seam for
+`LogAmplitudeFactor` terms.
+
+`FeatureEnvelope` is reserved for a future typed feature-space transform (a
+distinct concept from the multiplicative coordinate `Envelope` above). It must
+never be introduced as an alias or rename of `Envelope`.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from tpen.data.batch import ElectronBatch, pairwise_distances
+from tpen.data.batch import ElectronBatch
 from tpen.dependencies import require_torch, require_torch_functional, require_torch_nn
+from tpen.nn.factor import _check_factor_tensor as _check_envelope_tensor
+from tpen.nn.factor import _inverse_softplus
 
 torch = require_torch(feature="TPEN envelope modules")
 nn = require_torch_nn(feature="TPEN envelope modules")
 F = require_torch_functional(feature="TPEN envelope modules")
-
-
-def rational_pair_cusp(
-    distance: torch.Tensor,
-    coefficient: torch.Tensor | float,
-    range_parameter: torch.Tensor | float,
-) -> torch.Tensor:
-    """Return the rational pair cusp term.
-
-    Parameters
-    ----------
-    distance : torch.Tensor
-        Pair distances.
-    coefficient : torch.Tensor or float
-        Short-range cusp coefficient ``a``.
-    range_parameter : torch.Tensor or float
-        Positive range parameter ``b``.
-
-    Returns
-    -------
-    torch.Tensor
-        Values of ``a r / (1 + b r)`` with the same shape as `distance`.
-    """
-
-    output = coefficient * distance / (1.0 + range_parameter * distance)
-    assert output.shape == distance.shape
-    return output
 
 
 class Envelope(nn.Module):
@@ -208,124 +206,44 @@ class HookeGaussianConfinement(GaussianConfinement):
         self.omega = float(omega)
 
 
-class ElectronElectronCusp(Envelope):
-    """Spin-aware analytic electron-electron cusp envelope.
-
-    Parameters
-    ----------
-    enabled : bool, optional
-        Whether this envelope contributes to the output.
-    same_spin_coefficient : float, optional
-        Short-range coefficient for equal-spin electron pairs.
-    opposite_spin_coefficient : float, optional
-        Short-range coefficient for opposite-spin electron pairs.
-    spinless_coefficient : float or None, optional
-        Coefficient used when `ElectronBatch.spins` is absent. If ``None``,
-        `same_spin_coefficient` is used.
-    range_parameter : float, optional
-        Default positive range parameter.
-    same_range_parameter : float or None, optional
-        Equal-spin range parameter. If ``None``, `range_parameter` is used.
-    opposite_range_parameter : float or None, optional
-        Opposite-spin range parameter. If ``None``, `range_parameter` is used.
-    trainable_range : bool, optional
-        Whether to optimize the range parameters through a softplus
-        parametrization.
-    eps : float, optional
-        Numerical distance floor and positivity offset.
-    """
-
-    def __init__(
-        self,
-        enabled: bool = True,
-        same_spin_coefficient: float = 0.25,
-        opposite_spin_coefficient: float = 0.5,
-        spinless_coefficient: float | None = None,
-        range_parameter: float = 1.0,
-        same_range_parameter: float | None = None,
-        opposite_range_parameter: float | None = None,
-        trainable_range: bool = False,
-        eps: float = 1e-12,
-    ) -> None:
-        super().__init__(enabled=enabled)
-        self.same_spin_coefficient = float(same_spin_coefficient)
-        self.opposite_spin_coefficient = float(opposite_spin_coefficient)
-        if spinless_coefficient is None:
-            spinless_coefficient = same_spin_coefficient
-        self.spinless_coefficient = float(spinless_coefficient)
-        self.trainable_range = bool(trainable_range)
-        self.eps = eps
-        same_range = range_parameter if same_range_parameter is None else same_range_parameter
-        opposite_range = range_parameter if opposite_range_parameter is None else opposite_range_parameter
-        if self.trainable_range:
-            self.raw_same_range = nn.Parameter(_inverse_softplus(float(same_range) - eps))
-            self.raw_opposite_range = nn.Parameter(_inverse_softplus(float(opposite_range) - eps))
-        else:
-            self.register_buffer("same_range", torch.tensor(float(same_range)), persistent=False)
-            self.register_buffer("opposite_range", torch.tensor(float(opposite_range)), persistent=False)
-
-    @property
-    def same_range_parameter(self) -> torch.Tensor:
-        """Return the positive same-spin range parameter."""
-
-        if self.trainable_range:
-            return F.softplus(self.raw_same_range) + self.eps
-        return self.same_range
-
-    @property
-    def opposite_range_parameter(self) -> torch.Tensor:
-        """Return the positive opposite-spin range parameter."""
-
-        if self.trainable_range:
-            return F.softplus(self.raw_opposite_range) + self.eps
-        return self.opposite_range
-
-    def envelope_value(self, batch: ElectronBatch) -> torch.Tensor:
-        """Return the electron-electron cusp contribution."""
-
-        distances = pairwise_distances(batch.positions, eps=self.eps).squeeze(-1)
-        assert distances.shape == (batch.batch_size, batch.n_electrons, batch.n_electrons)
-        tri = torch.triu(torch.ones_like(distances, dtype=torch.bool), diagonal=1)
-        if batch.spins is None:
-            contribution = rational_pair_cusp(distances, self.spinless_coefficient, self.same_range_parameter)
-        else:
-            spins = batch.spins.to(device=batch.device, dtype=batch.dtype)
-            same_spin = spins.unsqueeze(2) == spins.unsqueeze(1)
-            coefficients = torch.where(
-                same_spin,
-                torch.full_like(distances, self.same_spin_coefficient),
-                torch.full_like(distances, self.opposite_spin_coefficient),
-            )
-            ranges = torch.where(
-                same_spin,
-                self.same_range_parameter,
-                self.opposite_range_parameter,
-            )
-            contribution = rational_pair_cusp(distances, coefficients, ranges)
-        output = contribution.masked_fill(~tri, 0.0).sum(dim=(1, 2))
-        assert output.shape == (batch.batch_size,)
-        return output
+# Names that moved to `tpen.nn.factor` / `tpen.nn.cusp`, kept resolvable from
+# this module (attribute access, `from tpen.nn.envelope import ...`, and
+# `import *`) via lazy re-export so this module never has to import those
+# modules eagerly (which import `Envelope` from here).
+_FACTOR_MODULE_NAMES = frozenset({"LogAmplitudeFactor", "AdditiveCusp"})
+_CUSP_MODULE_NAMES = frozenset(
+    {
+        "ElectronNucleusCuspLaw",
+        "LinearElectronNucleusCuspLaw",
+        "ElectronNucleusCusp",
+        "ElectronElectronCusp",
+        "rational_pair_cusp",
+    }
+)
 
 
-def _check_envelope_tensor(value: object, batch: ElectronBatch, *, name: str) -> None:
-    if not isinstance(value, torch.Tensor):
-        raise TypeError(f"{name} output must be a torch.Tensor, got {type(value)!r}")
-    expected = (batch.batch_size,)
-    if value.shape != expected:
-        raise ValueError(f"{name} output must have shape {expected}, got {tuple(value.shape)}")
+def __getattr__(name: str) -> object:
+    if name in _FACTOR_MODULE_NAMES:
+        import tpen.nn.factor as _factor
 
+        return getattr(_factor, name)
+    if name in _CUSP_MODULE_NAMES:
+        import tpen.nn.cusp as _cusp
 
-def _inverse_softplus(value: float) -> torch.Tensor:
-    value = max(value, 1e-12)
-    tensor = torch.tensor(value, dtype=torch.float64)
-    return torch.log(torch.expm1(tensor))
+        return getattr(_cusp, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
+    "AdditiveCusp",
     "AdditiveEnvelope",
     "ElectronElectronCusp",
+    "ElectronNucleusCusp",
+    "ElectronNucleusCuspLaw",
     "Envelope",
     "GaussianConfinement",
     "HookeGaussianConfinement",
+    "LinearElectronNucleusCuspLaw",
+    "LogAmplitudeFactor",
     "rational_pair_cusp",
 ]

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 import torch
 from torch import nn
 
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, Walkers, WavefunctionOutput
+from tpen.data.permutation import Permutation
 from tpen.sampling import MALASampler
 from tpen.sampling.metropolis import MetropolisSampler
 from tpen.sampling.moves import GaussianMove
@@ -76,6 +81,51 @@ def test_metropolis_initialize_without_partition_has_no_spins() -> None:
 
     assert walkers.positions.shape == (4, 2, 2)
     assert walkers.spins is None
+
+
+def test_sampler_propagates_fixed_nuclear_context_through_batches_and_restore() -> None:
+    nuclear_positions = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    sampler = MetropolisSampler(
+        n_walkers=3,
+        n_electrons=2,
+        spatial_dim=3,
+        seed=7,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+
+    walkers = sampler.reset(device="cpu")
+    batch = walkers.make_batch()
+    assert torch.equal(batch.nuclear_positions, nuclear_positions)
+    assert torch.equal(batch.nuclear_charges, nuclear_charges)
+    stepped = sampler.step(NoGradLinearModel(), walkers)
+    assert torch.equal(stepped.make_batch().nuclear_positions, nuclear_positions)
+    assert torch.equal(stepped.make_batch().nuclear_charges, nuclear_charges)
+    permuted = batch.permute(Permutation((1, 0)))
+    assert torch.equal(permuted.nuclear_positions, nuclear_positions)
+    assert torch.equal(permuted.nuclear_charges, nuclear_charges)
+
+    resumed = MetropolisSampler(n_walkers=3, n_electrons=2, spatial_dim=3, seed=7, dtype=torch.float64)
+    resumed.load_mcmc_state_dict(sampler.mcmc_state_dict(), device="cpu")
+    restored = resumed.walkers
+    assert restored is not None
+    assert torch.equal(restored.make_batch().nuclear_positions, nuclear_positions)
+    assert torch.equal(restored.make_batch().nuclear_charges, nuclear_charges)
+
+
+def test_sampler_rejects_partial_or_malformed_nuclear_context() -> None:
+    import pytest
+
+    positions = torch.zeros(1, 3, dtype=torch.float64)
+    charges = torch.ones(1, dtype=torch.float64)
+    with pytest.raises(ValueError, match="provided together"):
+        MetropolisSampler(nuclear_positions=positions)
+    with pytest.raises(ValueError, match="spatial_dim"):
+        MetropolisSampler(nuclear_positions=positions, nuclear_charges=charges, spatial_dim=2)
+    with pytest.raises(ValueError, match="n_nuclei"):
+        MetropolisSampler(nuclear_positions=positions, nuclear_charges=torch.ones(2))
 
 
 def test_gaussian_single_electron_move_preserves_shape_and_changes_one_electron_per_walker() -> None:
@@ -246,8 +296,18 @@ def test_mala_sampler_initializes_configured_spin_partition() -> None:
 
 def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
     model = QuadraticLogAbsModel()
-    sampler = MALASampler(proposal_scale=0.05, n_walkers=4, n_electrons=2, spatial_dim=1, dtype=torch.float64)
-    walkers = Walkers(positions=torch.zeros(4, 2, 1, dtype=torch.float64))
+    nuclear_positions = torch.tensor([[0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    sampler = MALASampler(
+        proposal_scale=0.05,
+        n_walkers=4,
+        n_electrons=2,
+        spatial_dim=1,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+    walkers = sampler.reset()
 
     stepped = sampler.step(model, walkers)
 
@@ -257,5 +317,254 @@ def test_mala_sampler_uses_logabs_gradients_and_caches_valid_walkers() -> None:
     assert stepped.sign is not None and stepped.sign.shape == (4,)
     assert stepped.aux["accepted"].shape == (4,)
     assert stepped.aux["log_accept_ratio"].shape == (4,)
+    assert stepped.atomic_configuration is not None
+    assert torch.equal(stepped.atomic_configuration.positions, nuclear_positions)
+    assert torch.equal(stepped.atomic_configuration.charges, nuclear_charges)
     assert torch.isfinite(stepped.logabs).all()
     assert 0.0 <= sampler.acceptance_rate <= 1.0
+
+
+def test_sampler_with_no_atomic_configuration_stays_legacy_hooke_none() -> None:
+    sampler = MetropolisSampler(n_walkers=3, n_electrons=2, spatial_dim=2, dtype=torch.float64)
+
+    walkers = sampler.reset(device="cpu")
+
+    assert sampler.atomic_configuration is None
+    assert sampler.nuclear_positions is None
+    assert sampler.nuclear_charges is None
+    assert walkers.atomic_configuration is None
+    assert walkers.make_batch().nuclear_positions is None
+    assert walkers.make_batch().nuclear_charges is None
+
+    state = sampler.mcmc_state_dict()
+    resumed = MetropolisSampler(n_walkers=3, n_electrons=2, spatial_dim=2, dtype=torch.float64)
+    resumed.load_mcmc_state_dict(state, device="cpu")
+
+    assert resumed.atomic_configuration is None
+
+
+def test_load_mcmc_state_dict_adopts_restored_configuration_when_unset() -> None:
+    nuclear_positions = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    configured = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+    configured.reset(device="cpu")
+    state = configured.mcmc_state_dict()
+
+    unset = MetropolisSampler(n_walkers=2, n_electrons=2, spatial_dim=3, dtype=torch.float64)
+    assert unset.atomic_configuration is None
+
+    unset.load_mcmc_state_dict(state, device="cpu")
+
+    assert unset.atomic_configuration is not None
+    assert unset.atomic_configuration == configured.atomic_configuration
+    assert torch.equal(unset.nuclear_positions, nuclear_positions)
+    assert torch.equal(unset.nuclear_charges, nuclear_charges)
+    # The restored walkers are normalized onto the single resolved reference.
+    assert unset.walkers.atomic_configuration is unset.atomic_configuration
+
+
+def test_load_mcmc_state_dict_serializes_atomic_configuration_before_any_reset() -> None:
+    nuclear_positions = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    configured = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+
+    # No reset()/initialize() call yet: no walkers exist on this sampler.
+    assert configured.walkers is None
+    state = configured.mcmc_state_dict()
+    assert state["walkers"] is None
+    assert state["atomic_configuration"] is not None
+
+    unset = MetropolisSampler(n_walkers=2, n_electrons=2, spatial_dim=3, dtype=torch.float64)
+    unset.load_mcmc_state_dict(state, device="cpu")
+
+    assert unset.atomic_configuration is not None
+    assert torch.equal(unset.nuclear_positions, nuclear_positions)
+    assert torch.equal(unset.nuclear_charges, nuclear_charges)
+
+
+def test_load_mcmc_state_dict_requires_exact_agreement_when_configured() -> None:
+    positions_a = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    charges_a = torch.tensor([2.0], dtype=torch.float64)
+    positions_b = torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float64)
+    charges_b = torch.tensor([3.0], dtype=torch.float64)
+
+    source = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=positions_a,
+        nuclear_charges=charges_a,
+        dtype=torch.float64,
+    )
+    source.reset(device="cpu")
+    state = source.mcmc_state_dict()
+
+    mismatched = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=positions_b,
+        nuclear_charges=charges_b,
+        dtype=torch.float64,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        mismatched.load_mcmc_state_dict(state, device="cpu")
+
+    # Nearly-equal-but-not-exact must also be rejected: exact agreement, not tolerant compare.
+    almost = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=positions_a + 1e-12,
+        nuclear_charges=charges_a,
+        dtype=torch.float64,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        almost.load_mcmc_state_dict(state, device="cpu")
+
+    # A checkpoint with no configuration must not disturb an already-configured sampler
+    # (contract: "preserve configured atomic configuration on restore").
+    unset_checkpoint_state = dict(state)
+    unset_checkpoint_state["atomic_configuration"] = None
+    unset_checkpoint_state["walkers"] = replace(state["walkers"].to(device="cpu"), atomic_configuration=None)
+    configured_again = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=positions_a,
+        nuclear_charges=charges_a,
+        dtype=torch.float64,
+    )
+    configured_again.load_mcmc_state_dict(unset_checkpoint_state, device="cpu")
+    assert configured_again.atomic_configuration == AtomicConfiguration(positions=positions_a, charges=charges_a)
+
+
+def test_load_mcmc_state_dict_rejects_walkers_atomic_configuration_mismatching_canonical_entry() -> None:
+    positions_a = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    charges_a = torch.tensor([2.0], dtype=torch.float64)
+    positions_b = torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float64)
+    charges_b = torch.tensor([3.0], dtype=torch.float64)
+
+    source = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=positions_a,
+        nuclear_charges=charges_a,
+        dtype=torch.float64,
+    )
+    source.reset(device="cpu")
+    state = source.mcmc_state_dict()
+    # Simulate a hand-built/malformed checkpoint where the walkers carry a
+    # different configuration than the canonical top-level entry.
+    divergent_configuration = AtomicConfiguration(positions=positions_b, charges=charges_b)
+    state["walkers"] = replace(state["walkers"], atomic_configuration=divergent_configuration)
+
+    resumed = MetropolisSampler(n_walkers=2, n_electrons=2, spatial_dim=3, dtype=torch.float64)
+    with pytest.raises(ValueError, match="does not match its canonical"):
+        resumed.load_mcmc_state_dict(state, device="cpu")
+
+
+def test_reset_preserves_configured_atomic_configuration() -> None:
+    nuclear_positions = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    sampler = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+    before = sampler.atomic_configuration
+
+    sampler.reset(device="cpu")
+    sampler.reset(device="cpu")
+
+    assert sampler.atomic_configuration is before
+    assert sampler.walkers is not None
+    assert sampler.walkers.atomic_configuration is before
+
+
+def test_sampler_atomic_configuration_moves_with_mixed_device_restore() -> None:
+    nuclear_positions = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64)
+    nuclear_charges = torch.tensor([2.0], dtype=torch.float64)
+    source = MetropolisSampler(
+        n_walkers=2,
+        n_electrons=2,
+        spatial_dim=3,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        dtype=torch.float64,
+    )
+    source.reset(device="cpu")
+    state = source.mcmc_state_dict()
+    state["generator_device"] = "cuda"
+
+    resumed = MetropolisSampler(n_walkers=2, n_electrons=2, spatial_dim=3, dtype=torch.float64)
+    resumed.load_mcmc_state_dict(state, device="cpu")
+
+    assert resumed.atomic_configuration is not None
+    assert resumed.atomic_configuration.device == torch.device("cpu")
+    assert resumed.walkers is not None
+    assert resumed.walkers.atomic_configuration.device == torch.device("cpu")
+    assert torch.equal(resumed.nuclear_positions, nuclear_positions)
+
+
+def test_walkers_atomic_configuration_to_moves_dtype_and_device() -> None:
+    configuration = AtomicConfiguration(
+        positions=torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64),
+        charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    walkers = Walkers(
+        positions=torch.zeros(2, 2, 3, dtype=torch.float64),
+        atomic_configuration=configuration,
+    )
+
+    moved = walkers.to(dtype=torch.float32)
+
+    assert moved.atomic_configuration is not None
+    assert moved.atomic_configuration.dtype == torch.float32
+    assert moved.positions.dtype == torch.float32
+    # The source configuration is immutable and unaffected by the move.
+    assert configuration.dtype == torch.float64
+
+
+def test_walkers_rejects_atomic_configuration_device_mismatch() -> None:
+    configuration = AtomicConfiguration(
+        positions=torch.zeros(1, 3, dtype=torch.float64),
+        charges=torch.ones(1, dtype=torch.float64),
+    )
+    with pytest.raises(ValueError, match="positions device"):
+        Walkers(
+            positions=torch.zeros(2, 2, 3, dtype=torch.float64, device="meta"),
+            atomic_configuration=configuration,
+        )
+
+
+def test_electron_batch_rejects_atomic_configuration_mismatching_unbatched_nuclear_tensors() -> None:
+    configuration = AtomicConfiguration(
+        positions=torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float64),
+        charges=torch.tensor([2.0], dtype=torch.float64),
+    )
+    with pytest.raises(ValueError, match="atomic_configuration must match"):
+        ElectronBatch(
+            positions=torch.zeros(2, 2, 3, dtype=torch.float64),
+            nuclear_positions=torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64),
+            nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
+            atomic_configuration=configuration,
+        )

@@ -9,6 +9,7 @@ import platform
 import re
 import socket
 import subprocess
+import time
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,7 +19,7 @@ from dataclasses import is_dataclass
 from datetime import UTC, datetime, tzinfo
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Mapping, TypeVar
+from typing import Any, Callable, Mapping, TypeVar
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -169,6 +170,9 @@ class RunContext:
     _occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = field(
         default_factory=dict, init=False, repr=False
     )
+    monotonic_clock: Callable[[], float] = field(
+        default=time.perf_counter, repr=False
+    )
 
     @property
     def run_dir(self) -> Path:
@@ -230,7 +234,9 @@ class RunContext:
             raise TypeError("Started and Ended are emitted only by scope(operation)")
         if state is not None and not isinstance(state, DomainState):
             raise TypeError(f"state must be a DomainState, got {type(state).__name__}")
-        occurrence = Occurrence(event=event, count=self._next_occurrence_count(type(event)))
+        occurrence = self._occurrence(
+            event=event, count=self._next_occurrence_count(type(event))
+        )
         self._dispatch_occurrence(occurrence, state=state)
         return occurrence
 
@@ -261,19 +267,29 @@ class RunContext:
         if state is not None and not isinstance(state, DomainState):
             raise TypeError(f"state must be a DomainState, got {type(state).__name__}")
         count = self._next_occurrence_count(type(operation))
-        started = Occurrence(event=Started(operation), count=count)
+        started = self._occurrence(event=Started(operation), count=count)
         self._dispatch_occurrence(started, state=state)
         try:
             yield started
-        finally:
+        except BaseException:
             self._dispatch_occurrence(
-                Occurrence(event=Ended(operation), count=count), state=state
+                self._occurrence(event=Ended(operation, succeeded=False), count=count), state=state
+            )
+            raise
+        else:
+            self._dispatch_occurrence(
+                self._occurrence(event=Ended(operation, succeeded=True), count=count), state=state
             )
 
     def _next_occurrence_count(self, event_type: type[TypedEvent] | type[Operation]) -> int:
         count = self._occurrence_counts.get(event_type, 0) + 1
         self._occurrence_counts[event_type] = count
         return count
+    def _occurrence(self, *, event: _EventT, count: int) -> Occurrence[_EventT]:
+        """Create one delivery-stamped occurrence before any observer runs."""
+
+        return Occurrence(event=event, count=count, monotonic_time=self.monotonic_clock())
+
 
     def _dispatch_occurrence(
         self, occurrence: Occurrence[Any], *, state: DomainState | None = None

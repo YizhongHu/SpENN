@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tpen.evaluation.calculators.atom import ElectronNucleusRadialCalculator
 from tpen.evaluation.calculators.derivatives import RadialLogAbsDerivativeCalculator
 from tpen.evaluation.calculators.local_energy import LocalEnergyCalculator
 from tpen.evaluation.calculators.trace import (
@@ -17,6 +18,7 @@ from tpen.evaluation.calculators.transforms import (
 from tpen.evaluation.calculators.wavefunction import WavefunctionCalculator
 
 __all__ = [
+    "ElectronNucleusRadialCalculator",
     "FeatureTraceCalculator",
     "FullModelAntisymmetryCalculator",
     "LocalEnergyCalculator",

@@ -72,11 +72,16 @@ class Occurrence(Generic[EventT]):
     count : int
         One-based count for the concrete event or operation type in the
         current run context.
+    monotonic_time : float or None, optional
+        Process-local monotonic time captured by the emitter before artifact
+        persistence and callback delivery. It is deliberately an occurrence
+        envelope field, not domain-event data, and is not a cross-run clock.
+        ``None`` preserves direct test construction outside a `RunContext`.
     """
 
     event: EventT
     count: int
-
+    monotonic_time: float | None = None
 
 @dataclass(frozen=True)
 class Started(Event, Generic[OperationT]):
@@ -87,10 +92,19 @@ class Started(Event, Generic[OperationT]):
 
 @dataclass(frozen=True)
 class Ended(Event, Generic[OperationT]):
-    """Record exit from a typed operation scope, regardless of outcome."""
+    """Record exit from a typed operation scope.
+
+    Parameters
+    ----------
+    operation : OperationT
+        Scoped operation that ended.
+    succeeded : bool, optional
+        Whether the scope body returned normally. A boundary still arrives
+        after a body exception once its `Started` boundary was delivered.
+    """
 
     operation: OperationT
-
+    succeeded: bool = True
 
 @dataclass(frozen=True)
 class Subscription:

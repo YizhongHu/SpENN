@@ -15,7 +15,7 @@ nn = require_torch_nn(feature="TPEN wavefunction modules")
 
 
 class TPENWaveFunction(EquivariantMap):
-    """Compose basis, embedding, a TPEN layer stack, readout, and an envelope.
+    """Compose basis, embedding, a TPEN layer stack, readout, and post-readout factors.
 
     The full pipeline is::
 
@@ -25,11 +25,20 @@ class TPENWaveFunction(EquivariantMap):
           -> embedding
           -> TPENStack (TPEN layers)
           -> readout
-          -> + additive log-amplitude envelope
+          -> + envelope (legacy, optional)
+          -> + sum(factors) (generic, optional)
 
-    The raw :class:`ElectronBatch` is still passed to the readout and envelope so
-    they see true coordinates; the basis only re-represents the per-particle
-    input to the embedding.
+    ``envelope`` and each entry of ``factors`` are additive post-readout
+    log-amplitude contributions: every one of them accepts an
+    :class:`ElectronBatch` and returns a ``[batch]``-shaped tensor (the
+    contract shared by both `tpen.nn.envelope.Envelope` and
+    `tpen.nn.factor.LogAmplitudeFactor`). There is no mutual exclusion
+    between them -- they compose in one pipeline, and either (or both) may be
+    omitted for a bare readout output.
+
+    The raw :class:`ElectronBatch` is still passed to the readout and every
+    factor so they see true coordinates; the basis only re-represents the
+    per-particle input to the embedding.
 
     Parameters
     ----------
@@ -41,9 +50,11 @@ class TPENWaveFunction(EquivariantMap):
         are wrapped into a stack; the layers always live in ``self.stack``.
     readout : torch.nn.Module
         Module mapping final real features to :class:`WavefunctionOutput`.
-    envelope : torch.nn.Module
-        Required additive log-amplitude envelope. Envelopes accept ``batch``
-        and return an additive tensor matching ``output.logabs``.
+    envelope : torch.nn.Module or None, optional
+        Legacy additive log-amplitude envelope (e.g. `tpen.nn.AdditiveEnvelope`).
+    factors : iterable of torch.nn.Module, optional
+        Generic additive post-readout log-amplitude factors (e.g.
+        `tpen.nn.ElectronNucleusCusp`, `tpen.nn.AdditiveCusp`).
     basis : torch.nn.Module or None, optional
         Optional :class:`tpen.nn.ElectronBasis` applied before the embedding.
         When ``None``, the embedding consumes the raw :class:`ElectronBatch`.
@@ -57,36 +68,39 @@ class TPENWaveFunction(EquivariantMap):
         embedding: nn.Module,
         layers: Iterable[nn.Module] | TPENStack = (),
         readout: nn.Module,
-        envelope: nn.Module | None,
+        envelope: nn.Module | None = None,
+        factors: Iterable[nn.Module] = (),
         basis: nn.Module | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        if envelope is None:
-            raise ValueError("TPENWaveFunction requires an envelope module")
         self.basis = basis
         self.embedding = embedding
         self.stack = layers if isinstance(layers, TPENStack) else TPENStack(layers)
         self.readout = readout
         self.envelope = envelope
+        self.factors = nn.ModuleList(factors)
 
     def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
+
+        output = self._readout_output(batch)
+        logabs = output.logabs
+        if self.envelope is not None:
+            logabs = logabs + _log_factor(self.envelope, batch, logabs.shape, name="Envelope")
+        for index, factor in enumerate(self.factors):
+            logabs = logabs + _log_factor(factor, batch, logabs.shape, name=f"factors[{index}]")
+        return WavefunctionOutput(logabs=logabs, sign=output.sign, phase=output.phase, aux=dict(output.aux))
+
+    def _readout_output(self, batch: ElectronBatch) -> WavefunctionOutput:
+        """Build readout output once for the public evaluation path."""
 
         basis_features = self.basis(batch) if self.basis is not None else None
         context = TPENForwardContext(batch=batch, basis_features=basis_features)
         embedded_input = basis_features if basis_features is not None else batch
         features = self.embedding(embedded_input, context=context)
         features = self.stack(features, context)
-        output = self.readout(features, batch)
-        logabs = output.logabs
-        logabs = logabs + _log_factor(self.envelope, batch, output.logabs.shape, name="Envelope")
-        return WavefunctionOutput(
-            logabs=logabs,
-            sign=output.sign,
-            phase=output.phase,
-            aux=dict(output.aux),
-        )
+        return self.readout(features, batch)
 
 
 def _log_factor(module: nn.Module, batch: ElectronBatch, shape: torch.Size, *, name: str) -> torch.Tensor:

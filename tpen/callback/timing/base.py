@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from tpen.events import Occurrence
+
 from tpen.accelerator import synchronize as _synchronize_accelerator
 
 from ..base import Callback
@@ -29,4 +33,15 @@ def _sync_device(accelerator_synchronize: bool) -> None:
     _synchronize_accelerator(feature="device timing synchronization")
 
 
-__all__ = ["Callback", "_sync_device"]
+def _occurrence_time(occurrence: Occurrence[object], clock: Callable[[], float]) -> float:
+    """Return an emitter-stamped host boundary time.
+
+    Direct callback tests may construct an occurrence without a `RunContext`;
+    the injected clock preserves that narrow testing seam. Runtime delivery
+    always supplies the shared stamp captured before persistence and callbacks.
+    """
+
+    return clock() if occurrence.monotonic_time is None else occurrence.monotonic_time
+
+
+__all__ = ["Callback", "_occurrence_time", "_sync_device"]

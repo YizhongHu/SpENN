@@ -49,7 +49,21 @@ def summarize_values(
     quantiles: Sequence[float],
     prefix: str,
 ) -> dict[str, MetricScalar]:
-    """Summarize finite tensor values with a metric prefix."""
+    """Summarize finite tensor values with a metric prefix.
+
+    Notes
+    -----
+    ``{prefix}_stderr`` is an **IID-only** standard error: ``sigma / sqrt(N)``
+    over flattened finite samples. MCMC walkers are serially correlated and are
+    flattened here, so this value understates the true uncertainty by roughly
+    ``sqrt(tau_int)``. It is retained unchanged because it is a durable metric
+    with existing consumers.
+
+    The correlation-aware replacement is
+    :func:`tpen.statistics.produce_trajectory_statistics`, which needs a
+    ``[draw, walker]`` trajectory rather than the flattened batch available
+    here. Do not reinterpret this metric as an MCSE.
+    """
 
     flat = values.detach().reshape(-1)
     finite_mask = torch.isfinite(flat)
@@ -60,6 +74,8 @@ def summarize_values(
     finite = flat[finite_mask]
     variance = finite.var(unbiased=False) if n_finite > 1 else torch.zeros((), dtype=finite.dtype, device=finite.device)
     std = torch.sqrt(variance)
+    # IID standard error: correct only for independent samples. See the Notes
+    # section above before using this as an uncertainty on an MCMC mean.
     stderr = std / float(n_finite) ** 0.5
     metrics: dict[str, MetricScalar] = {
         f"{prefix}_mean": float(finite.mean().item()),

@@ -65,7 +65,7 @@ class FullModelAntisymmetryCalculator:
 
 
 class SpatialExchangeSymmetryCalculator:
-    """Compare Hooke spatial-singlet outputs under coordinate exchange."""
+    """Compare spatial-singlet outputs under opposite-spin coordinate exchange."""
 
     name = "spatial_exchange_symmetry"
 

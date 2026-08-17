@@ -15,6 +15,9 @@ stand-in cannot substitute for the real one here.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -68,6 +71,7 @@ def make_run_context(
     callbacks: list[Any] | None = None,
     loggers: list[Any] | None = None,
     run_id: str = "helper-run",
+    monotonic_clock: Callable[[], float] | None = None,
     device: str = "cpu",
 ) -> RunContext:
     """Return a real `RunContext` writing artifacts under ``tmp_path``.
@@ -82,6 +86,8 @@ def make_run_context(
         Loggers `RunContext.log` writes to, in order.
     run_id : str, optional
         Run identifier used for both the run name and the directory name.
+    monotonic_clock : callable, optional
+        Process-local clock injected for deterministic event-boundary tests.
     device : str, optional
         Device string recorded in the metadata; the trainer reads it.
     """
@@ -117,6 +123,7 @@ def make_run_context(
         clock=RunClock(timezone="UTC", tzinfo=UTC),
         callbacks=[] if callbacks is None else callbacks,
         loggers=[] if loggers is None else loggers,
+        monotonic_clock=time.perf_counter if monotonic_clock is None else monotonic_clock,
     )
 
 
