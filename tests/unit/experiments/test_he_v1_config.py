@@ -412,6 +412,50 @@ def test_the_reference_energy_digit_string_is_pinned_in_a_test() -> None:
     assert float(_load(EVAL)["system"]["reference_energy"]) == float(expected)
 
 
+def test_every_declared_trainable_component_is_actually_trainable() -> None:
+    """The three components the study trains must each SAY SO in both configs.
+
+    THIS TEST EXISTS BECAUSE ITS ABSENCE WAS THE DEFECT. The config test already
+    asserted ``ee["trainable_range"] is True`` and ``law["trainable"] is True``
+    one line away, and asserted only ``channels`` for the readout. That asymmetry
+    is exactly where the hole was: `PfaffianReadout` defaults to
+    ``trainable: bool = False`` -- documented as keeping the weights "as fixed
+    buffers for scaffold determinism" -- so passing only ``channels`` pinned
+    ``w_c`` at uniform 1/32 for all 300,000 updates and the channel mixing could
+    never learn.
+
+    The failure was undetectable by reading the config, which names no default it
+    disagrees with, and undetectable at runtime: under the default,
+    ``channel_weights`` is ``register_parameter(..., None)`` and the value lives
+    in a NON-PERSISTENT buffer, so it appears in neither ``named_parameters()``
+    nor ``state_dict()``. Nothing logs it and nothing restores it. A DEFAULT THAT
+    SILENTLY DISAGREES WITH THE CONFIG AUTHOR'S INTENT IS WHAT A CONFIG TEST IS
+    FOR.
+
+    Asserted in BOTH configs because enabling it adds the state-dict key
+    ``readout.channel_weights`` and eval restores ``strict: true``, so a
+    one-sided change fails restore in both directions.
+    """
+
+    for path in (TRAIN, EVAL):
+        model = _load(path)["model"]
+        readout = model["readout"]
+        assert readout["_target_"] == "tpen.nn.readout.PfaffianReadout", path.name
+        assert readout.get("trainable") is True, (
+            f"{path.name}: PfaffianReadout.trainable defaults to False, so omitting it "
+            "pins the channel weights at uniform 1/32 as a non-persistent buffer -- "
+            "absent from named_parameters() and state_dict(), and unlearnable"
+        )
+
+        factors = model["factors"]
+        assert factors[0]["trainable_range"] is True, path.name
+        assert factors[1]["law"]["trainable"] is True, path.name
+
+    # The two model blocks must stay byte-identical, which is what makes the
+    # strict restore survive this change.
+    assert _load(TRAIN)["model"] == _load(EVAL)["model"]
+
+
 def test_the_callback_above_the_factor_scalars_index_is_still_sampler_health() -> None:
     """Names the neighbour that makes the off-by-one silent rather than loud.
 

@@ -192,6 +192,32 @@ model:
   readout:
     _target_: tpen.nn.readout.PfaffianReadout
     channels: 32
+    # TRAINABLE ON PURPOSE, AND THE DEFAULT IS THE OPPOSITE. `PfaffianReadout`
+    # declares `trainable: bool = False`, documented as keeping the weights "as
+    # fixed buffers for scaffold determinism". Passing only `channels` therefore
+    # pinned w_c at uniform 1/32 for the entire run: Psi = (1/32) sum_c Pf[K_c]
+    # with the channel mixing UNLEARNABLE across all 300,000 updates.
+    #
+    # The silence was total, which is why this needed a test rather than care.
+    # Under the default, `channel_weights` is `register_parameter(..., None)` and
+    # the value lives in a NON-PERSISTENT buffer, so it is absent from
+    # `named_parameters()` AND from `state_dict()`. Nothing logs it, nothing
+    # restores it, and no gradient touches it. Measured at 0d74d2a2 (job
+    # 39680008): readout parameter names [], state-dict keys matching readout [],
+    # 43 parameters total.
+    #
+    # CHECKPOINT CONSEQUENCE, the same shape as the en-cusp law's two-key note
+    # above: enabling this ADDS the state-dict key `readout.channel_weights`.
+    # `eval.yaml` restores with `mode: model_only, strict: true`, so a ONE-SIDED
+    # change fails restore IN BOTH DIRECTIONS. The two model blocks must stay
+    # byte-identical and a config test asserts they do.
+    #
+    # 1/32 uniform is now a CHOSEN INITIALIZATION, not an inherited default, and
+    # the difference between those two is the entire content of this bug. It is
+    # the maximum-entropy start over channels: it commits to no channel ordering
+    # and reproduces the previous fixed behaviour exactly at step 0, so the only
+    # thing that changes is that the weights can now move.
+    trainable: true
 
 hamiltonian_terms:
   kinetic:

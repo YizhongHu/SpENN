@@ -152,6 +152,13 @@ model:
   readout:
     _target_: tpen.nn.readout.PfaffianReadout
     channels: 32
+    # MUST MATCH train.yaml EXACTLY. Enabling `trainable` adds the state-dict key
+    # `readout.channel_weights`, and this config restores with
+    # `mode: model_only, strict: true`, so a one-sided change fails restore in
+    # BOTH directions: a trained checkpoint into a non-trainable eval model, or
+    # the reverse. See train.yaml for why the default was wrong and why 1/32 is
+    # now a chosen initialization rather than an inherited one.
+    trainable: true
 
 hamiltonian_terms:
   kinetic:
