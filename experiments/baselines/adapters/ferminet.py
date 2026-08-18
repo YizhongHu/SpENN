@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import re
 import statistics
 import sys
@@ -40,29 +39,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from experiments.baselines.errors import AdapterError
 from experiments.baselines.records import BaselineRecord
+
+# Re-exported so that callers importing these from this module keep working;
+# both now live in the statistics module, which owns the concept.
+from experiments.baselines.statistics import blocking_stderr  # noqa: F401
 
 TRAIN_STATS_FILENAME = "train_stats.csv"
 RECORD_FILENAME = "baseline_record.json"
-
-#: Smallest number of blocks that still supports a usable variance estimate.
-#: Below this the standard error is itself so noisy that a larger value means
-#: nothing, so blocking stops rather than reporting a spuriously wide bar.
-MIN_BLOCKS = 32
 
 #: ``NVIDIA A100-SXM4-40GB, GPU-39166c9d-..., 40960 MiB``
 _NVIDIA_SMI = re.compile(r"^\s*(NVIDIA [^,]+),\s*(GPU-[0-9a-f-]+)", re.MULTILINE)
 _START_STAMP = re.compile(r"start=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})")
 _END_STAMP = re.compile(r"end=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})")
-
-
-class AdapterError(RuntimeError):
-    """A run directory could not be turned into a record.
-
-    Raised rather than returning a partial record: a run with no usable energy
-    must fail loudly, never appear as a record with a null energy or vanish
-    from the collection silently.
-    """
 
 
 def read_energies(run_dir: Path) -> list[float]:
@@ -98,49 +88,6 @@ def read_energies(run_dir: Path) -> list[float]:
     if not energies:
         raise AdapterError(f"{stats_path} has no data rows")
     return energies
-
-
-def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tuple[float, int]:
-    """Return a correlation-corrected standard error by pair-average blocking.
-
-    Implements Flyvbjerg-Petersen blocking: repeatedly average adjacent pairs,
-    recording the standard error at each level. Correlated data shows the
-    standard error rising with block size and then plateauing; the plateau is
-    the honest bar.
-
-    Parameters
-    ----------
-    values : sequence of float
-        The series to estimate the mean's uncertainty for.
-    min_blocks : int, optional
-        Stop once fewer than this many blocks remain.
-
-    Returns
-    -------
-    tuple of (float, int)
-        The standard error, and the number of blocks it was computed from.
-
-    Raises
-    ------
-    AdapterError
-        If fewer than two values are supplied.
-    """
-
-    data = [float(value) for value in values]
-    if len(data) < 2:
-        raise AdapterError("blocking needs at least two values")
-
-    best_stderr = 0.0
-    best_blocks = len(data)
-    while len(data) >= max(min_blocks, 2):
-        stderr = math.sqrt(statistics.variance(data) / len(data))
-        if stderr > best_stderr:
-            best_stderr, best_blocks = stderr, len(data)
-        # Pair-average into the next blocking level, dropping a trailing odd
-        # sample rather than pairing it with nothing.
-        data = [(data[i] + data[i + 1]) / 2.0 for i in range(0, len(data) - 1, 2)]
-
-    return best_stderr, best_blocks
 
 
 def parse_device(log_text: str) -> tuple[str | None, str | None]:
