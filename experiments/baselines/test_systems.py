@@ -15,7 +15,16 @@ from typing import Any
 import pytest
 import yaml
 
-REGISTRY_PATH = Path(__file__).resolve().parent / "systems.yaml"
+# The path comes from the loader, not a second copy of the literal: a test that
+# validates a different file than the loader reads is a test that can pass while
+# production code reads something broken.
+from experiments.baselines.systems import (
+    REGISTRY_PATH,
+    RegistryError,
+    known_system_ids,
+    load_registry,
+    system_ids,
+)
 
 # Keys every registry entry must carry. Missing any of these is a hard failure:
 # downstream collection joins on `id` and reports against
@@ -283,8 +292,6 @@ def test_electron_count_matches_total_nuclear_charge(entries: list[dict[str, Any
 def test_loader_ids_match_the_document(entries: list[dict[str, Any]]) -> None:
     """``known_system_ids`` reports exactly the ids the file declares."""
 
-    from experiments.baselines.systems import known_system_ids
-
     assert known_system_ids() == frozenset(entry["id"] for entry in entries)
 
 
@@ -295,8 +302,6 @@ def test_loader_covers_every_reproduced_system() -> None:
     from the registry would not break any adapter -- it would make the record
     uncomparable, which is why the set is pinned here rather than left implicit.
     """
-
-    from experiments.baselines.systems import known_system_ids
 
     emitted = {
         "he_atom",
@@ -314,16 +319,12 @@ def test_loader_covers_every_reproduced_system() -> None:
 def test_loader_rejects_a_missing_registry(tmp_path: Path) -> None:
     """A missing registry raises rather than yielding an empty id set."""
 
-    from experiments.baselines.systems import RegistryError, load_registry
-
     with pytest.raises(RegistryError, match="cannot read"):
         load_registry(tmp_path / "absent.yaml")
 
 
 def test_loader_rejects_a_registry_without_systems(tmp_path: Path) -> None:
     """A registry with no ``systems`` list raises."""
-
-    from experiments.baselines.systems import RegistryError, load_registry
 
     path = tmp_path / "systems.yaml"
     path.write_text("schema_version: 1\nsystems: []\n", encoding="utf-8")
@@ -333,8 +334,6 @@ def test_loader_rejects_a_registry_without_systems(tmp_path: Path) -> None:
 
 def test_loader_rejects_an_entry_without_an_id(tmp_path: Path) -> None:
     """An entry missing its id raises instead of being skipped."""
-
-    from experiments.baselines.systems import RegistryError, system_ids
 
     path = tmp_path / "systems.yaml"
     path.write_text("systems:\n  - description: nameless\n", encoding="utf-8")
