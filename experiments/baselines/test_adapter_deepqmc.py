@@ -409,7 +409,11 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
     numpy = pytest.importorskip("numpy")
     run = tmp_path / "training"
     run.mkdir()
-    values = numpy.asarray(_converged(count=4000), dtype="float32").reshape(4000, 1, 1)
+    # The run must be long enough for the default estimator window: this test
+    # is about the HDF5-to-record path, not about short tails, so it takes the
+    # opt-in-free path and therefore has to clear statistics.MIN_TAIL_STEPS.
+    # At 4000 steps it raised before the number reached any assertion below.
+    values = numpy.asarray(_converged(count=40000), dtype="float32").reshape(-1, 1, 1)
     with h5py.File(run / "result.h5", "w") as handle:
         handle.create_dataset(ENERGY_DATASET, data=values)
     (tmp_path / "job.out").write_text(LOG_TEXT, encoding="utf-8")
@@ -425,7 +429,8 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
 
     assert record.code == "deepqmc"
     assert record.ansatz == "lapnet"
-    assert record.steps == 4000
+    assert record.steps == 40000
+    assert "last 10000 of 40000 steps" in (record.notes or "")
     assert record.gpu_model == "NVIDIA H200"
     assert record.code_commit == "cafe1234"
     assert record.energy_hartree == pytest.approx(-2.9037, abs=1e-3)
