@@ -122,7 +122,7 @@ def test_parse_wall_clock_seconds() -> None:
 def test_build_record_round_trips_and_carries_estimator_caveat(tmp_path: Path) -> None:
     """A built record validates, serialises, and names its estimator."""
 
-    energies = [-7.4779 + 0.0001 * math.sin(i / 7.0) for i in range(2000)]
+    energies = [-7.4779 + 0.0001 * math.sin(i / 7.0) for i in range(20000)]
     run_dir = _write_stats(tmp_path / "Li", energies)
     (tmp_path / "job.out").write_text(LOG_TEXT, encoding="utf-8")
 
@@ -137,8 +137,8 @@ def test_build_record_round_trips_and_carries_estimator_caveat(tmp_path: Path) -
 
     assert record.system_id == "li_atom"
     assert record.code == "ferminet"
-    assert record.steps == 2000
-    assert record.samples == 2000 * 4096
+    assert record.steps == 20000
+    assert record.samples == 20000 * 4096
     assert record.device_type == "cuda"
     assert record.gpu_model == "NVIDIA A100-SXM4-40GB"
     assert record.energy_hartree == pytest.approx(-7.4779, abs=1e-3)
@@ -158,11 +158,11 @@ def test_adapter_records_preserve_nested_run_provenance_on_collection(tmp_path: 
     run_root = tmp_path / "runs"
     first = _write_stats(
         run_root / "system-a" / "seed-0",
-        [-7.4 + 0.0001 * i for i in range(100)],
+        [-7.4 + 0.0001 * i for i in range(20000)],
     )
     second = _write_stats(
         run_root / "system-b" / "seed-0",
-        [-7.5 + 0.0001 * i for i in range(100)],
+        [-7.5 + 0.0001 * i for i in range(20000)],
     )
 
     for run_dir in (first, second):
@@ -183,20 +183,20 @@ def test_build_record_rejects_a_tail_too_short_to_estimate(tmp_path: Path) -> No
     """A tail of one sample cannot carry an error bar, so it must fail."""
 
     run_dir = _write_stats(tmp_path / "tiny", [-1.0, -1.1, -1.2])
-    with pytest.raises(AdapterError, match="need >= 2"):
+    with pytest.raises(AdapterError, match="cannot fill the 10000-step minimum"):
         build_record(run_dir, system_id="he_atom", batch_size=16, ansatz="ferminet", tail_fraction=0.01)
 
 
 def test_build_record_rejects_out_of_range_tail_fraction(tmp_path: Path) -> None:
-    run_dir = _write_stats(tmp_path / "run", [-1.0] * 100)
-    with pytest.raises(AdapterError, match="tail_fraction"):
+    run_dir = _write_stats(tmp_path / "run", [-1.0] * 20000)
+    with pytest.raises(AdapterError, match="tail fraction must be in"):
         build_record(run_dir, system_id="he_atom", batch_size=16, ansatz="ferminet", tail_fraction=0.0)
 
 
 def test_missing_log_leaves_device_fields_null(tmp_path: Path) -> None:
     """Without a log, device fields stay None rather than being guessed."""
 
-    run_dir = _write_stats(tmp_path / "run", [-2.9 + 0.001 * (i % 5) for i in range(500)])
+    run_dir = _write_stats(tmp_path / "run", [-2.9 + 0.001 * (i % 5) for i in range(20000)])
     record = build_record(run_dir, system_id="he_atom", batch_size=256, ansatz="ferminet")
     assert record.device_type is None
     assert record.gpu_model is None
@@ -210,7 +210,7 @@ def test_ansatz_is_recorded_not_assumed(tmp_path: Path) -> None:
     regardless of what ran, and two merged Psiformer records were mislabelled.
     """
 
-    run_dir = _write_stats(tmp_path / "He", [-2.9 + 1e-4 * (i % 7) for i in range(500)])
+    run_dir = _write_stats(tmp_path / "He", [-2.9 + 1e-4 * (i % 7) for i in range(20000)])
     record = build_record(run_dir, system_id="he_atom", batch_size=4096, ansatz="psiformer")
     assert record.ansatz == "psiformer"
 
@@ -224,7 +224,7 @@ def test_estimator_distinguishes_training_tail_from_inference(tmp_path: Path) ->
     coincidence rather than a recorded fact.
     """
 
-    run_dir = _write_stats(tmp_path / "Li", [-7.4779 + 1e-4 * (i % 5) for i in range(1000)])
+    run_dir = _write_stats(tmp_path / "Li", [-7.4779 + 1e-4 * (i % 5) for i in range(20000)])
 
     train = build_record(run_dir, system_id="li_atom", batch_size=4096, ansatz="ferminet")
     infer = build_record(

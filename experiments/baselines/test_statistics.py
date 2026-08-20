@@ -16,6 +16,7 @@ from experiments.baselines.errors import AdapterError
 from experiments.baselines.statistics import (
     blocking_inflation,
     blocking_stderr,
+    select_tail,
     sign_test,
     window_means,
 )
@@ -36,6 +37,47 @@ def _naive_stderr(series: list[float]) -> float:
     mean = sum(series) / len(series)
     variance = sum((x - mean) ** 2 for x in series) / (len(series) - 1)
     return math.sqrt(variance / len(series))
+
+
+def test_select_tail_never_exceeds_the_run_length() -> None:
+    """The window is a slice of the series, so it cannot be longer than it.
+
+    Without the clip, a short run yields a window equal to the floor, which is
+    both a lie about how many steps were averaged AND silently disables the
+    short-run refusal, because `window < min_steps` becomes false.
+    """
+
+    assert select_tail(20000, 0.25) == 10000
+    assert select_tail(12000, 0.9) == 10800
+    assert select_tail(10000, 1.0) == 10000
+    # Even asking for the whole trace cannot exceed it.
+    assert select_tail(11000, 1.0) == 11000
+
+
+def test_select_tail_applies_the_floor_and_then_the_fraction() -> None:
+    """Floor wins below it, fraction wins above it."""
+
+    assert select_tail(20000, 0.25) == 10000       # floor beats 5000
+    assert select_tail(200000, 0.25) == 50000      # fraction beats the floor
+    assert select_tail(40000, 0.25) == 10000       # exactly at the floor
+
+
+def test_select_tail_refuses_a_run_below_the_floor() -> None:
+    with pytest.raises(AdapterError, match="run of 500 steps cannot fill the 10000-step"):
+        select_tail(500, 0.25)
+
+
+def test_select_tail_honours_an_explicit_short_window() -> None:
+    """A caller may take a short window deliberately; that is not the same as
+    getting one by accident."""
+
+    assert select_tail(500, 1.0, allow_below_floor=True) == 500
+
+
+def test_select_tail_rejects_a_bad_fraction() -> None:
+    for bad in (0.0, -0.1, 1.5):
+        with pytest.raises(AdapterError, match="tail fraction must be in"):
+            select_tail(20000, bad)
 
 
 def test_blocking_exceeds_naive_stderr_on_correlated_data() -> None:

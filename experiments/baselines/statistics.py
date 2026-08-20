@@ -44,6 +44,83 @@ MIN_BLOCKS = 32
 #: gate one time in eight, which is too noisy to hang an expensive verdict on.
 SIGN_TEST_WINDOWS = 8
 
+#: Fewest steps an estimator window may span. **This is an absolute count, not a
+#: fraction, because the requirement is absolute**: the window has to be long
+#: enough to average out the slow mode, which is a property of the series rather
+#: than of the run length.
+#:
+#: A fraction alone fails in the small-run limit and did so measurably. At a 0.25
+#: fraction a 20000-step run yields a 5000-step window, and emitting at that
+#: window put Psiformer on helium at -2.1 microhartree and PauliNet at 100k at
+#: -3.33 microhartree -- both BELOW the exact energy, which no variational
+#: estimate can be. Widening to 10000 steps moved them to +1.16 and +15.29,
+#: matching the independently computed reference column.
+MIN_TAIL_STEPS = 10000
+
+
+def select_tail(
+    total_steps: int,
+    fraction: float,
+    *,
+    min_steps: int = MIN_TAIL_STEPS,
+    allow_below_floor: bool = False,
+) -> int:
+    """Return how many trailing steps the estimator window should span.
+
+    The window is ``max(round(fraction * total_steps), min_steps)``, clipped to
+    ``total_steps``. The floor is what makes this correct in the small-run
+    limit; see :data:`MIN_TAIL_STEPS` for the measurement that motivated it.
+
+    Parameters
+    ----------
+    total_steps : int
+        Length of the full series.
+    fraction : float
+        Requested trailing fraction, in ``(0, 1]``.
+    min_steps : int, optional
+        Absolute floor on the window.
+    allow_below_floor : bool, optional
+        Permit a window shorter than ``min_steps`` when the run itself is
+        shorter. Off by default so that a too-short run is an explicit decision
+        rather than a silent downgrade.
+
+    Returns
+    -------
+    int
+        Number of trailing steps to average, at least 2.
+
+    Raises
+    ------
+    AdapterError
+        If ``fraction`` is outside ``(0, 1]``; if ``total_steps`` is below two;
+        or if the whole trace is shorter than ``min_steps`` and
+        ``allow_below_floor`` is False. The message names both the run length and
+        the floor, because "too short" is not actionable without them.
+
+    Notes
+    -----
+    Clipping to ``total_steps`` means a run shorter than the floor cannot reach
+    it. That case raises rather than returning the whole trace silently: an
+    estimate from a 500-step run is not comparable to one from 200000 steps, and
+    a caller that genuinely wants it should say so via ``allow_below_floor``.
+    """
+
+    if not 0.0 < fraction <= 1.0:
+        raise AdapterError(f"tail fraction must be in (0, 1], got {fraction}")
+    if total_steps < 2:
+        raise AdapterError(f"need at least two steps to estimate, got {total_steps}")
+
+    window = min(max(round(fraction * total_steps), min_steps), total_steps)
+
+    if window < min_steps and not allow_below_floor:
+        raise AdapterError(
+            f"run of {total_steps} steps cannot fill the {min_steps}-step minimum "
+            "estimator window; pass allow_below_floor to accept a shorter one and "
+            "record that the estimate is provisional"
+        )
+
+    return max(window, 2)
+
 
 def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tuple[float, int]:
     """Return a correlation-corrected standard error by pair-average blocking.
@@ -206,9 +283,11 @@ def sign_test(values: Sequence[float], windows: int = SIGN_TEST_WINDOWS) -> tupl
 
 __all__ = [
     "MIN_BLOCKS",
+    "MIN_TAIL_STEPS",
     "SIGN_TEST_WINDOWS",
     "blocking_inflation",
     "blocking_stderr",
+    "select_tail",
     "sign_test",
     "window_means",
 ]
