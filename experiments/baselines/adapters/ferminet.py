@@ -44,7 +44,11 @@ from experiments.baselines.records import BaselineRecord
 
 # Re-exported so that callers importing these from this module keep working;
 # both now live in the statistics module, which owns the concept.
-from experiments.baselines.statistics import blocking_stderr  # noqa: F401
+from experiments.baselines.statistics import (  # noqa: F401
+    MIN_TAIL_STEPS,
+    blocking_stderr,
+    select_tail,
+)
 
 TRAIN_STATS_FILENAME = "train_stats.csv"
 RECORD_FILENAME = "baseline_record.json"
@@ -120,6 +124,8 @@ def build_record(
     system_id: str,
     batch_size: int,
     tail_fraction: float = 0.1,
+    min_tail_steps: int = MIN_TAIL_STEPS,
+    allow_short_tail: bool = False,
     ansatz: str,
     estimator: str = "training_tail",
     log_path: Path | None = None,
@@ -171,16 +177,17 @@ def build_record(
         fewer than two samples.
     """
 
-    if not 0.0 < tail_fraction <= 1.0:
-        raise AdapterError(f"tail_fraction must be in (0, 1], got {tail_fraction}")
-
     energies = read_energies(run_dir)
-    tail_start = int(len(energies) * (1.0 - tail_fraction))
-    tail = energies[tail_start:]
-    if len(tail) < 2:
-        raise AdapterError(
-            f"tail_fraction {tail_fraction} selects {len(tail)} of {len(energies)} steps; need >= 2"
-        )
+    # Absolute floor, not fraction alone. This adapter's 0.1 default is MORE
+    # exposed than the DeepQMC adapter's 0.25: on a 20000-step run it selects
+    # 2000 steps. See statistics.MIN_TAIL_STEPS for the measured consequence.
+    window = select_tail(
+        len(energies),
+        tail_fraction,
+        min_steps=min_tail_steps,
+        allow_below_floor=allow_short_tail,
+    )
+    tail = energies[-window:]
 
     stderr, n_blocks = blocking_stderr(tail)
     device_type, gpu_model, wall_clock = None, None, None
@@ -257,6 +264,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="use 'inference' for a fixed-parameter evaluation pass",
     )
     parser.add_argument("--tail-fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--min-tail-steps",
+        type=int,
+        default=MIN_TAIL_STEPS,
+        help="absolute floor on the estimator window, in steps",
+    )
+    parser.add_argument(
+        "--allow-short-tail",
+        action="store_true",
+        help="accept a window below the floor for a short run; the record says so",
+    )
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -271,6 +289,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ansatz=args.ansatz,
             estimator=args.estimator,
             tail_fraction=args.tail_fraction,
+            min_tail_steps=args.min_tail_steps,
+            allow_short_tail=args.allow_short_tail,
             log_path=args.log_path,
             code_commit=args.code_commit,
             seed=args.seed,

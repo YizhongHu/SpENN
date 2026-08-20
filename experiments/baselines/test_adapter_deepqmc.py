@@ -137,8 +137,11 @@ def test_convergence_is_reported_unassessed_when_the_tail_is_too_short() -> None
         ansatz="lapnet",
         run_id="r",
         tail_fraction=1.0,
+        allow_short_tail=True,
     )
     assert "UNASSESSED" in (record.notes or "")
+    # A window under the floor must SAY so; silence would read as a full window.
+    assert "provisional" in (record.notes or "")
 
 
 def test_notes_carry_the_autocorrelation_inflation_ratio() -> None:
@@ -194,23 +197,52 @@ def test_energy_is_the_tail_mean_not_the_final_value() -> None:
 
 def test_rejects_out_of_range_tail_fraction() -> None:
     for bad in (0.0, -0.5, 1.5):
-        with pytest.raises(AdapterError, match="tail_fraction"):
+        with pytest.raises(AdapterError, match="tail fraction must be in"):
             record_from_series(
                 _converged(), system_id="he_atom", batch_size=16, ansatz="lapnet", run_id="r",
                 tail_fraction=bad,
             )
 
 
-def test_rejects_a_tail_too_short_to_carry_a_bar() -> None:
-    with pytest.raises(AdapterError, match="need >= 2"):
+def test_rejects_a_run_shorter_than_the_floor() -> None:
+    """A run too short for the minimum window must refuse, not quietly shrink.
+
+    Naming both the run length and the floor is deliberate: "too short" is not
+    actionable without them.
+    """
+
+    with pytest.raises(AdapterError, match="run of 3 steps cannot fill the 10000-step"):
         record_from_series(
             [-1.0, -1.1, -1.2],
             system_id="he_atom",
             batch_size=16,
             ansatz="lapnet",
             run_id="r",
-            tail_fraction=0.01,
         )
+
+
+def test_floor_overrides_a_fraction_that_would_be_too_small() -> None:
+    """0.25 of 20000 is 5000 steps, which produced impossible energies.
+
+    The floor must win, so the window is 10000 and the notes say so in STEPS.
+    """
+
+    record = record_from_series(
+        _converged(count=20000), system_id="he_atom", batch_size=4096,
+        ansatz="psiformer", run_id="r", tail_fraction=0.25,
+    )
+    assert "last 10000 of 20000 steps" in (record.notes or "")
+    assert "provisional" not in (record.notes or "")
+
+
+def test_fraction_wins_when_it_exceeds_the_floor() -> None:
+    """On a long run the fraction still governs; the floor is only a minimum."""
+
+    record = record_from_series(
+        _converged(count=200000), system_id="he_atom", batch_size=4096,
+        ansatz="psiformer", run_id="r", tail_fraction=0.25,
+    )
+    assert "last 50000 of 200000 steps" in (record.notes or "")
 
 
 def test_device_fields_stay_none_without_a_log() -> None:

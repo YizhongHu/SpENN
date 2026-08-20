@@ -55,9 +55,11 @@ from typing import Sequence
 from experiments.baselines.errors import AdapterError
 from experiments.baselines.records import BaselineRecord
 from experiments.baselines.statistics import (
+    MIN_TAIL_STEPS,
     SIGN_TEST_WINDOWS,
     blocking_inflation,
     blocking_stderr,
+    select_tail,
     sign_test,
 )
 
@@ -199,6 +201,8 @@ def record_from_series(
     ansatz: str,
     estimator: str = "training_tail",
     tail_fraction: float = DEFAULT_TAIL_FRACTION,
+    min_tail_steps: int = MIN_TAIL_STEPS,
+    allow_short_tail: bool = False,
     run_id: str,
     code_commit: str | None = None,
     optimizer: str = "kfac",
@@ -240,15 +244,17 @@ def record_from_series(
         If ``tail_fraction`` is out of range or selects fewer than two samples.
     """
 
-    if not 0.0 < tail_fraction <= 1.0:
-        raise AdapterError(f"tail_fraction must be in (0, 1], got {tail_fraction}")
-
     series = [float(value) for value in energies]
-    tail = series[int(len(series) * (1.0 - tail_fraction)) :]
-    if len(tail) < 2:
-        raise AdapterError(
-            f"tail_fraction {tail_fraction} selects {len(tail)} of {len(series)} steps; need >= 2"
-        )
+    # The window is chosen by absolute step count, not by fraction alone: a
+    # fraction is scale-relative and 0.25 of a short run is too few steps to
+    # average out the slow mode. See statistics.MIN_TAIL_STEPS.
+    window = select_tail(
+        len(series),
+        tail_fraction,
+        min_steps=min_tail_steps,
+        allow_below_floor=allow_short_tail,
+    )
+    tail = series[-window:]
 
     stderr, _ = blocking_stderr(tail)
 
@@ -282,11 +288,15 @@ def record_from_series(
         "no claim about that method may rest on this row."
     )
 
+    # State the window in STEPS, not only as a percentage: a reader cannot judge
+    # "25%" without knowing the run length, and it was exactly that ambiguity
+    # that let a 5000-step window pass for a long one.
+    short = " Window is BELOW the standard minimum, so this estimate is provisional." if len(tail) < min_tail_steps else ""
     estimator_text = (
-        f"Training-tail average over the last {tail_fraction:.0%} of steps ({len(tail)} samples)."
+        f"Training-tail average over the last {len(tail)} of {len(series)} steps."
         if estimator == "training_tail"
-        else f"Fixed-parameter inference pass over {len(tail)} steps."
-    )
+        else f"Fixed-parameter inference pass over {len(tail)} of {len(series)} steps."
+    ) + short
 
     return BaselineRecord(
         system_id=system_id,
@@ -328,6 +338,8 @@ def build_record(
     ansatz: str,
     estimator: str = "training_tail",
     tail_fraction: float = DEFAULT_TAIL_FRACTION,
+    min_tail_steps: int = MIN_TAIL_STEPS,
+    allow_short_tail: bool = False,
     log_path: Path | None = None,
     code_commit: str | None = None,
     optimizer: str = "kfac",
@@ -358,6 +370,8 @@ def build_record(
         ansatz=ansatz,
         estimator=estimator,
         tail_fraction=tail_fraction,
+        min_tail_steps=min_tail_steps,
+        allow_short_tail=allow_short_tail,
         run_id=run_id or run_dir.name,
         code_commit=code_commit,
         optimizer=optimizer,
@@ -396,6 +410,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="use 'inference' for a fixed-parameter evaluation pass",
     )
     parser.add_argument("--tail-fraction", type=float, default=DEFAULT_TAIL_FRACTION)
+    parser.add_argument(
+        "--min-tail-steps",
+        type=int,
+        default=MIN_TAIL_STEPS,
+        help="absolute floor on the estimator window, in steps",
+    )
+    parser.add_argument(
+        "--allow-short-tail",
+        action="store_true",
+        help="accept a window below the floor for a short run; the record says so",
+    )
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -410,6 +435,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ansatz=args.ansatz,
             estimator=args.estimator,
             tail_fraction=args.tail_fraction,
+            min_tail_steps=args.min_tail_steps,
+            allow_short_tail=args.allow_short_tail,
             log_path=args.log_path,
             code_commit=args.code_commit,
             seed=args.seed,
