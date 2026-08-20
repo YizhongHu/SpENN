@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Sequence
 
 from experiments.baselines.records import BaselineRecord, RecordValidationError
+from experiments.baselines.systems import REGISTRY_PATH, known_system_ids
 
 RECORD_FILENAME = "baseline_record.json"
 
@@ -42,8 +43,9 @@ class CollectionReport:
     records : list of BaselineRecord
         Records that validated, ordered by record-file path.
     failures : list of tuple of (str, str)
-        ``(path, reason)`` for every record file that failed to parse or
-        validate. Failures are reported, never silently dropped.
+        ``(path, reason)`` for every record file that failed to parse, failed
+        validation, or named a system absent from the registry. Failures are
+        reported, never silently dropped.
     """
 
     records: list[BaselineRecord]
@@ -67,13 +69,19 @@ def find_record_files(run_root: Path) -> list[Path]:
     return sorted(run_root.rglob(RECORD_FILENAME))
 
 
-def collect(run_root: Path) -> CollectionReport:
+def collect(run_root: Path, known_ids: frozenset[str] | None = None) -> CollectionReport:
     """Read and validate every record under ``run_root``.
+
+    A record must also name a system that the registry declares. ``system_id``
+    is the join key to a reference energy, so a record naming an unknown system
+    cannot be compared against anything; it is a failure, not a result.
 
     Parameters
     ----------
     run_root : pathlib.Path
         Directory tree to scan.
+    known_ids : frozenset of str, optional
+        System ids to accept. Defaults to the in-repo registry.
 
     Returns
     -------
@@ -88,6 +96,8 @@ def collect(run_root: Path) -> CollectionReport:
 
     if not run_root.is_dir():
         raise FileNotFoundError(f"run root is not a directory: {run_root}")
+
+    accepted_ids = known_system_ids() if known_ids is None else known_ids
 
     records: list[BaselineRecord] = []
     failures: list[tuple[str, str]] = []
@@ -104,6 +114,15 @@ def collect(run_root: Path) -> CollectionReport:
             record = BaselineRecord.from_json_dict(payload)
         except RecordValidationError as error:
             failures.append((relative, str(error)))
+            continue
+        if record.system_id not in accepted_ids:
+            failures.append(
+                (
+                    relative,
+                    f"unknown system_id {record.system_id!r}: not declared in "
+                    f"{REGISTRY_PATH.name}",
+                )
+            )
             continue
         # Stamp provenance only when the emitter left it blank; never overwrite
         # what the emitter asserted. The record is frozen, hence `replace`.
