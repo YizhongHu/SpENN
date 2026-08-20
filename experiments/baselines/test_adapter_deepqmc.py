@@ -245,6 +245,66 @@ def test_fraction_wins_when_it_exceeds_the_floor() -> None:
     assert "last 50000 of 200000 steps" in (record.notes or "")
 
 
+# --------------------------------------------------------------------------
+# operator caveats -- facts the numbers cannot carry
+# --------------------------------------------------------------------------
+
+
+def test_note_is_appended_without_displacing_the_generated_account() -> None:
+    """A caveat extends the provenance text; it never replaces any of it."""
+
+    kwargs = dict(
+        system_id="lih_molecule", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    plain = record_from_series(_converged(), **kwargs)
+    caveated = record_from_series(
+        _converged(), **kwargs, note="Ran at R=3.09913 bohr, registry is 3.015 bohr."
+    )
+
+    assert (plain.notes or "") in (caveated.notes or "")
+    assert (caveated.notes or "").endswith(
+        " Ran at R=3.09913 bohr, registry is 3.015 bohr."
+    )
+
+
+def test_note_changes_no_number() -> None:
+    """The caveat is documentation; every estimated field must be untouched."""
+
+    kwargs = dict(
+        system_id="lih_molecule", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    plain = record_from_series(_converged(), **kwargs)
+    caveated = record_from_series(_converged(), **kwargs, note="geometry deviates")
+
+    assert caveated.energy_hartree == plain.energy_hartree
+    assert caveated.energy_stderr_hartree == plain.energy_stderr_hartree
+    assert caveated.steps == plain.steps
+    assert caveated.samples == plain.samples
+
+
+def test_omitting_the_note_leaves_the_record_unchanged() -> None:
+    """Default behaviour is the pre-change adapter's, character for character."""
+
+    kwargs = dict(
+        system_id="he_atom", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    assert (
+        record_from_series(_converged(), **kwargs, note=None).notes
+        == record_from_series(_converged(), **kwargs).notes
+    )
+
+
+def test_whitespace_only_note_is_refused_rather_than_dropped() -> None:
+    """A caveat that silently vanishes is worse than no argument at all."""
+
+    for blank in ("", "   ", "\t\n"):
+        with pytest.raises(AdapterError, match="empty"):
+            record_from_series(
+                _converged(), system_id="he_atom", batch_size=4096,
+                ansatz="lapnet", run_id="r", note=blank,
+            )
+
+
 def test_device_fields_stay_none_without_a_log() -> None:
     """Unknown provenance is None, never an invented value."""
 
