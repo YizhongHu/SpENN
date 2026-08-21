@@ -249,7 +249,8 @@ def record_from_series(
     Raises
     ------
     AdapterError
-        If ``tail_fraction`` is out of range or selects fewer than two samples,
+        If ``tail_fraction`` is out of range or selects fewer than two samples;
+        if the selected window is constant, so its standard error would be zero;
         or if ``note`` is given but carries no text.
     """
 
@@ -267,6 +268,21 @@ def record_from_series(
         allow_below_floor=allow_short_tail,
     )
     tail = series[-window:]
+
+    # A constant window is not a measurement, and nothing downstream catches it:
+    # blocking initialises its running maximum at 0.0 and returns that untouched
+    # when the variance is zero, while records.py accepts 0.0 as a non-negative
+    # bar. So without this gate the emission publishes a baseline row whose error
+    # bar claims infinite precision -- the most reassuring number the adapter can
+    # emit, for a window that carries no information at all. The check is on the
+    # window rather than on the returned bar because it must hold whichever
+    # version of the statistics module is installed.
+    if max(tail) == min(tail):
+        raise AdapterError(
+            f"the {len(tail)}-step estimator window is constant at {tail[0]!r}, so its "
+            "standard error is zero and no record is emitted; a constant VMC series "
+            "means the energies did not come from the run's own sampling"
+        )
 
     stderr, _ = blocking_stderr(tail)
 

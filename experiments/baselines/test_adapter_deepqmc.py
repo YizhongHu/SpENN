@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from experiments.baselines.errors import AdapterError
+from experiments.baselines.records import BaselineRecord
 from experiments.baselines.adapters.deepqmc import (
     DEFAULT_TAIL_FRACTION,
     ENERGY_DATASET,
@@ -243,6 +244,52 @@ def test_fraction_wins_when_it_exceeds_the_floor() -> None:
         ansatz="psiformer", run_id="r", tail_fraction=0.25,
     )
     assert "last 50000 of 200000 steps" in (record.notes or "")
+
+
+def test_constant_window_is_refused_rather_than_given_a_zero_bar() -> None:
+    """A zero error bar is the most reassuring number an emission can publish.
+
+    Blocking returns 0.0 for a zero-variance series -- its running maximum is
+    initialised at 0.0 and never beaten -- and ``BaselineRecord`` accepts 0.0 as
+    a non-negative bar, so nothing downstream of the adapter stops the row. The
+    adapter is the last place that knows a record is about to be written.
+    """
+
+    with pytest.raises(AdapterError, match="constant"):
+        record_from_series(
+            [-2.9037] * 40000, system_id="he_atom", batch_size=4096,
+            ansatz="lapnet", run_id="r",
+        )
+
+
+def test_constant_window_is_refused_even_with_the_short_tail_opt_in() -> None:
+    """The opt-in buys a short window, never an unmeasurable one.
+
+    ``allow_short_tail`` says "this run is shorter than the standard window";
+    it does not say "publish a bar you could not estimate".
+    """
+
+    with pytest.raises(AdapterError, match="constant"):
+        record_from_series(
+            [-2.9037] * 40, system_id="he_atom", batch_size=16,
+            ansatz="lapnet", run_id="r", tail_fraction=1.0, allow_short_tail=True,
+        )
+
+
+def test_the_refusal_is_the_only_thing_stopping_a_zero_bar() -> None:
+    """Pin the downstream permissiveness the guard above exists to cover.
+
+    If this ever starts failing, ``records.py`` has begun rejecting a zero bar
+    itself and the adapter guard's justification has changed -- which is worth
+    knowing, not worth silently keeping.
+    """
+
+    record = BaselineRecord(
+        system_id="he_atom", code="deepqmc", code_commit="0" * 40, ansatz="lapnet",
+        energy_hartree=-2.9037, energy_stderr_hartree=0.0, steps=40000,
+        samples=40000 * 4096, batch_size=4096, estimator="training_tail", run_id="r",
+    )
+    assert record.energy_stderr_hartree == 0.0
 
 
 # --------------------------------------------------------------------------
