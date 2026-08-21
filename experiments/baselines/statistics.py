@@ -67,9 +67,10 @@ def select_tail(
 ) -> int:
     """Return how many trailing steps the estimator window should span.
 
-    The window is ``max(round(fraction * total_steps), min_steps)``, clipped to
-    ``total_steps``. The floor is what makes this correct in the small-run
-    limit; see :data:`MIN_TAIL_STEPS` for the measurement that motivated it.
+    The window is ``max(round(fraction * total_steps), min_steps)``: the
+    fraction is the request and the floor only ever widens it. The floor is what
+    makes this correct in the small-run limit; see :data:`MIN_TAIL_STEPS` for the
+    measurement that motivated it.
 
     Parameters
     ----------
@@ -78,7 +79,8 @@ def select_tail(
     fraction : float
         Requested trailing fraction, in ``(0, 1]``.
     min_steps : int, optional
-        Absolute floor on the window.
+        Absolute floor on the window, applied only when the run is long enough
+        to reach it.
     allow_below_floor : bool, optional
         Permit a window shorter than ``min_steps`` when the run itself is
         shorter. Off by default so that a too-short run is an explicit decision
@@ -99,10 +101,15 @@ def select_tail(
 
     Notes
     -----
-    Clipping to ``total_steps`` means a run shorter than the floor cannot reach
-    it. That case raises rather than returning the whole trace silently: an
+    A run shorter than the floor cannot reach it. By default that raises: an
     estimate from a 500-step run is not comparable to one from 200000 steps, and
     a caller that genuinely wants it should say so via ``allow_below_floor``.
+
+    Under ``allow_below_floor`` the fraction governs, so a quarter tail of a
+    2000-step run is 500 steps. Returning the whole 2000 instead -- which is
+    what clipping the widened window to ``total_steps`` used to do -- reports a
+    window the caller never asked for and leaves ``fraction`` with no effect on
+    the result, which is indistinguishable from honouring it.
     """
 
     if not 0.0 < fraction <= 1.0:
@@ -110,19 +117,34 @@ def select_tail(
     if total_steps < 2:
         raise AdapterError(f"need at least two steps to estimate, got {total_steps}")
 
-    window = min(max(round(fraction * total_steps), min_steps), total_steps)
+    # The fraction is the request; the floor only widens it. Neither is clipped
+    # to `total_steps` here, so a run too short to fill the floor stays a
+    # visible case below instead of collapsing into the whole trace.
+    requested = max(round(fraction * total_steps), 2)
+    window = max(requested, min_steps)
 
-    if window < min_steps and not allow_below_floor:
-        raise AdapterError(
-            f"run of {total_steps} steps cannot fill the {min_steps}-step minimum "
-            "estimator window; pass allow_below_floor to accept a shorter one and "
-            "record that the estimate is provisional"
-        )
+    if window > total_steps:
+        # This run cannot fill the floor at all.
+        if not allow_below_floor:
+            raise AdapterError(
+                f"run of {total_steps} steps cannot fill the {min_steps}-step minimum "
+                "estimator window; pass allow_below_floor to accept a shorter one and "
+                "record that the estimate is provisional"
+            )
+        # Widening to `total_steps` would discard `fraction` entirely, so the
+        # fraction governs the window instead. It is already within the run:
+        # `round(fraction * total_steps) <= total_steps` for any fraction <= 1.
+        window = requested
 
-    return max(window, 2)
+    return window
 
 
-def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tuple[float, int]:
+def blocking_stderr(
+    values: Sequence[float],
+    min_blocks: int = MIN_BLOCKS,
+    *,
+    allow_below_floor: bool = False,
+) -> tuple[float, int | None]:
     """Return a correlation-corrected standard error by pair-average blocking.
 
     Implements Flyvbjerg-Petersen blocking: repeatedly average adjacent pairs,
@@ -136,10 +158,14 @@ def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tu
         The series to estimate the mean's uncertainty for.
     min_blocks : int, optional
         Stop once fewer than this many blocks remain.
+    allow_below_floor : bool, optional
+        Permit a window too short for the ladder to run at all. Off by default:
+        the only bar available for such a window is the uncorrected naive one,
+        which understates, and these numbers are transcribed into receipts.
 
     Returns
     -------
-    tuple of (float, int)
+    tuple of (float, int or None)
         The standard error, and the number of blocks it was computed from.
 
         The second element is returned for provenance only. **Do not read it as
@@ -147,16 +173,56 @@ def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tu
         maximum happened to occur, which on a flat curve is determined by noise.
         Use :func:`blocking_inflation` for that.
 
+        On a window shorter than ``min_blocks`` the ladder never runs. Under
+        ``allow_below_floor`` the standard error is then the naive one --
+        uncorrected for autocorrelation and therefore understating -- and the
+        block count is ``None``, because no blocking level produced it. ``None``
+        rather than an integer on purpose: ``0`` or ``len(values)`` stays
+        arithmetically silent, so ``stderr * sqrt(blocks)`` or ``blocks > 1``
+        downstream would yield a plausible number for a window that was never
+        blocked, whereas ``None`` raises ``TypeError`` at the first arithmetic
+        touch.
+
     Raises
     ------
     AdapterError
-        If fewer than two values are supplied.
+        If fewer than two values are supplied; if every value is identical, so
+        the window has no measurable spread; or if the window is shorter than
+        ``min_blocks`` and ``allow_below_floor`` is False.
     """
 
     data = [float(value) for value in values]
     if len(data) < 2:
         raise AdapterError("blocking needs at least two values")
 
+    # No spread at all is not a spread of zero. Every ladder level would measure
+    # 0.0, `stderr > best_stderr` would be false at each of them, and the 0.0
+    # initialiser below would be returned as though it had been measured --
+    # which records.py accepts, because it rejects only negative bars.
+    spread = statistics.variance(data)
+    if spread == 0.0:
+        raise AdapterError(
+            f"window of {len(data)} identical values has no measurable spread, so its "
+            "standard error is unmeasurable rather than zero"
+        )
+
+    if len(data) < max(min_blocks, 2):
+        # The ladder cannot run even once, so there is no correction to apply.
+        # Refuse by default rather than answer with the naive bar: it
+        # understates, and this path used to return the 0.0 initialiser, which
+        # reads downstream as infinite precision.
+        if not allow_below_floor:
+            raise AdapterError(
+                f"window of {len(data)} values cannot fill the {min_blocks}-block minimum "
+                "for blocking; pass allow_below_floor to accept the uncorrected naive "
+                "standard error and record that it understates"
+            )
+        # None, not a block count: no blocking level produced this value.
+        return math.sqrt(spread / len(data)), None
+
+    # The ladder below is unchanged. It is now entered only when it will run at
+    # least once, and `spread > 0` there, so a measured level always overwrites
+    # `best_stderr` and the 0.0 initialiser can no longer escape.
     best_stderr = 0.0
     best_blocks = len(data)
     while len(data) >= max(min_blocks, 2):
@@ -170,7 +236,12 @@ def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tu
     return best_stderr, best_blocks
 
 
-def blocking_inflation(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> float:
+def blocking_inflation(
+    values: Sequence[float],
+    min_blocks: int = MIN_BLOCKS,
+    *,
+    allow_below_floor: bool = False,
+) -> float | None:
     """Return how much blocking widens the bar relative to the naive estimate.
 
     This is the autocorrelation diagnostic. A ratio near 1 means the series is
@@ -184,18 +255,28 @@ def blocking_inflation(values: Sequence[float], min_blocks: int = MIN_BLOCKS) ->
         The series, normally an already-selected tail.
     min_blocks : int, optional
         Passed through to :func:`blocking_stderr`.
+    allow_below_floor : bool, optional
+        Passed through to :func:`blocking_stderr`. With it set, a window too
+        short to block returns ``None`` instead of raising.
 
     Returns
     -------
-    float
+    float or None
         ``blocked_stderr / naive_stderr``, at least 1.0 by construction since
         blocking takes the maximum over levels and level one is the naive value.
+
+        ``None`` when the window was too short for the ladder to run and
+        ``allow_below_floor`` is set. There is no blocked-to-naive comparison to
+        report in that case, and the arithmetic answer would be exactly 1.00 --
+        which reads as "blocking found no autocorrelation here", the most
+        reassuring value this diagnostic can take, for a window never blocked.
 
     Raises
     ------
     AdapterError
-        If fewer than two values are supplied, or the series has zero variance
-        so the ratio is undefined.
+        If fewer than two values are supplied; if the series has zero variance
+        so the ratio is undefined; or if the window is shorter than
+        ``min_blocks`` and ``allow_below_floor`` is False.
     """
 
     data = [float(value) for value in values]
@@ -206,7 +287,11 @@ def blocking_inflation(values: Sequence[float], min_blocks: int = MIN_BLOCKS) ->
     if naive == 0.0:
         raise AdapterError("blocking inflation is undefined for a constant series")
 
-    blocked, _ = blocking_stderr(data, min_blocks=min_blocks)
+    blocked, blocks = blocking_stderr(
+        data, min_blocks=min_blocks, allow_below_floor=allow_below_floor
+    )
+    if blocks is None:
+        return None
     return blocked / naive
 
 
