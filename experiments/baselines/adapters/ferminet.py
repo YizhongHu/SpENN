@@ -193,7 +193,7 @@ def build_record(
     )
     tail = energies[-window:]
 
-    stderr, n_blocks = blocking_stderr(tail)
+    stderr, n_blocks = blocking_stderr(tail, allow_below_floor=allow_short_tail)
     # Second line of defence on the publication boundary, deliberately
     # independent of what statistics.blocking_stderr currently does. Today that
     # function raises on a degenerate window, so this branch is unreachable
@@ -213,11 +213,27 @@ def build_record(
     # arithmetic on it: the notes below interpolate it with no format spec, and
     # f"{None}" renders the string "None" without complaint. A record reading
     # "from None blocks" looks like a forgotten field, not like "blocking never
-    # ran", so refuse instead of formatting it. This adapter never passes
-    # allow_below_floor to blocking_stderr - only to select_tail - so a window
-    # under the 32-block minimum raises there and never reaches this branch. The
-    # check is here rather than as a comment saying it cannot happen because the
-    # thing making it unreachable is one bare call argument in the line above.
+    # ran", so refuse instead of formatting it.
+    #
+    # This branch is the refusal that fires under --allow-short-tail, because
+    # the call above now forwards that opt-in: a window under the 32-block
+    # minimum comes back as (naive stderr, None) instead of raising one layer
+    # down. Before the forwarding it was dead code. Measured on a varying
+    # series, tail lengths 2..399 through the bare call gave 368 returns and 30
+    # raises and zero Nones, and deleting these six lines left the whole
+    # ferminet suite green - the guard read as a second line of defence while
+    # guarding nothing reachable.
+    #
+    # With the flag OFF the 32-block floor is still enforced by statistics, but
+    # only by way of a lowered --min-tail-steps: at the default 10000-step floor
+    # select_tail refuses first, so statistics' block raise is unreachable on
+    # the default path. Also measured, rather than assumed from reading the two
+    # floors. Either route ends in a refusal; only the message and the layer
+    # that emits it differ.
+    #
+    # This raise dominates the notes block below, so the bare {n_blocks}
+    # interpolations there cannot render "None". The guard is what makes them
+    # safe - not a format-time branch, which would be unreachable in turn.
     if n_blocks is None:
         raise AdapterError(
             f"{run_dir}: the selected tail of {len(tail)} steps was never blocked, so "
@@ -309,9 +325,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=(
             "lower the STEP floor on the estimator window for a short run; the "
-            "record says the window was short. This does not lower the 32-BLOCK "
-            "floor: a window that cannot be blocked is still refused, so a "
-            "sufficiently small window plus this flag is an error, not an emission"
+            "record says the window was short. A window too short to BLOCK is "
+            "still refused: the opt-in is forwarded to the blocking estimator "
+            "and this adapter then rejects the uncorrected naive error bar "
+            "itself, so a sufficiently small window plus this flag is an error, "
+            "not an emission"
         ),
     )
     parser.add_argument("--log-path", type=Path, default=None)
