@@ -17,8 +17,6 @@ from experiments.baselines.statistics import (
     MIN_BLOCKS,
     blocking_inflation,
     blocking_stderr,
-    format_block_count,
-    format_inflation,
     select_tail,
     sign_test,
     window_means,
@@ -288,43 +286,6 @@ def test_inflation_is_at_least_one_wherever_it_returns_a_float(
 
     assert inflation is not None
     assert inflation >= 1.0
-
-
-def test_block_count_formatting_never_renders_the_string_none() -> None:
-    """A bare replacement field publishes "None" into a notes field.
-
-    The marker is loud on arithmetic and on a format spec, but not here, and
-    notes text is what gets copied into a receipt: "from None blocks" reads as a
-    count someone forgot to fill in rather than one that does not exist.
-    """
-
-    absent = format_block_count(None)
-
-    assert "None" not in absent
-    assert "below the block floor" in absent
-    assert format_block_count(64) == "64 blocks"
-
-
-def test_unmeasured_inflation_formats_as_unmeasured_rather_than_as_one() -> None:
-    """``f"{None:.2f}"`` raises TypeError, which ``except AdapterError`` misses.
-
-    So the two available accidents are a traceback in place of a caveat or --
-    for a caller that drops the format spec to avoid it -- the literal text
-    1.00x for a window that was never blocked, which is the most reassuring
-    value this diagnostic can take.
-    """
-
-    unmeasured = format_inflation(None)
-
-    assert "None" not in unmeasured
-    assert "unmeasured" in unmeasured
-    assert "1.00" not in unmeasured
-
-
-def test_measured_inflation_formats_to_two_decimals() -> None:
-    """The ratio is transcribed beside every published bar, so pin its text."""
-
-    assert format_inflation(1.4271852641379712) == "1.43x"
 
 
 def test_inflation_refuses_a_window_below_the_block_floor() -> None:

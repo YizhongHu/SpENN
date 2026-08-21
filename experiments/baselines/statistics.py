@@ -188,9 +188,12 @@ def blocking_stderr(
         (``f"{blocks:d}"`` raises ``TypeError``), but a bare replacement field
         does not: ``f"from {blocks} blocks"`` renders ``"from None blocks"``,
         which reads as a count someone forgot to fill in rather than one that
-        does not exist. Callers building notes text must branch on ``blocks is
-        None`` first, or call :func:`format_block_count`, rather than relying on
-        the marker to stop them.
+        does not exist. A caller building notes text must therefore branch on
+        ``blocks is None`` before formatting, rather than relying on the marker
+        to stop it -- and must do the same for the ratio from
+        :func:`blocking_inflation`, where a format spec raises ``TypeError``
+        rather than an :class:`AdapterError`, so an ``except AdapterError``
+        around the emission does not catch it.
 
     Raises
     ------
@@ -307,59 +310,6 @@ def blocking_inflation(
     if blocks is None:
         return None
     return blocked / naive
-
-
-def format_block_count(blocks: int | None) -> str:
-    """Render a block count for notes text, including when there is none.
-
-    :func:`blocking_stderr` returns ``None`` for the block count when the window
-    was too short for the ladder to run. That marker is loud on arithmetic and
-    on a format spec, but a bare replacement field is a silent consumer:
-    ``f"from {blocks} blocks"`` renders ``"from None blocks"``. Notes text is
-    copied into receipts, so the rendering lives here, beside the marker, rather
-    than being re-derived at each call site.
-
-    Parameters
-    ----------
-    blocks : int or None
-        A block count as returned by :func:`blocking_stderr`.
-
-    Returns
-    -------
-    str
-        Text that never contains the substring ``None``.
-    """
-
-    if blocks is None:
-        return "no blocking level (window below the block floor)"
-    return f"{blocks} blocks"
-
-
-def format_inflation(inflation: float | None) -> str:
-    """Render an inflation ratio for notes text, including when it is unmeasured.
-
-    Two distinct accidents live in this one line. A bare replacement field
-    publishes the string ``None``. A format spec does not, but ``f"{None:.2f}"``
-    raises ``TypeError``, which is **not** an :class:`AdapterError`, so a
-    caller's ``except AdapterError`` around its emission does not catch it and
-    the run ends in a traceback instead of a caveat.
-
-    Parameters
-    ----------
-    inflation : float or None
-        A ratio as returned by :func:`blocking_inflation`.
-
-    Returns
-    -------
-    str
-        Text that never contains the substring ``None`` and never renders an
-        unmeasured ratio as a number -- least of all as ``1.00x``, which reads
-        as "blocking found no autocorrelation here".
-    """
-
-    if inflation is None:
-        return "inflation unmeasured (window below the block floor)"
-    return f"{inflation:.2f}x"
 
 
 def window_means(values: Sequence[float], windows: int = SIGN_TEST_WINDOWS) -> list[float]:
