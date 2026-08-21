@@ -180,8 +180,11 @@ def build_record(
 
     energies = read_energies(run_dir)
     # Absolute floor, not fraction alone. This adapter's 0.1 default is MORE
-    # exposed than the DeepQMC adapter's 0.25: on a 20000-step run it selects
-    # 2000 steps. See statistics.MIN_TAIL_STEPS for the measured consequence.
+    # exposed than the DeepQMC adapter's 0.25: on a 20000-step run the
+    # fraction asks for 2000 steps and MIN_TAIL_STEPS overrides it to 10000,
+    # so the realized window is 5x the requested one. That gap is why the
+    # notes string below renders the measured window and never the requested
+    # fraction. See statistics.MIN_TAIL_STEPS.
     window = select_tail(
         len(energies),
         tail_fraction,
@@ -253,8 +256,8 @@ def build_record(
         collected_at=None,
         notes=(
             (
-                f"Training-tail average over the last {tail_fraction:.0%} of steps "
-                f"({len(tail)} samples), blocked standard error from {n_blocks} "
+                f"Training-tail average over the last {len(tail)} of "
+                f"{len(energies)} steps, blocked standard error from {n_blocks} "
                 "blocks. NOT the estimator FermiNet's published table uses: those "
                 "values come from a separate post-training evaluation phase, so "
                 "this number is expected to sit slightly high."
