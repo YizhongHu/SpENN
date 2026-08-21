@@ -180,8 +180,17 @@ def blocking_stderr(
         rather than an integer on purpose: ``0`` or ``len(values)`` stays
         arithmetically silent, so ``stderr * sqrt(blocks)`` or ``blocks > 1``
         downstream would yield a plausible number for a window that was never
-        blocked, whereas ``None`` raises ``TypeError`` at the first arithmetic
+        blocked, whereas ``None`` raises ``TypeError`` on the first arithmetic
         touch.
+
+        **That loudness is not universal, and the exception is the case that
+        publishes prose.** ``None`` raises on arithmetic and on a format spec
+        (``f"{blocks:d}"`` raises ``TypeError``), but a bare replacement field
+        does not: ``f"from {blocks} blocks"`` renders ``"from None blocks"``,
+        which reads as a count someone forgot to fill in rather than one that
+        does not exist. Callers building notes text must branch on ``blocks is
+        None`` first, or call :func:`format_block_count`, rather than relying on
+        the marker to stop them.
 
     Raises
     ------
@@ -262,8 +271,13 @@ def blocking_inflation(
     Returns
     -------
     float or None
-        ``blocked_stderr / naive_stderr``, at least 1.0 by construction since
-        blocking takes the maximum over levels and level one is the naive value.
+        ``blocked_stderr / naive_stderr`` **when a float is returned**, and then
+        at least 1.0 by construction, since blocking takes the maximum over
+        levels and level one is the naive value. The clause is scoped to that
+        branch deliberately: this function can also return ``None``, and an
+        unscoped "at least 1.0" reads as a guarantee about every return value,
+        which would license ``inflation >= 1.0`` as a stand-in for checking
+        whether anything was measured at all.
 
         ``None`` when the window was too short for the ladder to run and
         ``allow_below_floor`` is set. There is no blocked-to-naive comparison to
@@ -293,6 +307,59 @@ def blocking_inflation(
     if blocks is None:
         return None
     return blocked / naive
+
+
+def format_block_count(blocks: int | None) -> str:
+    """Render a block count for notes text, including when there is none.
+
+    :func:`blocking_stderr` returns ``None`` for the block count when the window
+    was too short for the ladder to run. That marker is loud on arithmetic and
+    on a format spec, but a bare replacement field is a silent consumer:
+    ``f"from {blocks} blocks"`` renders ``"from None blocks"``. Notes text is
+    copied into receipts, so the rendering lives here, beside the marker, rather
+    than being re-derived at each call site.
+
+    Parameters
+    ----------
+    blocks : int or None
+        A block count as returned by :func:`blocking_stderr`.
+
+    Returns
+    -------
+    str
+        Text that never contains the substring ``None``.
+    """
+
+    if blocks is None:
+        return "no blocking level (window below the block floor)"
+    return f"{blocks} blocks"
+
+
+def format_inflation(inflation: float | None) -> str:
+    """Render an inflation ratio for notes text, including when it is unmeasured.
+
+    Two distinct accidents live in this one line. A bare replacement field
+    publishes the string ``None``. A format spec does not, but ``f"{None:.2f}"``
+    raises ``TypeError``, which is **not** an :class:`AdapterError`, so a
+    caller's ``except AdapterError`` around its emission does not catch it and
+    the run ends in a traceback instead of a caveat.
+
+    Parameters
+    ----------
+    inflation : float or None
+        A ratio as returned by :func:`blocking_inflation`.
+
+    Returns
+    -------
+    str
+        Text that never contains the substring ``None`` and never renders an
+        unmeasured ratio as a number -- least of all as ``1.00x``, which reads
+        as "blocking found no autocorrelation here".
+    """
+
+    if inflation is None:
+        return "inflation unmeasured (window below the block floor)"
+    return f"{inflation:.2f}x"
 
 
 def window_means(values: Sequence[float], windows: int = SIGN_TEST_WINDOWS) -> list[float]:
