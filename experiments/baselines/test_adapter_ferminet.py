@@ -256,3 +256,119 @@ def test_record_with_unknown_estimator_is_rejected() -> None:
 
     with pytest.raises(RecordValidationError, match="estimator must be one of"):
         BaselineRecord(system_id="he_atom", code="ferminet", estimator="training-tail")
+
+
+def test_build_record_rejects_a_constant_tail_rather_than_publishing_a_zero_bar(
+    tmp_path: Path,
+) -> None:
+    """A degenerate run must not publish a zero error bar. Two independent gates
+    now refuse it, and this test pins WHICH one speaks so a future change to
+    either layer is visible here rather than silently absorbed."""
+
+    run_dir = _write_stats(tmp_path / "degenerate", [-7.5] * 20000)
+
+    # Lower layer, statistics.blocking_stderr: refuses outright. It used to
+    # return 0.0 for this series, and 0.0 still validates as a record field
+    # (below), which is why the adapter keeps its own guard as well.
+    with pytest.raises(AdapterError, match="has no measurable spread"):
+        blocking_stderr([-7.5] * 20000)
+    assert BaselineRecord(
+        system_id="li_atom",
+        code="ferminet",
+        estimator="training_tail",
+        energy_hartree=-7.5,
+        energy_stderr_hartree=0.0,
+    ).energy_stderr_hartree == 0.0
+
+    # Through build_record the statistics raise is what surfaces, so assert on
+    # its text. The adapter's own `stderr == 0.0` guard is therefore currently
+    # unreachable by this route: it is retained as a second line of defence, not
+    # as this test's subject.
+    with pytest.raises(AdapterError, match="has no measurable spread"):
+        build_record(run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet")
+
+    assert not (run_dir / "baseline_record.json").exists()
+
+
+def test_allow_short_tail_accepts_a_run_below_the_floor(tmp_path: Path) -> None:
+    """The short-tail escape hatch must actually work end to end: it was
+    reachable from build_record but exercised by no test."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(4000)]
+    run_dir = _write_stats(tmp_path / "short", energies)
+
+    record = build_record(
+        run_dir,
+        system_id="li_atom",
+        batch_size=256,
+        ansatz="ferminet",
+        allow_short_tail=True,
+    )
+
+    # steps stays the length of the trace; the WINDOW is round(0.1 * 4000) = 400.
+    # The floor no longer clips back up to the whole run when it cannot be met -
+    # opting past the floor buys a short window, not a free full-trace one.
+    assert record.steps == 4000
+    assert record.samples == 4000 * 256
+    assert record.energy_stderr_hartree is not None and record.energy_stderr_hartree > 0.0
+    assert "400 samples" in (record.notes or "")
+    # 400 samples still fills the 32-block minimum, so the count is a real int
+    # and the note is not quietly reporting an unblocked estimate.
+    assert "from 200 blocks" in (record.notes or "")
+
+
+def test_short_run_without_the_flag_still_raises(tmp_path: Path) -> None:
+    """The counterpart: below the floor is an explicit decision, not a default."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(4000)]
+    run_dir = _write_stats(tmp_path / "short", energies)
+
+    with pytest.raises(AdapterError, match="cannot fill the 10000-step minimum"):
+        build_record(run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet")
+
+
+def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
+    tmp_path: Path,
+) -> None:
+    """A window below the 32-block minimum has no blocked error bar. The count
+    comes back None, an f-string renders that as the literal "None", and a note
+    reading "from None blocks" looks like a forgotten field rather than like
+    "blocking never ran". Refuse instead of formatting it."""
+
+    # 200 steps, 10% window -> 20 samples, which cannot fill 32 blocks.
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(200)]
+    run_dir = _write_stats(tmp_path / "unblockable", energies)
+
+    # The count really is None at the layer below, and it really does format
+    # silently - both halves of the hazard, executed rather than asserted about.
+    _, n_blocks = blocking_stderr(energies[-20:], allow_below_floor=True)
+    assert n_blocks is None
+    assert f"from {n_blocks} blocks" == "from None blocks"
+
+    with pytest.raises(AdapterError, match="cannot fill the 32-block minimum"):
+        build_record(
+            run_dir,
+            system_id="li_atom",
+            batch_size=256,
+            ansatz="ferminet",
+            allow_short_tail=True,
+        )
+
+    assert not (run_dir / "baseline_record.json").exists()
+
+
+def test_published_notes_never_contain_the_string_none(tmp_path: Path) -> None:
+    """Guard the whole notes field, not just today's known None. Any future
+    Optional interpolated into this string would read as a missing value to a
+    human and as a measurement to a parser."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(20000)]
+    for estimator in ("training_tail", "inference"):
+        record = build_record(
+            _write_stats(tmp_path / estimator, energies),
+            system_id="li_atom",
+            batch_size=256,
+            ansatz="ferminet",
+            estimator=estimator,
+        )
+        assert "None" not in (record.notes or ""), record.notes

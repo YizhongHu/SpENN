@@ -173,8 +173,9 @@ def build_record(
     Raises
     ------
     AdapterError
-        If the run has no usable energy series, or ``tail_fraction`` selects
-        fewer than two samples.
+        If the run has no usable energy series, ``tail_fraction`` selects
+        fewer than two samples, or the selected tail is constant and so carries
+        no error bar.
     """
 
     energies = read_energies(run_dir)
@@ -190,6 +191,34 @@ def build_record(
     tail = energies[-window:]
 
     stderr, n_blocks = blocking_stderr(tail)
+    # Second line of defence on the publication boundary, deliberately
+    # independent of what statistics.blocking_stderr currently does. Today that
+    # function raises on a degenerate window, so this branch is unreachable
+    # through it; before that change it returned exactly 0.0, and records.py
+    # rejects only NEGATIVE stderr, so a degenerate run published a baseline row
+    # claiming zero uncertainty - the most authoritative-looking number in the
+    # table produced by the least informative series. Keep the guard: the cost
+    # is one comparison, and it is what holds if the layer below is reverted or
+    # grows a new zero-valued route.
+    if stderr == 0.0:
+        raise AdapterError(
+            f"{run_dir}: the selected tail of {len(tail)} steps yields a zero error "
+            "bar, so its spread is unmeasured rather than zero; refusing to emit a record"
+        )
+    # blocking_stderr returns None for the block count when the window was too
+    # short to block. None only breaks a caller loudly if the caller does
+    # arithmetic on it: the notes below interpolate it with no format spec, and
+    # f"{None}" renders the string "None" without complaint. A record reading
+    # "from None blocks" looks like a forgotten field, not like "blocking never
+    # ran", so refuse instead of formatting it. This adapter never passes
+    # allow_below_floor, so the count should always be an int; that is exactly
+    # why the check is here rather than a comment saying it cannot happen.
+    if n_blocks is None:
+        raise AdapterError(
+            f"{run_dir}: the selected tail of {len(tail)} steps was never blocked, so "
+            "the error bar is an uncorrected naive estimate that understates the "
+            "uncertainty; refusing to emit a record that cannot say so in a number"
+        )
     device_type, gpu_model, wall_clock = None, None, None
     if log_path is not None and log_path.is_file():
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
