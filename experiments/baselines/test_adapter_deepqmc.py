@@ -287,7 +287,7 @@ def test_the_refusal_is_the_only_thing_stopping_a_zero_bar() -> None:
     record = BaselineRecord(
         system_id="he_atom", code="deepqmc", code_commit="0" * 40, ansatz="lapnet",
         energy_hartree=-2.9037, energy_stderr_hartree=0.0, steps=40000,
-        samples=40000 * 4096, batch_size=4096, estimator="training_tail", run_id="r",
+        samples=40000 * 4096, estimator="training_tail", run_id="r",
     )
     assert record.energy_stderr_hartree == 0.0
 
