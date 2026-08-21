@@ -261,3 +261,74 @@ def test_cli_fails_when_any_record_is_invalid(tmp_path: Path) -> None:
     exit_code = main(["--run-root", str(run_root), "--output", str(output)])
 
     assert exit_code == 1
+
+
+def test_collect_rejects_a_record_naming_an_unregistered_system(tmp_path: Path) -> None:
+    """A record whose ``system_id`` is not in the registry is a failure.
+
+    This is the hole that let four emitted records name ``b_atom`` and
+    ``n_atom`` while ``systems.yaml`` declared neither: the id validated as a
+    non-empty string, so the record reached ``results.jsonl`` looking like a
+    result with nothing to compare it against.
+    """
+
+    _write_record(tmp_path, "good", _valid_payload())
+    _write_record(tmp_path, "dangling", _valid_payload(system_id="not_a_registered_system"))
+
+    report = collect(tmp_path)
+
+    assert [record.run_dir for record in report.records] == ["good"]
+    assert len(report.failures) == 1
+    path, reason = report.failures[0]
+    assert path == "dangling"
+    # The reason must name the offending id; "invalid record" alone would send a
+    # reader looking for a schema problem that does not exist.
+    assert "not_a_registered_system" in reason
+
+
+def test_collect_accepts_the_registered_reproduction_systems(tmp_path: Path) -> None:
+    """Every system id the baseline runs actually emit collects cleanly."""
+
+    emitted = ("he_atom", "li_atom", "be_atom", "b_atom", "n_atom", "lih_molecule", "n2_molecule")
+    for system_id in emitted:
+        _write_record(tmp_path, system_id, _valid_payload(system_id=system_id, run_id=system_id))
+
+    report = collect(tmp_path)
+
+    assert report.failures == []
+    assert sorted(record.system_id for record in report.records) == sorted(emitted)
+
+
+def test_collect_honours_an_injected_id_set(tmp_path: Path) -> None:
+    """``known_ids`` overrides the in-repo registry.
+
+    The seam exists so a caller can collect against a registry other than the
+    committed one; without it, this behaviour could only be tested by
+    monkeypatching the collector's own module.
+    """
+
+    _write_record(tmp_path, "custom", _valid_payload(system_id="some_future_system"))
+
+    accepted = collect(tmp_path, known_ids=frozenset({"some_future_system"}))
+    rejected = collect(tmp_path, known_ids=frozenset({"he_atom"}))
+
+    assert [record.system_id for record in accepted.records] == ["some_future_system"]
+    assert accepted.failures == []
+    assert rejected.records == []
+    assert len(rejected.failures) == 1
+
+
+def test_cli_fails_when_a_record_names_an_unregistered_system(tmp_path: Path) -> None:
+    """The collector exits non-zero and omits the dangling record."""
+
+    run_root = tmp_path / "runs"
+    _write_record(run_root, "good", _valid_payload())
+    _write_record(run_root, "dangling", _valid_payload(system_id="not_a_registered_system"))
+    output = tmp_path / "results.jsonl"
+
+    exit_code = main(["--run-root", str(run_root), "--output", str(output)])
+
+    assert exit_code == 1
+    lines = output.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["system_id"] == "hooke_pair_singlet_omega0.5"
