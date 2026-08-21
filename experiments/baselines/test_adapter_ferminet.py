@@ -410,7 +410,13 @@ def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
     """A window below the 32-block minimum has no blocked error bar. The count
     comes back None, an f-string renders that as the literal "None", and a note
     reading "from None blocks" looks like a forgotten field rather than like
-    "blocking never ran". Refuse instead of formatting it."""
+    "blocking never ran". Refuse instead of formatting it.
+
+    Match on a substring unique to this adapter, not on statistics' block-floor
+    message. Both messages appear on this path, and pinning the wrong one made
+    the test pass whether the adapter refused or published: deleting the
+    adapter's guard entirely left the suite green.
+    """
 
     # 200 steps, 10% window -> 20 samples, which cannot fill 32 blocks.
     energies = [-7.4779 + 1e-4 * (i % 5) for i in range(200)]
@@ -418,11 +424,14 @@ def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
 
     # The count really is None at the layer below, and it really does format
     # silently - both halves of the hazard, executed rather than asserted about.
+    # This is also the positive control for the assertion afterwards: with the
+    # opt-in forwarded, statistics RETURNS here instead of raising, so the only
+    # thing left that can refuse is the adapter.
     _, n_blocks = blocking_stderr(energies[-20:], allow_below_floor=True)
     assert n_blocks is None
     assert f"from {n_blocks} blocks" == "from None blocks"
 
-    with pytest.raises(AdapterError, match="cannot fill the 32-block minimum"):
+    with pytest.raises(AdapterError, match="cannot say so in a number") as excinfo:
         build_record(
             run_dir,
             system_id="li_atom",
@@ -431,7 +440,39 @@ def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
             allow_short_tail=True,
         )
 
+    # Attribute the refusal to the adapter rather than to the layer below.
+    assert "cannot fill the 32-block minimum" not in str(excinfo.value)
     assert not (run_dir / "baseline_record.json").exists()
+
+
+def test_short_but_blockable_window_still_publishes_a_real_block_count(
+    tmp_path: Path,
+) -> None:
+    """Forwarding the opt-in must not turn every short run into a refusal.
+
+    A window that is below the STEP floor but still has enough samples to block
+    is a legitimate emission, and it now travels through
+    ``blocking_stderr(..., allow_below_floor=True)``. Pin that it comes back
+    with an integer count and notes that never say "None", otherwise the fix
+    for the unreachable guard would have replaced a silent bad record with a
+    blanket refusal.
+    """
+
+    # 1000 steps, 10% window -> 100 samples: under the 10000-step floor, over
+    # the 32-block minimum.
+    energies = [-7.4779 + 1e-4 * (i % 7) for i in range(1000)]
+    record = build_record(
+        _write_stats(tmp_path / "short-blockable", energies),
+        system_id="li_atom",
+        batch_size=256,
+        ansatz="ferminet",
+        allow_short_tail=True,
+    )
+
+    assert record.energy_stderr_hartree is not None
+    assert record.energy_stderr_hartree > 0.0
+    assert "None" not in (record.notes or ""), record.notes
+    assert "100 of 1000 steps" in (record.notes or ""), record.notes
 
 
 def test_published_notes_never_contain_the_string_none(tmp_path: Path) -> None:
@@ -439,16 +480,24 @@ def test_published_notes_never_contain_the_string_none(tmp_path: Path) -> None:
     Optional interpolated into this string would read as a missing value to a
     human and as a measurement to a parser."""
 
-    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(20000)]
-    for estimator in ("training_tail", "inference"):
-        record = build_record(
-            _write_stats(tmp_path / estimator, energies),
-            system_id="li_atom",
-            batch_size=256,
-            ansatz="ferminet",
-            estimator=estimator,
-        )
-        assert "None" not in (record.notes or ""), record.notes
+    # Both branches of the notes expression, and both a long run and a short
+    # one. The short case is the one that reaches statistics with the opt-in
+    # set, i.e. the only route on which a None count is producible at all.
+    cases = (
+        ("long", [-7.4779 + 1e-4 * (i % 5) for i in range(20000)], False),
+        ("short", [-7.4779 + 1e-4 * (i % 7) for i in range(1000)], True),
+    )
+    for label, energies, allow_short_tail in cases:
+        for estimator in ("training_tail", "inference"):
+            record = build_record(
+                _write_stats(tmp_path / f"{label}-{estimator}", energies),
+                system_id="li_atom",
+                batch_size=256,
+                ansatz="ferminet",
+                estimator=estimator,
+                allow_short_tail=allow_short_tail,
+            )
+            assert "None" not in (record.notes or ""), (label, record.notes)
 
 
 def test_cli_refuses_an_unblockable_window_cleanly_rather_than_tracebacking(
@@ -456,11 +505,12 @@ def test_cli_refuses_an_unblockable_window_cleanly_rather_than_tracebacking(
 ) -> None:
     """The refusal has to survive the CLI boundary, not just build_record.
 
-    ``--allow-short-tail`` lowers the step floor and nothing else, so a small
-    enough window still cannot be blocked and the run is refused. That refusal
-    reaching a user as an uncaught AdapterError traceback would read as a broken
-    tool rather than as a deliberate decision, so pin the exit code, the message
-    on stderr, and the absence of an emitted record together.
+    ``--allow-short-tail`` lowers the step floor, and the adapter forwards it to
+    the blocking estimator, so a small enough window comes back unblocked and is
+    refused here rather than one layer down. That refusal reaching a user as an
+    uncaught AdapterError traceback would read as a broken tool rather than as a
+    deliberate decision, so pin the exit code, the message on stderr, and the
+    absence of an emitted record together.
     """
 
     # 200 steps, 10% window -> 20 samples, below the 32-block minimum.
@@ -483,7 +533,7 @@ def test_cli_refuses_an_unblockable_window_cleanly_rather_than_tracebacking(
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert "cannot fill the 32-block minimum" in captured.err
+    assert "cannot say so in a number" in captured.err
     # The refusal must not be filed as a record, and must not print a record
     # shaped like a successful emission either. write_record's destination is
     # the run directory, so check there rather than at a caller-chosen path.
