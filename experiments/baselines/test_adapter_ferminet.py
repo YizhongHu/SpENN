@@ -245,6 +245,82 @@ def test_estimator_distinguishes_training_tail_from_inference(tmp_path: Path) ->
     assert "Fixed-parameter inference" in (infer.notes or "")
 
 
+def test_notes_state_the_realized_window_not_the_requested_fraction(tmp_path: Path) -> None:
+    """The floor widens the window past the requested fraction, so a notes string
+    built from that fraction is false. Both rendered numbers must be measured.
+
+    The old string interpolated the ARGUMENT for the percentage and the REALIZED
+    window for the count, so the two halves of one sentence described different
+    windows.
+    """
+
+    # 20000 steps at the 0.1 default asks for 2000; MIN_TAIL_STEPS=10000 wins, so
+    # the old string said "10%" while averaging half the trace. This length is
+    # deliberate: it is inside the band where the rendered percentage is false at
+    # every precision. A length above the floor's reach would not discriminate.
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(20000)]
+    run_dir = _write_stats(tmp_path / "mid", energies)
+
+    record = build_record(
+        run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet"
+    )
+
+    assert "10000 of 20000 steps" in (record.notes or "")
+    # Assert the absence of ANY percent sign rather than the absence of "10%".
+    # A value check cannot discriminate wherever the format specifier rounds a
+    # false fraction back onto the true one; a shape check discriminates at every
+    # length and every precision. See the companion test below.
+    assert "%" not in (record.notes or "")
+
+
+def test_notes_are_honest_when_the_floor_takes_the_whole_trace(tmp_path: Path) -> None:
+    """At exactly MIN_TAIL_STEPS the window is the entire run, and the worst case
+    of the old string described the whole trace as 10% of itself."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(10000)]
+    run_dir = _write_stats(tmp_path / "atfloor", energies)
+
+    record = build_record(
+        run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet"
+    )
+
+    assert "10000 of 10000 steps" in (record.notes or "")
+    assert "%" not in (record.notes or "")
+
+
+def test_notes_render_no_percentage_even_where_one_would_round_true(
+    tmp_path: Path,
+) -> None:
+    """Pin the band where a percentage is wrong but renders right.
+
+    At 39216 steps with a 0.25 fraction the floor still widens the window, from a
+    requested 9804 to 10000, so the realized fraction is 25.4998% - yet both it
+    and the requested 25% render as "25%" at the precision this adapter used.
+    That makes this length the only place where a percentage recomputed from the
+    realized window would be byte-identical to the buggy one, so it is the only
+    length at which asserting on the percentage's VALUE proves nothing and
+    asserting on its ABSENCE proves the shape changed.
+
+    The bounds are measured, not derived by hand: this band's upper end is 39997,
+    because round(0.25 * 39998) is 10000 exactly and the floor stops binding two
+    steps before 40000.
+    """
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(39216)]
+    run_dir = _write_stats(tmp_path / "roundstrue", energies)
+
+    record = build_record(
+        run_dir,
+        system_id="li_atom",
+        batch_size=256,
+        ansatz="ferminet",
+        tail_fraction=0.25,
+    )
+
+    assert "10000 of 39216 steps" in (record.notes or "")
+    assert "%" not in (record.notes or "")
+
+
 def test_record_without_estimator_is_rejected() -> None:
     """An estimator-less record cannot be compared, so it must not validate."""
 
@@ -312,7 +388,7 @@ def test_allow_short_tail_accepts_a_run_below_the_floor(tmp_path: Path) -> None:
     assert record.steps == 4000
     assert record.samples == 4000 * 256
     assert record.energy_stderr_hartree is not None and record.energy_stderr_hartree > 0.0
-    assert "400 samples" in (record.notes or "")
+    assert "400 of 4000 steps" in (record.notes or "")
     # 400 samples still fills the 32-block minimum, so the count is a real int
     # and the note is not quietly reporting an unblocked estimate.
     assert "from 200 blocks" in (record.notes or "")
