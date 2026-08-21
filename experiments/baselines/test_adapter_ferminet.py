@@ -19,6 +19,7 @@ from experiments.baselines.adapters.ferminet import (
     parse_device,
     parse_wall_clock_seconds,
     read_energies,
+    select_tail,
     write_record,
 )
 
@@ -427,7 +428,16 @@ def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
     # This is also the positive control for the assertion afterwards: with the
     # opt-in forwarded, statistics RETURNS here instead of raising, so the only
     # thing left that can refuse is the adapter.
-    _, n_blocks = blocking_stderr(energies[-20:], allow_below_floor=True)
+    #
+    # Derive the window from the same call the adapter makes rather than
+    # hand-slicing energies[-20:]. A hand slice coincides with the path's tail
+    # only while the fixture keeps producing exactly 20 samples, and it
+    # decouples SILENTLY: for any total in [2, 314] the hand window and the
+    # real one both block to None, so the control stops covering the path under
+    # test while every assertion here still passes. From 315 up the real window
+    # reaches 32 blocks and the pytest.raises below fails loudly instead.
+    window = select_tail(len(energies), 0.1, allow_below_floor=True)
+    _, n_blocks = blocking_stderr(energies[-window:], allow_below_floor=True)
     assert n_blocks is None
     assert f"from {n_blocks} blocks" == "from None blocks"
 
@@ -437,11 +447,24 @@ def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
             system_id="li_atom",
             batch_size=256,
             ansatz="ferminet",
+            tail_fraction=0.1,
             allow_short_tail=True,
         )
 
-    # Attribute the refusal to the adapter rather than to the layer below.
-    assert "cannot fill the 32-block minimum" not in str(excinfo.value)
+    # Attribute the refusal to the adapter rather than to the layer below, two
+    # independent ways. Each alone kills a mutant that rewords this adapter's
+    # guard to statistics' wording; deleting BOTH lets that mutant survive, so
+    # neither is redundant even though neither is what kills a mutant that
+    # deletes the guard outright (that one dies on DID NOT RAISE above).
+    #
+    # Assert the invariant substrings separately rather than the span
+    # "cannot fill the 32-block minimum", which crosses statistics'
+    # {min_blocks} interpolation: a negative assertion over a rendered default
+    # stops matching SILENTLY when the default moves, where a positive pin on
+    # the same text would fail loudly.
+    message = str(excinfo.value)
+    assert not ("cannot fill the" in message and "-block minimum" in message)
+    assert Path(str(excinfo.traceback[-1].path)).name == "ferminet.py"
     assert not (run_dir / "baseline_record.json").exists()
 
 
