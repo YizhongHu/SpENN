@@ -211,8 +211,10 @@ def build_record(
     # f"{None}" renders the string "None" without complaint. A record reading
     # "from None blocks" looks like a forgotten field, not like "blocking never
     # ran", so refuse instead of formatting it. This adapter never passes
-    # allow_below_floor, so the count should always be an int; that is exactly
-    # why the check is here rather than a comment saying it cannot happen.
+    # allow_below_floor to blocking_stderr - only to select_tail - so a window
+    # under the 32-block minimum raises there and never reaches this branch. The
+    # check is here rather than as a comment saying it cannot happen because the
+    # thing making it unreachable is one bare call argument in the line above.
     if n_blocks is None:
         raise AdapterError(
             f"{run_dir}: the selected tail of {len(tail)} steps was never blocked, so "
@@ -302,7 +304,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--allow-short-tail",
         action="store_true",
-        help="accept a window below the floor for a short run; the record says so",
+        help=(
+            "lower the STEP floor on the estimator window for a short run; the "
+            "record says the window was short. This does not lower the 32-BLOCK "
+            "floor: a window that cannot be blocked is still refused, so a "
+            "sufficiently small window plus this flag is an error, not an emission"
+        ),
     )
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)

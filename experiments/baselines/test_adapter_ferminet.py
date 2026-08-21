@@ -15,6 +15,7 @@ from experiments.baselines.adapters.ferminet import (
     AdapterError,
     blocking_stderr,
     build_record,
+    main,
     parse_device,
     parse_wall_clock_seconds,
     read_energies,
@@ -372,3 +373,43 @@ def test_published_notes_never_contain_the_string_none(tmp_path: Path) -> None:
             estimator=estimator,
         )
         assert "None" not in (record.notes or ""), record.notes
+
+
+def test_cli_refuses_an_unblockable_window_cleanly_rather_than_tracebacking(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal has to survive the CLI boundary, not just build_record.
+
+    ``--allow-short-tail`` lowers the step floor and nothing else, so a small
+    enough window still cannot be blocked and the run is refused. That refusal
+    reaching a user as an uncaught AdapterError traceback would read as a broken
+    tool rather than as a deliberate decision, so pin the exit code, the message
+    on stderr, and the absence of an emitted record together.
+    """
+
+    # 200 steps, 10% window -> 20 samples, below the 32-block minimum.
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(200)]
+    run_dir = _write_stats(tmp_path / "cli-unblockable", energies)
+
+    rc = main(
+        [
+            "--run-dir",
+            str(run_dir),
+            "--system-id",
+            "li_atom",
+            "--batch-size",
+            "256",
+            "--ansatz",
+            "ferminet",
+            "--allow-short-tail",
+        ]
+    )
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "cannot fill the 32-block minimum" in captured.err
+    # The refusal must not be filed as a record, and must not print a record
+    # shaped like a successful emission either. write_record's destination is
+    # the run directory, so check there rather than at a caller-chosen path.
+    assert not (run_dir / "baseline_record.json").exists()
+    assert "energy_hartree" not in captured.out
