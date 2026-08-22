@@ -465,28 +465,53 @@ def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
 
     # Attribute the refusal to the adapter rather than to the layer below.
     # Three mechanisms are in play here - the match= above, the negative assert
-    # below, and the traceback assert below that - and all three are
-    # load-bearing, each against a DIFFERENT way the attribution can break:
+    # below, and the traceback assert below that. Each one is the SOLE detector
+    # of at least one way the attribution can break, so none is dispensable.
+    # Every row below was measured by applying the edit and running this test.
     #
     #   guard deleted outright         dies above on DID NOT RAISE; none of the
     #                                  three mechanisms is involved.
     #   guard reworded to statistics'  killed by match= alone AND by the
-    #     text                         negative assert alone. Over this mutant
-    #                                  by itself the negative assert is
-    #                                  dispensable - it is the next case that
-    #                                  makes it load-bearing.
+    #     text                         negative assert alone, so neither one is
+    #                                  the sole detector here.
     #   guard wraps the lower error    match= still PASSES, because
     #     and re-raises, concatenating  pytest.raises(match=) is re.search and a
-    #     both texts                   superstring satisfies the pin. Only the
-    #                                  negative assert refuses.
-    #   adapter stops forwarding the   the guard's own wording is intact and
-    #     opt-in, so the LOWER layer    never rendered, so both text mechanisms
-    #     refuses                       pass. Only the traceback assert refuses.
+    #     both texts                   superstring satisfies the pin. NEGATIVE
+    #                                  ASSERT IS SOLE DETECTOR.
+    #   adapter stops forwarding the   all THREE refuse, not one. statistics'
+    #     opt-in at the blocking_stderr blocking-floor message carries both
+    #     call, so the LOWER layer      substrings the negative assert conjoins,
+    #     refuses                       carries none of the match= pin, and the
+    #                                  traceback names the other file.
+    #   adapter stops forwarding at    negative assert is BLIND here:
+    #     the select_tail call          select_tail's own message has "cannot
+    #     instead                       fill the" but not "-block minimum", and
+    #                                  the assert conjoins them. match= kills
+    #                                  it. Two call sites forward this opt-in
+    #                                  and only one reaches the blocking floor,
+    #                                  so a one-site mutation leaves the other
+    #                                  untested.
+    #   adapter's own message          negative assert passes - neither of its
+    #     reworded, semantics kept     substrings appears - and the traceback
+    #                                  still names this file. MATCH= IS SOLE
+    #                                  DETECTOR.
+    #   COMPOUND: stop forwarding AND  match= passes, because the pin is
+    #     give statistics' floor the   present in the rendered text, and the
+    #     adapter's own wording        negative assert passes, because both of
+    #                                  its substrings are gone. Only the file
+    #                                  the exception came from still differs.
+    #                                  TRACEBACK ASSERT IS SOLE DETECTOR.
     #
     # Two general shapes, worth keeping straight: a positive regex pin cannot
     # see ADDED text, and a negative "not in" assert cannot see text whose
     # SPELLING changes. Neither form dominates the other, which is why both are
     # here alongside a check that does not read the message at all.
+    #
+    # Dispensability is scoped to the mutant SPACE as well as to the mutant
+    # SET. The traceback assert's sole-detection case needs TWO simultaneous
+    # edits, so any single-edit sweep reports it as sole detector of nothing -
+    # which reads as evidence the check is decorative when it is only evidence
+    # that the space was too small to contain its target.
     #
     # Assert the invariant substrings separately rather than the span
     # "cannot fill the 32-block minimum", which crosses statistics'
