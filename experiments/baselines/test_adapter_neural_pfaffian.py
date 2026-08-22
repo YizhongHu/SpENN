@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import random
+import statistics
 from pathlib import Path
 
 import pytest
@@ -288,12 +289,78 @@ def test_energy_is_the_tail_mean_and_window_follows_the_fraction() -> None:
 
     # First half far above, second half at the true plateau: a whole-trace mean
     # would land near -2.4, a tail mean near -2.9.
-    energies = [-1.9] * 20000 + [-2.9] * 20000
+    #
+    # The plateau carries ANTITHETIC jitter -- every draw contributes both
+    # ``-2.9 + d`` and ``-2.9 - d`` -- rather than being perfectly flat. A flat
+    # window has variance exactly 0.0, and ``blocking_stderr`` refuses that,
+    # because no spread at all is unmeasurable rather than a spread of zero. A
+    # flat plateau raises at construction and never reaches the assertions
+    # below, so the test that looked like it covered the tail mean would in fact
+    # be covering nothing.
+    #
+    # Pairing, rather than plain jitter, is what keeps the repair honest: the
+    # mean of any pair-aligned window is exactly -2.9, so the ``rel=1e-12``
+    # bound stays as tight as it was and still fails when the window reaches
+    # into the -1.9 half. Widening that tolerance to absorb jitter would have
+    # removed the only thing this test measures.
+    rng = random.Random(29)
+    plateau = []
+    for _ in range(10000):
+        offset = rng.gauss(0.0, 1e-4)
+        plateau.extend((-2.9 + offset, -2.9 - offset))
+    energies = [-1.9] * 20000 + plateau
+
+    # Asserted, not assumed. If a later edit flattens the plateau again, it
+    # fails here naming the cause, instead of surfacing as an estimator error
+    # from three frames down.
+    total = len(energies)
+    window = int(DEFAULT_TAIL_FRACTION * total)
+    assert statistics.variance(energies[-window:]) > 0.0
+
+    # The exactness above is a property of the CONSTANTS, not of the
+    # construction. Antithetic offsets cancel only across a whole pair, so the
+    # window must cover the plateau in whole pairs -- which it does at
+    # ``0.25 * 40000`` by arithmetic, not by anything the construction
+    # enforces. Measured: drop a single plateau value and the tail mean picks
+    # up a residual of about ``d / window``, a relative deviation of 1.8e-09.
+    #
+    # Asserting it here does not change WHETHER a straddled window fails: the
+    # energy assertion below already catches that 1.8e-09 against a 1e-12
+    # bound. It changes what the failure SAYS. Without it the reader sees an
+    # energy off in the ninth decimal and reasonably concludes the tail window
+    # is broken, when in fact the window is right and the fixture straddles a
+    # pair boundary.
+    #
+    # The condition is the parity of the window's OVERLAP with the plateau,
+    # clamped with ``max``, not the parity of the window itself. Once the
+    # window reaches past the start of the plateau it covers the plateau whole
+    # and alignment is automatic however long the window is, so an unclamped
+    # ``window % 2`` would be asking the wrong question. Measured: at
+    # ``tail_fraction=0.750025`` the window is 30001, and the unclamped form
+    # fails here claiming the window "covers 30001 plateau values" when only
+    # 20000 exist -- stealing the kill from the energy assertion below, which
+    # is where a window reaching into the -1.9 half belongs. At 0.75 exactly
+    # the two forms agree, because 30000 is even; the clamp is what makes the
+    # guard right for the odd case rather than lucky for the even one.
+    #
+    # Only this one parity is asserted. The plateau's own length is even for
+    # every constant-arity version of the loop above -- ``extend`` of a fixed
+    # k-tuple over 10000 iterations cannot produce an odd count -- so a
+    # ``len(plateau) % 2`` guard would be an assertion no edit can fail. Losing
+    # the antithetic pairing itself is caught by the energy assertion instead:
+    # measured at 9.9e-07 relative for single-value draws, 4.8e-09 for one
+    # stray unpaired element.
+    plateau_start = total - len(plateau)
+    plateau_covered = total - max(total - window, plateau_start)
+    assert plateau_covered % 2 == 0, (
+        f"window covers {plateau_covered} plateau values, which is not whole pairs"
+    )
+
     record = record_from_series(
-        energies, [0.05] * 40000, system_id="he_atom", walkers_per_step=WALKERS
+        energies, [0.05] * total, system_id="he_atom", walkers_per_step=WALKERS
     )
     assert record.energy_hartree == pytest.approx(-2.9, rel=1e-12)
-    assert f"last {int(DEFAULT_TAIL_FRACTION * 40000)} of 40000 steps" in record.notes
+    assert f"last {window} of {total} steps" in record.notes
 
 
 def test_steps_and_samples_count_the_whole_run_not_the_tail() -> None:
