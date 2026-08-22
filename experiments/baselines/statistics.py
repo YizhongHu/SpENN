@@ -110,6 +110,23 @@ def select_tail(
     what clipping the widened window to ``total_steps`` used to do -- reports a
     window the caller never asked for and leaves ``fraction`` with no effect on
     the result, which is indistinguishable from honouring it.
+
+    Settled deliberately as a design call, not a correctness fix. The rejected
+    alternative clamped the widened window to ``total_steps``; below the floor
+    its image is the single point ``{total_steps}`` for every fraction, so
+    ``fraction`` had no effect there. This signature carries no estimator
+    argument, so one fallback has to serve both callers, and the whole trace is
+    right for a fixed-parameter inference pass -- where the samples are
+    exchangeable -- and wrong for a training tail, where it folds the
+    unconverged prefix into the mean and biases it upward. Letting the fraction
+    govern keeps the whole trace reachable, since an inference caller asks for
+    it with ``fraction=1.0``, while leaving a training caller able to ask for a
+    short tail. The clamping shape could express neither request.
+
+    The accepted cost is a discontinuity at the floor. At ``fraction=0.25`` with
+    ``allow_below_floor``, a 10000-step run yields a 10000-step window and a
+    9999-step run yields 2500: one step of run length, four times the window.
+    Clamping is continuous there. The jump was judged the cheaper price.
     """
 
     if not 0.0 < fraction <= 1.0:
