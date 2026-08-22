@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import random
+import statistics
 from pathlib import Path
 
 import pytest
@@ -288,12 +289,38 @@ def test_energy_is_the_tail_mean_and_window_follows_the_fraction() -> None:
 
     # First half far above, second half at the true plateau: a whole-trace mean
     # would land near -2.4, a tail mean near -2.9.
-    energies = [-1.9] * 20000 + [-2.9] * 20000
+    #
+    # The plateau carries ANTITHETIC jitter -- every draw contributes both
+    # ``-2.9 + d`` and ``-2.9 - d`` -- rather than being perfectly flat. A flat
+    # window has variance exactly 0.0, and ``blocking_stderr`` refuses that,
+    # because no spread at all is unmeasurable rather than a spread of zero. A
+    # flat plateau raises at construction and never reaches the assertions
+    # below, so the test that looked like it covered the tail mean would in fact
+    # be covering nothing.
+    #
+    # Pairing, rather than plain jitter, is what keeps the repair honest: the
+    # mean of any pair-aligned window is exactly -2.9, so the ``rel=1e-12``
+    # bound stays as tight as it was and still fails when the window reaches
+    # into the -1.9 half. Widening that tolerance to absorb jitter would have
+    # removed the only thing this test measures.
+    rng = random.Random(29)
+    plateau = []
+    for _ in range(10000):
+        offset = rng.gauss(0.0, 1e-4)
+        plateau.extend((-2.9 + offset, -2.9 - offset))
+    energies = [-1.9] * 20000 + plateau
+
+    # Asserted, not assumed. If a later edit flattens the plateau again, it
+    # fails here naming the cause, instead of surfacing as an estimator error
+    # from three frames down.
+    window = int(DEFAULT_TAIL_FRACTION * 40000)
+    assert statistics.variance(energies[-window:]) > 0.0
+
     record = record_from_series(
         energies, [0.05] * 40000, system_id="he_atom", walkers_per_step=WALKERS
     )
     assert record.energy_hartree == pytest.approx(-2.9, rel=1e-12)
-    assert f"last {int(DEFAULT_TAIL_FRACTION * 40000)} of 40000 steps" in record.notes
+    assert f"last {window} of 40000 steps" in record.notes
 
 
 def test_steps_and_samples_count_the_whole_run_not_the_tail() -> None:
