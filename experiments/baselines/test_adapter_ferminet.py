@@ -15,9 +15,11 @@ from experiments.baselines.adapters.ferminet import (
     AdapterError,
     blocking_stderr,
     build_record,
+    main,
     parse_device,
     parse_wall_clock_seconds,
     read_energies,
+    select_tail,
     write_record,
 )
 
@@ -244,6 +246,82 @@ def test_estimator_distinguishes_training_tail_from_inference(tmp_path: Path) ->
     assert "Fixed-parameter inference" in (infer.notes or "")
 
 
+def test_notes_state_the_realized_window_not_the_requested_fraction(tmp_path: Path) -> None:
+    """The floor widens the window past the requested fraction, so a notes string
+    built from that fraction is false. Both rendered numbers must be measured.
+
+    The old string interpolated the ARGUMENT for the percentage and the REALIZED
+    window for the count, so the two halves of one sentence described different
+    windows.
+    """
+
+    # 20000 steps at the 0.1 default asks for 2000; MIN_TAIL_STEPS=10000 wins, so
+    # the old string said "10%" while averaging half the trace. This length is
+    # deliberate: it is inside the band where the rendered percentage is false at
+    # every precision. A length above the floor's reach would not discriminate.
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(20000)]
+    run_dir = _write_stats(tmp_path / "mid", energies)
+
+    record = build_record(
+        run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet"
+    )
+
+    assert "10000 of 20000 steps" in (record.notes or "")
+    # Assert the absence of ANY percent sign rather than the absence of "10%".
+    # A value check cannot discriminate wherever the format specifier rounds a
+    # false fraction back onto the true one; a shape check discriminates at every
+    # length and every precision. See the companion test below.
+    assert "%" not in (record.notes or "")
+
+
+def test_notes_are_honest_when_the_floor_takes_the_whole_trace(tmp_path: Path) -> None:
+    """At exactly MIN_TAIL_STEPS the window is the entire run, and the worst case
+    of the old string described the whole trace as 10% of itself."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(10000)]
+    run_dir = _write_stats(tmp_path / "atfloor", energies)
+
+    record = build_record(
+        run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet"
+    )
+
+    assert "10000 of 10000 steps" in (record.notes or "")
+    assert "%" not in (record.notes or "")
+
+
+def test_notes_render_no_percentage_even_where_one_would_round_true(
+    tmp_path: Path,
+) -> None:
+    """Pin the band where a percentage is wrong but renders right.
+
+    At 39216 steps with a 0.25 fraction the floor still widens the window, from a
+    requested 9804 to 10000, so the realized fraction is 25.4998% - yet both it
+    and the requested 25% render as "25%" at the precision this adapter used.
+    That makes this length the only place where a percentage recomputed from the
+    realized window would be byte-identical to the buggy one, so it is the only
+    length at which asserting on the percentage's VALUE proves nothing and
+    asserting on its ABSENCE proves the shape changed.
+
+    The bounds are measured, not derived by hand: this band's upper end is 39997,
+    because round(0.25 * 39998) is 10000 exactly and the floor stops binding two
+    steps before 40000.
+    """
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(39216)]
+    run_dir = _write_stats(tmp_path / "roundstrue", energies)
+
+    record = build_record(
+        run_dir,
+        system_id="li_atom",
+        batch_size=256,
+        ansatz="ferminet",
+        tail_fraction=0.25,
+    )
+
+    assert "10000 of 39216 steps" in (record.notes or "")
+    assert "%" not in (record.notes or "")
+
+
 def test_record_without_estimator_is_rejected() -> None:
     """An estimator-less record cannot be compared, so it must not validate."""
 
@@ -256,3 +334,231 @@ def test_record_with_unknown_estimator_is_rejected() -> None:
 
     with pytest.raises(RecordValidationError, match="estimator must be one of"):
         BaselineRecord(system_id="he_atom", code="ferminet", estimator="training-tail")
+
+
+def test_build_record_rejects_a_constant_tail_rather_than_publishing_a_zero_bar(
+    tmp_path: Path,
+) -> None:
+    """A degenerate run must not publish a zero error bar. Two independent gates
+    now refuse it, and this test pins WHICH one speaks so a future change to
+    either layer is visible here rather than silently absorbed."""
+
+    run_dir = _write_stats(tmp_path / "degenerate", [-7.5] * 20000)
+
+    # Lower layer, statistics.blocking_stderr: refuses outright. It used to
+    # return 0.0 for this series, and 0.0 still validates as a record field
+    # (below), which is why the adapter keeps its own guard as well.
+    with pytest.raises(AdapterError, match="has no measurable spread"):
+        blocking_stderr([-7.5] * 20000)
+    assert BaselineRecord(
+        system_id="li_atom",
+        code="ferminet",
+        estimator="training_tail",
+        energy_hartree=-7.5,
+        energy_stderr_hartree=0.0,
+    ).energy_stderr_hartree == 0.0
+
+    # Through build_record the statistics raise is what surfaces, so assert on
+    # its text. The adapter's own `stderr == 0.0` guard is therefore currently
+    # unreachable by this route: it is retained as a second line of defence, not
+    # as this test's subject.
+    with pytest.raises(AdapterError, match="has no measurable spread"):
+        build_record(run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet")
+
+    assert not (run_dir / "baseline_record.json").exists()
+
+
+def test_allow_short_tail_accepts_a_run_below_the_floor(tmp_path: Path) -> None:
+    """The short-tail escape hatch must actually work end to end: it was
+    reachable from build_record but exercised by no test."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(4000)]
+    run_dir = _write_stats(tmp_path / "short", energies)
+
+    record = build_record(
+        run_dir,
+        system_id="li_atom",
+        batch_size=256,
+        ansatz="ferminet",
+        allow_short_tail=True,
+    )
+
+    # steps stays the length of the trace; the WINDOW is round(0.1 * 4000) = 400.
+    # The floor no longer clips back up to the whole run when it cannot be met -
+    # opting past the floor buys a short window, not a free full-trace one.
+    assert record.steps == 4000
+    assert record.samples == 4000 * 256
+    assert record.energy_stderr_hartree is not None and record.energy_stderr_hartree > 0.0
+    assert "400 of 4000 steps" in (record.notes or "")
+    # 400 samples still fills the 32-block minimum, so the count is a real int
+    # and the note is not quietly reporting an unblocked estimate.
+    assert "from 200 blocks" in (record.notes or "")
+
+
+def test_short_run_without_the_flag_still_raises(tmp_path: Path) -> None:
+    """The counterpart: below the floor is an explicit decision, not a default."""
+
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(4000)]
+    run_dir = _write_stats(tmp_path / "short", energies)
+
+    with pytest.raises(AdapterError, match="cannot fill the 10000-step minimum"):
+        build_record(run_dir, system_id="li_atom", batch_size=256, ansatz="ferminet")
+
+
+def test_window_too_short_to_block_raises_rather_than_reporting_none_blocks(
+    tmp_path: Path,
+) -> None:
+    """A window below the 32-block minimum has no blocked error bar. The count
+    comes back None, an f-string renders that as the literal "None", and a note
+    reading "from None blocks" looks like a forgotten field rather than like
+    "blocking never ran". Refuse instead of formatting it.
+
+    Match on a substring unique to this adapter, not on statistics' block-floor
+    message. Both messages appear on this path, and pinning the wrong one made
+    the test pass whether the adapter refused or published: deleting the
+    adapter's guard entirely left the suite green.
+    """
+
+    # 200 steps, 10% window -> 20 samples, which cannot fill 32 blocks.
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(200)]
+    run_dir = _write_stats(tmp_path / "unblockable", energies)
+
+    # The count really is None at the layer below, and it really does format
+    # silently - both halves of the hazard, executed rather than asserted about.
+    # This is also the positive control for the assertion afterwards: with the
+    # opt-in forwarded, statistics RETURNS here instead of raising, so the only
+    # thing left that can refuse is the adapter.
+    #
+    # Derive the window from the same call the adapter makes rather than
+    # hand-slicing energies[-20:]. A hand slice coincides with the path's tail
+    # only while the fixture keeps producing exactly 20 samples, and it
+    # decouples SILENTLY: for any total in [2, 314] the hand window and the
+    # real one both block to None, so the control stops covering the path under
+    # test while every assertion here still passes. From 315 up the real window
+    # reaches 32 blocks and the pytest.raises below fails loudly instead.
+    window = select_tail(len(energies), 0.1, allow_below_floor=True)
+    _, n_blocks = blocking_stderr(energies[-window:], allow_below_floor=True)
+    assert n_blocks is None
+    assert f"from {n_blocks} blocks" == "from None blocks"
+
+    with pytest.raises(AdapterError, match="cannot say so in a number") as excinfo:
+        build_record(
+            run_dir,
+            system_id="li_atom",
+            batch_size=256,
+            ansatz="ferminet",
+            tail_fraction=0.1,
+            allow_short_tail=True,
+        )
+
+    # Attribute the refusal to the adapter rather than to the layer below, two
+    # independent ways. Each alone kills a mutant that rewords this adapter's
+    # guard to statistics' wording; deleting BOTH lets that mutant survive, so
+    # neither is redundant even though neither is what kills a mutant that
+    # deletes the guard outright (that one dies on DID NOT RAISE above).
+    #
+    # Assert the invariant substrings separately rather than the span
+    # "cannot fill the 32-block minimum", which crosses statistics'
+    # {min_blocks} interpolation: a negative assertion over a rendered default
+    # stops matching SILENTLY when the default moves, where a positive pin on
+    # the same text would fail loudly.
+    message = str(excinfo.value)
+    assert not ("cannot fill the" in message and "-block minimum" in message)
+    assert Path(str(excinfo.traceback[-1].path)).name == "ferminet.py"
+    assert not (run_dir / "baseline_record.json").exists()
+
+
+def test_short_but_blockable_window_still_publishes_a_real_block_count(
+    tmp_path: Path,
+) -> None:
+    """Forwarding the opt-in must not turn every short run into a refusal.
+
+    A window that is below the STEP floor but still has enough samples to block
+    is a legitimate emission, and it now travels through
+    ``blocking_stderr(..., allow_below_floor=True)``. Pin that it comes back
+    with an integer count and notes that never say "None", otherwise the fix
+    for the unreachable guard would have replaced a silent bad record with a
+    blanket refusal.
+    """
+
+    # 1000 steps, 10% window -> 100 samples: under the 10000-step floor, over
+    # the 32-block minimum.
+    energies = [-7.4779 + 1e-4 * (i % 7) for i in range(1000)]
+    record = build_record(
+        _write_stats(tmp_path / "short-blockable", energies),
+        system_id="li_atom",
+        batch_size=256,
+        ansatz="ferminet",
+        allow_short_tail=True,
+    )
+
+    assert record.energy_stderr_hartree is not None
+    assert record.energy_stderr_hartree > 0.0
+    assert "None" not in (record.notes or ""), record.notes
+    assert "100 of 1000 steps" in (record.notes or ""), record.notes
+
+
+def test_published_notes_never_contain_the_string_none(tmp_path: Path) -> None:
+    """Guard the whole notes field, not just today's known None. Any future
+    Optional interpolated into this string would read as a missing value to a
+    human and as a measurement to a parser."""
+
+    # Both branches of the notes expression, and both a long run and a short
+    # one. The short case is the one that reaches statistics with the opt-in
+    # set, i.e. the only route on which a None count is producible at all.
+    cases = (
+        ("long", [-7.4779 + 1e-4 * (i % 5) for i in range(20000)], False),
+        ("short", [-7.4779 + 1e-4 * (i % 7) for i in range(1000)], True),
+    )
+    for label, energies, allow_short_tail in cases:
+        for estimator in ("training_tail", "inference"):
+            record = build_record(
+                _write_stats(tmp_path / f"{label}-{estimator}", energies),
+                system_id="li_atom",
+                batch_size=256,
+                ansatz="ferminet",
+                estimator=estimator,
+                allow_short_tail=allow_short_tail,
+            )
+            assert "None" not in (record.notes or ""), (label, record.notes)
+
+
+def test_cli_refuses_an_unblockable_window_cleanly_rather_than_tracebacking(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The refusal has to survive the CLI boundary, not just build_record.
+
+    ``--allow-short-tail`` lowers the step floor, and the adapter forwards it to
+    the blocking estimator, so a small enough window comes back unblocked and is
+    refused here rather than one layer down. That refusal reaching a user as an
+    uncaught AdapterError traceback would read as a broken tool rather than as a
+    deliberate decision, so pin the exit code, the message on stderr, and the
+    absence of an emitted record together.
+    """
+
+    # 200 steps, 10% window -> 20 samples, below the 32-block minimum.
+    energies = [-7.4779 + 1e-4 * (i % 5) for i in range(200)]
+    run_dir = _write_stats(tmp_path / "cli-unblockable", energies)
+
+    rc = main(
+        [
+            "--run-dir",
+            str(run_dir),
+            "--system-id",
+            "li_atom",
+            "--batch-size",
+            "256",
+            "--ansatz",
+            "ferminet",
+            "--allow-short-tail",
+        ]
+    )
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "cannot say so in a number" in captured.err
+    # The refusal must not be filed as a record, and must not print a record
+    # shaped like a successful emission either. write_record's destination is
+    # the run directory, so check there rather than at a caller-chosen path.
+    assert not (run_dir / "baseline_record.json").exists()
+    assert "energy_hartree" not in captured.out

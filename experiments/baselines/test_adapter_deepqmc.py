@@ -17,11 +17,14 @@ from pathlib import Path
 import pytest
 
 from experiments.baselines.errors import AdapterError
+import experiments.baselines.adapters.deepqmc as deepqmc
 from experiments.baselines.records import BaselineRecord
 from experiments.baselines.adapters.deepqmc import (
     DEFAULT_TAIL_FRACTION,
     ENERGY_DATASET,
+    RECORD_FILENAME,
     build_record,
+    main,
     parse_device,
     parse_wall_clock_seconds,
     read_energies,
@@ -128,11 +131,46 @@ def test_notes_report_a_plateaued_tail_as_noise() -> None:
     assert "MONOTONE" not in (record.notes or "")
 
 
-def test_convergence_is_reported_unassessed_when_the_tail_is_too_short() -> None:
-    """Silence would read as 'converged'. An unassessable tail says so."""
+def test_a_tail_below_the_block_floor_is_refused_not_given_a_zero_bar() -> None:
+    """The predecessor of this test accepted the record this one refuses.
+
+    It drove six values through the adapter and asserted only that the NOTES
+    said ``UNASSESSED`` and ``provisional``. The record it accepted carried
+    ``energy_stderr_hartree = 0.0``, because a window that cannot fill one
+    blocking level used to return the loop's zero initialiser. Prose caveats do
+    not travel: the 0.0 would have been read as infinite precision by anything
+    that quoted the field instead of the sentence. A bar that cannot be assessed
+    is not a wide bar, so no record is emitted at all.
+    """
+
+    with pytest.raises(AdapterError) as caught:
+        record_from_series(
+            [-2.9 + 1e-6 * i for i in range(6)],
+            system_id="he_atom",
+            batch_size=16,
+            ansatz="lapnet",
+            run_id="r",
+            tail_fraction=1.0,
+            allow_short_tail=True,
+        )
+    # The message must name the floor that was missed and an action a CLI user
+    # can actually take. Naming a keyword argument no command line can pass
+    # would describe the flag this caller already used.
+    message = str(caught.value)
+    assert "32-block" in message
+    assert "allow_below_floor" not in message
+
+
+def test_the_short_tail_opt_in_still_buys_a_real_bar_above_the_block_floor() -> None:
+    """The opt-in is not revoked, only bounded.
+
+    A run shorter than ``MIN_TAIL_STEPS`` but long enough to block is still
+    emitted, with the window's provisional status stated. Refusing this too
+    would make the flag dead rather than narrower.
+    """
 
     record = record_from_series(
-        [-2.9 + 1e-6 * i for i in range(6)],
+        _converged(count=4000),
         system_id="he_atom",
         batch_size=16,
         ansatz="lapnet",
@@ -140,9 +178,112 @@ def test_convergence_is_reported_unassessed_when_the_tail_is_too_short() -> None
         tail_fraction=1.0,
         allow_short_tail=True,
     )
-    assert "UNASSESSED" in (record.notes or "")
-    # A window under the floor must SAY so; silence would read as a full window.
+    assert record.energy_stderr_hartree is not None
+    assert record.energy_stderr_hartree > 0.0
     assert "provisional" in (record.notes or "")
+
+
+def test_no_emitted_field_or_note_carries_the_word_none() -> None:
+    """A content check, not an exception check.
+
+    ``f"{factor:.2f}x"`` raises TypeError when the factor is missing, which is
+    not an ``AdapterError`` and so is caught by no handler here; ``f"{factor}x"``
+    raises nothing at all and renders the word into the record. Only reading the
+    emitted payload catches the second case.
+    """
+
+    record = record_from_series(
+        _converged(), system_id="he_atom", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    assert "None" not in json.dumps(record.to_json_dict())
+    assert "None" not in (record.notes or "")
+
+
+# --------------------------------------------------------------------------
+# the command line -- the surface a human actually runs
+# --------------------------------------------------------------------------
+# Before this section, `grep -c 'main(' ` on this file returned 0: every test
+# called the library and none had ever crossed the entry point, so no test in
+# it could observe an exit status, a stream, or a file on disk however green the
+# file looked. These tests monkeypatch `read_energies` rather than write HDF5,
+# so they are NOT gated on h5py -- the CLI contract being asserted here is exit
+# status, stderr, and absence of a file, none of which involve reading a file
+# format. A test skipped for a missing dependency protects nothing.
+
+
+def _cli_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                 series: list[float]) -> Path:
+    """A run directory whose energy series is supplied, not read from HDF5."""
+
+    run_dir = tmp_path / "run39411090"
+    run_dir.mkdir()
+    monkeypatch.setattr(deepqmc, "read_energies", lambda _: list(series))
+    return run_dir
+
+
+def test_cli_refuses_with_status_one_and_writes_no_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Refusal is a non-zero exit, a message on stderr, and nothing on disk.
+
+    All four are asserted together. An exit status alone would not catch a
+    partial record left behind, and a record left behind is the failure that
+    matters: a file on disk outlives the shell that printed the warning.
+    """
+
+    run_dir = _cli_run_dir(tmp_path, monkeypatch, [-2.9 + 1e-6 * i for i in range(6)])
+    status = main(
+        [
+            "--run-dir", str(run_dir),
+            "--system-id", "he_atom",
+            "--batch-size", "16",
+            "--ansatz", "lapnet",
+            "--tail-fraction", "1.0",
+            "--allow-short-tail",
+        ]
+    )
+    assert status == 1
+    captured = capsys.readouterr()
+    assert "32-block" in captured.err
+    # No record-shaped text on stdout either: a caller redirecting stdout to a
+    # file would otherwise capture a refusal as though it were a record.
+    assert "energy_hartree" not in captured.out
+    assert not (run_dir / RECORD_FILENAME).exists()
+
+
+def test_cli_writes_a_record_and_exits_zero_when_the_bar_is_assessable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal above must not be the only outcome the CLI can produce."""
+
+    run_dir = _cli_run_dir(tmp_path, monkeypatch, _converged())
+    status = main(
+        [
+            "--run-dir", str(run_dir),
+            "--system-id", "he_atom",
+            "--batch-size", "4096",
+            "--ansatz", "lapnet",
+        ]
+    )
+    assert status == 0
+    written = json.loads((run_dir / RECORD_FILENAME).read_text())
+    assert written["energy_stderr_hartree"] > 0.0
+
+
+def test_the_short_tail_flag_help_names_the_block_floor_it_does_not_relax(
+    capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The help text is part of the contract, not commentary on it.
+
+    ``--allow-short-tail`` reads as "accept a short window" while the blocking
+    floor it does not relax is what will actually refuse the run. A user who
+    passes the flag and is then refused anyway needs the reason to be in the
+    text of the flag they read.
+    """
+
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "32-block" in capsys.readouterr().out
 
 
 def test_notes_carry_the_autocorrelation_inflation_ratio() -> None:
@@ -460,6 +601,9 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
     # is about the HDF5-to-record path, not about short tails, so it takes the
     # opt-in-free path and therefore has to clear statistics.MIN_TAIL_STEPS.
     # At 4000 steps it raised before the number reached any assertion below.
+    # dev arrived at the same 40000 independently in #297; the count is the
+    # agreement, the reshape(-1, ...) is kept so the two cannot drift apart
+    # silently if the count is ever changed again.
     values = numpy.asarray(_converged(count=40000), dtype="float32").reshape(-1, 1, 1)
     with h5py.File(run / "result.h5", "w") as handle:
         handle.create_dataset(ENERGY_DATASET, data=values)

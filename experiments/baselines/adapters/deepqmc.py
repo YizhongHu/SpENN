@@ -55,6 +55,7 @@ from typing import Sequence
 from experiments.baselines.errors import AdapterError
 from experiments.baselines.records import BaselineRecord
 from experiments.baselines.statistics import (
+    MIN_BLOCKS,
     MIN_TAIL_STEPS,
     SIGN_TEST_WINDOWS,
     blocking_inflation,
@@ -269,14 +270,22 @@ def record_from_series(
     )
     tail = series[-window:]
 
-    # A constant window is not a measurement, and nothing downstream catches it:
-    # blocking initialises its running maximum at 0.0 and returns that untouched
-    # when the variance is zero, while records.py accepts 0.0 as a non-negative
-    # bar. So without this gate the emission publishes a baseline row whose error
-    # bar claims infinite precision -- the most reassuring number the adapter can
-    # emit, for a window that carries no information at all. The check is on the
-    # window rather than on the returned bar because it must hold whichever
-    # version of the statistics module is installed.
+    # A constant window is not a measurement. This gate is deliberately kept
+    # even though the statistics layer now refuses one too, because the two
+    # refusals say different things and only this one names the cause an
+    # operator can act on. Measured at dev tip 7d8391a with a varied control at
+    # the same length, so the refusal attributes to constancy and not to length:
+    #   blocking_stderr(constant, n=4000)  -> AdapterError "window of 4000
+    #                                         identical values has no measurable
+    #                                         spread"
+    #   blocking_stderr(varied,   n=4000)  -> (1.3877e-05, 2000)
+    # The check is on the window rather than on the returned bar because it must
+    # hold whichever version of the statistics module is installed, and the two
+    # versions genuinely differ: at e139a10f the same call RETURNED 0.0 for all
+    # 30 lengths in [2, 31] and `allow_below_floor` did not exist, so a bar
+    # claiming infinite precision reached records.py, which rejects only
+    # NEGATIVE bars. Do not delete this on the grounds that the lower layer
+    # covers it; the lower layer covers it only in the version installed today.
     if max(tail) == min(tail):
         raise AdapterError(
             f"the {len(tail)}-step estimator window is constant at {tail[0]!r}, so its "
@@ -284,7 +293,29 @@ def record_from_series(
             "means the energies did not come from the run's own sampling"
         )
 
-    stderr, _ = blocking_stderr(tail)
+    # The window floor and the BLOCKING floor are different floors, and only the
+    # first is opt-outable. `allow_short_tail` is passed on rather than withheld,
+    # so one flag does not mean two things at two call sites -- but the reply is
+    # then checked, because the opt-in buys the uncorrected naive bar, not a
+    # licence to publish it. A block count of `None` means no blocking level ran,
+    # so the bar is unassessable; 0.0 or an uncorrected value published as the
+    # bar is a false claim of exactness rather than a wide interval.
+    stderr, blocks = blocking_stderr(tail, allow_below_floor=allow_short_tail)
+    if blocks is None:
+        raise AdapterError(
+            f"tail of {len(tail)} steps is below the {MIN_BLOCKS}-block minimum for "
+            "blocking, so this run's error bar cannot be assessed and no record is "
+            "written; average a longer window (raise --tail-fraction) or run more "
+            f"steps -- the tail must hold at least {MIN_BLOCKS} steps"
+        )
+    if not stderr > 0.0:
+        # Reached only if the statistics layer ever stops refusing a spreadless
+        # window. records.py rejects only NEGATIVE bars, so a zero would pass
+        # validation and be read downstream as infinite precision.
+        raise AdapterError(
+            f"blocking returned a non-positive error bar for a tail of {len(tail)} "
+            "steps; refusing to publish a bar that claims exactness"
+        )
 
     # Convergence and autocorrelation are reported, never used to alter the
     # number. A verdict that could change the estimate would be a selection
@@ -301,15 +332,29 @@ def record_from_series(
             )
         )
     except AdapterError:
+        # Unreachable while MIN_BLOCKS >= SIGN_TEST_WINDOWS, because the refusal
+        # above already guarantees a tail of at least MIN_BLOCKS steps and
+        # window_means only refuses a series it cannot split. Retained rather
+        # than deleted: the relation between those two constants lives in
+        # another module, and this branch is what stops a narrowing of it from
+        # turning an unassessable verdict into an exception out of the adapter.
         verdict = (
             f"tail of {len(tail)} steps is too short for a {SIGN_TEST_WINDOWS}-window "
             "sign test, so convergence is UNASSESSED"
         )
 
-    try:
-        inflation = f"{blocking_inflation(tail):.2f}x"
-    except AdapterError:
-        inflation = "undefined"
+    # Branch on the VALUE before formatting. `f"{value:.2f}x"` raises TypeError
+    # on a missing factor, which `except AdapterError` does not catch, and
+    # `f"{value}x"` would have rendered the word None into an emitted record.
+    inflation_factor = blocking_inflation(tail, allow_below_floor=allow_short_tail)
+    if inflation_factor is None:
+        # Unreachable while the block-count refusal above precedes it, since both
+        # read the same tail against the same floor. Kept so that reordering or a
+        # divergence between the two floors cannot resurrect a formatted None.
+        raise AdapterError(
+            f"autocorrelation inflation is unmeasurable for a tail of {len(tail)} steps"
+        )
+    inflation = f"{inflation_factor:.2f}x"
 
     native = " DeepQMC is PauliNet's own codebase, so this ansatz is native rather than a reimplementation." if ansatz in NATIVE_ANSATZES else (
         f" '{ansatz}' here is DeepQMC's REIMPLEMENTATION, not the {ansatz} authors' own code; "
@@ -452,7 +497,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--allow-short-tail",
         action="store_true",
-        help="accept a window below the floor for a short run; the record says so",
+        help=(
+            "accept an estimator window below --min-tail-steps for a short run; the "
+            "record says so. This relaxes the WINDOW floor only: a tail too short to "
+            f"fill the {MIN_BLOCKS}-block blocking minimum is still refused, because "
+            "its error bar cannot be assessed"
+        ),
     )
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)

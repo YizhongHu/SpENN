@@ -173,14 +173,18 @@ def build_record(
     Raises
     ------
     AdapterError
-        If the run has no usable energy series, or ``tail_fraction`` selects
-        fewer than two samples.
+        If the run has no usable energy series, ``tail_fraction`` selects
+        fewer than two samples, or the selected tail is constant and so carries
+        no error bar.
     """
 
     energies = read_energies(run_dir)
     # Absolute floor, not fraction alone. This adapter's 0.1 default is MORE
-    # exposed than the DeepQMC adapter's 0.25: on a 20000-step run it selects
-    # 2000 steps. See statistics.MIN_TAIL_STEPS for the measured consequence.
+    # exposed than the DeepQMC adapter's 0.25: on a 20000-step run the
+    # fraction asks for 2000 steps and MIN_TAIL_STEPS overrides it to 10000,
+    # so the realized window is 5x the requested one. That gap is why the
+    # notes string below renders the measured window and never the requested
+    # fraction. See statistics.MIN_TAIL_STEPS.
     window = select_tail(
         len(energies),
         tail_fraction,
@@ -189,7 +193,53 @@ def build_record(
     )
     tail = energies[-window:]
 
-    stderr, n_blocks = blocking_stderr(tail)
+    stderr, n_blocks = blocking_stderr(tail, allow_below_floor=allow_short_tail)
+    # Second line of defence on the publication boundary, deliberately
+    # independent of what statistics.blocking_stderr currently does. Today that
+    # function raises on a degenerate window, so this branch is unreachable
+    # through it; before that change it returned exactly 0.0, and records.py
+    # rejects only NEGATIVE stderr, so a degenerate run published a baseline row
+    # claiming zero uncertainty - the most authoritative-looking number in the
+    # table produced by the least informative series. Keep the guard: the cost
+    # is one comparison, and it is what holds if the layer below is reverted or
+    # grows a new zero-valued route.
+    if stderr == 0.0:
+        raise AdapterError(
+            f"{run_dir}: the selected tail of {len(tail)} steps yields a zero error "
+            "bar, so its spread is unmeasured rather than zero; refusing to emit a record"
+        )
+    # blocking_stderr returns None for the block count when the window was too
+    # short to block. None only breaks a caller loudly if the caller does
+    # arithmetic on it: the notes below interpolate it with no format spec, and
+    # f"{None}" renders the string "None" without complaint. A record reading
+    # "from None blocks" looks like a forgotten field, not like "blocking never
+    # ran", so refuse instead of formatting it.
+    #
+    # This branch is the refusal that fires under --allow-short-tail, because
+    # the call above now forwards that opt-in: a window under the 32-block
+    # minimum comes back as (naive stderr, None) instead of raising one layer
+    # down. Before the forwarding it was dead code. Measured on a varying
+    # series, tail lengths 2..399 through the bare call gave 368 returns and 30
+    # raises and zero Nones, and deleting these six lines left the whole
+    # ferminet suite green - the guard read as a second line of defence while
+    # guarding nothing reachable.
+    #
+    # With the flag OFF the 32-block floor is still enforced by statistics, but
+    # only by way of a lowered --min-tail-steps: at the default 10000-step floor
+    # select_tail refuses first, so statistics' block raise is unreachable on
+    # the default path. Also measured, rather than assumed from reading the two
+    # floors. Either route ends in a refusal; only the message and the layer
+    # that emits it differ.
+    #
+    # This raise dominates the notes block below, so the bare {n_blocks}
+    # interpolations there cannot render "None". The guard is what makes them
+    # safe - not a format-time branch, which would be unreachable in turn.
+    if n_blocks is None:
+        raise AdapterError(
+            f"{run_dir}: the selected tail of {len(tail)} steps was never blocked, so "
+            "the error bar is an uncorrected naive estimate that understates the "
+            "uncertainty; refusing to emit a record that cannot say so in a number"
+        )
     device_type, gpu_model, wall_clock = None, None, None
     if log_path is not None and log_path.is_file():
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -222,8 +272,8 @@ def build_record(
         collected_at=None,
         notes=(
             (
-                f"Training-tail average over the last {tail_fraction:.0%} of steps "
-                f"({len(tail)} samples), blocked standard error from {n_blocks} "
+                f"Training-tail average over the last {len(tail)} of "
+                f"{len(energies)} steps, blocked standard error from {n_blocks} "
                 "blocks. NOT the estimator FermiNet's published table uses: those "
                 "values come from a separate post-training evaluation phase, so "
                 "this number is expected to sit slightly high."
@@ -273,7 +323,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--allow-short-tail",
         action="store_true",
-        help="accept a window below the floor for a short run; the record says so",
+        help=(
+            "lower the STEP floor on the estimator window for a short run; the "
+            "record says the window was short. A window too short to BLOCK is "
+            "still refused: the opt-in is forwarded to the blocking estimator "
+            "and this adapter then rejects the uncorrected naive error bar "
+            "itself, so a sufficiently small window plus this flag is an error, "
+            "not an emission"
+        ),
     )
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)
