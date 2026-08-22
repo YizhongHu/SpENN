@@ -213,6 +213,7 @@ def record_from_series(
     device_type: str | None = None,
     gpu_model: str | None = None,
     wall_clock_seconds: float | None = None,
+    note: str | None = None,
 ) -> BaselineRecord:
     """Build a record from an already-read energy series.
 
@@ -233,6 +234,13 @@ def record_from_series(
         ``"training_tail"`` or ``"inference"``.
     tail_fraction : float, optional
         Trailing fraction averaged for the estimate.
+    note : str, optional
+        Operator caveat appended verbatim to the generated provenance text, for
+        facts the numbers cannot carry -- a run whose geometry deviates from the
+        registered system, for instance. Appended, never substituted: the
+        generated sentences are the record's own account of how it was made and
+        no argument may edit them. Whitespace-only text is rejected, because a
+        caveat that silently vanishes is worse than no argument at all.
 
     Returns
     -------
@@ -242,8 +250,13 @@ def record_from_series(
     Raises
     ------
     AdapterError
-        If ``tail_fraction`` is out of range or selects fewer than two samples.
+        If ``tail_fraction`` is out of range or selects fewer than two samples;
+        if the selected window is constant, so its standard error would be zero;
+        or if ``note`` is given but carries no text.
     """
+
+    if note is not None and not note.strip():
+        raise AdapterError("note was given but is empty; omit it or write the caveat")
 
     series = [float(value) for value in energies]
     # The window is chosen by absolute step count, not by fraction alone: a
@@ -256,6 +269,29 @@ def record_from_series(
         allow_below_floor=allow_short_tail,
     )
     tail = series[-window:]
+
+    # A constant window is not a measurement. This gate is deliberately kept
+    # even though the statistics layer now refuses one too, because the two
+    # refusals say different things and only this one names the cause an
+    # operator can act on. Measured at dev tip 7d8391a with a varied control at
+    # the same length, so the refusal attributes to constancy and not to length:
+    #   blocking_stderr(constant, n=4000)  -> AdapterError "window of 4000
+    #                                         identical values has no measurable
+    #                                         spread"
+    #   blocking_stderr(varied,   n=4000)  -> (1.3877e-05, 2000)
+    # The check is on the window rather than on the returned bar because it must
+    # hold whichever version of the statistics module is installed, and the two
+    # versions genuinely differ: at e139a10f the same call RETURNED 0.0 for all
+    # 30 lengths in [2, 31] and `allow_below_floor` did not exist, so a bar
+    # claiming infinite precision reached records.py, which rejects only
+    # NEGATIVE bars. Do not delete this on the grounds that the lower layer
+    # covers it; the lower layer covers it only in the version installed today.
+    if max(tail) == min(tail):
+        raise AdapterError(
+            f"the {len(tail)}-step estimator window is constant at {tail[0]!r}, so its "
+            "standard error is zero and no record is emitted; a constant VMC series "
+            "means the energies did not come from the run's own sampling"
+        )
 
     # The window floor and the BLOCKING floor are different floors, and only the
     # first is opt-outable. `allow_short_tail` is passed on rather than withheld,
@@ -363,6 +399,9 @@ def record_from_series(
             f"{estimator_text} Blocked standard error, autocorrelation inflation "
             f"{inflation} over the naive estimate. Energies read from "
             f"'{ENERGY_DATASET}', never from stdout. {verdict}.{native}"
+            # The operator caveat goes last so the generated account stays
+            # intact and byte-identical to a no-note emission up to this point.
+            + (f" {note.strip()}" if note is not None else "")
         ),
     )
 
@@ -384,6 +423,7 @@ def build_record(
     seed: int | None = None,
     parameter_count: int | None = None,
     run_id: str | None = None,
+    note: str | None = None,
 ) -> BaselineRecord:
     """Build one comparison record from a completed DeepQMC run directory.
 
@@ -418,6 +458,7 @@ def build_record(
         device_type=device_type,
         gpu_model=gpu_model,
         wall_clock_seconds=wall_clock,
+        note=note,
     )
 
 
@@ -466,6 +507,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--note",
+        default=None,
+        help=(
+            "operator caveat appended to the record's generated provenance text, "
+            "for facts the numbers cannot carry (e.g. the run's geometry deviates "
+            "from the registered system)"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="print, do not write")
     args = parser.parse_args(argv)
 
@@ -482,6 +532,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             log_path=args.log_path,
             code_commit=args.code_commit,
             seed=args.seed,
+            note=args.note,
         )
     except AdapterError as error:
         print(f"error: {error}", file=sys.stderr)

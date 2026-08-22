@@ -18,6 +18,7 @@ import pytest
 
 from experiments.baselines.errors import AdapterError
 import experiments.baselines.adapters.deepqmc as deepqmc
+from experiments.baselines.records import BaselineRecord
 from experiments.baselines.adapters.deepqmc import (
     DEFAULT_TAIL_FRACTION,
     ENERGY_DATASET,
@@ -152,11 +153,35 @@ def test_a_tail_below_the_block_floor_is_refused_not_given_a_zero_bar() -> None:
             tail_fraction=1.0,
             allow_short_tail=True,
         )
-    # The message must name the floor that was missed and an action a CLI user
-    # can actually take. Naming a keyword argument no command line can pass
-    # would describe the flag this caller already used.
+    # THIS ADAPTER must be the layer that refused, and the assert this block
+    # replaced could not say so. `assert "32-block" in message` alone passes
+    # whether this adapter refuses or the layer underneath does, because both
+    # refusals carry that substring:
+    #   statistics.py   f"window of {len(data)} values cannot fill the "
+    #                   f"{min_blocks}-block minimum "
+    #   this adapter    f"tail of {len(tail)} steps is below the "
+    #                   f"{MIN_BLOCKS}-block minimum for "
+    # That sentence describes the REPLACED line, not the ones below it.
+    #
+    # Measured in job 41112543 at tree dc1216e over the mutant set
+    # M2+M-WRAP -- M2 withholds the allow_below_floor flag so the layer below
+    # raises instead; M-WRAP wraps and re-raises the lower layer's error:
+    #   full arm (pos+negA+negB)  M2 KILL at the positive, M-WRAP KILL at negA
+    #   pos alone                 M2 KILL, M-WRAP SURVIVE
+    #   negA alone                both KILL
+    #   negB alone                both KILL
+    #   DISPENSABILITY dispensable=[negA, negB, pos] sufficient_alone=[negA, negB]
+    # So over THAT set no single assert is indispensable, and the positive one
+    # is not sufficient alone: an `in` check is satisfied by a superstring, so a
+    # wrapped re-raise passes it. Dispensability is mutant-set-scoped -- do not
+    # read these three lines as redundant against a set nobody has named.
+    #
+    # The message must also name an action a CLI user can actually take, so
+    # naming a keyword argument no command line can pass would describe the flag
+    # this caller already used. That is the second reason the last line stays.
     message = str(caught.value)
-    assert "32-block" in message
+    assert "is below the" in message and "-block minimum for" in message
+    assert "cannot fill the" not in message
     assert "allow_below_floor" not in message
 
 
@@ -386,6 +411,112 @@ def test_fraction_wins_when_it_exceeds_the_floor() -> None:
     assert "last 50000 of 200000 steps" in (record.notes or "")
 
 
+def test_constant_window_is_refused_rather_than_given_a_zero_bar() -> None:
+    """A zero error bar is the most reassuring number an emission can publish.
+
+    Blocking returns 0.0 for a zero-variance series -- its running maximum is
+    initialised at 0.0 and never beaten -- and ``BaselineRecord`` accepts 0.0 as
+    a non-negative bar, so nothing downstream of the adapter stops the row. The
+    adapter is the last place that knows a record is about to be written.
+    """
+
+    with pytest.raises(AdapterError, match="constant"):
+        record_from_series(
+            [-2.9037] * 40000, system_id="he_atom", batch_size=4096,
+            ansatz="lapnet", run_id="r",
+        )
+
+
+def test_constant_window_is_refused_even_with_the_short_tail_opt_in() -> None:
+    """The opt-in buys a short window, never an unmeasurable one.
+
+    ``allow_short_tail`` says "this run is shorter than the standard window";
+    it does not say "publish a bar you could not estimate".
+    """
+
+    with pytest.raises(AdapterError, match="constant"):
+        record_from_series(
+            [-2.9037] * 40, system_id="he_atom", batch_size=16,
+            ansatz="lapnet", run_id="r", tail_fraction=1.0, allow_short_tail=True,
+        )
+
+
+def test_the_refusal_is_the_only_thing_stopping_a_zero_bar() -> None:
+    """Pin the downstream permissiveness the guard above exists to cover.
+
+    If this ever starts failing, ``records.py`` has begun rejecting a zero bar
+    itself and the adapter guard's justification has changed -- which is worth
+    knowing, not worth silently keeping.
+    """
+
+    record = BaselineRecord(
+        system_id="he_atom", code="deepqmc", code_commit="0" * 40, ansatz="lapnet",
+        energy_hartree=-2.9037, energy_stderr_hartree=0.0, steps=40000,
+        samples=40000 * 4096, estimator="training_tail", run_id="r",
+    )
+    assert record.energy_stderr_hartree == 0.0
+
+
+# --------------------------------------------------------------------------
+# operator caveats -- facts the numbers cannot carry
+# --------------------------------------------------------------------------
+
+
+def test_note_is_appended_without_displacing_the_generated_account() -> None:
+    """A caveat extends the provenance text; it never replaces any of it."""
+
+    kwargs = dict(
+        system_id="lih_molecule", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    plain = record_from_series(_converged(), **kwargs)
+    caveated = record_from_series(
+        _converged(), **kwargs, note="Ran at R=3.09913 bohr, registry is 3.015 bohr."
+    )
+
+    assert (plain.notes or "") in (caveated.notes or "")
+    assert (caveated.notes or "").endswith(
+        " Ran at R=3.09913 bohr, registry is 3.015 bohr."
+    )
+
+
+def test_note_changes_no_number() -> None:
+    """The caveat is documentation; every estimated field must be untouched."""
+
+    kwargs = dict(
+        system_id="lih_molecule", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    plain = record_from_series(_converged(), **kwargs)
+    caveated = record_from_series(_converged(), **kwargs, note="geometry deviates")
+
+    assert caveated.energy_hartree == plain.energy_hartree
+    assert caveated.energy_stderr_hartree == plain.energy_stderr_hartree
+    assert caveated.steps == plain.steps
+    assert caveated.samples == plain.samples
+
+
+def test_omitting_the_note_leaves_the_record_unchanged() -> None:
+    """Default behaviour is the pre-change adapter's, character for character."""
+
+    kwargs = dict(
+        system_id="he_atom", batch_size=4096, ansatz="lapnet", run_id="r"
+    )
+    assert (
+        record_from_series(_converged(), **kwargs, note=None).notes
+        == record_from_series(_converged(), **kwargs).notes
+    )
+
+
+def test_whitespace_only_note_is_refused_rather_than_dropped() -> None:
+    """A caveat that silently vanishes is worse than no argument at all."""
+
+    for blank in ("", "   ", "\t\n"):
+        with pytest.raises(AdapterError, match="empty"):
+            record_from_series(
+                _converged(), system_id="he_atom", batch_size=4096,
+                ansatz="lapnet", run_id="r", note=blank,
+            )
+
+
 def test_device_fields_stay_none_without_a_log() -> None:
     """Unknown provenance is None, never an invented value."""
 
@@ -490,7 +621,14 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
     numpy = pytest.importorskip("numpy")
     run = tmp_path / "training"
     run.mkdir()
-    values = numpy.asarray(_converged(count=40000), dtype="float32").reshape(40000, 1, 1)
+    # The run must be long enough for the default estimator window: this test
+    # is about the HDF5-to-record path, not about short tails, so it takes the
+    # opt-in-free path and therefore has to clear statistics.MIN_TAIL_STEPS.
+    # At 4000 steps it raised before the number reached any assertion below.
+    # dev arrived at the same 40000 independently in #297; the count is the
+    # agreement, the reshape(-1, ...) is kept so the two cannot drift apart
+    # silently if the count is ever changed again.
+    values = numpy.asarray(_converged(count=40000), dtype="float32").reshape(-1, 1, 1)
     with h5py.File(run / "result.h5", "w") as handle:
         handle.create_dataset(ENERGY_DATASET, data=values)
     (tmp_path / "job.out").write_text(LOG_TEXT, encoding="utf-8")
@@ -507,6 +645,7 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
     assert record.code == "deepqmc"
     assert record.ansatz == "lapnet"
     assert record.steps == 40000
+    assert "last 10000 of 40000 steps" in (record.notes or "")
     assert record.gpu_model == "NVIDIA H200"
     assert record.code_commit == "cafe1234"
     assert record.energy_hartree == pytest.approx(-2.9037, abs=1e-3)
