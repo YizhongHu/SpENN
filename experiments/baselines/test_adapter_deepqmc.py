@@ -153,11 +153,35 @@ def test_a_tail_below_the_block_floor_is_refused_not_given_a_zero_bar() -> None:
             tail_fraction=1.0,
             allow_short_tail=True,
         )
-    # The message must name the floor that was missed and an action a CLI user
-    # can actually take. Naming a keyword argument no command line can pass
-    # would describe the flag this caller already used.
+    # THIS ADAPTER must be the layer that refused, and the assert this block
+    # replaced could not say so. `assert "32-block" in message` alone passes
+    # whether this adapter refuses or the layer underneath does, because both
+    # refusals carry that substring:
+    #   statistics.py   f"window of {len(data)} values cannot fill the "
+    #                   f"{min_blocks}-block minimum "
+    #   this adapter    f"tail of {len(tail)} steps is below the "
+    #                   f"{MIN_BLOCKS}-block minimum for "
+    # That sentence describes the REPLACED line, not the ones below it.
+    #
+    # Measured in job 41112543 at tree dc1216e over the mutant set
+    # M2+M-WRAP -- M2 withholds the allow_below_floor flag so the layer below
+    # raises instead; M-WRAP wraps and re-raises the lower layer's error:
+    #   full arm (pos+negA+negB)  M2 KILL at the positive, M-WRAP KILL at negA
+    #   pos alone                 M2 KILL, M-WRAP SURVIVE
+    #   negA alone                both KILL
+    #   negB alone                both KILL
+    #   DISPENSABILITY dispensable=[negA, negB, pos] sufficient_alone=[negA, negB]
+    # So over THAT set no single assert is indispensable, and the positive one
+    # is not sufficient alone: an `in` check is satisfied by a superstring, so a
+    # wrapped re-raise passes it. Dispensability is mutant-set-scoped -- do not
+    # read these three lines as redundant against a set nobody has named.
+    #
+    # The message must also name an action a CLI user can actually take, so
+    # naming a keyword argument no command line can pass would describe the flag
+    # this caller already used. That is the second reason the last line stays.
     message = str(caught.value)
-    assert "32-block" in message
+    assert "is below the" in message and "-block minimum for" in message
+    assert "cannot fill the" not in message
     assert "allow_below_floor" not in message
 
 
