@@ -391,6 +391,7 @@ as `sampler_acceptance_rate`. Those names and values are unchanged.
 ```text
 step_time_sec
 step_time_sec_rolling_mean
+step_device_time_sec                 optional distinct accelerator-event elapsed time
 <phase>_time_sec                        see "Timing metrics" below
 ```
 

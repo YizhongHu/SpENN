@@ -317,6 +317,7 @@ _DEFAULT_STATUS_METRICS = (
     "train/local_energy_finite_fraction",
     "train/perf/step_time_sec",
     "train/perf/step_time_sec_rolling_mean",
+    "train/perf/step_device_time_sec",
 )
 
 _STATUS_LABELS = {
@@ -328,6 +329,7 @@ _STATUS_LABELS = {
     "train/local_energy_finite_fraction": "finite",
     "train/perf/step_time_sec": "step_time",
     "train/perf/step_time_sec_rolling_mean": "step_avg",
+    "train/perf/step_device_time_sec": "step_device",
 }
 
 def _format_run_start_lines(context: CallbackContext, *, max_line_width: int = _STATUS_BOX_MAX_LINE_WIDTH) -> list[str]:
@@ -475,6 +477,8 @@ def _training_metric_values(state: TrainerState) -> dict[str, object]:
     if timing is not None:
         values["train/perf/step_time_sec"] = timing.step_time_sec
         values["train/perf/step_time_sec_rolling_mean"] = timing.step_time_sec_rolling_mean
+        if timing.step_device_time_sec is not None:
+            values["train/perf/step_device_time_sec"] = timing.step_device_time_sec
     return values
 
 

@@ -96,7 +96,11 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
         }
         if elapsed.device is not None:
             metrics["step_device_time_sec"] = elapsed.device
-        state.timing = TrainingTiming(**metrics)
+        state.timing = TrainingTiming(
+            step_time_sec=duration,
+            step_time_sec_rolling_mean=metrics["step_time_sec_rolling_mean"],
+            step_device_time_sec=elapsed.device,
+        )
         context.log(metrics, step=step, namespace="train/perf")
 
     def _reset_typed_state(self) -> None:
