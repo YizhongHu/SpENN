@@ -20,17 +20,7 @@ import math
 from typing import Any, Mapping, Sequence
 
 from experiments.toolkit.artifacts import metric_map
-
-TRAIN_PHASES = (
-    "sampling",
-    "batch_build",
-    "local_energy",
-    "forward",
-    "objective",
-    "backward",
-    "optimizer_step",
-    "post_step_metrics",
-)
+from experiments.toolkit.timing import TRAIN_PHASES, reduce_attempt
 
 # Delivered-hardware receipt fields a caller may supply per run/attempt. The
 # delivered card can disagree with a partition's advertised GRES, so identity
@@ -56,7 +46,11 @@ COST_BY_RUN_BASE_COLUMNS = [
     "device_peak_memory_reserved_mb",
     "device_peak_memory_available",
     "timing_mode",
+    "git_sha",
     "hostname",
+    "device_model",
+    "partition",
+    "process_packing",
     "slurm_job_id",
     "device_uuid",
     "device_name",
@@ -68,8 +62,12 @@ COST_BY_RUN_BASE_COLUMNS = [
     "n_steps_measured",
     "mean_step_time_sec",
     "median_step_time_sec",
+    "iqr_step_time_sec",
     "p95_step_time_sec",
-    *(f"mean_{phase}_time_sec" for phase in TRAIN_PHASES),
+    *(name for phase in TRAIN_PHASES for name in (
+        f"mean_{phase}_time_sec", f"median_{phase}_time_sec",
+        f"iqr_{phase}_time_sec", f"p95_{phase}_time_sec",
+    )),
 ]
 
 COST_BY_AXIS_COLUMNS = [
@@ -298,6 +296,13 @@ def cost_by_run_row(
     device_peak_available = all(device_peak_present)
     step_times = _per_step_values(metrics_rows, "train/perf", "step_time_sec")
     measured_step_times = _steady_state(step_times, warmup)
+    timing = (
+        reduce_attempt(
+            metrics_rows, run_id=run_id, attempt_id=attempt_id, stage=stage,
+            warmup_steps=warmup,
+        )
+        if step_times and measured_step_times else {}
+    )
     row: dict[str, Any] = {
         "run_id": run_id,
         "attempt_id": attempt_id,
@@ -319,19 +324,26 @@ def cost_by_run_row(
         "warmup_steps": str(warmup),
         # Blank only when nothing was recorded; an exhausted window reads "0".
         "n_steps_measured": str(len(measured_step_times)) if step_times else "",
-        "mean_step_time_sec": _format(_mean(measured_step_times)),
-        "median_step_time_sec": _format(_median(measured_step_times)),
-        "p95_step_time_sec": _format(_quantile(measured_step_times, 0.95)),
+        "mean_step_time_sec": _format(timing.get("step_time_sec_mean", _mean(measured_step_times))),
+        "median_step_time_sec": _format(timing.get("step_time_sec_median", _median(measured_step_times))),
+        "iqr_step_time_sec": _format(timing.get("step_time_sec_iqr", math.nan)),
+        "p95_step_time_sec": _format(timing.get("step_time_sec_p95", _quantile(measured_step_times, 0.95))),
         **{
             key: (provenance or {}).get(key, "")
-            for key in ("timing_mode", "hostname", "slurm_job_id", "device_uuid")
+            for key in (
+                "timing_mode", "git_sha", "hostname", "device_model", "partition",
+                "process_packing", "slurm_job_id", "device_uuid",
+            )
         },
         **_allocation_columns(allocation, device_type=device_type),
     }
     for phase in TRAIN_PHASES:
         values = _per_step_values(metrics_rows, "train/perf", f"{phase}_time_sec")
         # Same exclusion as the total step series, so phase means stay comparable.
-        row[f"mean_{phase}_time_sec"] = _format(_mean(_steady_state(values, warmup)))
+        row[f"mean_{phase}_time_sec"] = _format(timing.get(f"{phase}_time_sec_mean", _mean(_steady_state(values, warmup))))
+        row[f"median_{phase}_time_sec"] = _format(timing.get(f"{phase}_time_sec_median", math.nan))
+        row[f"iqr_{phase}_time_sec"] = _format(timing.get(f"{phase}_time_sec_iqr", math.nan))
+        row[f"p95_{phase}_time_sec"] = _format(timing.get(f"{phase}_time_sec_p95", math.nan))
     for axis, value in (axes or {}).items():
         row[str(axis)] = value
     return row

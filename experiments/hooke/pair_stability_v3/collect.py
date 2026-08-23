@@ -359,6 +359,7 @@ def _cost_tables(
                 status=str(row["status"]),
                 device_type=device,
                 axes=axes,
+                warmup_steps=0,
             )
         )
         task_rows.extend(
@@ -381,8 +382,9 @@ def _cost_tables(
                     attempt_id=str(source.get("train_attempt_id", "")),
                     stage="train",
                     status=status_of(train_dir),
-                    device_type=_run_device(train_dir),
-                    axes=axes,
+                device_type=_run_device(train_dir),
+                axes=axes,
+                warmup_steps=0,
                 )
             )
     return cost_rows, task_rows

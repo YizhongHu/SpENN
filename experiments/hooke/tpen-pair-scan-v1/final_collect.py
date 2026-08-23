@@ -1182,6 +1182,7 @@ def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str
                 status=str(context["train_status_json"].get("status", "")),
                 device_type=_attempt_device(context["train_attempt_dir"]),
                 axes=axes,
+                warmup_steps=0,
             )
         )
         cost_rows.append(
@@ -1193,6 +1194,7 @@ def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str
                 status=str(context["eval_status"]),
                 device_type=eval_device,
                 axes=axes,
+                warmup_steps=0,
             )
         )
         task_rows.extend(
