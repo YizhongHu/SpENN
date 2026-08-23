@@ -78,11 +78,16 @@ class TrainStepTiming(StatefulCallback[TrainingTimingState]):
         if record is None:
             return
         step, start = record
+        # Consume the ended boundary before cadence admission. Runtime
+        # occurrences already carry this emitter stamp; the fallback clock
+        # must observe the same boundary sequence even when a sample is
+        # intentionally skipped by the durable-step window.
+        end_timestamp = _occurrence_time(occurrence, self.clock)
         if not event.succeeded or not self._cadence_gate.should_run(int(step)):
             return
         if self.accelerator_synchronize:
             _sync_device(True)
-        elapsed = self._timing.elapsed(start, _occurrence_time(occurrence, self.clock))
+        elapsed = self._timing.elapsed(start, end_timestamp)
         duration = elapsed.host
         self._durations.append(duration)
         metrics = {

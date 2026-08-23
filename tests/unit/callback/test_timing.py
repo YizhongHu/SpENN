@@ -219,7 +219,9 @@ def test_train_step_timing_uses_durable_step_cadence() -> None:
 
     context = RecordingContext()
     callback = TrainStepTiming(
-        every_n_steps=2, clock=FakeClock([1.0, 1.5])
+        # Both dispatched iterations have valid start/end boundaries; step 1
+        # is measured and discarded by the durable-step cadence gate.
+        every_n_steps=2, clock=FakeClock([1.0, 1.5, 3.0, 3.5])
     )
     state = training_state()
 
