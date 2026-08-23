@@ -180,11 +180,15 @@ def provenance_from_metadata(metadata: Mapping[str, Any]) -> tuple[dict[str, Any
 
 def require_identity(provenance: Mapping[str, Any], allocation: Mapping[str, Any]) -> None:
     """Fail closed when a comparable timing row lacks its authoritative join."""
-    missing = [field for field in IDENTITY_FIELDS if field not in provenance and field not in allocation]
+    def present(source: Mapping[str, Any], field: str) -> bool:
+        value = source.get(field)
+        return value is not None and str(value).strip() != ""
+
+    missing = [field for field in IDENTITY_FIELDS if not present(provenance, field) and not present(allocation, field)]
     if missing:
         raise TimingReductionError(f"required timing identity absent: {', '.join(missing)}")
     for field in ("device_count", "allocated_wall_time_sec"):
-        if field not in allocation:
+        if not present(allocation, field):
             raise TimingReductionError(f"required allocation receipt absent: {field}")
 
 
