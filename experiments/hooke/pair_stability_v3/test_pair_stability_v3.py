@@ -2022,13 +2022,26 @@ def _write_minimal_final_artifacts(results_root: Path) -> tuple[str, str]:
     )
     _write_json(final_eval_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:10+00:00"})
     _write_json(final_train_dir / "status.json", {"status": "completed", "start_time": "2026-07-08T00:00:00+00:00", "end_time": "2026-07-08T00:00:05+00:00"})
-    _write_json(final_train_dir / "metadata.json", {"runtime": {"device": "cuda"}, "peak_memory_mb": 123})
+    timing_metadata = {
+        "git_sha": "fixture-sha",
+        "resolved_timing_mode": "host_wall",
+        "hostname": "fixture-host",
+        "device_model": "fixture-cpu",
+        "device_uuid": "fixture-device",
+        "process_packing": "1-process/1-device",
+        "partition": "test",
+        "allocation": {"device_name": "fixture-cpu", "device_count": 1, "allocated_wall_time_sec": 30},
+        "runtime": {"device": "cuda"},
+        "peak_memory_mb": 123,
+    }
+    _write_json(final_train_dir / "metadata.json", timing_metadata)
+    _write_json(final_eval_dir / "metadata.json", timing_metadata)
     _append_metrics(
         final_train_dir / "metrics.jsonl",
         [
             {"namespace": "train", "step": 0, "metrics": {"energy": 2.1, "energy_stderr": 0.01, "energy_variance": 0.02, "grad_norm": 1.5}},
             {"namespace": "train/sampler", "step": 0, "metrics": {"acceptance_rate": 0.7}},
-            {"namespace": "train/perf", "step": 0, "metrics": {"step_time_sec": 1.0, "local_energy_time_sec": 0.2, "forward_time_sec": 0.3, "backward_time_sec": 0.4}},
+            {"namespace": "train/perf", "step": 0, "metrics": {"step_time_sec": 1.0, "sampling_time_sec": 0.05, "batch_build_time_sec": 0.05, "local_energy_time_sec": 0.2, "forward_time_sec": 0.3, "objective_time_sec": 0.05, "backward_time_sec": 0.4, "optimizer_step_time_sec": 0.05, "post_step_metrics_time_sec": 0.05}},
             {"namespace": "runtime", "step": 0, "metrics": {"wall_time_sec": 5.0, "peak_memory_mb": 123}},
             {"namespace": "debug/unrelated", "step": 0, "metrics": {"ignored": 999}},
         ],

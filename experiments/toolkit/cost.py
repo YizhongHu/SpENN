@@ -20,7 +20,12 @@ import math
 from typing import Any, Mapping, Sequence
 
 from experiments.toolkit.artifacts import metric_map
-from experiments.toolkit.timing import TRAIN_PHASES, reduce_attempt
+from experiments.toolkit.timing import (
+    REQUIRED_TRAIN_METRICS,
+    TRAIN_PHASES,
+    reduce_attempt,
+    require_identity,
+)
 
 # Delivered-hardware receipt fields a caller may supply per run/attempt. The
 # delivered card can disagree with a partition's advertised GRES, so identity
@@ -258,6 +263,7 @@ def cost_by_run_row(
     provenance: Mapping[str, Any] | None = None,
     allocation: Mapping[str, Any] | None = None,
     warmup_steps: int = 0,
+    identity_required: bool = False,
 ) -> dict[str, Any]:
     """Return one ``cost_by_run.csv`` row projected from run metrics rows.
 
@@ -300,9 +306,15 @@ def cost_by_run_row(
         reduce_attempt(
             metrics_rows, run_id=run_id, attempt_id=attempt_id, stage=stage,
             warmup_steps=warmup,
+            required_metrics=REQUIRED_TRAIN_METRICS if identity_required else ("step_time_sec",),
         )
         if step_times and measured_step_times else {}
     )
+    has_training_timing = bool(step_times) or any(
+        str(row.get("namespace", "")).strip("/") == "train/perf" for row in metrics_rows
+    )
+    if identity_required and has_training_timing:
+        require_identity(provenance or {}, allocation or {})
     row: dict[str, Any] = {
         "run_id": run_id,
         "attempt_id": attempt_id,

@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 
 from experiments.toolkit.timing import (
+    IDENTITY_FIELDS,
+    REQUIRED_TRAIN_METRICS,
     TimingReductionError,
     convergence_receipt,
+    provenance_from_metadata,
     reduce_attempt,
     validate_attempts,
 )
@@ -33,6 +36,30 @@ def test_missing_metric_and_empty_phases_fail_loudly():
         reduce_attempt([_rows()[1]], run_id="r", attempt_id="a", stage="train", warmup_steps=0)
     with pytest.raises(TimingReductionError, match="empty training phase"):
         reduce_attempt([], run_id="r", attempt_id="a", stage="train", warmup_steps=0)
+
+
+def test_comparable_training_requires_all_eight_phases():
+    rows = [row for row in _rows(steps=(0,)) if row["metric"] != "post_step_metrics_time_sec"]
+    with pytest.raises(TimingReductionError, match="required timing metric absent"):
+        reduce_attempt(rows, run_id="r", attempt_id="a", stage="train", warmup_steps=0)
+    result = reduce_attempt(_rows(steps=(0,)), run_id="r", attempt_id="a", stage="train", warmup_steps=0)
+    assert all(f"{phase}_time_sec_median" in result for phase in (
+        "sampling", "batch_build", "local_energy", "forward", "objective",
+        "backward", "optimizer_step", "post_step_metrics",
+    ))
+
+
+def test_missing_authoritative_identity_fails_and_explicit_metadata_maps():
+    with pytest.raises(TimingReductionError, match="required timing identity absent"):
+        from experiments.toolkit.timing import require_identity
+        require_identity({}, {})
+    metadata = {
+        "git_sha": "abc", "resolved_timing_mode": "device_event", "hostname": "node-a",
+        "device_uuid": "GPU-a", "device_model": "A100", "process_packing": "1xGPU",
+        "partition": "test", "allocation": {"device_count": 1, "allocated_wall_time_sec": 30},
+    }
+    provenance, allocation = provenance_from_metadata(metadata)
+    assert set(IDENTITY_FIELDS) <= set(provenance) | set(allocation)
 
 
 def test_negative_residual_fails_loudly():

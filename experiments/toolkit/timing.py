@@ -14,6 +14,11 @@ TRAIN_PHASES = (
     "sampling", "batch_build", "local_energy", "forward", "objective",
     "backward", "optimizer_step", "post_step_metrics",
 )
+REQUIRED_TRAIN_METRICS = ("step_time_sec", *[f"{phase}_time_sec" for phase in TRAIN_PHASES])
+IDENTITY_FIELDS = (
+    "git_sha", "timing_mode", "device_model", "device_uuid", "hostname",
+    "process_packing", "partition", "device_count", "allocated_wall_time_sec",
+)
 
 
 class TimingReductionError(ValueError):
@@ -66,7 +71,7 @@ def reduce_attempt(
     attempt_id: str,
     stage: str,
     warmup_steps: int,
-    required_metrics: Sequence[str] = ("step_time_sec",),
+    required_metrics: Sequence[str] = REQUIRED_TRAIN_METRICS,
     provenance: Mapping[str, Any] | None = None,
     sample_count: Any | None = None,
     walker_count: Any | None = None,
@@ -136,6 +141,51 @@ def reduce_attempt(
             result["samples_per_walker_sec"] = samples / walkers / result["step_time_sec_median"]
     result.update({key: value for key, value in (provenance or {}).items()})
     return result
+
+
+def _first_explicit(source: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        if key in source and source[key] not in (None, ""):
+            return source[key]
+    return None
+
+
+def provenance_from_metadata(metadata: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Extract only explicitly recorded provenance and allocation receipts.
+
+    Nested sections are accepted because they are named metadata contracts;
+    filesystem names, hostnames, device types, and partition names are never
+    inferred.  Missing required values remain absent for strict validation.
+    """
+    runtime = metadata.get("runtime") if isinstance(metadata.get("runtime"), Mapping) else {}
+    scheduler = metadata.get("scheduler") if isinstance(metadata.get("scheduler"), Mapping) else {}
+    receipt = metadata.get("allocation") if isinstance(metadata.get("allocation"), Mapping) else {}
+    provenance = {
+        "git_sha": _first_explicit(metadata, ("git_sha", "git_commit", "commit_sha")),
+        "timing_mode": _first_explicit(metadata, ("resolved_timing_mode", "timing_mode")),
+        "device_model": _first_explicit(metadata, ("device_model", "device_name")) or _first_explicit(runtime, ("device_model", "device_name")),
+        "device_uuid": _first_explicit(metadata, ("device_uuid",)) or _first_explicit(runtime, ("device_uuid",)),
+        "hostname": _first_explicit(metadata, ("hostname", "host")) or _first_explicit(runtime, ("hostname", "host")),
+        "process_packing": _first_explicit(metadata, ("process_packing", "packing")),
+        "partition": _first_explicit(metadata, ("partition", "slurm_partition")) or _first_explicit(scheduler, ("partition", "slurm_partition")),
+        "slurm_job_id": _first_explicit(metadata, ("slurm_job_id", "job_id")) or _first_explicit(scheduler, ("slurm_job_id", "job_id")),
+    }
+    allocation = {
+        "device_name": _first_explicit(receipt, ("device_name", "device_model")) or provenance["device_model"],
+        "device_count": _first_explicit(receipt, ("device_count", "delivered_device_count")) or _first_explicit(metadata, ("device_count", "delivered_device_count")),
+        "allocated_wall_time_sec": _first_explicit(receipt, ("allocated_wall_time_sec", "allocation_wall_time_sec")) or _first_explicit(metadata, ("allocated_wall_time_sec", "allocation_wall_time_sec")),
+    }
+    return {key: value for key, value in provenance.items() if value not in (None, "")}, {key: value for key, value in allocation.items() if value not in (None, "")}
+
+
+def require_identity(provenance: Mapping[str, Any], allocation: Mapping[str, Any]) -> None:
+    """Fail closed when a comparable timing row lacks its authoritative join."""
+    missing = [field for field in IDENTITY_FIELDS if field not in provenance and field not in allocation]
+    if missing:
+        raise TimingReductionError(f"required timing identity absent: {', '.join(missing)}")
+    for field in ("device_count", "allocated_wall_time_sec"):
+        if field not in allocation:
+            raise TimingReductionError(f"required allocation receipt absent: {field}")
 
 
 def validate_attempts(rows: Sequence[Mapping[str, Any]]) -> None:

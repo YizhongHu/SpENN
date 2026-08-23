@@ -61,6 +61,7 @@ from experiments.toolkit.cost import (  # noqa: E402
     cost_by_run_row,
     cost_by_task_rows,
 )
+from experiments.toolkit.timing import provenance_from_metadata  # noqa: E402
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
@@ -1163,6 +1164,10 @@ def _attempt_device(attempt_dir: Path) -> str:
     return str(runtime.get("device", metadata.get("device", "")))
 
 
+def _timing_receipt(attempt_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    return provenance_from_metadata(_load_json_if_present(Path(attempt_dir) / "metadata.json"))
+
+
 def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Project final-train and final-eval run metrics into cost rows."""
 
@@ -1173,6 +1178,8 @@ def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str
         run_id = str(context["final_run_id"])
         eval_attempt_id = str(context["attempt_id"])
         eval_device = _attempt_device(context["attempt_dir"])
+        train_provenance, train_allocation = provenance_from_metadata(context["train_metadata"])
+        eval_provenance, eval_allocation = _timing_receipt(context["attempt_dir"])
         cost_rows.append(
             cost_by_run_row(
                 context["train_metrics"],
@@ -1183,6 +1190,9 @@ def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str
                 device_type=_attempt_device(context["train_attempt_dir"]),
                 axes=axes,
                 warmup_steps=0,
+                provenance=train_provenance,
+                allocation=train_allocation,
+                identity_required=True,
             )
         )
         cost_rows.append(
@@ -1195,6 +1205,9 @@ def _cost_tables_rows(contexts: Sequence[dict[str, Any]]) -> tuple[list[dict[str
                 device_type=eval_device,
                 axes=axes,
                 warmup_steps=0,
+                provenance=eval_provenance,
+                allocation=eval_allocation,
+                identity_required=True,
             )
         )
         task_rows.extend(
