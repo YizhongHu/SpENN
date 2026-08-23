@@ -142,11 +142,8 @@ run_parameters:
   training_model_seed: 0
   training_sampler_seed: 0
   validation_sampler_seed: 0
-  # Device synchronization for the timing callbacks. FALSE for the production
-  # grid: `TrainStepTiming` synchronizes at both scope boundaries
-  # (`train_step_timing.py:61,72`), which perturbs the quantity being measured
-  # and serializes work that would otherwise overlap. The P0-e timing probe
-  # flips this to true, where attribution matters more than throughput.
+  # Device-wide synchronization is an explicit perturbation mode. Production
+  # timing uses unsynchronized host stamps; the probe may opt in separately.
   accelerator_synchronize: false
 
 # -----------------------------------------------------------------------------
@@ -263,25 +260,9 @@ checks:
     atol: 1.0e-06
     rtol: 1.0e-06
 
-# Timing cadence. Read the asymmetry below before "tidying" it: the two
-# callbacks do NOT respond to the same knob, and that was measured, not assumed.
-#
-# `TrainPhaseTiming` honours `every_n_steps`: it pops the kwarg and builds its
-# own report `Cadence` (`train_phase_timing.py:64-74`). A 60-step smoke emitted 6
-# phase rows.
-#
-# `TrainStepTiming` does NOT. It forwards `every_n_steps` to the base, which
-# stores it as an attribute (`callback/base.py:104`) while typed delivery is
-# gated by `SubscriptionGroup(cadence=...)` — and `TrainStepTiming` constructs
-# its group without one, so `group_state.gate is None` and every occurrence is
-# delivered. The same 60-step smoke emitted 60 step rows. Passing the kwarg there
-# would look like a throttle and do nothing, so it is deliberately NOT passed.
-#
-# Consequence, accepted rather than hidden: a 500-step run writes ~500
-# `train/perf` step rows, which dominate that run's `metrics.csv`. Throttling it
-# needs a `cadence=` on the callback's subscription group, i.e. a production
-# change, which is out of scope here. `rolling_window` is what makes the stream
-# interpretable at that density.
+# Timing cadence is explicit and keyed on the durable training step. Both
+# timing callbacks therefore remain resume-safe when a callback instance is
+# reconstructed from a checkpoint.
 timing:
   every_n_steps: ${training.log_every_n_steps}
   rolling_window: 20
@@ -521,9 +502,8 @@ callbacks:
   # 288-run grid would have been blank in every per-phase column.
   - _target_: tpen.callback.RunTiming
     accelerator_synchronize: ${run_parameters.accelerator_synchronize}
-  # No `every_n_steps`: it is inert on this callback and would misrepresent the
-  # row cost. See the `timing` block for the measurement.
   - _target_: tpen.callback.TrainStepTiming
+    every_n_steps: 1
     rolling_window: ${timing.rolling_window}
     accelerator_synchronize: ${run_parameters.accelerator_synchronize}
   - _target_: tpen.callback.TrainPhaseTiming

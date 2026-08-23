@@ -214,8 +214,8 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
 
 
 
-def test_train_step_timing_applies_legacy_step_cadence_to_typed_boundaries() -> None:
-    """The paired lifecycle gate preserves the legacy one-based cadence."""
+def test_train_step_timing_uses_durable_step_cadence() -> None:
+    """Cadence follows the typed training step, not occurrence count."""
 
     context = RecordingContext()
     callback = TrainStepTiming(
@@ -231,7 +231,7 @@ def test_train_step_timing_applies_legacy_step_cadence_to_typed_boundaries() -> 
     assert context.by_namespace("train/perf") == [
         {
             "metrics": {"step_time_sec": 0.5, "step_time_sec_rolling_mean": 0.5},
-            "step": 1,
+            "step": 2,
             "namespace": "train/perf",
         }
     ]
