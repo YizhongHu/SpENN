@@ -316,10 +316,14 @@ class HeliumAtlasValues:
 
     requested_coordinate: torch.Tensor
     realized_coordinate: torch.Tensor
-    is_refinement_boundary: torch.Tensor
+    coordinate_representability_boundary_radius: torch.Tensor
+    is_coordinate_representability_boundary: torch.Tensor
     is_exact_zero_sentinel: torch.Tensor
     ideal_unfloored_ee_inverse_distance: torch.Tensor | None
-    ideal_unfloored_ee_domain_mask: torch.Tensor | None
+    ideal_unfloored_ee_positive_separation_domain_mask: torch.Tensor | None
+    ideal_unfloored_ee_reciprocal_evaluation_defined_mask: torch.Tensor | None
+    ideal_unfloored_ee_reciprocal_failure_radius: torch.Tensor | None
+    is_ideal_unfloored_ee_reciprocal_failure_boundary: torch.Tensor | None
     derivatives: Mapping[str, AtlasDerivativeValues]
     total_local_energy: torch.Tensor
     total_local_energy_finite_mask: torch.Tensor
@@ -354,38 +358,134 @@ class HeliumAtlasValues:
             if not torch.isfinite(value).all() or torch.any(value < 0):
                 raise ValueError(f"HeliumAtlasValues.{name} must be finite and nonnegative")
         for name, mask in (
-            ("is_refinement_boundary", self.is_refinement_boundary),
+            (
+                "is_coordinate_representability_boundary",
+                self.is_coordinate_representability_boundary,
+            ),
             ("is_exact_zero_sentinel", self.is_exact_zero_sentinel),
         ):
             _validate_bool_mask(mask, shape=sample_shape, device=flat.device, name=name)
-        if torch.any(self.is_refinement_boundary & self.is_exact_zero_sentinel):
-            raise ValueError("refinement-boundary rows and exact-zero sentinels must be distinct")
+        _validate_boundary_radius(
+            self.coordinate_representability_boundary_radius,
+            mask=self.is_coordinate_representability_boundary,
+            shape=sample_shape,
+            device=flat.device,
+            dtype=flat.dtype,
+            name="coordinate_representability_boundary_radius",
+        )
+        if not torch.equal(
+            self.coordinate_representability_boundary_radius[
+                self.is_coordinate_representability_boundary
+            ],
+            self.requested_coordinate[self.is_coordinate_representability_boundary],
+        ):
+            raise ValueError(
+                "coordinate_representability_boundary_radius must record the positive "
+                "requested path coordinate at the boundary"
+            )
+        if torch.any(
+            self.is_coordinate_representability_boundary & self.is_exact_zero_sentinel
+        ):
+            raise ValueError(
+                "coordinate-representability boundary rows and exact-zero sentinels must be distinct"
+            )
         if not torch.all(self.requested_coordinate[self.is_exact_zero_sentinel] == 0):
             raise ValueError("exact-zero sentinels require requested_coordinate == 0")
         if not torch.all(self.realized_coordinate[self.is_exact_zero_sentinel] == 0):
             raise ValueError("exact-zero sentinels require realized_coordinate == 0")
 
-        if (self.ideal_unfloored_ee_inverse_distance is None) != (
-            self.ideal_unfloored_ee_domain_mask is None
+        ideal_fields = (
+            self.ideal_unfloored_ee_inverse_distance,
+            self.ideal_unfloored_ee_positive_separation_domain_mask,
+            self.ideal_unfloored_ee_reciprocal_evaluation_defined_mask,
+            self.ideal_unfloored_ee_reciprocal_failure_radius,
+            self.is_ideal_unfloored_ee_reciprocal_failure_boundary,
+        )
+        if any(value is None for value in ideal_fields) and not all(
+            value is None for value in ideal_fields
         ):
-            raise ValueError("ideal unfloored e-e value and domain mask must be present together")
+            raise ValueError(
+                "ideal unfloored e-e values, positive-separation domain, reciprocal-evaluation "
+                "domain, reciprocal-failure radius, and boundary mask must be present together"
+            )
         if self.ideal_unfloored_ee_inverse_distance is not None:
             ideal = self.ideal_unfloored_ee_inverse_distance
-            ideal_domain = self.ideal_unfloored_ee_domain_mask
-            assert ideal_domain is not None
+            positive_domain = self.ideal_unfloored_ee_positive_separation_domain_mask
+            evaluation_defined = (
+                self.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+            )
+            reciprocal_radius = self.ideal_unfloored_ee_reciprocal_failure_radius
+            reciprocal_boundary = self.is_ideal_unfloored_ee_reciprocal_failure_boundary
+            assert positive_domain is not None
+            assert evaluation_defined is not None
+            assert reciprocal_radius is not None
+            assert reciprocal_boundary is not None
             if tuple(ideal.shape) != sample_shape or ideal.device != flat.device or ideal.dtype != flat.dtype:
                 raise ValueError(
                     "ideal_unfloored_ee_inverse_distance must match batch dtype/device and sample shape"
                 )
             _validate_bool_mask(
-                ideal_domain,
+                positive_domain,
                 shape=sample_shape,
                 device=flat.device,
-                name="ideal_unfloored_ee_domain_mask",
+                name="ideal_unfloored_ee_positive_separation_domain_mask",
             )
-            if not torch.equal(ideal_domain, self.realized_coordinate > 0):
+            if not torch.equal(positive_domain, self.requested_coordinate > 0):
                 raise ValueError(
-                    "ideal_unfloored_ee_domain_mask must be true exactly at positive physical separation"
+                    "ideal_unfloored_ee_positive_separation_domain_mask must be true exactly "
+                    "at positive requested path separation"
+                )
+            expected_ideal = (
+                self.requested_coordinate.detach()
+                .to(device="cpu", dtype=torch.float64)
+                .reciprocal()
+                .to(device=flat.device, dtype=flat.dtype)
+            )
+            if not torch.equal(ideal, expected_ideal):
+                raise ValueError(
+                    "ideal_unfloored_ee_inverse_distance must equal the unfloored reciprocal "
+                    "of requested_coordinate"
+                )
+            _validate_bool_mask(
+                evaluation_defined,
+                shape=sample_shape,
+                device=flat.device,
+                name="ideal_unfloored_ee_reciprocal_evaluation_defined_mask",
+            )
+            if not torch.equal(evaluation_defined, torch.isfinite(ideal)):
+                raise ValueError(
+                    "ideal_unfloored_ee_reciprocal_evaluation_defined_mask must be true "
+                    "exactly where the ideal reciprocal is finite"
+                )
+            _validate_bool_mask(
+                reciprocal_boundary,
+                shape=sample_shape,
+                device=flat.device,
+                name="is_ideal_unfloored_ee_reciprocal_failure_boundary",
+            )
+            _validate_boundary_radius(
+                reciprocal_radius,
+                mask=reciprocal_boundary,
+                shape=sample_shape,
+                device=flat.device,
+                dtype=flat.dtype,
+                name="ideal_unfloored_ee_reciprocal_failure_radius",
+            )
+            if not torch.equal(
+                reciprocal_radius[reciprocal_boundary],
+                self.requested_coordinate[reciprocal_boundary],
+            ):
+                raise ValueError(
+                    "ideal_unfloored_ee_reciprocal_failure_radius must record the positive "
+                    "requested path coordinate at the transition"
+                )
+            if torch.any(reciprocal_boundary & self.is_exact_zero_sentinel):
+                raise ValueError(
+                    "ideal unfloored e-e reciprocal-failure boundaries and zero sentinels must be distinct"
+                )
+            if not torch.all(~torch.isfinite(ideal[reciprocal_boundary])):
+                raise ValueError(
+                    "ideal unfloored e-e reciprocal-failure boundary must mark nonfinite reciprocal values"
                 )
 
         if not self.derivatives:
@@ -500,8 +600,19 @@ class HeliumAtlasValues:
         expected_domain_status = tuple(
             "exact_zero_sentinel"
             if bool(self.is_exact_zero_sentinel[index].item())
-            else "recorded_numerical_refinement_boundary"
-            if bool(self.is_refinement_boundary[index].item())
+            else "ideal_unfloored_ee_reciprocal_and_coordinate_representability_boundary"
+            if bool(self.is_coordinate_representability_boundary[index].item())
+            and self.is_ideal_unfloored_ee_reciprocal_failure_boundary is not None
+            and bool(
+                self.is_ideal_unfloored_ee_reciprocal_failure_boundary[index].item()
+            )
+            else "coordinate_representability_boundary"
+            if bool(self.is_coordinate_representability_boundary[index].item())
+            else "ideal_unfloored_ee_reciprocal_failure_boundary"
+            if self.is_ideal_unfloored_ee_reciprocal_failure_boundary is not None
+            and bool(
+                self.is_ideal_unfloored_ee_reciprocal_failure_boundary[index].item()
+            )
             else "finite"
             if bool(sample_finite[index].item())
             else "computed_nonfinite_retained"
@@ -526,17 +637,37 @@ class HeliumAtlasValues:
         return type(self)(
             requested_coordinate=self.requested_coordinate.clone(),
             realized_coordinate=self.realized_coordinate.clone(),
-            is_refinement_boundary=self.is_refinement_boundary.clone(),
+            coordinate_representability_boundary_radius=(
+                self.coordinate_representability_boundary_radius.clone()
+            ),
+            is_coordinate_representability_boundary=(
+                self.is_coordinate_representability_boundary.clone()
+            ),
             is_exact_zero_sentinel=self.is_exact_zero_sentinel.clone(),
             ideal_unfloored_ee_inverse_distance=(
                 None
                 if self.ideal_unfloored_ee_inverse_distance is None
                 else self.ideal_unfloored_ee_inverse_distance.clone()
             ),
-            ideal_unfloored_ee_domain_mask=(
+            ideal_unfloored_ee_positive_separation_domain_mask=(
                 None
-                if self.ideal_unfloored_ee_domain_mask is None
-                else self.ideal_unfloored_ee_domain_mask.clone()
+                if self.ideal_unfloored_ee_positive_separation_domain_mask is None
+                else self.ideal_unfloored_ee_positive_separation_domain_mask.clone()
+            ),
+            ideal_unfloored_ee_reciprocal_evaluation_defined_mask=(
+                None
+                if self.ideal_unfloored_ee_reciprocal_evaluation_defined_mask is None
+                else self.ideal_unfloored_ee_reciprocal_evaluation_defined_mask.clone()
+            ),
+            ideal_unfloored_ee_reciprocal_failure_radius=(
+                None
+                if self.ideal_unfloored_ee_reciprocal_failure_radius is None
+                else self.ideal_unfloored_ee_reciprocal_failure_radius.clone()
+            ),
+            is_ideal_unfloored_ee_reciprocal_failure_boundary=(
+                None
+                if self.is_ideal_unfloored_ee_reciprocal_failure_boundary is None
+                else self.is_ideal_unfloored_ee_reciprocal_failure_boundary.clone()
             ),
             derivatives=dict(self.derivatives),
             total_local_energy=self.total_local_energy.clone(),
@@ -599,7 +730,10 @@ class HeliumAtlasValues:
             close = close and block_close
             max_abs_error = max(max_abs_error, float(metrics["max_abs_error"]))
         for left, right in (
-            (self.is_refinement_boundary, other.is_refinement_boundary),
+            (
+                self.is_coordinate_representability_boundary,
+                other.is_coordinate_representability_boundary,
+            ),
             (self.is_exact_zero_sentinel, other.is_exact_zero_sentinel),
             (self.total_local_energy_finite_mask, other.total_local_energy_finite_mask),
             (self.per_electron_kinetic_domain_mask, other.per_electron_kinetic_domain_mask),
@@ -609,13 +743,38 @@ class HeliumAtlasValues:
         ):
             status_mismatch_count += int((left != right).sum().item())
         if self.ideal_unfloored_ee_inverse_distance is not None:
-            assert self.ideal_unfloored_ee_domain_mask is not None
+            assert self.ideal_unfloored_ee_positive_separation_domain_mask is not None
+            assert self.ideal_unfloored_ee_reciprocal_evaluation_defined_mask is not None
             assert other.ideal_unfloored_ee_inverse_distance is not None
-            assert other.ideal_unfloored_ee_domain_mask is not None
+            assert other.ideal_unfloored_ee_positive_separation_domain_mask is not None
+            assert other.ideal_unfloored_ee_reciprocal_evaluation_defined_mask is not None
+            assert self.ideal_unfloored_ee_reciprocal_failure_radius is not None
+            assert other.ideal_unfloored_ee_reciprocal_failure_radius is not None
+            assert self.is_ideal_unfloored_ee_reciprocal_failure_boundary is not None
+            assert other.is_ideal_unfloored_ee_reciprocal_failure_boundary is not None
+            status_mismatch_count += int(
+                (
+                    self.is_ideal_unfloored_ee_reciprocal_failure_boundary
+                    != other.is_ideal_unfloored_ee_reciprocal_failure_boundary
+                )
+                .sum()
+                .item()
+            )
             self_ideal_finite = torch.isfinite(self.ideal_unfloored_ee_inverse_distance)
             other_ideal_finite = torch.isfinite(other.ideal_unfloored_ee_inverse_distance)
             status_mismatch_count += int(
-                (self.ideal_unfloored_ee_domain_mask != other.ideal_unfloored_ee_domain_mask)
+                (
+                    self.ideal_unfloored_ee_positive_separation_domain_mask
+                    != other.ideal_unfloored_ee_positive_separation_domain_mask
+                )
+                .sum()
+                .item()
+            )
+            status_mismatch_count += int(
+                (
+                    self.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+                    != other.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+                )
                 .sum()
                 .item()
             )
@@ -629,6 +788,40 @@ class HeliumAtlasValues:
             )
             close = close and ideal_close
             max_abs_error = max(max_abs_error, float(ideal_metrics["max_abs_error"]))
+            shared_reciprocal_radius = (
+                self.is_ideal_unfloored_ee_reciprocal_failure_boundary
+                & other.is_ideal_unfloored_ee_reciprocal_failure_boundary
+            )
+            radius_close, radius_metrics = compare_tensor_blocks(
+                [
+                    self.ideal_unfloored_ee_reciprocal_failure_radius[
+                        shared_reciprocal_radius
+                    ]
+                ],
+                [
+                    other.ideal_unfloored_ee_reciprocal_failure_radius[
+                        shared_reciprocal_radius
+                    ]
+                ],
+                atol=atol,
+                rtol=rtol,
+            )
+            close = close and radius_close
+            max_abs_error = max(max_abs_error, float(radius_metrics["max_abs_error"]))
+        shared_coordinate_radius = (
+            self.is_coordinate_representability_boundary
+            & other.is_coordinate_representability_boundary
+        )
+        coordinate_radius_close, coordinate_radius_metrics = compare_tensor_blocks(
+            [self.coordinate_representability_boundary_radius[shared_coordinate_radius]],
+            [other.coordinate_representability_boundary_radius[shared_coordinate_radius]],
+            atol=atol,
+            rtol=rtol,
+        )
+        close = close and coordinate_radius_close
+        max_abs_error = max(
+            max_abs_error, float(coordinate_radius_metrics["max_abs_error"])
+        )
         for name in self.derivatives:
             derivative_close, error, mismatches = self.derivatives[name].compare(
                 other.derivatives[name], atol=atol, rtol=rtol
@@ -710,6 +903,32 @@ def _validate_float64_sample(
 
     if tuple(value.shape) != shape or value.dtype != torch.float64 or value.device != device:
         raise ValueError(f"HeliumAtlasValues.{name} must be float64 on {device} with shape {shape}")
+
+
+def _validate_boundary_radius(
+    value: torch.Tensor,
+    *,
+    mask: torch.Tensor,
+    shape: tuple[int, ...],
+    device: torch.device,
+    dtype: torch.dtype,
+    name: str,
+) -> None:
+    """Require a finite positive radius exactly on each named boundary."""
+
+    if tuple(value.shape) != shape or value.device != device or value.dtype != dtype:
+        raise ValueError(
+            f"HeliumAtlasValues.{name} must match batch dtype/device with shape {shape}"
+        )
+    if not torch.equal(torch.isfinite(value), mask):
+        raise ValueError(f"HeliumAtlasValues.{name} must be finite exactly on its boundary")
+    if not torch.isnan(value[~mask]).all():
+        raise ValueError(f"HeliumAtlasValues.{name} must use explicit NaN outside its boundary")
+    if torch.any(value[mask] <= 0):
+        raise ValueError(
+            f"HeliumAtlasValues.{name} boundary values must be positive and distinct "
+            "from the exact-zero sentinel"
+        )
 
 
 @dataclass(frozen=True)

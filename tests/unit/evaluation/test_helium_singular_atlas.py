@@ -16,6 +16,7 @@ from tpen.data.permutation import Permutation
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations, HeliumAtlasValues
 from tpen.evaluation.calculators import HeliumAtlasCalculator
 from tpen.evaluation.calculators.helium_atlas import (
+    _validate_boundary_order,
     directional_log_derivatives,
     directional_log_derivatives_reference,
 )
@@ -163,8 +164,8 @@ def test_geometric_refinement_records_properties_and_provenance_not_magic_epsilo
         directions=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         center_of_mass=[0.0, 0.0, 0.0],
         start_radius=1.0e-2,
-        refinement_ratio=1.0e-64,
-        max_refinement_steps=16,
+        refinement_ratio=1.0e-8,
+        max_refinement_steps=128,
     ).generate(model=None, context=_context(tmp_path))
     bundle = _calculator().calculate(
         model=_AnalyticAtlasModel(),
@@ -178,6 +179,16 @@ def test_geometric_refinement_records_properties_and_provenance_not_magic_epsilo
     assert atlas.provenance.evaluation_dtype == "float64"
     assert atlas.provenance.evaluation_device == "cpu"
     assert atlas.provenance.seed == 17
+    positive_domain = atlas.ideal_unfloored_ee_positive_separation_domain_mask
+    evaluation_defined = (
+        atlas.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+    )
+    assert positive_domain is not None
+    assert evaluation_defined is not None
+    ideal = atlas.ideal_unfloored_ee_inverse_distance
+    assert ideal is not None
+    assert torch.equal(evaluation_defined, torch.isfinite(ideal))
+    assert not torch.equal(positive_domain, evaluation_defined)
 
     ray_ids = generated.metadata["ray_id"]
     for ray_id in sorted(set(ray_ids.tolist())):
@@ -185,20 +196,61 @@ def test_geometric_refinement_records_properties_and_provenance_not_magic_epsilo
         requested = atlas.requested_coordinate[selection]
         positive = requested[requested > 0]
         assert torch.all(positive[1:] < positive[:-1])
-        assert int(atlas.is_refinement_boundary[selection].sum().item()) == 1
+        coordinate_boundary = atlas.is_coordinate_representability_boundary[selection]
+        reciprocal_boundary_mask = (
+            atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary
+        )
+        assert reciprocal_boundary_mask is not None
+        reciprocal_boundary = reciprocal_boundary_mask[selection]
+        assert int(coordinate_boundary.sum().item()) == 1
+        assert int(reciprocal_boundary.sum().item()) == 1
         assert int(atlas.is_exact_zero_sentinel[selection].sum().item()) == 1
+        assert bool(atlas.is_exact_zero_sentinel[selection][-1].item())
         assert atlas.domain_status[torch.nonzero(selection, as_tuple=False)[-1].item()] == (
             "exact_zero_sentinel"
         )
-        ideal = atlas.ideal_unfloored_ee_inverse_distance
-        assert ideal is not None
-        finite = torch.isfinite(ideal[selection])
-        transitions = finite[:-1] & ~finite[1:]
+        ray_defined = evaluation_defined[selection]
+        transitions = ray_defined[:-1] & ~ray_defined[1:]
         assert int(transitions.sum().item()) == 1
         transition = int(torch.nonzero(transitions, as_tuple=False).item())
-        assert bool(atlas.is_refinement_boundary[selection][transition + 1].item())
+        assert bool(reciprocal_boundary[transition + 1].item())
+        assert torch.all(ray_defined[: transition + 1])
+        assert not torch.any(ray_defined[transition + 1 :])
+        assert bool(positive_domain[selection][transition + 1].item())
         assert not bool(atlas.is_exact_zero_sentinel[selection][transition + 1].item())
-    assert generated.batch.batch_size < 2 * 18
+        reciprocal_radius = atlas.ideal_unfloored_ee_reciprocal_failure_radius
+        assert reciprocal_radius is not None
+        evaluation_failure_radius = reciprocal_radius[selection][reciprocal_boundary].item()
+        coordinate_underflow_radius = atlas.coordinate_representability_boundary_radius[
+            selection
+        ][coordinate_boundary].item()
+        assert evaluation_failure_radius > 0
+        assert coordinate_underflow_radius > 0
+        assert evaluation_failure_radius >= coordinate_underflow_radius
+        assert torch.nonzero(reciprocal_boundary, as_tuple=False).item() <= torch.nonzero(
+            coordinate_boundary, as_tuple=False
+        ).item()
+        assert not bool(positive_domain[selection][-1].item())
+        assert not bool(evaluation_defined[selection][-1].item())
+    assert generated.batch.batch_size < 2 * 130
+
+
+def test_reciprocal_failure_must_precede_coordinate_underflow() -> None:
+    with pytest.raises(ValueError, match="greater than or equal"):
+        _validate_boundary_order(
+            requested_coordinate=torch.tensor([2.0, 1.0, 0.0], dtype=torch.float64),
+            reciprocal_evaluation_defined_mask=torch.tensor([True, False, False]),
+            reciprocal_failure_radius=torch.tensor(
+                [float("nan"), 0.5, float("nan")], dtype=torch.float64
+            ),
+            reciprocal_boundary=torch.tensor([False, True, False]),
+            coordinate_boundary_radius=torch.tensor(
+                [float("nan"), 1.0, float("nan")], dtype=torch.float64
+            ),
+            coordinate_boundary=torch.tensor([False, True, False]),
+            sentinel=torch.tensor([False, False, True]),
+            ray=torch.tensor([0, 0, 0], dtype=torch.long),
+        )
 
 
 def test_refinement_fails_closed_when_bound_prevents_reaching_numerical_limit(
@@ -214,6 +266,32 @@ def test_refinement_fails_closed_when_bound_prevents_reaching_numerical_limit(
     )
     with pytest.raises(ValueError, match="before reaching a numerical boundary"):
         generator.generate(model=None, context=_context(tmp_path))
+
+
+def test_electron_nucleus_calculator_rejects_missing_coordinate_boundary(
+    tmp_path: Path,
+) -> None:
+    generated = HeliumElectronNucleusApproachGenerator(
+        atoms=_atoms(),
+        directions=[[1.0, 0.0, 0.0]],
+        spectator_position=[0.0, 0.0, -1.0],
+        start_radius=1.0e-2,
+        refinement_ratio=1.0e-64,
+        probe_electrons=[0],
+        max_refinement_steps=16,
+    ).generate(model=None, context=_context(tmp_path))
+    metadata = dict(generated.metadata)
+    metadata["is_coordinate_representability_boundary"] = torch.zeros_like(
+        metadata["is_coordinate_representability_boundary"]
+    )
+    malformed = GeneratedConfigurations(batch=generated.batch, metadata=metadata)
+
+    with pytest.raises(ValueError, match="one coordinate-representability boundary"):
+        _calculator().calculate(
+            model=_AnalyticAtlasModel(),
+            bundle=EvaluationBundle(generated=malformed),
+            context=_context(tmp_path),
+        )
 
 
 def test_escape_and_shell_generators_preserve_explicit_spectator_com_and_directions(
@@ -422,15 +500,46 @@ def test_writer_retains_nonfinite_boundary_and_distinguishes_zero_sentinel(
         namespace="eval/helium_atlas",
     )
 
-    assert numerical.metrics["atlas_refinement_boundary_count"] == 1
+    assert numerical.metrics["atlas_coordinate_representability_boundary_count"] == 1
+    assert numerical.metrics[
+        "ideal_unfloored_ee_reciprocal_failure_boundary_count"
+    ] == 1
     assert numerical.metrics["atlas_exact_zero_sentinel_count"] == 1
-    assert numerical.metrics["ideal_unfloored_ee_nonfinite_count"] >= 1
+    assert numerical.metrics[
+        "ideal_unfloored_ee_reciprocal_evaluation_undefined_count"
+    ] >= 1
     rows = list(csv.DictReader(result.artifacts[0].path.read_text(encoding="utf-8").splitlines()))
     assert len(rows) == generated.batch.batch_size
     sentinel = next(row for row in rows if row["is_exact_zero_sentinel"] == "True")
+    coordinate_boundary = next(
+        row
+        for row in rows
+        if row["is_coordinate_representability_boundary"] == "True"
+    )
+    reciprocal_boundary = next(
+        row
+        for row in rows
+        if row["is_ideal_unfloored_ee_reciprocal_failure_boundary"] == "True"
+    )
+    assert float(coordinate_boundary["coordinate_representability_boundary_radius"]) > 0
+    assert (
+        float(
+            reciprocal_boundary[
+                "ideal_unfloored_ee_reciprocal_failure_radius"
+            ]
+        )
+        > 0
+    )
     assert sentinel["atlas_sample_kind"] == "exact_zero_sentinel"
     assert sentinel["ideal_unfloored_ee_inverse_distance"] == "inf"
-    assert sentinel["ideal_unfloored_ee_domain"] == "False"
+    assert sentinel["ideal_unfloored_ee_positive_separation_domain"] == "False"
+    assert sentinel["ideal_unfloored_ee_reciprocal_evaluation_defined"] == "False"
+    assert reciprocal_boundary[
+        "ideal_unfloored_ee_positive_separation_domain"
+    ] == "True"
+    assert reciprocal_boundary[
+        "ideal_unfloored_ee_reciprocal_evaluation_defined"
+    ] == "False"
     assert sentinel["domain_status"] == "exact_zero_sentinel"
     assert sentinel["executed_smoothed_ee_factor_value_finite"] == "True"
     assert sentinel["executed_hamiltonian_cancellation_abs_sum_finite"] in {
@@ -488,6 +597,17 @@ def test_real_executed_smoothed_ee_factor_remains_finite_where_ideal_is_undefine
     ideal = atlas.ideal_unfloored_ee_inverse_distance
     assert ideal is not None
     assert torch.isinf(ideal[sentinel]).all()
+    reciprocal_boundary = atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary
+    assert reciprocal_boundary is not None
+    assert int(reciprocal_boundary.sum().item()) == 1
+    positive_domain = atlas.ideal_unfloored_ee_positive_separation_domain_mask
+    evaluation_defined = (
+        atlas.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+    )
+    assert positive_domain is not None
+    assert evaluation_defined is not None
+    assert positive_domain[reciprocal_boundary].all()
+    assert not evaluation_defined[reciprocal_boundary].any()
     executed = atlas.derivatives["executed_smoothed_ee_factor"]
     assert executed.value_finite_mask[sentinel].all()
     assert executed.first_derivative_finite_mask[sentinel].all()

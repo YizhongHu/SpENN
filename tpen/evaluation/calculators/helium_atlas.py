@@ -96,7 +96,9 @@ class HeliumAtlasCalculator:
             flat,
             shape=(flat.batch_size, flat.n_electrons, flat.spatial_dim),
         )
-        boundary = _metadata_bool(metadata, "is_refinement_boundary", flat)
+        coordinate_boundary = _metadata_bool(
+            metadata, "is_coordinate_representability_boundary", flat
+        )
         sentinel = _metadata_bool(metadata, "is_exact_zero_sentinel", flat)
         coordinate_kinds = _metadata_strings(metadata, "atlas_coordinate_kind", flat.batch_size)
         realized = _realized_coordinate(flat, coordinate_kinds, metadata)
@@ -179,14 +181,61 @@ class HeliumAtlasCalculator:
         cancellation_ratio = cancellation_abs_sum / total.abs()
 
         is_ee = all(kind == "electron_electron_distance" for kind in coordinate_kinds)
+        is_coordinate_refinement = all(
+            kind in {"electron_nucleus_distance", "electron_electron_distance"}
+            for kind in coordinate_kinds
+        )
+        reciprocal_boundary: torch.Tensor | None
+        reciprocal_failure_radius: torch.Tensor | None
+        positive_separation_domain: torch.Tensor | None
+        reciprocal_evaluation_defined: torch.Tensor | None
+        coordinate_boundary_radius = torch.full_like(requested, float("nan"))
+        coordinate_boundary_radius[coordinate_boundary] = requested[coordinate_boundary]
+        ray = _metadata_long(metadata, "ray_id", flat)
+        if is_coordinate_refinement or bool(
+            torch.any(coordinate_boundary | sentinel).item()
+        ):
+            _validate_coordinate_refinement(
+                requested_coordinate=requested,
+                coordinate_boundary_radius=coordinate_boundary_radius,
+                coordinate_boundary=coordinate_boundary,
+                sentinel=sentinel,
+                ray=ray,
+            )
         if is_ee:
-            ideal_inverse = realized.reciprocal()
-            ideal_domain = realized > 0
+            # The ideal law is defined on the requested unfloored path coordinate;
+            # its numerical boundary stays on the provenance-pinned CPU float64
+            # reference while the executed model consumes the realized geometry.
+            ideal_inverse = (
+                requested.detach().to(device="cpu", dtype=torch.float64).reciprocal()
+            ).to(device=flat.device, dtype=flat.dtype)
+            positive_separation_domain = requested > 0
+            reciprocal_evaluation_defined = torch.isfinite(ideal_inverse)
+            reciprocal_boundary = _first_nonfinite_boundaries(
+                reciprocal_evaluation_defined,
+                ray=ray,
+                sentinel=sentinel,
+            )
+            reciprocal_failure_radius = torch.full_like(requested, float("nan"))
+            reciprocal_failure_radius[reciprocal_boundary] = requested[reciprocal_boundary]
+            _validate_boundary_order(
+                requested_coordinate=requested,
+                reciprocal_evaluation_defined_mask=reciprocal_evaluation_defined,
+                reciprocal_failure_radius=reciprocal_failure_radius,
+                reciprocal_boundary=reciprocal_boundary,
+                coordinate_boundary_radius=coordinate_boundary_radius,
+                coordinate_boundary=coordinate_boundary,
+                sentinel=sentinel,
+                ray=ray,
+            )
         else:
             if any(kind == "electron_electron_distance" for kind in coordinate_kinds):
                 raise ValueError("one helium atlas task may not mix e-e and non-e-e coordinate kinds")
             ideal_inverse = None
-            ideal_domain = None
+            positive_separation_domain = None
+            reciprocal_evaluation_defined = None
+            reciprocal_boundary = None
+            reciprocal_failure_radius = None
 
         sample_finite = derivatives["executed_full_logabs"].value_finite_mask.clone()
         for values in derivatives.values():
@@ -201,8 +250,15 @@ class HeliumAtlasCalculator:
         domain_status = tuple(
             "exact_zero_sentinel"
             if bool(sentinel[index].item())
-            else "recorded_numerical_refinement_boundary"
-            if bool(boundary[index].item())
+            else "ideal_unfloored_ee_reciprocal_and_coordinate_representability_boundary"
+            if bool(coordinate_boundary[index].item())
+            and reciprocal_boundary is not None
+            and bool(reciprocal_boundary[index].item())
+            else "coordinate_representability_boundary"
+            if bool(coordinate_boundary[index].item())
+            else "ideal_unfloored_ee_reciprocal_failure_boundary"
+            if reciprocal_boundary is not None
+            and bool(reciprocal_boundary[index].item())
             else "finite"
             if bool(sample_finite[index].item())
             else "computed_nonfinite_retained"
@@ -211,13 +267,31 @@ class HeliumAtlasCalculator:
         values = HeliumAtlasValues(
             requested_coordinate=requested.detach(),
             realized_coordinate=realized.detach(),
-            is_refinement_boundary=boundary,
+            coordinate_representability_boundary_radius=(
+                coordinate_boundary_radius.detach()
+            ),
+            is_coordinate_representability_boundary=coordinate_boundary,
             is_exact_zero_sentinel=sentinel,
             ideal_unfloored_ee_inverse_distance=(
                 None if ideal_inverse is None else ideal_inverse.detach()
             ),
-            ideal_unfloored_ee_domain_mask=(
-                None if ideal_domain is None else ideal_domain.detach()
+            ideal_unfloored_ee_positive_separation_domain_mask=(
+                None
+                if positive_separation_domain is None
+                else positive_separation_domain.detach()
+            ),
+            ideal_unfloored_ee_reciprocal_evaluation_defined_mask=(
+                None
+                if reciprocal_evaluation_defined is None
+                else reciprocal_evaluation_defined.detach()
+            ),
+            ideal_unfloored_ee_reciprocal_failure_radius=(
+                None
+                if reciprocal_failure_radius is None
+                else reciprocal_failure_radius.detach()
+            ),
+            is_ideal_unfloored_ee_reciprocal_failure_boundary=(
+                None if reciprocal_boundary is None else reciprocal_boundary.detach()
             ),
             derivatives=derivatives,
             total_local_energy=total,
@@ -473,6 +547,171 @@ def _validate_provenance_metadata(
     for key, value in expected.items():
         if metadata.get(key) != value:
             raise ValueError(f"{key} metadata must record evaluated provenance value {value!r}")
+
+
+def _first_nonfinite_boundaries(
+    finite_mask: torch.Tensor,
+    *,
+    ray: torch.Tensor,
+    sentinel: torch.Tensor,
+) -> torch.Tensor:
+    """Mark the first finite-to-nonfinite destination on every refinement ray."""
+
+    boundary = torch.zeros_like(finite_mask)
+    for ray_id in sorted(set(ray.detach().cpu().tolist())):
+        indices = torch.nonzero((ray == ray_id) & ~sentinel, as_tuple=False).reshape(-1)
+        transitions = finite_mask[indices][:-1] & ~finite_mask[indices][1:]
+        if int(transitions.sum().item()) != 1:
+            raise ValueError(
+                "each ideal unfloored e-e refinement ray must contain exactly one "
+                "finite-to-nonfinite reciprocal transition"
+            )
+        transition = int(torch.nonzero(transitions, as_tuple=False).item())
+        boundary[indices[transition + 1]] = True
+    return boundary
+
+
+def _validate_boundary_order(
+    *,
+    requested_coordinate: torch.Tensor,
+    reciprocal_evaluation_defined_mask: torch.Tensor,
+    reciprocal_failure_radius: torch.Tensor,
+    reciprocal_boundary: torch.Tensor,
+    coordinate_boundary_radius: torch.Tensor,
+    coordinate_boundary: torch.Tensor,
+    sentinel: torch.Tensor,
+    ray: torch.Tensor,
+) -> None:
+    """Validate reciprocal failure against an already valid coordinate refinement."""
+
+    for ray_id in sorted(set(ray.detach().cpu().tolist())):
+        selection = ray == ray_id
+        indices = torch.nonzero(selection, as_tuple=False).reshape(-1)
+        ray_sentinel = sentinel[indices]
+        nonzero_indices = indices[~ray_sentinel]
+
+        evaluation_defined = reciprocal_evaluation_defined_mask[nonzero_indices]
+        transitions = evaluation_defined[:-1] & ~evaluation_defined[1:]
+        if int(transitions.sum().item()) != 1:
+            raise ValueError(
+                "each ideal unfloored e-e ray must contain exactly one finite-to-nonfinite "
+                "reciprocal transition"
+            )
+        transition = int(torch.nonzero(transitions, as_tuple=False).item())
+        reciprocal_destination = nonzero_indices[transition + 1]
+        if (
+            not bool(torch.all(evaluation_defined[: transition + 1]).item())
+            or bool(torch.any(evaluation_defined[transition + 1 :]).item())
+        ):
+            raise ValueError(
+                "ideal unfloored e-e reciprocal evaluation must stay undefined after its "
+                "first failure"
+            )
+
+        reciprocal = reciprocal_failure_radius[selection & reciprocal_boundary]
+        coordinate = coordinate_boundary_radius[selection & coordinate_boundary]
+        if reciprocal.numel() != 1 or coordinate.numel() != 1:
+            raise ValueError(
+                "each ideal unfloored e-e ray must emit one reciprocal-failure radius "
+                "and one coordinate-representability radius"
+            )
+        if bool((reciprocal[0] < coordinate[0]).item()):
+            raise ValueError(
+                "ideal unfloored e-e reciprocal evaluation must fail at a radius "
+                "greater than or equal to the coordinate-representability boundary"
+            )
+        reciprocal_index = torch.nonzero(
+            selection & reciprocal_boundary, as_tuple=False
+        ).reshape(-1)[0]
+        coordinate_index = torch.nonzero(
+            selection & coordinate_boundary, as_tuple=False
+        ).reshape(-1)[0]
+        if bool((reciprocal_index != reciprocal_destination).item()):
+            raise ValueError(
+                "the reciprocal-failure boundary must mark the finite-to-nonfinite "
+                "transition destination"
+            )
+        if (
+            bool((reciprocal[0] <= 0).item())
+            or bool((coordinate[0] <= 0).item())
+            or bool(
+                (reciprocal[0] != requested_coordinate[reciprocal_index]).item()
+            )
+            or bool(
+                (coordinate[0] != requested_coordinate[coordinate_index]).item()
+            )
+        ):
+            raise ValueError(
+                "named numerical-boundary radii must be positive requested coordinates "
+                "and distinct from the exact-zero sentinel"
+            )
+        ray_reciprocal_index = int(
+            torch.nonzero(indices == reciprocal_index, as_tuple=False).item()
+        )
+        ray_coordinate_index = int(
+            torch.nonzero(indices == coordinate_index, as_tuple=False).item()
+        )
+        if ray_reciprocal_index > ray_coordinate_index:
+            raise ValueError(
+                "ideal unfloored e-e reciprocal evaluation must fail before or at the "
+                "coordinate-representability boundary"
+            )
+
+
+def _validate_coordinate_refinement(
+    *,
+    requested_coordinate: torch.Tensor,
+    coordinate_boundary_radius: torch.Tensor,
+    coordinate_boundary: torch.Tensor,
+    sentinel: torch.Tensor,
+    ray: torch.Tensor,
+) -> None:
+    """Require a monotone positive ray, one terminal boundary, and one zero sentinel."""
+
+    for ray_id in sorted(set(ray.detach().cpu().tolist())):
+        selection = ray == ray_id
+        indices = torch.nonzero(selection, as_tuple=False).reshape(-1)
+        ray_sentinel = sentinel[indices]
+        if int(ray_sentinel.sum().item()) != 1 or not bool(ray_sentinel[-1].item()):
+            raise ValueError(
+                "each coordinate-refinement ray must terminate with one exact-zero sentinel"
+            )
+        nonzero_indices = indices[~ray_sentinel]
+        nonzero_requested = requested_coordinate[nonzero_indices]
+        if (
+            nonzero_requested.numel() < 2
+            or bool(torch.any(nonzero_requested <= 0).item())
+            or not bool(torch.all(nonzero_requested[1:] < nonzero_requested[:-1]).item())
+        ):
+            raise ValueError(
+                "each coordinate-refinement ray must approach zero through a strictly "
+                "decreasing positive requested-coordinate sequence"
+            )
+        if bool((requested_coordinate[indices[-1]] != 0).item()):
+            raise ValueError("the exact-zero sentinel must have requested_coordinate == 0")
+        ray_coordinate_boundary = coordinate_boundary[indices]
+        if int(ray_coordinate_boundary.sum().item()) != 1:
+            raise ValueError(
+                "each coordinate-refinement ray must emit one coordinate-representability boundary"
+            )
+        coordinate_index = indices[
+            torch.nonzero(ray_coordinate_boundary, as_tuple=False).reshape(-1)[0]
+        ]
+        if bool((coordinate_index != nonzero_indices[-1]).item()):
+            raise ValueError(
+                "the coordinate-representability boundary must terminate the positive ray"
+            )
+        coordinate_radius = coordinate_boundary_radius[coordinate_index]
+        if (
+            bool((coordinate_radius <= 0).item())
+            or bool(
+                (coordinate_radius != requested_coordinate[coordinate_index]).item()
+            )
+        ):
+            raise ValueError(
+                "the coordinate-representability radius must be the terminal positive "
+                "requested coordinate and distinct from the exact-zero sentinel"
+            )
 
 
 __all__ = [

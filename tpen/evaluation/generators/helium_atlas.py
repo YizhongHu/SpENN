@@ -29,7 +29,7 @@ class _AtlasRow:
     probe_electron: int
     geometry_kind: str
     coordinate_kind: str
-    is_refinement_boundary: bool = False
+    is_coordinate_representability_boundary: bool = False
     is_exact_zero_sentinel: bool = False
 
 
@@ -103,8 +103,8 @@ class _HeliumAtlasGenerator:
                 "probe_electron": torch.tensor(
                     [row.probe_electron for row in rows], device=device, dtype=torch.long
                 ),
-                "is_refinement_boundary": torch.tensor(
-                    [row.is_refinement_boundary for row in rows],
+                "is_coordinate_representability_boundary": torch.tensor(
+                    [row.is_coordinate_representability_boundary for row in rows],
                     device=device,
                     dtype=torch.bool,
                 ),
@@ -480,14 +480,14 @@ def _refine_ray(
                     tangent=tangent,
                     requested_coordinate=requested,
                     realized_coordinate=realized,
-                    sample_kind="nonzero_requested_representation_failure",
+                    sample_kind="nonzero_requested_coordinate_representation_failure",
                     direction_id=direction_id,
                     ray_id=ray_id,
                     refinement_index=index,
                     probe_electron=probe_electron,
                     geometry_kind=geometry_kind,
                     coordinate_kind=coordinate_kind,
-                    is_refinement_boundary=True,
+                    is_coordinate_representability_boundary=True,
                 )
             )
             boundary_reached = True
@@ -509,11 +509,15 @@ def _refine_ray(
         )
         next_requested = requested * refinement_ratio
         if next_requested <= 0 or not torch.isfinite(next_requested):
-            rows[-1] = _replace_boundary(rows[-1], "last_finite_nonzero_boundary")
+            rows[-1] = _replace_boundary(
+                rows[-1], "last_finite_coordinate_representability_boundary"
+            )
             boundary_reached = True
             break
         if not next_requested < requested:
-            rows[-1] = _replace_boundary(rows[-1], "nondecreasing_representation_boundary")
+            rows[-1] = _replace_boundary(
+                rows[-1], "nondecreasing_coordinate_representability_boundary"
+            )
             boundary_reached = True
             break
         requested = next_requested
@@ -556,7 +560,7 @@ def _replace_boundary(row: _AtlasRow, sample_kind: str) -> _AtlasRow:
         probe_electron=row.probe_electron,
         geometry_kind=row.geometry_kind,
         coordinate_kind=row.coordinate_kind,
-        is_refinement_boundary=True,
+        is_coordinate_representability_boundary=True,
         is_exact_zero_sentinel=False,
     )
 

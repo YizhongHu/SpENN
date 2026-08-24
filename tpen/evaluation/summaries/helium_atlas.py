@@ -185,28 +185,46 @@ class HeliumNumericalLimitSummary:
         sample_nonfinite |= ~atlas.cancellation_ratio_finite_mask
         metrics: dict[str, MetricScalar] = {
             "atlas_total_count": int(atlas.requested_coordinate.numel()),
-            "atlas_refinement_boundary_count": int(atlas.is_refinement_boundary.sum().item()),
+            "atlas_coordinate_representability_boundary_count": int(
+                atlas.is_coordinate_representability_boundary.sum().item()
+            ),
             "atlas_exact_zero_sentinel_count": int(atlas.is_exact_zero_sentinel.sum().item()),
             "atlas_computed_nonfinite_retained_count": int(sample_nonfinite.sum().item()),
             "atlas_dtype_is_float64": atlas.provenance.dtype == "float64",
             "atlas_seed": int(atlas.provenance.seed),
         }
         if atlas.ideal_unfloored_ee_inverse_distance is not None:
-            ideal = atlas.ideal_unfloored_ee_inverse_distance
-            ideal_domain = atlas.ideal_unfloored_ee_domain_mask
-            assert ideal_domain is not None
+            positive_domain = (
+                atlas.ideal_unfloored_ee_positive_separation_domain_mask
+            )
+            evaluation_defined = (
+                atlas.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+            )
+            reciprocal_boundary = (
+                atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary
+            )
+            assert positive_domain is not None
+            assert evaluation_defined is not None
+            assert reciprocal_boundary is not None
             executed = atlas.derivatives.get("executed_smoothed_ee_factor")
             if executed is None:
                 raise ValueError(
                     "an e-e numerical atlas requires executed_smoothed_ee_factor diagnostics"
                 )
-            ideal_finite = torch.isfinite(ideal)
             metrics.update(
                 {
-                    "ideal_unfloored_ee_domain_count": int(ideal_domain.sum().item()),
-                    "ideal_unfloored_ee_nonfinite_count": int((~ideal_finite).sum().item()),
-                    "executed_smoothed_ee_factor_finite_at_ideal_undefined_count": int(
-                        (executed.value_finite_mask & ~ideal_domain).sum().item()
+                    "ideal_unfloored_ee_positive_separation_domain_count": int(
+                        positive_domain.sum().item()
+                    ),
+                    "ideal_unfloored_ee_reciprocal_evaluation_undefined_count": int(
+                        (~evaluation_defined).sum().item()
+                    ),
+                    "ideal_unfloored_ee_reciprocal_failure_boundary_count": int(
+                        reciprocal_boundary.sum().item()
+                    ),
+                    "executed_smoothed_ee_factor_finite_at_ideal_reciprocal_"
+                    "evaluation_undefined_count": int(
+                        (executed.value_finite_mask & ~evaluation_defined).sum().item()
                     ),
                 }
             )
@@ -268,19 +286,22 @@ class HeliumAtlasWriter:
             "ray_id",
             "refinement_index",
             "probe_electron",
-            "boundary_provenance_dtype",
-            "boundary_provenance_device",
-            "boundary_provenance_seed",
+            "refinement_provenance_dtype",
+            "refinement_provenance_device",
+            "refinement_provenance_seed",
             "evaluation_dtype",
             "evaluation_device",
             "requested_path_coordinate",
             "realized_physical_coordinate",
-            "is_refinement_boundary",
+            "coordinate_representability_boundary_radius",
+            "is_coordinate_representability_boundary",
             "is_exact_zero_sentinel",
             "domain_status",
             "ideal_unfloored_ee_inverse_distance",
-            "ideal_unfloored_ee_domain",
-            "ideal_unfloored_ee_finite",
+            "ideal_unfloored_ee_positive_separation_domain",
+            "ideal_unfloored_ee_reciprocal_evaluation_defined",
+            "ideal_unfloored_ee_reciprocal_failure_radius",
+            "is_ideal_unfloored_ee_reciprocal_failure_boundary",
             *derivative_columns,
             "executed_hamiltonian_total",
             "executed_hamiltonian_total_finite",
@@ -304,7 +325,12 @@ class HeliumAtlasWriter:
             writer.writeheader()
             for index in range(atlas.requested_coordinate.numel()):
                 ideal = atlas.ideal_unfloored_ee_inverse_distance
-                ideal_domain = atlas.ideal_unfloored_ee_domain_mask
+                positive_domain = (
+                    atlas.ideal_unfloored_ee_positive_separation_domain_mask
+                )
+                evaluation_defined = (
+                    atlas.ideal_unfloored_ee_reciprocal_evaluation_defined_mask
+                )
                 row: dict[str, object] = {
                     "sample_index": index,
                     "atlas_coordinate_kind": coordinate_kinds[index],
@@ -314,28 +340,59 @@ class HeliumAtlasWriter:
                     "ray_id": int(ray[index].item()),
                     "refinement_index": int(refinement[index].item()),
                     "probe_electron": int(probe[index].item()),
-                    "boundary_provenance_dtype": atlas.provenance.dtype,
-                    "boundary_provenance_device": atlas.provenance.device,
-                    "boundary_provenance_seed": atlas.provenance.seed,
+                    "refinement_provenance_dtype": atlas.provenance.dtype,
+                    "refinement_provenance_device": atlas.provenance.device,
+                    "refinement_provenance_seed": atlas.provenance.seed,
                     "evaluation_dtype": atlas.provenance.evaluation_dtype,
                     "evaluation_device": atlas.provenance.evaluation_device,
                     "requested_path_coordinate": _number(atlas.requested_coordinate[index]),
                     "realized_physical_coordinate": _number(atlas.realized_coordinate[index]),
-                    "is_refinement_boundary": bool(atlas.is_refinement_boundary[index].item()),
+                    "coordinate_representability_boundary_radius": (
+                        _number(atlas.coordinate_representability_boundary_radius[index])
+                        if bool(
+                            atlas.is_coordinate_representability_boundary[index].item()
+                        )
+                        else "not_boundary"
+                    ),
+                    "is_coordinate_representability_boundary": bool(
+                        atlas.is_coordinate_representability_boundary[index].item()
+                    ),
                     "is_exact_zero_sentinel": bool(atlas.is_exact_zero_sentinel[index].item()),
                     "domain_status": atlas.domain_status[index],
                     "ideal_unfloored_ee_inverse_distance": (
                         "not_applicable" if ideal is None else _number(ideal[index])
                     ),
-                    "ideal_unfloored_ee_domain": (
+                    "ideal_unfloored_ee_positive_separation_domain": (
                         "not_applicable"
-                        if ideal_domain is None
-                        else bool(ideal_domain[index].item())
+                        if positive_domain is None
+                        else bool(positive_domain[index].item())
                     ),
-                    "ideal_unfloored_ee_finite": (
+                    "ideal_unfloored_ee_reciprocal_evaluation_defined": (
                         "not_applicable"
-                        if ideal is None
-                        else bool(torch.isfinite(ideal[index]).item())
+                        if evaluation_defined is None
+                        else bool(evaluation_defined[index].item())
+                    ),
+                    "ideal_unfloored_ee_reciprocal_failure_radius": (
+                        "not_applicable"
+                        if atlas.ideal_unfloored_ee_reciprocal_failure_radius is None
+                        else _number(
+                            atlas.ideal_unfloored_ee_reciprocal_failure_radius[index]
+                        )
+                        if bool(
+                            atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary[
+                                index
+                            ].item()
+                        )
+                        else "not_boundary"
+                    ),
+                    "is_ideal_unfloored_ee_reciprocal_failure_boundary": (
+                        "not_applicable"
+                        if atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary is None
+                        else bool(
+                            atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary[
+                                index
+                            ].item()
+                        )
                     ),
                     "executed_hamiltonian_total": _number(atlas.total_local_energy[index]),
                     "executed_hamiltonian_total_finite": bool(
@@ -396,15 +453,22 @@ class HeliumAtlasWriter:
                     path=path,
                     metadata={
                         "rows": count,
-                        "refinement_boundary_count": int(
-                            atlas.is_refinement_boundary.sum().item()
+                        "coordinate_representability_boundary_count": int(
+                            atlas.is_coordinate_representability_boundary.sum().item()
+                        ),
+                        "ideal_unfloored_ee_reciprocal_failure_boundary_count": (
+                            "not_applicable"
+                            if atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary is None
+                            else int(
+                                atlas.is_ideal_unfloored_ee_reciprocal_failure_boundary.sum().item()
+                            )
                         ),
                         "exact_zero_sentinel_count": int(
                             atlas.is_exact_zero_sentinel.sum().item()
                         ),
-                        "boundary_provenance_dtype": atlas.provenance.dtype,
-                        "boundary_provenance_device": atlas.provenance.device,
-                        "boundary_provenance_seed": atlas.provenance.seed,
+                        "refinement_provenance_dtype": atlas.provenance.dtype,
+                        "refinement_provenance_device": atlas.provenance.device,
+                        "refinement_provenance_seed": atlas.provenance.seed,
                         "evaluation_dtype": atlas.provenance.evaluation_dtype,
                         "evaluation_device": atlas.provenance.evaluation_device,
                     },
