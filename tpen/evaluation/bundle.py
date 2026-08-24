@@ -34,6 +34,7 @@ from tpen.data.batch.geometry import electron_nuclear_displacements
 from tpen.data.equivariant_state import compare_tensor_blocks
 from tpen.data.indices import permute_particle_axis
 from tpen.data.permutation import Permutation
+from tpen.evaluation.trajectory_records import TrajectoryRecordArtifact
 from tpen.trace import Trace
 
 
@@ -42,11 +43,14 @@ class GeneratedConfigurations:
     """Electron configurations produced by an evaluation generator.
 
     Metadata is bookkeeping only. Scientific quantities computed from a model
-    or Hamiltonian belong in calculator outputs, not in this object.
+    or Hamiltonian belong in calculator outputs, not in the metadata mapping.
+    A streamed trajectory artifact is carried through its dedicated typed field
+    so it cannot masquerade as bookkeeping or an arbitrary dictionary.
     """
 
     batch: ElectronBatch
     metadata: Mapping[str, Any]
+    trajectory_records: TrajectoryRecordArtifact | None = None
 
 
 @dataclass(frozen=True)

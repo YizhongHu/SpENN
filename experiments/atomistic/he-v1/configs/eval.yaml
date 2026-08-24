@@ -273,9 +273,10 @@ evaluation_tasks:
       # already exported -- it was simply never named by a config, so an eval
       # row reported no acceptance rate at all.
       - _target_: tpen.evaluation.summaries.SamplerStatsSummary
-      # Raw [draw, walker] retention. max_samples covers the full product
-      # (256 x 4096 = 1048576); the default 100000 would silently keep 9.5% and
-      # look entirely healthy.
+      # Raw [draw, walker] retention. This is a complete streamed grid, not a
+      # snapshot table: max_samples is an explicit capacity contract for all
+      # 256 x 4096 = 1048576 rows. A smaller bound fails the task loudly rather
+      # than silently replacing the trajectory with a head slice.
       - _target_: tpen.evaluation.summaries.SampledRecordWriter
         max_samples: 1048576
         include_term_energies: true

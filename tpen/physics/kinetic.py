@@ -40,6 +40,7 @@ def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
         system=batch.system,
         nuclear_positions=batch.nuclear_positions,
         nuclear_charges=batch.nuclear_charges,
+        atomic_configuration=batch.atomic_configuration,
         spins=batch.spins,
         aux=dict(batch.aux),
     )
@@ -77,6 +78,16 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
         Kinetic local-energy contribution with shape ``[batch]``.
     """
 
+    value, _ = _kinetic_energy_and_output(model, batch)
+    return value
+
+
+def _kinetic_energy_and_output(
+    model,
+    batch: ElectronBatch,
+) -> tuple[torch.Tensor, WavefunctionOutput]:
+    """Return kinetic energy and the exact signed-log output it differentiated."""
+
     batch = batch.flatten_samples()
     positions = batch.positions.detach().clone().requires_grad_(True)
     if positions.ndim != 3:
@@ -86,6 +97,7 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
         system=batch.system,
         nuclear_positions=batch.nuclear_positions,
         nuclear_charges=batch.nuclear_charges,
+        atomic_configuration=batch.atomic_configuration,
         spins=batch.spins,
         aux=dict(batch.aux),
     )
@@ -101,10 +113,13 @@ def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     for idx in range(flat_grad.shape[1]):
         second = torch.autograd.grad(flat_grad[:, idx].sum(), positions, create_graph=True, retain_graph=True)[0]
         laplacian = laplacian + second.reshape(second.shape[0], -1)[:, idx]
-    output = -0.5 * (laplacian + flat_grad.pow(2).sum(dim=1))
-    if output.shape != (batch.batch_size,):
-        raise ValueError(f"kinetic local energy must have shape {(batch.batch_size,)}, got {tuple(output.shape)}")
-    return output
+    kinetic = -0.5 * (laplacian + flat_grad.pow(2).sum(dim=1))
+    if kinetic.shape != (batch.batch_size,):
+        raise ValueError(
+            f"kinetic local energy must have shape {(batch.batch_size,)}, "
+            f"got {tuple(kinetic.shape)}"
+        )
+    return kinetic, output
 
 
 class KineticEnergy:
@@ -113,5 +128,9 @@ class KineticEnergy:
     name = "kinetic"
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
-        value = kinetic_energy_from_logabs(wavefunction, batch)
-        return LocalEnergyResult(total=value, terms={self.name: value})
+        value, output = _kinetic_energy_and_output(wavefunction, batch)
+        return LocalEnergyResult(
+            total=value,
+            terms={self.name: value},
+            wavefunction_output=output,
+        )

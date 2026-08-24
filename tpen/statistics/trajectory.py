@@ -8,11 +8,35 @@ does not define its own.
 
 from __future__ import annotations
 
+import hashlib
+import math
 from dataclasses import dataclass
 
 import torch
 
-__all__ = ["ObservableTrajectory"]
+__all__ = ["ObservableTrajectory", "ObservableTrajectoryReconciliation"]
+
+
+@dataclass(frozen=True)
+class ObservableTrajectoryReconciliation:
+    """Deterministic identity and moments for a ``[draw, walker]`` observable."""
+
+    observable: str
+    draw_count: int
+    walker_count: int
+    draw_stride: int
+    burn_in_draws: int
+    row_count: int
+    finite_count: int
+    mean: float
+    variance: float
+    values_content_id: str
+
+    @property
+    def nonfinite_count(self) -> int:
+        """Return the number of non-finite observable rows."""
+
+        return self.row_count - self.finite_count
 
 
 @dataclass(frozen=True)
@@ -121,3 +145,45 @@ class ObservableTrajectory:
         """Return the number of non-finite entries in the trajectory."""
         return int((~torch.isfinite(self.values)).sum().item())
 
+    def reconciliation(self) -> ObservableTrajectoryReconciliation:
+        """Return shape, moments, finite count, and content identity.
+
+        The moment reduction is explicitly draw-major. A streaming record
+        writer can reproduce it from one retained draw at a time without
+        holding the full row artifact in memory.
+        """
+
+        values = self.values.detach().to(device="cpu", dtype=torch.float64)
+        draw_sums = values.sum(dim=1)
+        draw_square_sums = values.square().sum(dim=1)
+        total = draw_sums.sum()
+        total_square = draw_square_sums.sum()
+        row_count = self.total_draws
+        mean = float((total / row_count).item())
+        variance = float((total_square / row_count - (total / row_count).square()).item())
+        if math.isfinite(variance) and variance < 0.0:
+            # Roundoff can make an exactly constant trajectory microscopically
+            # negative under the sum/sum-of-squares identity.
+            variance = 0.0
+        return ObservableTrajectoryReconciliation(
+            observable=self.observable,
+            draw_count=self.n_draws,
+            walker_count=self.n_walkers,
+            draw_stride=self.draw_stride,
+            burn_in_draws=self.burn_in_draws,
+            row_count=row_count,
+            finite_count=row_count - self.nonfinite_count,
+            mean=mean,
+            variance=variance,
+            values_content_id=_values_content_id(values),
+        )
+
+
+def _values_content_id(values: torch.Tensor) -> str:
+    """Hash canonical float64 values in draw-major, walker-minor order."""
+
+    canonical = values.detach().to(device="cpu", dtype=torch.float64).contiguous()
+    digest = hashlib.sha256()
+    digest.update(str(tuple(canonical.shape)).encode("utf-8"))
+    digest.update(canonical.numpy().astype("<f8", copy=False).tobytes())
+    return digest.hexdigest()

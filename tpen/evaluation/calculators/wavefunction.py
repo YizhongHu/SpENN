@@ -30,6 +30,28 @@ class WavefunctionCalculator:
     ) -> EvaluationBundle:
         """Evaluate wavefunction outputs without retaining autograd graphs."""
 
+        records = bundle.generated.trajectory_records
+        if records is not None:
+            if self.return_components:
+                raise ValueError(
+                    "streamed trajectory records intentionally omit graph-bearing "
+                    "wavefunction components"
+                )
+            records.validate(check_files=False)
+            flat = bundle.generated.batch.flatten_samples()
+            n_rows = records.validate_snapshot_batch(flat)
+            values = WavefunctionValues(
+                logabs=records.final_draw.logabs[:n_rows].to(
+                    device=flat.device,
+                    dtype=flat.dtype,
+                ),
+                sign=records.final_draw.sign[:n_rows].to(
+                    device=flat.device,
+                    dtype=flat.dtype,
+                ),
+            )
+            return replace(bundle, wavefunction=values)
+
         flat = bundle.generated.batch.flatten_samples()
         size = flat.batch_size if self.chunk_size is None or self.chunk_size <= 0 else self.chunk_size
         logabs_chunks: list[torch.Tensor] = []

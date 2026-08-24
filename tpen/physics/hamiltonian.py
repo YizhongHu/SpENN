@@ -27,7 +27,7 @@ from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import torch
 
-from tpen.data.batch import ElectronBatch
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.naming import camel_to_snake
 
 
@@ -43,10 +43,15 @@ class LocalEnergyResult:
         Per-term local energies keyed by the resolved term name. When produced
         by `local_energy`, names come from the ``dict`` key (named form) or the
         snake-case class name (sequence form), and are guaranteed unique.
+    wavefunction_output : WavefunctionOutput or None, optional
+        Exact wavefunction output used by a term while evaluating this local
+        energy. The aggregate evaluator permits at most one producing term so
+        consumers can retain signed-log values without a second model pass.
     """
 
     total: torch.Tensor
     terms: dict[str, torch.Tensor] = field(default_factory=dict)
+    wavefunction_output: WavefunctionOutput | None = None
 
 
 def normalize_hamiltonian_terms(
@@ -192,16 +197,28 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
         batch_size = batch.flatten_samples().batch_size
         total: torch.Tensor | None = None
         decomposition: dict[str, torch.Tensor] = {}
+        wavefunction_output: WavefunctionOutput | None = None
         for name, term in normalized.items():
             result = term.local_energy(context.wavefunction, batch)
             result = _validate_local_energy_result(name, result, batch_size=batch_size)
             decomposition[name] = result.total
             total = result.total if total is None else total + result.total
+            if result.wavefunction_output is not None:
+                if wavefunction_output is not None:
+                    raise ValueError(
+                        "local-energy evaluation produced more than one wavefunction output; "
+                        "trajectory records require one model evaluation source"
+                    )
+                wavefunction_output = result.wavefunction_output
         if total is None:
             flat = batch.flatten_samples()
             total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
         if return_terms:
-            return LocalEnergyResult(total=total, terms=decomposition)
+            return LocalEnergyResult(
+                total=total,
+                terms=decomposition,
+                wavefunction_output=wavefunction_output,
+            )
         return total
 
 
@@ -277,6 +294,12 @@ def _validate_local_energy_result(
                 f"hamiltonian term {name!r} decomposition {term_name!r} must have shape "
                 f"{expected_shape}, got {tuple(value.shape)}"
             )
+    if result.wavefunction_output is not None:
+        if not isinstance(result.wavefunction_output, WavefunctionOutput):
+            raise TypeError(
+                f"hamiltonian term {name!r} wavefunction_output must be a WavefunctionOutput"
+            )
+        result.wavefunction_output.validate(batch_size=batch_size)
     return result
 
 

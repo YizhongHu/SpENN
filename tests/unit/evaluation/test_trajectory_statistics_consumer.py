@@ -9,6 +9,7 @@ hand-built record would prove only that the assertion matches the fixture.
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import shutil
@@ -20,13 +21,13 @@ import torch
 from tpen.checkpoint.hashing import file_sha256
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
-from tpen.data.batch.geometry import electron_nuclear_displacements
+from tpen.data.batch.geometry import electron_nuclear_displacements, electron_nuclear_distances, pairwise_distances
 from tpen.data.batch.walkers import Walkers
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
-from tpen.evaluation.calculators import LocalEnergyCalculator
+from tpen.evaluation.calculators import LocalEnergyCalculator, WavefunctionCalculator
 from tpen.evaluation.generators import TRAJECTORY_METADATA_KEY, TrajectoryMCMCGenerator
 from tpen.evaluation.protocols import EvaluationContext
-from tpen.evaluation.summaries import LocalEnergySummary, TrajectoryStatisticsSummary
+from tpen.evaluation.summaries import LocalEnergySummary, SampledRecordWriter, TrajectoryStatisticsSummary
 from tpen.evaluation.summaries.trajectory_statistics import DEFAULT_SIDECAR_NAME
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, ElectronNucleusInteraction
@@ -56,8 +57,10 @@ class HeliumSlaterModel(torch.nn.Module):
     def __init__(self, alpha: float = 1.8) -> None:
         super().__init__()
         self.alpha = torch.nn.Parameter(torch.tensor(alpha, dtype=torch.float64))
+        self.forward_count = 0
 
     def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        self.forward_count += 1
         distance = electron_nuclear_displacements(batch).norm(dim=-1)
         logabs = -self.alpha * distance.sum(dim=(-2, -1))
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
@@ -198,6 +201,117 @@ def test_real_local_energy_trajectory_yields_available_mcse(tmp_path: Path) -> N
     assert artifact.metadata["estimator_id"] == "pooled_geyer_ips"
 
 
+def test_records_stream_the_complete_grid_from_the_single_trajectory_evaluation(tmp_path: Path) -> None:
+    """Records retain accepted draw states and need neither another draw nor forward pass."""
+
+    n_draws = 3
+    discard_draws = 2
+    sampler = CorrelatedHeliumSampler(n_walkers=4)
+    model = HeliumSlaterModel()
+    context = EvaluationContext(
+        namespace="eval/mcmc_energy",
+        artifact_level="records",
+        task_failure_policy="continue",
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        seed=3,
+        run_dir=tmp_path,
+        task_output_dir=tmp_path,
+        metadata={},
+    )
+    generator = TrajectoryMCMCGenerator(
+        sampler=sampler,
+        hamiltonian_terms=_terms(),
+        n_draws=n_draws,
+        discard_draws=discard_draws,
+        chunk_size=2,
+    )
+
+    generated = generator.generate(model=model, context=context)
+    records = generated.trajectory_records
+    assert records is not None
+    assert sampler.call_count == discard_draws + n_draws
+    # Four walkers, chunked in pairs, one kinetic forward per chunk and draw.
+    assert model.forward_count == (discard_draws + n_draws) * 2
+    assert records.row_count == n_draws * sampler.n_walkers
+    assert records.final_draw.retained_draw_index == n_draws - 1
+    assert torch.equal(generated.batch.positions, records.final_draw.positions.to(generated.batch.dtype))
+    reconciliation = generated.metadata[TRAJECTORY_METADATA_KEY].reconciliation()
+    assert records.observable_values_content_id == reconciliation.values_content_id
+    assert records.mean == reconciliation.mean
+    assert records.variance == reconciliation.variance
+
+    calculated = LocalEnergyCalculator(
+        hamiltonian_terms=_terms(), return_terms=True, chunk_size=2
+    ).calculate(model=model, bundle=EvaluationBundle(generated=generated), context=context)
+    calculated = WavefunctionCalculator(chunk_size=2).calculate(
+        model=model, bundle=calculated, context=context
+    )
+    # Calculators reuse the captured final retained draw; records never trigger
+    # a second per-draw/snapshot model evaluation.
+    assert model.forward_count == (discard_draws + n_draws) * 2
+    result = SampledRecordWriter(
+        max_samples=n_draws * sampler.n_walkers,
+        include_term_energies=True,
+    ).summarize(bundle=calculated, context=context, namespace="eval/mcmc_energy")
+    (artifact,) = result.artifacts
+    assert artifact.metadata["selection"] == "complete_draw_walker_grid"
+    assert artifact.metadata["rows"] == n_draws * sampler.n_walkers
+
+    with records.path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [(int(row["draw_index"]), int(row["walker_index"])) for row in rows] == [
+        (draw, walker)
+        for draw in range(n_draws)
+        for walker in range(sampler.n_walkers)
+    ]
+    assert all(
+        float(row["local_energy"])
+        == pytest.approx(sum(float(row[f"term/{name}"]) for name in records.term_names))
+        for row in rows
+    )
+
+    # The CSV stores raw coordinates only. Existing typed geometry helpers can
+    # reconstruct all radial and pairwise quantities without duplicating them.
+    first = rows[0]
+    positions = torch.tensor(
+        [
+            [
+                float(first[f"position/electron_{electron}/axis_{axis}"])
+                for axis in range(records.spatial_dim)
+            ]
+            for electron in range(records.n_electrons)
+        ],
+        dtype=torch.float64,
+    ).unsqueeze(0)
+    batch = ElectronBatch(
+        positions=positions,
+        atomic_configuration=records.atomic_configuration,
+        nuclear_positions=records.atomic_configuration.positions,
+        nuclear_charges=records.atomic_configuration.charges,
+    )
+    assert electron_nuclear_distances(batch).shape == (1, records.n_electrons, 1)
+    assert pairwise_distances(positions, eps=0.0).shape == (1, records.n_electrons, records.n_electrons, 1)
+    metadata = json.loads(records.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["row_semantics"] == "complete_draw_walker_grid"
+    assert metadata["atomic_configuration_id"] == records.atomic_configuration.content_id()
+
+    with pytest.raises(ValueError, match="would truncate a complete trajectory grid"):
+        SampledRecordWriter(max_samples=1, include_term_energies=True).summarize(
+            bundle=calculated,
+            context=context,
+            namespace="eval/mcmc_energy",
+        )
+
+    with pytest.raises(ValueError, match="would truncate the final retained draw"):
+        TrajectoryMCMCGenerator(
+            sampler=CorrelatedHeliumSampler(n_walkers=4),
+            hamiltonian_terms=_terms(),
+            n_draws=1,
+            max_samples=1,
+        ).generate(model=HeliumSlaterModel(), context=context)
+
+
 def test_kinetic_term_genuinely_requires_grad(tmp_path: Path) -> None:
     """Prove the observable needs autograd rather than merely tolerating it.
 
@@ -237,8 +351,8 @@ def test_mcse_and_iid_stderr_are_both_published_and_distinct(tmp_path: Path) -> 
     assert result.metrics["local_energy_mcse_inflation"] == pytest.approx(mcse / stderr_iid)
     assert result.metrics["local_energy_mcse_inflation"] > 1.0
 
-    # The pre-existing snapshot IID stderr is a different sample and is left
-    # untouched by this consumer: it must still be emitted under its own name.
+    # The final retained draw remains available to snapshot summaries without
+    # being an extra sampler draw; its IID stderr keeps its own name.
     calculated = LocalEnergyCalculator(hamiltonian_terms=_terms(), chunk_size=2).calculate(
         model=HeliumSlaterModel(),
         bundle=EvaluationBundle(generated=generated),

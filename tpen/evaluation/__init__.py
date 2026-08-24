@@ -60,6 +60,12 @@ from tpen.evaluation.summaries import (
     TransformConsistencySummary,
 )
 from tpen.evaluation.task import EvaluationTask
+from tpen.evaluation.trajectory_records import (
+    TRAJECTORY_RECORD_FILENAME,
+    TRAJECTORY_RECORD_SCHEMA,
+    TrajectoryRecordArtifact,
+    TrajectoryRecordBatch,
+)
 
 __all__ = [
     "ArtifactRecord",
@@ -77,6 +83,10 @@ __all__ = [
     "EvaluationResult",
     "EvaluationRunState",
     "EvaluationTask",
+    "TRAJECTORY_RECORD_FILENAME",
+    "TRAJECTORY_RECORD_SCHEMA",
+    "TrajectoryRecordArtifact",
+    "TrajectoryRecordBatch",
     "Evaluator",
     "ExchangeOrbitGenerator",
     "FeatureTraceCalculator",
