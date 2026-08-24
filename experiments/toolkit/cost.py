@@ -40,6 +40,10 @@ ALLOCATION_FIELDS = ("device_name", "device_count", "allocated_wall_time_sec")
 # ``gpu_seconds`` is derived from the receipt, so it is a column but not a field.
 ALLOCATION_COLUMNS = (*ALLOCATION_FIELDS, "gpu_seconds")
 
+# These component names are the He-v1 summaries whose normal invocation owns
+# artifact publication. Streamed trajectory CSV writes remain generator work.
+DEFAULT_WRITER_SUMMARY_NAMES = ("sampled_records", "sampler_stats")
+
 COST_BY_RUN_BASE_COLUMNS = [
     "run_id",
     "attempt_id",
@@ -48,6 +52,9 @@ COST_BY_RUN_BASE_COLUMNS = [
     "status",
     "wall_time_sec",
     "peak_memory_mb",
+    "device_peak_memory_allocated_mb",
+    "device_peak_memory_reserved_mb",
+    "device_peak_memory_available",
     "timing_mode",
     "hostname",
     "slurm_job_id",
@@ -92,6 +99,21 @@ COST_BY_TASK_COLUMNS = [
     "generator_time_sec",
     "calculator_time_sec",
     "summary_time_sec",
+    "writer_summary_time_sec",
+    "component_time_sec",
+    "unattributed_time_sec",
+    "timing_reconciled",
+    "value_count",
+    "values_per_sec",
+    "values_per_sec_denominator",
+    "timing_mode",
+    "hostname",
+    "slurm_job_id",
+    "device_uuid",
+    "device_name",
+    "device_count",
+    "allocated_wall_time_sec",
+    "gpu_seconds",
 ]
 
 
@@ -188,7 +210,11 @@ def _allocated_quantity(field: str, value: Any) -> float:
     return parsed
 
 
-def _allocation_columns(allocation: Mapping[str, Any] | None) -> dict[str, Any]:
+def _allocation_columns(
+    allocation: Mapping[str, Any] | None,
+    *,
+    device_type: str = "",
+) -> dict[str, Any]:
     """Return the delivered-allocation columns, deriving ``gpu_seconds``.
 
     ``gpu_seconds`` is arithmetic on two supplied facts, delivered device count
@@ -213,7 +239,11 @@ def _allocation_columns(allocation: Mapping[str, Any] | None) -> dict[str, Any]:
     if supplied.get("allocated_wall_time_sec") is not None:
         seconds = _allocated_quantity("allocated_wall_time_sec", supplied["allocated_wall_time_sec"])
         columns["allocated_wall_time_sec"] = supplied["allocated_wall_time_sec"]
-    if devices is not None and seconds is not None:
+    # A CPU allocation may still carry its delivered worker count and wall
+    # limit, but those facts are not GPU-seconds. Preserve them without
+    # manufacturing a device-memory/cost reading for hardware that was absent.
+    is_cpu = str(device_type).strip().lower().startswith("cpu")
+    if devices is not None and seconds is not None and not is_cpu:
         columns["gpu_seconds"] = _format(devices * seconds)
     return columns
 
@@ -258,6 +288,14 @@ def cost_by_run_row(
 
     warmup = _warmup_count(warmup_steps)
     metric_values = metric_map(metrics_rows)
+    device_peak_keys = (
+        "runtime/cuda_max_memory_allocated_mb",
+        "runtime/cuda_max_memory_reserved_mb",
+    )
+    device_peak_present = [key in metric_values for key in device_peak_keys]
+    if any(device_peak_present) and not all(device_peak_present):
+        raise ValueError("device peak-memory receipt is incomplete")
+    device_peak_available = all(device_peak_present)
     step_times = _per_step_values(metrics_rows, "train/perf", "step_time_sec")
     measured_step_times = _steady_state(step_times, warmup)
     row: dict[str, Any] = {
@@ -268,6 +306,15 @@ def cost_by_run_row(
         "status": status,
         "wall_time_sec": metric_values.get("runtime/wall_time_sec", ""),
         "peak_memory_mb": metric_values.get("runtime/peak_memory_mb", ""),
+        # CUDA peaks are conditional measurements. On CPU these cells stay
+        # blank and availability is false; zero would falsely claim a reading.
+        "device_peak_memory_allocated_mb": metric_values.get(
+            "runtime/cuda_max_memory_allocated_mb", ""
+        ),
+        "device_peak_memory_reserved_mb": metric_values.get(
+            "runtime/cuda_max_memory_reserved_mb", ""
+        ),
+        "device_peak_memory_available": device_peak_available,
         "n_steps": str(len(step_times)) if step_times else "",
         "warmup_steps": str(warmup),
         # Blank only when nothing was recorded; an exhausted window reads "0".
@@ -279,7 +326,7 @@ def cost_by_run_row(
             key: (provenance or {}).get(key, "")
             for key in ("timing_mode", "hostname", "slurm_job_id", "device_uuid")
         },
-        **_allocation_columns(allocation),
+        **_allocation_columns(allocation, device_type=device_type),
     }
     for phase in TRAIN_PHASES:
         values = _per_step_values(metrics_rows, "train/perf", f"{phase}_time_sec")
@@ -297,22 +344,46 @@ def cost_by_task_rows(
     attempt_id: str,
     stage: str,
     device_type: str = "",
+    writer_summary_names: Sequence[str] = DEFAULT_WRITER_SUMMARY_NAMES,
+    provenance: Mapping[str, Any] | None = None,
+    allocation: Mapping[str, Any] | None = None,
+    reconciliation_tolerance_sec: float = 1.0e-9,
 ) -> list[dict[str, Any]]:
     """Return per-evaluation-task ``cost_by_task.csv`` rows from run metrics.
 
     Task wall time comes from ``diagnostics/<task>/time_sec``; component times
     come from ``eval/perf/<task>/{generator_time_sec, calculator/<name>_time_sec,
     summary/<name>_time_sec}`` with calculator/summary components summed per
-    task. Tasks appear if either source is present.
+    task. Tasks appear if either source is present. Draw-value throughput is
+    divided by generator wall time only when the task also emitted the complete
+    typed trajectory value-count receipt. Writer time refers only to explicitly
+    named summary components (by default ``sampled_records`` and
+    ``sampler_stats``); streamed record I/O inside the generator remains in
+    generator time and is assessed by an artifact on/off comparison instead of
+    being silently reattributed.
     """
 
+    tolerance = _as_float(reconciliation_tolerance_sec)
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError("reconciliation_tolerance_sec must be finite and non-negative")
+    writer_names = {str(name).strip() for name in writer_summary_names}
+    if "" in writer_names:
+        raise ValueError("writer_summary_names must not contain blanks")
     metric_values = metric_map(metrics_rows)
     tasks: dict[str, dict[str, float]] = {}
 
     def task_entry(task_name: str) -> dict[str, float]:
         return tasks.setdefault(
             task_name,
-            {"time_sec": math.nan, "generator": math.nan, "calculator": math.nan, "summary": math.nan},
+            {
+                "time_sec": math.nan,
+                "generator": math.nan,
+                "calculator": math.nan,
+                "summary": math.nan,
+                "writer_summary": math.nan,
+                "retained_values": math.nan,
+                "discarded_values": math.nan,
+            },
         )
 
     for key, value in metric_values.items():
@@ -329,13 +400,69 @@ def cost_by_task_rows(
             elif component.startswith("calculator/") and component.endswith("_time_sec"):
                 addend = _as_float(value)
                 if math.isfinite(addend):
-                    entry["calculator"] = addend + (entry["calculator"] if math.isfinite(entry["calculator"]) else 0.0)
+                    previous = entry["calculator"] if math.isfinite(entry["calculator"]) else 0.0
+                    entry["calculator"] = addend + previous
             elif component.startswith("summary/") and component.endswith("_time_sec"):
                 addend = _as_float(value)
                 if math.isfinite(addend):
                     entry["summary"] = addend + (entry["summary"] if math.isfinite(entry["summary"]) else 0.0)
-    return [
-        {
+                    summary_name = component[len("summary/") : -len("_time_sec")]
+                    if summary_name in writer_names:
+                        entry["writer_summary"] = addend + (
+                            entry["writer_summary"]
+                            if math.isfinite(entry["writer_summary"])
+                            else 0.0
+                        )
+            continue
+        if len(parts) == 3 and parts[0] == "eval":
+            task_name = parts[1]
+            if parts[2] == "sampler_trajectory_retained_value_count":
+                task_entry(task_name)["retained_values"] = _as_float(value)
+            elif parts[2] == "sampler_trajectory_discarded_value_count":
+                task_entry(task_name)["discarded_values"] = _as_float(value)
+
+    provenance_values = {
+        key: (provenance or {}).get(key, "")
+        for key in ("timing_mode", "hostname", "slurm_job_id", "device_uuid")
+    }
+    allocation_values = _allocation_columns(allocation, device_type=device_type)
+    output: list[dict[str, Any]] = []
+    for task_name, entry in sorted(tasks.items()):
+        components = _finite(
+            [entry["generator"], entry["calculator"], entry["summary"]]
+        )
+        component_time = sum(components) if components else math.nan
+        task_time = entry["time_sec"]
+        unattributed = (
+            task_time - component_time
+            if math.isfinite(task_time) and math.isfinite(component_time)
+            else math.nan
+        )
+        timing_reconciled: bool | str = ""
+        if math.isfinite(unattributed):
+            timing_reconciled = unattributed >= -tolerance
+        retained_available = math.isfinite(entry["retained_values"])
+        discarded_available = math.isfinite(entry["discarded_values"])
+        if retained_available != discarded_available:
+            raise ValueError(
+                f"trajectory value-count receipt for task {task_name!r} is incomplete"
+            )
+        value_count = math.nan
+        if retained_available:
+            for label in ("retained_values", "discarded_values"):
+                count = entry[label]
+                if count < 0.0 or count != int(count):
+                    raise ValueError(
+                        f"trajectory {label} for task {task_name!r} must be a "
+                        "non-negative whole number"
+                    )
+            value_count = entry["retained_values"] + entry["discarded_values"]
+        values_per_sec = (
+            value_count / entry["generator"]
+            if math.isfinite(value_count) and entry["generator"] > 0.0
+            else math.nan
+        )
+        output.append({
             "run_id": run_id,
             "attempt_id": attempt_id,
             "stage": stage,
@@ -345,9 +472,114 @@ def cost_by_task_rows(
             "generator_time_sec": _format(entry["generator"]),
             "calculator_time_sec": _format(entry["calculator"]),
             "summary_time_sec": _format(entry["summary"]),
+            "writer_summary_time_sec": _format(entry["writer_summary"]),
+            "component_time_sec": _format(component_time),
+            # Signed on purpose. A negative residual exposes inconsistent
+            # boundary data instead of being clamped into a plausible zero.
+            "unattributed_time_sec": _format(unattributed),
+            "timing_reconciled": timing_reconciled,
+            "value_count": _format(value_count),
+            "values_per_sec": _format(values_per_sec),
+            "values_per_sec_denominator": (
+                "generator_time_sec" if math.isfinite(values_per_sec) else ""
+            ),
+            **provenance_values,
+            "device_name": allocation_values["device_name"],
+            "device_count": allocation_values["device_count"],
+            "allocated_wall_time_sec": allocation_values["allocated_wall_time_sec"],
+            "gpu_seconds": allocation_values["gpu_seconds"],
+        })
+    return output
+
+
+def artifact_timing_comparison(
+    measurements: Sequence[Mapping[str, Any]],
+    *,
+    comparison_fields: Sequence[str],
+    order_key: str = "measurement_index",
+    mode_key: str = "artifact_mode",
+    time_key: str = "time_sec",
+    region_key: str = "measurement_region",
+) -> dict[str, Any]:
+    """Compare interleaved artifact-off/on timings without hiding noise.
+
+    The sorted sequence must alternate ``off`` and ``on`` and contain complete
+    adjacent pairs. All declared comparison fields must match across the whole
+    sequence, which is how shape and delivered-host/device provenance are kept
+    comparable. Signed deltas are always ``on - off`` and are never clamped.
+    Every input row must identify itself as part of the measured region; warmup
+    rows cannot qualify as comparison evidence. Three pairs are required to
+    meet the repetition/comparability floor. The result remains a signed delta
+    measurement: whether its magnitude exceeds its dispersion is a reader's
+    claim, not something inferred from pair count alone.
+    """
+
+    if not measurements:
+        raise ValueError("artifact timing comparison requires measurements")
+    ordered = sorted(measurements, key=lambda row: _as_float(row.get(order_key)))
+    if len(ordered) % 2:
+        raise ValueError("artifact timing comparison requires complete off/on pairs")
+    orders = [_as_float(row.get(order_key)) for row in ordered]
+    if not all(math.isfinite(value) for value in orders) or len(set(orders)) != len(orders):
+        raise ValueError("artifact timing measurement indices must be finite and unique")
+    modes = [str(row.get(mode_key, "")).strip().lower() for row in ordered]
+    if any(mode not in {"off", "on"} for mode in modes):
+        raise ValueError("artifact_mode must be 'off' or 'on'")
+    if any(left == right for left, right in zip(modes, modes[1:])):
+        raise ValueError("artifact timing measurements must alternate off and on")
+    regions = [str(row.get(region_key, "")).strip().lower() for row in ordered]
+    if any(region != "measured" for region in regions):
+        raise ValueError(
+            "artifact timing comparison accepts only rows explicitly marked "
+            "measurement_region='measured'"
+        )
+    fields = tuple(str(field).strip() for field in comparison_fields)
+    if not fields or any(not field for field in fields) or len(set(fields)) != len(fields):
+        raise ValueError("comparison_fields must contain unique non-empty names")
+    comparison: dict[str, Any] = {}
+    for field in fields:
+        first = ordered[0].get(field)
+        if first is None or (isinstance(first, str) and not first.strip()):
+            raise ValueError(
+                f"artifact timing comparison field {field!r} must be present and non-empty"
+            )
+        if any(row.get(field) != first for row in ordered[1:]):
+            raise ValueError(f"artifact timing comparison field {field!r} is not comparable")
+        comparison[field] = first
+
+    deltas: list[float] = []
+    for first, second in zip(ordered[::2], ordered[1::2]):
+        pair = {
+            str(first.get(mode_key)).strip().lower(): first,
+            str(second.get(mode_key)).strip().lower(): second,
         }
-        for task_name, entry in sorted(tasks.items())
-    ]
+        off_time = _as_float(pair["off"].get(time_key))
+        on_time = _as_float(pair["on"].get(time_key))
+        if not math.isfinite(off_time) or not math.isfinite(on_time):
+            raise ValueError("artifact timing values must be finite")
+        deltas.append(on_time - off_time)
+
+    n_pairs = len(deltas)
+    repeated_comparable = n_pairs >= 3
+    status = (
+        "repeated_comparable_delta"
+        if repeated_comparable
+        else "single_observation_delta"
+        if n_pairs == 1
+        else "insufficient_repetition_delta"
+    )
+    return {
+        "status": status,
+        "n_pairs": n_pairs,
+        "repeated_comparable": repeated_comparable,
+        "measurement_region": "measured",
+        "comparison_fields": comparison,
+        "artifact_delta_sec_by_pair": tuple(deltas),
+        "artifact_delta_sec_min": min(deltas),
+        "artifact_delta_sec_median": _median(deltas),
+        "artifact_delta_sec_max": max(deltas),
+        "artifact_delta_sec_spread": max(deltas) - min(deltas),
+    }
 
 
 def cost_by_axis_rows(

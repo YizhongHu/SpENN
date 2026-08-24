@@ -217,6 +217,22 @@ electron_distance_q99
 electron_distance_max
 electron_distance_n_pairs
 
+trajectory_retained_draw_count
+trajectory_discarded_draw_count
+trajectory_n_walkers
+trajectory_draw_stride
+trajectory_sampler_burn_in
+trajectory_proposal_scale
+trajectory_retained_value_count
+trajectory_discarded_value_count
+trajectory_retained_transition_count
+trajectory_discarded_transition_count
+trajectory_retained_draw_acceptance_rate_mean
+trajectory_discarded_draw_acceptance_rate_mean
+trajectory_retained_draw_minimum_electron_nucleus_radius
+trajectory_discarded_draw_minimum_electron_nucleus_radius
+trajectory_intermediate_sampler_steps_observed
+
 passed
 max_abs_error
 n_failed_entries
@@ -248,17 +264,41 @@ carrying `tau_int`, `ess` and `mcse` together with a `status` of
 that receipt; it must never rescale a `*_stderr` key and call the result an MCSE,
 and must never read a missing receipt as zero correlation.
 
-Sampler geometry keys (the `position_*`/`radius_*`/`electron_distance_*`/
+Sampler snapshot geometry keys (the `position_*`/`radius_*`/`electron_distance_*`/
 `center_of_mass_rms` block above) come from
 `tpen.sampling.summarize_walker_geometry` and appear under whichever namespace
 logged the sampler stats — `train/sampler/*` today.
 
-All sampler keys are composed by `tpen.sampling.SamplerStats`, the typed record
-a sampler returns from `collect_samples`. `SamplerStats.as_metrics` produces the
-full `*/sampler` key set (named fields plus the open geometry key set), and
-`SamplerStats.as_check_metrics` produces the fixed `checks/sampler` subset
-`acceptance_rate`, `n_walkers`, `n_steps`, `burn_in`, to which `SamplerHealth`
-adds `passed`. Nothing else spells these names.
+Evaluation trajectories add a second typed producer,
+`tpen.sampling.SamplerTrajectoryDiagnostics`. Its scalar projection uses the
+`trajectory_*` keys above; `SamplerStatsSummary` applies its configured
+`sampler_` prefix when logging them in the evaluation task namespace (He-v1 is
+`eval/mcmc_energy`). The existing scalar `acceptance_rate` keeps its exact
+meaning: the `SamplerStats` value returned by the final sampler call. It is not
+replaced by a draw series. Draw-resolved values live in the versioned
+`sampler_trajectory_diagnostics/v1` sidecar under the separately registered
+fields `retained_draw_acceptance_rate_series` and
+`discarded_draw_acceptance_rate_series`.
+
+`trajectory_retained_draw_minimum_electron_nucleus_radius` is the raw minimum
+over collector-retained walker states only. `trajectory_draw_stride` states how
+many sampler steps separate those observations, and
+`trajectory_intermediate_sampler_steps_observed` is always false: accepted
+states between retained draws are not visible through `collect_samples`.
+Therefore this metric must never be described as the minimum over every state
+reached by the sampler. The discarded-draw minimum has its own key and is never
+pooled with the retained minimum. Sampler-internal burn-in states are also
+unobserved; `trajectory_sampler_burn_in` records their configured step count,
+not their geometry.
+
+Sampler snapshot keys are composed by `tpen.sampling.SamplerStats`, the typed
+record a sampler returns from `collect_samples`; trajectory keys are composed
+by `tpen.sampling.SamplerTrajectoryDiagnostics`. `SamplerStats.as_metrics`
+produces the full `*/sampler` snapshot key set (named fields plus the open
+geometry key set), and `SamplerStats.as_check_metrics` produces the fixed
+`checks/sampler` subset `acceptance_rate`, `n_walkers`, `n_steps`, `burn_in`, to
+which `SamplerHealth` adds `passed`. Draw-resolved diagnostics never enter that
+fixed runtime-check subset.
 
 Use underscores inside keys.
 
@@ -317,6 +357,34 @@ seed                                    only when the sampler was seeded
                                         block, whose membership varies with
                                         n_electrons
 ```
+
+`<evaluation task namespace>` — `SamplerStatsSummary`, when the generator
+published `SamplerTrajectoryDiagnostics` (the configured prefix is `sampler`
+by default, so these are full metric keys rather than a nested namespace):
+
+```text
+sampler_trajectory_retained_draw_count
+sampler_trajectory_discarded_draw_count
+sampler_trajectory_n_walkers
+sampler_trajectory_draw_stride
+sampler_trajectory_sampler_burn_in
+sampler_trajectory_proposal_scale
+sampler_trajectory_retained_value_count
+sampler_trajectory_discarded_value_count
+sampler_trajectory_retained_transition_count
+sampler_trajectory_discarded_transition_count
+sampler_trajectory_retained_draw_acceptance_rate_mean
+sampler_trajectory_discarded_draw_acceptance_rate_mean       only with discarded draws
+sampler_trajectory_retained_draw_minimum_electron_nucleus_radius
+                                                            only with typed nuclei
+sampler_trajectory_discarded_draw_minimum_electron_nucleus_radius
+                                                            only with discarded draws
+                                                            and typed nuclei
+sampler_trajectory_intermediate_sampler_steps_observed       always false
+```
+
+The same summary continues to emit its pre-existing scalar snapshot keys such
+as `sampler_acceptance_rate`. Those names and values are unchanged.
 
 `train/perf` — `TrainStepTiming` then `TrainPhaseTiming`:
 
@@ -388,6 +456,11 @@ cuda_max_memory_allocated_mb            only when CUDA is available
 cuda_max_memory_reserved_mb
 cuda_device_count
 ```
+
+`peak_memory_mb` is host process peak RSS. The three `cuda_*` fields are device
+measurements and are unavailable on CPU: they are omitted, never emitted as
+zero. Cost-table projections preserve that distinction with blank device-peak
+cells plus `device_peak_memory_available = false`.
 
 `<evaluator namespace>/status` and `<task namespace>/status` — `Evaluate`:
 
@@ -1196,6 +1269,27 @@ eval/perf/<task_name>/generator_time_sec
 eval/perf/<task_name>/calculator/<calculator_name>_time_sec
 eval/perf/<task_name>/summary/<summary_name>_time_sec
 ```
+
+`summary/sampled_records_time_sec` measures only the explicitly scoped
+`SampledRecordWriter` summary invocation. `summary/sampler_stats_time_sec`
+includes the draw-diagnostics sidecar published by `SamplerStatsSummary`; both
+names belong in He-v1's writer-summary subset. The complete trajectory CSV is
+streamed while the generator runs, so that I/O remains inside
+`generator_time_sec`; it must not be silently re-labelled as summary or writer
+time. `experiments.toolkit.cost.artifact_timing_comparison` assesses that
+streamed-artifact effect with interleaved artifact-off/on generator timings.
+Only rows explicitly marked as measured are admitted. The projection preserves
+signed `on - off` deltas (including negative values), reports min/median/spread,
+and labels at least three pairs as a repeated comparable delta rather than
+automatically claiming that the measured magnitude exceeds its dispersion.
+
+`cost_by_task_rows` reconciles the existing task and component boundaries with
+a signed `unattributed_time_sec`. A negative residual is retained and marks
+`timing_reconciled = false`; it is never clamped. `values_per_sec` divides the
+explicit discarded-plus-retained trajectory value count by
+`generator_time_sec` and carries host/device/allocation provenance supplied by
+the caller. A single run is throughput evidence only, never an efficiency or
+speedup claim.
 
 CSV examples:
 

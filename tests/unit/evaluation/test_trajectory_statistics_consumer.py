@@ -25,9 +25,19 @@ from tpen.data.batch.geometry import electron_nuclear_displacements, electron_nu
 from tpen.data.batch.walkers import Walkers
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
 from tpen.evaluation.calculators import LocalEnergyCalculator, WavefunctionCalculator
-from tpen.evaluation.generators import TRAJECTORY_METADATA_KEY, TrajectoryMCMCGenerator
+from tpen.evaluation.generators import (
+    SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY,
+    TRAJECTORY_METADATA_KEY,
+    TrajectoryMCMCGenerator,
+)
 from tpen.evaluation.protocols import EvaluationContext
-from tpen.evaluation.summaries import LocalEnergySummary, SampledRecordWriter, TrajectoryStatisticsSummary
+from tpen.evaluation.summaries import (
+    LocalEnergySummary,
+    SampledRecordWriter,
+    SamplerStatsSummary,
+    TrajectoryStatisticsSummary,
+)
+from tpen.evaluation.summaries.metadata import SAMPLER_TRAJECTORY_DIAGNOSTICS_FILENAME
 from tpen.evaluation.summaries.trajectory_statistics import DEFAULT_SIDECAR_NAME
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, ElectronNucleusInteraction
@@ -76,7 +86,15 @@ class CorrelatedHeliumSampler:
     the test would pass without exercising anything.
     """
 
-    def __init__(self, *, n_walkers: int = 4, n_steps: int = 2, rho: float = 0.85, seed: int = 11) -> None:
+    def __init__(
+        self,
+        *,
+        n_walkers: int = 4,
+        n_steps: int = 2,
+        rho: float = 0.85,
+        seed: int = 11,
+        acceptance_rates: tuple[float, ...] | None = None,
+    ) -> None:
         self.n_walkers = n_walkers
         self.n_steps = n_steps
         self.rho = rho
@@ -95,6 +113,7 @@ class CorrelatedHeliumSampler:
             (n_walkers, 2, 3), generator=self.generator, dtype=torch.float64
         )
         self.call_count = 0
+        self.acceptance_rates = acceptance_rates
 
     def collect_samples(
         self,
@@ -114,7 +133,19 @@ class CorrelatedHeliumSampler:
             positions=self.positions.clone(),
             atomic_configuration=self.atomic_configuration,
         )
-        stats = SamplerStats(0.6, self.n_walkers, 0, self.n_steps, 0.1, seed=self.call_count)
+        acceptance_rate = (
+            0.6
+            if self.acceptance_rates is None
+            else self.acceptance_rates[self.call_count - 1]
+        )
+        stats = SamplerStats(
+            acceptance_rate,
+            self.n_walkers,
+            0,
+            self.n_steps,
+            0.1,
+            seed=self.call_count,
+        )
         return walkers, stats
 
 
@@ -310,6 +341,78 @@ def test_records_stream_the_complete_grid_from_the_single_trajectory_evaluation(
             n_draws=1,
             max_samples=1,
         ).generate(model=HeliumSlaterModel(), context=context)
+
+
+def test_chunked_records_and_sampler_diagnostics_reconcile_retained_geometry(
+    tmp_path: Path,
+) -> None:
+    """The retained minimum spans every chunk and draw, not the final batch."""
+
+    context = EvaluationContext(
+        namespace="eval/mcmc_energy",
+        artifact_level="records",
+        task_failure_policy="continue",
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        seed=3,
+        run_dir=tmp_path,
+        task_output_dir=tmp_path,
+        metadata={},
+    )
+    generated = TrajectoryMCMCGenerator(
+        sampler=CorrelatedHeliumSampler(
+            n_walkers=4,
+            acceptance_rates=(0.1, 0.2, 0.4, 0.6, 0.8),
+        ),
+        hamiltonian_terms=_terms(),
+        n_draws=3,
+        discard_draws=2,
+        chunk_size=2,
+    ).generate(model=HeliumSlaterModel(), context=context)
+    records = generated.trajectory_records
+    assert records is not None
+    diagnostics = generated.metadata[SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY]
+
+    with records.path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    retained_radii = []
+    for row in rows:
+        for electron in range(records.n_electrons):
+            coordinates = torch.tensor(
+                [
+                    float(row[f"position/electron_{electron}/axis_{axis}"])
+                    for axis in range(records.spatial_dim)
+                ],
+                dtype=torch.float64,
+            )
+            retained_radii.append(float(coordinates.norm().item()))
+    expected_minimum = min(retained_radii)
+    assert diagnostics.as_metrics()[
+        "trajectory_retained_draw_minimum_electron_nucleus_radius"
+    ] == pytest.approx(expected_minimum)
+    assert len(diagnostics.retained_draws) == 3
+    assert len(diagnostics.discarded_draws) == 2
+
+    summary = SamplerStatsSummary().summarize(
+        bundle=EvaluationBundle(generated=generated),
+        context=context,
+        namespace=context.namespace,
+    )
+    # The established scalar remains the final sampler call (0.8), while the
+    # retained draw aggregate and series have distinct names and shapes.
+    assert summary.metrics["sampler_acceptance_rate"] == pytest.approx(0.8)
+    assert summary.metrics[
+        "sampler_trajectory_retained_draw_acceptance_rate_mean"
+    ] == pytest.approx(0.6)
+    assert summary.metrics[
+        "sampler_trajectory_retained_draw_minimum_electron_nucleus_radius"
+    ] == pytest.approx(expected_minimum)
+    (artifact,) = summary.artifacts
+    assert artifact.path.name == SAMPLER_TRAJECTORY_DIAGNOSTICS_FILENAME
+    payload = json.loads(artifact.path.read_text(encoding="utf-8"))
+    assert payload["retained_draw_acceptance_rate_series"] == [0.4, 0.6, 0.8]
+    assert payload["discarded_draw_acceptance_rate_series"] == [0.1, 0.2]
+    assert payload["intermediate_sampler_steps_observed"] is False
 
 
 def test_kinetic_term_genuinely_requires_grad(tmp_path: Path) -> None:
