@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -10,6 +12,7 @@ from torch import nn
 
 from tpen.artifacts import RunContext
 from tpen.callback import Callback, SubscriptionGroup
+from tpen.checkpoint import CheckpointReplaySemantics, CuspDistanceSemantics
 from tpen.evaluation import Evaluator, EvaluationTask
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations
 from tpen.data.batch import ElectronBatch
@@ -18,6 +21,26 @@ from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import SummaryResult
 from tpen.events import Subscription
 from tests.helpers.run_context import make_run_context
+
+
+def _replay_semantics() -> CheckpointReplaySemantics:
+    return CheckpointReplaySemantics(
+        source_git_sha="a" * 40,
+        source_tpen_version="0.3.1",
+        checkpoint_schema_version=2,
+        checkpoint_kind="tpen.checkpoint",
+        checkpoint_model_sha256="b" * 64,
+        evaluation_config_sha256="c" * 64,
+        runtime_dtype="float64",
+        cusp_distance=CuspDistanceSemantics(
+            electron_electron_distance_form="sqrt_squared_distance_plus_eps_squared",
+            electron_electron_distance_eps=1.0e-12,
+            electron_electron_range_offset_form="softplus_plus_eps",
+            electron_electron_range_offset_eps=1.0e-12,
+            electron_nucleus_coulomb_distance_form="euclidean_norm_clamp_min_eps",
+            electron_nucleus_coulomb_distance_eps=0.0,
+        ),
+    )
 
 
 class _NullGenerator:
@@ -29,6 +52,15 @@ class _NullGenerator:
             spins=torch.tensor([[1.0, -1.0]], dtype=torch.float64),
         )
         return GeneratedConfigurations(batch=batch, metadata={})
+
+
+class _FailingGenerator:
+    name = "broken"
+
+    def generate(
+        self, *, model: nn.Module | None, context: EvaluationContext
+    ) -> GeneratedConfigurations:
+        raise RuntimeError("generator boom")
 
 
 class _RecordingOutputDirSummary:
@@ -79,6 +111,24 @@ def _run_context(tmp_path: Path) -> RunContext:
     """
 
     return make_run_context(tmp_path)
+
+
+def _evaluator(*, output_dir: Path, generator: object) -> Evaluator:
+    """Return the one-task evaluator used by replay-result propagation tests."""
+
+    return Evaluator(
+        namespace="eval",
+        tasks=[
+            EvaluationTask(
+                name="energy",
+                namespace="eval/energy",
+                output_dir=output_dir,
+                generator=generator,
+                calculators=[],
+                summaries=[],
+            )
+        ],
+    )
 
 
 def test_evaluator_requires_explicit_task_output_dir() -> None:
@@ -202,3 +252,44 @@ def test_duplicate_summary_metrics_are_structured_task_failures(tmp_path: Path) 
     # The metric-key collision is reported as a summary component failure, which
     # is what `FailureLog` writes to ``diagnostics/failures.jsonl``.
     assert [event.failure.component_type for event in failures] == ["summary"]
+
+
+def test_replay_semantics_reaches_every_task_result_and_the_run_sidecar(
+    tmp_path: Path,
+) -> None:
+    """Even a generator failure carries the typed replay identity."""
+
+    semantics = _replay_semantics()
+    context = _run_context(tmp_path)
+    result = _evaluator(
+        output_dir=tmp_path / "energy", generator=_FailingGenerator()
+    ).evaluate(
+        model=nn.Linear(1, 1), context=context, replay_semantics=semantics
+    )
+
+    assert result.replay_semantics == semantics
+    assert result.task_results[0].replay_semantics == semantics
+    assert result.task_results[0].status == "failed"
+    sidecar = context.run_dir / "checkpoint_replay_semantics.json"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == semantics.to_dict()
+    assert result.artifacts[0].path == sidecar
+    assert result.to_payload()["replay_semantics"] == semantics.to_dict()
+    assert result.task_results[0].to_payload()["replay_semantics"] == semantics.to_dict()
+
+
+def test_replay_sidecar_refuses_a_different_semantic_identity_before_a_task_starts(
+    tmp_path: Path,
+) -> None:
+    """The immutable sidecar gate has a negative arm, not only a write path."""
+
+    context = _run_context(tmp_path)
+    semantics = _replay_semantics()
+    evaluator = _evaluator(output_dir=tmp_path / "energy", generator=_NullGenerator())
+    evaluator.evaluate(model=nn.Linear(1, 1), context=context, replay_semantics=semantics)
+
+    with pytest.raises(FileExistsError, match="different checkpoint replay semantics"):
+        evaluator.evaluate(
+            model=nn.Linear(1, 1),
+            context=context,
+            replay_semantics=replace(semantics, source_git_sha="d" * 40),
+        )

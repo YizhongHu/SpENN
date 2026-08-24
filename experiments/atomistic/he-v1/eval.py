@@ -77,6 +77,51 @@ def config_identity_hash(config_path: str | Path, overrides: Sequence[str]) -> s
     return digest.hexdigest()
 
 
+def _file_sha256(path: Path) -> str:
+    """Return the SHA256 digest of one checkpoint payload file."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def checkpoint_replay_semantics_overrides(checkpoint_dir: Path) -> list[str]:
+    """Return fail-closed replay-provenance overrides for one checkpoint.
+
+    The evaluation config intentionally leaves source and checkpoint fields
+    missing.  This driver reads them from the complete checkpoint immediately
+    before launching the row, so a result cannot claim a different source or
+    model payload than the directory it restores.
+    """
+
+    manifest_path = checkpoint_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = manifest.get("files")
+    provenance = manifest.get("provenance")
+    if not isinstance(files, Mapping) or files.get("model") != CHECKPOINT_MODEL_FILE:
+        raise driver.DriverError(
+            "checkpoint manifest must identify model.pt as its model payload for replay"
+        )
+    if not isinstance(provenance, Mapping):
+        raise driver.DriverError("checkpoint manifest lacks replay provenance")
+    source_git_sha = provenance.get("git_sha")
+    source_tpen_version = provenance.get("tpen_version")
+    if not isinstance(source_git_sha, str) or not isinstance(source_tpen_version, str):
+        raise driver.DriverError(
+            "checkpoint manifest lacks source git SHA or TPEN version for replay"
+        )
+    model_file = require_checkpoint_model_file(checkpoint_dir)
+    return [
+        f"load.replay_semantics.source_git_sha={source_git_sha}",
+        f"load.replay_semantics.source_tpen_version={source_tpen_version}",
+        f"load.replay_semantics.checkpoint_schema_version={int(manifest['schema_version'])}",
+        f"load.replay_semantics.checkpoint_kind={manifest['kind']}",
+        f"load.replay_semantics.checkpoint_model_sha256={_file_sha256(model_file)}",
+    ]
+
+
 def trajectory_identity_overrides(
     row: Mapping[str, object],
     *,
@@ -166,6 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_dir=checkpoint_dir,
                 config_sha256=config_sha256,
             ),
+            *checkpoint_replay_semantics_overrides(checkpoint_dir),
         ],
     )
 
