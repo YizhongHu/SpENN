@@ -52,14 +52,15 @@ class FullModelAntisymmetryCalculator:
             )
         return replace(
             bundle,
-            transform=TransformComparisonValues(
-                original_logabs=original_output.logabs.detach().reshape(-1),
-                transformed_logabs=transformed_output.logabs.detach().reshape(-1),
-                original_sign=original_output.sign.detach().reshape(-1),
-                transformed_sign=transformed_output.sign.detach().reshape(-1),
-                logabs_abs_error=(transformed_output.logabs.reshape(-1) - original_output.logabs.reshape(-1)).abs().detach(),
-                sign_mismatch=sign_mismatch.detach(),
-                metadata={**bundle.generated.metadata, "expected_sign": expected_sign.detach()},
+            transform=_comparison_values(
+                bundle=bundle,
+                original=original,
+                transformed=transformed,
+                original_output=original_output,
+                transformed_output=transformed_output,
+                sign_mismatch=sign_mismatch,
+                expected_sign=expected_sign,
+                transform_name=self.name,
             ),
         )
 
@@ -97,14 +98,15 @@ class SpatialExchangeSymmetryCalculator:
             )
         return replace(
             bundle,
-            transform=TransformComparisonValues(
-                original_logabs=original_output.logabs.detach().reshape(-1),
-                transformed_logabs=transformed_output.logabs.detach().reshape(-1),
-                original_sign=original_output.sign.detach().reshape(-1),
-                transformed_sign=transformed_output.sign.detach().reshape(-1),
-                logabs_abs_error=(transformed_output.logabs.reshape(-1) - original_output.logabs.reshape(-1)).abs().detach(),
-                sign_mismatch=sign_mismatch.detach(),
-                metadata={**bundle.generated.metadata, "expected_sign": expected_sign.detach()},
+            transform=_comparison_values(
+                bundle=bundle,
+                original=original,
+                transformed=transformed,
+                original_output=original_output,
+                transformed_output=transformed_output,
+                sign_mismatch=sign_mismatch,
+                expected_sign=expected_sign,
+                transform_name=self.name,
             ),
         )
 
@@ -171,14 +173,15 @@ class RotationConsistencyCalculator:
             local_energy_abs_error = (transformed_energy.reshape(-1) - original_energy.reshape(-1)).abs().detach()
         return replace(
             bundle,
-            transform=TransformComparisonValues(
-                original_logabs=original_output.logabs.detach().reshape(-1),
-                transformed_logabs=transformed_output.logabs.detach().reshape(-1),
-                original_sign=original_output.sign.detach().reshape(-1),
-                transformed_sign=transformed_output.sign.detach().reshape(-1),
-                logabs_abs_error=(transformed_output.logabs.reshape(-1) - original_output.logabs.reshape(-1)).abs().detach(),
-                sign_mismatch=sign_mismatch.detach(),
-                metadata={**bundle.generated.metadata, "expected_sign": expected_sign.detach()},
+            transform=_comparison_values(
+                bundle=bundle,
+                original=original,
+                transformed=transformed,
+                original_output=original_output,
+                transformed_output=transformed_output,
+                sign_mismatch=sign_mismatch,
+                expected_sign=expected_sign,
+                transform_name=self.name,
                 local_energy_abs_error=local_energy_abs_error,
             ),
         )
@@ -224,6 +227,57 @@ def _evaluate_pair(
     if not isinstance(original_output, WavefunctionOutput) or not isinstance(transformed_output, WavefunctionOutput):
         raise TypeError("transform calculators require the model to return WavefunctionOutput")
     return original_output, transformed_output
+
+
+def _comparison_values(
+    *,
+    bundle: EvaluationBundle,
+    original: ElectronBatch,
+    transformed: ElectronBatch,
+    original_output: WavefunctionOutput,
+    transformed_output: WavefunctionOutput,
+    sign_mismatch: torch.Tensor,
+    expected_sign: torch.Tensor,
+    transform_name: str,
+    local_energy_abs_error: torch.Tensor | None = None,
+) -> TransformComparisonValues:
+    """Build one typed, identity-preserving transform comparison."""
+
+    original_logabs = original_output.logabs.detach().reshape(-1)
+    transformed_logabs = transformed_output.logabs.detach().reshape(-1)
+    original_sign = original_output.sign.detach().reshape(-1)
+    transformed_sign = transformed_output.sign.detach().reshape(-1)
+    logabs_abs_error = (transformed_logabs - original_logabs).abs().detach()
+    finite = torch.isfinite(original_logabs)
+    finite &= torch.isfinite(transformed_logabs)
+    finite &= torch.isfinite(original_sign) & torch.isfinite(transformed_sign)
+    finite &= torch.isfinite(logabs_abs_error)
+    if local_energy_abs_error is not None:
+        finite &= torch.isfinite(local_energy_abs_error.detach().reshape(-1))
+    sample_index = bundle.generated.metadata.get("base_sample_index")
+    if not isinstance(sample_index, torch.Tensor) or sample_index.numel() != original_logabs.numel():
+        sample_index = torch.arange(original_logabs.numel(), device=original_logabs.device)
+    metadata = {
+        **bundle.generated.metadata,
+        "expected_sign": expected_sign.detach(),
+        "transform_name": transform_name,
+        "transform_kind": "spatial_exchange" if transform_name == "spatial_exchange_symmetry" else transform_name,
+    }
+    return TransformComparisonValues(
+        original_logabs=original_logabs,
+        transformed_logabs=transformed_logabs,
+        original_sign=original_sign,
+        transformed_sign=transformed_sign,
+        logabs_abs_error=logabs_abs_error,
+        sign_mismatch=sign_mismatch.detach(),
+        metadata=metadata,
+        local_energy_abs_error=None if local_energy_abs_error is None else local_energy_abs_error.detach(),
+        sample_index=sample_index.detach().reshape(-1).to(device=original_logabs.device),
+        original_positions=original.positions.detach(),
+        transformed_positions=transformed.positions.detach(),
+        transform_name=transform_name,
+        finite=finite.detach(),
+    )
 
 
 def _split_optional(value: torch.Tensor | None, *, side: int, n_pairs: int, tail_rank: int) -> torch.Tensor | None:

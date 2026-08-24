@@ -9,6 +9,8 @@ triplet-fraction diagnostic including its exclusion semantics.
 from __future__ import annotations
 
 import math
+import csv
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ import torch
 from tpen.data.batch import ElectronBatch
 from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations, TransformComparisonValues
 from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.summaries.records import TransformRecordWriter
 from tpen.evaluation.summaries.trace import DEFAULT_LOGABS_GROSS_ATOL, TransformConsistencySummary
 
 # The spatial-exchange logabs error the post-merge He smoke actually recorded
@@ -207,6 +210,51 @@ def test_nonfinite_logabs_error_counts_as_a_logabs_failure(tmp_path: Path) -> No
     # An unevaluable sample must never be reported as agreement.
     assert metrics["logabs_failure_count"] == 1
     assert metrics["failure_count"] == 1
+
+
+def test_low_amplitude_purity_is_finite_and_namespace_qualified(tmp_path: Path) -> None:
+    bundle = _bundle(
+        original_logabs=[-100.0, -100.0],
+        transformed_logabs=[-99.0, -101.0],
+        original_sign=[1.0, -1.0],
+        transformed_sign=[1.0, -1.0],
+    )
+    metrics = _metrics(bundle, tmp_path)
+    assert math.isfinite(metrics["triplet_fraction_mean_under_psi_orig_sq"])
+    assert math.isfinite(metrics["triplet_fraction_max_under_psi_orig_sq"])
+
+    collided = replace(bundle, transform=replace(bundle.transform, metadata={"transform_kind": "full_model_antisymmetry"}))
+    collided_metrics = _metrics(collided, tmp_path)
+    assert "triplet_fraction_mean_under_psi_orig_sq" not in collided_metrics
+
+
+def test_bounded_transform_records_keep_identity_geometry_and_finite_status(tmp_path: Path) -> None:
+    bundle = _bundle(
+        original_logabs=[-2.0],
+        transformed_logabs=[-2.0],
+        original_sign=[1.0],
+        transformed_sign=[1.0],
+    )
+    transform = replace(
+        bundle.transform,
+        sample_index=torch.tensor([17]),
+        original_positions=torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]),
+        transformed_positions=torch.tensor([[[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]),
+        transform_name="spatial_exchange_symmetry",
+        finite=torch.tensor([True]),
+    )
+    result = TransformRecordWriter(max_records=1).summarize(
+        bundle=replace(bundle, transform=transform),
+        context=replace(_context(tmp_path), artifact_level="records"),
+        namespace="validation/spatial_exchange_symmetry",
+    )
+    assert result.artifacts
+    with (tmp_path / "transform_records.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["sample_index"] == "17"
+    assert row["transform"] == "spatial_exchange_symmetry"
+    assert row["finite"] == "True"
+    assert "0.0" in row["original_geometry"]
 
 
 def test_triplet_fraction_is_zero_for_an_exactly_symmetric_pair(tmp_path: Path) -> None:

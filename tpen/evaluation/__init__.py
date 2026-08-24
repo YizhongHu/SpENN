@@ -11,6 +11,7 @@ from tpen.evaluation.bundle import (
     LocalEnergyValues,
     ReadoutTraceValues,
     TraceComparisonValues,
+    TraceKeySummary,
     TransformComparisonValues,
     WavefunctionValues,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "TailGridGenerator",
     "TaskResult",
     "TraceComparisonValues",
+    "TraceKeySummary",
     "TraceEquivarianceCalculator",
     "TraceEquivarianceSummary",
     "TransformComparisonValues",

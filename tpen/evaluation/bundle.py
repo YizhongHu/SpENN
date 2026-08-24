@@ -200,6 +200,25 @@ class TransformComparisonValues:
     sign_mismatch: torch.Tensor
     metadata: Mapping[str, Any]
     local_energy_abs_error: torch.Tensor | None = None
+    sample_index: torch.Tensor | None = None
+    original_positions: torch.Tensor | None = None
+    transformed_positions: torch.Tensor | None = None
+    transform_name: str = "unknown"
+    finite: torch.Tensor | None = None
+
+
+@dataclass(frozen=True)
+class TraceKeySummary:
+    """Typed aggregate diagnostics for one trace key."""
+
+    key: str
+    count: int
+    mean_abs_error: float
+    max_abs_error: float
+    failure_count: int
+    missing_count: int
+    extra_count: int
+    sample_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -214,6 +233,8 @@ class TraceComparisonValues:
     missing_key_count: int
     extra_key_count: int
     records: Sequence[Mapping[str, Any]]
+    key_summaries: Sequence[TraceKeySummary] = ()
+    compared_sample_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -254,6 +275,7 @@ __all__ = [
     "GeneratedConfigurations",
     "LocalEnergyValues",
     "ReadoutTraceValues",
+    "TraceKeySummary",
     "TraceComparisonValues",
     "TransformComparisonValues",
     "WavefunctionValues",

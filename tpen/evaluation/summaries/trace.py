@@ -76,7 +76,7 @@ class TransformConsistencySummary:
     ) -> SummaryResult:
         """Return logabs, sign, purity, and optional local-energy error metrics."""
 
-        del context, namespace
+        del context
         transform = bundle.transform
         if transform is None:
             raise ValueError("TransformConsistencySummary requires bundle.transform")
@@ -103,7 +103,12 @@ class TransformConsistencySummary:
             "logabs_gate_rtol": float(rtol),
             "failure_count": int(failure_mismatch.sum().item()),
         }
-        metrics.update(_singlet_purity_metrics(transform))
+        if _spatial_exchange_namespace(transform, namespace):
+            metrics.update(_singlet_purity_metrics(transform))
+        if transform.finite is not None:
+            finite = transform.finite.detach().reshape(-1)
+            metrics["finite_count"] = int(finite.sum().item())
+            metrics["nonfinite_count"] = int((~finite).sum().item())
         if transform.local_energy_abs_error is not None:
             local_energy_error = _finite_or_empty(transform.local_energy_abs_error)
             metrics["local_energy_max_abs_error"] = _max(local_energy_error)
@@ -131,17 +136,26 @@ class TraceEquivarianceSummary:
         if values is None:
             raise ValueError("TraceEquivarianceSummary requires bundle.trace_comparison")
         finite = _finite_or_empty(values.max_abs_error)
-        return SummaryResult(
-            metrics={
+        metrics: dict[str, MetricScalar] = {
                 "max_abs_error": _max(finite),
                 "mean_abs_error": _mean(finite),
                 "failure_count": int(values.failure_count),
                 "compared_entry_count": int(values.compared_entry_count),
+                "compared_sample_count": int(values.compared_sample_count),
                 "comparison_error_count": int(values.comparison_error_count),
                 "missing_key_count": int(values.missing_key_count),
                 "extra_key_count": int(values.extra_key_count),
             }
-        )
+        for key_summary in values.key_summaries:
+            prefix = f"key/{key_summary.key}"
+            metrics[f"{prefix}/count"] = int(key_summary.count)
+            metrics[f"{prefix}/mean_abs_error"] = key_summary.mean_abs_error
+            metrics[f"{prefix}/max_abs_error"] = key_summary.max_abs_error
+            metrics[f"{prefix}/failure_count"] = int(key_summary.failure_count)
+            metrics[f"{prefix}/missing_key_count"] = int(key_summary.missing_count)
+            metrics[f"{prefix}/extra_key_count"] = int(key_summary.extra_count)
+            metrics[f"{prefix}/sample_count"] = int(key_summary.sample_count)
+        return SummaryResult(metrics=metrics)
 
 
 class FeatureTraceSummary:
@@ -218,6 +232,16 @@ def _logabs_mismatch(values: TransformComparisonValues, *, atol: float, rtol: fl
     error = values.logabs_abs_error.detach().reshape(-1)
     reference = values.original_logabs.detach().reshape(-1).abs()
     return ~(error <= atol + rtol * reference)
+
+
+def _spatial_exchange_namespace(values: TransformComparisonValues, namespace: str) -> bool:
+    """Allow purity only for an explicit spatial-exchange transform namespace."""
+
+    transform_kind = values.metadata.get("transform_kind")
+    if transform_kind is not None:
+        return transform_kind == "spatial_exchange"
+    # Compatibility for hand-built typed fixtures predating transform identity.
+    return namespace.rstrip("/").split("/")[-1] == "spatial_exchange_symmetry"
 
 
 def _singlet_purity_metrics(values: TransformComparisonValues) -> dict[str, MetricScalar]:
