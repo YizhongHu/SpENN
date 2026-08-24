@@ -320,11 +320,9 @@ def _restored_factors(
                 f"restored model has {len(factors)} factors, cannot select index {index} for {name!r}"
             )
         factor = factors[index]
-        if isinstance(factor, ElectronElectronCusp) and not name.startswith(
-            "executed_smoothed_ee_"
-        ):
+        if isinstance(factor, ElectronElectronCusp) and name != "executed_smoothed_ee_factor":
             raise ValueError(
-                "ElectronElectronCusp diagnostics must be labelled executed_smoothed_ee_* "
+                "ElectronElectronCusp diagnostics must be labelled executed_smoothed_ee_factor "
                 "to distinguish them from the ideal unfloored e-e law"
             )
         selected[name] = factor

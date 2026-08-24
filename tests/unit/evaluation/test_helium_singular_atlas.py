@@ -302,6 +302,12 @@ def test_calculator_emits_typed_named_terms_float64_cancellation_and_permutation
     assert set(status for row in atlas.per_electron_kinetic_status for status in row) == {
         "defined"
     }
+    invalid_status = replace(
+        atlas,
+        domain_status=("exact_zero_sentinel",) * len(atlas.domain_status),
+    )
+    with pytest.raises(ValueError, match="domain_status must exactly encode"):
+        invalid_status.validate(bundle.generated.batch)
 
     permutation = Permutation((1, 0))
     metadata = dict(bundle.generated.metadata)

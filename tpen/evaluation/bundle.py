@@ -482,6 +482,35 @@ class HeliumAtlasValues:
             not isinstance(value, str) or not value for value in self.domain_status
         ):
             raise ValueError("domain_status must contain one non-empty string per sample")
+        sample_finite = torch.ones(sample_shape, device=flat.device, dtype=torch.bool)
+        for values in self.derivatives.values():
+            sample_finite &= values.value_finite_mask
+            sample_finite &= values.first_derivative_finite_mask
+            sample_finite &= values.second_derivative_finite_mask
+        sample_finite &= self.total_local_energy_finite_mask
+        for mask in self.hamiltonian_term_finite_masks.values():
+            sample_finite &= mask
+        kinetic_was_requested = any(
+            status != "undefined_no_kinetic_registry_term"
+            for statuses in self.per_electron_kinetic_status
+            for status in statuses
+        )
+        if kinetic_was_requested:
+            sample_finite &= self.per_electron_kinetic_domain_mask.all(dim=1)
+        expected_domain_status = tuple(
+            "exact_zero_sentinel"
+            if bool(self.is_exact_zero_sentinel[index].item())
+            else "recorded_numerical_refinement_boundary"
+            if bool(self.is_refinement_boundary[index].item())
+            else "finite"
+            if bool(sample_finite[index].item())
+            else "computed_nonfinite_retained"
+            for index in range(flat.batch_size)
+        )
+        if self.domain_status != expected_domain_status:
+            raise ValueError(
+                "domain_status must exactly encode sentinel, boundary, finite, and retained-nonfinite semantics"
+            )
         self.provenance.validate(flat)
         return self
 
