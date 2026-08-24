@@ -377,11 +377,11 @@ class HeliumAtlasValues:
             self.coordinate_representability_boundary_radius[
                 self.is_coordinate_representability_boundary
             ],
-            self.requested_coordinate[self.is_coordinate_representability_boundary],
+            self.realized_coordinate[self.is_coordinate_representability_boundary],
         ):
             raise ValueError(
-                "coordinate_representability_boundary_radius must record the positive "
-                "requested path coordinate at the boundary"
+                "coordinate_representability_boundary_radius must equal the realized "
+                "coordinate at the boundary"
             )
         if torch.any(
             self.is_coordinate_representability_boundary & self.is_exact_zero_sentinel
@@ -430,21 +430,16 @@ class HeliumAtlasValues:
                 device=flat.device,
                 name="ideal_unfloored_ee_positive_separation_domain_mask",
             )
-            if not torch.equal(positive_domain, self.requested_coordinate > 0):
+            if not torch.equal(positive_domain, self.realized_coordinate > 0):
                 raise ValueError(
                     "ideal_unfloored_ee_positive_separation_domain_mask must be true exactly "
-                    "at positive requested path separation"
+                    "at positive realized separation"
                 )
-            expected_ideal = (
-                self.requested_coordinate.detach()
-                .to(device="cpu", dtype=torch.float64)
-                .reciprocal()
-                .to(device=flat.device, dtype=flat.dtype)
-            )
+            expected_ideal = self.realized_coordinate.reciprocal()
             if not torch.equal(ideal, expected_ideal):
                 raise ValueError(
                     "ideal_unfloored_ee_inverse_distance must equal the unfloored reciprocal "
-                    "of requested_coordinate"
+                    "of realized_coordinate"
                 )
             _validate_bool_mask(
                 evaluation_defined,
@@ -473,11 +468,11 @@ class HeliumAtlasValues:
             )
             if not torch.equal(
                 reciprocal_radius[reciprocal_boundary],
-                self.requested_coordinate[reciprocal_boundary],
+                self.realized_coordinate[reciprocal_boundary],
             ):
                 raise ValueError(
-                    "ideal_unfloored_ee_reciprocal_failure_radius must record the positive "
-                    "requested path coordinate at the transition"
+                    "ideal_unfloored_ee_reciprocal_failure_radius must equal the realized "
+                    "coordinate at the transition"
                 )
             if torch.any(reciprocal_boundary & self.is_exact_zero_sentinel):
                 raise ValueError(
@@ -914,7 +909,7 @@ def _validate_boundary_radius(
     dtype: torch.dtype,
     name: str,
 ) -> None:
-    """Require a finite positive radius exactly on each named boundary."""
+    """Require a finite nonnegative radius exactly on each named boundary."""
 
     if tuple(value.shape) != shape or value.device != device or value.dtype != dtype:
         raise ValueError(
@@ -924,10 +919,10 @@ def _validate_boundary_radius(
         raise ValueError(f"HeliumAtlasValues.{name} must be finite exactly on its boundary")
     if not torch.isnan(value[~mask]).all():
         raise ValueError(f"HeliumAtlasValues.{name} must use explicit NaN outside its boundary")
-    if torch.any(value[mask] <= 0):
+    if torch.any(value[mask] < 0):
         raise ValueError(
-            f"HeliumAtlasValues.{name} boundary values must be positive and distinct "
-            "from the exact-zero sentinel"
+            f"HeliumAtlasValues.{name} boundary values must be nonnegative realized "
+            "coordinates"
         )
 
 

@@ -466,7 +466,7 @@ def _refine_ray(
     device: torch.device,
     dtype: torch.dtype,
 ) -> list[_AtlasRow]:
-    """Return a monotone nonzero ray, its measured boundary, and zero sentinel."""
+    """Return a requested-nonzero ray, its realized boundary, and zero sentinel."""
 
     rows: list[_AtlasRow] = []
     requested = torch.tensor(start_radius, device=device, dtype=dtype)
@@ -508,18 +508,6 @@ def _refine_ray(
             )
         )
         next_requested = requested * refinement_ratio
-        if next_requested <= 0 or not torch.isfinite(next_requested):
-            rows[-1] = _replace_boundary(
-                rows[-1], "last_finite_coordinate_representability_boundary"
-            )
-            boundary_reached = True
-            break
-        if not next_requested < requested:
-            rows[-1] = _replace_boundary(
-                rows[-1], "nondecreasing_coordinate_representability_boundary"
-            )
-            boundary_reached = True
-            break
         requested = next_requested
     if not boundary_reached:
         raise ValueError(
@@ -545,24 +533,6 @@ def _refine_ray(
         )
     )
     return rows
-
-
-def _replace_boundary(row: _AtlasRow, sample_kind: str) -> _AtlasRow:
-    return _AtlasRow(
-        positions=row.positions,
-        tangent=row.tangent,
-        requested_coordinate=row.requested_coordinate,
-        realized_coordinate=row.realized_coordinate,
-        sample_kind=sample_kind,
-        direction_id=row.direction_id,
-        ray_id=row.ray_id,
-        refinement_index=row.refinement_index,
-        probe_electron=row.probe_electron,
-        geometry_kind=row.geometry_kind,
-        coordinate_kind=row.coordinate_kind,
-        is_coordinate_representability_boundary=True,
-        is_exact_zero_sentinel=False,
-    )
 
 
 def _validated_directions(

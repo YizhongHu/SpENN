@@ -398,6 +398,51 @@ task_success                            task level
 task_failed
 ```
 
+`<helium atlas task namespace>` — helium atlas summaries in
+`tpen.evaluation.summaries.helium_atlas`:
+
+```text
+<curvature_prefix>_<window>_total_count
+<curvature_prefix>_<window>_finite_count
+<curvature_prefix>_<window>_nonfinite_count
+<curvature_prefix>_<window>_available
+<curvature_prefix>_<window>_second_derivative_mean       when available
+<curvature_prefix>_<window>_second_derivative_min        when available
+<curvature_prefix>_<window>_second_derivative_max        when available
+<curvature_prefix>_<window>_directional_spread           when available
+
+<tail_prefix>_total_count
+<tail_prefix>_finite_count
+<tail_prefix>_nonfinite_count
+<tail_prefix>_direction_count
+<tail_prefix>_available
+<tail_prefix>_slope                                      when available
+<tail_prefix>_extrema_min                                when available
+<tail_prefix>_extrema_max                                when available
+<tail_prefix>_sign_fraction                              when available
+<tail_prefix>_outer_radius                               when available
+<tail_prefix>_directional_spread                         when available
+
+atlas_total_count
+atlas_coordinate_representability_boundary_count
+atlas_exact_zero_sentinel_count
+atlas_computed_nonfinite_retained_count
+atlas_dtype_is_float64
+atlas_seed
+ideal_unfloored_ee_positive_separation_domain_count      e-e atlas only
+ideal_unfloored_ee_reciprocal_evaluation_undefined_count e-e atlas only
+ideal_unfloored_ee_reciprocal_failure_boundary_count     e-e atlas only
+executed_smoothed_ee_factor_finite_at_ideal_reciprocal_evaluation_undefined_count
+                                                            e-e atlas only
+
+helium_atlas_row_count                                   artifact writer enabled
+```
+
+The curvature prefix, nested window names, and tail prefix are explicit task
+configuration. They must preserve whether a series is ideal unfloored or
+executed smoothed behavior; summaries must not collapse those semantics into an
+ambiguous generic prefix.
+
 #### `train` record attribution
 
 `grad_norm` is the norm over the parameter gradients that drove this

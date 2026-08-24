@@ -189,37 +189,34 @@ class HeliumAtlasCalculator:
         reciprocal_failure_radius: torch.Tensor | None
         positive_separation_domain: torch.Tensor | None
         reciprocal_evaluation_defined: torch.Tensor | None
-        coordinate_boundary_radius = torch.full_like(requested, float("nan"))
-        coordinate_boundary_radius[coordinate_boundary] = requested[coordinate_boundary]
+        coordinate_boundary_radius = torch.full_like(realized, float("nan"))
+        coordinate_boundary_radius[coordinate_boundary] = realized[coordinate_boundary]
         ray = _metadata_long(metadata, "ray_id", flat)
         if is_coordinate_refinement or bool(
             torch.any(coordinate_boundary | sentinel).item()
         ):
             _validate_coordinate_refinement(
-                requested_coordinate=requested,
+                realized_coordinate=realized,
                 coordinate_boundary_radius=coordinate_boundary_radius,
                 coordinate_boundary=coordinate_boundary,
                 sentinel=sentinel,
                 ray=ray,
             )
         if is_ee:
-            # The ideal law is defined on the requested unfloored path coordinate;
-            # its numerical boundary stays on the provenance-pinned CPU float64
-            # reference while the executed model consumes the realized geometry.
-            ideal_inverse = (
-                requested.detach().to(device="cpu", dtype=torch.float64).reciprocal()
-            ).to(device=flat.device, dtype=flat.dtype)
-            positive_separation_domain = requested > 0
+            # The atlas records the unfloored reciprocal of the separation that
+            # actually materialized, never the requested path target.
+            ideal_inverse = realized.reciprocal()
+            positive_separation_domain = realized > 0
             reciprocal_evaluation_defined = torch.isfinite(ideal_inverse)
             reciprocal_boundary = _first_nonfinite_boundaries(
                 reciprocal_evaluation_defined,
                 ray=ray,
                 sentinel=sentinel,
             )
-            reciprocal_failure_radius = torch.full_like(requested, float("nan"))
-            reciprocal_failure_radius[reciprocal_boundary] = requested[reciprocal_boundary]
+            reciprocal_failure_radius = torch.full_like(realized, float("nan"))
+            reciprocal_failure_radius[reciprocal_boundary] = realized[reciprocal_boundary]
             _validate_boundary_order(
-                requested_coordinate=requested,
+                realized_coordinate=realized,
                 reciprocal_evaluation_defined_mask=reciprocal_evaluation_defined,
                 reciprocal_failure_radius=reciprocal_failure_radius,
                 reciprocal_boundary=reciprocal_boundary,
@@ -573,7 +570,7 @@ def _first_nonfinite_boundaries(
 
 def _validate_boundary_order(
     *,
-    requested_coordinate: torch.Tensor,
+    realized_coordinate: torch.Tensor,
     reciprocal_evaluation_defined_mask: torch.Tensor,
     reciprocal_failure_radius: torch.Tensor,
     reciprocal_boundary: torch.Tensor,
@@ -632,18 +629,18 @@ def _validate_boundary_order(
                 "transition destination"
             )
         if (
-            bool((reciprocal[0] <= 0).item())
-            or bool((coordinate[0] <= 0).item())
+            bool((reciprocal[0] < 0).item())
+            or bool((coordinate[0] < 0).item())
             or bool(
-                (reciprocal[0] != requested_coordinate[reciprocal_index]).item()
+                (reciprocal[0] != realized_coordinate[reciprocal_index]).item()
             )
             or bool(
-                (coordinate[0] != requested_coordinate[coordinate_index]).item()
+                (coordinate[0] != realized_coordinate[coordinate_index]).item()
             )
         ):
             raise ValueError(
-                "named numerical-boundary radii must be positive requested coordinates "
-                "and distinct from the exact-zero sentinel"
+                "named numerical-boundary radii must equal the nonnegative realized "
+                "coordinate on their explicitly labelled boundary rows"
             )
         ray_reciprocal_index = int(
             torch.nonzero(indices == reciprocal_index, as_tuple=False).item()
@@ -660,13 +657,13 @@ def _validate_boundary_order(
 
 def _validate_coordinate_refinement(
     *,
-    requested_coordinate: torch.Tensor,
+    realized_coordinate: torch.Tensor,
     coordinate_boundary_radius: torch.Tensor,
     coordinate_boundary: torch.Tensor,
     sentinel: torch.Tensor,
     ray: torch.Tensor,
 ) -> None:
-    """Require a monotone positive ray, one terminal boundary, and one zero sentinel."""
+    """Require one monotone realized ray, terminal boundary, and zero sentinel."""
 
     for ray_id in sorted(set(ray.detach().cpu().tolist())):
         selection = ray == ray_id
@@ -677,18 +674,18 @@ def _validate_coordinate_refinement(
                 "each coordinate-refinement ray must terminate with one exact-zero sentinel"
             )
         nonzero_indices = indices[~ray_sentinel]
-        nonzero_requested = requested_coordinate[nonzero_indices]
+        realized_approach = realized_coordinate[nonzero_indices]
         if (
-            nonzero_requested.numel() < 2
-            or bool(torch.any(nonzero_requested <= 0).item())
-            or not bool(torch.all(nonzero_requested[1:] < nonzero_requested[:-1]).item())
+            realized_approach.numel() < 2
+            or bool(torch.any(realized_approach < 0).item())
+            or not bool(torch.all(realized_approach[1:] < realized_approach[:-1]).item())
         ):
             raise ValueError(
                 "each coordinate-refinement ray must approach zero through a strictly "
-                "decreasing positive requested-coordinate sequence"
+                "decreasing nonnegative realized-coordinate sequence"
             )
-        if bool((requested_coordinate[indices[-1]] != 0).item()):
-            raise ValueError("the exact-zero sentinel must have requested_coordinate == 0")
+        if bool((realized_coordinate[indices[-1]] != 0).item()):
+            raise ValueError("the exact-zero sentinel must have realized_coordinate == 0")
         ray_coordinate_boundary = coordinate_boundary[indices]
         if int(ray_coordinate_boundary.sum().item()) != 1:
             raise ValueError(
@@ -699,18 +696,19 @@ def _validate_coordinate_refinement(
         ]
         if bool((coordinate_index != nonzero_indices[-1]).item()):
             raise ValueError(
-                "the coordinate-representability boundary must terminate the positive ray"
+                "the coordinate-representability boundary must terminate the "
+                "requested-nonzero approach ray"
             )
         coordinate_radius = coordinate_boundary_radius[coordinate_index]
         if (
-            bool((coordinate_radius <= 0).item())
+            bool((coordinate_radius < 0).item())
             or bool(
-                (coordinate_radius != requested_coordinate[coordinate_index]).item()
+                (coordinate_radius != realized_coordinate[coordinate_index]).item()
             )
         ):
             raise ValueError(
-                "the coordinate-representability radius must be the terminal positive "
-                "requested coordinate and distinct from the exact-zero sentinel"
+                "the coordinate-representability radius must equal the terminal "
+                "nonnegative realized coordinate on its distinct boundary row"
             )
 
 
