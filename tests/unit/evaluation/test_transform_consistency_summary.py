@@ -9,7 +9,6 @@ triplet-fraction diagnostic including its exclusion semantics.
 from __future__ import annotations
 
 import math
-import csv
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,9 +16,14 @@ import pytest
 import torch
 
 from tpen.data.batch import ElectronBatch
-from tpen.evaluation.bundle import EvaluationBundle, GeneratedConfigurations, TransformComparisonValues
+from tpen.evaluation.bundle import (
+    EvaluationBundle,
+    GeneratedConfigurations,
+    TransformComparisonValues,
+    TransformKind,
+    TransformName,
+)
 from tpen.evaluation.protocols import EvaluationContext
-from tpen.evaluation.summaries.records import TransformRecordWriter
 from tpen.evaluation.summaries.trace import DEFAULT_LOGABS_GROSS_ATOL, TransformConsistencySummary
 
 # The spatial-exchange logabs error the post-merge He smoke actually recorded
@@ -74,16 +78,34 @@ def _bundle(
             transformed_sign=signs_transformed,
             logabs_abs_error=(transformed - original).abs(),
             sign_mismatch=mismatch,
+            sample_index=torch.arange(original.numel()),
+            original_positions=batch.positions,
+            transformed_positions=batch.positions.clone(),
+            transform_name=TransformName.SPATIAL_EXCHANGE_SYMMETRY,
+            transform_kind=TransformKind.SPATIAL_EXCHANGE,
+            finite=(
+                torch.isfinite(original)
+                & torch.isfinite(transformed)
+                & torch.isfinite(signs_original)
+                & torch.isfinite(signs_transformed)
+                & torch.isfinite((transformed - original).abs())
+            ),
             metadata={},
         ),
     )
 
 
-def _metrics(bundle: EvaluationBundle, tmp_path: Path, **kwargs: float | None) -> dict[str, object]:
+def _metrics(
+    bundle: EvaluationBundle,
+    tmp_path: Path,
+    *,
+    namespace: str = "validation/spatial_exchange_symmetry",
+    **kwargs: float | None,
+) -> dict[str, object]:
     return TransformConsistencySummary(**kwargs).summarize(
         bundle=bundle,
         context=_context(tmp_path),
-        namespace="validation/spatial_exchange_symmetry",
+        namespace=namespace,
     ).metrics
 
 
@@ -212,49 +234,66 @@ def test_nonfinite_logabs_error_counts_as_a_logabs_failure(tmp_path: Path) -> No
     assert metrics["failure_count"] == 1
 
 
-def test_low_amplitude_purity_is_finite_and_namespace_qualified(tmp_path: Path) -> None:
+def test_low_amplitude_purity_is_finite_and_ignores_generic_kind_metadata(tmp_path: Path) -> None:
     bundle = _bundle(
         original_logabs=[-100.0, -100.0],
         transformed_logabs=[-99.0, -101.0],
         original_sign=[1.0, -1.0],
         transformed_sign=[1.0, -1.0],
     )
-    metrics = _metrics(bundle, tmp_path)
+    collided_metadata = replace(
+        bundle,
+        transform=replace(
+            bundle.transform,
+            metadata={"transform_kind": "full_model_antisymmetry"},
+        ),
+    )
+    metrics = _metrics(collided_metadata, tmp_path)
     assert math.isfinite(metrics["triplet_fraction_mean_under_psi_orig_sq"])
     assert math.isfinite(metrics["triplet_fraction_max_under_psi_orig_sq"])
-
-    collided = replace(bundle, transform=replace(bundle.transform, metadata={"transform_kind": "full_model_antisymmetry"}))
-    collided_metrics = _metrics(collided, tmp_path)
-    assert "triplet_fraction_mean_under_psi_orig_sq" not in collided_metrics
+    assert metrics["finite_count"] == 2
+    assert metrics["nonfinite_count"] == 0
 
 
-def test_bounded_transform_records_keep_identity_geometry_and_finite_status(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("transform_kind", "namespace", "metadata_kind"),
+    [
+        (
+            TransformKind.SPATIAL_EXCHANGE,
+            "validation/full_model_antisymmetry",
+            "spatial_exchange",
+        ),
+        (
+            TransformKind.FULL_MODEL_ANTISYMMETRY,
+            "validation/spatial_exchange_symmetry",
+            "spatial_exchange",
+        ),
+    ],
+)
+def test_spatial_purity_requires_typed_kind_and_explicit_namespace(
+    tmp_path: Path,
+    transform_kind: TransformKind,
+    namespace: str,
+    metadata_kind: str,
+) -> None:
     bundle = _bundle(
-        original_logabs=[-2.0],
-        transformed_logabs=[-2.0],
+        original_logabs=[-100.0],
+        transformed_logabs=[-99.0],
         original_sign=[1.0],
         transformed_sign=[1.0],
     )
-    transform = replace(
-        bundle.transform,
-        sample_index=torch.tensor([17]),
-        original_positions=torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]),
-        transformed_positions=torch.tensor([[[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]),
-        transform_name="spatial_exchange_symmetry",
-        finite=torch.tensor([True]),
+    collided = replace(
+        bundle,
+        transform=replace(
+            bundle.transform,
+            transform_kind=transform_kind,
+            metadata={"transform_kind": metadata_kind},
+        ),
     )
-    result = TransformRecordWriter(max_records=1).summarize(
-        bundle=replace(bundle, transform=transform),
-        context=replace(_context(tmp_path), artifact_level="records"),
-        namespace="validation/spatial_exchange_symmetry",
-    )
-    assert result.artifacts
-    with (tmp_path / "transform_records.csv").open(newline="", encoding="utf-8") as handle:
-        row = next(csv.DictReader(handle))
-    assert row["sample_index"] == "17"
-    assert row["transform"] == "spatial_exchange_symmetry"
-    assert row["finite"] == "True"
-    assert "0.0" in row["original_geometry"]
+
+    metrics = _metrics(collided, tmp_path, namespace=namespace)
+
+    assert "triplet_fraction_mean_under_psi_orig_sq" not in metrics
 
 
 def test_triplet_fraction_is_zero_for_an_exactly_symmetric_pair(tmp_path: Path) -> None:

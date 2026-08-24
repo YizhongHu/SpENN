@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import torch
@@ -188,9 +189,25 @@ class ElectronNucleusRadialValues:
         )
 
 
+class TransformName(str, Enum):
+    """Stable names for supported transform-comparison calculators."""
+
+    FULL_MODEL_ANTISYMMETRY = "full_model_antisymmetry"
+    SPATIAL_EXCHANGE_SYMMETRY = "spatial_exchange_symmetry"
+    ROTATION_CONSISTENCY = "rotation_consistency"
+
+
+class TransformKind(str, Enum):
+    """Semantic kinds for transform-specific summary dispatch."""
+
+    FULL_MODEL_ANTISYMMETRY = "full_model_antisymmetry"
+    SPATIAL_EXCHANGE = "spatial_exchange"
+    ROTATION_CONSISTENCY = "rotation_consistency"
+
+
 @dataclass(frozen=True)
 class TransformComparisonValues:
-    """Raw values comparing original and transformed model outputs."""
+    """Raw values and typed identity for one transformed model comparison."""
 
     original_logabs: torch.Tensor
     transformed_logabs: torch.Tensor
@@ -198,13 +215,14 @@ class TransformComparisonValues:
     transformed_sign: torch.Tensor
     logabs_abs_error: torch.Tensor
     sign_mismatch: torch.Tensor
+    sample_index: torch.Tensor
+    original_positions: torch.Tensor
+    transformed_positions: torch.Tensor
+    transform_name: TransformName
+    transform_kind: TransformKind
+    finite: torch.Tensor
     metadata: Mapping[str, Any]
     local_energy_abs_error: torch.Tensor | None = None
-    sample_index: torch.Tensor | None = None
-    original_positions: torch.Tensor | None = None
-    transformed_positions: torch.Tensor | None = None
-    transform_name: str = "unknown"
-    finite: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +295,8 @@ __all__ = [
     "ReadoutTraceValues",
     "TraceKeySummary",
     "TraceComparisonValues",
+    "TransformKind",
+    "TransformName",
     "TransformComparisonValues",
     "WavefunctionValues",
 ]

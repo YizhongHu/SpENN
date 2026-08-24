@@ -8,7 +8,12 @@ from dataclasses import replace
 import torch
 
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
-from tpen.evaluation.bundle import EvaluationBundle, TransformComparisonValues
+from tpen.evaluation.bundle import (
+    EvaluationBundle,
+    TransformComparisonValues,
+    TransformKind,
+    TransformName,
+)
 from tpen.evaluation.calculators.local_energy import evaluate_local_energy_in_chunks, split_local_energy_result
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.physics.hamiltonian import HamiltonianTerm, normalize_hamiltonian_terms
@@ -60,7 +65,8 @@ class FullModelAntisymmetryCalculator:
                 transformed_output=transformed_output,
                 sign_mismatch=sign_mismatch,
                 expected_sign=expected_sign,
-                transform_name=self.name,
+                transform_name=TransformName.FULL_MODEL_ANTISYMMETRY,
+                transform_kind=TransformKind.FULL_MODEL_ANTISYMMETRY,
             ),
         )
 
@@ -106,7 +112,8 @@ class SpatialExchangeSymmetryCalculator:
                 transformed_output=transformed_output,
                 sign_mismatch=sign_mismatch,
                 expected_sign=expected_sign,
-                transform_name=self.name,
+                transform_name=TransformName.SPATIAL_EXCHANGE_SYMMETRY,
+                transform_kind=TransformKind.SPATIAL_EXCHANGE,
             ),
         )
 
@@ -181,7 +188,8 @@ class RotationConsistencyCalculator:
                 transformed_output=transformed_output,
                 sign_mismatch=sign_mismatch,
                 expected_sign=expected_sign,
-                transform_name=self.name,
+                transform_name=TransformName.ROTATION_CONSISTENCY,
+                transform_kind=TransformKind.ROTATION_CONSISTENCY,
                 local_energy_abs_error=local_energy_abs_error,
             ),
         )
@@ -238,7 +246,8 @@ def _comparison_values(
     transformed_output: WavefunctionOutput,
     sign_mismatch: torch.Tensor,
     expected_sign: torch.Tensor,
-    transform_name: str,
+    transform_name: TransformName,
+    transform_kind: TransformKind,
     local_energy_abs_error: torch.Tensor | None = None,
 ) -> TransformComparisonValues:
     """Build one typed, identity-preserving transform comparison."""
@@ -260,8 +269,6 @@ def _comparison_values(
     metadata = {
         **bundle.generated.metadata,
         "expected_sign": expected_sign.detach(),
-        "transform_name": transform_name,
-        "transform_kind": "spatial_exchange" if transform_name == "spatial_exchange_symmetry" else transform_name,
     }
     return TransformComparisonValues(
         original_logabs=original_logabs,
@@ -276,6 +283,7 @@ def _comparison_values(
         original_positions=original.positions.detach(),
         transformed_positions=transformed.positions.detach(),
         transform_name=transform_name,
+        transform_kind=transform_kind,
         finite=finite.detach(),
     )
 

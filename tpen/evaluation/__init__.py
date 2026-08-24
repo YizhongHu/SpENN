@@ -13,6 +13,8 @@ from tpen.evaluation.bundle import (
     TraceComparisonValues,
     TraceKeySummary,
     TransformComparisonValues,
+    TransformKind,
+    TransformName,
     WavefunctionValues,
 )
 from tpen.evaluation.calculators import (
@@ -128,6 +130,8 @@ __all__ = [
     "TraceEquivarianceSummary",
     "TransformComparisonValues",
     "TransformConsistencySummary",
+    "TransformKind",
+    "TransformName",
     "WavefunctionCalculator",
     "WavefunctionValues",
 ]

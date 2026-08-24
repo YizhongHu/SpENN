@@ -8,7 +8,12 @@ from typing import Any
 
 import torch
 
-from tpen.evaluation.bundle import EvaluationBundle, TransformComparisonValues
+from tpen.evaluation.bundle import (
+    EvaluationBundle,
+    TransformComparisonValues,
+    TransformKind,
+    TransformName,
+)
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import MetricScalar, SummaryResult
 
@@ -235,13 +240,13 @@ def _logabs_mismatch(values: TransformComparisonValues, *, atol: float, rtol: fl
 
 
 def _spatial_exchange_namespace(values: TransformComparisonValues, namespace: str) -> bool:
-    """Allow purity only for an explicit spatial-exchange transform namespace."""
+    """Require typed spatial identity and its explicit namespace for purity."""
 
-    transform_kind = values.metadata.get("transform_kind")
-    if transform_kind is not None:
-        return transform_kind == "spatial_exchange"
-    # Compatibility for hand-built typed fixtures predating transform identity.
-    return namespace.rstrip("/").split("/")[-1] == "spatial_exchange_symmetry"
+    namespace_name = namespace.rstrip("/").split("/")[-1]
+    return (
+        values.transform_kind == TransformKind.SPATIAL_EXCHANGE
+        and namespace_name == TransformName.SPATIAL_EXCHANGE_SYMMETRY.value
+    )
 
 
 def _singlet_purity_metrics(values: TransformComparisonValues) -> dict[str, MetricScalar]:
