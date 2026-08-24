@@ -262,6 +262,11 @@ class TransformRecordWriter:
         indices = list(range(n_keep))
         base_fields = [
             "record_index",
+            "sample_index",
+            "transform",
+            "finite",
+            "original_geometry",
+            "transformed_geometry",
             "original_logabs",
             "transformed_logabs",
             "logabs_abs_error",
@@ -290,6 +295,21 @@ class TransformRecordWriter:
             for index in indices:
                 row: dict[str, object] = {
                     "record_index": index,
+                    "sample_index": index if transform.sample_index is None else int(transform.sample_index.detach().reshape(-1)[index].item()),
+                    "transform": transform.transform_name,
+                    "finite": bool(
+                        (
+                            transform.finite.detach().reshape(-1)[index]
+                            if transform.finite is not None
+                            else _transform_row_finite(transform, index)
+                        ).item()
+                    ),
+                    "original_geometry": None
+                    if transform.original_positions is None
+                    else _csv_value(transform.original_positions.detach().cpu()[index]),
+                    "transformed_geometry": None
+                    if transform.transformed_positions is None
+                    else _csv_value(transform.transformed_positions.detach().cpu()[index]),
                     "original_logabs": _float_or_text(transform.original_logabs.detach().reshape(-1)[index]),
                     "transformed_logabs": _float_or_text(transform.transformed_logabs.detach().reshape(-1)[index]),
                     "logabs_abs_error": _float_or_text(transform.logabs_abs_error.detach().reshape(-1)[index]),
@@ -376,6 +396,22 @@ def _float_or_text(value: torch.Tensor) -> float | str:
     if torch.isfinite(value).item():
         return number
     return "inf" if number > 0 else "-inf" if number < 0 else "nan"
+
+
+def _transform_row_finite(transform: Any, index: int) -> torch.Tensor:
+    """Compute finite status for legacy typed transform values."""
+
+    values = (
+        transform.original_logabs.reshape(-1)[index],
+        transform.transformed_logabs.reshape(-1)[index],
+        transform.original_sign.reshape(-1)[index],
+        transform.transformed_sign.reshape(-1)[index],
+        transform.logabs_abs_error.reshape(-1)[index],
+    )
+    finite = all(bool(torch.isfinite(value).item()) for value in values)
+    if transform.local_energy_abs_error is not None:
+        finite = finite and bool(torch.isfinite(transform.local_energy_abs_error.reshape(-1)[index]).item())
+    return torch.tensor(finite)
 
 
 def _require_same_tensor(name: str, actual: torch.Tensor, expected: torch.Tensor) -> None:

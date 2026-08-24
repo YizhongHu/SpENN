@@ -17,6 +17,7 @@ from tpen.evaluation.bundle import (
     FeatureTraceValues,
     ReadoutTraceValues,
     TraceComparisonValues,
+    TraceKeySummary,
 )
 from tpen.evaluation.calculators.transforms import split_paired_batch
 from tpen.evaluation.protocols import EvaluationContext
@@ -58,6 +59,11 @@ class TraceEquivarianceCalculator:
         failure_count = 0
         compared_entry_count = 0
         comparison_error_count = 0
+        compared_sample_count = 0
+        key_errors: dict[str, list[float]] = {}
+        key_failures: dict[str, int] = {}
+        key_missing: dict[str, int] = {}
+        key_extra: dict[str, int] = {}
         for image, indices in _permutation_groups(permutation_images).items():
             permutation = Permutation(image)
             original_group = _select_batch(original, indices)
@@ -77,10 +83,14 @@ class TraceEquivarianceCalculator:
             extra_count += len(extra)
             failure_count += len(missing) + len(extra)
             for key in missing:
-                records.append({"key": key, "status": "missing", "permutation": image})
+                key_missing[key] = key_missing.get(key, 0) + 1
+                records.append({"key": key, "status": "missing", "permutation": image, "sample_index": indices.tolist()})
             for key in extra:
-                records.append({"key": key, "status": "extra", "permutation": image})
+                key_extra[key] = key_extra.get(key, 0) + 1
+                records.append({"key": key, "status": "extra", "permutation": image, "sample_index": indices.tolist()})
             for key in sorted(keys_a & keys_b):
+                key_errors.setdefault(key, [])
+                compared_sample_count += int(indices.numel())
                 compared_entry_count += 1
                 try:
                     expected = apply_particle_permutation(entries_a[key].value, permutation)
@@ -99,6 +109,7 @@ class TraceEquivarianceCalculator:
                             "key": key,
                             "status": "error",
                             "permutation": image,
+                            "sample_index": indices.tolist(),
                             "error_type": type(exc).__name__,
                             "message": str(exc),
                         }
@@ -109,13 +120,16 @@ class TraceEquivarianceCalculator:
                             "key": key,
                             "status": "success" if close else "failed",
                             "permutation": image,
+                            "sample_index": indices.tolist(),
                             "max_abs_error": error,
                         }
                     )
                 if math.isfinite(error):
                     errors.append(error)
+                key_errors[key].append(error)
                 if not close:
                     failure_count += 1
+                    key_failures[key] = key_failures.get(key, 0) + 1
         if compared_entry_count == 0:
             raise ValueError("TraceEquivarianceCalculator compared zero trace entries")
         device = original.device
@@ -123,6 +137,23 @@ class TraceEquivarianceCalculator:
         error_tensor = torch.tensor(errors, device=device, dtype=dtype)
         max_error = error_tensor if error_tensor.numel() else torch.zeros(0, device=device, dtype=dtype)
         mean_error = error_tensor if error_tensor.numel() else torch.zeros(0, device=device, dtype=dtype)
+        key_summaries = tuple(
+            TraceKeySummary(
+                key=key,
+                count=len(key_errors.get(key, ())) + key_missing.get(key, 0) + key_extra.get(key, 0),
+                mean_abs_error=_error_mean(key_errors.get(key, ())),
+                max_abs_error=_error_max(key_errors.get(key, ())),
+                failure_count=key_failures.get(key, 0),
+                missing_count=key_missing.get(key, 0),
+                extra_count=key_extra.get(key, 0),
+                sample_count=sum(
+                    len(record.get("sample_index", ()))
+                    for record in records
+                    if record.get("key") == key and record.get("status") in {"success", "failed", "error"}
+                ),
+            )
+            for key in sorted(set(key_errors) | set(key_missing) | set(key_extra))
+        )
         return replace(
             bundle,
             trace_comparison=TraceComparisonValues(
@@ -134,6 +165,8 @@ class TraceEquivarianceCalculator:
                 missing_key_count=missing_count,
                 extra_key_count=extra_count,
                 records=tuple(records),
+                key_summaries=key_summaries,
+                compared_sample_count=compared_sample_count,
             ),
         )
 
@@ -372,6 +405,26 @@ def _flatten_tensors(tensors: Sequence[torch.Tensor]) -> torch.Tensor:
     if not tensors:
         return torch.empty(0)
     return torch.cat([tensor.detach().reshape(-1) for tensor in tensors], dim=0)
+
+
+def _error_mean(values: Sequence[float]) -> float:
+    if not values:
+        return math.nan
+    if any(math.isinf(value) for value in values):
+        return math.inf
+    if any(math.isnan(value) for value in values):
+        return math.nan
+    return sum(values) / len(values)
+
+
+def _error_max(values: Sequence[float]) -> float:
+    if not values:
+        return math.nan
+    if any(math.isinf(value) for value in values):
+        return math.inf
+    if any(math.isnan(value) for value in values):
+        return math.nan
+    return max(values)
 
 
 __all__ = [

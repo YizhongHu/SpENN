@@ -89,6 +89,35 @@ class _SymmetricTraceModel(nn.Module):
         return WavefunctionOutput(logabs=logabs, sign=sign, aux={"K": matrix})
 
 
+class _FiveSampleGenerator:
+    name = "five_sample"
+
+    def generate(self, *, model: nn.Module | None, context: EvaluationContext) -> GeneratedConfigurations:
+        del model, context
+        positions = torch.tensor(
+            [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]] * 5,
+            dtype=torch.float64,
+        )
+        return GeneratedConfigurations(
+            batch=ElectronBatch(
+                positions=positions,
+                spins=torch.tensor([[1.0, -1.0]] * 5, dtype=torch.float64),
+            ),
+            metadata={"sample_index": torch.arange(5)},
+        )
+
+
+class _MissingAndExtraTraceModel(nn.Module):
+    def forward(self, batch: ElectronBatch) -> WavefunctionOutput:
+        flat = batch.flatten_samples()
+        value = ParticleTensor(flat.positions, particle_axis=1)
+        trace_value(value, key="shared", slot="features", semantic_type="features")
+        key = "left_only" if float(flat.positions[:, 0, 0].mean()) < 0.5 else "right_only"
+        trace_value(value, key=key, slot="features", semantic_type="features")
+        logabs = flat.positions.square().sum(dim=(1, 2))
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
 def test_permutation_orbit_and_full_model_antisymmetry_summary(tmp_path: Path) -> None:
     generated = PermutationOrbitGenerator(
         base_generator=_StaticGenerator(),
@@ -189,6 +218,31 @@ def test_trace_equivariance_rejects_vacuous_trace(tmp_path: Path) -> None:
             bundle=_bundle(generated),
             context=_context(tmp_path),
         )
+
+
+def test_trace_summary_reports_typed_per_key_coverage_and_missing_extra(tmp_path: Path) -> None:
+    generated = PermutationOrbitGenerator(
+        base_generator=_FiveSampleGenerator(),
+        permutations=[torch.tensor([1, 0])],
+    ).generate(model=None, context=_context(tmp_path))
+    bundle = TraceEquivarianceCalculator(compare_slots=["features"]).calculate(
+        model=_MissingAndExtraTraceModel(),
+        bundle=_bundle(generated),
+        context=_context(tmp_path),
+    )
+    metrics = TraceEquivarianceSummary().summarize(
+        bundle=bundle,
+        context=_context(tmp_path),
+        namespace="validation/trace_equivariance",
+    ).metrics
+
+    assert metrics["compared_sample_count"] == 5
+    assert metrics["missing_key_count"] == 1
+    assert metrics["extra_key_count"] == 1
+    assert metrics["key/shared/count"] == 1
+    assert metrics["key/shared/sample_count"] == 5
+    assert metrics["key/left_only/missing_key_count"] == 1
+    assert metrics["key/right_only/extra_key_count"] == 1
 
 
 def test_feature_and_readout_trace_summaries(tmp_path: Path) -> None:
