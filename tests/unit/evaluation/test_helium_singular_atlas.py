@@ -196,8 +196,8 @@ def test_geometric_refinement_records_properties_and_provenance_not_magic_epsilo
         transitions = finite[:-1] & ~finite[1:]
         assert int(transitions.sum().item()) == 1
         transition = int(torch.nonzero(transitions, as_tuple=False).item())
-        assert bool(atlas.is_refinement_boundary[selection][transition].item())
-        assert bool(atlas.is_exact_zero_sentinel[selection][transition + 1].item())
+        assert bool(atlas.is_refinement_boundary[selection][transition + 1].item())
+        assert not bool(atlas.is_exact_zero_sentinel[selection][transition + 1].item())
     assert generated.batch.batch_size < 2 * 18
 
 
