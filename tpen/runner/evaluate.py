@@ -56,6 +56,7 @@ class Evaluate(Runner):
             self.model.eval()
             _assert_eager_initialized(self.model)
 
+        replay_semantics = None
         mode = _load_mode(self.load)
         if mode == "train_resume":
             raise ValueError("Evaluate rejects load.mode='train_resume'; use model_only")
@@ -70,6 +71,7 @@ class Evaluate(Runner):
             # flattened mapping. No callback subscribes it; its consumer is the
             # durable occurrence record (D3).
             context.emit(CheckpointRestored(report=report))
+            replay_semantics = report.replay_semantics
             if _is_torch_module(self.model):
                 self.model.eval()
 
@@ -77,7 +79,11 @@ class Evaluate(Runner):
         # `finally`, which would pre-empt the run-level `exception` event that
         # `EvaluationTiming` turns into `eval/perf {failed: True}`.
         context.emit(EvaluationStarted())
-        result = self.evaluator.evaluate(model=self.model, context=context)
+        result = self.evaluator.evaluate(
+            model=self.model,
+            context=context,
+            replay_semantics=replay_semantics,
+        )
         _log_result(context, result, namespace=self.evaluator.namespace)
 
         # The existing completion moment carries the evaluator's aggregate

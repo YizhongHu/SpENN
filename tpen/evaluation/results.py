@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 
+from tpen.checkpoint.replay import CheckpointReplaySemantics
+
 JsonScalar: TypeAlias = bool | int | float | str | None
 MetricScalar: TypeAlias = bool | int | float
 EvaluationStatus: TypeAlias = Literal["success", "success_with_warnings", "failed"]
@@ -98,6 +100,7 @@ class TaskResult:
     metrics: dict[str, MetricScalar]
     artifacts: tuple[ArtifactRecord, ...]
     failures: tuple[EvaluationFailure, ...]
+    replay_semantics: CheckpointReplaySemantics | None = None
 
     @property
     def failed(self) -> bool:
@@ -108,7 +111,7 @@ class TaskResult:
     def to_payload(self) -> dict[str, Any]:
         """Return compact event payload data."""
 
-        return {
+        payload = {
             "name": self.name,
             "namespace": self.namespace,
             "output_dir": str(self.output_dir),
@@ -117,6 +120,9 @@ class TaskResult:
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "failures": [failure.to_dict() for failure in self.failures],
         }
+        if self.replay_semantics is not None:
+            payload["replay_semantics"] = self.replay_semantics.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -128,17 +134,21 @@ class EvaluationResult:
     task_results: tuple[TaskResult, ...]
     artifacts: tuple[ArtifactRecord, ...]
     failures: tuple[EvaluationFailure, ...]
+    replay_semantics: CheckpointReplaySemantics | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """Return compact event payload data."""
 
-        return {
+        payload = {
             "status": self.status,
             "metrics": dict(self.metrics),
             "tasks": [task.to_payload() for task in self.task_results],
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "failures": [failure.to_dict() for failure in self.failures],
         }
+        if self.replay_semantics is not None:
+            payload["replay_semantics"] = self.replay_semantics.to_dict()
+        return payload
 
 
 def _is_json_scalar(value: object) -> bool:
