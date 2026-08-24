@@ -9,6 +9,13 @@ from tpen.evaluation.generators.hooke import (
     StratifiedGeometryGenerator,
     TailGridGenerator,
 )
+from tpen.evaluation.generators.helium_atlas import (
+    HeliumAngularShellGenerator,
+    HeliumCenterOfMassEscapeGenerator,
+    HeliumElectronElectronApproachGenerator,
+    HeliumElectronNucleusApproachGenerator,
+    HeliumOneElectronEscapeGenerator,
+)
 from tpen.evaluation.generators.mcmc import MCMCGenerator
 from tpen.evaluation.generators.orbits import (
     ExchangeOrbitGenerator,
@@ -28,6 +35,11 @@ __all__ = [
     "ExchangeOrbitGenerator",
     "HookeOrbitalGenerator",
     "HeliumRadialGridGenerator",
+    "HeliumAngularShellGenerator",
+    "HeliumCenterOfMassEscapeGenerator",
+    "HeliumElectronElectronApproachGenerator",
+    "HeliumElectronNucleusApproachGenerator",
+    "HeliumOneElectronEscapeGenerator",
     "MCMCGenerator",
     "PermutationOrbitGenerator",
     "RotationOrbitGenerator",
