@@ -43,6 +43,7 @@ from tpen.evaluation.results import ArtifactRecord, EvaluationFailure, Evaluatio
 from tpen.evaluation.state import EvaluationRunState
 from tpen.evaluation.summaries import (
     CoalescenceDivergenceSummary,
+    ConditionedLocalEnergySummary,
     ElectronNucleusCuspSummary,
     ElectronNucleusRadialProfileWriter,
     ElectronNucleusTailSummary,
@@ -70,6 +71,7 @@ from tpen.evaluation.trajectory_records import (
 __all__ = [
     "ArtifactRecord",
     "CoalescenceDivergenceSummary",
+    "ConditionedLocalEnergySummary",
     "CuspGridGenerator",
     "DerivativeValues",
     "ElectronNucleusCuspSummary",
