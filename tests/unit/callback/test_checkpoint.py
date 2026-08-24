@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,8 @@ import tpen.checkpoint.restore as restore_module
 from tpen.accelerator import current_accelerator_type, device_module
 from tpen.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
+    CheckpointReplaySemantics,
+    CuspDistanceSemantics,
     checkpoint_hashes,
     resolve_checkpoint_dir,
     restore_checkpoint,
@@ -23,8 +26,9 @@ from tpen.checkpoint import (
     save_checkpoint,
     stable_config_hash,
 )
-from tpen.checkpoint.events import LoadStarted, LoadSucceeded
 from tpen.checkpoint.artifact import prune_old_checkpoints, write_latest
+from tpen.checkpoint.events import LoadStarted, LoadSucceeded
+from tpen.checkpoint.hashing import file_sha256
 from tpen.checkpoint.manifest import LEGACY_CHECKPOINT_KIND, LEGACY_CHECKPOINT_SCHEMA_VERSION
 from tpen.checkpoint.rng import (
     ACCELERATOR_STATE_KEY,
@@ -36,7 +40,8 @@ from tpen.checkpoint.rng import (
     require_restorable_rng_state,
     rng_state_dict,
 )
-from tpen.nn import HookeOrbitalBasis
+from tpen.checkpoint.schema import read_manifest
+from tpen.nn import ElectronElectronCusp, HookeOrbitalBasis
 
 
 def _cfg(*, model_out: int = 2):
@@ -108,6 +113,71 @@ def _write_checkpoint(tmp_path: Path, model: torch.nn.Module | None = None, **kw
     )
 
 
+class _ReplayModel(torch.nn.Module):
+    """Small explicit-factor model used to prove replay gates precede loading."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.factors = torch.nn.ModuleList([ElectronElectronCusp(trainable_range=True)])
+        self.projection = torch.nn.Linear(3, 2)
+
+
+def _replay_context() -> SimpleNamespace:
+    context = _context()
+    context.metadata.git_commit = "a" * 40
+    OmegaConf.update(
+        context.cfg,
+        "trajectory_identity.config_sha256",
+        "b" * 64,
+        force_add=True,
+    )
+    OmegaConf.update(
+        context.cfg,
+        "hamiltonian_terms.electron_nucleus",
+        {"_target_": "tests.ElectronNucleus", "eps": 0.0},
+        force_add=True,
+    )
+    return context
+
+
+def _write_replay_checkpoint(
+    tmp_path: Path,
+) -> tuple[Path, _ReplayModel, CheckpointReplaySemantics, SimpleNamespace]:
+    context = _replay_context()
+    trained = _ReplayModel().double()
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=3,
+        completed_updates=3,
+        model=trained,
+        context=context,
+        save_optimizer=False,
+        save_trainer=False,
+        save_sampler=False,
+        save_rng=False,
+    )
+    manifest = read_manifest(checkpoint_dir / "manifest.json", mode="model_only")
+    cusp = trained.factors[0]
+    semantics = CheckpointReplaySemantics(
+        source_git_sha=manifest.provenance["git_sha"],
+        source_tpen_version=manifest.provenance["tpen_version"],
+        checkpoint_schema_version=manifest.schema_version,
+        checkpoint_kind=manifest.kind,
+        checkpoint_model_sha256=file_sha256(checkpoint_dir / manifest.files["model"]),
+        evaluation_config_sha256=context.cfg.trajectory_identity.config_sha256,
+        runtime_dtype=context.metadata.dtype,
+        cusp_distance=CuspDistanceSemantics(
+            electron_electron_distance_form="sqrt_squared_distance_plus_eps_squared",
+            electron_electron_distance_eps=cusp.eps,
+            electron_electron_range_offset_form="softplus_plus_eps",
+            electron_electron_range_offset_eps=cusp.eps,
+            electron_nucleus_coulomb_distance_form="euclidean_norm_clamp_min_eps",
+            electron_nucleus_coulomb_distance_eps=0.0,
+        ),
+    )
+    return checkpoint_dir, trained, semantics, context
+
+
 def _rewrite_manifest_as_v1(checkpoint_dir: Path) -> None:
     """Rewrite a written manifest into the retired v1 shape.
 
@@ -146,6 +216,142 @@ def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) 
     assert report.loaded_model is True
     assert report.loaded_optimizer is False
     assert report.loaded_sampler is False
+
+
+def test_replay_semantics_strict_restore_succeeds_and_is_reported(tmp_path: Path) -> None:
+    """The matching record is non-vacuous: it permits and records a real load."""
+
+    checkpoint_dir, trained, semantics, context = _write_replay_checkpoint(tmp_path)
+    fresh = _ReplayModel().double()
+    before_restore = {
+        name: value.detach().clone() for name, value in fresh.state_dict().items()
+    }
+
+    report = restore_checkpoint(
+        load={
+            "path": str(checkpoint_dir),
+            "mode": "model_only",
+            "strict": True,
+            "replay_semantics": semantics.to_dict(),
+        },
+        model=fresh,
+        context=context,
+    )
+
+    assert report.replay_semantics == semantics
+    assert report.to_dict()["replay_semantics"] == semantics.to_dict()
+    assert any(
+        not torch.equal(value, before_restore[name])
+        for name, value in fresh.state_dict().items()
+    )
+    for name, value in fresh.state_dict().items():
+        assert torch.equal(value, trained.state_dict()[name])
+
+
+@pytest.mark.parametrize(
+    ("field", "mutate"),
+    [
+        ("source_git_sha", lambda value: replace(value, source_git_sha="c" * 40)),
+        ("source_tpen_version", lambda value: replace(value, source_tpen_version="9.9.9")),
+        (
+            "checkpoint_schema_version",
+            lambda value: replace(value, checkpoint_schema_version=99),
+        ),
+        ("checkpoint_kind", lambda value: replace(value, checkpoint_kind="other.checkpoint")),
+        (
+            "checkpoint_model_sha256",
+            lambda value: replace(value, checkpoint_model_sha256="c" * 64),
+        ),
+        (
+            "evaluation_config_sha256",
+            lambda value: replace(value, evaluation_config_sha256="c" * 64),
+        ),
+        ("runtime_dtype", lambda value: replace(value, runtime_dtype="float32")),
+        (
+            "electron_electron_distance_eps",
+            lambda value: replace(
+                value,
+                cusp_distance=replace(
+                    value.cusp_distance, electron_electron_distance_eps=2.0e-12
+                ),
+            ),
+        ),
+        (
+            "electron_electron_range_offset_eps",
+            lambda value: replace(
+                value,
+                cusp_distance=replace(
+                    value.cusp_distance,
+                    electron_electron_range_offset_eps=2.0e-12,
+                ),
+            ),
+        ),
+        (
+            "electron_nucleus_coulomb_distance_eps",
+            lambda value: replace(
+                value,
+                cusp_distance=replace(
+                    value.cusp_distance,
+                    electron_nucleus_coulomb_distance_eps=1.0e-12,
+                ),
+            ),
+        ),
+    ],
+)
+def test_replay_semantics_mismatches_refuse_before_model_mutation(
+    tmp_path: Path, field: str, mutate
+) -> None:
+    """Every replay gate has a negative arm and leaves its target unmodified."""
+
+    checkpoint_dir, _, semantics, context = _write_replay_checkpoint(tmp_path)
+    fresh = _ReplayModel().double()
+    before_restore = {
+        name: value.detach().clone() for name, value in fresh.state_dict().items()
+    }
+
+    with pytest.raises(ValueError, match=field):
+        restore_checkpoint(
+            load={
+                "path": str(checkpoint_dir),
+                "mode": "model_only",
+                "strict": True,
+                "replay_semantics": mutate(semantics).to_dict(),
+            },
+            model=fresh,
+            context=context,
+        )
+
+    for name, value in fresh.state_dict().items():
+        assert torch.equal(value, before_restore[name])
+
+
+def test_replay_semantics_content_identity_mismatch_refuses_before_model_mutation(
+    tmp_path: Path,
+) -> None:
+    """A serialized record cannot claim an identity different from its fields."""
+
+    checkpoint_dir, _, semantics, context = _write_replay_checkpoint(tmp_path)
+    fresh = _ReplayModel().double()
+    before_restore = {
+        name: value.detach().clone() for name, value in fresh.state_dict().items()
+    }
+    serialized = semantics.to_dict()
+    serialized["content_id"] = "c" * 64
+
+    with pytest.raises(ValueError, match="content_id mismatch"):
+        restore_checkpoint(
+            load={
+                "path": str(checkpoint_dir),
+                "mode": "model_only",
+                "strict": True,
+                "replay_semantics": serialized,
+            },
+            model=fresh,
+            context=context,
+        )
+
+    for name, value in fresh.state_dict().items():
+        assert torch.equal(value, before_restore[name])
 
 
 def test_restore_runtime_device_check_accepts_this_hosts_accelerator() -> None:

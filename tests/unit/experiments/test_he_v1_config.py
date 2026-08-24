@@ -141,6 +141,31 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     }
 
 
+def test_he_eval_replay_semantics_are_typed_and_fail_closed() -> None:
+    """The driver must supply source/checkpoint identity before strict restore."""
+
+    replay = _load(EVAL)["load"]["replay_semantics"]
+    assert replay["record_schema_version"] == 1
+    assert replay["source_git_sha"] == "???"
+    assert replay["source_tpen_version"] == "???"
+    assert replay["checkpoint_schema_version"] == "???"
+    assert replay["checkpoint_kind"] == "???"
+    assert replay["checkpoint_model_sha256"] == "???"
+    assert replay["evaluation_config_sha256"] == "${trajectory_identity.config_sha256}"
+    assert replay["runtime_dtype"] == "${runtime.dtype}"
+    assert replay["reference_energy_qualification"] == (
+        "infinite_nuclear_mass_nonrelativistic"
+    )
+    assert replay["cusp_distance"] == {
+        "electron_electron_distance_form": "sqrt_squared_distance_plus_eps_squared",
+        "electron_electron_distance_eps": 1.0e-12,
+        "electron_electron_range_offset_form": "softplus_plus_eps",
+        "electron_electron_range_offset_eps": 1.0e-12,
+        "electron_nucleus_coulomb_distance_form": "euclidean_norm_clamp_min_eps",
+        "electron_nucleus_coulomb_distance_eps": "${hamiltonian_terms.electron_nucleus.eps}",
+    }
+
+
 def test_he_eval_registers_atom_owned_radial_profiles_after_typed_contracts() -> None:
     config = _load(EVAL)
     tasks = config["evaluation_tasks"]

@@ -14,6 +14,11 @@ from tpen.accelerator import canonical_device
 
 from .artifact import resolve_checkpoint_dir
 from .hashing import checkpoint_hashes
+from .replay import (
+    CheckpointReplaySemantics,
+    coerce_checkpoint_replay_semantics,
+    verify_checkpoint_replay_semantics,
+)
 from .rng import apply_rng_state, require_restorable_rng_state, runtime_device
 from .schema import read_manifest
 
@@ -56,11 +61,12 @@ class RestoreReport:
     loaded_trainer: bool = False
     loaded_sampler: bool = False
     loaded_rng: bool = False
+    replay_semantics: CheckpointReplaySemantics | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-safe report mapping."""
 
-        return {
+        payload = {
             "mode": self.mode,
             "checkpoint_dir": self.checkpoint_dir,
             "schema_version": self.schema_version,
@@ -72,6 +78,9 @@ class RestoreReport:
             "loaded_sampler": self.loaded_sampler,
             "loaded_rng": self.loaded_rng,
         }
+        if self.replay_semantics is not None:
+            payload["replay_semantics"] = self.replay_semantics.to_dict()
+        return payload
 
 
 def restore_checkpoint(
@@ -109,6 +118,19 @@ def restore_checkpoint(
     # Schema acceptance is mode-dependent, so the mode is decided before the
     # manifest is read: a v1 artifact is refused for `train_resume` at the gate.
     manifest = read_manifest(checkpoint_dir / "manifest.json", mode=mode)
+    replay_semantics = (
+        coerce_checkpoint_replay_semantics(config["replay_semantics"])
+        if config.get("replay_semantics") is not None
+        else None
+    )
+    if replay_semantics is not None:
+        verify_checkpoint_replay_semantics(
+            replay_semantics,
+            manifest=manifest,
+            checkpoint_dir=checkpoint_dir,
+            model=model,
+            context=context,
+        )
     current_hashes = checkpoint_hashes(getattr(context, "cfg", {}))
 
     _verify_hash(manifest.hashes, current_hashes, "model_config", checkpoint_dir)
@@ -129,6 +151,7 @@ def restore_checkpoint(
             # `None` for a v1 manifest, which never recorded the counter.
             completed_updates=manifest.completed_updates,
             loaded_model=True,
+            replay_semantics=replay_semantics,
         )
 
     for hash_name in (
@@ -172,6 +195,7 @@ def restore_checkpoint(
         loaded_trainer=True,
         loaded_sampler=True,
         loaded_rng=True,
+        replay_semantics=replay_semantics,
     )
 
 
