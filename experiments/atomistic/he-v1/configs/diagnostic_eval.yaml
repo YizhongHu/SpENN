@@ -1,0 +1,282 @@
+# Overlay for the frozen post-hoc he-v1-diagnostic-v1 study.
+#
+# diagnostic.py merges this document over eval.yaml.  The base file remains the
+# strict real-format restore authority; this overlay owns only the new task
+# graph and row scale controls.  Facility paths are supplied by an external
+# source manifest and never appear here.
+
+experiment:
+  run_name: tpen_he_v1_diagnostic_v1
+
+evaluation:
+  namespace: he_v1_diagnostic_v1
+  task_failure_policy: fail_fast
+
+diagnostic:
+  row_kind: ???
+  protocol: ???
+  comparison_kind: ???
+  checkpoint_label: ???
+  checkpoint_step: ???
+  n_walkers: ???
+  n_draws: ???
+  burn_in: ???
+  stride: ???
+  record_capacity: ???
+  diagnostic_samples: ???
+  factor_arm:
+    label: baseline
+    b_ee: 1.0
+    c_electron_nucleus: 1.0
+    d_electron_nucleus: 1.0
+  factor_arms:
+    - {label: baseline, b_ee: 1.0, c_electron_nucleus: 1.0, d_electron_nucleus: 1.0}
+    - {label: b_ee_minus_10pct, b_ee: 0.9, c_electron_nucleus: 1.0, d_electron_nucleus: 1.0}
+    - {label: b_ee_plus_10pct, b_ee: 1.1, c_electron_nucleus: 1.0, d_electron_nucleus: 1.0}
+    - {label: c_en_minus_10pct, b_ee: 1.0, c_electron_nucleus: 0.9, d_electron_nucleus: 1.0}
+    - {label: c_en_plus_10pct, b_ee: 1.0, c_electron_nucleus: 1.1, d_electron_nucleus: 1.0}
+    - {label: d_en_minus_10pct, b_ee: 1.0, c_electron_nucleus: 1.0, d_electron_nucleus: 0.9}
+    - {label: d_en_plus_10pct, b_ee: 1.0, c_electron_nucleus: 1.0, d_electron_nucleus: 1.1}
+
+diagnostic_tasks:
+  retained_energy:
+    name: retained_energy
+    namespace: ${evaluation.namespace}/${diagnostic.protocol}/retained_energy
+    output_dir: ${run.dir}/retained_energy
+    generator:
+      _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
+      sampler: ${evaluation_sampler}
+      hamiltonian_terms: ${hamiltonian_terms}
+      n_draws: ${diagnostic.n_draws}
+      seed: ${evaluation.seed}
+      chunk_size: 256
+      reset: true
+    calculators:
+      - _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        return_terms: true
+        chunk_size: 256
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
+        reference_energy: ${system.reference_energy}
+      - _target_: tpen.evaluation.summaries.TrajectoryStatisticsSummary
+        stage: ${trajectory_identity.stage}
+        run_id: ${trajectory_identity.run_id}
+        attempt_id: ${trajectory_identity.attempt_id}
+        evaluator_id: ${trajectory_identity.evaluator_id}
+        checkpoint_path: ${trajectory_identity.checkpoint_file}
+        config_sha256: ${trajectory_identity.config_sha256}
+        observable: local_energy
+        prefix: local_energy
+      - _target_: tpen.evaluation.summaries.HamiltonianTermSummary
+      - _target_: tpen.evaluation.summaries.SamplerStatsSummary
+      - _target_: tpen.evaluation.summaries.ConditionedLocalEnergySummary
+        range_edges:
+          minimum_electron_nuclear_radius: [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0]
+          electron_electron_distance: [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+          maximum_electron_nuclear_radius: [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+          hyperradius: [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0]
+          cos_theta12: [-0.9, -0.5, 0.0, 0.5, 0.9]
+          logabs: [-30.0, -20.0, -10.0, -5.0, 0.0, 5.0]
+        quantile_seed: ${evaluation.seed}
+        deviation_ccdf_thresholds: [0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0]
+        joint_strata:
+          - name: near_nucleus_close_pair
+            bounds:
+              minimum_electron_nuclear_radius: [0.0, 0.1]
+              electron_electron_distance: [0.0, 0.25]
+          - name: near_nucleus_wide_pair
+            bounds:
+              minimum_electron_nuclear_radius: [0.0, 0.1]
+              electron_electron_distance: [1.0, 8.0]
+          - name: compact_bulk
+            bounds:
+              minimum_electron_nuclear_radius: [0.25, 2.0]
+              maximum_electron_nuclear_radius: [0.25, 4.0]
+        top_k: 100
+        max_event_records: 100
+        cancellation_ratio_threshold: 100.0
+        cancellation_term_l1_threshold: 10.0
+        cancellation_energy_floor: 1.0e-12
+        low_logabs_threshold: -20.0
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
+        max_samples: ${diagnostic.record_capacity}
+        include_term_energies: true
+
+  reequilibrated_energy:
+    name: reequilibrated_energy
+    namespace: ${evaluation.namespace}/factor_re_equilibrated/${diagnostic.factor_arm.label}
+    output_dir: ${run.dir}/reequilibrated_energy
+    generator:
+      _target_: tpen.evaluation.generators.ReequilibratedFactorGenerator
+      arm: ${diagnostic.factor_arm}
+      generator:
+        _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
+        sampler: ${evaluation_sampler}
+        hamiltonian_terms: ${hamiltonian_terms}
+        n_draws: ${diagnostic.n_draws}
+        seed: ${evaluation.seed}
+        chunk_size: 256
+        reset: true
+    calculators:
+      - _target_: tpen.evaluation.calculators.FactorArmCalculator
+        arm: ${diagnostic.factor_arm}
+        calculator:
+          _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+          hamiltonian_terms: ${hamiltonian_terms}
+          return_terms: true
+          chunk_size: 256
+      - _target_: tpen.evaluation.calculators.FactorArmCalculator
+        arm: ${diagnostic.factor_arm}
+        calculator:
+          _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.ReferenceEnergySummary
+        reference_energy: ${system.reference_energy}
+      - _target_: tpen.evaluation.summaries.TrajectoryStatisticsSummary
+        stage: ${trajectory_identity.stage}
+        run_id: ${trajectory_identity.run_id}
+        attempt_id: ${trajectory_identity.attempt_id}
+        evaluator_id: ${trajectory_identity.evaluator_id}
+        checkpoint_path: ${trajectory_identity.checkpoint_file}
+        config_sha256: ${trajectory_identity.config_sha256}
+        observable: local_energy
+        prefix: local_energy
+      - _target_: tpen.evaluation.summaries.HamiltonianTermSummary
+      - _target_: tpen.evaluation.summaries.SamplerStatsSummary
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
+        max_samples: ${diagnostic.record_capacity}
+        include_term_energies: true
+
+  common_factor_response:
+    name: common_factor_response
+    namespace: ${evaluation.namespace}/factor_common_configuration
+    output_dir: ${run.dir}/common_factor_response
+    generator:
+      _target_: tpen.evaluation.generators.MCMCGenerator
+      sampler: ${evaluation_sampler}
+      seed: ${evaluation.seed}
+      max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.FactorResponseCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        arms: ${diagnostic.factor_arms}
+        baseline_label: baseline
+        chunk_size: 256
+    summaries:
+      - _target_: tpen.evaluation.summaries.FactorResponseSummary
+        max_records: 100000
+
+  full_model_antisymmetry:
+    name: full_model_antisymmetry
+    namespace: ${evaluation.namespace}/full_model_antisymmetry
+    output_dir: ${run.dir}/full_model_antisymmetry
+    generator:
+      _target_: tpen.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: tpen.evaluation.generators.MCMCGenerator
+        sampler: ${evaluation_sampler}
+        seed: ${evaluation.seed}
+        max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.FullModelAntisymmetryCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.TransformConsistencySummary
+      - _target_: tpen.evaluation.summaries.TransformRecordWriter
+
+  spatial_exchange_symmetry:
+    name: spatial_exchange_symmetry
+    namespace: ${evaluation.namespace}/spatial_exchange_symmetry
+    output_dir: ${run.dir}/spatial_exchange_symmetry
+    generator:
+      _target_: tpen.evaluation.generators.ExchangeOrbitGenerator
+      exchange: opposite_spin_pair
+      base_generator:
+        _target_: tpen.evaluation.generators.MCMCGenerator
+        sampler: ${evaluation_sampler}
+        seed: ${evaluation.seed}
+        max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.SpatialExchangeSymmetryCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.TransformConsistencySummary
+      - _target_: tpen.evaluation.summaries.TransformRecordWriter
+
+  rotation_consistency:
+    name: rotation_consistency
+    namespace: ${evaluation.namespace}/rotation_consistency
+    output_dir: ${run.dir}/rotation_consistency
+    generator:
+      _target_: tpen.evaluation.generators.RotationOrbitGenerator
+      n_rotations: 4
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: tpen.evaluation.generators.MCMCGenerator
+        sampler: ${evaluation_sampler}
+        seed: ${evaluation.seed}
+        max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.RotationConsistencyCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        chunk_size: 256
+    summaries:
+      - _target_: tpen.evaluation.summaries.TransformConsistencySummary
+      - _target_: tpen.evaluation.summaries.TransformRecordWriter
+
+  trace_equivariance:
+    name: trace_equivariance
+    namespace: ${evaluation.namespace}/trace_equivariance
+    output_dir: ${run.dir}/trace_equivariance
+    generator:
+      _target_: tpen.evaluation.generators.PermutationOrbitGenerator
+      n_permutations: 1
+      seed: ${evaluation.seed}
+      base_generator:
+        _target_: tpen.evaluation.generators.MCMCGenerator
+        sampler: ${evaluation_sampler}
+        seed: ${evaluation.seed}
+        max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.TraceEquivarianceCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.TraceEquivarianceSummary
+      - _target_: tpen.evaluation.summaries.TraceRecordWriter
+
+  feature_trace:
+    name: feature_trace
+    namespace: ${evaluation.namespace}/feature_trace
+    output_dir: ${run.dir}/feature_trace
+    generator:
+      _target_: tpen.evaluation.generators.MCMCGenerator
+      sampler: ${evaluation_sampler}
+      seed: ${evaluation.seed}
+      max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.FeatureTraceCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.FeatureTraceSummary
+      - _target_: tpen.evaluation.summaries.TraceRecordWriter
+
+  readout_trace:
+    name: readout_trace
+    namespace: ${evaluation.namespace}/readout_trace
+    output_dir: ${run.dir}/readout_trace
+    generator:
+      _target_: tpen.evaluation.generators.MCMCGenerator
+      sampler: ${evaluation_sampler}
+      seed: ${evaluation.seed}
+      max_samples: ${diagnostic.diagnostic_samples}
+    calculators:
+      - _target_: tpen.evaluation.calculators.ReadoutTraceCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.ReadoutTraceSummary
+      - _target_: tpen.evaluation.summaries.TraceRecordWriter
+
+diagnostic_callbacks:
+  - _target_: tpen.callback.ArtifactIndex
+  - _target_: tpen.callback.FailureLog

@@ -31,6 +31,7 @@ def test_evaluation_bundle_fields_are_intentional() -> None:
         "trace_comparison",
         "feature_trace",
         "readout_trace",
+        "factor_response",
     }
 
 

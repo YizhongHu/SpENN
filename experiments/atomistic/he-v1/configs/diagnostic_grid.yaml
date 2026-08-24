@@ -1,0 +1,111 @@
+schema: he-v1-diagnostic-grid/v1
+study: he-v1-diagnostic-v1
+base_eval_config: experiments/atomistic/he-v1/configs/eval.yaml
+overlay_config: experiments/atomistic/he-v1/configs/diagnostic_eval.yaml
+source_git_sha: 418accf153368aab45586dc2a2cc97c18472691c
+
+# Logical checkpoint identities only.  Exact source directories are supplied
+# in an external source map and are content-verified by diagnostic_plan.py.
+checkpoints:
+  - label: step_025000
+    completed_updates: 25000
+    model_sha256: 7f897ee268e6f2261fb58f4136d08121258b31478da3bf31526f9ce7fea58b1f
+    manifest_sha256: fbc5f20ac95da58479d0651b6ca7beb5f931b61123d330bc0dfac67982f77510
+  - label: step_050000
+    completed_updates: 50000
+    model_sha256: 9a8acc0e6f2ca86c405880ce5a43c322bfddb4352315c692e257aced7b0d07d7
+    manifest_sha256: a4e77b36ec250a500014672b9128be3d18c0809e528d5b64dd0c1358c4a276ed
+
+trajectory_protocols:
+  - name: primary_256x4096
+    comparison_kind: primary_headline
+    seeds: [1000, 1001, 1002, 1003]
+    n_walkers: 4096
+    n_draws: 256
+    burn_in: 100
+    stride: 20
+  - name: long_1024x1024
+    comparison_kind: long_chain_diagnostic
+    seeds: [2000, 2001, 2002, 2003]
+    n_walkers: 1024
+    n_draws: 1024
+    burn_in: 100
+    stride: 20
+
+# Sensitivity arms are diagnostic and never replace or pool into the primary
+# estimator.  Each changes exactly one chain-control coordinate.
+sensitivity_protocols:
+  - {name: burn_in_50, comparison_kind: burn_in_sensitivity, seed: 3000, n_walkers: 256, n_draws: 256, burn_in: 50, stride: 20}
+  - {name: burn_in_200, comparison_kind: burn_in_sensitivity, seed: 3001, n_walkers: 256, n_draws: 256, burn_in: 200, stride: 20}
+  - {name: stride_10, comparison_kind: stride_sensitivity, seed: 3100, n_walkers: 256, n_draws: 256, burn_in: 100, stride: 10}
+  - {name: stride_40, comparison_kind: stride_sensitivity, seed: 3101, n_walkers: 256, n_draws: 256, burn_in: 100, stride: 40}
+
+factor_arms:
+  - {label: baseline, seed: 4000, b_ee: 1.0, c_electron_nucleus: 1.0, d_electron_nucleus: 1.0}
+  - {label: b_ee_minus_10pct, seed: 4001, b_ee: 0.9, c_electron_nucleus: 1.0, d_electron_nucleus: 1.0}
+  - {label: b_ee_plus_10pct, seed: 4002, b_ee: 1.1, c_electron_nucleus: 1.0, d_electron_nucleus: 1.0}
+  - {label: c_en_minus_10pct, seed: 4003, b_ee: 1.0, c_electron_nucleus: 0.9, d_electron_nucleus: 1.0}
+  - {label: c_en_plus_10pct, seed: 4004, b_ee: 1.0, c_electron_nucleus: 1.1, d_electron_nucleus: 1.0}
+  - {label: d_en_minus_10pct, seed: 4005, b_ee: 1.0, c_electron_nucleus: 1.0, d_electron_nucleus: 0.9}
+  - {label: d_en_plus_10pct, seed: 4006, b_ee: 1.0, c_electron_nucleus: 1.0, d_electron_nucleus: 1.1}
+
+factor_common_configuration:
+  seed: 5000
+  n_walkers: 1024
+  burn_in: 100
+  stride: 20
+
+factor_reequilibrated:
+  n_walkers: 256
+  n_draws: 128
+  burn_in: 100
+  stride: 20
+
+checkpoint_diagnostics:
+  seed: 6000
+  n_walkers: 4096
+  burn_in: 100
+  stride: 20
+  n_samples: 4096
+  task_names:
+    - he_radial_profiles
+    - he_en_numerical_atlas
+    - he_ee_ideal_vs_executed_numerical_atlas
+    - he_one_electron_tail_atlas
+    - he_center_of_mass_tail_atlas
+    - he_angular_shell_atlas
+    - full_model_antisymmetry
+    - spatial_exchange_symmetry
+    - rotation_consistency
+    - trace_equivariance
+    - feature_trace
+    - readout_trace
+
+resources:
+  production:
+    partition: kozinsky_gpu
+    stratum: a100
+    constraint: a100
+    timeout_min: 720
+    cpus: 4
+    mem_gb: 32
+    gpus: 1
+  smoke:
+    partition: gpu_test
+    stratum: a100_mig
+    constraint: null
+    timeout_min: 120
+    cpus: 4
+    mem_gb: 32
+    gpus: 1
+
+# Smoke changes scale only.  Row kinds, checkpoint identities, factor arms,
+# task profiles, dependencies, and collection requirements remain identical.
+smoke_scale:
+  n_walkers: 4
+  n_draws: 2
+  burn_in: 1
+  stride: 1
+  diagnostic_samples: 4
+  atlas_max_refinement_steps: 4
+  atlas_radii: [2.0]

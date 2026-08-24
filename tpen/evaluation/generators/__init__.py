@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tpen.evaluation.generators.atom import HeliumRadialGridGenerator
+from tpen.evaluation.generators.factor_response import ReequilibratedFactorGenerator
 from tpen.evaluation.generators.hooke import (
     CuspGridGenerator,
     HookeOrbitalGenerator,
@@ -42,6 +43,7 @@ __all__ = [
     "HeliumOneElectronEscapeGenerator",
     "MCMCGenerator",
     "PermutationOrbitGenerator",
+    "ReequilibratedFactorGenerator",
     "RotationOrbitGenerator",
     "StratifiedGeometryGenerator",
     "TailGridGenerator",
