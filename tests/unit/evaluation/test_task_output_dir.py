@@ -113,6 +113,24 @@ def _run_context(tmp_path: Path) -> RunContext:
     return make_run_context(tmp_path)
 
 
+def _evaluator(*, output_dir: Path, generator: object) -> Evaluator:
+    """Return the one-task evaluator used by replay-result propagation tests."""
+
+    return Evaluator(
+        namespace="eval",
+        tasks=[
+            EvaluationTask(
+                name="energy",
+                namespace="eval/energy",
+                output_dir=output_dir,
+                generator=generator,
+                calculators=[],
+                summaries=[],
+            )
+        ],
+    )
+
+
 def test_evaluator_requires_explicit_task_output_dir() -> None:
     with pytest.raises(ValueError, match="output_dir"):
         Evaluator(
