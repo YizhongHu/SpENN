@@ -14,6 +14,12 @@ from tpen.evaluation.summaries.hooke import (
     LocalEnergyStabilitySummary,
     OppositeSpinCuspSummary,
 )
+from tpen.evaluation.summaries.helium_atlas import (
+    HeliumAtlasWriter,
+    HeliumCurvatureSummary,
+    HeliumNumericalLimitSummary,
+    HeliumTailSummary,
+)
 from tpen.evaluation.summaries.local_energy import LocalEnergySummary
 from tpen.evaluation.summaries.metadata import SamplerStatsSummary
 from tpen.evaluation.summaries.records import SampledRecordWriter, TraceRecordWriter, TransformRecordWriter
@@ -35,6 +41,10 @@ __all__ = [
     "ElectronNucleusTailSummary",
     "FeatureTraceSummary",
     "HamiltonianTermSummary",
+    "HeliumAtlasWriter",
+    "HeliumCurvatureSummary",
+    "HeliumNumericalLimitSummary",
+    "HeliumTailSummary",
     "LocalEnergyPathologySummary",
     "LocalEnergyStabilitySummary",
     "LocalEnergySummary",

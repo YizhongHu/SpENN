@@ -10,6 +10,7 @@ import pytest
 
 from tpen.evaluation.bundle import (
     EvaluationBundle,
+    GeneratedConfigurations,
     TransformComparisonValues,
     TransformKind,
     TransformName,
@@ -24,11 +25,23 @@ def test_evaluation_bundle_fields_are_intentional() -> None:
         "local_energy",
         "derivatives",
         "electron_nucleus_radial",
+        "helium_atlas",
         "trace",
         "transform",
         "trace_comparison",
         "feature_trace",
         "readout_trace",
+    }
+
+
+def test_records_and_atlas_carriers_coexist_as_typed_bundle_fields() -> None:
+    assert [field.name for field in fields(GeneratedConfigurations)] == [
+        "batch",
+        "metadata",
+        "trajectory_records",
+    ]
+    assert "helium_atlas" in {
+        field.name for field in fields(EvaluationBundle)
     }
 
 

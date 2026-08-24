@@ -47,11 +47,17 @@ class LocalEnergyResult:
         Exact wavefunction output used by a term while evaluating this local
         energy. The aggregate evaluator permits at most one producing term so
         consumers can retain signed-log values without a second model pass.
+    per_electron_kinetic : torch.Tensor or None, optional
+        Explicit per-electron kinetic attribution with shape
+        [batch, n_electrons]. The aggregate evaluator permits at most one
+        producing term and carries it alongside the wavefunction output so
+        diagnostics reuse the same differentiated model evaluation.
     """
 
     total: torch.Tensor
     terms: dict[str, torch.Tensor] = field(default_factory=dict)
     wavefunction_output: WavefunctionOutput | None = None
+    per_electron_kinetic: torch.Tensor | None = None
 
 
 def normalize_hamiltonian_terms(
@@ -194,13 +200,20 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
             )
         normalized = normalize_hamiltonian_terms(terms)
         batch = context.batch
-        batch_size = batch.flatten_samples().batch_size
+        flat = batch.flatten_samples()
+        batch_size = flat.batch_size
         total: torch.Tensor | None = None
         decomposition: dict[str, torch.Tensor] = {}
         wavefunction_output: WavefunctionOutput | None = None
+        per_electron_kinetic: torch.Tensor | None = None
         for name, term in normalized.items():
             result = term.local_energy(context.wavefunction, batch)
-            result = _validate_local_energy_result(name, result, batch_size=batch_size)
+            result = _validate_local_energy_result(
+                name,
+                result,
+                batch_size=batch_size,
+                n_electrons=flat.n_electrons,
+            )
             decomposition[name] = result.total
             total = result.total if total is None else total + result.total
             if result.wavefunction_output is not None:
@@ -210,6 +223,13 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
                         "trajectory records require one model evaluation source"
                     )
                 wavefunction_output = result.wavefunction_output
+            if result.per_electron_kinetic is not None:
+                if per_electron_kinetic is not None:
+                    raise ValueError(
+                        "local-energy evaluation produced more than one per-electron "
+                        "kinetic attribution"
+                    )
+                per_electron_kinetic = result.per_electron_kinetic
         if total is None:
             flat = batch.flatten_samples()
             total = torch.zeros(flat.batch_size, device=flat.device, dtype=flat.dtype)
@@ -218,6 +238,7 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
                 total=total,
                 terms=decomposition,
                 wavefunction_output=wavefunction_output,
+                per_electron_kinetic=per_electron_kinetic,
             )
         return total
 
@@ -267,6 +288,7 @@ def _validate_local_energy_result(
     result: object,
     *,
     batch_size: int,
+    n_electrons: int,
 ) -> LocalEnergyResult:
     """Validate the object returned by one Hamiltonian term."""
 
@@ -300,6 +322,23 @@ def _validate_local_energy_result(
                 f"hamiltonian term {name!r} wavefunction_output must be a WavefunctionOutput"
             )
         result.wavefunction_output.validate(batch_size=batch_size)
+    if result.per_electron_kinetic is not None:
+        attribution = result.per_electron_kinetic
+        if not isinstance(attribution, torch.Tensor):
+            raise TypeError(
+                f"hamiltonian term {name!r} per_electron_kinetic must be a torch.Tensor"
+            )
+        expected_attribution_shape = (batch_size, n_electrons)
+        if tuple(attribution.shape) != expected_attribution_shape:
+            raise ValueError(
+                f"hamiltonian term {name!r} per_electron_kinetic must have shape "
+                f"{expected_attribution_shape}, got {tuple(attribution.shape)}"
+            )
+        if attribution.device != result.total.device or attribution.dtype != result.total.dtype:
+            raise ValueError(
+                f"hamiltonian term {name!r} per_electron_kinetic must match total "
+                "dtype/device"
+            )
     return result
 
 

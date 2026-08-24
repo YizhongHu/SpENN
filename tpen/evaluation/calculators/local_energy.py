@@ -119,8 +119,10 @@ def evaluate_local_energy_in_chunks(
     term_chunks: dict[str, list[torch.Tensor]] = {}
     logabs_chunks: list[torch.Tensor] = []
     sign_chunks: list[torch.Tensor] = []
+    per_electron_kinetic_chunks: list[torch.Tensor] = []
     term_order: tuple[str, ...] | None = None
     captured_wavefunction = False
+    captured_per_electron_kinetic = False
     for start in range(0, batch_size, size):
         chunk = slice_flat_batch(flat, start, min(start + size, batch_size))
         result = local_energy(terms, wavefunction, chunk, return_terms=return_terms)
@@ -143,6 +145,11 @@ def evaluate_local_energy_in_chunks(
                 # term, so neither may escape the current chunk.
                 logabs_chunks.append(output.logabs.detach().reshape(-1))
                 sign_chunks.append(output.sign.detach().reshape(-1))
+            if result.per_electron_kinetic is not None:
+                captured_per_electron_kinetic = True
+                per_electron_kinetic_chunks.append(
+                    result.per_electron_kinetic.detach()
+                )
         else:
             if not isinstance(result, torch.Tensor):
                 raise TypeError("local_energy(return_terms=False) must return a torch.Tensor")
@@ -158,10 +165,22 @@ def evaluate_local_energy_in_chunks(
             logabs=torch.cat(logabs_chunks, dim=0),
             sign=torch.cat(sign_chunks, dim=0),
         )
+    per_electron_kinetic = None
+    if captured_per_electron_kinetic:
+        if len(per_electron_kinetic_chunks) != len(total_chunks):
+            raise ValueError(
+                "per-electron kinetic attribution was not produced for every "
+                "local-energy chunk"
+            )
+        per_electron_kinetic = torch.cat(
+            per_electron_kinetic_chunks,
+            dim=0,
+        )
     return LocalEnergyResult(
         total=total,
         terms={name: torch.cat(chunks, dim=0) for name, chunks in term_chunks.items()},
         wavefunction_output=wavefunction_output,
+        per_electron_kinetic=per_electron_kinetic,
     )
 
 
