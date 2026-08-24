@@ -739,3 +739,21 @@ def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
         linear.load_state_dict(trainable.state_dict(), strict=True)
     with pytest.raises(RuntimeError):
         trainable.load_state_dict(linear.state_dict(), strict=True)
+
+
+def test_he_eval_enables_canonical_host_wall_cost_callbacks_at_config_root() -> None:
+    """Use typed evaluation boundaries without claiming broken device sync."""
+
+    config = _load(EVAL)
+    callbacks = {
+        entry["_target_"]: entry
+        for entry in config["callbacks"]
+    }
+    for target in (
+        "tpen.callback.EvaluationTiming",
+        "tpen.callback.EvaluationComponentTiming",
+        "tpen.callback.DiagnosticTiming",
+    ):
+        assert callbacks[target]["accelerator_synchronize"] is False
+    assert "tpen.callback.ResourceUsage" in callbacks
+    assert "callbacks" not in config["runner"]

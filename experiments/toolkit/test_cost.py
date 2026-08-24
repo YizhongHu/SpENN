@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from experiments.toolkit.cost import (
+    artifact_timing_comparison,
     cost_by_axis_rows,
     cost_by_run_row,
     cost_by_task_rows,
@@ -38,6 +39,9 @@ def test_cost_by_run_row_projects_runtime_and_step_statistics() -> None:
     assert row["stage"] == "train"
     assert row["wall_time_sec"] == 100.0
     assert row["peak_memory_mb"] == 512.0
+    assert row["device_peak_memory_allocated_mb"] == ""
+    assert row["device_peak_memory_reserved_mb"] == ""
+    assert row["device_peak_memory_available"] is False
     assert row["n_steps"] == "3"
     assert float(row["mean_step_time_sec"]) == pytest.approx(2.0)
     assert float(row["median_step_time_sec"]) == pytest.approx(2.0)
@@ -213,6 +217,43 @@ def test_cost_by_run_row_without_metrics_leaves_blanks() -> None:
     assert row["mean_step_time_sec"] == ""
 
 
+def test_cost_by_run_row_reports_device_peaks_only_when_both_were_measured() -> None:
+    rows = [
+        {
+            "step": 0,
+            "namespace": "runtime",
+            "metric": "cuda_max_memory_allocated_mb",
+            "value": 128.0,
+        },
+        {
+            "step": 0,
+            "namespace": "runtime",
+            "metric": "cuda_max_memory_reserved_mb",
+            "value": 256.0,
+        },
+    ]
+
+    row = cost_by_run_row(rows, run_id="run-a", attempt_id="A0", stage="eval")
+
+    assert row["device_peak_memory_available"] is True
+    assert row["device_peak_memory_allocated_mb"] == 128.0
+    assert row["device_peak_memory_reserved_mb"] == 256.0
+
+
+def test_cost_by_run_row_rejects_partial_device_peak_receipt() -> None:
+    rows = [
+        {
+            "step": 0,
+            "namespace": "runtime",
+            "metric": "cuda_max_memory_allocated_mb",
+            "value": 128.0,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="peak-memory receipt is incomplete"):
+        cost_by_run_row(rows, run_id="run-a", attempt_id="A0", stage="eval")
+
+
 def test_cost_by_task_rows_merges_task_time_and_components() -> None:
     metrics_rows = [
         {"step": 0, "namespace": "diagnostics/tail", "metric": "time_sec", "value": 4.0},
@@ -236,6 +277,226 @@ def test_cost_by_task_rows_merges_task_time_and_components() -> None:
     assert float(tail["generator_time_sec"]) == pytest.approx(1.0)
     assert float(tail["calculator_time_sec"]) == pytest.approx(0.75)
     assert float(tail["summary_time_sec"]) == pytest.approx(0.125)
+
+
+def test_cost_by_task_rows_reports_throughput_provenance_and_timing_reconciliation() -> None:
+    metrics_rows = [
+        {"step": 0, "namespace": "diagnostics/mcmc_energy", "metric": "time_sec", "value": 10.0},
+        {"step": 0, "namespace": "eval/perf/mcmc_energy", "metric": "generator_time_sec", "value": 4.0},
+        {
+            "step": 0,
+            "namespace": "eval/perf/mcmc_energy",
+            "metric": "calculator/local_energy_time_sec",
+            "value": 2.0,
+        },
+        {
+            "step": 0,
+            "namespace": "eval/perf/mcmc_energy",
+            "metric": "summary/sampler_stats_time_sec",
+            "value": 1.0,
+        },
+        {
+            "step": 0,
+            "namespace": "eval/perf/mcmc_energy",
+            "metric": "summary/sampled_records_time_sec",
+            "value": 0.5,
+        },
+        {
+            "step": 0,
+            "namespace": "eval/mcmc_energy",
+            "metric": "sampler_trajectory_retained_value_count",
+            "value": 12,
+        },
+        {
+            "step": 0,
+            "namespace": "eval/mcmc_energy",
+            "metric": "sampler_trajectory_discarded_value_count",
+            "value": 4,
+        },
+    ]
+    provenance = {
+        "timing_mode": "host_wall_unsynchronized",
+        "hostname": "holy8a24101",
+        "slurm_job_id": "123",
+        "device_uuid": "cpu",
+    }
+
+    (row,) = cost_by_task_rows(
+        metrics_rows,
+        run_id="run-a",
+        attempt_id="A0",
+        stage="eval",
+        device_type="cpu",
+        provenance=provenance,
+        allocation={
+            "device_name": "cpu",
+            "device_count": 4,
+            "allocated_wall_time_sec": 30.0,
+        },
+    )
+
+    # Both sampled_records and sampler_stats publish artifacts in He-v1.
+    assert float(row["writer_summary_time_sec"]) == pytest.approx(1.5)
+    assert float(row["component_time_sec"]) == pytest.approx(7.5)
+    assert float(row["unattributed_time_sec"]) == pytest.approx(2.5)
+    assert row["timing_reconciled"] is True
+    assert float(row["value_count"]) == pytest.approx(16.0)
+    assert float(row["values_per_sec"]) == pytest.approx(4.0)
+    assert row["values_per_sec_denominator"] == "generator_time_sec"
+    assert {key: row[key] for key in provenance} == provenance
+    assert row["device_name"] == "cpu"
+    assert row["device_count"] == 4
+    assert row["allocated_wall_time_sec"] == 30.0
+    # Four CPU workers are allocation provenance, never four GPUs.
+    assert row["gpu_seconds"] == ""
+
+
+def test_cost_by_task_rows_retains_complete_delivered_gpu_allocation() -> None:
+    """Task throughput keeps the same delivered-allocation facts as run cost."""
+
+    (row,) = cost_by_task_rows(
+        [
+            {
+                "step": 0,
+                "namespace": "diagnostics/energy",
+                "metric": "time_sec",
+                "value": 1.0,
+            }
+        ],
+        run_id="run-a",
+        attempt_id="A0",
+        stage="eval",
+        device_type="cuda",
+        allocation={
+            "device_name": "NVIDIA A100-SXM4-40GB",
+            "device_count": 2,
+            "allocated_wall_time_sec": 30.0,
+        },
+    )
+
+    assert row["device_name"] == "NVIDIA A100-SXM4-40GB"
+    assert row["device_count"] == 2
+    assert row["allocated_wall_time_sec"] == 30.0
+    assert float(row["gpu_seconds"]) == pytest.approx(60.0)
+
+
+def test_cost_by_task_rows_preserves_negative_timing_residual() -> None:
+    metrics_rows = [
+        {"step": 0, "namespace": "diagnostics/energy", "metric": "time_sec", "value": 1.0},
+        {"step": 0, "namespace": "eval/perf/energy", "metric": "generator_time_sec", "value": 2.0},
+    ]
+
+    (row,) = cost_by_task_rows(
+        metrics_rows,
+        run_id="run-a",
+        attempt_id="A0",
+        stage="eval",
+    )
+
+    assert float(row["unattributed_time_sec"]) == pytest.approx(-1.0)
+    assert row["timing_reconciled"] is False
+
+
+def test_cost_by_task_rows_rejects_partial_trajectory_value_counts() -> None:
+    """Throughput is unavailable when either measurement region is missing."""
+
+    metrics_rows = [
+        {
+            "step": 0,
+            "namespace": "eval/perf/energy",
+            "metric": "generator_time_sec",
+            "value": 2.0,
+        },
+        {
+            "step": 0,
+            "namespace": "eval/energy",
+            "metric": "sampler_trajectory_retained_value_count",
+            "value": 8,
+        },
+    ]
+
+    with pytest.raises(ValueError, match="value-count receipt.*incomplete"):
+        cost_by_task_rows(
+            metrics_rows,
+            run_id="run-a",
+            attempt_id="A0",
+            stage="eval",
+        )
+
+
+def test_repeated_interleaved_artifact_timing_keeps_signed_deltas() -> None:
+    rows = [
+        {"measurement_index": 0, "measurement_region": "measured", "artifact_mode": "off", "time_sec": 10.0, "shape": "4x8", "host": "h1"},
+        {"measurement_index": 1, "measurement_region": "measured", "artifact_mode": "on", "time_sec": 9.0, "shape": "4x8", "host": "h1"},
+        {"measurement_index": 2, "measurement_region": "measured", "artifact_mode": "off", "time_sec": 10.0, "shape": "4x8", "host": "h1"},
+        {"measurement_index": 3, "measurement_region": "measured", "artifact_mode": "on", "time_sec": 12.0, "shape": "4x8", "host": "h1"},
+        {"measurement_index": 4, "measurement_region": "measured", "artifact_mode": "off", "time_sec": 11.0, "shape": "4x8", "host": "h1"},
+        {"measurement_index": 5, "measurement_region": "measured", "artifact_mode": "on", "time_sec": 12.0, "shape": "4x8", "host": "h1"},
+    ]
+
+    result = artifact_timing_comparison(rows, comparison_fields=("shape", "host"))
+
+    assert result["status"] == "repeated_comparable_delta"
+    assert result["repeated_comparable"] is True
+    assert result["measurement_region"] == "measured"
+    assert result["comparison_fields"] == {"shape": "4x8", "host": "h1"}
+    assert result["artifact_delta_sec_by_pair"] == (-1.0, 2.0, 1.0)
+    assert result["artifact_delta_sec_min"] == pytest.approx(-1.0)
+    assert result["artifact_delta_sec_median"] == pytest.approx(1.0)
+    assert result["artifact_delta_sec_spread"] == pytest.approx(3.0)
+
+
+def test_single_artifact_pair_is_a_signed_delta_not_an_overhead_claim() -> None:
+    result = artifact_timing_comparison(
+        [
+            {"measurement_index": 0, "measurement_region": "measured", "artifact_mode": "off", "time_sec": 5.0, "shape": "same"},
+            {"measurement_index": 1, "measurement_region": "measured", "artifact_mode": "on", "time_sec": 4.0, "shape": "same"},
+        ],
+        comparison_fields=("shape",),
+    )
+
+    assert result["status"] == "single_observation_delta"
+    assert result["repeated_comparable"] is False
+    assert result["artifact_delta_sec_by_pair"] == (-1.0,)
+
+
+def test_artifact_timing_rejects_noninterleaved_or_noncomparable_measurements() -> None:
+    base = [
+        {"measurement_index": 0, "measurement_region": "measured", "artifact_mode": "off", "time_sec": 5.0, "host": "h1"},
+        {"measurement_index": 1, "measurement_region": "measured", "artifact_mode": "on", "time_sec": 6.0, "host": "h2"},
+    ]
+    with pytest.raises(ValueError, match="not comparable"):
+        artifact_timing_comparison(base, comparison_fields=("host",))
+    with pytest.raises(ValueError, match="alternate"):
+        artifact_timing_comparison(
+            [dict(base[0]), {**base[1], "artifact_mode": "off", "host": "h1"}],
+            comparison_fields=("host",),
+        )
+
+
+def test_artifact_timing_rejects_warmup_rows_as_measurement_evidence() -> None:
+    """Warmup stays visible and cannot qualify an artifact comparison."""
+
+    with pytest.raises(ValueError, match="only rows explicitly marked"):
+        artifact_timing_comparison(
+            [
+                {
+                    "measurement_index": 0,
+                    "measurement_region": "warmup",
+                    "artifact_mode": "off",
+                    "time_sec": 5.0,
+                    "shape": "same",
+                },
+                {
+                    "measurement_index": 1,
+                    "measurement_region": "measured",
+                    "artifact_mode": "on",
+                    "time_sec": 6.0,
+                    "shape": "same",
+                },
+            ],
+            comparison_fields=("shape",),
+        )
 
 
 def test_cost_by_axis_rows_groups_by_each_axis_value() -> None:

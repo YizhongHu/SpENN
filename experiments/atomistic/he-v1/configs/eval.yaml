@@ -372,6 +372,17 @@ callbacks:
     output_path: ${run.dir}/metadata.json
   - _target_: tpen.callback.Status
     output_path: ${run.dir}/status.json
+  # Evaluation cost diagnostics consume the canonical typed Event Clock
+  # boundaries. Device synchronization stays disabled: the current callback
+  # dispatch order cannot make that flag bracket device work truthfully, while
+  # CPU runs need honest host-wall timing rather than a synchronization claim.
+  - _target_: tpen.callback.EvaluationTiming
+    accelerator_synchronize: false
+  - _target_: tpen.callback.EvaluationComponentTiming
+    accelerator_synchronize: false
+  - _target_: tpen.callback.DiagnosticTiming
+    accelerator_synchronize: false
+  - _target_: tpen.callback.ResourceUsage
 
 loggers:
   - _target_: tpen.logging.CSV

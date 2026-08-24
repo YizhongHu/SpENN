@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch.electron_batch import ElectronBatch
 from tpen.data.batch.walkers import Walkers
 from tpen.data.batch.wavefunction_output import WavefunctionOutput
@@ -11,6 +12,7 @@ from tpen.sampling.stats import SamplerStats
 from tpen.sampling.trajectory import (
     ModelDriftError,
     collect_observable_trajectory,
+    collect_observable_trajectory_with_diagnostics,
     parameter_fingerprint,
 )
 
@@ -248,6 +250,116 @@ def test_returned_stats_are_from_final_draw() -> None:
     )
 
     assert stats == _stats(2, 3, seed=2)
+
+
+class AtomicDrawSampler:
+    """Return prescribed one-electron states and per-draw acceptance rates."""
+
+    def __init__(self) -> None:
+        self.states = (0.10, 0.50, 0.20, 0.80)
+        self.acceptance_rates = (0.1, 0.2, 0.4, 0.6)
+        self.index = 0
+        self.atoms = AtomicConfiguration(
+            positions=torch.zeros((1, 1), dtype=torch.float64),
+            charges=torch.ones(1, dtype=torch.float64),
+        )
+
+    def collect_samples(
+        self,
+        model: torch.nn.Module,
+        *,
+        reset: bool,
+        device: torch.device | str | None,
+    ) -> tuple[Walkers, SamplerStats]:
+        radius = self.states[self.index]
+        acceptance_rate = self.acceptance_rates[self.index]
+        self.index += 1
+        walkers = Walkers(
+            positions=torch.tensor([[[radius]]], dtype=torch.float64),
+            atomic_configuration=self.atoms,
+        )
+        return walkers, SamplerStats(
+            acceptance_rate=acceptance_rate,
+            n_walkers=1,
+            burn_in=100,
+            n_steps=20,
+            proposal_scale=0.5,
+            seed=9,
+        )
+
+
+def test_draw_diagnostics_separate_discarded_and_retained_minima() -> None:
+    """Reduce exact retained states, never the terminal snapshot or discarded region."""
+
+    _, final_stats, diagnostics = collect_observable_trajectory_with_diagnostics(
+        AtomicDrawSampler(),
+        TinyModel(),
+        _position_observable,
+        observable_name="radius",
+        n_draws=3,
+        discard_draws=1,
+    )
+
+    metrics = diagnostics.as_metrics()
+    assert final_stats.acceptance_rate == pytest.approx(0.6)
+    # The scalar keeps its established final-call meaning. The new draw series
+    # and aggregate have their own identities.
+    assert metrics["trajectory_retained_draw_acceptance_rate_mean"] == pytest.approx(0.4)
+    assert diagnostics.to_dict()["retained_draw_acceptance_rate_series"] == [0.2, 0.4, 0.6]
+    assert metrics["trajectory_retained_draw_minimum_electron_nucleus_radius"] == pytest.approx(0.2)
+    assert metrics["trajectory_discarded_draw_minimum_electron_nucleus_radius"] == pytest.approx(0.1)
+    # The terminal state is radius 0.8 and cannot stand in for the retained
+    # minimum. The stride remains beside the result and limits its claim.
+    assert diagnostics.retained_draws[-1].minimum_electron_nucleus_radius == pytest.approx(0.8)
+    assert metrics["trajectory_draw_stride"] == 20
+    assert metrics["trajectory_intermediate_sampler_steps_observed"] is False
+    assert metrics["trajectory_retained_transition_count"] == 3 * 20
+    assert metrics["trajectory_discarded_transition_count"] == 20
+
+
+def test_draw_geometry_unavailable_is_omitted_instead_of_zero() -> None:
+    """Walkers without typed nuclei cannot fabricate an electron-nucleus minimum."""
+
+    _, _, diagnostics = collect_observable_trajectory_with_diagnostics(
+        FakeSampler(n_walkers=2, n_steps=4),
+        TinyModel(),
+        _position_observable,
+        observable_name="position",
+        n_draws=2,
+    )
+
+    metrics = diagnostics.as_metrics()
+    assert "trajectory_retained_draw_minimum_electron_nucleus_radius" not in metrics
+    assert all(
+        draw.minimum_electron_nucleus_radius is None for draw in diagnostics.retained_draws
+    )
+
+
+class WrongWalkerCountSampler(FakeSampler):
+    """Return typed stats that disagree with the actual walker state."""
+
+    def collect_samples(
+        self,
+        model: torch.nn.Module,
+        *,
+        reset: bool,
+        device: torch.device | str | None,
+    ) -> tuple[Walkers, SamplerStats]:
+        walkers, stats = super().collect_samples(model, reset=reset, device=device)
+        return walkers, _stats(walkers.batch_size + 1, stats.n_steps)
+
+
+def test_draw_diagnostics_reject_sampler_stats_walker_count_mismatch() -> None:
+    """Counts and acceptance weighting must describe the returned chains."""
+
+    with pytest.raises(ValueError, match="walker count disagrees"):
+        collect_observable_trajectory_with_diagnostics(
+            WrongWalkerCountSampler(),
+            TinyModel(),
+            _position_observable,
+            observable_name="position",
+            n_draws=1,
+        )
 
 
 class GaussianWavefunction(torch.nn.Module):

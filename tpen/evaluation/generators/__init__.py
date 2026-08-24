@@ -16,11 +16,13 @@ from tpen.evaluation.generators.orbits import (
     RotationOrbitGenerator,
 )
 from tpen.evaluation.generators.trajectory import (
+    SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY,
     TRAJECTORY_METADATA_KEY,
     TrajectoryMCMCGenerator,
 )
 
 __all__ = [
+    "SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY",
     "TRAJECTORY_METADATA_KEY",
     "CuspGridGenerator",
     "ExchangeOrbitGenerator",

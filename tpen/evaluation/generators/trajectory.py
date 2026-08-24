@@ -41,10 +41,13 @@ from tpen.evaluation.trajectory_records import (
     TrajectoryRecordStreamWriter,
 )
 from tpen.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, normalize_hamiltonian_terms
-from tpen.sampling.trajectory import collect_observable_trajectory
+from tpen.sampling.trajectory import collect_observable_trajectory_with_diagnostics
 
 TRAJECTORY_METADATA_KEY = "observable_trajectory"
 """Metadata key under which the collected trajectory is published."""
+
+SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY = "sampler_trajectory_diagnostics"
+"""Metadata key for typed draw-resolved sampler health."""
 
 
 class TrajectoryMCMCGenerator:
@@ -188,16 +191,18 @@ class TrajectoryMCMCGenerator:
             return result.total
 
         try:
-            trajectory, sampler_stats = collect_observable_trajectory(
-                self.sampler,
-                model,
-                observable,
-                observable_name=self.observable_name,
-                n_draws=self.n_draws,
-                discard_draws=self.discard_draws,
-                device=context.device,
-                reset=self.reset,
-                verify_model_unchanged=self.verify_model_unchanged,
+            trajectory, sampler_stats, sampler_diagnostics = (
+                collect_observable_trajectory_with_diagnostics(
+                    self.sampler,
+                    model,
+                    observable,
+                    observable_name=self.observable_name,
+                    n_draws=self.n_draws,
+                    discard_draws=self.discard_draws,
+                    device=context.device,
+                    reset=self.reset,
+                    verify_model_unchanged=self.verify_model_unchanged,
+                )
             )
             trajectory_records = (
                 None if record_stream is None else record_stream.finalize(trajectory)
@@ -222,6 +227,7 @@ class TrajectoryMCMCGenerator:
             "draw_index": self.n_draws - 1,
             "snapshot_artifact": "final_retained_trajectory_draw",
             "sampler_stats": sampler_stats,
+            SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY: sampler_diagnostics,
             TRAJECTORY_METADATA_KEY: trajectory,
         }
         if self.seed is not None:
@@ -295,4 +301,8 @@ class TrajectoryMCMCGenerator:
         )
 
 
-__all__ = ["TRAJECTORY_METADATA_KEY", "TrajectoryMCMCGenerator"]
+__all__ = [
+    "SAMPLER_TRAJECTORY_DIAGNOSTICS_KEY",
+    "TRAJECTORY_METADATA_KEY",
+    "TrajectoryMCMCGenerator",
+]
