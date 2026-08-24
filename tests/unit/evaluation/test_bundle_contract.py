@@ -18,6 +18,7 @@ def test_evaluation_bundle_fields_are_intentional() -> None:
         "local_energy",
         "derivatives",
         "electron_nucleus_radial",
+        "helium_atlas",
         "trace",
         "transform",
         "trace_comparison",

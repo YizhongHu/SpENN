@@ -32,7 +32,7 @@ import torch
 from tpen.data.batch import ElectronBatch
 from tpen.data.batch.geometry import electron_nuclear_displacements
 from tpen.data.equivariant_state import compare_tensor_blocks
-from tpen.data.indices import permute_particle_axis
+from tpen.data.indices import permutation_index, permute_particle_axis
 from tpen.data.permutation import Permutation
 from tpen.trace import Trace
 
@@ -185,6 +185,505 @@ class ElectronNucleusRadialValues:
 
 
 @dataclass(frozen=True)
+class AtlasNumericalProvenance:
+    """Numerical identity attached to a generated atlas boundary."""
+
+    dtype: str
+    device: str
+    evaluation_dtype: str
+    evaluation_device: str
+    seed: int
+
+    def validate(self, batch: ElectronBatch) -> "AtlasNumericalProvenance":
+        """Require provenance to describe the evaluated batch exactly."""
+
+        flat = batch.flatten_samples()
+        if self.dtype != "float64":
+            raise ValueError(
+                "AtlasNumericalProvenance.dtype must pin boundary generation to 'float64'"
+            )
+        if self.device != "cpu":
+            raise ValueError(
+                "AtlasNumericalProvenance.device must pin boundary generation to 'cpu'"
+            )
+        expected_dtype = str(flat.dtype).removeprefix("torch.")
+        expected_device = str(flat.device)
+        if self.evaluation_dtype != expected_dtype or self.evaluation_device != expected_device:
+            raise ValueError(
+                "AtlasNumericalProvenance evaluation dtype/device must describe the evaluated batch"
+            )
+        if not isinstance(self.seed, int) or isinstance(self.seed, bool):
+            raise TypeError("AtlasNumericalProvenance.seed must be an integer")
+        return self
+
+
+@dataclass(frozen=True)
+class AtlasDerivativeValues:
+    """One named atlas scalar and its pathwise first and second derivatives."""
+
+    value: torch.Tensor
+    first_derivative: torch.Tensor
+    second_derivative: torch.Tensor
+    value_finite_mask: torch.Tensor
+    first_derivative_finite_mask: torch.Tensor
+    second_derivative_finite_mask: torch.Tensor
+
+    def validate(self, batch: ElectronBatch) -> "AtlasDerivativeValues":
+        """Validate scalar shapes, dtype/device, and exact finite masks."""
+
+        flat = batch.flatten_samples()
+        expected_shape = (flat.batch_size,)
+        for name, value in (
+            ("value", self.value),
+            ("first_derivative", self.first_derivative),
+            ("second_derivative", self.second_derivative),
+        ):
+            if tuple(value.shape) != expected_shape:
+                raise ValueError(f"AtlasDerivativeValues.{name} must have shape {expected_shape}")
+            if value.device != flat.device or value.dtype != flat.dtype:
+                raise ValueError(f"AtlasDerivativeValues.{name} must match batch dtype/device")
+        for name, mask, value in (
+            ("value_finite_mask", self.value_finite_mask, self.value),
+            (
+                "first_derivative_finite_mask",
+                self.first_derivative_finite_mask,
+                self.first_derivative,
+            ),
+            (
+                "second_derivative_finite_mask",
+                self.second_derivative_finite_mask,
+                self.second_derivative,
+            ),
+        ):
+            if tuple(mask.shape) != expected_shape or mask.dtype != torch.bool:
+                raise ValueError(f"AtlasDerivativeValues.{name} must be bool with shape {expected_shape}")
+            if mask.device != flat.device or not torch.equal(mask, torch.isfinite(value)):
+                raise ValueError(
+                    f"AtlasDerivativeValues.{name} must match value device and isfinite status"
+                )
+        return self
+
+    def compare(
+        self,
+        other: "AtlasDerivativeValues",
+        *,
+        atol: float,
+        rtol: float,
+    ) -> tuple[bool, float, int]:
+        """Compare masks exactly and numeric values only where both are finite."""
+
+        if type(self) is not type(other):
+            return False, float("inf"), 0
+        close = True
+        max_abs_error = 0.0
+        mask_mismatch_count = 0
+        for left, right, left_mask, right_mask in (
+            (self.value, other.value, self.value_finite_mask, other.value_finite_mask),
+            (
+                self.first_derivative,
+                other.first_derivative,
+                self.first_derivative_finite_mask,
+                other.first_derivative_finite_mask,
+            ),
+            (
+                self.second_derivative,
+                other.second_derivative,
+                self.second_derivative_finite_mask,
+                other.second_derivative_finite_mask,
+            ),
+        ):
+            if left.shape != right.shape or left.device != right.device or left.dtype != right.dtype:
+                return False, float("inf"), mask_mismatch_count
+            mismatch = int((left_mask != right_mask).sum().item())
+            mask_mismatch_count += mismatch
+            shared = left_mask & right_mask
+            block_close, metrics = compare_tensor_blocks(
+                [left[shared]], [right[shared]], atol=atol, rtol=rtol
+            )
+            close = close and block_close and mismatch == 0
+            max_abs_error = max(max_abs_error, float(metrics["max_abs_error"]))
+        return close, max_abs_error, mask_mismatch_count
+
+
+@dataclass(frozen=True)
+class HeliumAtlasValues:
+    """Typed primitive values for helium coalescence, curvature, and tail atlases.
+
+    Scalar wavefunction and Hamiltonian fields are invariant to electron
+    relabelling. ``per_electron_kinetic`` and its domain status carry the sole
+    explicit electron axis and therefore permute semantically.
+    """
+
+    requested_coordinate: torch.Tensor
+    realized_coordinate: torch.Tensor
+    is_refinement_boundary: torch.Tensor
+    is_exact_zero_sentinel: torch.Tensor
+    ideal_unfloored_ee_inverse_distance: torch.Tensor | None
+    ideal_unfloored_ee_domain_mask: torch.Tensor | None
+    derivatives: Mapping[str, AtlasDerivativeValues]
+    total_local_energy: torch.Tensor
+    total_local_energy_finite_mask: torch.Tensor
+    hamiltonian_terms: Mapping[str, torch.Tensor]
+    hamiltonian_term_finite_masks: Mapping[str, torch.Tensor]
+    per_electron_kinetic: torch.Tensor
+    per_electron_kinetic_domain_mask: torch.Tensor
+    per_electron_kinetic_status: tuple[tuple[str, ...], ...]
+    cancellation_abs_sum: torch.Tensor
+    cancellation_residual: torch.Tensor
+    cancellation_ratio: torch.Tensor
+    cancellation_abs_sum_finite_mask: torch.Tensor
+    cancellation_residual_finite_mask: torch.Tensor
+    cancellation_ratio_finite_mask: torch.Tensor
+    domain_status: tuple[str, ...]
+    provenance: AtlasNumericalProvenance
+
+    def validate(self, batch: ElectronBatch) -> "HeliumAtlasValues":
+        """Validate typed shapes, semantic masks, and numerical provenance."""
+
+        flat = batch.flatten_samples()
+        sample_shape = (flat.batch_size,)
+        electron_shape = (flat.batch_size, flat.n_electrons)
+        for name, value in (
+            ("requested_coordinate", self.requested_coordinate),
+            ("realized_coordinate", self.realized_coordinate),
+        ):
+            if tuple(value.shape) != sample_shape or value.device != flat.device or value.dtype != flat.dtype:
+                raise ValueError(
+                    f"HeliumAtlasValues.{name} must match batch dtype/device with shape {sample_shape}"
+                )
+            if not torch.isfinite(value).all() or torch.any(value < 0):
+                raise ValueError(f"HeliumAtlasValues.{name} must be finite and nonnegative")
+        for name, mask in (
+            ("is_refinement_boundary", self.is_refinement_boundary),
+            ("is_exact_zero_sentinel", self.is_exact_zero_sentinel),
+        ):
+            _validate_bool_mask(mask, shape=sample_shape, device=flat.device, name=name)
+        if torch.any(self.is_refinement_boundary & self.is_exact_zero_sentinel):
+            raise ValueError("refinement-boundary rows and exact-zero sentinels must be distinct")
+        if not torch.all(self.requested_coordinate[self.is_exact_zero_sentinel] == 0):
+            raise ValueError("exact-zero sentinels require requested_coordinate == 0")
+        if not torch.all(self.realized_coordinate[self.is_exact_zero_sentinel] == 0):
+            raise ValueError("exact-zero sentinels require realized_coordinate == 0")
+
+        if (self.ideal_unfloored_ee_inverse_distance is None) != (
+            self.ideal_unfloored_ee_domain_mask is None
+        ):
+            raise ValueError("ideal unfloored e-e value and domain mask must be present together")
+        if self.ideal_unfloored_ee_inverse_distance is not None:
+            ideal = self.ideal_unfloored_ee_inverse_distance
+            ideal_domain = self.ideal_unfloored_ee_domain_mask
+            assert ideal_domain is not None
+            if tuple(ideal.shape) != sample_shape or ideal.device != flat.device or ideal.dtype != flat.dtype:
+                raise ValueError(
+                    "ideal_unfloored_ee_inverse_distance must match batch dtype/device and sample shape"
+                )
+            _validate_bool_mask(
+                ideal_domain,
+                shape=sample_shape,
+                device=flat.device,
+                name="ideal_unfloored_ee_domain_mask",
+            )
+            if not torch.equal(ideal_domain, self.realized_coordinate > 0):
+                raise ValueError(
+                    "ideal_unfloored_ee_domain_mask must be true exactly at positive physical separation"
+                )
+
+        if not self.derivatives:
+            raise ValueError("HeliumAtlasValues.derivatives must not be empty")
+        for name, values in self.derivatives.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("HeliumAtlasValues derivative names must be non-empty strings")
+            if not isinstance(values, AtlasDerivativeValues):
+                raise TypeError(f"HeliumAtlasValues derivative {name!r} must be AtlasDerivativeValues")
+            values.validate(flat)
+
+        _validate_float64_sample(
+            self.total_local_energy,
+            shape=sample_shape,
+            device=flat.device,
+            name="total_local_energy",
+        )
+        _validate_bool_mask(
+            self.total_local_energy_finite_mask,
+            shape=sample_shape,
+            device=flat.device,
+            name="total_local_energy_finite_mask",
+        )
+        if not torch.equal(self.total_local_energy_finite_mask, torch.isfinite(self.total_local_energy)):
+            raise ValueError("total_local_energy_finite_mask must equal isfinite(total_local_energy)")
+        if not self.hamiltonian_terms or set(self.hamiltonian_terms) != set(
+            self.hamiltonian_term_finite_masks
+        ):
+            raise ValueError("Hamiltonian values and finite masks must have identical non-empty names")
+        for name, value in self.hamiltonian_terms.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("Hamiltonian term names must be non-empty strings")
+            _validate_float64_sample(value, shape=sample_shape, device=flat.device, name=name)
+            mask = self.hamiltonian_term_finite_masks[name]
+            _validate_bool_mask(mask, shape=sample_shape, device=flat.device, name=f"{name}_finite_mask")
+            if not torch.equal(mask, torch.isfinite(value)):
+                raise ValueError(f"Hamiltonian term {name!r} finite mask must equal isfinite")
+
+        _validate_float64_sample(
+            self.per_electron_kinetic,
+            shape=electron_shape,
+            device=flat.device,
+            name="per_electron_kinetic",
+        )
+        _validate_bool_mask(
+            self.per_electron_kinetic_domain_mask,
+            shape=electron_shape,
+            device=flat.device,
+            name="per_electron_kinetic_domain_mask",
+        )
+        if len(self.per_electron_kinetic_status) != flat.batch_size or any(
+            len(row) != flat.n_electrons for row in self.per_electron_kinetic_status
+        ):
+            raise ValueError(
+                "per_electron_kinetic_status must have [batch, n_electrons] string structure"
+            )
+        kinetic_finite = torch.isfinite(self.per_electron_kinetic)
+        if not torch.equal(self.per_electron_kinetic_domain_mask, kinetic_finite):
+            raise ValueError(
+                "per_electron_kinetic_domain_mask must be true exactly for finite attributions"
+            )
+        for index, statuses in enumerate(self.per_electron_kinetic_status):
+            for electron, status in enumerate(statuses):
+                is_finite = bool(kinetic_finite[index, electron].item())
+                if (is_finite and status != "defined") or (
+                    not is_finite and not status.startswith("undefined_")
+                ):
+                    raise ValueError(
+                        "per_electron_kinetic_status must explicitly distinguish defined and undefined values"
+                    )
+
+        for name, value, mask in (
+            (
+                "cancellation_abs_sum",
+                self.cancellation_abs_sum,
+                self.cancellation_abs_sum_finite_mask,
+            ),
+            (
+                "cancellation_residual",
+                self.cancellation_residual,
+                self.cancellation_residual_finite_mask,
+            ),
+            (
+                "cancellation_ratio",
+                self.cancellation_ratio,
+                self.cancellation_ratio_finite_mask,
+            ),
+        ):
+            _validate_float64_sample(value, shape=sample_shape, device=flat.device, name=name)
+            _validate_bool_mask(mask, shape=sample_shape, device=flat.device, name=f"{name}_finite_mask")
+            if not torch.equal(mask, torch.isfinite(value)):
+                raise ValueError(f"{name}_finite_mask must equal isfinite({name})")
+        if len(self.domain_status) != flat.batch_size or any(
+            not isinstance(value, str) or not value for value in self.domain_status
+        ):
+            raise ValueError("domain_status must contain one non-empty string per sample")
+        self.provenance.validate(flat)
+        return self
+
+    def permute(self, permutation: Permutation) -> "HeliumAtlasValues":
+        """Apply the electron permutation to per-electron kinetic attribution."""
+
+        if len(permutation) != self.per_electron_kinetic.shape[1]:
+            raise ValueError(
+                f"Permutation of size {len(permutation)} is incompatible with "
+                f"{self.per_electron_kinetic.shape[1]} electrons"
+            )
+        order = tuple(permutation_index(permutation).tolist())
+        return type(self)(
+            requested_coordinate=self.requested_coordinate.clone(),
+            realized_coordinate=self.realized_coordinate.clone(),
+            is_refinement_boundary=self.is_refinement_boundary.clone(),
+            is_exact_zero_sentinel=self.is_exact_zero_sentinel.clone(),
+            ideal_unfloored_ee_inverse_distance=(
+                None
+                if self.ideal_unfloored_ee_inverse_distance is None
+                else self.ideal_unfloored_ee_inverse_distance.clone()
+            ),
+            ideal_unfloored_ee_domain_mask=(
+                None
+                if self.ideal_unfloored_ee_domain_mask is None
+                else self.ideal_unfloored_ee_domain_mask.clone()
+            ),
+            derivatives=dict(self.derivatives),
+            total_local_energy=self.total_local_energy.clone(),
+            total_local_energy_finite_mask=self.total_local_energy_finite_mask.clone(),
+            hamiltonian_terms={name: value.clone() for name, value in self.hamiltonian_terms.items()},
+            hamiltonian_term_finite_masks={
+                name: value.clone() for name, value in self.hamiltonian_term_finite_masks.items()
+            },
+            per_electron_kinetic=permute_particle_axis(
+                self.per_electron_kinetic, permutation, axis=1
+            ),
+            per_electron_kinetic_domain_mask=permute_particle_axis(
+                self.per_electron_kinetic_domain_mask, permutation, axis=1
+            ),
+            per_electron_kinetic_status=tuple(
+                tuple(statuses[index] for index in order)
+                for statuses in self.per_electron_kinetic_status
+            ),
+            cancellation_abs_sum=self.cancellation_abs_sum.clone(),
+            cancellation_residual=self.cancellation_residual.clone(),
+            cancellation_ratio=self.cancellation_ratio.clone(),
+            cancellation_abs_sum_finite_mask=self.cancellation_abs_sum_finite_mask.clone(),
+            cancellation_residual_finite_mask=self.cancellation_residual_finite_mask.clone(),
+            cancellation_ratio_finite_mask=self.cancellation_ratio_finite_mask.clone(),
+            domain_status=self.domain_status,
+            provenance=self.provenance,
+        )
+
+    def compare(
+        self,
+        other: "HeliumAtlasValues",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, dict[str, int | float]]:
+        """Compare semantic status exactly and finite numeric values tolerantly."""
+
+        if type(self) is not type(other):
+            return False, {"max_abs_error": float("inf"), "status_mismatch_count": 0}
+        if (self.ideal_unfloored_ee_inverse_distance is None) != (
+            other.ideal_unfloored_ee_inverse_distance is None
+        ):
+            return False, {"max_abs_error": float("inf"), "status_mismatch_count": 1}
+        if (
+            tuple(self.derivatives) != tuple(other.derivatives)
+            or tuple(self.hamiltonian_terms) != tuple(other.hamiltonian_terms)
+            or self.domain_status != other.domain_status
+            or self.per_electron_kinetic_status != other.per_electron_kinetic_status
+            or self.provenance != other.provenance
+        ):
+            return False, {"max_abs_error": float("inf"), "status_mismatch_count": 1}
+        status_mismatch_count = 0
+        max_abs_error = 0.0
+        close = True
+        for left, right in (
+            (self.requested_coordinate, other.requested_coordinate),
+            (self.realized_coordinate, other.realized_coordinate),
+        ):
+            block_close, metrics = compare_tensor_blocks([left], [right], atol=atol, rtol=rtol)
+            close = close and block_close
+            max_abs_error = max(max_abs_error, float(metrics["max_abs_error"]))
+        for left, right in (
+            (self.is_refinement_boundary, other.is_refinement_boundary),
+            (self.is_exact_zero_sentinel, other.is_exact_zero_sentinel),
+            (self.total_local_energy_finite_mask, other.total_local_energy_finite_mask),
+            (self.per_electron_kinetic_domain_mask, other.per_electron_kinetic_domain_mask),
+            (self.cancellation_abs_sum_finite_mask, other.cancellation_abs_sum_finite_mask),
+            (self.cancellation_residual_finite_mask, other.cancellation_residual_finite_mask),
+            (self.cancellation_ratio_finite_mask, other.cancellation_ratio_finite_mask),
+        ):
+            status_mismatch_count += int((left != right).sum().item())
+        if self.ideal_unfloored_ee_inverse_distance is not None:
+            assert self.ideal_unfloored_ee_domain_mask is not None
+            assert other.ideal_unfloored_ee_inverse_distance is not None
+            assert other.ideal_unfloored_ee_domain_mask is not None
+            self_ideal_finite = torch.isfinite(self.ideal_unfloored_ee_inverse_distance)
+            other_ideal_finite = torch.isfinite(other.ideal_unfloored_ee_inverse_distance)
+            status_mismatch_count += int(
+                (self.ideal_unfloored_ee_domain_mask != other.ideal_unfloored_ee_domain_mask)
+                .sum()
+                .item()
+            )
+            status_mismatch_count += int((self_ideal_finite != other_ideal_finite).sum().item())
+            shared_ideal = self_ideal_finite & other_ideal_finite
+            ideal_close, ideal_metrics = compare_tensor_blocks(
+                [self.ideal_unfloored_ee_inverse_distance[shared_ideal]],
+                [other.ideal_unfloored_ee_inverse_distance[shared_ideal]],
+                atol=atol,
+                rtol=rtol,
+            )
+            close = close and ideal_close
+            max_abs_error = max(max_abs_error, float(ideal_metrics["max_abs_error"]))
+        for name in self.derivatives:
+            derivative_close, error, mismatches = self.derivatives[name].compare(
+                other.derivatives[name], atol=atol, rtol=rtol
+            )
+            close = close and derivative_close
+            max_abs_error = max(max_abs_error, error)
+            status_mismatch_count += mismatches
+        numeric = [
+            (
+                self.total_local_energy,
+                other.total_local_energy,
+                self.total_local_energy_finite_mask & other.total_local_energy_finite_mask,
+            ),
+            (
+                self.per_electron_kinetic,
+                other.per_electron_kinetic,
+                self.per_electron_kinetic_domain_mask & other.per_electron_kinetic_domain_mask,
+            ),
+            (
+                self.cancellation_abs_sum,
+                other.cancellation_abs_sum,
+                self.cancellation_abs_sum_finite_mask & other.cancellation_abs_sum_finite_mask,
+            ),
+            (
+                self.cancellation_residual,
+                other.cancellation_residual,
+                self.cancellation_residual_finite_mask & other.cancellation_residual_finite_mask,
+            ),
+            (
+                self.cancellation_ratio,
+                other.cancellation_ratio,
+                self.cancellation_ratio_finite_mask & other.cancellation_ratio_finite_mask,
+            ),
+        ]
+        for name in self.hamiltonian_terms:
+            left_mask = self.hamiltonian_term_finite_masks[name]
+            right_mask = other.hamiltonian_term_finite_masks[name]
+            status_mismatch_count += int((left_mask != right_mask).sum().item())
+            numeric.append(
+                (
+                    self.hamiltonian_terms[name],
+                    other.hamiltonian_terms[name],
+                    left_mask & right_mask,
+                )
+            )
+        for left, right, shared_mask in numeric:
+            block_close, metrics = compare_tensor_blocks(
+                [left[shared_mask]], [right[shared_mask]], atol=atol, rtol=rtol
+            )
+            close = close and block_close
+            max_abs_error = max(max_abs_error, float(metrics["max_abs_error"]))
+        return close and status_mismatch_count == 0, {
+            "max_abs_error": max_abs_error,
+            "status_mismatch_count": status_mismatch_count,
+        }
+
+
+def _validate_bool_mask(
+    value: torch.Tensor,
+    *,
+    shape: tuple[int, ...],
+    device: torch.device,
+    name: str,
+) -> None:
+    """Validate one explicitly named boolean atlas status tensor."""
+
+    if tuple(value.shape) != shape or value.dtype != torch.bool or value.device != device:
+        raise ValueError(f"HeliumAtlasValues.{name} must be bool on {device} with shape {shape}")
+
+
+def _validate_float64_sample(
+    value: torch.Tensor,
+    *,
+    shape: tuple[int, ...],
+    device: torch.device,
+    name: str,
+) -> None:
+    """Keep Hamiltonian cancellation diagnostics in float64 end to end."""
+
+    if tuple(value.shape) != shape or value.dtype != torch.float64 or value.device != device:
+        raise ValueError(f"HeliumAtlasValues.{name} must be float64 on {device} with shape {shape}")
+
+
+@dataclass(frozen=True)
 class TransformComparisonValues:
     """Raw values comparing original and transformed model outputs."""
 
@@ -235,6 +734,7 @@ class EvaluationBundle:
     local_energy: LocalEnergyValues | None = None
     derivatives: Mapping[str, DerivativeValues] | None = None
     electron_nucleus_radial: ElectronNucleusRadialValues | None = None
+    helium_atlas: HeliumAtlasValues | None = None
     trace: Trace | None = None
     transform: TransformComparisonValues | None = None
     trace_comparison: TraceComparisonValues | None = None
@@ -243,11 +743,14 @@ class EvaluationBundle:
 
 
 __all__ = [
+    "AtlasDerivativeValues",
+    "AtlasNumericalProvenance",
     "DerivativeValues",
     "ElectronNucleusRadialValues",
     "EvaluationBundle",
     "FeatureTraceValues",
     "GeneratedConfigurations",
+    "HeliumAtlasValues",
     "LocalEnergyValues",
     "ReadoutTraceValues",
     "TraceComparisonValues",

@@ -60,6 +60,123 @@ def autograd_laplacian(model, batch: ElectronBatch) -> torch.Tensor:
     return laplacian
 
 
+def per_electron_kinetic_from_logabs_reference(model, batch: ElectronBatch) -> torch.Tensor:
+    """Return slow per-electron kinetic attribution for diagnostic validation.
+
+    The implementation deliberately evaluates one sample and one Cartesian
+    coordinate at a time. It is the readable reference for the bounded
+    vectorized atlas path and is not used by training or by `KineticEnergy`.
+
+    Parameters
+    ----------
+    model : callable
+        Wavefunction model returning `WavefunctionOutput`.
+    batch : ElectronBatch
+        Electron configurations to attribute.
+
+    Returns
+    -------
+    torch.Tensor
+        Per-electron kinetic values with shape ``[batch, n_electrons]``.
+    """
+
+    flat = batch.flatten_samples()
+    rows: list[torch.Tensor] = []
+    for sample_index in range(flat.batch_size):
+        positions = flat.positions[sample_index : sample_index + 1].detach().clone().requires_grad_(True)
+        probe_batch = _kinetic_probe_batch(flat, positions, sample_index, sample_index + 1)
+        logabs = _extract_logabs(model(probe_batch))
+        gradient = torch.autograd.grad(logabs.sum(), positions, create_graph=True)[0]
+        electron_values: list[torch.Tensor] = []
+        for electron in range(flat.n_electrons):
+            laplacian = torch.zeros((), device=flat.device, dtype=flat.dtype)
+            for coordinate in range(flat.spatial_dim):
+                second = torch.autograd.grad(
+                    gradient[0, electron, coordinate],
+                    positions,
+                    retain_graph=True,
+                )[0]
+                laplacian = laplacian + second[0, electron, coordinate]
+            gradient_squared = gradient[0, electron].square().sum()
+            electron_values.append(-0.5 * (laplacian + gradient_squared))
+        # Detach only after every second derivative for this sample exists.
+        rows.append(torch.stack(electron_values).detach())
+    if not rows:
+        return torch.empty(
+            (0, flat.n_electrons), device=flat.device, dtype=flat.dtype
+        )
+    return torch.stack(rows)
+
+
+def per_electron_kinetic_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
+    """Return vectorized per-electron kinetic attribution for diagnostics.
+
+    The first backward keeps ``create_graph=True``. Every diagonal Hessian
+    entry is formed before the result is detached, so the path cannot silently
+    drop the graph needed for curvature.
+
+    Parameters
+    ----------
+    model : callable
+        Wavefunction model returning `WavefunctionOutput`.
+    batch : ElectronBatch
+        Electron configurations to attribute.
+
+    Returns
+    -------
+    torch.Tensor
+        Per-electron kinetic values with shape ``[batch, n_electrons]``.
+    """
+
+    flat = batch.flatten_samples()
+    positions = flat.positions.detach().clone().requires_grad_(True)
+    probe_batch = _kinetic_probe_batch(flat, positions, 0, flat.batch_size)
+    logabs = _extract_logabs(model(probe_batch))
+    if tuple(logabs.shape) != (flat.batch_size,):
+        raise ValueError(f"logabs must have shape {(flat.batch_size,)}, got {tuple(logabs.shape)}")
+    gradient = torch.autograd.grad(logabs.sum(), positions, create_graph=True)[0]
+    electron_laplacians: list[torch.Tensor] = []
+    for electron in range(flat.n_electrons):
+        coordinate_seconds: list[torch.Tensor] = []
+        for coordinate in range(flat.spatial_dim):
+            second = torch.autograd.grad(
+                gradient[:, electron, coordinate].sum(),
+                positions,
+                retain_graph=True,
+            )[0]
+            coordinate_seconds.append(second[:, electron, coordinate])
+        electron_laplacians.append(torch.stack(coordinate_seconds, dim=0).sum(dim=0))
+    laplacian = torch.stack(electron_laplacians, dim=1)
+    gradient_squared = gradient.square().sum(dim=-1)
+    return (-0.5 * (laplacian + gradient_squared)).detach()
+
+
+def _kinetic_probe_batch(
+    batch: ElectronBatch,
+    positions: torch.Tensor,
+    start: int,
+    end: int,
+) -> ElectronBatch:
+    """Build a graph-carrying kinetic probe without changing batch semantics."""
+
+    nuclear_positions = batch.nuclear_positions
+    if nuclear_positions is not None and nuclear_positions.ndim == 3:
+        nuclear_positions = nuclear_positions[start:end]
+    nuclear_charges = batch.nuclear_charges
+    if nuclear_charges is not None and nuclear_charges.ndim == 2:
+        nuclear_charges = nuclear_charges[start:end]
+    spins = None if batch.spins is None else batch.spins[start:end]
+    return ElectronBatch(
+        positions=positions,
+        system=batch.system,
+        nuclear_positions=nuclear_positions,
+        nuclear_charges=nuclear_charges,
+        atomic_configuration=batch.atomic_configuration,
+        spins=spins,
+        aux=dict(batch.aux),
+    )
+
+
 def kinetic_energy_from_logabs(model, batch: ElectronBatch) -> torch.Tensor:
     """Return local kinetic energy from the log-amplitude.
 
@@ -115,3 +232,12 @@ class KineticEnergy:
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         value = kinetic_energy_from_logabs(wavefunction, batch)
         return LocalEnergyResult(total=value, terms={self.name: value})
+
+
+__all__ = [
+    "KineticEnergy",
+    "autograd_laplacian",
+    "kinetic_energy_from_logabs",
+    "per_electron_kinetic_from_logabs",
+    "per_electron_kinetic_from_logabs_reference",
+]
