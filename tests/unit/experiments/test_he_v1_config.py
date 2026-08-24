@@ -546,11 +546,12 @@ def test_he_eval_reports_sampler_health_and_retains_raw_records() -> None:
     assert config["evaluation"]["artifact_level"] == "records"
     writer = summaries["tpen.evaluation.summaries.SampledRecordWriter"]
 
-    # max_samples must cover the whole [draw, walker] product. The default
-    # 100000 would silently keep 9.5% of it and look entirely healthy.
+    # The writer's declared capacity is the complete streamed draw-by-walker
+    # grid. A smaller capacity is a task error, never a silent head slice.
     draws = int(task["generator"]["n_draws"])
     walkers = int(config["evaluation_sampler"]["n_walkers"])
-    assert int(writer["max_samples"]) >= draws * walkers
+    assert int(writer["max_samples"]) == draws * walkers
+    assert writer["include_term_energies"] is True
 
 
 def test_he_eval_sampler_carries_the_predeclared_stride_and_burn_in() -> None:

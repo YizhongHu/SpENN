@@ -59,7 +59,7 @@ from tpen.statistics.sidecar import (
     DuplicateReceiptError,
     TrajectoryStatisticsSidecar,
 )
-from tpen.statistics.trajectory import ObservableTrajectory
+from tpen.statistics.trajectory import ObservableTrajectory, ObservableTrajectoryReconciliation
 
 __all__ = [
     "DEFAULT_MIN_DRAWS_PER_CHAIN",
@@ -71,6 +71,7 @@ __all__ = [
     "IntegratedAutocorrelation",
     "MixingDiagnostics",
     "ObservableTrajectory",
+    "ObservableTrajectoryReconciliation",
     "PlateauDiagnostics",
     "TAU_CONVENTION",
     "TrajectoryShape",
