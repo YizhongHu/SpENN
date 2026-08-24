@@ -7,6 +7,7 @@ from tpen.evaluation.summaries.atom import (
     ElectronNucleusRadialProfileWriter,
     ElectronNucleusTailSummary,
 )
+from tpen.evaluation.summaries.conditioned_local_energy import ConditionedLocalEnergySummary
 from tpen.evaluation.summaries.hooke import (
     CoalescenceDivergenceSummary,
     LocalEnergyPathologySummary,
@@ -28,6 +29,7 @@ from tpen.evaluation.summaries.trajectory_statistics import TrajectoryStatistics
 
 __all__ = [
     "CoalescenceDivergenceSummary",
+    "ConditionedLocalEnergySummary",
     "ElectronNucleusCuspSummary",
     "ElectronNucleusRadialProfileWriter",
     "ElectronNucleusTailSummary",
