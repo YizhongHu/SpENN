@@ -89,159 +89,44 @@ there. Do not treat the recipe as a Frontier hardware or run-validation receipt.
 
 ### NVIDIA A100 Environment (ALCF Polaris)
 
-Polaris is the one facility where TPEN selects **no** PyTorch extra. ALCF owns
-Python, PyTorch, and CUDA; `uv` only layers TPEN's own dependencies on top of
-that stack, inside a versioned overlay created with `--system-site-packages`.
-Selecting `cu126`/`cu128`/`cu130` here would shadow the facility PyTorch, which
-is the one outcome to avoid.
+There is **no presently verified, runnable TPEN bootstrap on Polaris**. Do not
+run either of the historical profiles below as an operational recipe.
 
-Facility selection is environment variables only; nothing facility-specific is
-committed. The conda path, overlay path, project account, and Eagle run root
-below are values you export or pass on the command line, never tracked defaults.
+The former direct, absolute-interpreter profile was validated only before the
+2026-08-19 Polaris/Eagle upgrade. On the changed system, that direct profile
+separately failed to load Torch's CUDA runtime libraries. The current
+ALCF-documented sequence—`module use /soft/modulefiles`, `module load conda`,
+then `conda activate base`—was attempted in PBS job `7559215` and currently
+fails while loading `conda`: its module dependencies `gcc-native/14.2` and
+`cray-hdf5-parallel/1.14.3.5` are unavailable. That job did not reach Python,
+Torch, overlay provisioning, or TPEN tests.
 
-Provision on a login node; real compute stays off login nodes.  On a
-post-maintenance Polaris system, activate the facility base first rather than
-assuming a previously recorded absolute interpreter remains a runnable Torch
-runtime:
+Use the current [ALCF Polaris Python guidance](https://docs.alcf.anl.gov/polaris/data-science/python/)
+and contact [ALCF Support](https://www.alcf.anl.gov/support-center) for a
+supported post-upgrade base runtime. A fresh facility validation is required
+before any Polaris TPEN provisioning or test run.
 
-```bash
-module use /soft/modulefiles
-module load conda
-conda activate base
-PYBIN="$(command -v python)"
-test -n "$PYBIN"
+Once ALCF restores and verifies a supported base runtime, these are conditional
+invariants—not a current executable recipe:
 
-# Record this resolved base runtime in the run receipt before creating an
-# overlay.  The same preflight is required inside a PBS allocation before
-# provisioning or tests.
-"$PYBIN" - <<'PY'
-import sys
-import torch
+- Polaris selects **no TPEN PyTorch extra**. ALCF owns Python, PyTorch, and
+  CUDA; selecting `cu126`/`cu128`/`cu130` would shadow the facility Torch.
+- The resolved facility interpreter must drive `$PYBIN -m uv` with
+  `UV_NO_MANAGED_PYTHON=1`, `UV_PYTHON_DOWNLOADS=never`, and a fresh absolute
+  `UV_PROJECT_ENVIRONMENT` created with `--system-site-packages`.
+- Synchronization must remain `uv sync --inexact --locked`; `--inexact`
+  preserves the facility stack and `--locked` prevents an implicit re-lock.
+  No Torch extra or `--no-extra` flag is selected.
+- Validate the resolved runtime with `import torch` after activation and again
+  inside the PBS allocation before provisioning or tests. Record the resolved
+  Python, Torch/CUDA, PE, lock SHA, and overlay provenance in the receipt.
+- Verify interpreter selection through `pyvenv.cfg` or `sys.base_prefix`, not
+  `uv python find`; invoke the overlay Python directly after synchronization,
+  and never run `uv sync` concurrently in workers.
 
-print("base_executable", sys.executable)
-print("base_prefix", sys.prefix)
-print("torch", torch.__version__, torch.version.cuda)
-PY
-
-export UV_PYTHON="$PYBIN"
-export UV_NO_MANAGED_PYTHON=1   # overrides python-preference in pyproject.toml
-export UV_PYTHON_DOWNLOADS=never
-export UV_PROJECT_ENVIRONMENT="/path/to/a/fresh/polaris/overlay"
-
-cd /path/to/a/clean/tpen/checkout
-$PYBIN -m uv lock --check                                      # lock readable and current
-$PYBIN -m uv venv --system-site-packages "$UV_PROJECT_ENVIRONMENT"
-$PYBIN -m uv sync --inexact --locked
-```
-
-For a reproducibility check from a genuinely pristine tracked checkout, clone
-the ref first and use that directory as `cd`'s target (do not copy a dirty
-worktree or untracked files):
-
-```bash
-git clone --no-checkout https://github.com/YizhongHu/TPEN.git "$HOME/tpen-proof/checkout"
-git -C "$HOME/tpen-proof/checkout" checkout --detach <tracked-ref>
-cd "$HOME/tpen-proof/checkout"
-test -z "$(git status --porcelain)"
-test -z "$(git ls-files --others --exclude-standard)"
-```
-
-Afterwards, invoke `"$UV_PROJECT_ENVIRONMENT/bin/python"` directly. Workers must
-not run `uv sync`, and `uv` must never run concurrently from several workers.
-
-`--inexact` matters because the facility PyTorch/CUDA stack is deliberately a
-package outside TPEN's resolved overlay dependencies, and an exact sync would
-treat it as extraneous. `--locked` forbids a silent re-lock of the tracked
-`uv.lock`, and `uv lock --check` gates on the facility `uv` — older than the one
-that writes the lock locally — actually being able to read it.
-
-Four properties of this recipe are load-bearing.
-
-**`uv` is not on Polaris's PATH.** No binary, no module, no `~/.local/bin` copy.
-It exists only as a module of the facility interpreter, `$PYBIN -m uv` (0.8.23
-on the validated stack). Nothing needs installing; do not try to bootstrap one.
-
-**`module use /soft/modulefiles` must precede `module load conda`.**
-Without it the load is a *silent no-op*: it returns rc=0 and conda never reaches
-PATH, so the failure only surfaces later as the wrong interpreter. Never pipe
-`module` into another command either — it is a shell function, so
-`module use ... | tail` discards the `MODULEPATH` change in a subshell. The
-activation in the block above is therefore load-bearing: derive `PYBIN` only
-after `conda activate base`, then prove `import torch` before creating the
-overlay. Repeat that activation and preflight inside PBS before provisioning or
-tests; a login-node preflight is not evidence for a changed compute runtime.
-
-**Never pass `--no-extra`.** On the facility `uv` the flag takes a value and
-applies only when `--all-extras` is also given, which this recipe never passes;
-on newer `uv` it fails outright:
-
-```text
-error: a value is required for '--no-extra <NO_EXTRA>'
-```
-
-Omitting it is equivalent. Extras are opt-in, TPEN declares no
-`default-extras`, so no CUDA extra is selected and facility PyTorch is never
-shadowed.
-The selected environment is therefore **no TPEN PyTorch extra**; `uv tree` may
-list the lock's opt-in extras, but `uv sync` does not install them unless one is
-requested.
-
-**Do not add `UV_PYTHON_PREFERENCE=only-system`** alongside
-`UV_NO_MANAGED_PYTHON=1`, for the same reason as Frontier — uv rejects the
-combination and the recipe would not run at all.
-
-Verify interpreter selection through the overlay's `pyvenv.cfg` (`home = ...`)
-or `sys.base_prefix`, **not** through `uv python find`. With `UV_PYTHON` set and
-`python-preference = "only-managed"` committed, `uv python find` reports the
-uv-managed interpreter while `uv venv` correctly uses the requested one:
-
-```bash
-"$UV_PROJECT_ENVIRONMENT/bin/python" - <<'PY'
-import sys, torch, numpy, tpen
-print("base_prefix", sys.base_prefix)   # must be the facility mconda3
-print("torch", torch.__version__, torch.version.cuda, torch.cuda.is_available())
-print("numpy", numpy.__version__, "tpen", tpen.__file__)
-PY
-```
-
-`torch.cuda.is_available()` is **False on a login node**, and torch may emit
-`Can't initialize NVML`. Polaris login-node GPUs are not user-usable, so this is
-expected and not a provisioning failure. The required `import torch` preflight
-must still succeed after activation; record the resolved base runtime in the
-receipt and repeat the preflight inside PBS before provisioning or tests.
-
-Nothing in the checkout needs editing to make this work. A pinned
-`.python-version` and `[tool.uv] python-preference = "only-system"` were used
-once as temporary cluster evidence and have been reverted; the env-var-only
-profile is proven from a pristine checkout, so neither belongs in a commit.
-
-Historical provenance only: a 2026-08-11 pristine-checkout receipt recorded
-`uv 0.8.23`, a facility Torch 2.8.0/CUDA 12.9 stack, and a successful
-system-site overlay. Polaris/Eagle changed after that receipt, so those values
-are not current configuration. Do not copy historical facility or overlay paths
-into a run. Record the activated base interpreter, Torch/CUDA, PE, and overlay
-selection in the current job receipt instead.
-
-Polaris jobs do not share nodes, so treat a node as a four-GPU worker pool: one
-independent single-GPU TPEN row per GPU rather than one grid row per exclusive
-node. Set `CUDA_VISIBLE_DEVICES` before Python imports torch — PBS did not
-constrain visibility in partial-GPU allocations, so bind explicitly. Account,
-queue, and filesystem declarations stay on the `qsub` command line
-(`-A <project> -q <queue> -l filesystems=home:eagle`; the validated runs used
-project `HetRxnEnergy` and queue `debug`), and run data goes under the project's
-Eagle run root, `/eagle/<project>/<user>/runs`.
-
-Historical 2026-08-07 validation against an earlier Polaris stack remains
-provenance for the workflow only. Facility stacks move: a current run must
-activate conda base, derive `PYBIN`, and record its current Python, Torch/CUDA,
-PE, and overlay evidence rather than treating those historical values as
-configuration.
-
-Core tests are the active validation target:
-
-```bash
-"$UV_PROJECT_ENVIRONMENT/bin/python" -m pytest -q
-```
+Facility paths, exports, project accounts, and Eagle run roots belong in an
+approved run receipt rather than committed defaults. The pre-upgrade validation
+is dated provenance only and must not be treated as a current stack definition.
 
 Configured runs go through the single `run.py` entrypoint, which launches one
 `tpen.runner.Runner` from a YAML config. The legacy Hooke pair smoke training
