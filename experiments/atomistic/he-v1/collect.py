@@ -118,6 +118,51 @@ NAMESPACE_SEPARATOR = "."
 #: does not recognize.
 METRIC_NAMESPACE_SPEC_KEY = "metric_namespaces"
 
+CANARY_ARTIFACT_FILENAMES: Mapping[str, str] = {
+    "sampled_eval_table": "sampled_eval_table.csv",
+    "local_energy_trajectory_statistics": "trajectory_statistics.jsonl",
+    "sampler_trajectory_diagnostics": "sampler_trajectory_diagnostics.json",
+}
+
+CANARY_ARTIFACT_KINDS: Mapping[str, str] = {
+    "sampled_eval_table": "csv",
+    "local_energy_trajectory_statistics": "trajectory_statistics_sidecar",
+    "sampler_trajectory_diagnostics": "sampler_trajectory_diagnostics",
+}
+
+_SAMPLER_DIAGNOSTICS_KEYS = frozenset(
+    {
+        "schema",
+        "n_walkers",
+        "draw_stride",
+        "sampler_burn_in",
+        "proposal_scale",
+        "intermediate_sampler_steps_observed",
+        "intermediate_sampler_steps_unobserved_reason",
+        "sampler_internal_burn_in_states_observed",
+        "discarded_draw_acceptance_rate_series",
+        "retained_draw_acceptance_rate_series",
+        "discarded_draws",
+        "retained_draws",
+        "metrics",
+    }
+)
+
+_SAMPLER_DRAW_DIAGNOSTICS_KEYS = frozenset(
+    {
+        "collection_index",
+        "region_index",
+        "acceptance_rate",
+        "n_walkers",
+        "burn_in",
+        "draw_stride",
+        "transition_count",
+        "proposal_scale",
+        "seed",
+        "minimum_electron_nucleus_radius",
+    }
+)
+
 COLLECTED_FILENAME = "collected.json"
 ROWS_CSV = "rows.csv"
 GATES_CSV = "gates.csv"
@@ -465,6 +510,7 @@ def reconcile_canary_row(
             "n_walkers": row.get("n_walkers"),
             "n_draws": row.get("n_draws"),
             "burn_in": row.get("burn_in"),
+            "discard_draws": row.get("discard_draws"),
             "stride": row.get("stride"),
             "chunk_size": row.get("chunk_size"),
             "record_capacity": row.get("record_capacity"),
@@ -472,14 +518,15 @@ def reconcile_canary_row(
     )
     _reconcile_canary_config(config, row=row, source=source, reasons=reasons)
 
+    task_dir = run_dir / "mcmc_energy"
     index = _required_json(
         run_dir / "diagnostics" / "index.json", "artifact index", reasons
     )
-    artifacts = _reconcile_canary_index(index, row=row, reasons=reasons)
-    task_dir = run_dir / "mcmc_energy"
+    artifacts = _reconcile_canary_index(index, task_dir=task_dir, reasons=reasons)
     csv_path = task_dir / "sampled_eval_table.csv"
     record_metadata_path = task_dir / "sampled_eval_table.metadata.json"
     trajectory_path = task_dir / "trajectory_statistics.jsonl"
+    sampler_diagnostics_path = task_dir / "sampler_trajectory_diagnostics.json"
     record_metadata = _required_json(
         record_metadata_path, "trajectory record metadata", reasons
     )
@@ -497,6 +544,12 @@ def reconcile_canary_row(
         config_sha256=expected_config_sha,
         plan_attempt_id=plan_attempt_id,
         artifact=artifacts.get("local_energy_trajectory_statistics"),
+        reasons=reasons,
+    )
+    _reconcile_canary_sampler_diagnostics(
+        sampler_diagnostics_path,
+        row=row,
+        artifact=artifacts.get("sampler_trajectory_diagnostics"),
         reasons=reasons,
     )
     return reasons
@@ -527,8 +580,10 @@ def _reconcile_canary_config(
         reasons.append("resolved sampler scale disagrees with the canary row")
     generator = task.get("generator")
     if not isinstance(generator, Mapping) or (
-        generator.get("n_draws"), generator.get("chunk_size")
-    ) != (row["n_draws"], row["chunk_size"]):
+        generator.get("n_draws"),
+        generator.get("discard_draws"),
+        generator.get("chunk_size"),
+    ) != (row["n_draws"], row["discard_draws"], row["chunk_size"]):
         reasons.append("resolved trajectory generator scale disagrees with the canary row")
     writers = [
         value
@@ -553,7 +608,7 @@ def _reconcile_canary_config(
 
 
 def _reconcile_canary_index(
-    index: Any, *, row: Mapping[str, Any], reasons: list[str]
+    index: Any, *, task_dir: Path, reasons: list[str]
 ) -> dict[str, Mapping[str, Any]]:
     tasks = index.get("tasks") if isinstance(index, Mapping) else None
     if not isinstance(tasks, list) or len(tasks) != 1:
@@ -574,21 +629,32 @@ def _reconcile_canary_index(
         for artifact in artifacts
         if isinstance(artifact, Mapping)
     }
-    expected = {"sampled_eval_table", "local_energy_trajectory_statistics"}
-    if set(by_name) != expected:
+    expected = set(CANARY_ARTIFACT_FILENAMES)
+    if len(artifacts) != len(expected) or set(by_name) != expected:
         reasons.append(
             f"mcmc_energy artifacts mismatch: expected={sorted(expected)}, "
-            f"actual={sorted(by_name)}"
+            f"actual={[artifact.get('name') if isinstance(artifact, Mapping) else None for artifact in artifacts]}"
         )
+    indexed_output_dir = Path(str(task.get("output_dir") or ""))
+    if not indexed_output_dir.is_absolute() or indexed_output_dir.resolve() != task_dir.resolve():
+        reasons.append("artifact index output directory disagrees with the canary task directory")
     for name, artifact in by_name.items():
+        expected_kind = CANARY_ARTIFACT_KINDS.get(name)
+        if expected_kind is not None and artifact.get("kind") != expected_kind:
+            reasons.append(f"artifact {name!r} kind disagrees with its known contract")
         path = Path(str(artifact.get("path") or ""))
         if not path.is_absolute():
             reasons.append(f"artifact {name!r} path is not absolute")
         else:
             try:
-                path.resolve().relative_to((Path(str(task.get("output_dir"))) ).resolve())
+                path.resolve().relative_to(task_dir.resolve())
             except ValueError:
                 reasons.append(f"artifact {name!r} is outside the indexed task directory")
+            expected_filename = CANARY_ARTIFACT_FILENAMES.get(name)
+            if expected_filename is not None and path.resolve() != (
+                task_dir / expected_filename
+            ).resolve():
+                reasons.append(f"artifact {name!r} path disagrees with its known filename")
     return by_name
 
 
@@ -612,7 +678,7 @@ def _reconcile_canary_records(
         "draw_count": row["n_draws"],
         "walker_count": row["n_walkers"],
         "draw_stride": row["stride"],
-        "burn_in_draws": row["burn_in"],
+        "burn_in_draws": row["discard_draws"],
         "row_count": expected_rows,
     }
     if any(record_metadata.get(key) != value for key, value in expected_metadata.items()):
@@ -698,7 +764,7 @@ def _reconcile_canary_trajectory(
             "draw_count": row["n_draws"],
             "total_draws": row["record_capacity"],
             "draw_stride": row["stride"],
-            "burn_in_draws": row["burn_in"],
+            "burn_in_draws": row["discard_draws"],
         }.items()
     ):
         reasons.append("trajectory-statistics shape disagrees with the retained grid")
@@ -710,6 +776,137 @@ def _reconcile_canary_trajectory(
         for key, value in {**expected_identity, "status": receipt.get("status")}.items()
     ):
         reasons.append("trajectory-statistics artifact metadata disagrees with its sidecar")
+
+
+def _reconcile_canary_sampler_diagnostics(
+    path: Path,
+    *,
+    row: Mapping[str, Any],
+    artifact: Mapping[str, Any] | None,
+    reasons: list[str],
+) -> None:
+    payload = _required_json(path, "sampler trajectory diagnostics", reasons)
+    if not isinstance(payload, Mapping):
+        if payload is not None:
+            reasons.append("sampler trajectory diagnostics must be a mapping")
+        return
+
+    discarded = payload.get("discarded_draws")
+    retained = payload.get("retained_draws")
+    discarded_series = payload.get("discarded_draw_acceptance_rate_series")
+    retained_series = payload.get("retained_draw_acceptance_rate_series")
+    proposal_scale = payload.get("proposal_scale")
+    expected_top_level = {
+        "schema": "sampler_trajectory_diagnostics/v1",
+        "n_walkers": row["n_walkers"],
+        "draw_stride": row["stride"],
+        "sampler_burn_in": row["burn_in"],
+        "intermediate_sampler_steps_observed": False,
+        "sampler_internal_burn_in_states_observed": False,
+    }
+    expected_metrics = {
+        "trajectory_retained_draw_count": row["n_draws"],
+        "trajectory_discarded_draw_count": row["discard_draws"],
+        "trajectory_n_walkers": row["n_walkers"],
+        "trajectory_draw_stride": row["stride"],
+        "trajectory_sampler_burn_in": row["burn_in"],
+        "trajectory_proposal_scale": proposal_scale,
+        "trajectory_retained_value_count": row["record_capacity"],
+        "trajectory_discarded_value_count": row["discard_draws"]
+        * row["n_walkers"],
+        "trajectory_retained_transition_count": row["record_capacity"]
+        * row["stride"],
+        "trajectory_discarded_transition_count": row["discard_draws"]
+        * row["n_walkers"]
+        * row["stride"],
+        "trajectory_intermediate_sampler_steps_observed": False,
+    }
+    metrics = payload.get("metrics")
+    sidecar_matches = (
+        set(payload) == _SAMPLER_DIAGNOSTICS_KEYS
+        and all(payload.get(key) == value for key, value in expected_top_level.items())
+        and isinstance(payload.get("intermediate_sampler_steps_unobserved_reason"), str)
+        and bool(payload.get("intermediate_sampler_steps_unobserved_reason"))
+        and _sampler_diagnostic_draws_match(
+            discarded,
+            row=row,
+            count=row["discard_draws"],
+            collection_offset=0,
+            proposal_scale=proposal_scale,
+        )
+        and _sampler_diagnostic_draws_match(
+            retained,
+            row=row,
+            count=row["n_draws"],
+            collection_offset=row["discard_draws"],
+            proposal_scale=proposal_scale,
+        )
+        and isinstance(discarded_series, list)
+        and isinstance(retained_series, list)
+        and discarded_series
+        == [draw["acceptance_rate"] for draw in discarded]
+        and retained_series == [draw["acceptance_rate"] for draw in retained]
+        and isinstance(metrics, Mapping)
+        and all(metrics.get(key) == value for key, value in expected_metrics.items())
+    )
+    if not sidecar_matches:
+        reasons.append("sampler trajectory diagnostics disagree with the planned sampler/grid")
+
+    expected_artifact_metadata = {
+        "schema": "sampler_trajectory_diagnostics/v1",
+        "retained_draw_count": row["n_draws"],
+        "discarded_draw_count": row["discard_draws"],
+        "draw_stride": row["stride"],
+        "intermediate_sampler_steps_observed": False,
+    }
+    artifact_metadata = artifact.get("metadata") if isinstance(artifact, Mapping) else None
+    if not isinstance(artifact_metadata, Mapping) or (
+        set(artifact_metadata) != set(expected_artifact_metadata)
+        or any(
+            artifact_metadata.get(key) != value
+            for key, value in expected_artifact_metadata.items()
+        )
+    ):
+        reasons.append("sampler trajectory diagnostics artifact metadata mismatch")
+
+
+def _sampler_diagnostic_draws_match(
+    draws: Any,
+    *,
+    row: Mapping[str, Any],
+    count: int,
+    collection_offset: int,
+    proposal_scale: Any,
+) -> bool:
+    if not isinstance(draws, list) or len(draws) != count:
+        return False
+    for region_index, draw in enumerate(draws):
+        if not isinstance(draw, Mapping) or set(draw) != _SAMPLER_DRAW_DIAGNOSTICS_KEYS:
+            return False
+        acceptance_rate = draw.get("acceptance_rate")
+        radius = draw.get("minimum_electron_nucleus_radius")
+        seed = draw.get("seed")
+        if (
+            isinstance(acceptance_rate, bool)
+            or not isinstance(acceptance_rate, int | float)
+            or not 0.0 <= acceptance_rate <= 1.0
+            or (radius is not None and (isinstance(radius, bool) or not isinstance(radius, int | float) or radius < 0.0))
+            or (seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)))
+        ):
+            return False
+        expected = {
+            "collection_index": collection_offset + region_index,
+            "region_index": region_index,
+            "n_walkers": row["n_walkers"],
+            "burn_in": row["burn_in"],
+            "draw_stride": row["stride"],
+            "transition_count": row["n_walkers"] * row["stride"],
+            "proposal_scale": proposal_scale,
+            "seed": row["seed"],
+        }
+        if any(draw.get(key) != value for key, value in expected.items()):
+            return False
+    return True
 
 
 def _required_json(path: Path, label: str, reasons: list[str]) -> Any:

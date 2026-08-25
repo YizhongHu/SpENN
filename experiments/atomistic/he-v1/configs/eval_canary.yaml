@@ -25,6 +25,7 @@ scale:
   n_walkers: 16
   n_draws: 4
   burn_in: 4
+  discard_draws: 0
   stride: 2
   chunk_size: 16
 

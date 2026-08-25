@@ -110,6 +110,8 @@ def test_canary_expands_exactly_two_separately_addressable_energy_rows(
     ]
     assert all(row["task_names"] == ["mcmc_energy"] for row in manifest["rows"])
     assert all(row["record_capacity"] == 64 for row in manifest["rows"])
+    assert all(row["burn_in"] == 4 for row in manifest["rows"])
+    assert all(row["discard_draws"] == 0 for row in manifest["rows"])
     assert all(row["depends_on"] == [] for row in manifest["rows"])
     assert all("checkpoint_dir" not in row for row in manifest["rows"])
     assert all(
@@ -229,6 +231,7 @@ def test_runtime_transform_keeps_the_real_graph_and_only_reduces_scale(
     assert configured.evaluation_sampler.burn_in == row["burn_in"]
     assert configured.evaluation_sampler.n_steps == row["stride"]
     assert configured.evaluator.tasks[0].generator.n_draws == row["n_draws"]
+    assert configured.evaluator.tasks[0].generator.discard_draws == row["discard_draws"]
     targets = [callback._target_ for callback in configured.callbacks]
     assert targets[-2:] == ["tpen.callback.ArtifactIndex", "tpen.callback.FailureLog"]
 
@@ -280,6 +283,7 @@ def _write_canary_outputs(
                     "name": "mcmc_energy",
                     "generator": {
                         "n_draws": row["n_draws"],
+                        "discard_draws": row["discard_draws"],
                         "chunk_size": row["chunk_size"],
                     },
                     "summaries": [
@@ -325,7 +329,7 @@ def _write_canary_outputs(
         "draw_count": row["n_draws"],
         "walker_count": row["n_walkers"],
         "draw_stride": row["stride"],
-        "burn_in_draws": row["burn_in"],
+        "burn_in_draws": row["discard_draws"],
         "row_count": row["record_capacity"],
         "csv_sha256": csv_sha,
         "byte_count": csv_path.stat().st_size,
@@ -344,6 +348,7 @@ def _write_canary_outputs(
                 "n_walkers",
                 "n_draws",
                 "burn_in",
+                "discard_draws",
                 "stride",
                 "chunk_size",
                 "record_capacity",
@@ -367,11 +372,70 @@ def _write_canary_outputs(
             "draw_count": row["n_draws"],
             "total_draws": row["record_capacity"],
             "draw_stride": row["stride"],
-            "burn_in_draws": row["burn_in"],
+            "burn_in_draws": row["discard_draws"],
         },
     }
     trajectory_path = task_dir / "trajectory_statistics.jsonl"
     trajectory_path.write_text(json.dumps(trajectory) + "\n", encoding="utf-8")
+    proposal_scale = 0.5
+    discarded_draws = [
+        _sampler_diagnostic_draw(
+            row,
+            collection_index=index,
+            region_index=index,
+            proposal_scale=proposal_scale,
+        )
+        for index in range(row["discard_draws"])
+    ]
+    retained_draws = [
+        _sampler_diagnostic_draw(
+            row,
+            collection_index=row["discard_draws"] + index,
+            region_index=index,
+            proposal_scale=proposal_scale,
+        )
+        for index in range(row["n_draws"])
+    ]
+    sampler_diagnostics = {
+        "schema": "sampler_trajectory_diagnostics/v1",
+        "n_walkers": row["n_walkers"],
+        "draw_stride": row["stride"],
+        "sampler_burn_in": row["burn_in"],
+        "proposal_scale": proposal_scale,
+        "intermediate_sampler_steps_observed": False,
+        "intermediate_sampler_steps_unobserved_reason": (
+            "collector sees only stride-spaced states"
+        ),
+        "sampler_internal_burn_in_states_observed": False,
+        "discarded_draw_acceptance_rate_series": [
+            draw["acceptance_rate"] for draw in discarded_draws
+        ],
+        "retained_draw_acceptance_rate_series": [
+            draw["acceptance_rate"] for draw in retained_draws
+        ],
+        "discarded_draws": discarded_draws,
+        "retained_draws": retained_draws,
+        "metrics": {
+            "trajectory_retained_draw_count": row["n_draws"],
+            "trajectory_discarded_draw_count": row["discard_draws"],
+            "trajectory_n_walkers": row["n_walkers"],
+            "trajectory_draw_stride": row["stride"],
+            "trajectory_sampler_burn_in": row["burn_in"],
+            "trajectory_proposal_scale": proposal_scale,
+            "trajectory_retained_value_count": row["record_capacity"],
+            "trajectory_discarded_value_count": row["discard_draws"]
+            * row["n_walkers"],
+            "trajectory_retained_transition_count": row["record_capacity"]
+            * row["stride"],
+            "trajectory_discarded_transition_count": row["discard_draws"]
+            * row["n_walkers"]
+            * row["stride"],
+            "trajectory_retained_draw_acceptance_rate_mean": 0.5,
+            "trajectory_intermediate_sampler_steps_observed": False,
+        },
+    }
+    sampler_diagnostics_path = task_dir / "sampler_trajectory_diagnostics.json"
+    collect.layout.write_json(sampler_diagnostics_path, sampler_diagnostics)
     index = {
         "tasks": [
             {
@@ -382,6 +446,7 @@ def _write_canary_outputs(
                 "artifacts": [
                     {
                         "name": "sampled_eval_table",
+                        "kind": "csv",
                         "path": str(csv_path.resolve()),
                         "metadata": {
                             "rows": row["record_capacity"],
@@ -396,8 +461,21 @@ def _write_canary_outputs(
                     },
                     {
                         "name": "local_energy_trajectory_statistics",
+                        "kind": "trajectory_statistics_sidecar",
                         "path": str(trajectory_path.resolve()),
                         "metadata": {**identity, "status": "unresolved"},
+                    },
+                    {
+                        "name": "sampler_trajectory_diagnostics",
+                        "kind": "sampler_trajectory_diagnostics",
+                        "path": str(sampler_diagnostics_path.resolve()),
+                        "metadata": {
+                            "schema": "sampler_trajectory_diagnostics/v1",
+                            "retained_draw_count": row["n_draws"],
+                            "discarded_draw_count": row["discard_draws"],
+                            "draw_stride": row["stride"],
+                            "intermediate_sampler_steps_observed": False,
+                        },
                     },
                 ],
             }
@@ -407,15 +485,33 @@ def _write_canary_outputs(
     return row, source, result_dir, run_dir, row_record, metadata
 
 
-@pytest.mark.parametrize("mutation", ["record_grid", "trajectory_identity", "missing_record"])
-def test_collection_reconciliation_fails_closed_on_mismatch(
-    tmp_path: Path, mutation: str
-) -> None:
-    manifest, source_map_path, _ = _case(tmp_path)
-    row, source, result_dir, run_dir, row_record, metadata = _write_canary_outputs(
-        tmp_path, manifest, source_map_path
-    )
-    baseline = collect.reconcile_canary_row(
+def _sampler_diagnostic_draw(
+    row: dict[str, Any],
+    *,
+    collection_index: int,
+    region_index: int,
+    proposal_scale: float,
+) -> dict[str, Any]:
+    return {
+        "collection_index": collection_index,
+        "region_index": region_index,
+        "acceptance_rate": 0.5,
+        "n_walkers": row["n_walkers"],
+        "burn_in": row["burn_in"],
+        "draw_stride": row["stride"],
+        "transition_count": row["n_walkers"] * row["stride"],
+        "proposal_scale": proposal_scale,
+        "seed": row["seed"],
+        "minimum_electron_nucleus_radius": 0.25,
+    }
+
+
+def _reconcile_written_outputs(
+    manifest: dict[str, Any],
+    written: tuple[dict[str, Any], Any, Path, Path, dict[str, Any], dict[str, Any]],
+) -> list[str]:
+    row, source, result_dir, run_dir, row_record, metadata = written
+    return collect.reconcile_canary_row(
         row,
         source=source,
         result_dir=result_dir,
@@ -425,33 +521,239 @@ def test_collection_reconciliation_fails_closed_on_mismatch(
         row_record=row_record,
         metadata=metadata,
     )
-    assert baseline == []
 
+
+def _artifact_index(run_dir: Path) -> dict[str, Any]:
+    return json.loads((run_dir / "diagnostics" / "index.json").read_text(encoding="utf-8"))
+
+
+def _write_artifact_index(run_dir: Path, index: dict[str, Any]) -> None:
+    collect.layout.write_json(run_dir / "diagnostics" / "index.json", index)
+
+
+def _artifact(index: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(
+        artifact
+        for artifact in index["tasks"][0]["artifacts"]
+        if artifact["name"] == name
+    )
+
+
+def _refresh_record_identity(run_dir: Path) -> None:
+    task_dir = run_dir / "mcmc_energy"
+    csv_path = task_dir / "sampled_eval_table.csv"
+    csv_sha = plan.file_sha256(csv_path)
+    record_metadata_path = task_dir / "sampled_eval_table.metadata.json"
+    record_metadata = json.loads(record_metadata_path.read_text(encoding="utf-8"))
+    record_metadata["csv_sha256"] = csv_sha
+    record_metadata["byte_count"] = csv_path.stat().st_size
+    collect.layout.write_json(record_metadata_path, record_metadata)
+    index = _artifact_index(run_dir)
+    metadata = _artifact(index, "sampled_eval_table")["metadata"]
+    metadata["content_id"] = csv_sha
+    metadata["bytes"] = csv_path.stat().st_size
+    _write_artifact_index(run_dir, index)
+
+
+def test_collection_accepts_exact_three_artifact_contract(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(
+        tmp_path, manifest, source_map_path
+    )
+    run_dir = written[3]
+    names = [artifact["name"] for artifact in _artifact_index(run_dir)["tasks"][0]["artifacts"]]
+
+    assert set(names) == set(collect.CANARY_ARTIFACT_FILENAMES)
+    assert len(names) == 3
+    assert _reconcile_written_outputs(manifest, written) == []
+
+
+@pytest.mark.parametrize("artifact_name", sorted(collect.CANARY_ARTIFACT_FILENAMES))
+@pytest.mark.parametrize("mutation", ["missing", "renamed"])
+def test_collection_rejects_each_missing_or_renamed_artifact(
+    tmp_path: Path, artifact_name: str, mutation: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    index = _artifact_index(run_dir)
+    artifacts = index["tasks"][0]["artifacts"]
+    if mutation == "missing":
+        index["tasks"][0]["artifacts"] = [
+            artifact for artifact in artifacts if artifact["name"] != artifact_name
+        ]
+    else:
+        _artifact(index, artifact_name)["name"] = f"renamed_{artifact_name}"
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("mcmc_energy artifacts mismatch" in reason for reason in reasons)
+
+
+def test_collection_rejects_unknown_extra_artifact(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    index = _artifact_index(run_dir)
+    unknown = dict(index["tasks"][0]["artifacts"][0])
+    unknown["name"] = "unknown_canary_artifact"
+    index["tasks"][0]["artifacts"].append(unknown)
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("mcmc_energy artifacts mismatch" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("artifact_name", sorted(collect.CANARY_ARTIFACT_FILENAMES))
+def test_collection_rejects_artifact_provenance_mismatch(
+    tmp_path: Path, artifact_name: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    index = _artifact_index(run_dir)
+    _artifact(index, artifact_name)["kind"] = "wrong_kind"
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("kind disagrees" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("channel", ["sampler_burn_in", "trajectory_discard"])
+def test_collection_keeps_sampler_burn_in_and_trajectory_discard_distinct(
+    tmp_path: Path, channel: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if channel == "sampler_burn_in":
+        config["evaluation_sampler"]["burn_in"] = row["discard_draws"]
+    else:
+        config["evaluator"]["tasks"][0]["generator"]["discard_draws"] = row["burn_in"]
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("resolved" in reason and "scale disagrees" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["draw_count", "walker_count", "row_count", "burn_in_draws"],
+)
+def test_collection_rejects_each_record_shape_mismatch(
+    tmp_path: Path, field: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    path = run_dir / "mcmc_energy" / "sampled_eval_table.metadata.json"
+    record_metadata = json.loads(path.read_text(encoding="utf-8"))
+    record_metadata[field] = (
+        row["burn_in"] if field == "burn_in_draws" else record_metadata[field] + 1
+    )
+    collect.layout.write_json(path, record_metadata)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("record metadata disagrees" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("coordinate", ["sample_index", "draw_index", "walker_index"])
+def test_collection_rejects_each_record_coordinate_mismatch(
+    tmp_path: Path, coordinate: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
     csv_path = run_dir / "mcmc_energy" / "sampled_eval_table.csv"
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        records = list(csv.DictReader(handle))
+    records[0][coordinate] = "99"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(records[0]))
+        writer.writeheader()
+        writer.writerows(records)
+    _refresh_record_identity(run_dir)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("complete ordered draw/walker grid" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["walker_count", "draw_count", "total_draws", "draw_stride", "burn_in_draws"],
+)
+def test_collection_rejects_each_trajectory_statistics_shape_mismatch(
+    tmp_path: Path, field: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    receipt["shape"][field] = (
+        row["burn_in"] if field == "burn_in_draws" else receipt["shape"][field] + 1
+    )
+    path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("trajectory-statistics shape disagrees" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["retained_draw", "discarded_draw", "walker_count", "sampler_burn_in"],
+)
+def test_collection_rejects_sampler_diagnostics_shape_mismatch(
+    tmp_path: Path, mutation: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    path = run_dir / "mcmc_energy" / "sampler_trajectory_diagnostics.json"
+    diagnostics = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "retained_draw":
+        diagnostics["retained_draws"].pop()
+    elif mutation == "discarded_draw":
+        diagnostics["discarded_draws"].append(dict(diagnostics["retained_draws"][0]))
+    elif mutation == "walker_count":
+        diagnostics["n_walkers"] += 1
+    else:
+        diagnostics["sampler_burn_in"] = diagnostics["sampler_burn_in"] + 1
+    collect.layout.write_json(path, diagnostics)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("diagnostics disagree" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("mutation", ["trajectory_identity", "missing_record"])
+def test_collection_reconciliation_fails_closed_on_partial_or_identity_mismatch(
+    tmp_path: Path, mutation: str
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+
     trajectory_path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
-    if mutation == "record_grid":
-        lines = csv_path.read_text(encoding="utf-8").splitlines()
-        fields = lines[1].split(",")
-        fields[0] = "99"
-        lines[1] = ",".join(fields)
-        csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    elif mutation == "trajectory_identity":
+    if mutation == "trajectory_identity":
         receipt = json.loads(trajectory_path.read_text(encoding="utf-8"))
         receipt["checkpoint_sha256"] = "f" * 64
         trajectory_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
     else:
+        csv_path = run_dir / "mcmc_energy" / "sampled_eval_table.csv"
         csv_path.rename(csv_path.with_suffix(".preserved-partial.csv"))
 
-    reasons = collect.reconcile_canary_row(
-        row,
-        source=source,
-        result_dir=result_dir,
-        run_dir=run_dir,
-        plan_attempt_id=manifest["attempt_id"],
-        manifest=manifest,
-        row_record=row_record,
-        metadata=metadata,
-    )
+    reasons = _reconcile_written_outputs(manifest, written)
+
     assert reasons
 
 
