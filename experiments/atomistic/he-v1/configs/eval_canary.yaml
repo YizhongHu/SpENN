@@ -1,0 +1,38 @@
+# Minimal real-checkpoint He-v1 post-hoc evaluation canary.
+#
+# Checkpoint directories and their immutable hashes live in an external source
+# map supplied at plan/launch/collect time.  This tracked file owns only the
+# two logical checkpoint coordinates, the reduced sampling coordinates, and
+# the Cannon gpu_test request.  Expanding the scale later changes these values;
+# it does not replace the restore -> MCMC -> local-energy -> trajectory-record
+# runtime graph selected from configs/eval.yaml.
+
+schema: he-v1-eval-canary-grid/v1
+study: he-v1-eval-canary-v1
+eval_config: experiments/atomistic/he-v1/configs/eval.yaml
+task_names:
+  - mcmc_energy
+
+checkpoints:
+  - source_id: actual-step-025000
+    checkpoint_step: 25000
+    evaluation_seed: 25001
+  - source_id: actual-step-050000
+    checkpoint_step: 50000
+    evaluation_seed: 50001
+
+scale:
+  n_walkers: 16
+  n_draws: 4
+  burn_in: 4
+  stride: 2
+  chunk_size: 16
+
+resources:
+  partition: gpu_test
+  stratum: a100_mig
+  constraint: null
+  timeout_min: 30
+  cpus: 4
+  mem_gb: 32
+  gpus: 1

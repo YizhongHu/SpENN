@@ -1,10 +1,8 @@
-"""Submit planned He-v1 rows to Slurm with mandatory GPU stratum pinning.
+"""Submit planned He-v1 rows to Slurm with explicit GPU stratum validation.
 
-Every GPU row is submitted with an explicit ``--constraint``, records the
-constraint it asked for, and runs a driver that asserts the delivered card from
-inside the allocation. `seas_gpu` genuinely mixes ``nvidia_h200`` and
-``nvidia_a100-sxm4-80gb``; an unpinned submission has already cost this program
-the comparability of two of its own baseline runs.
+Production rows carry an explicit ``--constraint``. The reduced canary uses
+Cannon's current ``gpu_test`` A100-MIG profile, which has no distinguishing
+node feature, and still asserts the delivered MIG device inside the allocation.
 
 Three further rules are enforced here rather than trusted:
 
@@ -44,6 +42,7 @@ STUDY_DIR = Path(__file__).resolve().parent
 if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
+import canary  # noqa: E402
 import layout  # noqa: E402
 import plan as plan_stage  # noqa: E402
 import strata  # noqa: E402
@@ -76,11 +75,19 @@ def checkpoint_dir_for_eval_row(
     attempt_id: str,
     *,
     manifest: Mapping[str, Any],
+    checkpoint_sources: Mapping[str, canary.CheckpointSource] | None = None,
 ) -> Path:
     """Return the checkpoint directory one evaluation row restores from."""
 
     if row["kind"] != "eval":
         raise LaunchError(f"row {row['row_id']!r} is not an evaluation row")
+    if row.get("canary_protocol") == canary.CANARY_SCHEMA:
+        if checkpoint_sources is None:
+            raise LaunchError("canary row requires validated external checkpoint sources")
+        try:
+            return canary.source_for_row(row, checkpoint_sources).checkpoint_dir
+        except canary.CanaryError as exc:
+            raise LaunchError(str(exc)) from exc
     train_row = plan_stage.row_by_id(manifest, str(row["depends_on"][0]))
     train_run_dir = run_dir_for_row(results_root, train_row, attempt_id)
     return train_run_dir / "checkpoints" / str(row["checkpoint_dir_name"])
@@ -93,6 +100,8 @@ def driver_command(
     manifest: Mapping[str, Any],
     attempt_id: str,
     launch_attempt_id: str,
+    checkpoint_source_map: str | Path | None = None,
+    checkpoint_sources: Mapping[str, canary.CheckpointSource] | None = None,
 ) -> list[str]:
     """Return the driver invocation for one row."""
 
@@ -110,14 +119,28 @@ def driver_command(
         str(row["row_id"]),
     ]
     if row["kind"] == "eval":
-        command += [
-            "--checkpoint-dir",
-            str(
-                checkpoint_dir_for_eval_row(
-                    results_root, row, attempt_id, manifest=manifest
-                )
-            ),
-        ]
+        if row.get("canary_protocol") == canary.CANARY_SCHEMA:
+            if checkpoint_source_map is None:
+                raise LaunchError("canary row requires --checkpoint-source-map")
+            # Re-resolve the row now so command construction cannot bypass the
+            # all-source validation performed before any allocation is made.
+            checkpoint_dir_for_eval_row(
+                results_root,
+                row,
+                attempt_id,
+                manifest=manifest,
+                checkpoint_sources=checkpoint_sources,
+            )
+            command += ["--checkpoint-source-map", str(checkpoint_source_map)]
+        else:
+            command += [
+                "--checkpoint-dir",
+                str(
+                    checkpoint_dir_for_eval_row(
+                        results_root, row, attempt_id, manifest=manifest
+                    )
+                ),
+            ]
     return command
 
 
@@ -144,7 +167,12 @@ def sbatch_directives(
             f"row {row['row_id']!r} requests {gpus} GPUs; this study has no CPU-only rows, "
             "so a zero-GPU row is a planning error"
         )
-    resolved = strata.validate_gpu_placement(
+    validator = (
+        strata.validate_canary_gpu_placement
+        if row.get("canary_protocol") == canary.CANARY_SCHEMA
+        else strata.validate_gpu_placement
+    )
+    resolved = validator(
         partition=partition,
         stratum_name=str(resources["stratum"]),
         timeout_min=int(resources["timeout_min"]),
@@ -158,7 +186,6 @@ def sbatch_directives(
     directives = [
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={partition}",
-        f"#SBATCH --constraint={resolved.constraint}",
         f"#SBATCH --gres=gpu:{gpus}",
         f"#SBATCH --cpus-per-task={int(resources['cpus'])}",
         f"#SBATCH --mem={int(resources['mem_gb'])}G",
@@ -169,6 +196,8 @@ def sbatch_directives(
         f"#SBATCH --output={log_dir / 'slurm-%j.out'}",
         f"#SBATCH --error={log_dir / 'slurm-%j.err'}",
     ]
+    if resolved.constraint:
+        directives.insert(2, f"#SBATCH --constraint={resolved.constraint}")
     if account:
         directives.insert(1, f"#SBATCH --account={account}")
     if dependency:
@@ -186,6 +215,7 @@ def build_script(
     uv_extras: Sequence[str],
     uv_project_environment: str,
     uv_cache_root: str,
+    evaluation_git_sha: str | None = None,
 ) -> str:
     """Return the sbatch script text for one row."""
 
@@ -213,6 +243,14 @@ def build_script(
         f'export UV_CACHE_DIR={shlex.quote(str(uv_cache_root))}"/${{SLURM_JOB_ID}}"',
         'mkdir -p "${UV_CACHE_DIR}"',
         f"cd {shlex.quote(str(repo_root))}",
+    ]
+    if evaluation_git_sha is not None:
+        lines += [
+            "test -n \"${SLURM_JOB_ID:-}\"",
+            f"test \"$(git rev-parse HEAD)\" = {shlex.quote(evaluation_git_sha)}",
+            "test -z \"$(git status --porcelain --untracked-files=no)\"",
+        ]
+    lines += [
         "",
         "# The constraint is what was asked for; this banner is what was delivered.",
         f'echo "[he-v1] row={row["row_id"]} kind={row["kind"]} '
@@ -290,6 +328,7 @@ def launch(
     uv_cache_root: str,
     account: str | None,
     submit: bool,
+    checkpoint_source_map: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write scripts and submission records for ``rows`` and optionally submit.
 
@@ -300,6 +339,19 @@ def launch(
     """
 
     plan_attempt_id = str(manifest["attempt_id"])
+    checkpoint_sources: Mapping[str, canary.CheckpointSource] | None = None
+    evaluation_git_sha: str | None = None
+    if manifest.get("canary_schema") == canary.CANARY_SCHEMA:
+        if checkpoint_source_map is None:
+            raise LaunchError("canary launch requires --checkpoint-source-map")
+        try:
+            checkpoint_sources = canary.reconcile_manifest_sources(
+                manifest, checkpoint_source_map
+            )
+        except canary.CanaryError as exc:
+            raise LaunchError(str(exc)) from exc
+        evaluation_git_sha = str(manifest["evaluation_git_sha"])
+        _require_repo_identity(repo_root, evaluation_git_sha)
     attempt_dir = layout.launch_attempt_dir(results_root, launch_attempt_id)
     submitted_job_ids: dict[str, str] = {}
     launched_row_ids = {str(row["row_id"]) for row in rows}
@@ -328,6 +380,8 @@ def launch(
             manifest=manifest,
             attempt_id=plan_attempt_id,
             launch_attempt_id=launch_attempt_id,
+            checkpoint_source_map=checkpoint_source_map,
+            checkpoint_sources=checkpoint_sources,
         )
         directives = sbatch_directives(
             row,
@@ -345,6 +399,7 @@ def launch(
             uv_extras=uv_extras,
             uv_project_environment=uv_project_environment,
             uv_cache_root=uv_cache_root,
+            evaluation_git_sha=evaluation_git_sha,
         )
         script_path = row_launch_dir / "sbatch.sh"
         script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -363,6 +418,8 @@ def launch(
             "partition": str(row["resources"]["partition"]),
             "requested_stratum": str(row["resources"]["stratum"]),
             "requested_constraint": strata.constraint_for(str(row["resources"]["stratum"])),
+            "evaluation_git_sha": evaluation_git_sha,
+            "checkpoint_source_map_sha256": manifest.get("source_map_sha256"),
             "timeout_min": int(row["resources"]["timeout_min"]),
             "gpus": int(row["resources"]["gpus"]),
             "account": account,
@@ -394,11 +451,38 @@ def launch(
         "uv_bin": str(uv_bin),
         "uv_extras": [str(extra) for extra in uv_extras],
         "resume_policy": "forbidden",
+        "evaluation_git_sha": evaluation_git_sha,
+        "checkpoint_source_map_sha256": manifest.get("source_map_sha256"),
         "rows": records,
     }
     layout.write_json(attempt_dir / "submissions.json", summary)
     layout.write_latest(layout.stage_dir(results_root, layout.STAGE_LAUNCH), launch_attempt_id)
     return summary
+
+
+def _require_repo_identity(repo_root: Path, expected_sha: str) -> None:
+    """Require the exact clean evaluation checkout before script allocation."""
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if head.returncode != 0 or head.stdout.strip() != expected_sha:
+        raise LaunchError(
+            f"canary checkout must be exact SHA {expected_sha}; got {head.stdout.strip()!r}"
+        )
+    if status.returncode != 0 or status.stdout.strip():
+        raise LaunchError("canary checkout must have a clean tracked tree before allocation")
 
 
 def _dependency_for_row(
@@ -455,6 +539,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--row-id", action="append", default=[], help="Restrict to row ids.")
     parser.add_argument(
+        "--checkpoint-source-map",
+        default=None,
+        help="External immutable source map required by a canary plan.",
+    )
+    parser.add_argument(
         "--uv-bin",
         required=True,
         help="Absolute path to the uv binary; bare 'uv' resolves in no shell on Cannon.",
@@ -509,6 +598,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         uv_cache_root=args.uv_cache_root,
         account=args.account,
         submit=args.submit,
+        checkpoint_source_map=args.checkpoint_source_map,
     )
     mode = "submitted" if summary["submitted"] else "prepared (dry run)"
     print(
