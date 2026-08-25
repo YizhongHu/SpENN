@@ -484,6 +484,7 @@ def test_typed_event_serializes_a_plain_dataclass_field_field_wise(tmp_path: Pat
             "loaded_trainer": True,
             "loaded_sampler": True,
             "loaded_rng": True,
+            "replay_semantics": None,
         }
     }
 
