@@ -38,6 +38,7 @@ ALLOCATION_RECEIPT = "allocation_receipt.json"
 
 DeviceReader = Callable[[], "str | None"]
 ConfigRunner = Callable[..., int]
+ConfigTransform = Callable[[Any], Any | None]
 
 
 class DriverError(RuntimeError):
@@ -246,6 +247,7 @@ def run_row(
     plan_attempt_id: str,
     launch_attempt_id: str,
     extra_overrides: Sequence[str] = (),
+    config_transform: ConfigTransform | None = None,
     device_reader: DeviceReader = torch_device_name,
     runner: ConfigRunner | None = None,
     environ: Mapping[str, str] | None = None,
@@ -285,6 +287,10 @@ def run_row(
         overrides,
         checked=[*[str(item) for item in row["overrides"]], *[str(item) for item in extra_overrides]],
     )
+    if config_transform is not None:
+        transformed = config_transform(cfg)
+        if transformed is not None:
+            cfg = transformed
     run = runner if runner is not None else _run_from_config
     return int(
         run(
@@ -337,6 +343,7 @@ __all__ = [
     "add_common_arguments",
     "allocation_receipt",
     "build_config",
+    "ConfigTransform",
     "load_row",
     "require_scheduler",
     "row_overrides",

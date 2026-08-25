@@ -60,6 +60,8 @@ if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
 import absence  # noqa: E402
+import canary  # noqa: E402
+import eval as eval_stage  # noqa: E402
 import launch as launch_stage  # noqa: E402
 import layout  # noqa: E402
 import plan as plan_stage  # noqa: E402
@@ -413,6 +415,321 @@ def load_gate_spec(path: str | Path | None, *, manifest: Mapping[str, Any]) -> d
     return dict(payload)
 
 
+def reconcile_canary_row(
+    row: Mapping[str, Any],
+    *,
+    source: canary.CheckpointSource,
+    result_dir: Path,
+    run_dir: Path,
+    plan_attempt_id: str,
+    manifest: Mapping[str, Any],
+    row_record: Any,
+    metadata: Any,
+) -> list[str]:
+    """Reconcile one canary's source, execution, records, and trajectory receipt."""
+
+    reasons: list[str] = []
+    binding_receipt = _required_json(
+        result_dir / eval_stage.CHECKPOINT_BINDING_RECEIPT,
+        "checkpoint binding receipt",
+        reasons,
+    )
+    try:
+        expected_receipt = source.receipt()
+    except canary.CanaryError as exc:
+        reasons.append(f"immutable checkpoint source changed: {exc}")
+        expected_receipt = None
+    if expected_receipt is not None and binding_receipt != expected_receipt:
+        reasons.append("checkpoint binding receipt disagrees with the live immutable source")
+
+    if not isinstance(row_record, Mapping) or row_record.get("row") != dict(row):
+        reasons.append("executed row record disagrees with the planned canary row")
+    if _json_field(row_record, "plan_attempt_id") != plan_attempt_id:
+        reasons.append("executed row record has the wrong plan attempt id")
+    if _json_field(metadata, "run_id") != row["row_id"]:
+        reasons.append("run metadata has the wrong row id")
+    if _json_field(metadata, "git_commit") != manifest.get("evaluation_git_sha"):
+        reasons.append("run metadata has the wrong evaluation source SHA")
+    if _json_field(metadata, "dirty_worktree") is not False:
+        reasons.append("run metadata does not attest a clean evaluation worktree")
+
+    config_path = run_dir / "resolved_config.yaml"
+    config = _required_yaml(config_path, "resolved config", reasons)
+    expected_config_sha = eval_stage.config_identity_hash(
+        STUDY_DIR.parents[2] / str(row["config"]),
+        [str(item) for item in row["overrides"]],
+        identity_values={
+            "canary_protocol": row.get("canary_protocol"),
+            "checkpoint_source": row.get("checkpoint_source"),
+            "task_names": row.get("task_names"),
+            "n_walkers": row.get("n_walkers"),
+            "n_draws": row.get("n_draws"),
+            "burn_in": row.get("burn_in"),
+            "stride": row.get("stride"),
+            "chunk_size": row.get("chunk_size"),
+            "record_capacity": row.get("record_capacity"),
+        },
+    )
+    _reconcile_canary_config(config, row=row, source=source, reasons=reasons)
+
+    index = _required_json(
+        run_dir / "diagnostics" / "index.json", "artifact index", reasons
+    )
+    artifacts = _reconcile_canary_index(index, row=row, reasons=reasons)
+    task_dir = run_dir / "mcmc_energy"
+    csv_path = task_dir / "sampled_eval_table.csv"
+    record_metadata_path = task_dir / "sampled_eval_table.metadata.json"
+    trajectory_path = task_dir / "trajectory_statistics.jsonl"
+    record_metadata = _required_json(
+        record_metadata_path, "trajectory record metadata", reasons
+    )
+    _reconcile_canary_records(
+        csv_path,
+        record_metadata,
+        row=row,
+        artifact=artifacts.get("sampled_eval_table"),
+        reasons=reasons,
+    )
+    _reconcile_canary_trajectory(
+        trajectory_path,
+        row=row,
+        source=source,
+        config_sha256=expected_config_sha,
+        plan_attempt_id=plan_attempt_id,
+        artifact=artifacts.get("local_energy_trajectory_statistics"),
+        reasons=reasons,
+    )
+    return reasons
+
+
+def _reconcile_canary_config(
+    config: Any,
+    *,
+    row: Mapping[str, Any],
+    source: canary.CheckpointSource,
+    reasons: list[str],
+) -> None:
+    if not isinstance(config, Mapping):
+        return
+    evaluator = config.get("evaluator")
+    sampler = config.get("evaluation_sampler")
+    tasks = evaluator.get("tasks") if isinstance(evaluator, Mapping) else None
+    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes)) or len(tasks) != 1:
+        reasons.append("resolved evaluator must contain exactly one task")
+        return
+    task = tasks[0]
+    if not isinstance(task, Mapping) or task.get("name") != "mcmc_energy":
+        reasons.append("resolved evaluator selected a task other than mcmc_energy")
+        return
+    if not isinstance(sampler, Mapping) or (
+        sampler.get("n_walkers"), sampler.get("burn_in"), sampler.get("n_steps")
+    ) != (row["n_walkers"], row["burn_in"], row["stride"]):
+        reasons.append("resolved sampler scale disagrees with the canary row")
+    generator = task.get("generator")
+    if not isinstance(generator, Mapping) or (
+        generator.get("n_draws"), generator.get("chunk_size")
+    ) != (row["n_draws"], row["chunk_size"]):
+        reasons.append("resolved trajectory generator scale disagrees with the canary row")
+    writers = [
+        value
+        for value in task.get("summaries", [])
+        if isinstance(value, Mapping)
+        and value.get("_target_") == "tpen.evaluation.summaries.SampledRecordWriter"
+    ]
+    if len(writers) != 1 or writers[0].get("max_samples") != row["record_capacity"]:
+        reasons.append("resolved trajectory writer capacity disagrees with the canary row")
+    replay = config.get("load", {}).get("replay_semantics", {})
+    expected_replay = {
+        "source_git_sha": source.training_source_sha,
+        "source_tpen_version": row["checkpoint_source"]["source_tpen_version"],
+        "checkpoint_schema_version": 2,
+        "checkpoint_kind": "tpen.checkpoint",
+        "checkpoint_model_sha256": source.model_sha256,
+    }
+    if not isinstance(replay, Mapping) or any(
+        replay.get(key) != value for key, value in expected_replay.items()
+    ):
+        reasons.append("resolved replay semantics disagree with the immutable source")
+
+
+def _reconcile_canary_index(
+    index: Any, *, row: Mapping[str, Any], reasons: list[str]
+) -> dict[str, Mapping[str, Any]]:
+    tasks = index.get("tasks") if isinstance(index, Mapping) else None
+    if not isinstance(tasks, list) or len(tasks) != 1:
+        reasons.append("artifact index must contain exactly one evaluation task")
+        return {}
+    task = tasks[0]
+    if not isinstance(task, Mapping) or (
+        task.get("name"), task.get("namespace"), task.get("status")
+    ) != ("mcmc_energy", "eval/mcmc_energy", "success"):
+        reasons.append("artifact index does not contain one successful mcmc_energy task")
+        return {}
+    artifacts = task.get("artifacts")
+    if not isinstance(artifacts, list):
+        reasons.append("mcmc_energy artifact index has no artifact list")
+        return {}
+    by_name = {
+        str(artifact.get("name")): artifact
+        for artifact in artifacts
+        if isinstance(artifact, Mapping)
+    }
+    expected = {"sampled_eval_table", "local_energy_trajectory_statistics"}
+    if set(by_name) != expected:
+        reasons.append(
+            f"mcmc_energy artifacts mismatch: expected={sorted(expected)}, "
+            f"actual={sorted(by_name)}"
+        )
+    for name, artifact in by_name.items():
+        path = Path(str(artifact.get("path") or ""))
+        if not path.is_absolute():
+            reasons.append(f"artifact {name!r} path is not absolute")
+        else:
+            try:
+                path.resolve().relative_to((Path(str(task.get("output_dir"))) ).resolve())
+            except ValueError:
+                reasons.append(f"artifact {name!r} is outside the indexed task directory")
+    return by_name
+
+
+def _reconcile_canary_records(
+    csv_path: Path,
+    record_metadata: Any,
+    *,
+    row: Mapping[str, Any],
+    artifact: Mapping[str, Any] | None,
+    reasons: list[str],
+) -> None:
+    if not csv_path.is_file() or not isinstance(record_metadata, Mapping):
+        if not csv_path.is_file():
+            reasons.append(f"missing trajectory record CSV: {csv_path}")
+        return
+    expected_rows = int(row["record_capacity"])
+    expected_metadata = {
+        "schema": "trajectory_records/v1",
+        "row_semantics": "complete_draw_walker_grid",
+        "observable": "local_energy",
+        "draw_count": row["n_draws"],
+        "walker_count": row["n_walkers"],
+        "draw_stride": row["stride"],
+        "burn_in_draws": row["burn_in"],
+        "row_count": expected_rows,
+    }
+    if any(record_metadata.get(key) != value for key, value in expected_metadata.items()):
+        reasons.append("trajectory record metadata disagrees with the planned draw/walker grid")
+    actual_sha = plan_stage.file_sha256(csv_path)
+    if record_metadata.get("csv_sha256") != actual_sha:
+        reasons.append("trajectory record CSV hash disagrees with its metadata")
+    if record_metadata.get("byte_count") != csv_path.stat().st_size:
+        reasons.append("trajectory record CSV byte count disagrees with its metadata")
+    try:
+        with csv_path.open(newline="", encoding="utf-8") as handle:
+            records = list(csv.DictReader(handle))
+    except (OSError, UnicodeDecodeError, csv.Error) as exc:
+        reasons.append(f"trajectory record CSV is unreadable: {exc}")
+        return
+    coordinates = [
+        (int(record["sample_index"]), int(record["draw_index"]), int(record["walker_index"]))
+        for record in records
+        if {"sample_index", "draw_index", "walker_index"} <= set(record)
+    ]
+    expected_coordinates = [
+        (draw * int(row["n_walkers"]) + walker, draw, walker)
+        for draw in range(int(row["n_draws"]))
+        for walker in range(int(row["n_walkers"]))
+    ]
+    if len(records) != expected_rows or coordinates != expected_coordinates:
+        reasons.append("trajectory record CSV is not the complete ordered draw/walker grid")
+    artifact_metadata = artifact.get("metadata") if isinstance(artifact, Mapping) else None
+    if not isinstance(artifact_metadata, Mapping) or any(
+        artifact_metadata.get(key) != value
+        for key, value in {
+            "rows": expected_rows,
+            "n_total": expected_rows,
+            "draw_count": row["n_draws"],
+            "walker_count": row["n_walkers"],
+            "truncated": False,
+            "selection": "complete_draw_walker_grid",
+            "content_id": actual_sha,
+            "bytes": csv_path.stat().st_size,
+        }.items()
+    ):
+        reasons.append("sampled_eval_table artifact metadata disagrees with the retained grid")
+
+
+def _reconcile_canary_trajectory(
+    path: Path,
+    *,
+    row: Mapping[str, Any],
+    source: canary.CheckpointSource,
+    config_sha256: str,
+    plan_attempt_id: str,
+    artifact: Mapping[str, Any] | None,
+    reasons: list[str],
+) -> None:
+    if not path.is_file():
+        reasons.append(f"missing trajectory-statistics sidecar: {path}")
+        return
+    try:
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        reasons.append(f"trajectory-statistics sidecar is unreadable: {exc}")
+        return
+    if len(records) != 1 or not isinstance(records[0], Mapping):
+        reasons.append("trajectory-statistics sidecar must contain exactly one receipt")
+        return
+    receipt = records[0]
+    expected_identity = {
+        "stage": row["stage"],
+        "run_id": row["row_id"],
+        "attempt_id": plan_attempt_id,
+        "checkpoint_sha256": source.model_sha256,
+        "config_sha256": config_sha256,
+        "observable": "local_energy",
+        "evaluator_id": eval_stage.EVALUATOR_ID,
+    }
+    if any(receipt.get(key) != value for key, value in expected_identity.items()):
+        reasons.append("trajectory-statistics receipt join identity mismatch")
+    shape = receipt.get("shape")
+    if not isinstance(shape, Mapping) or any(
+        shape.get(key) != value
+        for key, value in {
+            "walker_count": row["n_walkers"],
+            "draw_count": row["n_draws"],
+            "total_draws": row["record_capacity"],
+            "draw_stride": row["stride"],
+            "burn_in_draws": row["burn_in"],
+        }.items()
+    ):
+        reasons.append("trajectory-statistics shape disagrees with the retained grid")
+    if receipt.get("status") not in {"available", "unresolved"}:
+        reasons.append("trajectory-statistics receipt does not attest a retained trajectory")
+    artifact_metadata = artifact.get("metadata") if isinstance(artifact, Mapping) else None
+    if not isinstance(artifact_metadata, Mapping) or any(
+        artifact_metadata.get(key) != value
+        for key, value in {**expected_identity, "status": receipt.get("status")}.items()
+    ):
+        reasons.append("trajectory-statistics artifact metadata disagrees with its sidecar")
+
+
+def _required_json(path: Path, label: str, reasons: list[str]) -> Any:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        reasons.append(f"missing or invalid {label}: {path}: {exc}")
+        return None
+    return payload
+
+
+def _required_yaml(path: Path, label: str, reasons: list[str]) -> Any:
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        reasons.append(f"missing or invalid {label}: {path}: {exc}")
+        return None
+    return payload
+
+
 def collect_row(
     row: Mapping[str, Any],
     *,
@@ -423,6 +740,7 @@ def collect_row(
     metric_namespaces: Mapping[str, str] | None = None,
     extra_metric_keys: Sequence[str] = (),
     hash_checkpoints: bool = True,
+    checkpoint_sources: Mapping[str, canary.CheckpointSource] | None = None,
 ) -> dict[str, Any]:
     """Collect one planned row into a table row with explicit absence.
 
@@ -463,14 +781,39 @@ def collect_row(
     checkpoint_hash: Any = absence.ABSENT
     checkpoint_dir: Any = absence.ABSENT
     if kind == "eval":
-        checkpoint_dir = launch_stage.checkpoint_dir_for_eval_row(
-            results_root, row, plan_attempt_id, manifest=manifest
-        )
-        checkpoint_hash = (
-            directory_sha256(checkpoint_dir) if hash_checkpoints else absence.ABSENT
-        )
-        if hash_checkpoints and absence.is_absent(checkpoint_hash):
-            reasons.append(f"restored checkpoint is missing: {checkpoint_dir}")
+        if row.get("canary_protocol") == canary.CANARY_SCHEMA:
+            if checkpoint_sources is None:
+                reasons.append("canary collection has no validated checkpoint source map")
+            else:
+                try:
+                    source = canary.source_for_row(row, checkpoint_sources)
+                    checkpoint_dir = source.checkpoint_dir
+                    checkpoint_hash = (
+                        source.model_sha256 if hash_checkpoints else absence.ABSENT
+                    )
+                    reasons.extend(
+                        reconcile_canary_row(
+                            row,
+                            source=source,
+                            result_dir=result_dir,
+                            run_dir=run_dir,
+                            plan_attempt_id=plan_attempt_id,
+                            manifest=manifest,
+                            row_record=row_record,
+                            metadata=metadata,
+                        )
+                    )
+                except canary.CanaryError as exc:
+                    reasons.append(f"immutable checkpoint source reconciliation failed: {exc}")
+        else:
+            checkpoint_dir = launch_stage.checkpoint_dir_for_eval_row(
+                results_root, row, plan_attempt_id, manifest=manifest
+            )
+            checkpoint_hash = (
+                directory_sha256(checkpoint_dir) if hash_checkpoints else absence.ABSENT
+            )
+            if hash_checkpoints and absence.is_absent(checkpoint_hash):
+                reasons.append(f"restored checkpoint is missing: {checkpoint_dir}")
 
     identity = {
         "row_id": row_id,
@@ -668,6 +1011,7 @@ def collect(
     metric_namespaces: Mapping[str, str] | None = None,
     extra_metric_keys: Sequence[str] = (),
     hash_checkpoints: bool = True,
+    checkpoint_source_map: str | Path | None = None,
 ) -> dict[str, Any]:
     """Collect one plan attempt into a durable table.
 
@@ -678,6 +1022,16 @@ def collect(
     """
 
     manifest = plan_stage.read_manifest(results_root, plan_attempt_id)
+    checkpoint_sources: Mapping[str, canary.CheckpointSource] | None = None
+    if manifest.get("canary_schema") == canary.CANARY_SCHEMA:
+        if checkpoint_source_map is None:
+            raise CollectError("canary collection requires --checkpoint-source-map")
+        try:
+            checkpoint_sources = canary.reconcile_manifest_sources(
+                manifest, checkpoint_source_map
+            )
+        except canary.CanaryError as exc:
+            raise CollectError(f"immutable checkpoint sources are incomplete: {exc}") from exc
     thresholds, spec_bindings = split_gate_spec(gate_spec)
     bindings = {**spec_bindings, **dict(metric_namespaces or {})}
     rows = [
@@ -690,6 +1044,7 @@ def collect(
             metric_namespaces=bindings,
             extra_metric_keys=extra_metric_keys,
             hash_checkpoints=hash_checkpoints,
+            checkpoint_sources=checkpoint_sources,
         )
         for row in manifest["rows"]
     ]
@@ -721,6 +1076,12 @@ def collect(
         "n_rows": len(rows),
         "n_pass": sum(1 for row in rows if row["status"] == "pass"),
         "n_fail": sum(1 for row in rows if row["status"] == "fail"),
+        "canary_complete": (
+            len(rows) == 2 and all(row["status"] == "pass" for row in rows)
+            if manifest.get("canary_schema") == canary.CANARY_SCHEMA
+            else None
+        ),
+        "checkpoint_source_map_sha256": manifest.get("source_map_sha256"),
         "summaries": summarize(rows, keys=metric_keys),
         "rows": rows,
     }
@@ -737,6 +1098,22 @@ def write_collected(collected: Mapping[str, Any], *, results_root: Path) -> Path
     _write_gates_csv(directory / GATES_CSV, collected)
     layout.write_latest(layout.stage_dir(results_root, layout.STAGE_COLLECT), attempt_id)
     return directory
+
+
+def require_complete_canary_collection(collected: Mapping[str, Any]) -> None:
+    """Fail closed unless both planned canary rows reconciled completely."""
+
+    if collected.get("canary_complete") is None:
+        return
+    if collected.get("canary_complete") is not True:
+        failed = [
+            row["identity"]["row_id"]
+            for row in collected.get("rows", [])
+            if row.get("status") != "pass"
+        ]
+        raise CollectError(
+            f"canary collection is incomplete; both 25k and 50k rows must pass: {failed}"
+        )
 
 
 def _write_rows_csv(path: Path, collected: Mapping[str, Any]) -> None:
@@ -882,6 +1259,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip checkpoint hashing; the hash then renders as absent, never as matching.",
     )
+    parser.add_argument(
+        "--checkpoint-source-map",
+        default=None,
+        help="External immutable source map required by a canary plan.",
+    )
     return parser.parse_args(argv)
 
 
@@ -907,17 +1289,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan_attempt_id = layout.resolve_attempt_id(results_root, layout.STAGE_PLAN, args.plan_attempt_id)
     manifest = plan_stage.read_manifest(results_root, plan_attempt_id)
     gate_spec = load_gate_spec(args.gate_spec, manifest=manifest)
-    collected = collect(
-        results_root=results_root,
-        plan_attempt_id=plan_attempt_id,
-        collect_attempt_id=args.collect_attempt_id or plan_stage.now_attempt_id(),
-        gate_spec=gate_spec,
-        gate_spec_source=str(args.gate_spec) if args.gate_spec else "plan_manifest",
-        metric_namespaces=parse_metric_namespace_arguments(args.metric_namespace),
-        extra_metric_keys=args.metric_key,
-        hash_checkpoints=not args.skip_checkpoint_hash,
-    )
-    directory = write_collected(collected, results_root=results_root)
+    collect_attempt_id = args.collect_attempt_id or plan_stage.now_attempt_id()
+    try:
+        collected = collect(
+            results_root=results_root,
+            plan_attempt_id=plan_attempt_id,
+            collect_attempt_id=collect_attempt_id,
+            gate_spec=gate_spec,
+            gate_spec_source=str(args.gate_spec) if args.gate_spec else "plan_manifest",
+            metric_namespaces=parse_metric_namespace_arguments(args.metric_namespace),
+            extra_metric_keys=args.metric_key,
+            hash_checkpoints=not args.skip_checkpoint_hash,
+            checkpoint_source_map=args.checkpoint_source_map,
+        )
+        directory = write_collected(collected, results_root=results_root)
+        require_complete_canary_collection(collected)
+    except Exception as exc:
+        failure_dir = layout.collect_attempt_dir(results_root, collect_attempt_id)
+        layout.write_json(
+            failure_dir / "failure.json",
+            {
+                "schema": "he-v1-collect-failure/v1",
+                "plan_attempt_id": plan_attempt_id,
+                "collect_attempt_id": collect_attempt_id,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+        raise
     print(
         f"[he-v1] collected {collected['n_rows']} rows "
         f"({collected['n_pass']} pass, {collected['n_fail']} fail) into {directory}"

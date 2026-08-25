@@ -69,9 +69,10 @@ class Stratum:
     partitions: tuple[str, ...]
 
 
-#: Production GPU strata. ``gpu_test`` is deliberately absent: it serves MIG
-#: slices (``nvidia_a100_3g.20gb``) with no distinguishing node feature, and
-#: `production-grid-v0` forbids production rows there.
+#: Declared GPU strata. ``a100_mig`` is deliberately canary-only: Cannon's
+#: ``gpu_test`` partition serves ``nvidia_a100_3g.20gb`` slices with no
+#: distinguishing node feature, so its empty constraint must never leak into
+#: the production placement validator.
 STRATA: Mapping[str, Stratum] = {
     "h200": Stratum(
         name="h200",
@@ -86,6 +87,13 @@ STRATA: Mapping[str, Stratum] = {
         device_name_required=("a100-sxm4-80gb",),
         device_name_forbidden=("mig",),
         partitions=("kozinsky_gpu", "seas_gpu"),
+    ),
+    "a100_mig": Stratum(
+        name="a100_mig",
+        constraint="",
+        device_name_required=("a100",),
+        device_name_forbidden=(),
+        partitions=("gpu_test",),
     ),
 }
 
@@ -195,6 +203,35 @@ def validate_gpu_placement(*, partition: str, stratum_name: str, timeout_min: in
     return resolved
 
 
+def validate_canary_gpu_placement(
+    *, partition: str, stratum_name: str, timeout_min: int
+) -> Stratum:
+    """Validate the one policy-authorized reduced-scale canary placement.
+
+    The canary is not allowed to choose a production fallback.  It uses the
+    current Cannon ``gpu_test`` A100-MIG profile or planning fails closed.
+    """
+
+    partition = str(partition).strip()
+    resolved = stratum(stratum_name)
+    if partition != "gpu_test" or resolved.name != "a100_mig":
+        raise StratumError(
+            "He-v1 evaluation canary requires gpu_test/a100_mig; no fallback is permitted"
+        )
+    if partition not in resolved.partitions:
+        raise StratumError(
+            f"stratum {resolved.name!r} is not available on partition {partition!r}"
+        )
+    limit = wall_limit_min(partition)
+    if int(timeout_min) <= 0 or int(timeout_min) > limit:
+        raise StratumError(
+            f"canary wall time must be in 1..{limit} minutes, got {timeout_min!r}"
+        )
+    if resolved.constraint:
+        raise StratumError("gpu_test A100-MIG must not invent a Slurm node constraint")
+    return resolved
+
+
 def check_delivered_device(*, stratum_name: str, delivered: str | None) -> None:
     """Assert the delivered device matches the constrained stratum.
 
@@ -221,6 +258,10 @@ def check_delivered_device(*, stratum_name: str, delivered: str | None) -> None:
         )
     text = str(delivered).strip().lower()
     missing = [token for token in resolved.device_name_required if token not in text]
+    if resolved.name == "a100_mig" and not (
+        "mig" in text or "3g.20gb" in text or "a100 3g" in text
+    ):
+        missing.append("MIG/3g.20gb")
     present = [token for token in resolved.device_name_forbidden if token in text]
     if missing or present:
         raise DeliveredDeviceMismatch(
@@ -255,6 +296,7 @@ __all__ = [
     "constraint_for",
     "slurm_time",
     "stratum",
+    "validate_canary_gpu_placement",
     "validate_gpu_placement",
     "wall_limit_min",
 ]

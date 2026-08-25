@@ -14,13 +14,16 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 STUDY_DIR = Path(__file__).resolve().parent
 if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
+import canary  # noqa: E402
 import driver  # noqa: E402
+import layout  # noqa: E402
+import plan as plan_stage  # noqa: E402
 
 #: Marker written by the checkpoint writer when a directory is fully written.
 #: Spelled here rather than imported because ``experiments/`` may not import
@@ -36,6 +39,9 @@ CHECKPOINT_MODEL_FILE = "model.pt"
 
 #: Evaluator identity recorded in the trajectory join. Constant for this study.
 EVALUATOR_ID = "tpen_he_v1_eval"
+
+#: Source receipt written outside the configured run directory before restore.
+CHECKPOINT_BINDING_RECEIPT = "checkpoint_binding.json"
 
 
 def require_checkpoint_model_file(checkpoint_dir: str | Path) -> Path:
@@ -60,7 +66,12 @@ def require_checkpoint_model_file(checkpoint_dir: str | Path) -> Path:
     return model_file
 
 
-def config_identity_hash(config_path: str | Path, overrides: Sequence[str]) -> str:
+def config_identity_hash(
+    config_path: str | Path,
+    overrides: Sequence[str],
+    *,
+    identity_values: Mapping[str, Any] | None = None,
+) -> str:
     """Return the deterministic config hash recorded in the join identity.
 
     Computed over the config FILE BYTES plus the row's overrides, both before
@@ -74,6 +85,16 @@ def config_identity_hash(config_path: str | Path, overrides: Sequence[str]) -> s
     digest.update(Path(config_path).read_bytes())
     digest.update(b"\0overrides\0")
     digest.update(json.dumps(sorted(str(item) for item in overrides)).encode("utf-8"))
+    if identity_values is not None:
+        digest.update(b"\0identity-values\0")
+        digest.update(
+            json.dumps(
+                identity_values,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        )
     return digest.hexdigest()
 
 
@@ -87,7 +108,9 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def checkpoint_replay_semantics_overrides(checkpoint_dir: Path) -> list[str]:
+def checkpoint_replay_semantics_overrides(
+    checkpoint_dir: Path, *, binding: Mapping[str, Any] | None = None
+) -> list[str]:
     """Return fail-closed replay-provenance overrides for one checkpoint.
 
     The evaluation config intentionally leaves source and checkpoint fields
@@ -113,6 +136,26 @@ def checkpoint_replay_semantics_overrides(checkpoint_dir: Path) -> list[str]:
             "checkpoint manifest lacks source git SHA or TPEN version for replay"
         )
     model_file = require_checkpoint_model_file(checkpoint_dir)
+    if binding is not None:
+        expected = {
+            "source_git_sha": binding.get("training_source_sha"),
+            "source_tpen_version": binding.get("source_tpen_version"),
+            "checkpoint_schema_version": binding.get("checkpoint_schema_version"),
+            "checkpoint_kind": binding.get("checkpoint_kind"),
+            "checkpoint_model_sha256": binding.get("model_sha256"),
+        }
+        actual = {
+            "source_git_sha": source_git_sha,
+            "source_tpen_version": source_tpen_version,
+            "checkpoint_schema_version": manifest.get("schema_version"),
+            "checkpoint_kind": manifest.get("kind"),
+            "checkpoint_model_sha256": _file_sha256(model_file),
+        }
+        if actual != expected:
+            raise driver.DriverError(
+                f"checkpoint replay identity changed after allocation: expected={expected}, "
+                f"actual={actual}"
+            )
     return [
         f"load.replay_semantics.source_git_sha={source_git_sha}",
         f"load.replay_semantics.source_tpen_version={source_tpen_version}",
@@ -120,6 +163,45 @@ def checkpoint_replay_semantics_overrides(checkpoint_dir: Path) -> list[str]:
         f"load.replay_semantics.checkpoint_kind={manifest['kind']}",
         f"load.replay_semantics.checkpoint_model_sha256={_file_sha256(model_file)}",
     ]
+
+
+def configure_canary_evaluation(cfg: Any, row: Mapping[str, Any]) -> Any:
+    """Select only retained-energy evaluation and apply reduced scale knobs."""
+
+    from omegaconf import OmegaConf  # noqa: PLC0415 - driver-only dependency
+
+    if list(row.get("task_names", [])) != ["mcmc_energy"]:
+        raise driver.DriverError("canary row must select only mcmc_energy")
+    task = cfg.evaluation_tasks.mcmc_energy
+    cfg.evaluator.tasks = OmegaConf.create([task])
+    cfg.evaluation_sampler.seed = int(row["seed"])
+    cfg.evaluation_sampler.n_walkers = int(row["n_walkers"])
+    cfg.evaluation_sampler.burn_in = int(row["burn_in"])
+    cfg.evaluation_sampler.n_steps = int(row["stride"])
+    task.generator.n_draws = int(row["n_draws"])
+    task.generator.chunk_size = int(row["chunk_size"])
+
+    local_energy = [
+        calculator
+        for calculator in task.calculators
+        if str(calculator.get("_target_"))
+        == "tpen.evaluation.calculators.LocalEnergyCalculator"
+    ]
+    writers = [
+        summary
+        for summary in task.summaries
+        if str(summary.get("_target_"))
+        == "tpen.evaluation.summaries.SampledRecordWriter"
+    ]
+    if len(local_energy) != 1 or len(writers) != 1:
+        raise driver.DriverError(
+            "generic eval graph lost its single LocalEnergyCalculator or SampledRecordWriter"
+        )
+    local_energy[0].chunk_size = int(row["chunk_size"])
+    writers[0].max_samples = int(row["record_capacity"])
+    cfg.callbacks.append(OmegaConf.create({"_target_": "tpen.callback.ArtifactIndex"}))
+    cfg.callbacks.append(OmegaConf.create({"_target_": "tpen.callback.FailureLog"}))
+    return cfg
 
 
 def trajectory_identity_overrides(
@@ -176,10 +258,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description=__doc__)
     driver.add_common_arguments(parser)
-    parser.add_argument(
-        "--checkpoint-dir",
-        required=True,
-        help="Complete checkpoint directory this chain restores.",
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--checkpoint-dir", help="Complete checkpoint directory this chain restores."
+    )
+    source.add_argument(
+        "--checkpoint-source-map",
+        help="External immutable source map required by a canary plan.",
     )
     return parser.parse_args(argv)
 
@@ -189,12 +274,51 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parse_args(argv)
     results_root = Path(args.results_root).resolve()
-    row = driver.load_row(results_root, args.plan_attempt_id, args.row_id, kind="eval")
-    checkpoint_dir = require_complete_checkpoint(args.checkpoint_dir)
+    manifest = plan_stage.read_manifest(results_root, args.plan_attempt_id)
+    row = plan_stage.row_by_id(manifest, args.row_id)
+    if str(row["kind"]) != "eval":
+        raise driver.DriverError(f"row {args.row_id!r} is not an evaluation row")
+
+    binding: Mapping[str, Any] | None = None
+    source_receipt: Mapping[str, Any] | None = None
+    if row.get("canary_protocol") == canary.CANARY_SCHEMA:
+        if args.checkpoint_source_map is None:
+            raise driver.DriverError("canary row requires --checkpoint-source-map")
+        sources = canary.reconcile_manifest_sources(
+            manifest, args.checkpoint_source_map
+        )
+        source = canary.source_for_row(row, sources)
+        binding = dict(row["checkpoint_source"])
+        source_receipt = source.receipt()
+        checkpoint_dir = require_complete_checkpoint(source.checkpoint_dir)
+    else:
+        if args.checkpoint_dir is None:
+            raise driver.DriverError("generic evaluation row requires --checkpoint-dir")
+        checkpoint_dir = require_complete_checkpoint(args.checkpoint_dir)
+
     config_sha256 = config_identity_hash(
         driver.STUDY_DIR.parents[2] / str(row["config"]),
         [str(item) for item in row["overrides"]],
+        identity_values={
+            "canary_protocol": row.get("canary_protocol"),
+            "checkpoint_source": row.get("checkpoint_source"),
+            "task_names": row.get("task_names"),
+            "n_walkers": row.get("n_walkers"),
+            "n_draws": row.get("n_draws"),
+            "burn_in": row.get("burn_in"),
+            "stride": row.get("stride"),
+            "chunk_size": row.get("chunk_size"),
+            "record_capacity": row.get("record_capacity"),
+        }
+        if binding is not None
+        else None,
     )
+    if source_receipt is not None:
+        result_dir = layout.row_dir(
+            results_root, str(row["stage"]), str(row["row_id"]), args.plan_attempt_id
+        )
+        result_dir.mkdir(parents=True, exist_ok=True)
+        layout.write_json(result_dir / CHECKPOINT_BINDING_RECEIPT, dict(source_receipt))
     return driver.run_row(
         row,
         results_root=results_root,
@@ -211,8 +335,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_dir=checkpoint_dir,
                 config_sha256=config_sha256,
             ),
-            *checkpoint_replay_semantics_overrides(checkpoint_dir),
+            *checkpoint_replay_semantics_overrides(checkpoint_dir, binding=binding),
         ],
+        config_transform=(
+            (lambda cfg: configure_canary_evaluation(cfg, row))
+            if binding is not None
+            else None
+        ),
     )
 
 
