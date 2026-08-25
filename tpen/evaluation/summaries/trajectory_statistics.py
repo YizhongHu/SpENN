@@ -239,6 +239,11 @@ def _trajectory_from(bundle: EvaluationBundle) -> ObservableTrajectory | None:
             f"metadata[{TRAJECTORY_METADATA_KEY!r}] must be an ObservableTrajectory, "
             f"got {type(value).__name__}"
         )
+    if bundle.generated.trajectory_records is not None:
+        # The statistics input and row artifact are two projections of the
+        # same accepted walker states. Shape, moments, finite counts, and the
+        # canonical value hash must agree before either can be published.
+        bundle.generated.trajectory_records.reconcile(value)
     return value
 
 

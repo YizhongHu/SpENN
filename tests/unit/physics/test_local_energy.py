@@ -121,6 +121,18 @@ def test_autograd_kinetic_matches_gaussian_logabs_formula() -> None:
     assert torch.allclose(kinetic, expected)
 
 
+def test_zero_electron_kinetic_preserves_empty_attribution_shape() -> None:
+    batch = ElectronBatch(positions=torch.empty(3, 0, 2, dtype=torch.float64))
+
+    result = local_energy([KineticEnergy()], GaussianOutputModel(alpha=0.3), batch, return_terms=True)
+
+    assert isinstance(result, LocalEnergyResult)
+    assert result.total.shape == (3,)
+    assert torch.equal(result.total, torch.zeros(3, dtype=torch.float64))
+    assert result.per_electron_kinetic is not None
+    assert result.per_electron_kinetic.shape == (3, 0)
+
+
 def test_harmonic_oscillator_ground_state_has_constant_local_energy() -> None:
     omega = 1.7
     positions = torch.tensor(

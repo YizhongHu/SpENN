@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tpen"
-version = "0.3.1"
+version = "0.3.2"
 description = "Specht-module equivariant neural network fermionic wavefunctions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,6 +51,14 @@ submitit = [
 
 [dependency-groups]
 dev = [
+  # experiments/baselines/adapters/deepqmc.py reads DeepQMC HDF5 traces, so the
+  # HDF5-reading adapter tests in experiments/baselines/test_adapter_deepqmc.py
+  # need h5py. Pinned rather than lower-bounded so the resolver cannot silently
+  # take the newest: 3.11.0 is the oldest release that both installs and imports
+  # here. 3.10.0 installs from its cp312 wheel but its numpy 1.x ABI is rejected
+  # by this project's locked numpy 2.x, and 3.9.0 has no cp312 wheel at all so
+  # it falls back to a source build that needs libhdf5.
+  "h5py==3.11.0",
   "matplotlib>=3.10.9",
   "pytest",
   "typeguard>=4",

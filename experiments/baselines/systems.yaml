@@ -149,6 +149,74 @@ systems:
     notes: >-
       FermiNet reports -14.66733(3) Ha (99.97(3)% of the correlation energy).
 
+  - id: b_atom
+    description: Boron atom, doublet ground state (1s2 2s2 2p1, one unpaired electron).
+    n_up: 3
+    n_down: 2
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: B
+              charge: 5
+              position_bohr: [0.0, 0.0, 0.0]
+        - term: electron_electron
+    reference_energy_hartree: -24.65391
+    reference_source: >-
+      Chakravorty, Gwaltney, Davidson, Parpia and Froese Fischer, Phys. Rev. A
+      47, 3649 (1993), read via Brown, Trail, Lopez Rios and Needs,
+      "Energies of the first row atoms from quantum Monte Carlo",
+      arXiv:1011.4343, Table 1, and corroborated digit-for-digit by Seth,
+      Lopez Rios and Needs, arXiv:1012.0709, Table 2. Read 2026-08-13.
+    confidence: transcribed
+    notes: >-
+      ESTIMATED-EXACT, not exact: the Chakravorty values are nonrelativistic
+      total energies inferred from experimental ionization potentials with
+      relativistic and QED corrections removed, supplemented by CAS
+      calculations. They are not variational bounds and carry roughly 0.1 mHa
+      uncertainty for the heavier first-row atoms, so a baseline that lands
+      within 0.1 mHa of this number is at the resolution of the reference
+      itself, not confirmed against it. Chakravorty et al. 1993 was not read
+      directly (APS paywalls it); the evidence is two independent QMC papers
+      printing identical digits. Spin sector matches what the reproduction runs
+      used: FermiNet's utils/elements.py assigns group 13 one unpaired
+      electron, giving n_up = 3, n_down = 2 for five electrons. FermiNet
+      reports -24.65370(3) Ha (99.83(3)% of the correlation energy), about 0.2
+      mHa above this reference.
+
+  - id: n_atom
+    description: Nitrogen atom, quartet ground state (1s2 2s2 2p3, three unpaired electrons).
+    n_up: 5
+    n_down: 2
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: N
+              charge: 7
+              position_bohr: [0.0, 0.0, 0.0]
+        - term: electron_electron
+    reference_energy_hartree: -54.5892
+    reference_source: >-
+      Chakravorty, Gwaltney, Davidson, Parpia and Froese Fischer, Phys. Rev. A
+      47, 3649 (1993), read via Brown, Trail, Lopez Rios and Needs,
+      arXiv:1011.4343, Table 1, and corroborated digit-for-digit by Seth,
+      Lopez Rios and Needs, arXiv:1012.0709, Table 2. Read 2026-08-13.
+    confidence: transcribed
+    notes: >-
+      ESTIMATED-EXACT on the same footing as b_atom: derived from experimental
+      ionization potentials with relativistic and QED corrections removed, not
+      a variational bound, roughly 0.1 mHa uncertain. Only five decimals are
+      published for N, one fewer than for Be, so do not read more precision
+      into the stored value than it carries. Spin sector matches the
+      reproduction runs: FermiNet's utils/elements.py assigns group 15 three
+      unpaired electrons, giving n_up = 5, n_down = 2 for seven electrons.
+      FermiNet reports -54.58882(6) Ha (99.80(3)% of the correlation energy),
+      about 0.4 mHa above this reference.
   - id: lih_molecule
     description: Lithium hydride at its equilibrium geometry, singlet ground state.
     n_up: 2
@@ -166,6 +234,7 @@ systems:
               charge: 1
               position_bohr: [1.5075, 0.0, 0.0]
         - term: electron_electron
+        - term: nucleus_nucleus
     reference_energy_hartree: -8.070548
     reference_source: >-
       Cencek and Rychlewski, Chem. Phys. Lett. 320, 549-552 (2000), the
@@ -207,6 +276,7 @@ systems:
               charge: 1
               position_bohr: [0.7, 0.0, 0.0]
         - term: electron_electron
+        - term: nucleus_nucleus
     reference_energy_hartree: -1.17447
     reference_source: >-
       Kolos and Wolniewicz (1965), the standard Born-Oppenheimer reference,
@@ -223,3 +293,44 @@ systems:
       systematic offset, not noise, and it is silent if unstated. Only five
       digits were transcribed; the Kolos-Wolniewicz value is quoted to more
       precision in the primary source, which has not been read here.
+
+  - id: n2_molecule
+    description: >-
+      Nitrogen dimer at R = 2.068 bohr, singlet ground state. The largest
+      system in this registry and the standard hard case for NN-QMC: a triple
+      bond whose correlation energy no single-reference method recovers well.
+    n_up: 7
+    n_down: 7
+    spatial_dim: 3
+    hamiltonian:
+      terms:
+        - term: kinetic
+        - term: electron_nucleus
+          nuclei:
+            - element: N
+              charge: 7
+              position_bohr: [-1.034, 0.0, 0.0]
+            - element: N
+              charge: 7
+              position_bohr: [1.034, 0.0, 0.0]
+        - term: electron_electron
+        - term: nucleus_nucleus
+    reference_energy_hartree: -109.5423
+    reference_source: >-
+      Filippi and Umrigar, J. Chem. Phys. 105, 213 (1996), quoted as the Exact
+      column of the FermiNet molecular table (Pfau, Spencer, Matthews and Foulkes,
+      arXiv:1909.02487, Table 2) at R = 2.068 bohr. Read 2026-08-13.
+    confidence: transcribed
+    notes: >-
+      The FermiNet molecular table is a wide multi-method table (System, R,
+      FermiNet, VMC, DMC, CCSD(T)/CBS, HF/CBS, Exact, %corr); -109.5425 is a
+      neighbouring cell, not the exact value, and an earlier collapsed
+      extraction read it. Column identity was pinned on the 2026-08-13 re-read
+      by the same two-way check used for lih_molecule. Geometry is stated
+      because it is load-bearing: R = 2.068 bohr, nuclei symmetric about the
+      origin on x, which is also the geometry the DeepQMC reproduction runs
+      used, so that comparison is geometry-matched rather than approximately
+      matched. FermiNet reports -109.5388(1) Ha (99.36(2)% of the correlation
+      energy) -- 3.5 mHa above the reference, the largest shortfall anywhere in
+      its table and the reason N2 is the interesting case rather than a
+      formality.

@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 
-from tpen.data.batch import ElectronBatch
+from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.evaluation.bundle import EvaluationBundle, LocalEnergyValues
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, local_energy, normalize_hamiltonian_terms
@@ -38,6 +38,37 @@ class LocalEnergyCalculator:
         context: EvaluationContext,
     ) -> EvaluationBundle:
         """Evaluate local energy and return a bundle with raw values."""
+
+        records = bundle.generated.trajectory_records
+        if records is not None:
+            records.validate(check_files=False)
+            if tuple(self.hamiltonian_terms) != records.term_names:
+                raise ValueError(
+                    "LocalEnergyCalculator terms disagree with streamed trajectory records"
+                )
+            flat = bundle.generated.batch.flatten_samples()
+            n_rows = records.validate_snapshot_batch(flat)
+            total = records.final_draw.local_energy[:n_rows].to(
+                device=flat.device,
+                dtype=flat.dtype,
+            )
+            terms = None
+            if self.return_terms:
+                terms = {
+                    name: records.final_draw.term_energies[name][:n_rows].to(
+                        device=flat.device,
+                        dtype=flat.dtype,
+                    )
+                    for name in records.term_names
+                }
+            return replace(
+                bundle,
+                local_energy=LocalEnergyValues(
+                    local_energy=total,
+                    finite_mask=torch.isfinite(total),
+                    term_energies=terms,
+                ),
+            )
 
         result = evaluate_local_energy_in_chunks(
             self.hamiltonian_terms,
@@ -86,7 +117,12 @@ def evaluate_local_energy_in_chunks(
     size = batch_size if chunk_size is None or int(chunk_size) <= 0 else int(chunk_size)
     total_chunks: list[torch.Tensor] = []
     term_chunks: dict[str, list[torch.Tensor]] = {}
+    logabs_chunks: list[torch.Tensor] = []
+    sign_chunks: list[torch.Tensor] = []
+    per_electron_kinetic_chunks: list[torch.Tensor] = []
     term_order: tuple[str, ...] | None = None
+    captured_wavefunction = False
+    captured_per_electron_kinetic = False
     for start in range(0, batch_size, size):
         chunk = slice_flat_batch(flat, start, min(start + size, batch_size))
         result = local_energy(terms, wavefunction, chunk, return_terms=return_terms)
@@ -101,6 +137,19 @@ def evaluate_local_energy_in_chunks(
             total_chunks.append(result.total.detach())
             for name, value in result.terms.items():
                 term_chunks.setdefault(name, []).append(value.detach())
+            output = result.wavefunction_output
+            if output is not None:
+                captured_wavefunction = True
+                # Keep only the signed-log primitives. ``aux`` and the original
+                # output may retain the derivative graph used by the kinetic
+                # term, so neither may escape the current chunk.
+                logabs_chunks.append(output.logabs.detach().reshape(-1))
+                sign_chunks.append(output.sign.detach().reshape(-1))
+            if result.per_electron_kinetic is not None:
+                captured_per_electron_kinetic = True
+                per_electron_kinetic_chunks.append(
+                    result.per_electron_kinetic.detach()
+                )
         else:
             if not isinstance(result, torch.Tensor):
                 raise TypeError("local_energy(return_terms=False) must return a torch.Tensor")
@@ -108,7 +157,31 @@ def evaluate_local_energy_in_chunks(
     total = torch.cat(total_chunks, dim=0)
     if not return_terms:
         return total
-    return LocalEnergyResult(total=total, terms={name: torch.cat(chunks, dim=0) for name, chunks in term_chunks.items()})
+    wavefunction_output = None
+    if captured_wavefunction:
+        if len(logabs_chunks) != len(total_chunks):
+            raise ValueError("wavefunction output was not produced for every local-energy chunk")
+        wavefunction_output = WavefunctionOutput(
+            logabs=torch.cat(logabs_chunks, dim=0),
+            sign=torch.cat(sign_chunks, dim=0),
+        )
+    per_electron_kinetic = None
+    if captured_per_electron_kinetic:
+        if len(per_electron_kinetic_chunks) != len(total_chunks):
+            raise ValueError(
+                "per-electron kinetic attribution was not produced for every "
+                "local-energy chunk"
+            )
+        per_electron_kinetic = torch.cat(
+            per_electron_kinetic_chunks,
+            dim=0,
+        )
+    return LocalEnergyResult(
+        total=total,
+        terms={name: torch.cat(chunks, dim=0) for name, chunks in term_chunks.items()},
+        wavefunction_output=wavefunction_output,
+        per_electron_kinetic=per_electron_kinetic,
+    )
 
 
 def slice_flat_batch(batch: ElectronBatch, start: int, end: int) -> ElectronBatch:
@@ -133,6 +206,7 @@ def slice_flat_batch(batch: ElectronBatch, start: int, end: int) -> ElectronBatc
         system=batch.system,
         nuclear_positions=nuclear_positions,
         nuclear_charges=nuclear_charges,
+        atomic_configuration=batch.atomic_configuration,
         spins=spins,
         aux=aux,
     )

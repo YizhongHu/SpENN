@@ -27,6 +27,7 @@ system:
   nuclei:
     positions: [[0.0, 0.0, 0.0]]
     charges: [2.0]
+  # Infinite-nuclear-mass, nonrelativistic helium reference energy.
   reference_energy: -2.903724377034119598
 
 # Sole typed nuclear-geometry authority (A5): one declarative `atoms` source
@@ -82,6 +83,26 @@ load:
   mode: model_only
   strict: true
   allow_protocol_mismatch: false
+  # Source/checkpoint values are injected from manifest.json by eval.py.  The
+  # forms and values below make the executed cusp-distance behavior legible
+  # without changing its existing parameters.
+  replay_semantics:
+    record_schema_version: 1
+    source_git_sha: ???
+    source_tpen_version: ???
+    checkpoint_schema_version: ???
+    checkpoint_kind: ???
+    checkpoint_model_sha256: ???
+    evaluation_config_sha256: ${trajectory_identity.config_sha256}
+    runtime_dtype: ${runtime.dtype}
+    cusp_distance:
+      electron_electron_distance_form: sqrt_squared_distance_plus_eps_squared
+      electron_electron_distance_eps: 1.0e-12
+      electron_electron_range_offset_form: softplus_plus_eps
+      electron_electron_range_offset_eps: 1.0e-12
+      electron_nucleus_coulomb_distance_form: euclidean_norm_clamp_min_eps
+      electron_nucleus_coulomb_distance_eps: ${hamiltonian_terms.electron_nucleus.eps}
+    reference_energy_qualification: infinite_nuclear_mass_nonrelativistic
 
 runner:
   _target_: tpen.runner.Evaluate
@@ -101,6 +122,12 @@ evaluator:
     - ${evaluation_tasks.full_model_antisymmetry}
     - ${evaluation_tasks.spatial_exchange_symmetry}
     - ${evaluation_tasks.trace_equivariance}
+    # P3 singular/tail atlas block: append-only for cross-chain convergence.
+    - ${evaluation_tasks.he_en_numerical_atlas}
+    - ${evaluation_tasks.he_ee_ideal_vs_executed_numerical_atlas}
+    - ${evaluation_tasks.he_one_electron_tail_atlas}
+    - ${evaluation_tasks.he_center_of_mass_tail_atlas}
+    - ${evaluation_tasks.he_angular_shell_atlas}
 
 model:
   _target_: tpen.nn.TPENWaveFunction
@@ -273,9 +300,10 @@ evaluation_tasks:
       # already exported -- it was simply never named by a config, so an eval
       # row reported no acceptance rate at all.
       - _target_: tpen.evaluation.summaries.SamplerStatsSummary
-      # Raw [draw, walker] retention. max_samples covers the full product
-      # (256 x 4096 = 1048576); the default 100000 would silently keep 9.5% and
-      # look entirely healthy.
+      # Raw [draw, walker] retention. This is a complete streamed grid, not a
+      # snapshot table: max_samples is an explicit capacity contract for all
+      # 256 x 4096 = 1048576 rows. A smaller bound fails the task loudly rather
+      # than silently replacing the trajectory with a head slice.
       - _target_: tpen.evaluation.summaries.SampledRecordWriter
         max_samples: 1048576
         include_term_energies: true
@@ -362,6 +390,194 @@ evaluation_tasks:
     summaries:
       - _target_: tpen.evaluation.summaries.TraceEquivarianceSummary
 
+  # P3 singular/tail atlas block: kept contiguous and appended so the records
+  # and physics stacks can converge without interleaving shared-list edits.
+  # Refinement schedules are generated on pinned CPU float64, then transferred
+  # to this evaluation runtime with both provenances recorded in every row.
+  he_en_numerical_atlas:
+    name: he_en_numerical_atlas
+    namespace: ${evaluation.namespace}/he_en_numerical_atlas
+    output_dir: ${run.dir}/he_en_numerical_atlas
+    generator:
+      _target_: tpen.evaluation.generators.HeliumElectronNucleusApproachGenerator
+      atoms: ${atoms}
+      directions:
+        - [1.0, 0.0, 0.0]
+        - [-1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, -1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+        - [0.0, 0.0, -1.0]
+      spectator_position: [0.0, 0.0, -1.0]
+      start_radius: 1.0e-2
+      refinement_ratio: 1.0e-8
+      probe_electrons: [0, 1]
+      max_refinement_steps: 128
+    calculators:
+      - _target_: tpen.evaluation.calculators.HeliumAtlasCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        factor_indices:
+          executed_smoothed_ee_factor: 0
+          executed_electron_nucleus_factor: 1
+        chunk_size: 8
+    summaries:
+      - _target_: tpen.evaluation.summaries.HeliumCurvatureSummary
+        series_name: executed_electron_nucleus_factor
+        metric_prefix: executed_electron_nucleus_factor_curvature
+        windows:
+          near_zero: 1.0e-10
+          near_nucleus: 1.0e-6
+          cusp_region: 1.0e-2
+      - _target_: tpen.evaluation.summaries.HeliumCurvatureSummary
+        series_name: executed_full_logabs
+        metric_prefix: executed_full_logabs_en_curvature
+        windows:
+          near_zero: 1.0e-10
+          near_nucleus: 1.0e-6
+          cusp_region: 1.0e-2
+      - _target_: tpen.evaluation.summaries.HeliumNumericalLimitSummary
+      - _target_: tpen.evaluation.summaries.HeliumAtlasWriter
+        filename: helium_en_numerical_atlas.csv
+
+  he_ee_ideal_vs_executed_numerical_atlas:
+    name: he_ee_ideal_vs_executed_numerical_atlas
+    namespace: ${evaluation.namespace}/he_ee_ideal_vs_executed_numerical_atlas
+    output_dir: ${run.dir}/he_ee_ideal_vs_executed_numerical_atlas
+    generator:
+      _target_: tpen.evaluation.generators.HeliumElectronElectronApproachGenerator
+      atoms: ${atoms}
+      directions:
+        - [1.0, 0.0, 0.0]
+        - [-1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, -1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+        - [0.0, 0.0, -1.0]
+      center_of_mass: [0.0, 0.0, 0.0]
+      start_radius: 1.0e-2
+      refinement_ratio: 1.0e-8
+      max_refinement_steps: 128
+    calculators:
+      - _target_: tpen.evaluation.calculators.HeliumAtlasCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        factor_indices:
+          executed_smoothed_ee_factor: 0
+          executed_electron_nucleus_factor: 1
+        chunk_size: 8
+    summaries:
+      - _target_: tpen.evaluation.summaries.HeliumCurvatureSummary
+        series_name: executed_smoothed_ee_factor
+        metric_prefix: executed_smoothed_ee_factor_curvature
+        windows:
+          below_executed_smoothing_scale: 1.0e-14
+          executed_smoothing_transition: 1.0e-10
+          coalescence_region: 1.0e-2
+      - _target_: tpen.evaluation.summaries.HeliumCurvatureSummary
+        series_name: executed_full_logabs
+        metric_prefix: executed_full_logabs_ee_curvature
+        windows:
+          below_executed_smoothing_scale: 1.0e-14
+          executed_smoothing_transition: 1.0e-10
+          coalescence_region: 1.0e-2
+      - _target_: tpen.evaluation.summaries.HeliumNumericalLimitSummary
+      - _target_: tpen.evaluation.summaries.HeliumAtlasWriter
+        filename: helium_ideal_unfloored_vs_executed_smoothed_ee_atlas.csv
+
+  he_one_electron_tail_atlas:
+    name: he_one_electron_tail_atlas
+    namespace: ${evaluation.namespace}/he_one_electron_tail_atlas
+    output_dir: ${run.dir}/he_one_electron_tail_atlas
+    generator:
+      _target_: tpen.evaluation.generators.HeliumOneElectronEscapeGenerator
+      atoms: ${atoms}
+      directions:
+        - [1.0, 0.0, 0.0]
+        - [-1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, -1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+        - [0.0, 0.0, -1.0]
+      radii: [2.0, 4.0, 6.0, 8.0, 10.0]
+      spectator_position: [0.0, 0.0, -1.0]
+      probe_electron: 0
+    calculators:
+      - _target_: tpen.evaluation.calculators.HeliumAtlasCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        factor_indices:
+          executed_smoothed_ee_factor: 0
+          executed_electron_nucleus_factor: 1
+        chunk_size: 8
+    summaries:
+      - _target_: tpen.evaluation.summaries.HeliumTailSummary
+        series_name: executed_full_logabs
+        metric_prefix: executed_full_logabs_one_electron_tail
+      - _target_: tpen.evaluation.summaries.HeliumAtlasWriter
+        filename: helium_one_electron_tail_atlas.csv
+
+  he_center_of_mass_tail_atlas:
+    name: he_center_of_mass_tail_atlas
+    namespace: ${evaluation.namespace}/he_center_of_mass_tail_atlas
+    output_dir: ${run.dir}/he_center_of_mass_tail_atlas
+    generator:
+      _target_: tpen.evaluation.generators.HeliumCenterOfMassEscapeGenerator
+      atoms: ${atoms}
+      directions:
+        - [1.0, 0.0, 0.0]
+        - [-1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, -1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+        - [0.0, 0.0, -1.0]
+      radii: [2.0, 4.0, 6.0, 8.0, 10.0]
+      relative_positions:
+        - [0.0, 0.0, 0.5]
+        - [0.0, 0.0, -0.5]
+    calculators:
+      - _target_: tpen.evaluation.calculators.HeliumAtlasCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        factor_indices:
+          executed_smoothed_ee_factor: 0
+          executed_electron_nucleus_factor: 1
+        chunk_size: 8
+    summaries:
+      - _target_: tpen.evaluation.summaries.HeliumTailSummary
+        series_name: executed_full_logabs
+        metric_prefix: executed_full_logabs_center_of_mass_tail
+      - _target_: tpen.evaluation.summaries.HeliumAtlasWriter
+        filename: helium_center_of_mass_tail_atlas.csv
+
+  he_angular_shell_atlas:
+    name: he_angular_shell_atlas
+    namespace: ${evaluation.namespace}/he_angular_shell_atlas
+    output_dir: ${run.dir}/he_angular_shell_atlas
+    generator:
+      _target_: tpen.evaluation.generators.HeliumAngularShellGenerator
+      atoms: ${atoms}
+      directions:
+        - [1.0, 0.0, 0.0]
+        - [-1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, -1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+        - [0.0, 0.0, -1.0]
+      radii: [4.0, 8.0, 12.0]
+      spectator_position: [0.0, 0.0, -1.0]
+      probe_electron: 0
+    calculators:
+      - _target_: tpen.evaluation.calculators.HeliumAtlasCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        factor_indices:
+          executed_smoothed_ee_factor: 0
+          executed_electron_nucleus_factor: 1
+        chunk_size: 8
+    summaries:
+      - _target_: tpen.evaluation.summaries.HeliumTailSummary
+        series_name: executed_full_logabs
+        metric_prefix: executed_full_logabs_angular_shell_tail
+      - _target_: tpen.evaluation.summaries.HeliumAtlasWriter
+        filename: helium_angular_shell_atlas.csv
+
+
 callbacks:
   - _target_: tpen.callback.ConfigSnapshot
     output_path: ${run.dir}/config.yaml
@@ -371,6 +587,17 @@ callbacks:
     output_path: ${run.dir}/metadata.json
   - _target_: tpen.callback.Status
     output_path: ${run.dir}/status.json
+  # Evaluation cost diagnostics consume the canonical typed Event Clock
+  # boundaries. Device synchronization stays disabled: the current callback
+  # dispatch order cannot make that flag bracket device work truthfully, while
+  # CPU runs need honest host-wall timing rather than a synchronization claim.
+  - _target_: tpen.callback.EvaluationTiming
+    accelerator_synchronize: false
+  - _target_: tpen.callback.EvaluationComponentTiming
+    accelerator_synchronize: false
+  - _target_: tpen.callback.DiagnosticTiming
+    accelerator_synchronize: false
+  - _target_: tpen.callback.ResourceUsage
 
 loggers:
   - _target_: tpen.logging.CSV

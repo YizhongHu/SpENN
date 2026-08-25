@@ -10,6 +10,11 @@ from typing import Any
 
 import torch
 
+from tpen.checkpoint.replay import (
+    CheckpointReplaySemantics,
+    REPLAY_SEMANTICS_FILENAME,
+    write_checkpoint_replay_semantics,
+)
 from tpen.evaluation.bundle import EvaluationBundle
 from tpen.evaluation.events import (
     CalculatorRun,
@@ -53,6 +58,7 @@ class Evaluator:
         *,
         model: torch.nn.Module,
         context: Any,
+        replay_semantics: CheckpointReplaySemantics | None = None,
     ) -> EvaluationResult:
         """Run all configured tasks and return aggregate metrics.
 
@@ -81,6 +87,18 @@ class Evaluator:
         full_metrics: dict[str, MetricScalar] = {}
         failures: list[EvaluationFailure] = []
         artifacts: list[ArtifactRecord] = []
+        if replay_semantics is not None:
+            replay_path = write_checkpoint_replay_semantics(
+                replay_semantics, run_context.run_dir
+            )
+            artifacts.append(
+                ArtifactRecord(
+                    name=REPLAY_SEMANTICS_FILENAME,
+                    kind="checkpoint_replay_semantics",
+                    path=replay_path,
+                    metadata={"content_id": replay_semantics.content_id()},
+                )
+            )
 
         for task in self.tasks:
             task_output_dir = _resolve_task_output_dir(task.output_dir, run_dir=base_context.run_dir)
@@ -106,6 +124,7 @@ class Evaluator:
                     context=task_context,
                     run_context=run_context,
                     state=state,
+                    replay_semantics=replay_semantics,
                 )
                 # Written inside the scope so the `Ended` boundary observes it.
                 state.task_result = result
@@ -124,6 +143,7 @@ class Evaluator:
             task_results=tuple(task_results),
             artifacts=tuple(artifacts),
             failures=tuple(failures),
+            replay_semantics=replay_semantics,
         )
 
     def _context_from_run_context(self, context: Any) -> EvaluationContext:
@@ -150,6 +170,7 @@ class Evaluator:
         context: EvaluationContext,
         run_context: Any,
         state: EvaluationRunState,
+        replay_semantics: CheckpointReplaySemantics | None,
     ) -> TaskResult:
         output_dir = context.task_output_dir
         failures: list[EvaluationFailure] = []
@@ -173,7 +194,15 @@ class Evaluator:
         except Exception as exc:
             failure = _failure(context, task=task, component=task.generator, component_type="generator", exc=exc)
             failures.append(failure)
-            result = _task_result(task, output_dir, "failed", metrics, artifacts, failures)
+            result = _task_result(
+                task,
+                output_dir,
+                "failed",
+                metrics,
+                artifacts,
+                failures,
+                replay_semantics,
+            )
             run_context.emit(ComponentFailed(failure=failure), state=state)
             return result
 
@@ -227,7 +256,15 @@ class Evaluator:
         # the split: the caller writes this result onto `EvaluationRunState`
         # before the task scope closes, so `Ended[EvaluationTaskRun]` carries the
         # outcome, status included, on both paths (ADR-E008).
-        return _task_result(task, output_dir, status, metrics, artifacts, failures)
+        return _task_result(
+            task,
+            output_dir,
+            status,
+            metrics,
+            artifacts,
+            failures,
+            replay_semantics,
+        )
 
 
 def _task_result(
@@ -237,6 +274,7 @@ def _task_result(
     metrics: Mapping[str, MetricScalar],
     artifacts: Sequence[ArtifactRecord],
     failures: Sequence[EvaluationFailure],
+    replay_semantics: CheckpointReplaySemantics | None,
 ) -> TaskResult:
     return TaskResult(
         name=task.name,
@@ -246,6 +284,7 @@ def _task_result(
         metrics=dict(metrics),
         artifacts=tuple(artifacts),
         failures=tuple(failures),
+        replay_semantics=replay_semantics,
     )
 
 

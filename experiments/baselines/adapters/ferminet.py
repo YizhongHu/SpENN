@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import re
 import statistics
 import sys
@@ -40,29 +39,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from experiments.baselines.errors import AdapterError
 from experiments.baselines.records import BaselineRecord
+
+# Re-exported so that callers importing these from this module keep working;
+# both now live in the statistics module, which owns the concept.
+from experiments.baselines.statistics import (  # noqa: F401
+    MIN_TAIL_STEPS,
+    blocking_stderr,
+    select_tail,
+)
 
 TRAIN_STATS_FILENAME = "train_stats.csv"
 RECORD_FILENAME = "baseline_record.json"
-
-#: Smallest number of blocks that still supports a usable variance estimate.
-#: Below this the standard error is itself so noisy that a larger value means
-#: nothing, so blocking stops rather than reporting a spuriously wide bar.
-MIN_BLOCKS = 32
 
 #: ``NVIDIA A100-SXM4-40GB, GPU-39166c9d-..., 40960 MiB``
 _NVIDIA_SMI = re.compile(r"^\s*(NVIDIA [^,]+),\s*(GPU-[0-9a-f-]+)", re.MULTILINE)
 _START_STAMP = re.compile(r"start=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})")
 _END_STAMP = re.compile(r"end=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})")
-
-
-class AdapterError(RuntimeError):
-    """A run directory could not be turned into a record.
-
-    Raised rather than returning a partial record: a run with no usable energy
-    must fail loudly, never appear as a record with a null energy or vanish
-    from the collection silently.
-    """
 
 
 def read_energies(run_dir: Path) -> list[float]:
@@ -100,49 +94,6 @@ def read_energies(run_dir: Path) -> list[float]:
     return energies
 
 
-def blocking_stderr(values: Sequence[float], min_blocks: int = MIN_BLOCKS) -> tuple[float, int]:
-    """Return a correlation-corrected standard error by pair-average blocking.
-
-    Implements Flyvbjerg-Petersen blocking: repeatedly average adjacent pairs,
-    recording the standard error at each level. Correlated data shows the
-    standard error rising with block size and then plateauing; the plateau is
-    the honest bar.
-
-    Parameters
-    ----------
-    values : sequence of float
-        The series to estimate the mean's uncertainty for.
-    min_blocks : int, optional
-        Stop once fewer than this many blocks remain.
-
-    Returns
-    -------
-    tuple of (float, int)
-        The standard error, and the number of blocks it was computed from.
-
-    Raises
-    ------
-    AdapterError
-        If fewer than two values are supplied.
-    """
-
-    data = [float(value) for value in values]
-    if len(data) < 2:
-        raise AdapterError("blocking needs at least two values")
-
-    best_stderr = 0.0
-    best_blocks = len(data)
-    while len(data) >= max(min_blocks, 2):
-        stderr = math.sqrt(statistics.variance(data) / len(data))
-        if stderr > best_stderr:
-            best_stderr, best_blocks = stderr, len(data)
-        # Pair-average into the next blocking level, dropping a trailing odd
-        # sample rather than pairing it with nothing.
-        data = [(data[i] + data[i + 1]) / 2.0 for i in range(0, len(data) - 1, 2)]
-
-    return best_stderr, best_blocks
-
-
 def parse_device(log_text: str) -> tuple[str | None, str | None]:
     """Return ``(device_type, gpu_model)`` parsed from a job log.
 
@@ -173,6 +124,8 @@ def build_record(
     system_id: str,
     batch_size: int,
     tail_fraction: float = 0.1,
+    min_tail_steps: int = MIN_TAIL_STEPS,
+    allow_short_tail: bool = False,
     ansatz: str,
     estimator: str = "training_tail",
     log_path: Path | None = None,
@@ -220,22 +173,73 @@ def build_record(
     Raises
     ------
     AdapterError
-        If the run has no usable energy series, or ``tail_fraction`` selects
-        fewer than two samples.
+        If the run has no usable energy series, ``tail_fraction`` selects
+        fewer than two samples, or the selected tail is constant and so carries
+        no error bar.
     """
 
-    if not 0.0 < tail_fraction <= 1.0:
-        raise AdapterError(f"tail_fraction must be in (0, 1], got {tail_fraction}")
-
     energies = read_energies(run_dir)
-    tail_start = int(len(energies) * (1.0 - tail_fraction))
-    tail = energies[tail_start:]
-    if len(tail) < 2:
-        raise AdapterError(
-            f"tail_fraction {tail_fraction} selects {len(tail)} of {len(energies)} steps; need >= 2"
-        )
+    # Absolute floor, not fraction alone. This adapter's 0.1 default is MORE
+    # exposed than the DeepQMC adapter's 0.25: on a 20000-step run the
+    # fraction asks for 2000 steps and MIN_TAIL_STEPS overrides it to 10000,
+    # so the realized window is 5x the requested one. That gap is why the
+    # notes string below renders the measured window and never the requested
+    # fraction. See statistics.MIN_TAIL_STEPS.
+    window = select_tail(
+        len(energies),
+        tail_fraction,
+        min_steps=min_tail_steps,
+        allow_below_floor=allow_short_tail,
+    )
+    tail = energies[-window:]
 
-    stderr, n_blocks = blocking_stderr(tail)
+    stderr, n_blocks = blocking_stderr(tail, allow_below_floor=allow_short_tail)
+    # Second line of defence on the publication boundary, deliberately
+    # independent of what statistics.blocking_stderr currently does. Today that
+    # function raises on a degenerate window, so this branch is unreachable
+    # through it; before that change it returned exactly 0.0, and records.py
+    # rejects only NEGATIVE stderr, so a degenerate run published a baseline row
+    # claiming zero uncertainty - the most authoritative-looking number in the
+    # table produced by the least informative series. Keep the guard: the cost
+    # is one comparison, and it is what holds if the layer below is reverted or
+    # grows a new zero-valued route.
+    if stderr == 0.0:
+        raise AdapterError(
+            f"{run_dir}: the selected tail of {len(tail)} steps yields a zero error "
+            "bar, so its spread is unmeasured rather than zero; refusing to emit a record"
+        )
+    # blocking_stderr returns None for the block count when the window was too
+    # short to block. None only breaks a caller loudly if the caller does
+    # arithmetic on it: the notes below interpolate it with no format spec, and
+    # f"{None}" renders the string "None" without complaint. A record reading
+    # "from None blocks" looks like a forgotten field, not like "blocking never
+    # ran", so refuse instead of formatting it.
+    #
+    # This branch is the refusal that fires under --allow-short-tail, because
+    # the call above now forwards that opt-in: a window under the 32-block
+    # minimum comes back as (naive stderr, None) instead of raising one layer
+    # down. Before the forwarding it was dead code. Measured on a varying
+    # series, tail lengths 2..399 through the bare call gave 368 returns and 30
+    # raises and zero Nones, and deleting these six lines left the whole
+    # ferminet suite green - the guard read as a second line of defence while
+    # guarding nothing reachable.
+    #
+    # With the flag OFF the 32-block floor is still enforced by statistics, but
+    # only by way of a lowered --min-tail-steps: at the default 10000-step floor
+    # select_tail refuses first, so statistics' block raise is unreachable on
+    # the default path. Also measured, rather than assumed from reading the two
+    # floors. Either route ends in a refusal; only the message and the layer
+    # that emits it differ.
+    #
+    # This raise dominates the notes block below, so the bare {n_blocks}
+    # interpolations there cannot render "None". The guard is what makes them
+    # safe - not a format-time branch, which would be unreachable in turn.
+    if n_blocks is None:
+        raise AdapterError(
+            f"{run_dir}: the selected tail of {len(tail)} steps was never blocked, so "
+            "the error bar is an uncorrected naive estimate that understates the "
+            "uncertainty; refusing to emit a record that cannot say so in a number"
+        )
     device_type, gpu_model, wall_clock = None, None, None
     if log_path is not None and log_path.is_file():
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -268,8 +272,8 @@ def build_record(
         collected_at=None,
         notes=(
             (
-                f"Training-tail average over the last {tail_fraction:.0%} of steps "
-                f"({len(tail)} samples), blocked standard error from {n_blocks} "
+                f"Training-tail average over the last {len(tail)} of "
+                f"{len(energies)} steps, blocked standard error from {n_blocks} "
                 "blocks. NOT the estimator FermiNet's published table uses: those "
                 "values come from a separate post-training evaluation phase, so "
                 "this number is expected to sit slightly high."
@@ -310,6 +314,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="use 'inference' for a fixed-parameter evaluation pass",
     )
     parser.add_argument("--tail-fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--min-tail-steps",
+        type=int,
+        default=MIN_TAIL_STEPS,
+        help="absolute floor on the estimator window, in steps",
+    )
+    parser.add_argument(
+        "--allow-short-tail",
+        action="store_true",
+        help=(
+            "lower the STEP floor on the estimator window for a short run; the "
+            "record says the window was short. A window too short to BLOCK is "
+            "still refused: the opt-in is forwarded to the blocking estimator "
+            "and this adapter then rejects the uncorrected naive error bar "
+            "itself, so a sufficiently small window plus this flag is an error, "
+            "not an emission"
+        ),
+    )
     parser.add_argument("--log-path", type=Path, default=None)
     parser.add_argument("--code-commit", default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -324,6 +346,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ansatz=args.ansatz,
             estimator=args.estimator,
             tail_fraction=args.tail_fraction,
+            min_tail_steps=args.min_tail_steps,
+            allow_short_tail=args.allow_short_tail,
             log_path=args.log_path,
             code_commit=args.code_commit,
             seed=args.seed,

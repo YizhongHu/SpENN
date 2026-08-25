@@ -141,6 +141,31 @@ def test_he_eval_config_restores_same_model_and_uses_mcmc_reference_energy() -> 
     }
 
 
+def test_he_eval_replay_semantics_are_typed_and_fail_closed() -> None:
+    """The driver must supply source/checkpoint identity before strict restore."""
+
+    replay = _load(EVAL)["load"]["replay_semantics"]
+    assert replay["record_schema_version"] == 1
+    assert replay["source_git_sha"] == "???"
+    assert replay["source_tpen_version"] == "???"
+    assert replay["checkpoint_schema_version"] == "???"
+    assert replay["checkpoint_kind"] == "???"
+    assert replay["checkpoint_model_sha256"] == "???"
+    assert replay["evaluation_config_sha256"] == "${trajectory_identity.config_sha256}"
+    assert replay["runtime_dtype"] == "${runtime.dtype}"
+    assert replay["reference_energy_qualification"] == (
+        "infinite_nuclear_mass_nonrelativistic"
+    )
+    assert replay["cusp_distance"] == {
+        "electron_electron_distance_form": "sqrt_squared_distance_plus_eps_squared",
+        "electron_electron_distance_eps": 1.0e-12,
+        "electron_electron_range_offset_form": "softplus_plus_eps",
+        "electron_electron_range_offset_eps": 1.0e-12,
+        "electron_nucleus_coulomb_distance_form": "euclidean_norm_clamp_min_eps",
+        "electron_nucleus_coulomb_distance_eps": "${hamiltonian_terms.electron_nucleus.eps}",
+    }
+
+
 def test_he_eval_registers_atom_owned_radial_profiles_after_typed_contracts() -> None:
     config = _load(EVAL)
     tasks = config["evaluation_tasks"]
@@ -546,11 +571,12 @@ def test_he_eval_reports_sampler_health_and_retains_raw_records() -> None:
     assert config["evaluation"]["artifact_level"] == "records"
     writer = summaries["tpen.evaluation.summaries.SampledRecordWriter"]
 
-    # max_samples must cover the whole [draw, walker] product. The default
-    # 100000 would silently keep 9.5% of it and look entirely healthy.
+    # The writer's declared capacity is the complete streamed draw-by-walker
+    # grid. A smaller capacity is a task error, never a silent head slice.
     draws = int(task["generator"]["n_draws"])
     walkers = int(config["evaluation_sampler"]["n_walkers"])
-    assert int(writer["max_samples"]) >= draws * walkers
+    assert int(writer["max_samples"]) == draws * walkers
+    assert writer["include_term_energies"] is True
 
 
 def test_he_eval_sampler_carries_the_predeclared_stride_and_burn_in() -> None:
@@ -738,3 +764,21 @@ def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
         linear.load_state_dict(trainable.state_dict(), strict=True)
     with pytest.raises(RuntimeError):
         trainable.load_state_dict(linear.state_dict(), strict=True)
+
+
+def test_he_eval_enables_canonical_host_wall_cost_callbacks_at_config_root() -> None:
+    """Use typed evaluation boundaries without claiming broken device sync."""
+
+    config = _load(EVAL)
+    callbacks = {
+        entry["_target_"]: entry
+        for entry in config["callbacks"]
+    }
+    for target in (
+        "tpen.callback.EvaluationTiming",
+        "tpen.callback.EvaluationComponentTiming",
+        "tpen.callback.DiagnosticTiming",
+    ):
+        assert callbacks[target]["accelerator_synchronize"] is False
+    assert "tpen.callback.ResourceUsage" in callbacks
+    assert "callbacks" not in config["runner"]

@@ -15,7 +15,16 @@ from typing import Any
 import pytest
 import yaml
 
-REGISTRY_PATH = Path(__file__).resolve().parent / "systems.yaml"
+# The path comes from the loader, not a second copy of the literal: a test that
+# validates a different file than the loader reads is a test that can pass while
+# production code reads something broken.
+from experiments.baselines.systems import (
+    REGISTRY_PATH,
+    RegistryError,
+    known_system_ids,
+    load_registry,
+    system_ids,
+)
 
 # Keys every registry entry must carry. Missing any of these is a hard failure:
 # downstream collection joins on `id` and reports against
@@ -217,3 +226,116 @@ def test_no_facility_absolute_paths() -> None:
     text = REGISTRY_PATH.read_text(encoding="utf-8")
     assert "/n/netscratch" not in text
     assert "/n/holy" not in text
+
+
+def _nuclei(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return every nucleus declared by an entry's Hamiltonian terms.
+
+    Parameters
+    ----------
+    entry : dict
+        One registry entry.
+
+    Returns
+    -------
+    list of dict
+        Nucleus mappings, in declaration order.
+    """
+
+    return [
+        nucleus
+        for term in entry["hamiltonian"]["terms"]
+        for nucleus in term.get("nuclei", [])
+    ]
+
+
+def test_multinuclear_entries_declare_nuclear_repulsion(entries: list[dict[str, Any]]) -> None:
+    """Any entry with more than one nucleus includes ``nucleus_nucleus``.
+
+    The reference energies are total energies, which include the nuclear
+    repulsion at the stated geometry. An entry that omits the term is not a
+    usable run specification: a run built from it would be compared against a
+    reference that is a constant away from what the run computes.
+    """
+
+    for entry in entries:
+        nuclei = _nuclei(entry)
+        if len(nuclei) < 2:
+            continue
+        terms = [term["term"] for term in entry["hamiltonian"]["terms"]]
+        assert "nucleus_nucleus" in terms, (
+            f"{entry['id']} declares {len(nuclei)} nuclei but no nucleus_nucleus term"
+        )
+
+
+def test_electron_count_matches_total_nuclear_charge(entries: list[dict[str, Any]]) -> None:
+    """Every entry with nuclei describes a neutral system.
+
+    Nothing in this registry is an ion, so the electron count must equal the
+    summed nuclear charge. This is the cheapest available check on a mistyped
+    charge or a mistyped spin sector -- either one silently changes which
+    physical system a reference energy is being claimed for.
+    """
+
+    for entry in entries:
+        nuclei = _nuclei(entry)
+        if not nuclei:
+            continue
+        total_charge = sum(nucleus["charge"] for nucleus in nuclei)
+        n_electrons = entry["n_up"] + entry["n_down"]
+        assert n_electrons == total_charge, (
+            f"{entry['id']} has {n_electrons} electrons against nuclear charge "
+            f"{total_charge}; it is an ion or a typo"
+        )
+
+
+def test_loader_ids_match_the_document(entries: list[dict[str, Any]]) -> None:
+    """``known_system_ids`` reports exactly the ids the file declares."""
+
+    assert known_system_ids() == frozenset(entry["id"] for entry in entries)
+
+
+def test_loader_covers_every_reproduced_system() -> None:
+    """Every system a baseline run has been emitted for is registered.
+
+    These ids are named by records already emitted on the cluster. Dropping one
+    from the registry would not break any adapter -- it would make the record
+    uncomparable, which is why the set is pinned here rather than left implicit.
+    """
+
+    emitted = {
+        "he_atom",
+        "li_atom",
+        "be_atom",
+        "b_atom",
+        "n_atom",
+        "lih_molecule",
+        "h2_molecule",
+        "n2_molecule",
+    }
+    assert emitted <= known_system_ids(), f"unregistered: {sorted(emitted - known_system_ids())}"
+
+
+def test_loader_rejects_a_missing_registry(tmp_path: Path) -> None:
+    """A missing registry raises rather than yielding an empty id set."""
+
+    with pytest.raises(RegistryError, match="cannot read"):
+        load_registry(tmp_path / "absent.yaml")
+
+
+def test_loader_rejects_a_registry_without_systems(tmp_path: Path) -> None:
+    """A registry with no ``systems`` list raises."""
+
+    path = tmp_path / "systems.yaml"
+    path.write_text("schema_version: 1\nsystems: []\n", encoding="utf-8")
+    with pytest.raises(RegistryError, match="non-empty 'systems' list"):
+        load_registry(path)
+
+
+def test_loader_rejects_an_entry_without_an_id(tmp_path: Path) -> None:
+    """An entry missing its id raises instead of being skipped."""
+
+    path = tmp_path / "systems.yaml"
+    path.write_text("systems:\n  - description: nameless\n", encoding="utf-8")
+    with pytest.raises(RegistryError, match="non-empty string id"):
+        system_ids(path)

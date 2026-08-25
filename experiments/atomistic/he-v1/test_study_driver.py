@@ -15,6 +15,7 @@ reality, and the checks are failures rather than notes:
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -292,6 +293,44 @@ def test_incomplete_checkpoint_is_refused(tmp_path: Path) -> None:
         eval_driver.require_complete_checkpoint(checkpoint)
     (checkpoint / eval_driver.COMPLETE_MARKER).write_text("", encoding="utf-8")
     assert eval_driver.require_complete_checkpoint(checkpoint) == checkpoint
+
+
+def test_replay_semantics_overrides_bind_the_manifest_source_and_model(tmp_path: Path) -> None:
+    """The row driver cannot substitute source/model replay provenance."""
+
+    checkpoint = tmp_path / "step_000010"
+    checkpoint.mkdir()
+    model = checkpoint / eval_driver.CHECKPOINT_MODEL_FILE
+    model.write_bytes(b"checkpoint-model")
+    (checkpoint / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "kind": "tpen.checkpoint",
+                "files": {"model": eval_driver.CHECKPOINT_MODEL_FILE},
+                "provenance": {
+                    "git_sha": "a" * 40,
+                    "tpen_version": "0.3.1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overrides = eval_driver.checkpoint_replay_semantics_overrides(checkpoint)
+    assert "load.replay_semantics.source_git_sha=" + "a" * 40 in overrides
+    assert "load.replay_semantics.source_tpen_version=0.3.1" in overrides
+    assert "load.replay_semantics.checkpoint_schema_version=2" in overrides
+    assert "load.replay_semantics.checkpoint_kind=tpen.checkpoint" in overrides
+    expected_model_hash = hashlib.sha256(b"checkpoint-model").hexdigest()
+    assert f"load.replay_semantics.checkpoint_model_sha256={expected_model_hash}" in overrides
+
+    (checkpoint / "manifest.json").write_text(
+        json.dumps({"schema_version": 2, "kind": "tpen.checkpoint", "files": {}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(eval_driver.driver.DriverError, match="model.pt"):
+        eval_driver.checkpoint_replay_semantics_overrides(checkpoint)
 
 
 def test_slurm_time_formats_days_and_hours() -> None:

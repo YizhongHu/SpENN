@@ -11,8 +11,11 @@ from typing import Any
 import torch
 
 from tpen.evaluation.bundle import EvaluationBundle
+from tpen.evaluation.generators.trajectory import TRAJECTORY_METADATA_KEY
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import ArtifactRecord, SummaryResult
+from tpen.evaluation.trajectory_records import TrajectoryRecordArtifact
+from tpen.statistics import ObservableTrajectory
 
 
 class SampledRecordWriter:
@@ -62,10 +65,17 @@ class SampledRecordWriter:
         wavefunction = bundle.wavefunction
         if local is None or wavefunction is None:
             raise ValueError("SampledRecordWriter requires local_energy and wavefunction")
+        trajectory_records = bundle.generated.trajectory_records
+        if trajectory_records is not None:
+            return self._summarize_trajectory_records(
+                bundle=bundle,
+                context=context,
+                trajectory=trajectory_records,
+            )
         flat = bundle.generated.batch.flatten_samples()
         n_total = int(local.local_energy.numel())
         n_keep = min(n_total, max(0, self.max_samples))
-        indices = list(range(n_keep))
+        indices = range(n_keep)
         base_fields = ["sample_index", "local_energy", "logabs", "sign", "finite"]
         term_columns: dict[str, torch.Tensor] = {}
         if self.include_term_energies:
@@ -122,7 +132,94 @@ class SampledRecordWriter:
                     name="sampled_eval_table",
                     kind="csv",
                     path=path,
-                    metadata={"rows": len(indices), "n_positions": int(flat.batch_size)},
+                    metadata={
+                        "rows": n_keep,
+                        "n_total": n_total,
+                        "n_positions": int(flat.batch_size),
+                        "max_samples": self.max_samples,
+                        "truncated": n_keep < n_total,
+                        "selection": "head" if n_keep < n_total else "complete",
+                    },
+                ),
+            ),
+        )
+
+    def _summarize_trajectory_records(
+        self,
+        *,
+        bundle: EvaluationBundle,
+        context: EvaluationContext,
+        trajectory: TrajectoryRecordArtifact,
+    ) -> SummaryResult:
+        """Publish a complete streamed grid or fail loudly on a short bound."""
+
+        if self.max_samples < trajectory.row_count:
+            raise ValueError(
+                "SampledRecordWriter max_samples would truncate a complete trajectory grid: "
+                f"capacity={self.max_samples}, required={trajectory.row_count}"
+            )
+        if not self.include_term_energies:
+            raise ValueError(
+                "trajectory records require include_term_energies=True so every configured "
+                "Hamiltonian contribution remains row-aligned"
+            )
+        if self.filename != trajectory.path.name:
+            raise ValueError(
+                "SampledRecordWriter filename disagrees with the streamed trajectory artifact: "
+                f"configured={self.filename!r}, generated={trajectory.path.name!r}"
+            )
+        observable = bundle.generated.metadata.get(TRAJECTORY_METADATA_KEY)
+        if not isinstance(observable, ObservableTrajectory):
+            raise TypeError(
+                f"metadata[{TRAJECTORY_METADATA_KEY!r}] must be an ObservableTrajectory "
+                "when trajectory records are present"
+            )
+        trajectory.reconcile(observable)
+
+        flat = bundle.generated.batch.flatten_samples()
+        n_rows = trajectory.validate_snapshot_batch(flat)
+        local = bundle.local_energy
+        wavefunction = bundle.wavefunction
+        if local is None or wavefunction is None:
+            raise ValueError("trajectory records require final-draw local_energy and wavefunction")
+        expected = trajectory.final_draw
+        _require_same_tensor(
+            "final-draw local_energy",
+            local.local_energy,
+            expected.local_energy[:n_rows],
+        )
+        _require_same_tensor("final-draw logabs", wavefunction.logabs, expected.logabs[:n_rows])
+        _require_same_tensor("final-draw sign", wavefunction.sign, expected.sign[:n_rows])
+        if local.term_energies is None or tuple(local.term_energies) != trajectory.term_names:
+            raise ValueError("final-draw calculator terms disagree with trajectory records")
+        for name in trajectory.term_names:
+            _require_same_tensor(
+                f"final-draw term/{name}",
+                local.term_energies[name],
+                expected.term_energies[name][:n_rows],
+            )
+
+        return SummaryResult(
+            metrics={},
+            artifacts=(
+                ArtifactRecord(
+                    name="sampled_eval_table",
+                    kind="csv",
+                    path=trajectory.path,
+                    metadata={
+                        "rows": trajectory.row_count,
+                        "n_total": trajectory.row_count,
+                        "draw_count": trajectory.n_draws,
+                        "walker_count": trajectory.n_walkers,
+                        "max_samples": self.max_samples,
+                        "truncated": False,
+                        "selection": "complete_draw_walker_grid",
+                        "content_id": trajectory.csv_sha256,
+                        "observable_content_id": trajectory.observable_values_content_id,
+                        "atomic_configuration_id": trajectory.atomic_configuration.content_id(),
+                        "metadata_path": str(trajectory.metadata_path),
+                        "bytes": trajectory.byte_count,
+                    },
                 ),
             ),
         )
@@ -165,6 +262,12 @@ class TransformRecordWriter:
         indices = list(range(n_keep))
         base_fields = [
             "record_index",
+            "sample_index",
+            "transform",
+            "transform_kind",
+            "finite",
+            "original_geometry",
+            "transformed_geometry",
             "original_logabs",
             "transformed_logabs",
             "logabs_abs_error",
@@ -193,6 +296,12 @@ class TransformRecordWriter:
             for index in indices:
                 row: dict[str, object] = {
                     "record_index": index,
+                    "sample_index": int(transform.sample_index.detach().reshape(-1)[index].item()),
+                    "transform": transform.transform_name.value,
+                    "transform_kind": transform.transform_kind.value,
+                    "finite": bool(transform.finite.detach().reshape(-1)[index].item()),
+                    "original_geometry": _csv_value(transform.original_positions.detach().cpu()[index]),
+                    "transformed_geometry": _csv_value(transform.transformed_positions.detach().cpu()[index]),
                     "original_logabs": _float_or_text(transform.original_logabs.detach().reshape(-1)[index]),
                     "transformed_logabs": _float_or_text(transform.transformed_logabs.detach().reshape(-1)[index]),
                     "logabs_abs_error": _float_or_text(transform.logabs_abs_error.detach().reshape(-1)[index]),
@@ -279,6 +388,13 @@ def _float_or_text(value: torch.Tensor) -> float | str:
     if torch.isfinite(value).item():
         return number
     return "inf" if number > 0 else "-inf" if number < 0 else "nan"
+
+
+def _require_same_tensor(name: str, actual: torch.Tensor, expected: torch.Tensor) -> None:
+    actual_cpu = actual.detach().reshape(-1).to(device="cpu", dtype=torch.float64)
+    expected_cpu = expected.detach().reshape(-1).to(device="cpu", dtype=torch.float64)
+    if not torch.allclose(actual_cpu, expected_cpu, rtol=0.0, atol=0.0, equal_nan=True):
+        raise ValueError(f"{name} disagrees with the streamed trajectory artifact")
 
 
 def _metadata_columns(

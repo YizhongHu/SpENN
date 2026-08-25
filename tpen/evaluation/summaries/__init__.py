@@ -7,11 +7,18 @@ from tpen.evaluation.summaries.atom import (
     ElectronNucleusRadialProfileWriter,
     ElectronNucleusTailSummary,
 )
+from tpen.evaluation.summaries.conditioned_local_energy import ConditionedLocalEnergySummary
 from tpen.evaluation.summaries.hooke import (
     CoalescenceDivergenceSummary,
     LocalEnergyPathologySummary,
     LocalEnergyStabilitySummary,
     OppositeSpinCuspSummary,
+)
+from tpen.evaluation.summaries.helium_atlas import (
+    HeliumAtlasWriter,
+    HeliumCurvatureSummary,
+    HeliumNumericalLimitSummary,
+    HeliumTailSummary,
 )
 from tpen.evaluation.summaries.local_energy import LocalEnergySummary
 from tpen.evaluation.summaries.metadata import SamplerStatsSummary
@@ -28,11 +35,16 @@ from tpen.evaluation.summaries.trajectory_statistics import TrajectoryStatistics
 
 __all__ = [
     "CoalescenceDivergenceSummary",
+    "ConditionedLocalEnergySummary",
     "ElectronNucleusCuspSummary",
     "ElectronNucleusRadialProfileWriter",
     "ElectronNucleusTailSummary",
     "FeatureTraceSummary",
     "HamiltonianTermSummary",
+    "HeliumAtlasWriter",
+    "HeliumCurvatureSummary",
+    "HeliumNumericalLimitSummary",
+    "HeliumTailSummary",
     "LocalEnergyPathologySummary",
     "LocalEnergyStabilitySummary",
     "LocalEnergySummary",
