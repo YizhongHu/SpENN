@@ -898,6 +898,49 @@ def test_tails_figure_has_two_semantic_panels(
 
 
 @pytest.mark.integration
+def test_factor_response_figure_has_two_semantic_panels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    rows = [
+        {
+            "comparison_basis": "fixed_configuration_paired",
+            "status": "available",
+            "checkpoint_label": "step_025000",
+            "arm_label": "kinetic_minus_10pct",
+            "delta_energy_ha": -0.01,
+            "delta_uncertainty_ha": 0.001,
+        },
+        {
+            "comparison_basis": "re_equilibrated_independent",
+            "status": "available",
+            "checkpoint_label": "step_025000",
+            "arm_label": "envelope_plus_10pct",
+            "delta_energy_ha": 0.02,
+            "delta_uncertainty_ha": 0.002,
+        },
+    ]
+    figure = report.plot_stage.factor_response_figure(rows)
+    try:
+        assert tuple(axis.get_title() for axis in figure.axes) == (
+            "Fixed configurations (paired response)",
+            "Re-equilibrated chains (independent estimates)",
+        )
+        assert tuple(len(axis.containers) for axis in figure.axes) == (1, 1)
+        assert tuple(
+            tuple(label.get_text() for label in axis.get_xticklabels())
+            for axis in figure.axes
+        ) == (("kinetic −10%",), ("envelope +10%",))
+        assert all(
+            axis.get_ylabel() == r"$\Delta E_L$ from baseline (Ha)"
+            for axis in figure.axes
+        )
+    finally:
+        report.plot_stage.pyplot().close(figure)
+
+
+@pytest.mark.integration
 def test_fixture_render_is_byte_deterministic_and_publication_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

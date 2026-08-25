@@ -472,7 +472,7 @@ def factor_response_figure(rows: Sequence[Mapping[str, Any]]) -> Any:
         ("fixed_configuration_paired", "Fixed configurations (paired response)"),
         ("re_equilibrated_independent", "Re-equilibrated chains (independent estimates)"),
     )
-    for ax, basis, title in panels:
+    for ax, (basis, title) in zip(axes, panels, strict=True):
         subset = [row for row in rows if row.get("comparison_basis") == basis and row.get("status") == "available"]
         labels = list(dict.fromkeys(str(row["arm_label"]) for row in subset))
         for checkpoint in sorted({str(row["checkpoint_label"]) for row in subset}):
