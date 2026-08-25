@@ -291,7 +291,7 @@ def cusp_curvature_figure(rows: Sequence[Mapping[str, Any]]) -> Any:
         ("electron_electron", "first_derivative", "Electron–electron cusp"),
         ("curvature", "second_derivative", "Direct executed curvature"),
     )
-    for ax, view, value_key, title in panels:
+    for ax, (view, value_key, title) in zip(axes, panels, strict=True):
         subset = [
             row
             for row in rows

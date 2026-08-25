@@ -801,6 +801,66 @@ def _render(root: Path, attempt: str = "R1") -> dict[str, Any]:
 
 
 @pytest.mark.integration
+def test_cusp_curvature_figure_has_three_semantic_panels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    rows = [
+        {
+            "view": "electron_nucleus",
+            "series": "executed_electron_nucleus_factor",
+            "available": True,
+            "checkpoint_label": "step_025000",
+            "radius_bohr": 0.1,
+            "first_derivative": -1.9,
+        },
+        {
+            "view": "electron_nucleus",
+            "series": "analytic_ideal_cusp_law",
+            "available": True,
+            "first_derivative": -2.0,
+        },
+        {
+            "view": "electron_electron",
+            "series": "executed_smoothed_ee_factor",
+            "available": True,
+            "checkpoint_label": "step_025000",
+            "radius_bohr": 0.1,
+            "first_derivative": 0.45,
+        },
+        {
+            "view": "electron_electron",
+            "series": "analytic_ideal_cusp_law",
+            "available": True,
+            "first_derivative": 0.5,
+        },
+        {
+            "view": "curvature",
+            "series": "executed_full_logabs",
+            "available": True,
+            "checkpoint_label": "step_025000",
+            "radius_bohr": 0.1,
+            "second_derivative": 1.25,
+        },
+    ]
+    figure = report.plot_stage.cusp_curvature_figure(rows)
+    try:
+        assert tuple(axis.get_title() for axis in figure.axes) == (
+            "Electron–nucleus cusp",
+            "Electron–electron cusp",
+            "Direct executed curvature",
+        )
+        assert tuple(len(axis.lines) for axis in figure.axes) == (2, 2, 1)
+        assert any(
+            "No universal Kato curvature target" in text.get_text()
+            for text in figure.axes[2].texts
+        )
+    finally:
+        report.plot_stage.pyplot().close(figure)
+
+
+@pytest.mark.integration
 def test_fixture_render_is_byte_deterministic_and_publication_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
