@@ -261,6 +261,12 @@ def test_complete_row_reconciles_by_identity_and_content(tmp_path: Path) -> None
         "local_energy_trajectory_statistics",
         "conditioned_local_energy",
     }
+    assert all(
+        not Path(artifact["path"]).is_absolute()
+        and Path(artifact["path"]).parts[:4]
+        == ("03_eval", row["row_id"], "P1", row["row_id"])
+        for artifact in result["artifacts"]
+    )
 
 
 def test_missing_or_short_raw_grid_fails_loudly(tmp_path: Path) -> None:

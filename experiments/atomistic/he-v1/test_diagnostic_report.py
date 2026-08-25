@@ -11,7 +11,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 from PIL import Image
@@ -202,16 +202,25 @@ def _artifact(
     kind: str,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    run_dir = next(parent for parent in path.parents if parent.name == row_id)
+    results_root = run_dir.parents[3]
     return {
         "task": task,
         "namespace": f"he_v1_diagnostic_v1/{task}",
         "name": name,
         "kind": kind,
-        "path": str(path.resolve()),
+        "path": path.resolve().relative_to(results_root.resolve()).as_posix(),
         "sha256": _sha(path),
         "bytes": path.stat().st_size,
         "metadata": metadata,
     }
+
+
+def _artifact_file(root: Path, artifact: Mapping[str, Any]) -> Path:
+    """Resolve a fixture's canonical artifact locator below its results root."""
+
+    path = Path(str(artifact["path"]))
+    return path if path.is_absolute() else root / path
 
 
 def _write_csv(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> None:
@@ -950,6 +959,9 @@ def test_fixture_render_is_byte_deterministic_and_publication_complete(
     right = tmp_path / "right"
     _materialize_fixture(left)
     _materialize_fixture(right)
+    left_collected = left / "04_collect" / COLLECT_ID / "collected.json"
+    right_collected = right / "04_collect" / COLLECT_ID / "collected.json"
+    assert left_collected.read_bytes() == right_collected.read_bytes()
     left_manifest = _render(left)
     right_manifest = _render(right)
 
@@ -963,9 +975,14 @@ def test_fixture_render_is_byte_deterministic_and_publication_complete(
     left_report = left / "05_report" / "R1"
     right_report = right / "05_report" / "R1"
     for relative in [
-        *(f"figures/{name}.{suffix}" for name in report.TABLE_NAMES for suffix in ("svg", "pdf", "png")),
+        *(
+            f"figures/{name}.{suffix}"
+            for name in report.TABLE_NAMES
+            for suffix in ("svg", "pdf", "png")
+        ),
         *(f"plot-data/{name}.csv" for name in report.TABLE_NAMES),
         "report.md",
+        report.REPORT_MANIFEST_FILENAME,
     ]:
         assert (left_report / relative).read_bytes() == (right_report / relative).read_bytes(), relative
 
@@ -994,6 +1011,11 @@ def test_fixture_render_is_byte_deterministic_and_publication_complete(
         header = (left_report / "plot-data" / f"{name}.csv").read_text(encoding="utf-8").splitlines()[0]
         for key in report.PROVENANCE_KEYS:
             assert key in header
+    assert all(
+        not Path(item["path"]).is_absolute()
+        and Path(item["path"]).parts[0] == report.layout.STAGE_EVAL
+        for item in left_manifest["source_artifacts"]
+    )
 
 
 def test_hash_mismatch_fails_before_report_directory_is_created(tmp_path: Path) -> None:
@@ -1004,7 +1026,8 @@ def test_hash_mismatch_fails_before_report_directory_is_created(tmp_path: Path) 
         for artifact in row["artifacts"]
         if artifact["name"] == "sampled_eval_table"
     )
-    path = Path(artifact["path"])
+    assert not Path(artifact["path"]).is_absolute()
+    path = _artifact_file(tmp_path, artifact)
     payload = bytearray(path.read_bytes())
     payload[0] = ord("x") if payload[0] != ord("x") else ord("y")
     path.write_bytes(bytes(payload))
@@ -1054,7 +1077,7 @@ def test_conditioned_reconciliation_corruption_fails_loudly(tmp_path: Path) -> N
         for artifact in row["artifacts"]
         if artifact["name"] == "conditioned_local_energy"
     )
-    path = Path(artifact["path"])
+    path = _artifact_file(tmp_path, artifact)
     payload = json.loads(path.read_text(encoding="utf-8"))
     quantity = report.REQUIRED_CONDITION_QUANTITIES[0]
     payload["range_conditioned"][quantity]["reconciliation"]["probability_sum"] = 0.5

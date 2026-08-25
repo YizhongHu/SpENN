@@ -255,7 +255,11 @@ def reconcile_row(
         raise DiagnosticCollectError("executed diagnostic task graph differs from the plan")
     if any(task.get("status") != "success" for task in tasks):
         raise DiagnosticCollectError("one or more diagnostic tasks did not succeed")
-    artifacts = _reconcile_artifacts(run_dir, tasks)
+    artifacts = _reconcile_artifacts(
+        run_dir,
+        tasks,
+        results_root=results_root,
+    )
     _require_profile_artifacts(planned, artifacts)
     metric_records = _read_metrics(run_dir / "metrics.jsonl")
     metric_namespaces = {record["namespace"] for record in metric_records}
@@ -288,7 +292,11 @@ def reconcile_row(
 def _reconcile_artifacts(
     run_dir: Path,
     tasks: Sequence[Mapping[str, Any]],
+    *,
+    results_root: Path,
 ) -> list[dict[str, Any]]:
+    resolved_run_dir = run_dir.resolve()
+    resolved_results_root = results_root.resolve()
     records: list[dict[str, Any]] = []
     for task in tasks:
         task_artifacts = task.get("artifacts")
@@ -298,24 +306,34 @@ def _reconcile_artifacts(
             )
         for artifact in task_artifacts:
             path = Path(str(artifact.get("path")))
-            resolved = path.resolve()
+            resolved = (
+                path.resolve()
+                if path.is_absolute()
+                else (resolved_run_dir / path).resolve()
+            )
             try:
-                resolved.relative_to(run_dir.resolve())
+                resolved.relative_to(resolved_run_dir)
             except ValueError as exc:
                 raise DiagnosticCollectError(
                     f"artifact path escapes row run directory: {path}"
                 ) from exc
-            if not path.is_file():
+            if not resolved.is_file():
                 raise DiagnosticCollectError(f"artifact is missing: {path}")
+            try:
+                provenance_path = resolved.relative_to(resolved_results_root).as_posix()
+            except ValueError as exc:
+                raise DiagnosticCollectError(
+                    f"artifact path escapes results root: {path}"
+                ) from exc
             records.append(
                 {
                     "task": task["name"],
                     "namespace": task["namespace"],
                     "name": artifact["name"],
                     "kind": artifact["kind"],
-                    "path": str(path),
-                    "sha256": plan_stage.file_sha256(path),
-                    "bytes": path.stat().st_size,
+                    "path": provenance_path,
+                    "sha256": plan_stage.file_sha256(resolved),
+                    "bytes": resolved.stat().st_size,
                     "metadata": artifact.get("metadata", {}),
                 }
             )

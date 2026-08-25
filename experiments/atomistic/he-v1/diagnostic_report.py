@@ -101,6 +101,7 @@ class VerifiedArtifact:
     name: str
     kind: str
     path: Path
+    provenance_path: str
     sha256: str
     byte_count: int
     metadata: Mapping[str, Any]
@@ -316,7 +317,12 @@ def _verify_row(
         plan_attempt_id,
     ) / row_id
     artifacts = tuple(
-        _verify_artifact(row_id, record, run_dir=run_dir)
+        _verify_artifact(
+            row_id,
+            record,
+            run_dir=run_dir,
+            results_root=results_root,
+        )
         for record in observed["artifacts"]
     )
     planned_tasks = set(planned["task_names"])
@@ -346,20 +352,26 @@ def _verify_artifact(
     record: Mapping[str, Any],
     *,
     run_dir: Path,
+    results_root: Path,
 ) -> VerifiedArtifact:
     required = ("task", "namespace", "name", "kind", "path", "sha256", "bytes", "metadata")
     missing = [key for key in required if key not in record]
     if missing:
         raise DiagnosticReportError(f"row {row_id} artifact lacks fields {missing}")
     path = Path(str(record["path"]))
-    if not path.is_absolute():
-        raise DiagnosticReportError(f"row {row_id} artifact path is not absolute: {path}")
-    resolved = path.resolve()
+    resolved_results_root = results_root.resolve()
+    resolved = path.resolve() if path.is_absolute() else (resolved_results_root / path).resolve()
     try:
         resolved.relative_to(run_dir.resolve())
     except ValueError as exc:
         raise DiagnosticReportError(
             f"row {row_id} artifact escapes its run directory: {resolved}"
+        ) from exc
+    try:
+        provenance_path = resolved.relative_to(resolved_results_root).as_posix()
+    except ValueError as exc:
+        raise DiagnosticReportError(
+            f"row {row_id} artifact escapes its results root: {resolved}"
         ) from exc
     if not resolved.is_file():
         raise DiagnosticReportError(f"row {row_id} artifact is missing: {resolved}")
@@ -387,6 +399,7 @@ def _verify_artifact(
         name=str(record["name"]),
         kind=str(record["kind"]),
         path=resolved,
+        provenance_path=provenance_path,
         sha256=actual_sha,
         byte_count=actual_bytes,
         metadata=dict(metadata),
@@ -2112,7 +2125,7 @@ def build_report(
             "namespace": artifact.namespace,
             "name": artifact.name,
             "kind": artifact.kind,
-            "path": str(artifact.path),
+            "path": artifact.provenance_path,
             "sha256": artifact.sha256,
             "bytes": artifact.byte_count,
         }
