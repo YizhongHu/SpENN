@@ -381,7 +381,7 @@ def tails_figure(rows: Sequence[Mapping[str, Any]]) -> Any:
     plt = pyplot()
     fig, axes = plt.subplots(1, 2, figsize=(10.2, 3.8), constrained_layout=True)
     panels = (("one_electron", "One-electron escape"), ("center_of_mass", "Centre-of-mass escape"))
-    for ax, view, title in panels:
+    for ax, (view, title) in zip(axes, panels, strict=True):
         subset = [row for row in rows if row.get("view") == view and row.get("available") is True]
         for checkpoint in sorted({str(row["checkpoint_label"]) for row in subset}):
             chosen = [row for row in subset if row["checkpoint_label"] == checkpoint]

@@ -861,6 +861,43 @@ def test_cusp_curvature_figure_has_three_semantic_panels(
 
 
 @pytest.mark.integration
+def test_tails_figure_has_two_semantic_panels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    rows = [
+        {
+            "view": "one_electron",
+            "available": True,
+            "checkpoint_label": "step_025000",
+            "radius_bohr": 1.0,
+            "executed_logabs": -1.0,
+            "outer_slope_bohr_inv": -1.0,
+        },
+        {
+            "view": "center_of_mass",
+            "available": True,
+            "checkpoint_label": "step_025000",
+            "radius_bohr": 1.0,
+            "executed_logabs": -2.0,
+            "outer_slope_bohr_inv": -2.0,
+        },
+    ]
+    figure = report.plot_stage.tails_figure(rows)
+    try:
+        assert tuple(axis.get_title() for axis in figure.axes) == (
+            "One-electron escape",
+            "Centre-of-mass escape",
+        )
+        assert tuple(len(axis.lines) for axis in figure.axes) == (1, 1)
+        assert all(axis.get_xlabel() == "Escape radius (bohr)" for axis in figure.axes)
+        assert all(axis.get_ylabel() == r"executed $\log|\Psi|$" for axis in figure.axes)
+    finally:
+        report.plot_stage.pyplot().close(figure)
+
+
+@pytest.mark.integration
 def test_fixture_render_is_byte_deterministic_and_publication_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
