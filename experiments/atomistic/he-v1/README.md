@@ -180,3 +180,26 @@ Smoke uses `--scale smoke`. That changes only the declared walker/draw/burn-in/
 stride/sample/atlas scale coordinates and Cannon resource target; row ids,
 checkpoint identities, factor arms, task profiles, driver, launcher, and
 collector contracts are identical to production.
+
+### Rendering the diagnostic report
+
+Reporting is a separate, immutable downstream stage. It verifies the canonical
+plan, the successful 42-row collection receipt, and every collected artifact's
+size and SHA-256 before reading scientific values. Complete retained-record
+CSVs are read through a read-only memory map; an incomplete or changed input is
+an error rather than a partial report.
+
+```bash
+uv run python experiments/atomistic/he-v1/diagnostic_report.py \
+  --results-root <diagnostic-results> --plan-attempt-id <plan-attempt> \
+  --collect-attempt-id <collect-attempt> --report-attempt-id <report-attempt>
+```
+
+The new attempt contains a Markdown report, provenance-bearing plot-data CSVs,
+and deterministic headless Matplotlib figures in SVG, PDF, and 300-DPI PNG.
+Primary correlation-aware energy/MCSE estimates remain separate from snapshot
+IID and other diagnostic estimators. The report also keeps executed versus
+ideal cusp behavior and paired fixed-configuration versus independently
+re-equilibrated factor response distinct. Missing, absent, and unresolved
+metrics are labeled explicitly and are never converted to zero. Runtime report
+attempts are scientific result data and must not be added to Git.
