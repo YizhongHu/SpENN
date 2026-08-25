@@ -113,8 +113,8 @@ and contact [ALCF Support](https://www.alcf.anl.gov/support-center) for a
 supported post-upgrade base runtime. A fresh facility validation is required
 before any Polaris TPEN provisioning or test run.
 
-Once ALCF restores and verifies a supported base runtime, these are conditional
-invariants—not a current executable recipe:
+Once a supported Polaris base runtime is independently verified, these are
+conditional invariants—not a current executable recipe:
 
 - Polaris selects **no TPEN PyTorch extra**. ALCF owns Python, PyTorch, and
   CUDA; selecting `cu126`/`cu128`/`cu130` would shadow the facility Torch.
