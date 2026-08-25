@@ -122,7 +122,15 @@ def _kinetic_energy_output_and_per_electron(
         laplacian = laplacian + diagonal
         electron = idx // batch.spatial_dim
         electron_laplacians[electron] = electron_laplacians[electron] + diagonal
-    electron_laplacian = torch.stack(electron_laplacians, dim=1)
+    if batch.n_electrons == 0:
+        # Preserve the typed per-electron contract for the vacuum sector.
+        electron_laplacian = torch.empty(
+            (batch.batch_size, 0),
+            device=grad.device,
+            dtype=grad.dtype,
+        )
+    else:
+        electron_laplacian = torch.stack(electron_laplacians, dim=1)
     kinetic = -0.5 * (laplacian + flat_grad.pow(2).sum(dim=1))
     per_electron = -0.5 * (electron_laplacian + grad.pow(2).sum(dim=-1))
     if kinetic.shape != (batch.batch_size,):
