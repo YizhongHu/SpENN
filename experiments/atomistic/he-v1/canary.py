@@ -45,7 +45,9 @@ _GRID_KEYS = frozenset(
     {"schema", "study", "eval_config", "task_names", "checkpoints", "scale", "resources"}
 )
 _GRID_CHECKPOINT_KEYS = frozenset({"source_id", "checkpoint_step", "evaluation_seed"})
-_SCALE_KEYS = frozenset({"n_walkers", "n_draws", "burn_in", "stride", "chunk_size"})
+_SCALE_KEYS = frozenset(
+    {"n_walkers", "n_draws", "burn_in", "discard_draws", "stride", "chunk_size"}
+)
 _RESOURCE_KEYS = frozenset(
     {"partition", "stratum", "constraint", "timeout_min", "cpus", "mem_gb", "gpus"}
 )
@@ -249,8 +251,12 @@ def load_grid(path: str | Path) -> dict[str, Any]:
         raise CanaryError("canary scale must be a mapping")
     _require_exact_keys(scale, _SCALE_KEYS, "canary scale")
     resolved_scale = {
-        key: _require_positive_int(scale[key], f"scale.{key}") for key in sorted(_SCALE_KEYS)
+        key: _require_positive_int(scale[key], f"scale.{key}")
+        for key in sorted(_SCALE_KEYS - {"discard_draws"})
     }
+    resolved_scale["discard_draws"] = _require_nonnegative_int(
+        scale["discard_draws"], "scale.discard_draws"
+    )
     resources = payload["resources"]
     if not isinstance(resources, Mapping):
         raise CanaryError("canary resources must be a mapping")
@@ -358,6 +364,7 @@ def expand_rows(
             "n_walkers": int(scale["n_walkers"]),
             "n_draws": int(scale["n_draws"]),
             "burn_in": int(scale["burn_in"]),
+            "discard_draws": int(scale["discard_draws"]),
             "stride": int(scale["stride"]),
             "chunk_size": int(scale["chunk_size"]),
             "record_capacity": int(scale["n_walkers"]) * int(scale["n_draws"]),
@@ -511,6 +518,12 @@ def _require_text(value: Any, field: str) -> str:
 def _require_positive_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise CanaryError(f"{field} must be a positive integer")
+    return int(value)
+
+
+def _require_nonnegative_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise CanaryError(f"{field} must be a non-negative integer")
     return int(value)
 
 

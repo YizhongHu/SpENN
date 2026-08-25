@@ -178,6 +178,7 @@ def configure_canary_evaluation(cfg: Any, row: Mapping[str, Any]) -> Any:
     cfg.evaluation_sampler.burn_in = int(row["burn_in"])
     cfg.evaluation_sampler.n_steps = int(row["stride"])
     task.generator.n_draws = int(row["n_draws"])
+    task.generator.discard_draws = int(row["discard_draws"])
     task.generator.chunk_size = int(row["chunk_size"])
 
     local_energy = [
@@ -309,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "n_walkers": row.get("n_walkers"),
             "n_draws": row.get("n_draws"),
             "burn_in": row.get("burn_in"),
+            "discard_draws": row.get("discard_draws"),
             "stride": row.get("stride"),
             "chunk_size": row.get("chunk_size"),
             "record_capacity": row.get("record_capacity"),
