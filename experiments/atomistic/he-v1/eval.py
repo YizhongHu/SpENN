@@ -173,7 +173,6 @@ def configure_canary_evaluation(cfg: Any, row: Mapping[str, Any]) -> Any:
     if list(row.get("task_names", [])) != ["mcmc_energy"]:
         raise driver.DriverError("canary row must select only mcmc_energy")
     task = cfg.evaluation_tasks.mcmc_energy
-    cfg.evaluator.tasks = OmegaConf.create([task])
     cfg.evaluation_sampler.seed = int(row["seed"])
     cfg.evaluation_sampler.n_walkers = int(row["n_walkers"])
     cfg.evaluation_sampler.burn_in = int(row["burn_in"])
@@ -199,6 +198,10 @@ def configure_canary_evaluation(cfg: Any, row: Mapping[str, Any]) -> Any:
         )
     local_energy[0].chunk_size = int(row["chunk_size"])
     writers[0].max_samples = int(row["record_capacity"])
+    # Clone only after every reduced-scale value is applied. OmegaConf.create
+    # owns a distinct evaluator task; mutating the declaration afterwards does
+    # not update that clone.
+    cfg.evaluator.tasks = OmegaConf.create([task])
     cfg.callbacks.append(OmegaConf.create({"_target_": "tpen.callback.ArtifactIndex"}))
     cfg.callbacks.append(OmegaConf.create({"_target_": "tpen.callback.FailureLog"}))
     return cfg
