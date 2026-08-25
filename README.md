@@ -94,12 +94,19 @@ run either of the historical profiles below as an operational recipe.
 
 The former direct, absolute-interpreter profile was validated only before the
 2026-08-19 Polaris/Eagle upgrade. On the changed system, that direct profile
-separately failed to load Torch's CUDA runtime libraries. The current
-ALCF-documented sequence—`module use /soft/modulefiles`, `module load conda`,
-then `conda activate base`—was attempted in PBS job `7559215` and currently
-fails while loading `conda`: its module dependencies `gcc-native/14.2` and
-`cray-hdf5-parallel/1.14.3.5` are unavailable. That job did not reach Python,
+separately failed to load Torch's CUDA runtime libraries. PBS job `7559215`
+also failed while loading `conda`, reporting unavailable dependencies
+`gcc-native/14.2` and `cray-hdf5-parallel/1.14.3.5`; it did not reach Python,
 Torch, overlay provisioning, or TPEN tests.
+
+That PBS result is limited: its preserved script began `#!/bin/bash`, whereas
+ALCF's [published Polaris batch examples](https://docs.alcf.anl.gov/running-jobs/example-job-scripts/)
+use `#!/bin/bash -l` to instantiate the login-shell environment. Job `7559215`
+therefore did **not** execute the fully qualified published login-shell context,
+and its failure does not establish that the documented
+`module use /soft/modulefiles`, `module load conda`, and
+`conda activate base` procedure fails in that context. The qualified procedure
+remains unverified; no corrected job has been authorized or run.
 
 Use the current [ALCF Polaris Python guidance](https://docs.alcf.anl.gov/polaris/data-science/python/)
 and contact [ALCF Support](https://www.alcf.anl.gov/support-center) for a
