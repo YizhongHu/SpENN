@@ -1,5 +1,40 @@
 # Release Notes
 
+## v0.3.2 - Current-dev baseline release
+
+Covers the exact 29-commit `origin/main..origin/dev` range ending at
+`d04a96fbd882d5c101b1bcadf28e57fc51ec3e11`.
+
+### Added
+
+- Baseline-comparison coverage now includes DeepQMC and Neural Pfaffian
+  adapters, shared estimator statistics, an explicit B/N/N2 system registry,
+  and the declared `h5py` dependency needed to execute the DeepQMC adapter
+  tests.
+- Artifact lifecycle schema and lifecycle-gated run-data-cleanup guidance,
+  together with the Cannon archive-experiment skill.
+- Row-aligned trajectory records; conditioned-energy, sampler-health, and
+  cost diagnostics; and expanded symmetry trace records with repaired trace
+  identity contracts.
+- He-v1 checkpoint replay semantics, reconciled helium atlases, and a minimal
+  real-checkpoint evaluation canary with its collection-contract repair.
+
+### Changed and fixed
+
+- Baseline emission now rejects unmeasured, zero, or otherwise unassessable
+  error bars; protects short-tail handling; reports measured tail windows; and
+  supports an explicit operator caveat for DeepQMC records.
+- The below-floor fallback decision and FermiNet attribution guidance are
+  documented, and baseline fixtures exercise executable DeepQMC coverage and
+  measurable Neural Pfaffian tail variation.
+
+### Excluded
+
+- Closed, unmerged diagnostics I1/#325 and I2/#326 are not included in this
+  release, nor is their V1 canary/gate. This section inventories only the
+  current `origin/main..origin/dev` baseline above; it makes no claim about
+  those excluded diagnostics, generated results, tags, or merges.
+
 ## v0.3.1 - Generic atom API, helium study infrastructure, and correlation-aware statistics
 
 Covers the full `v0.3.0..a9f9f7fa` delta of 55 commits.
