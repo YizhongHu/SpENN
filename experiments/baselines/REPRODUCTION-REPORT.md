@@ -367,7 +367,7 @@ came out clean.
 | 6, seed spread | unavailable | 18 of 33 records carry a seed and 17 of those are seed 23; the 18th is 42. No system has two records that differ only in seed |
 | 12, parameter count | 1 of 33 records | only the Orbformer row |
 | confounder protocol, dtype | 0 of 33 records | `dtype` is null everywhere, so the float32/float64 knob the protocol calls load-bearing cannot be reported for any row |
-| 9, GPU-seconds | partial | `wall_clock_seconds` null for 4 rows (`dqmc-ferminet-li-39571924`, `dqmc-he-deeperwin-200k-41503515`, `dqmc-he-lapnet-200k-41503516`, `dqmc-lapnet-lih-39639503`); `device_type`, `gpu_model` and `n_gpus` all null for exactly the three `fn-*` rows, which therefore cannot be placed on identical hardware |
+| 9, GPU-seconds | 26 of 33 rows, and NOT REPORTED HERE — see the note below the table | GPU-seconds needs `wall_clock_seconds` AND `n_gpus`. `wall_clock_seconds` null for 4 rows (`dqmc-ferminet-li-39571924`, `dqmc-he-deeperwin-200k-41503515`, `dqmc-he-lapnet-200k-41503516`, `dqmc-lapnet-lih-39639503`); `device_type`, `gpu_model` and `n_gpus` all null for exactly the three `fn-*` rows, which therefore also cannot be placed on identical hardware. Both present for 26 rows |
 | estimator window | not machine-readable for any row | the schema has no window field; the window survives only as prose in `notes` (item `f23e52fa`) |
 | training vs inference distinction | present but coarse | `estimator` is a free string; nothing in the record states the number of post-training steps or the block count except as prose (items `f23e52fa`, `3695e20d`) |
 | Psiformer reproduction, 6 rows | verdict unavailable | arXiv:2211.13672 has never been read by this program; no transcribed published Psiformer energies exist |
@@ -376,6 +376,30 @@ came out clean.
 | Orbformer He | verdict unavailable | no published Orbformer helium number exists; the released checkpoint's own model card names He as an expected-worse case |
 | `ethene`, `bicyclobutane`, `Li2`, `C`, `O`, `F`, `Ne` | no record | never run; and their references are CCSD(T)/CBS for the first two, not exact |
 | `hooke_pair_singlet_omega0.5` | no baseline record | no baseline has been ported to a harmonic trap yet — item `cc2e7aec`, which is also what blocks the parent item `476ffe33` |
+
+### Axis 9 is computable for 26 rows and is still not reported. Why.
+
+The two inputs are present for 26 of 33 rows, so the arithmetic is available. It
+is withheld because `wall_clock_seconds` is not one quantity across the column,
+and multiplying a mixed column by `n_gpus` would produce a number that looks like
+the axis the scorecard defines and is not.
+
+Measured instance, from the record's own notes:
+`orbformer-he-eval-41158747` states that its wall clock is "the metric logger's
+start_time-to-stop_time span, a lower bound on job wall clock: it excludes job
+startup before the logger exists and ends at the last logged scalar, which for a
+killed run precedes the job's death." Other rows carry a figure that includes
+setup, pretraining and equilibration. Nothing in the schema distinguishes the two
+— there is no field naming what the number measures — so per-row semantics
+survive only as prose, the same defect as the estimator window (items `f23e52fa`,
+`3695e20d`).
+
+Consequence for anyone extending this report: **scheduler elapsed is not a
+substitute either.** `sacct -j <id> --format=Elapsed` does return a time for
+every job, but it is wall-clock-including-setup, pretraining and equilibration,
+not the optimization GPU-seconds axis 9 asks for. It may be used, but only under
+that label. No number anywhere in this report is derived from scheduler elapsed,
+and no row substitutes one time quantity for another.
 
 ## 8. Reproducing this report
 
