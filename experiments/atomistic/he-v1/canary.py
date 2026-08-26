@@ -35,6 +35,7 @@ GRID_SCHEMA = "he-v1-eval42-grid/v2"
 LEGACY_GRID_SCHEMA = "he-v1-eval-canary-grid/v1"
 SOURCE_SCHEMA = "he-v1-eval-canary-sources/v1"
 CANARY_SCHEMA = "he-v1-eval-canary-plan/v1"
+METRIC_NAMESPACE_SPEC_KEY = "metric_namespaces"
 STUDY = "he-v1-eval-canary-v1"
 FROZEN_STUDY = "he-v1-eval-42-v1"
 # Compatibility default for the original two-row canary. Frozen v2 rows carry
@@ -48,7 +49,9 @@ CHECKPOINT_COORDINATES = (
 _GRID_KEYS = frozenset(
     {"schema", "study", "eval_config", "task_names", "checkpoints", "scale", "resources"}
 )
-_GRID_V2_KEYS = frozenset({"schema", "study", "eval_config", "checkpoints", "rows"})
+_GRID_V2_KEYS = frozenset(
+    {"schema", "study", "eval_config", "checkpoints", "rows", "metric_namespaces"}
+)
 _GRID_CHECKPOINT_KEYS = frozenset({"source_id", "checkpoint_step", "evaluation_seed"})
 _GRID_ROW_KEYS = frozenset(
     {"row_id", "checkpoint_step", "seed", "task_names", "scale", "resources", "factor_arm"}
@@ -313,6 +316,14 @@ def _load_grid_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Validate and normalize the explicit per-row frozen evaluation grid."""
 
     checkpoints = _mapping_sequence(payload["checkpoints"], "checkpoints")
+    raw_metric_namespaces = payload["metric_namespaces"]
+    if not isinstance(raw_metric_namespaces, Mapping):
+        raise CanaryError("canary metric_namespaces must be a mapping")
+    metric_namespaces: dict[str, str] = {}
+    for metric, namespace in raw_metric_namespaces.items():
+        metric_namespaces[_require_text(metric, "metric_namespaces key")] = _require_text(
+            namespace, f"metric_namespaces[{metric!r}]"
+        ).strip("/")
     coordinates = tuple(
         (str(item["source_id"]), int(item["checkpoint_step"])) for item in checkpoints
     )
@@ -366,6 +377,7 @@ def _load_grid_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
         "eval_config": str(payload["eval_config"]),
         "checkpoints": [dict(item) for item in checkpoints],
         "rows": normalized,
+        "metric_namespaces": metric_namespaces,
     }
 
 
@@ -535,6 +547,19 @@ def build_manifest(
     """Build a generic He-v1 plan manifest carrying the canary contract."""
 
     evaluation_git_sha = _require_git_sha(evaluation_git_sha, "evaluation_git_sha")
+    metric_namespaces = grid.get("metric_namespaces", {})
+    if not isinstance(metric_namespaces, Mapping):
+        raise CanaryError("grid metric_namespaces must be a mapping")
+    gate_spec = (
+        {METRIC_NAMESPACE_SPEC_KEY: dict(metric_namespaces)}
+        if metric_namespaces
+        else {}
+    )
+    thresholds = {
+        key: value
+        for key, value in gate_spec.items()
+        if key != METRIC_NAMESPACE_SPEC_KEY
+    }
     return {
         "schema_version": plan_stage.SCHEMA_VERSION,
         "canary_schema": CANARY_SCHEMA,
@@ -550,8 +575,10 @@ def build_manifest(
         "source_map_path": str(Path(source_map_path).resolve()),
         "source_map_sha256": file_sha256(source_map_path),
         "evaluation_git_sha": evaluation_git_sha,
-        "gate_spec": {},
-        "gate_spec_declared": False,
+        "gate_spec": gate_spec,
+        # Namespace bindings identify metric provenance; they are not tolerance
+        # thresholds, so they must not claim that value gates are declared.
+        "gate_spec_declared": bool(thresholds),
         "seed_stages": [],
         "convergence_assessment": {"status": "not_applicable"},
         "reporting_rules": {"checkpoint_reporting": "both_without_selection"},
@@ -754,6 +781,7 @@ __all__ = [
     "CHECKPOINT_COORDINATES",
     "CanaryError",
     "CheckpointSource",
+    "METRIC_NAMESPACE_SPEC_KEY",
     "GRID_SCHEMA",
     "SOURCE_SCHEMA",
     "build_manifest",
