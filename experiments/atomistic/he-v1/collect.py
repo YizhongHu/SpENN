@@ -106,6 +106,19 @@ ENERGY_METRIC_KEYS: tuple[str, ...] = (
 #: Every metric the gates read, retained whether or not it gated.
 GATE_METRIC_KEYS: tuple[str, ...] = tuple(gates.ATOM_GATE_METRIC_KEYS)
 
+# These summaries intentionally publish metrics only.  Their implementations
+# live in tpen/evaluation/summaries/trace.py and return SummaryResult(metrics=)
+# without artifacts; an empty index entry is therefore their declared output,
+# not a missing producer.  Every other task remains required to emit an
+# artifact, so adding a metrics-only task requires an explicit review here.
+METRICS_ONLY_TASKS = frozenset(
+    {
+        "full_model_antisymmetry",
+        "spatial_exchange_symmetry",
+        "trace_equivariance",
+    }
+)
+
 #: Separator between a namespace and a metric name in a qualified request, as in
 #: ``eval/spatial_exchange_symmetry.triplet_fraction_mean_under_psi_orig_sq``.
 #: The namespace itself is slash-separated, exactly as the run logs it, so the
@@ -659,9 +672,18 @@ def _reconcile_canary_index(
         if not isinstance(artifacts, list):
             reasons.append(f"{name} artifact index has no artifact list")
             continue
-        by_name = {str(a.get("name")): a for a in artifacts if isinstance(a, Mapping)}
-        if len(by_name) != len(artifacts) or not by_name:
-            reasons.append(f"{name} artifact index has duplicate, invalid, or empty artifacts")
+        named_artifacts = [
+            artifact
+            for artifact in artifacts
+            if isinstance(artifact, Mapping) and str(artifact.get("name") or "").strip()
+        ]
+        by_name = {str(artifact["name"]): artifact for artifact in named_artifacts}
+        if len(by_name) != len(artifacts) or (
+            not by_name and name not in METRICS_ONLY_TASKS
+        ):
+            reasons.append(
+                f"{name} artifact index has duplicate, invalid, or unexpected empty artifacts"
+            )
         if name == "mcmc_energy":
             expected = set(CANARY_ARTIFACT_FILENAMES)
             if len(artifacts) != len(expected) or set(by_name) != expected:

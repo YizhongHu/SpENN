@@ -826,6 +826,64 @@ def _write_artifact_index(run_dir: Path, index: dict[str, Any]) -> None:
     collect.layout.write_json(run_dir / "diagnostics" / "index.json", index)
 
 
+def _index_reasons(
+    tmp_path: Path, task_name: str, artifacts: list[dict[str, Any]]
+) -> list[str]:
+    task_dir = tmp_path / task_name
+    reasons: list[str] = []
+    collect._reconcile_canary_index(
+        {
+            "tasks": [
+                {
+                    "name": task_name,
+                    "namespace": f"eval/{task_name}",
+                    "output_dir": str(task_dir.resolve()),
+                    "status": "success",
+                    "artifacts": artifacts,
+                }
+            ]
+        },
+        run_dir=tmp_path,
+        task_names=[task_name],
+        row={},
+        reasons=reasons,
+    )
+    return reasons
+
+
+def test_metrics_only_tasks_accept_empty_artifact_lists(tmp_path: Path) -> None:
+    metrics_only_tasks = (
+        "full_model_antisymmetry",
+        "spatial_exchange_symmetry",
+        "trace_equivariance",
+    )
+
+    for task_name in metrics_only_tasks:
+        assert _index_reasons(tmp_path, task_name, []) == []
+
+
+def test_non_metrics_only_tasks_still_require_an_artifact(tmp_path: Path) -> None:
+    reasons = _index_reasons(tmp_path, "mcmc_energy", [])
+
+    assert any("unexpected empty artifacts" in reason for reason in reasons)
+
+
+def test_artifact_index_still_rejects_duplicate_names(tmp_path: Path) -> None:
+    reasons = _index_reasons(
+        tmp_path,
+        "trace_equivariance",
+        [{"name": "same"}, {"name": "same"}],
+    )
+
+    assert any("duplicate" in reason for reason in reasons)
+
+
+def test_artifact_index_still_rejects_missing_artifact_names(tmp_path: Path) -> None:
+    reasons = _index_reasons(tmp_path, "trace_equivariance", [{}])
+
+    assert any("invalid" in reason for reason in reasons)
+
+
 def _artifact(index: dict[str, Any], name: str) -> dict[str, Any]:
     return next(
         artifact
