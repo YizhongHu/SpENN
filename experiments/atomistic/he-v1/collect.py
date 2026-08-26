@@ -1082,6 +1082,8 @@ def collect_row(
         reasons.append("no metrics were logged")
 
     requested_stratum = str(row["resources"]["stratum"])
+    requested_partition = str(row["resources"]["partition"])
+    delivered_partition = _receipt_field(receipt, "partition")
     delivered_device = _receipt_field(receipt, "delivered_device")
     delivered_matches = _receipt_field(receipt, "delivered_matches_requested")
     if absence.is_absent(delivered_matches):
@@ -1146,7 +1148,8 @@ def collect_row(
         "requested_stratum": requested_stratum,
         "requested_constraint": str(row["resources"].get("constraint") or ""),
         "delivered_device": absence.cell(delivered_device),
-        "partition": str(row["resources"]["partition"]),
+        "partition": absence.cell(delivered_partition),
+        "requested_partition": requested_partition,
         "config_sha256": absence.cell(file_sha256(run_dir / "resolved_config.yaml")),
         "checkpoint_dir": absence.cell(
             None if absence.is_absent(checkpoint_dir) else str(checkpoint_dir)
@@ -1495,6 +1498,7 @@ def _write_rows_csv(path: Path, collected: Mapping[str, Any]) -> None:
         "run_id",
         "job_id",
         "partition",
+        "requested_partition",
         "requested_stratum",
         "requested_constraint",
         "delivered_device",
@@ -1519,7 +1523,8 @@ def _write_rows_csv(path: Path, collected: Mapping[str, Any]) -> None:
                 "chain": _render_cell(identity["chain"]),
                 "run_id": _render_cell(identity["run_id"]),
                 "job_id": _render_cell(identity["job_id"]),
-                "partition": identity["partition"],
+                "partition": _render_cell(identity["partition"]),
+                "requested_partition": identity["requested_partition"],
                 "requested_stratum": identity["requested_stratum"],
                 "requested_constraint": identity["requested_constraint"],
                 "delivered_device": _render_cell(identity["delivered_device"]),

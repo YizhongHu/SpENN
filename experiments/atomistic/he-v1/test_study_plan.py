@@ -309,6 +309,19 @@ def test_wall_time_past_the_partition_ceiling_is_rejected() -> None:
         plan.expand_rows(plan.validate_grid_config(_grid(eval_resources=resources)))
 
 
+def test_wall_time_uses_the_tightest_ceiling_for_multiple_partitions() -> None:
+    """A seven-day kozinsky limit is unsafe when seas_gpu is also requested."""
+
+    resources = dict(
+        GRID["eval_resources"],
+        partition="kozinsky_gpu,seas_gpu",
+        stratum="a100",
+        timeout_min=7 * 24 * 60,
+    )
+    with pytest.raises(plan.PlanError, match="exceeds the measured ceiling"):
+        plan.expand_rows(plan.validate_grid_config(_grid(eval_resources=resources)))
+
+
 def test_wall_time_at_the_partition_ceiling_is_accepted() -> None:
     """The ceiling itself is submittable; only past it is not."""
 
@@ -322,6 +335,24 @@ def test_stratum_absent_from_the_partition_is_rejected() -> None:
 
     resources = dict(GRID["eval_resources"], partition="kozinsky_gpu", stratum="h200")
     with pytest.raises(plan.PlanError, match="not available on partition"):
+        plan.expand_rows(plan.validate_grid_config(_grid(eval_resources=resources)))
+
+
+@pytest.mark.parametrize(
+    "partition, match",
+    [
+        ("kozinsky_gpu,", "partition member ''"),
+        ("kozinsky_gpu,kozinsky_gpu", "partition member 'kozinsky_gpu'"),
+        ("kozinsky_gpu,gpu_test", "partition member 'gpu_test'"),
+        ("seas_gpu,kozinsky_gpu", "partition member 'kozinsky_gpu'"),
+    ],
+)
+def test_each_named_production_partition_is_validated(partition: str, match: str) -> None:
+    """Malformed fallback lists fail at planning with the offending member."""
+
+    stratum = "h200" if partition == "seas_gpu,kozinsky_gpu" else "a100"
+    resources = dict(GRID["eval_resources"], partition=partition, stratum=stratum)
+    with pytest.raises(plan.PlanError, match=match):
         plan.expand_rows(plan.validate_grid_config(_grid(eval_resources=resources)))
 
 

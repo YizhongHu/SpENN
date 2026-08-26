@@ -161,7 +161,7 @@ def wall_limit_min(partition: str) -> int:
 
 
 def validate_gpu_placement(*, partition: str, stratum_name: str, timeout_min: int) -> Stratum:
-    """Validate one GPU row's partition, stratum, and wall time together.
+    """Validate a GPU row's partitions, stratum, and wall time together.
 
     Returns
     -------
@@ -171,34 +171,48 @@ def validate_gpu_placement(*, partition: str, stratum_name: str, timeout_min: in
     Raises
     ------
     StratumError
-        If the partition serves no GPUs, is not a production GPU target, does
-        not carry the requested stratum, or the requested wall time exceeds the
-        partition's measured ceiling. The last one matters because rows may not
-        resume: a row that would be cut off at the wall is a planning defect,
-        not a run to be restarted.
+        If any named partition serves no GPUs, is not a production GPU target,
+        does not carry the requested stratum, or the requested wall time exceeds
+        the tightest named partition's measured ceiling. The last one matters
+        because rows may not resume: a row that would be cut off at the wall is
+        a planning defect, not a run to be restarted.
     """
 
-    partition = str(partition).strip()
     resolved = stratum(stratum_name)
-    if partition not in GPU_PARTITIONS:
-        raise StratumError(f"partition {partition!r} serves no GPUs")
-    if partition not in PRODUCTION_GPU_PARTITIONS:
-        raise StratumError(
-            f"partition {partition!r} is a smoke/pilot target; production grid rows "
-            f"must use one of: {', '.join(sorted(PRODUCTION_GPU_PARTITIONS))}"
-        )
-    if partition not in resolved.partitions:
-        raise StratumError(
-            f"stratum {resolved.name!r} is not available on partition {partition!r}; "
-            f"it exists on: {', '.join(resolved.partitions)}"
-        )
-    limit = wall_limit_min(partition)
+    members = [part.strip() for part in str(partition).split(",")]
+    for member in members:
+        if not member:
+            raise StratumError(f"partition member {member!r} is empty")
+    seen: set[str] = set()
+    for member in members:
+        if member in seen:
+            raise StratumError(f"partition member {member!r} is duplicated")
+        seen.add(member)
+        if member not in GPU_PARTITIONS:
+            raise StratumError(f"partition member {member!r} serves no GPUs")
+        if member not in PRODUCTION_GPU_PARTITIONS:
+            raise StratumError(
+                f"partition member {member!r} is a smoke/pilot target; production grid rows "
+                f"must use one of: {', '.join(sorted(PRODUCTION_GPU_PARTITIONS))}"
+            )
+        if member not in resolved.partitions:
+            raise StratumError(
+                f"stratum {resolved.name!r} is not available on partition member {member!r}; "
+                f"it exists on: {', '.join(resolved.partitions)}"
+            )
+    limit = min(wall_limit_min(member) for member in members)
     if int(timeout_min) <= 0:
         raise StratumError(f"row wall time must be positive, got {timeout_min!r}")
     if int(timeout_min) > limit:
+        if len(members) == 1:
+            raise StratumError(
+                f"row wall time {timeout_min} min exceeds the measured {members[0]} ceiling "
+                f"of {limit} min; rows may not resume, so size the row to finish"
+            )
         raise StratumError(
-            f"row wall time {timeout_min} min exceeds the measured {partition} ceiling "
-            f"of {limit} min; rows may not resume, so size the row to finish"
+            f"row wall time {timeout_min} min exceeds the measured ceiling across "
+            f"partitions {', '.join(members)} of {limit} min; rows may not resume, "
+            "so size the row to finish"
         )
     return resolved
 
