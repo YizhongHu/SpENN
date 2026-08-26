@@ -904,6 +904,35 @@ def test_collection_rejects_factor_content_shape_mismatch(tmp_path: Path) -> Non
     assert any("factor_response artifact metadata disagrees" in reason for reason in reasons)
 
 
+@pytest.mark.parametrize("field, base", [("rows", 56), ("arm_count", 7), ("configuration_count", 8)])
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_factor_common_numeric_oracles_are_boundary_sensitive(
+    field: str, base: int, delta: int
+) -> None:
+    row = {"n_walkers": 8, "record_capacity": 64}
+    metadata = {
+        "comparison_kind": "common_configuration",
+        "rows": 56,
+        "arm_count": 7,
+        "configuration_count": 8,
+        "model_state_restored": True,
+    }
+    metadata[field] = base + delta
+    reasons: list[str] = []
+
+    collect._reconcile_canary_task_content(
+        "factor_response",
+        {"factor_response_common_configuration": {"metadata": metadata}},
+        row=row,
+        reasons=reasons,
+    )
+
+    if delta == 0:
+        assert reasons == []
+    else:
+        assert any("factor_response artifact metadata disagrees" in reason for reason in reasons)
+
+
 def test_collection_rejects_reequilibrated_factor_row_count_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -939,6 +968,26 @@ def test_collection_rejects_reequilibrated_factor_row_count_mismatch(
         "re-equilibrated factor sampled table metadata disagrees" in reason
         for reason in reasons
     )
+
+
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_reequilibrated_row_count_oracle_is_boundary_sensitive(delta: int) -> None:
+    row = {"record_capacity": 64}
+    reasons: list[str] = []
+    collect._reconcile_canary_task_content(
+        "factor_response_re_equilibrated",
+        {"sampled_eval_table": {"metadata": {"rows": row["record_capacity"] + delta}}},
+        row=row,
+        reasons=reasons,
+    )
+
+    if delta == 0:
+        assert reasons == []
+    else:
+        assert any(
+            "re-equilibrated factor sampled table metadata disagrees" in reason
+            for reason in reasons
+        )
 
 
 def test_collection_rejects_a_declared_task_missing_from_artifact_index(
@@ -1064,26 +1113,41 @@ def test_collection_keeps_sampler_burn_in_and_trajectory_discard_distinct(
     assert any("resolved" in reason and "scale disagrees" in reason for reason in reasons)
 
 
-@pytest.mark.parametrize(
-    "field",
-    ["draw_count", "walker_count", "row_count", "burn_in_draws"],
-)
+@pytest.mark.parametrize("field", ["draw_count", "walker_count", "row_count", "burn_in_draws"])
+@pytest.mark.parametrize("delta", [-1, 1])
 def test_collection_rejects_each_record_shape_mismatch(
-    tmp_path: Path, field: str
+    tmp_path: Path, field: str, delta: int
 ) -> None:
     manifest, source_map_path, _ = _case(tmp_path)
     written = _write_canary_outputs(tmp_path, manifest, source_map_path)
     row, _, _, run_dir, _, _ = written
     path = run_dir / "mcmc_energy" / "sampled_eval_table.metadata.json"
     record_metadata = json.loads(path.read_text(encoding="utf-8"))
-    record_metadata[field] = (
-        row["burn_in"] if field == "burn_in_draws" else record_metadata[field] + 1
-    )
+    record_metadata[field] = record_metadata[field] + delta
     collect.layout.write_json(path, record_metadata)
 
     reasons = _reconcile_written_outputs(manifest, written)
 
     assert any("record metadata disagrees" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("delta", [-1, 1])
+def test_collection_rejects_boundary_mcmc_writer_capacity_mismatch(
+    tmp_path: Path, delta: int
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"][0]["summaries"][0]["max_samples"] = (
+        row["record_capacity"] + delta
+    )
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("writer capacity disagrees" in reason for reason in reasons)
 
 
 @pytest.mark.parametrize("coordinate", ["sample_index", "draw_index", "walker_index"])
@@ -1112,17 +1176,16 @@ def test_collection_rejects_each_record_coordinate_mismatch(
     "field",
     ["walker_count", "draw_count", "total_draws", "draw_stride", "burn_in_draws"],
 )
+@pytest.mark.parametrize("delta", [-1, 1])
 def test_collection_rejects_each_trajectory_statistics_shape_mismatch(
-    tmp_path: Path, field: str
+    tmp_path: Path, field: str, delta: int
 ) -> None:
     manifest, source_map_path, _ = _case(tmp_path)
     written = _write_canary_outputs(tmp_path, manifest, source_map_path)
-    row, _, _, run_dir, _, _ = written
+    _, _, _, run_dir, _, _ = written
     path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
     receipt = json.loads(path.read_text(encoding="utf-8"))
-    receipt["shape"][field] = (
-        row["burn_in"] if field == "burn_in_draws" else receipt["shape"][field] + 1
-    )
+    receipt["shape"][field] = receipt["shape"][field] + delta
     path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
 
     reasons = _reconcile_written_outputs(manifest, written)
@@ -1150,6 +1213,23 @@ def test_collection_rejects_sampler_diagnostics_shape_mismatch(
         diagnostics["n_walkers"] += 1
     else:
         diagnostics["sampler_burn_in"] = diagnostics["sampler_burn_in"] + 1
+    collect.layout.write_json(path, diagnostics)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("diagnostics disagree" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("delta", [-1, 1])
+def test_collection_rejects_boundary_sampler_diagnostics_walker_count(
+    tmp_path: Path, delta: int
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    path = run_dir / "mcmc_energy" / "sampler_trajectory_diagnostics.json"
+    diagnostics = json.loads(path.read_text(encoding="utf-8"))
+    diagnostics["n_walkers"] = row["n_walkers"] + delta
     collect.layout.write_json(path, diagnostics)
 
     reasons = _reconcile_written_outputs(manifest, written)
