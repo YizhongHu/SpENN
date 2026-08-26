@@ -5,6 +5,11 @@ schema: he-v1-eval42-grid/v2
 study: he-v1-eval-42-v1
 eval_config: experiments/atomistic/he-v1/configs/eval.yaml
 
+metric_namespaces:
+  local_energy_mean: eval/mcmc_energy
+  local_energy_stderr: eval/mcmc_energy
+  local_energy_variance: eval/mcmc_energy
+
 checkpoints:
   - {source_id: actual-step-025000, checkpoint_step: 25000, evaluation_seed: 25001}
   - {source_id: actual-step-050000, checkpoint_step: 50000, evaluation_seed: 50001}

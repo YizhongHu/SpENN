@@ -163,6 +163,88 @@ def test_frozen_grid_schema_matches_canary_consumer_constant() -> None:
     payload = yaml.safe_load(GRID_42_PATH.read_text(encoding="utf-8"))
     assert payload["schema"] == canary.GRID_SCHEMA
     assert canary.load_grid(GRID_42_PATH)["schema"] == canary.GRID_SCHEMA
+    assert canary.METRIC_NAMESPACE_SPEC_KEY == collect.METRIC_NAMESPACE_SPEC_KEY
+
+
+def test_frozen_grid_bindings_are_carried_into_the_manifest(tmp_path: Path) -> None:
+    grid = canary.load_grid(GRID_42_PATH)
+    expected = {
+        "local_energy_mean": "eval/mcmc_energy",
+        "local_energy_stderr": "eval/mcmc_energy",
+        "local_energy_variance": "eval/mcmc_energy",
+    }
+
+    assert grid["metric_namespaces"] == expected
+    manifest = _completion_manifest_42(tmp_path)
+    assert manifest["gate_spec"] == {collect.METRIC_NAMESPACE_SPEC_KEY: expected}
+    # Bindings are provenance, not tolerances; no value thresholds are declared.
+    assert manifest["gate_spec_declared"] is False
+
+
+def test_frozen_grid_rejects_missing_metric_namespace_block(tmp_path: Path) -> None:
+    payload = yaml.safe_load(GRID_42_PATH.read_text(encoding="utf-8"))
+    del payload["metric_namespaces"]
+    path = tmp_path / "eval_42_without_metric_namespaces.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(canary.CanaryError, match="missing=.*metric_namespaces"):
+        canary.load_grid(path)
+
+
+def test_declared_binding_resolves_collision_without_cli_flags(tmp_path: Path) -> None:
+    manifest = _completion_manifest_42(tmp_path)
+    thresholds, bindings = collect.split_gate_spec(manifest["gate_spec"])
+    metrics_path = tmp_path / "metrics.jsonl"
+    metrics_path.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "namespace": "eval/mcmc_energy",
+                    "metrics": {
+                        "local_energy_mean": -1.0,
+                        "local_energy_stderr": 0.01,
+                        "local_energy_variance": 0.25,
+                    },
+                },
+                {
+                    "namespace": "eval/factor_response_re_equilibrated",
+                    # Differing means are load-bearing: equal values would not
+                    # be considered ambiguous by read_metrics_jsonl.
+                    "metrics": {"local_energy_mean": -2.0},
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    namespaced, flat, ambiguous = collect.read_metrics_jsonl(metrics_path)
+    namespaces = collect.logged_namespaces(namespaced)
+    reasons: list[str] = []
+
+    bound = collect.resolve_metric_bindings(
+        bindings,
+        namespaced=namespaced,
+        flat=flat,
+        ambiguous=ambiguous,
+        namespaces=namespaces,
+        reasons=reasons,
+    )
+
+    assert thresholds == {}
+    assert bound["local_energy_mean"] == -1.0
+    assert bound["local_energy_stderr"] == 0.01
+    assert bound["local_energy_variance"] == 0.25
+    assert reasons == []
+
+    _, reason = collect.resolve_metric_request(
+        "local_energy_mean",
+        namespaced=namespaced,
+        flat=flat,
+        ambiguous=ambiguous,
+        namespaces=namespaces,
+    )
+    assert reason is not None
 
 
 def test_frozen_grid_rejects_a_real_gpu_constraint_drift() -> None:
