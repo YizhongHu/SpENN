@@ -11,10 +11,16 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import torch
 import yaml
+
+from tpen.data.batch import Walkers
+from tpen.evaluation.generators import MCMCGenerator
+from tpen.evaluation.protocols import EvaluationContext
 
 STUDY_DIR = Path(__file__).resolve().parent
 GRID_PATH = STUDY_DIR / "configs" / "eval_canary.yaml"
+GRID_42_PATH = STUDY_DIR / "configs" / "eval_42.yaml"
 EVALUATION_SHA = "a" * 40
 
 
@@ -123,6 +129,66 @@ def test_canary_expands_exactly_two_separately_addressable_energy_rows(
         manifest, kinds=[], row_ids=["eval-canary-step000050000"]
     )
     assert [row["checkpoint_step"] for row in selected] == [50_000]
+
+
+def test_frozen_grid_declares_42_rows_and_all_required_arms() -> None:
+    grid = canary.load_grid(GRID_42_PATH)
+    rows = grid["rows"]
+    assert len(rows) == 42
+    assert {step: sum(row["checkpoint_step"] == step for row in rows) for step in (25_000, 50_000)} == {
+        25_000: 21, 50_000: 21
+    }
+    for step in (25_000, 50_000):
+        subset = [row for row in rows if row["checkpoint_step"] == step]
+        assert [row["seed"] for row in subset[:4]] == [1000, 1001, 1002, 1003]
+        assert [row["seed"] for row in subset[4:8]] == [2000, 2001, 2002, 2003]
+        assert [row["seed"] for row in subset[8:12]] == [3000, 3001, 3100, 3101]
+        assert subset[12]["seed"] == 5000
+        assert [row["seed"] for row in subset[13:20]] == list(range(4000, 4007))
+        assert subset[20]["seed"] == 6000
+    assert all(row["resources"]["constraint"] == "a100" for row in rows)
+    assert sum("factor_response" in row["task_names"] for row in rows) == 4
+    assert all(
+        row["task_names"] == ["mcmc_energy"]
+        for row in rows
+        if row["seed"] in {1000, 1001, 1002, 1003, 2000, 2001, 2002, 2003, 3000, 3001, 3100, 3101}
+    )
+
+
+def test_frozen_grid_schema_matches_canary_consumer_constant() -> None:
+    payload = yaml.safe_load(GRID_42_PATH.read_text(encoding="utf-8"))
+    assert payload["schema"] == canary.GRID_SCHEMA
+    assert canary.load_grid(GRID_42_PATH)["schema"] == canary.GRID_SCHEMA
+
+
+def test_frozen_grid_rejects_a_real_gpu_constraint_drift() -> None:
+    payload = yaml.safe_load(GRID_42_PATH.read_text(encoding="utf-8"))
+    payload["rows"][0]["resources"]["constraint"] = None
+    with pytest.raises(canary.CanaryError, match="constraint disagrees"):
+        canary._load_grid_v2(payload)
+
+
+def test_production_row_passes_plan_and_launch_with_stratum_constraint(
+    tmp_path: Path,
+) -> None:
+    """Planner and launcher must share the production stratum validator."""
+
+    grid = canary.load_grid(GRID_42_PATH)
+    row = dict(grid["rows"][0])
+    planned_resources = canary._resolve_resources(row["resources"], "production row")
+    assert planned_resources["partition"] == "kozinsky_gpu"
+    assert planned_resources["stratum"] == "a100"
+    assert planned_resources["constraint"] == "a100"
+
+    directives = launch.sbatch_directives(
+        row,
+        job_name="he-v1-eval42-production",
+        log_dir=tmp_path,
+        account=None,
+        dependency=None,
+    )
+    assert "#SBATCH --partition=kozinsky_gpu" in directives
+    assert "#SBATCH --constraint=a100" in directives
 
 
 @pytest.mark.parametrize(
@@ -234,6 +300,153 @@ def test_runtime_transform_keeps_the_real_graph_and_only_reduces_scale(
     assert configured.evaluator.tasks[0].generator.discard_draws == row["discard_draws"]
     targets = [callback._target_ for callback in configured.callbacks]
     assert targets[-2:] == ["tpen.callback.ArtifactIndex", "tpen.callback.FailureLog"]
+
+
+def test_runtime_transform_selects_declared_multi_task_row_and_factor_task_is_inert(
+    tmp_path: Path,
+) -> None:
+    """An unselected factor declaration cannot enter the evaluator graph."""
+
+    manifest, _, _ = _case(tmp_path)
+    row = dict(manifest["rows"][0])
+    cfg = collect.eval_stage.driver.build_config(
+        STUDY_DIR.parents[2] / row["config"], row["overrides"]
+    )
+    configured = eval_stage.configure_canary_evaluation(cfg, row)
+    assert [task.name for task in configured.evaluator.tasks] == ["mcmc_energy"]
+    assert all(task.name != "factor_response" for task in configured.evaluator.tasks)
+
+    row["task_names"] = ["mcmc_energy", "factor_response"]
+    cfg = collect.eval_stage.driver.build_config(
+        STUDY_DIR.parents[2] / row["config"], row["overrides"]
+    )
+    configured = eval_stage.configure_canary_evaluation(cfg, row)
+    assert [task.name for task in configured.evaluator.tasks] == [
+        "mcmc_energy", "factor_response"
+    ]
+
+
+def test_factor_common_collector_contract_uses_real_generator_emission() -> None:
+    """The common factor oracle must agree with the producer's real snapshot."""
+
+    class FixedSampler:
+        def collect_samples(self, model, *, device=None):
+            del model, device
+            walkers = Walkers(positions=torch.zeros(3, 1, 3, dtype=torch.float64))
+            return walkers, object()
+
+    row = {"n_walkers": 3, "n_draws": 8, "record_capacity": 24}
+    generator = MCMCGenerator(sampler=FixedSampler(), max_samples=row["n_walkers"])
+    generated = generator.generate(
+        model=None,
+        context=EvaluationContext(
+            namespace="eval/factor_response",
+            artifact_level="metrics_only",
+            task_failure_policy="fail_fast",
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+            seed=None,
+            run_dir=Path("/tmp"),
+            task_output_dir=Path("/tmp"),
+            metadata={},
+        ),
+    )
+    emitted_configurations = generated.batch.batch_size
+    assert emitted_configurations == row["n_walkers"]
+
+    reasons: list[str] = []
+    collect._reconcile_canary_task_content(
+        "factor_response",
+        {
+            "factor_response_common_configuration": {
+                "metadata": {
+                    "comparison_kind": "common_configuration",
+                    "rows": emitted_configurations * 7,
+                    "arm_count": 7,
+                    "configuration_count": emitted_configurations,
+                    "model_state_restored": True,
+                }
+            }
+        },
+        row=row,
+        reasons=reasons,
+    )
+    assert reasons == []
+
+    truncated = MCMCGenerator(sampler=FixedSampler(), max_samples=2).generate(
+        model=None,
+        context=EvaluationContext(
+            namespace="eval/factor_response",
+            artifact_level="metrics_only",
+            task_failure_policy="fail_fast",
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+            seed=None,
+            run_dir=Path("/tmp"),
+            task_output_dir=Path("/tmp"),
+            metadata={},
+        ),
+    )
+    assert truncated.batch.batch_size != row["n_walkers"]
+
+
+def test_factor_task_caps_are_row_overrides_and_common_cap_covers_all_arms() -> None:
+    config = yaml.safe_load((STUDY_DIR / "configs" / "eval.yaml").read_text(encoding="utf-8"))
+    common = config["evaluation_tasks"]["factor_response"]
+    assert int(common["summaries"][0]["max_records"]) >= 4096 * 7
+    reequilibrated = config["evaluation_tasks"]["factor_response_re_equilibrated"]
+    assert "max_samples" not in reequilibrated["generator"]["generator"]
+    assert "max_samples" not in reequilibrated["summaries"][1]
+
+
+def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
+    tmp_path: Path,
+) -> None:
+    """The configured re-equilibrated producer must receive the row draw count."""
+
+    _, source_map_path, _ = _case(tmp_path)
+    grid = canary.load_grid(GRID_42_PATH)
+    rows = canary.expand_rows(grid, canary.reconcile_grid_sources(
+        grid, canary.load_source_map(source_map_path)
+    ))
+    row = next(row for row in rows if "factor_response_re_equilibrated" in row["task_names"])
+    cfg = collect.eval_stage.driver.build_config(
+        STUDY_DIR.parents[2] / row["config"], row["overrides"]
+    )
+
+    configured = eval_stage.configure_canary_evaluation(cfg, row)
+    task = next(
+        task for task in configured.evaluator.tasks
+        if task.name == "factor_response_re_equilibrated"
+    )
+    assert task.generator.generator._target_ == (
+        "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    )
+    assert task.generator.generator.n_draws == row["n_draws"]
+    assert task.generator.generator.discard_draws == row["discard_draws"]
+    assert task.generator.generator.max_samples == row["record_capacity"]
+    writer = next(
+        summary for summary in task.summaries
+        if summary._target_ == "tpen.evaluation.summaries.SampledRecordWriter"
+    )
+    assert writer.max_samples == row["record_capacity"]
+
+
+def test_runtime_transform_rejects_unknown_or_duplicate_declared_tasks(
+    tmp_path: Path,
+) -> None:
+    manifest, _, _ = _case(tmp_path)
+    row = dict(manifest["rows"][0])
+    for task_names, match in [
+        (["does_not_exist"], "unknown evaluation task"),
+        (["mcmc_energy", "mcmc_energy"], "must be unique"),
+    ]:
+        row["task_names"] = task_names
+        cfg = collect.eval_stage.driver.build_config(
+            STUDY_DIR.parents[2] / row["config"], row["overrides"]
+        )
+        with pytest.raises(eval_stage.driver.DriverError, match=match):
+            eval_stage.configure_canary_evaluation(cfg, row)
 
 
 def _write_canary_outputs(
@@ -555,6 +768,42 @@ def _refresh_record_identity(run_dir: Path) -> None:
     _write_artifact_index(run_dir, index)
 
 
+def _refresh_trajectory_identity(
+    manifest: dict[str, Any], row: dict[str, Any], source: Any, run_dir: Path
+) -> None:
+    """Refresh fixture-owned trajectory identity after mutating the planned row."""
+
+    config_sha = eval_stage.config_identity_hash(
+        STUDY_DIR.parents[2] / row["config"],
+        row["overrides"],
+        identity_values={
+            key: row.get(key)
+            for key in (
+                "canary_protocol", "checkpoint_source", "task_names", "n_walkers",
+                "n_draws", "burn_in", "discard_draws", "stride", "chunk_size",
+                "record_capacity",
+            )
+        },
+    )
+    trajectory_path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
+    receipt = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    receipt.update({"stage": row["stage"], "run_id": row["row_id"],
+                   "attempt_id": manifest["attempt_id"],
+                   "checkpoint_sha256": source.model_sha256,
+                   "config_sha256": config_sha,
+                   "observable": "local_energy", "evaluator_id": eval_stage.EVALUATOR_ID})
+    trajectory_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    metadata = _artifact(index, "local_energy_trajectory_statistics")["metadata"]
+    metadata.update({"stage": row["stage"], "run_id": row["row_id"],
+                     "attempt_id": manifest["attempt_id"],
+                     "checkpoint_sha256": source.model_sha256,
+                     "config_sha256": config_sha,
+                     "observable": "local_energy", "evaluator_id": eval_stage.EVALUATOR_ID,
+                     "status": receipt["status"]})
+    _write_artifact_index(run_dir, index)
+
+
 def test_collection_accepts_exact_three_artifact_contract(tmp_path: Path) -> None:
     manifest, source_map_path, _ = _case(tmp_path)
     written = _write_canary_outputs(
@@ -566,6 +815,179 @@ def test_collection_accepts_exact_three_artifact_contract(tmp_path: Path) -> Non
     assert set(names) == set(collect.CANARY_ARTIFACT_FILENAMES)
     assert len(names) == 3
     assert _reconcile_written_outputs(manifest, written) == []
+
+
+def test_collection_reconciles_artifacts_for_each_declared_task(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, source, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response")
+    _refresh_trajectory_identity(manifest, row, source, run_dir)
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    factor_dir = run_dir / "factor_response"
+    factor_dir.mkdir()
+    factor_path = factor_dir / "factor_response.csv"
+    factor_path.write_text("arm,energy\nbaseline,0\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"].append(
+        {
+            "name": "factor_response",
+            "namespace": "eval/factor_response",
+            "output_dir": str(factor_dir.resolve()),
+            "status": "success",
+            "artifacts": [
+                {
+                    "name": "factor_response_common_configuration",
+                    "kind": "csv",
+                    "path": str(factor_path.resolve()),
+                    "metadata": {
+                        "comparison_kind": "common_configuration",
+                        "rows": row["n_walkers"] * 7,
+                        "arm_count": 7,
+                        "configuration_count": row["n_walkers"],
+                        "model_state_restored": True,
+                    },
+                }
+            ],
+        }
+    )
+    _write_artifact_index(run_dir, index)
+
+    assert _reconcile_written_outputs(manifest, written) == []
+
+
+def test_collection_rejects_declared_task_namespace_mismatch(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    index = _artifact_index(run_dir)
+    index["tasks"][0]["namespace"] = "eval/spatial_exchange_symmetry"
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("namespace disagrees" in reason for reason in reasons)
+
+
+def test_collection_rejects_factor_content_shape_mismatch(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response")
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    factor_dir = run_dir / "factor_response"
+    factor_dir.mkdir()
+    factor_path = factor_dir / "factor_response.csv"
+    factor_path.write_text("arm,energy\nbaseline,0\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"].append({
+        "name": "factor_response", "namespace": "eval/factor_response",
+        "output_dir": str(factor_dir.resolve()), "status": "success",
+        "artifacts": [{
+            "name": "factor_response_common_configuration", "kind": "csv",
+            "path": str(factor_path.resolve()),
+            "metadata": {"comparison_kind": "common_configuration", "rows": 1,
+                         "arm_count": 1, "configuration_count": row["n_walkers"],
+                         "model_state_restored": True},
+        }],
+    })
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("factor_response artifact metadata disagrees" in reason for reason in reasons)
+
+
+def test_collection_rejects_reequilibrated_factor_row_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, source, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response_re_equilibrated")
+    _refresh_trajectory_identity(manifest, row, source, run_dir)
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response_re_equilibrated"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    factor_dir = run_dir / "factor_response_re_equilibrated"
+    factor_dir.mkdir()
+    factor_path = factor_dir / "sampled_eval_table.csv"
+    factor_path.write_text("sample_index\n0\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"].append({
+        "name": "factor_response_re_equilibrated",
+        "namespace": "eval/factor_response_re_equilibrated",
+        "output_dir": str(factor_dir.resolve()), "status": "success",
+        "artifacts": [{
+            "name": "sampled_eval_table", "kind": "csv",
+            "path": str(factor_path.resolve()),
+            "metadata": {"rows": 1},
+        }],
+    })
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any(
+        "re-equilibrated factor sampled table metadata disagrees" in reason
+        for reason in reasons
+    )
+
+
+def test_collection_rejects_a_declared_task_missing_from_artifact_index(
+    tmp_path: Path,
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response")
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("artifact index task list disagrees" in reason for reason in reasons)
+
+
+def test_collection_rejects_declared_task_artifact_outside_task_directory(
+    tmp_path: Path,
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response")
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    factor_dir = run_dir / "factor_response"
+    factor_dir.mkdir()
+    factor_path = factor_dir / "factor_response.csv"
+    factor_path.write_text("arm,energy\nbaseline,0\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"].append(
+        {
+            "name": "factor_response",
+            "namespace": "eval/factor_response",
+            "output_dir": str(factor_dir.resolve()),
+            "status": "success",
+            "artifacts": [{"name": "factor_response", "kind": "csv", "path": str((tmp_path / "escaped.csv").resolve())}],
+        }
+    )
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("outside its indexed task directory" in reason for reason in reasons)
 
 
 @pytest.mark.parametrize("artifact_name", sorted(collect.CANARY_ARTIFACT_FILENAMES))

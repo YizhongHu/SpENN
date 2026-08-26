@@ -518,40 +518,48 @@ def reconcile_canary_row(
     )
     _reconcile_canary_config(config, row=row, source=source, reasons=reasons)
 
-    task_dir = run_dir / "mcmc_energy"
     index = _required_json(
         run_dir / "diagnostics" / "index.json", "artifact index", reasons
     )
-    artifacts = _reconcile_canary_index(index, task_dir=task_dir, reasons=reasons)
-    csv_path = task_dir / "sampled_eval_table.csv"
-    record_metadata_path = task_dir / "sampled_eval_table.metadata.json"
-    trajectory_path = task_dir / "trajectory_statistics.jsonl"
-    sampler_diagnostics_path = task_dir / "sampler_trajectory_diagnostics.json"
-    record_metadata = _required_json(
-        record_metadata_path, "trajectory record metadata", reasons
-    )
-    _reconcile_canary_records(
-        csv_path,
-        record_metadata,
+    task_artifacts = _reconcile_canary_index(
+        index,
+        run_dir=run_dir,
+        task_names=row.get("task_names", []),
         row=row,
-        artifact=artifacts.get("sampled_eval_table"),
         reasons=reasons,
     )
-    _reconcile_canary_trajectory(
-        trajectory_path,
-        row=row,
-        source=source,
-        config_sha256=expected_config_sha,
-        plan_attempt_id=plan_attempt_id,
-        artifact=artifacts.get("local_energy_trajectory_statistics"),
-        reasons=reasons,
-    )
-    _reconcile_canary_sampler_diagnostics(
-        sampler_diagnostics_path,
-        row=row,
-        artifact=artifacts.get("sampler_trajectory_diagnostics"),
-        reasons=reasons,
-    )
+    if "mcmc_energy" in row.get("task_names", []):
+        task_dir = run_dir / "mcmc_energy"
+        artifacts = task_artifacts.get("mcmc_energy", {})
+        csv_path = task_dir / "sampled_eval_table.csv"
+        record_metadata_path = task_dir / "sampled_eval_table.metadata.json"
+        trajectory_path = task_dir / "trajectory_statistics.jsonl"
+        sampler_diagnostics_path = task_dir / "sampler_trajectory_diagnostics.json"
+        record_metadata = _required_json(
+            record_metadata_path, "trajectory record metadata", reasons
+        )
+        _reconcile_canary_records(
+            csv_path,
+            record_metadata,
+            row=row,
+            artifact=artifacts.get("sampled_eval_table"),
+            reasons=reasons,
+        )
+        _reconcile_canary_trajectory(
+            trajectory_path,
+            row=row,
+            source=source,
+            config_sha256=expected_config_sha,
+            plan_attempt_id=plan_attempt_id,
+            artifact=artifacts.get("local_energy_trajectory_statistics"),
+            reasons=reasons,
+        )
+        _reconcile_canary_sampler_diagnostics(
+            sampler_diagnostics_path,
+            row=row,
+            artifact=artifacts.get("sampler_trajectory_diagnostics"),
+            reasons=reasons,
+        )
     return reasons
 
 
@@ -567,32 +575,37 @@ def _reconcile_canary_config(
     evaluator = config.get("evaluator")
     sampler = config.get("evaluation_sampler")
     tasks = evaluator.get("tasks") if isinstance(evaluator, Mapping) else None
-    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes)) or len(tasks) != 1:
-        reasons.append("resolved evaluator must contain exactly one task")
+    expected_names = list(row.get("task_names", []))
+    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes)) or len(tasks) != len(expected_names):
+        reasons.append(
+            "resolved evaluator task list disagrees with the canary row: "
+            f"expected={expected_names}, actual={len(tasks) if isinstance(tasks, Sequence) else None}"
+        )
         return
-    task = tasks[0]
-    if not isinstance(task, Mapping) or task.get("name") != "mcmc_energy":
-        reasons.append("resolved evaluator selected a task other than mcmc_energy")
-        return
-    if not isinstance(sampler, Mapping) or (
-        sampler.get("n_walkers"), sampler.get("burn_in"), sampler.get("n_steps")
-    ) != (row["n_walkers"], row["burn_in"], row["stride"]):
-        reasons.append("resolved sampler scale disagrees with the canary row")
-    generator = task.get("generator")
-    if not isinstance(generator, Mapping) or (
-        generator.get("n_draws"),
-        generator.get("discard_draws"),
-        generator.get("chunk_size"),
-    ) != (row["n_draws"], row["discard_draws"], row["chunk_size"]):
-        reasons.append("resolved trajectory generator scale disagrees with the canary row")
-    writers = [
-        value
-        for value in task.get("summaries", [])
-        if isinstance(value, Mapping)
-        and value.get("_target_") == "tpen.evaluation.summaries.SampledRecordWriter"
-    ]
-    if len(writers) != 1 or writers[0].get("max_samples") != row["record_capacity"]:
-        reasons.append("resolved trajectory writer capacity disagrees with the canary row")
+    actual_names = [task.get("name") if isinstance(task, Mapping) else None for task in tasks]
+    if actual_names != expected_names:
+        reasons.append(
+            f"resolved evaluator task names disagree with the canary row: expected={expected_names}, actual={actual_names}"
+        )
+    for task in tasks:
+        if not isinstance(task, Mapping) or task.get("name") != "mcmc_energy":
+            continue
+        if not isinstance(sampler, Mapping) or (
+            sampler.get("n_walkers"), sampler.get("burn_in"), sampler.get("n_steps")
+        ) != (row["n_walkers"], row["burn_in"], row["stride"]):
+            reasons.append("resolved sampler scale disagrees with the canary row")
+        generator = task.get("generator")
+        if not isinstance(generator, Mapping) or (
+            generator.get("n_draws"), generator.get("discard_draws"), generator.get("chunk_size")
+        ) != (row["n_draws"], row["discard_draws"], row["chunk_size"]):
+            reasons.append("resolved trajectory generator scale disagrees with the canary row")
+        writers = [
+            value for value in task.get("summaries", [])
+            if isinstance(value, Mapping)
+            and value.get("_target_") == "tpen.evaluation.summaries.SampledRecordWriter"
+        ]
+        if len(writers) != 1 or writers[0].get("max_samples") != row["record_capacity"]:
+            reasons.append("resolved trajectory writer capacity disagrees with the canary row")
     replay = config.get("load", {}).get("replay_semantics", {})
     expected_replay = {
         "source_git_sha": source.training_source_sha,
@@ -608,54 +621,136 @@ def _reconcile_canary_config(
 
 
 def _reconcile_canary_index(
-    index: Any, *, task_dir: Path, reasons: list[str]
-) -> dict[str, Mapping[str, Any]]:
+    index: Any,
+    *,
+    run_dir: Path,
+    task_names: Sequence[str],
+    row: Mapping[str, Any],
+    reasons: list[str],
+) -> dict[str, dict[str, Mapping[str, Any]]]:
     tasks = index.get("tasks") if isinstance(index, Mapping) else None
-    if not isinstance(tasks, list) or len(tasks) != 1:
-        reasons.append("artifact index must contain exactly one evaluation task")
-        return {}
-    task = tasks[0]
-    if not isinstance(task, Mapping) or (
-        task.get("name"), task.get("namespace"), task.get("status")
-    ) != ("mcmc_energy", "eval/mcmc_energy", "success"):
-        reasons.append("artifact index does not contain one successful mcmc_energy task")
-        return {}
-    artifacts = task.get("artifacts")
-    if not isinstance(artifacts, list):
-        reasons.append("mcmc_energy artifact index has no artifact list")
-        return {}
-    by_name = {
-        str(artifact.get("name")): artifact
-        for artifact in artifacts
-        if isinstance(artifact, Mapping)
-    }
-    expected = set(CANARY_ARTIFACT_FILENAMES)
-    if len(artifacts) != len(expected) or set(by_name) != expected:
+    expected_names = list(task_names)
+    if not isinstance(tasks, list) or len(tasks) != len(expected_names):
         reasons.append(
-            f"mcmc_energy artifacts mismatch: expected={sorted(expected)}, "
-            f"actual={[artifact.get('name') if isinstance(artifact, Mapping) else None for artifact in artifacts]}"
+            f"artifact index task list disagrees with the canary row: expected={expected_names}, "
+            f"actual={len(tasks) if isinstance(tasks, list) else None}"
         )
-    indexed_output_dir = Path(str(task.get("output_dir") or ""))
-    if not indexed_output_dir.is_absolute() or indexed_output_dir.resolve() != task_dir.resolve():
-        reasons.append("artifact index output directory disagrees with the canary task directory")
-    for name, artifact in by_name.items():
-        expected_kind = CANARY_ARTIFACT_KINDS.get(name)
-        if expected_kind is not None and artifact.get("kind") != expected_kind:
-            reasons.append(f"artifact {name!r} kind disagrees with its known contract")
-        path = Path(str(artifact.get("path") or ""))
-        if not path.is_absolute():
-            reasons.append(f"artifact {name!r} path is not absolute")
-        else:
-            try:
-                path.resolve().relative_to(task_dir.resolve())
-            except ValueError:
-                reasons.append(f"artifact {name!r} is outside the indexed task directory")
-            expected_filename = CANARY_ARTIFACT_FILENAMES.get(name)
-            if expected_filename is not None and path.resolve() != (
-                task_dir / expected_filename
-            ).resolve():
-                reasons.append(f"artifact {name!r} path disagrees with its known filename")
-    return by_name
+        return {}
+    result: dict[str, dict[str, Mapping[str, Any]]] = {}
+    actual_names: list[str] = []
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            reasons.append("artifact index contains a non-mapping task")
+            continue
+        name = str(task.get("name") or "")
+        actual_names.append(name)
+        expected_namespace = f"eval/{name}"
+        if name not in expected_names:
+            reasons.append(f"artifact index contains an undeclared task {name!r}")
+        if task.get("namespace") != expected_namespace:
+            reasons.append(
+                f"artifact index task {name!r} namespace disagrees: "
+                f"expected={expected_namespace!r}, actual={task.get('namespace')!r}"
+            )
+        if task.get("status") != "success":
+            reasons.append(f"artifact index task {name!r} is not successful")
+        artifacts = task.get("artifacts")
+        if not isinstance(artifacts, list):
+            reasons.append(f"{name} artifact index has no artifact list")
+            continue
+        by_name = {str(a.get("name")): a for a in artifacts if isinstance(a, Mapping)}
+        if len(by_name) != len(artifacts) or not by_name:
+            reasons.append(f"{name} artifact index has duplicate, invalid, or empty artifacts")
+        if name == "mcmc_energy":
+            expected = set(CANARY_ARTIFACT_FILENAMES)
+            if len(artifacts) != len(expected) or set(by_name) != expected:
+                reasons.append(
+                    f"mcmc_energy artifacts mismatch: expected={sorted(expected)}, "
+                    f"actual={[artifact.get('name') if isinstance(artifact, Mapping) else None for artifact in artifacts]}"
+                )
+        task_dir = run_dir / name
+        indexed_output_dir = Path(str(task.get("output_dir") or ""))
+        if not indexed_output_dir.is_absolute() or indexed_output_dir.resolve() != task_dir.resolve():
+            reasons.append(f"{name} artifact index output directory disagrees with its task directory")
+        for artifact_name, artifact in by_name.items():
+            path = Path(str(artifact.get("path") or ""))
+            if not path.is_absolute():
+                reasons.append(f"artifact {artifact_name!r} path is not absolute")
+            else:
+                try:
+                    path.resolve().relative_to(task_dir.resolve())
+                except ValueError:
+                    reasons.append(f"artifact {artifact_name!r} is outside its indexed task directory")
+                if not path.is_file():
+                    reasons.append(f"artifact {artifact_name!r} path does not exist")
+            if name == "mcmc_energy":
+                expected_kind = CANARY_ARTIFACT_KINDS.get(artifact_name)
+                if expected_kind is not None and artifact.get("kind") != expected_kind:
+                    reasons.append(f"artifact {artifact_name!r} kind disagrees with its known contract")
+                expected_filename = CANARY_ARTIFACT_FILENAMES.get(artifact_name)
+                if expected_filename is not None and path.resolve() != (task_dir / expected_filename).resolve():
+                    reasons.append(f"artifact {artifact_name!r} path disagrees with its known filename")
+        _reconcile_canary_task_content(
+            name, by_name, row=row, reasons=reasons
+        )
+        result[name] = by_name
+    if actual_names != expected_names:
+        reasons.append(f"artifact index task names disagree with the canary row: expected={expected_names}, actual={actual_names}")
+    return result
+
+
+def _reconcile_canary_task_content(
+    task_name: str,
+    artifacts: Mapping[str, Mapping[str, Any]],
+    *,
+    row: Mapping[str, Any],
+    reasons: list[str],
+) -> None:
+    """Check the content shape of declared non-trajectory task artifacts.
+
+    The index/path checks establish provenance, not semantic completeness. The
+    factor-response producer has a fixed seven-arm contract, while the
+    re-equilibrated factor task publishes one complete sampled table per row.
+    Keeping these checks named here makes a future task addition an explicit
+    review point instead of silently inheriting a weaker generic check.
+    """
+
+    if task_name == "factor_response":
+        artifact = artifacts.get("factor_response_common_configuration")
+        if artifact is None:
+            reasons.append("factor_response is missing its common-configuration artifact")
+            return
+        # Common-configuration compares seven factor arms on one sampler
+        # snapshot.  Its producer intentionally emits one batch per walker;
+        # the row's n_draws belongs to co-selected trajectory tasks, not this
+        # snapshot task.
+        capacity = int(row["n_walkers"])
+        metadata = artifact.get("metadata")
+        expected = {
+            "comparison_kind": "common_configuration",
+            "rows": capacity * 7,
+            "arm_count": 7,
+            "configuration_count": capacity,
+            "model_state_restored": True,
+        }
+        if not isinstance(metadata, Mapping) or any(
+            metadata.get(key) != value for key, value in expected.items()
+        ):
+            reasons.append(
+                "factor_response artifact metadata disagrees with the seven-arm "
+                f"common-configuration contract: expected={expected}"
+            )
+    elif task_name == "factor_response_re_equilibrated":
+        artifact = artifacts.get("sampled_eval_table")
+        if artifact is None:
+            reasons.append("re-equilibrated factor task is missing its sampled table artifact")
+            return
+        capacity = int(row["record_capacity"])
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, Mapping) or metadata.get("rows") != capacity:
+            reasons.append(
+                "re-equilibrated factor sampled table metadata disagrees with the row capacity"
+            )
 
 
 def _reconcile_canary_records(
