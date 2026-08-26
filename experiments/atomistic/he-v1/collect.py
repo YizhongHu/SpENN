@@ -49,6 +49,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterable, Mapping, Sequence
@@ -1293,6 +1294,53 @@ def summarize(rows: Sequence[Mapping[str, Any]], *, keys: Sequence[str]) -> dict
     return summaries
 
 
+def _canary_completion(
+    manifest: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> tuple[bool | None, list[str]]:
+    """Check coverage against the plan's declared shape and row identities."""
+
+    if manifest.get("canary_schema") != canary.CANARY_SCHEMA:
+        return None, []
+
+    declared_rows = list(manifest.get("rows", []))
+    declared_ids = [str(row.get("row_id")) for row in declared_rows]
+    actual_ids = [str(row.get("identity", {}).get("row_id")) for row in rows]
+    reasons: list[str] = []
+    declared_count = int(manifest.get("n_rows", len(declared_rows)))
+    if declared_count != len(declared_rows):
+        reasons.append(
+            f"manifest declares {declared_count} rows but contains {len(declared_rows)}"
+        )
+    if len(rows) != declared_count:
+        reasons.append(f"collected {len(rows)} rows but plan declares {declared_count}")
+
+    expected_counts = Counter(declared_ids)
+    actual_counts = Counter(actual_ids)
+    missing = sorted(
+        row_id
+        for row_id, count in (expected_counts - actual_counts).items()
+        for _ in range(count)
+    )
+    unexpected = sorted(
+        row_id
+        for row_id, count in (actual_counts - expected_counts).items()
+        for _ in range(count)
+    )
+    if missing:
+        reasons.append(f"missing rows={missing}")
+    if unexpected:
+        reasons.append(f"unexpected rows={unexpected}")
+
+    failing = sorted(
+        str(row.get("identity", {}).get("row_id"))
+        for row in rows
+        if row.get("status") != "pass"
+    )
+    if failing:
+        reasons.append(f"failing rows={failing}")
+    return not reasons, reasons
+
+
 def collect(
     *,
     results_root: Path,
@@ -1350,6 +1398,7 @@ def collect(
             *(f"{namespace}{NAMESPACE_SEPARATOR}{metric}" for metric, namespace in bindings.items()),
         ],
     )
+    canary_complete, canary_completion_reasons = _canary_completion(manifest, rows)
     collected = {
         "schema_version": plan_stage.SCHEMA_VERSION,
         "study": str(manifest["study"]),
@@ -1368,11 +1417,8 @@ def collect(
         "n_rows": len(rows),
         "n_pass": sum(1 for row in rows if row["status"] == "pass"),
         "n_fail": sum(1 for row in rows if row["status"] == "fail"),
-        "canary_complete": (
-            len(rows) == 2 and all(row["status"] == "pass" for row in rows)
-            if manifest.get("canary_schema") == canary.CANARY_SCHEMA
-            else None
-        ),
+        "canary_complete": canary_complete,
+        "canary_completion_reasons": canary_completion_reasons,
         "checkpoint_source_map_sha256": manifest.get("source_map_sha256"),
         "summaries": summarize(rows, keys=metric_keys),
         "rows": rows,
@@ -1393,18 +1439,25 @@ def write_collected(collected: Mapping[str, Any], *, results_root: Path) -> Path
 
 
 def require_complete_canary_collection(collected: Mapping[str, Any]) -> None:
-    """Fail closed unless both planned canary rows reconciled completely."""
+    """Fail closed unless every row declared by the plan reconciled completely."""
 
     if collected.get("canary_complete") is None:
         return
     if collected.get("canary_complete") is not True:
-        failed = [
-            row["identity"]["row_id"]
-            for row in collected.get("rows", [])
-            if row.get("status") != "pass"
-        ]
+        reasons = list(collected.get("canary_completion_reasons", []))
+        if not reasons:
+            reasons = [
+                "failing rows="
+                + str(
+                    [
+                        row["identity"]["row_id"]
+                        for row in collected.get("rows", [])
+                        if row.get("status") != "pass"
+                    ]
+                )
+            ]
         raise CollectError(
-            f"canary collection is incomplete; both 25k and 50k rows must pass: {failed}"
+            "canary collection is incomplete; " + "; ".join(reasons)
         )
 
 
