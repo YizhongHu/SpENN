@@ -635,8 +635,16 @@ def _reconcile_canary_index(
             continue
         name = str(task.get("name") or "")
         actual_names.append(name)
-        if name not in expected_names or task.get("status") != "success":
-            reasons.append(f"artifact index contains an undeclared or unsuccessful task {name!r}")
+        expected_namespace = f"eval/{name}"
+        if name not in expected_names:
+            reasons.append(f"artifact index contains an undeclared task {name!r}")
+        if task.get("namespace") != expected_namespace:
+            reasons.append(
+                f"artifact index task {name!r} namespace disagrees: "
+                f"expected={expected_namespace!r}, actual={task.get('namespace')!r}"
+            )
+        if task.get("status") != "success":
+            reasons.append(f"artifact index task {name!r} is not successful")
         artifacts = task.get("artifacts")
         if not isinstance(artifacts, list):
             reasons.append(f"{name} artifact index has no artifact list")
@@ -673,10 +681,62 @@ def _reconcile_canary_index(
                 expected_filename = CANARY_ARTIFACT_FILENAMES.get(artifact_name)
                 if expected_filename is not None and path.resolve() != (task_dir / expected_filename).resolve():
                     reasons.append(f"artifact {artifact_name!r} path disagrees with its known filename")
+        _reconcile_canary_task_content(
+            name, by_name, row=row, reasons=reasons
+        )
         result[name] = by_name
     if actual_names != expected_names:
         reasons.append(f"artifact index task names disagree with the canary row: expected={expected_names}, actual={actual_names}")
     return result
+
+
+def _reconcile_canary_task_content(
+    task_name: str,
+    artifacts: Mapping[str, Mapping[str, Any]],
+    *,
+    row: Mapping[str, Any],
+    reasons: list[str],
+) -> None:
+    """Check the content shape of declared non-trajectory task artifacts.
+
+    The index/path checks establish provenance, not semantic completeness. The
+    factor-response producer has a fixed seven-arm contract, while the
+    re-equilibrated factor task publishes one complete sampled table per row.
+    Keeping these checks named here makes a future task addition an explicit
+    review point instead of silently inheriting a weaker generic check.
+    """
+
+    capacity = int(row["record_capacity"])
+    if task_name == "factor_response":
+        artifact = artifacts.get("factor_response_common_configuration")
+        if artifact is None:
+            reasons.append("factor_response is missing its common-configuration artifact")
+            return
+        metadata = artifact.get("metadata")
+        expected = {
+            "comparison_kind": "common_configuration",
+            "rows": capacity * 7,
+            "arm_count": 7,
+            "configuration_count": capacity,
+            "model_state_restored": True,
+        }
+        if not isinstance(metadata, Mapping) or any(
+            metadata.get(key) != value for key, value in expected.items()
+        ):
+            reasons.append(
+                "factor_response artifact metadata disagrees with the seven-arm "
+                f"common-configuration contract: expected={expected}"
+            )
+    elif task_name == "factor_response_re_equilibrated":
+        artifact = artifacts.get("sampled_eval_table")
+        if artifact is None:
+            reasons.append("re-equilibrated factor task is missing its sampled table artifact")
+            return
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, Mapping) or metadata.get("rows") != capacity:
+            reasons.append(
+                "re-equilibrated factor sampled table metadata disagrees with the row capacity"
+            )
 
 
 def _reconcile_canary_records(

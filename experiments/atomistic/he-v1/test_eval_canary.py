@@ -666,7 +666,13 @@ def test_collection_reconciles_artifacts_for_each_declared_task(tmp_path: Path) 
                     "name": "factor_response_common_configuration",
                     "kind": "csv",
                     "path": str(factor_path.resolve()),
-                    "metadata": {"arm_count": 7},
+                    "metadata": {
+                        "comparison_kind": "common_configuration",
+                        "rows": row["record_capacity"] * 7,
+                        "arm_count": 7,
+                        "configuration_count": row["record_capacity"],
+                        "model_state_restored": True,
+                    },
                 }
             ],
         }
@@ -674,6 +680,51 @@ def test_collection_reconciles_artifacts_for_each_declared_task(tmp_path: Path) 
     _write_artifact_index(run_dir, index)
 
     assert _reconcile_written_outputs(manifest, written) == []
+
+
+def test_collection_rejects_declared_task_namespace_mismatch(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    index = _artifact_index(run_dir)
+    index["tasks"][0]["namespace"] = "eval/spatial_exchange_symmetry"
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("namespace disagrees" in reason for reason in reasons)
+
+
+def test_collection_rejects_factor_content_shape_mismatch(tmp_path: Path) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response")
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    factor_dir = run_dir / "factor_response"
+    factor_dir.mkdir()
+    factor_path = factor_dir / "factor_response.csv"
+    factor_path.write_text("arm,energy\nbaseline,0\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"].append({
+        "name": "factor_response", "namespace": "eval/factor_response",
+        "output_dir": str(factor_dir.resolve()), "status": "success",
+        "artifacts": [{
+            "name": "factor_response_common_configuration", "kind": "csv",
+            "path": str(factor_path.resolve()),
+            "metadata": {"comparison_kind": "common_configuration", "rows": 1,
+                         "arm_count": 1, "configuration_count": row["record_capacity"],
+                         "model_state_restored": True},
+        }],
+    })
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("factor_response artifact metadata disagrees" in reason for reason in reasons)
 
 
 def test_collection_rejects_a_declared_task_missing_from_artifact_index(

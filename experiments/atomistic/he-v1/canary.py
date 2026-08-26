@@ -35,6 +35,7 @@ GRID_SCHEMA = "he-v1-eval-canary-grid/v1"
 SOURCE_SCHEMA = "he-v1-eval-canary-sources/v1"
 CANARY_SCHEMA = "he-v1-eval-canary-plan/v1"
 STUDY = "he-v1-eval-canary-v1"
+FROZEN_STUDY = "he-v1-eval-42-v1"
 # Compatibility default for the original two-row canary. Frozen v2 rows carry
 # their own task_names and never consult this value.
 DEFAULT_TASK_NAMES = ("mcmc_energy",)
@@ -232,7 +233,7 @@ def load_grid(path: str | Path) -> dict[str, Any]:
     payload = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise CanaryError("canary grid must be a mapping")
-    if payload.get("study") != STUDY:
+    if payload.get("study") not in {STUDY, FROZEN_STUDY}:
         raise CanaryError("canary grid schema/study identity changed")
     if payload["eval_config"] != "experiments/atomistic/he-v1/configs/eval.yaml":
         raise CanaryError("canary must reuse the generic He-v1 evaluation config")
@@ -360,7 +361,7 @@ def _load_grid_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise CanaryError(f"frozen canary grid must contain 21 rows per checkpoint, got {counts}")
     return {
         "schema": "he-v1-eval-canary-grid/v2",
-        "study": STUDY,
+        "study": FROZEN_STUDY,
         "eval_config": str(payload["eval_config"]),
         "checkpoints": [dict(item) for item in checkpoints],
         "rows": normalized,
@@ -526,7 +527,7 @@ def build_manifest(
     return {
         "schema_version": plan_stage.SCHEMA_VERSION,
         "canary_schema": CANARY_SCHEMA,
-        "study": STUDY,
+        "study": str(grid.get("study", STUDY)),
         "attempt_id": str(attempt_id),
         "created_at": created_at
         or datetime.now(ZoneInfo(plan_stage.STUDY_TIMEZONE)).isoformat(),
@@ -559,7 +560,9 @@ def reconcile_manifest_sources(
 ) -> dict[str, CheckpointSource]:
     """Revalidate the exact external map and every planned source binding."""
 
-    if manifest.get("canary_schema") != CANARY_SCHEMA or manifest.get("study") != STUDY:
+    if manifest.get("canary_schema") != CANARY_SCHEMA or manifest.get("study") not in {
+        STUDY, FROZEN_STUDY
+    }:
         raise CanaryError("manifest is not the minimal He-v1 evaluation canary")
     _require_git_sha(manifest.get("evaluation_git_sha"), "evaluation_git_sha")
     if file_sha256(source_map_path) != manifest.get("source_map_sha256"):
