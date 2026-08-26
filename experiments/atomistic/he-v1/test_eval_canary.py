@@ -6,6 +6,8 @@ import csv
 import importlib.util
 import json
 import sys
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -415,7 +417,6 @@ def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
     cfg = collect.eval_stage.driver.build_config(
         STUDY_DIR.parents[2] / row["config"], row["overrides"]
     )
-
     configured = eval_stage.configure_canary_evaluation(cfg, row)
     task = next(
         task for task in configured.evaluator.tasks
@@ -427,11 +428,35 @@ def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
     assert task.generator.generator.n_draws == row["n_draws"]
     assert task.generator.generator.discard_draws == row["discard_draws"]
     assert task.generator.generator.max_samples == row["record_capacity"]
-    writer = next(
+    resolved_writer = next(
         summary for summary in task.summaries
         if summary._target_ == "tpen.evaluation.summaries.SampledRecordWriter"
     )
-    assert writer.max_samples == row["record_capacity"]
+    assert resolved_writer.max_samples == row["record_capacity"]
+    assert resolved_writer.include_term_energies is True
+
+
+
+def test_planner_receipt_reports_the_actual_v2_plan_row_count(tmp_path: Path) -> None:
+    """The planner's user-facing receipt must describe the plan it wrote."""
+
+    _, source_map_path, _ = _case(tmp_path)
+    results_root = tmp_path / "results"
+    output = StringIO()
+    with redirect_stdout(output):
+        assert canary.main(
+            [
+                "--grid-config", str(GRID_42_PATH),
+                "--checkpoint-source-map", str(source_map_path),
+                "--results-root", str(results_root),
+                "--attempt-id", "20260825T120000",
+                "--evaluation-git-sha", EVALUATION_SHA,
+            ]
+        ) == 0
+
+    manifest = plan.read_manifest(results_root, "20260825T120000")
+    assert manifest["n_rows"] == 42
+    assert f"wrote {manifest['n_rows']} rows" in output.getvalue()
 
 
 def test_runtime_transform_rejects_unknown_or_duplicate_declared_tasks(

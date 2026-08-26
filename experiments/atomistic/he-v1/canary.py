@@ -724,7 +724,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Validate both sources and write the exactly-two-row canary plan."""
+    """Validate sources and write the evaluation plan declared by the grid."""
 
     args = parse_args(argv)
     grid = load_grid(args.grid_config)
@@ -741,7 +741,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         evaluation_git_sha=args.evaluation_git_sha,
     )
     directory = plan_stage.write_plan(manifest, results_root=args.results_root)
-    print(f"[he-v1-canary] wrote exactly two rows to {directory}")
+    print(f"[he-v1-canary] wrote {manifest['n_rows']} rows to {directory}")
     return 0
 
 

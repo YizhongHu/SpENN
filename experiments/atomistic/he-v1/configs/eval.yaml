@@ -360,6 +360,7 @@ evaluation_tasks:
     summaries:
       - _target_: tpen.evaluation.summaries.LocalEnergySummary
       - _target_: tpen.evaluation.summaries.SampledRecordWriter
+        include_term_energies: true
   he_radial_profiles:
     name: he_radial_profiles
     namespace: ${evaluation.namespace}/he_radial_profiles
