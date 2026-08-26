@@ -62,10 +62,13 @@ def test_parameter_byte_guard_distinguishes_layout_and_storage() -> None:
     same_storage_different_stride = snapshot.transpose(0, 1)
     assert not _parameter_matches_snapshot(same_storage_different_stride, snapshot)
 
+    # Value-equal but byte-different: -0.0 == 0.0 compares true under any value
+    # comparison, so this case only fails if the guard reads addressed bytes.
     same_stride_different_storage = torch.tensor(
-        [1.0, 2.0, 3.0, 4.0, 9.0, 10.0], dtype=torch.float64
+        [-0.0, 2.0, 3.0, 4.0], dtype=torch.float64
     ).as_strided((2, 2), (2, 1))
-    reference = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
+    reference = torch.tensor([[0.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
+    assert torch.equal(same_stride_different_storage, reference)
     assert not _parameter_matches_snapshot(same_stride_different_storage, reference)
 
 
