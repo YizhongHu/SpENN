@@ -1,4 +1,4 @@
-"""Focused contract tests for the two-row real-checkpoint He-v1 canary."""
+"""Focused contract tests for He-v1 external-checkpoint evaluation plans."""
 
 from __future__ import annotations
 
@@ -89,7 +89,9 @@ def _case(tmp_path: Path) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     source_map_path.write_text(yaml.safe_dump(source_map, sort_keys=True), encoding="utf-8")
     grid = canary.load_grid(GRID_PATH)
     sources = canary.load_source_map(source_map_path)
-    rows = canary.expand_rows(grid, canary.reconcile_grid_sources(grid, sources))
+    rows = canary.expand_rows(
+        grid, canary.reconcile_grid_sources(grid, sources)
+    )
     manifest = canary.build_manifest(
         grid=grid,
         rows=rows,
@@ -736,6 +738,61 @@ def _reconcile_written_outputs(
     )
 
 
+def _completion_manifest_42(tmp_path: Path) -> dict[str, Any]:
+    """Build the shipped 42-row plan with the fixture's immutable sources."""
+
+    _, source_map_path, _ = _case(tmp_path)
+    grid = canary.load_grid(GRID_42_PATH)
+    sources = canary.load_source_map(source_map_path)
+    rows = canary.expand_rows(grid, canary.reconcile_grid_sources(grid, sources))
+    return canary.build_manifest(
+        grid=grid,
+        rows=rows,
+        attempt_id="20260825T120000",
+        results_root=tmp_path / "results",
+        grid_path=GRID_42_PATH,
+        source_map_path=source_map_path,
+        evaluation_git_sha=EVALUATION_SHA,
+        created_at="2026-08-25T12:00:00-04:00",
+    )
+
+
+def test_collection_completeness_uses_the_declared_42_row_shape(tmp_path: Path) -> None:
+    manifest = _completion_manifest_42(tmp_path)
+    rows = [
+        {"identity": {"row_id": row["row_id"]}, "status": "pass"}
+        for row in manifest["rows"]
+    ]
+
+    complete, reasons = collect._canary_completion(manifest, rows)
+
+    assert manifest["n_rows"] == 42
+    assert complete is True
+    assert reasons == []
+
+
+def test_collection_completeness_rejects_a_plan_short_by_one_row(tmp_path: Path) -> None:
+    manifest = _completion_manifest_42(tmp_path)
+    rows = [
+        {"identity": {"row_id": row["row_id"]}, "status": "pass"}
+        for row in manifest["rows"][:-1]
+    ]
+
+    complete, reasons = collect._canary_completion(manifest, rows)
+
+    assert complete is False
+    assert any("collected 41 rows but plan declares 42" in reason for reason in reasons)
+    assert any(manifest["rows"][-1]["row_id"] in reason for reason in reasons)
+    with pytest.raises(collect.CollectError, match=manifest["rows"][-1]["row_id"]):
+        collect.require_complete_canary_collection(
+            {
+                "canary_complete": complete,
+                "canary_completion_reasons": reasons,
+                "rows": rows,
+            }
+        )
+
+
 def _artifact_index(run_dir: Path) -> dict[str, Any]:
     return json.loads((run_dir / "diagnostics" / "index.json").read_text(encoding="utf-8"))
 
@@ -1276,7 +1333,7 @@ def test_collection_refuses_partial_source_map_and_partial_row_set(tmp_path: Pat
             checkpoint_source_map=source_map_path,
         )
 
-    with pytest.raises(collect.CollectError, match="both 25k and 50k"):
+    with pytest.raises(collect.CollectError, match="failing rows"):
         collect.require_complete_canary_collection(
             {
                 "canary_complete": False,
