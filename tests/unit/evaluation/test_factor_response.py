@@ -13,6 +13,7 @@ from tpen.data.batch import ElectronBatch
 from tpen.evaluation.bundle import EvaluationBundle, FactorResponseArmValues, FactorResponseValues, GeneratedConfigurations
 from tpen.evaluation.calculators.factor_response import FactorArmCalculator
 from tpen.evaluation.factor_response import FactorParameterScale, helium_factor_parameter_scale
+from tpen.evaluation.factor_response import _parameter_matches_snapshot
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.summaries.factor_response import FactorResponseSummary
 from tpen.nn.cusp import CurvatureElectronNucleusCuspLaw, ElectronElectronCusp, ElectronNucleusCusp
@@ -48,6 +49,12 @@ def _bundle(*, metadata: dict | None = None) -> EvaluationBundle:
     batch = ElectronBatch(positions=torch.zeros((2, 2, 3), dtype=torch.float64),
                           spins=torch.tensor([[1.0, -1.0], [1.0, -1.0]], dtype=torch.float64))
     return EvaluationBundle(generated=GeneratedConfigurations(batch=batch, metadata=metadata or {}))
+
+
+def test_parameter_byte_guard_distinguishes_signed_zero() -> None:
+    negative_zero = torch.tensor([-0.0], dtype=torch.float64)
+    positive_zero = torch.tensor([0.0], dtype=torch.float64)
+    assert not _parameter_matches_snapshot(negative_zero, positive_zero)
 
 
 def test_factor_scale_changes_physical_values_and_restores_every_parameter() -> None:

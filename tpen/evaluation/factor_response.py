@@ -64,6 +64,7 @@ def helium_factor_parameter_scale(
     resolved = arm if isinstance(arm, FactorParameterScale) else FactorParameterScale.from_mapping(arm)
     ee_factor, en_law = _helium_factor_owners(model)
     parameter_snapshot = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
+    parameter_identity = tuple((name, id(parameter)) for name, parameter in model.named_parameters())
     target_snapshot = {
         "raw_opposite_range": ee_factor.raw_opposite_range.detach().clone(),
         "raw_curvature_coefficient": en_law.raw_curvature_coefficient.detach().clone(),
@@ -93,13 +94,28 @@ def helium_factor_parameter_scale(
             ee_factor.raw_opposite_range.copy_(target_snapshot["raw_opposite_range"])
             en_law.raw_curvature_coefficient.copy_(target_snapshot["raw_curvature_coefficient"])
             en_law.raw_curvature_range.copy_(target_snapshot["raw_curvature_range"])
-        current = dict(model.named_parameters())
-        if tuple(current) != tuple(parameter_snapshot):
+        current_items = tuple(model.named_parameters())
+        current = dict(current_items)
+        if tuple((name, id(parameter)) for name, parameter in current_items) != parameter_identity:
             raise RuntimeError("factor response changed the model parameter identity set")
         changed = [name for name, parameter in current.items()
-                   if not torch.equal(parameter.detach(), parameter_snapshot[name])]
+                   if not _parameter_matches_snapshot(parameter, parameter_snapshot[name])]
         if changed:
             raise RuntimeError(f"factor response failed to restore model parameters: {changed}")
+
+
+def _parameter_matches_snapshot(parameter: torch.Tensor, snapshot: torch.Tensor) -> bool:
+    """Compare parameter metadata and storage bytes, including signed zero."""
+
+    if (
+        parameter.dtype != snapshot.dtype
+        or parameter.shape != snapshot.shape
+        or parameter.device != snapshot.device
+    ):
+        return False
+    current_bytes = parameter.detach().contiguous().view(torch.uint8)
+    snapshot_bytes = snapshot.detach().contiguous().view(torch.uint8)
+    return current_bytes.shape == snapshot_bytes.shape and torch.equal(current_bytes, snapshot_bytes)
 
 
 def _helium_factor_owners(model: torch.nn.Module) -> tuple[ElectronElectronCusp, CurvatureElectronNucleusCuspLaw]:
