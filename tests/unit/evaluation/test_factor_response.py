@@ -81,6 +81,23 @@ def test_parameter_byte_guard_uses_the_tensor_storage_window() -> None:
     assert _parameter_matches_snapshot(view, snapshot)
 
 
+def test_factor_scope_rejects_lazy_conjugate_parameter_layout() -> None:
+    model = _HeliumFactorModel()
+    model.unrelated = nn.Parameter(torch.conj(torch.tensor([1.0 + 2.0j], dtype=torch.complex128)))
+    assert model.unrelated.is_conj()
+    with pytest.raises(ValueError, match="lazy conjugate layout.*unrelated"):
+        with helium_factor_parameter_scale(model, {"label": "unsupported"}):
+            pass
+
+
+def test_factor_scope_rejects_overlapping_parameter_layout() -> None:
+    model = _HeliumFactorModel()
+    model.unrelated = nn.Parameter(torch.ones(1, dtype=torch.float64).as_strided((2,), (0,)))
+    with pytest.raises(ValueError, match="overlapping layout.*unrelated"):
+        with helium_factor_parameter_scale(model, {"label": "unsupported"}):
+            pass
+
+
 def test_factor_scale_changes_physical_values_and_restores_every_parameter() -> None:
     model = _HeliumFactorModel()
     before_state = {name: value.detach().clone() for name, value in model.state_dict().items()}
