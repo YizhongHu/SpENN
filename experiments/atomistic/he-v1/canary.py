@@ -35,7 +35,9 @@ GRID_SCHEMA = "he-v1-eval-canary-grid/v1"
 SOURCE_SCHEMA = "he-v1-eval-canary-sources/v1"
 CANARY_SCHEMA = "he-v1-eval-canary-plan/v1"
 STUDY = "he-v1-eval-canary-v1"
-TASK_NAMES = ("mcmc_energy",)
+# Compatibility default for the original two-row canary. Frozen v2 rows carry
+# their own task_names and never consult this value.
+DEFAULT_TASK_NAMES = ("mcmc_energy",)
 CHECKPOINT_COORDINATES = (
     ("actual-step-025000", 25_000),
     ("actual-step-050000", 50_000),
@@ -44,7 +46,11 @@ CHECKPOINT_COORDINATES = (
 _GRID_KEYS = frozenset(
     {"schema", "study", "eval_config", "task_names", "checkpoints", "scale", "resources"}
 )
+_GRID_V2_KEYS = frozenset({"schema", "study", "eval_config", "checkpoints", "rows"})
 _GRID_CHECKPOINT_KEYS = frozenset({"source_id", "checkpoint_step", "evaluation_seed"})
+_GRID_ROW_KEYS = frozenset(
+    {"row_id", "checkpoint_step", "seed", "task_names", "scale", "resources", "factor_arm"}
+)
 _SCALE_KEYS = frozenset(
     {"n_walkers", "n_draws", "burn_in", "discard_draws", "stride", "chunk_size"}
 )
@@ -221,18 +227,24 @@ class CheckpointSource:
 
 
 def load_grid(path: str | Path) -> dict[str, Any]:
-    """Load the tracked, exactly-two-row reduced-scale canary declaration."""
+    """Load a tracked canary declaration, including the frozen multi-row plan."""
 
     payload = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise CanaryError("canary grid must be a mapping")
-    _require_exact_keys(payload, _GRID_KEYS, "canary grid")
-    if payload["schema"] != GRID_SCHEMA or payload["study"] != STUDY:
+    if payload.get("study") != STUDY:
         raise CanaryError("canary grid schema/study identity changed")
     if payload["eval_config"] != "experiments/atomistic/he-v1/configs/eval.yaml":
         raise CanaryError("canary must reuse the generic He-v1 evaluation config")
-    if tuple(payload["task_names"]) != TASK_NAMES:
-        raise CanaryError("canary task graph must contain only mcmc_energy")
+    if payload.get("schema") == GRID_SCHEMA:
+        _require_exact_keys(payload, _GRID_KEYS, "canary grid")
+    elif payload.get("schema") == "he-v1-eval-canary-grid/v2":
+        _require_exact_keys(payload, _GRID_V2_KEYS, "canary grid")
+        return _load_grid_v2(payload)
+    else:
+        raise CanaryError("canary grid schema/study identity changed")
+    if tuple(payload["task_names"]) != DEFAULT_TASK_NAMES:
+        raise CanaryError("legacy canary task graph must contain only mcmc_energy")
 
     checkpoints = _mapping_sequence(payload["checkpoints"], "checkpoints")
     for checkpoint in checkpoints:
@@ -288,11 +300,100 @@ def load_grid(path: str | Path) -> dict[str, Any]:
         "schema": GRID_SCHEMA,
         "study": STUDY,
         "eval_config": str(payload["eval_config"]),
-        "task_names": list(TASK_NAMES),
+        "task_names": list(DEFAULT_TASK_NAMES),
         "checkpoints": [dict(item) for item in checkpoints],
         "scale": resolved_scale,
         "resources": resolved_resources,
     }
+
+
+def _load_grid_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and normalize the explicit per-row frozen evaluation grid."""
+
+    checkpoints = _mapping_sequence(payload["checkpoints"], "checkpoints")
+    coordinates = tuple(
+        (str(item["source_id"]), int(item["checkpoint_step"])) for item in checkpoints
+    )
+    if coordinates != CHECKPOINT_COORDINATES:
+        raise CanaryError(
+            f"canary checkpoints must be exactly {CHECKPOINT_COORDINATES!r}, got {coordinates!r}"
+        )
+    checkpoint_steps = {step for _, step in CHECKPOINT_COORDINATES}
+    rows = _mapping_sequence(payload["rows"], "rows")
+    if len(rows) != 42:
+        raise CanaryError(f"frozen He-v1 evaluation grid must contain 42 rows, got {len(rows)}")
+    normalized: list[dict[str, Any]] = []
+    for raw in rows:
+        _require_exact_keys(raw, _GRID_ROW_KEYS, "canary row")
+        row = dict(raw)
+        step = _require_positive_int(row["checkpoint_step"], "row.checkpoint_step")
+        if step not in checkpoint_steps:
+            raise CanaryError(f"row checkpoint_step is not a retained checkpoint: {step}")
+        row["row_id"] = _require_text(row["row_id"], "row.row_id")
+        row["seed"] = _require_positive_int(row["seed"], "row.seed")
+        tasks = row["task_names"]
+        if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes)):
+            raise CanaryError(f"row {row['row_id']!r} task_names must be a sequence")
+        row["task_names"] = [
+            _require_text(name, "row.task_names entry") for name in tasks
+        ]
+        if not row["task_names"] or len(set(row["task_names"])) != len(row["task_names"]):
+            raise CanaryError(f"row {row['row_id']!r} task_names must be unique and non-empty")
+        scale = row["scale"]
+        if not isinstance(scale, Mapping):
+            raise CanaryError(f"row {row['row_id']!r} scale must be a mapping")
+        _require_exact_keys(scale, _SCALE_KEYS, f"row {row['row_id']!r} scale")
+        row["scale"] = {
+            key: (_require_nonnegative_int(scale[key], f"row {row['row_id']!r} scale.{key}")
+                  if key == "discard_draws" else
+                  _require_positive_int(scale[key], f"row {row['row_id']!r} scale.{key}"))
+            for key in _SCALE_KEYS
+        }
+        row["resources"] = _resolve_resources(row["resources"], f"row {row['row_id']!r}")
+        if row["factor_arm"] is not None and not isinstance(row["factor_arm"], Mapping):
+            raise CanaryError(f"row {row['row_id']!r} factor_arm must be a mapping or null")
+        normalized.append(row)
+    if len({row["row_id"] for row in normalized}) != len(normalized):
+        raise CanaryError("frozen canary row ids must be unique")
+    counts = {step: sum(row["checkpoint_step"] == step for row in normalized) for step in checkpoint_steps}
+    if counts != {25_000: 21, 50_000: 21}:
+        raise CanaryError(f"frozen canary grid must contain 21 rows per checkpoint, got {counts}")
+    return {
+        "schema": "he-v1-eval-canary-grid/v2",
+        "study": STUDY,
+        "eval_config": str(payload["eval_config"]),
+        "checkpoints": [dict(item) for item in checkpoints],
+        "rows": normalized,
+    }
+
+
+def _resolve_resources(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise CanaryError(f"{field} resources must be a mapping")
+    _require_exact_keys(value, _RESOURCE_KEYS, f"{field} resources")
+    resolved_resources = {
+        "partition": _require_text(value["partition"], f"{field}.resources.partition"),
+        "stratum": _require_text(value["stratum"], f"{field}.resources.stratum"),
+        "constraint": value["constraint"],
+        **{key: _require_positive_int(value[key], f"{field}.resources.{key}")
+           for key in ("timeout_min", "cpus", "mem_gb", "gpus")},
+    }
+    validator = (strata.validate_canary_gpu_placement
+                 if (resolved_resources["partition"], resolved_resources["stratum"])
+                 == ("gpu_test", "a100_mig") else strata.validate_gpu_placement)
+    try:
+        resolved = validator(partition=resolved_resources["partition"],
+                             stratum_name=resolved_resources["stratum"],
+                             timeout_min=resolved_resources["timeout_min"])
+    except strata.StratumError as exc:
+        raise CanaryError(str(exc)) from exc
+    if validator is strata.validate_canary_gpu_placement:
+        if resolved_resources["constraint"] not in (None, "") or resolved.constraint:
+            raise CanaryError("gpu_test A100-MIG canary must not invent a node constraint")
+        resolved_resources["constraint"] = None
+    elif resolved_resources["constraint"] != resolved.constraint:
+        raise CanaryError(f"{field} resources constraint disagrees with its GPU stratum")
+    return resolved_resources
 
 
 def load_source_map(path: str | Path) -> dict[str, CheckpointSource]:
@@ -337,7 +438,36 @@ def reconcile_grid_sources(
 def expand_rows(
     grid: Mapping[str, Any], bindings: Mapping[str, Mapping[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
-    """Expand exactly one retained-energy trajectory row per checkpoint."""
+    """Expand the declared task and scale contract into immutable plan rows."""
+
+    if "rows" in grid:
+        bindings_by_step = {
+            int(item["checkpoint_step"]): dict(bindings[str(item["source_id"])])
+            for item in grid["checkpoints"]
+        }
+        rows: list[dict[str, Any]] = []
+        for index, spec in enumerate(grid["rows"]):
+            scale = dict(spec["scale"])
+            n_walkers = int(scale["n_walkers"])
+            n_draws = int(scale["n_draws"])
+            row = {
+                "row_id": str(spec["row_id"]), "index": index, "kind": "eval",
+                "stage": layout.STAGE_EVAL, "seed": int(spec["seed"]),
+                "checkpoint_step": int(spec["checkpoint_step"]), "chain": 0,
+                "chain_seed": int(spec["seed"]), "config": str(grid["eval_config"]),
+                "overrides": [f"runtime.seed={spec['seed']}", f"evaluation.seed={spec['seed']}"],
+                "retained_checkpoint_steps": [], "depends_on": [],
+                "resources": dict(spec["resources"]),
+                "checkpoint_source": bindings_by_step[int(spec["checkpoint_step"])],
+                "task_names": list(spec["task_names"]), "factor_arm": spec["factor_arm"],
+                "n_walkers": n_walkers, "n_draws": n_draws,
+                "burn_in": int(scale["burn_in"]), "discard_draws": int(scale["discard_draws"]),
+                "stride": int(scale["stride"]), "chunk_size": int(scale["chunk_size"]),
+                "record_capacity": n_walkers * n_draws, "canary_protocol": CANARY_SCHEMA,
+            }
+            plan_stage.reject_resume_overrides(row)
+            rows.append(row)
+        return tuple(rows)
 
     scale = dict(grid["scale"])
     rows: list[dict[str, Any]] = []
@@ -360,7 +490,7 @@ def expand_rows(
             "depends_on": [],
             "resources": dict(grid["resources"]),
             "checkpoint_source": dict(bindings[source_id]),
-            "task_names": list(TASK_NAMES),
+        "task_names": list(grid.get("task_names", DEFAULT_TASK_NAMES)),
             "n_walkers": int(scale["n_walkers"]),
             "n_draws": int(scale["n_draws"]),
             "burn_in": int(scale["burn_in"]),
@@ -415,9 +545,9 @@ def build_manifest(
         "reporting_rules": {"checkpoint_reporting": "both_without_selection"},
         "unemitted_requirements": {},
         "plan_hash": plan_stage.plan_hash(rows),
-        "n_rows": 2,
+        "n_rows": len(rows),
         "n_train_rows": 0,
-        "n_eval_rows": 2,
+        "n_eval_rows": len(rows),
         "resume_policy": "forbidden",
         "selection_policy": "none",
         "rows": [dict(row) for row in rows],
@@ -437,6 +567,32 @@ def reconcile_manifest_sources(
     sources = load_source_map(source_map_path)
     bindings = reconcile_grid_sources(manifest["grid_config"], sources)
     rows = list(manifest.get("rows", []))
+    if manifest.get("grid_config", {}).get("schema") == "he-v1-eval-canary-grid/v2":
+        if len(rows) != 42:
+            raise CanaryError(f"frozen canary manifest requires exactly 42 rows, found {len(rows)}")
+        if manifest.get("plan_hash") != plan_stage.plan_hash(rows):
+            raise CanaryError("canary manifest plan hash does not bind its rows")
+        expected_ids = [str(item["row_id"]) for item in manifest["grid_config"]["rows"]]
+        if [str(row.get("row_id")) for row in rows] != expected_ids:
+            raise CanaryError("frozen canary row order or identity changed")
+        for row in rows:
+            if (
+                row.get("canary_protocol") != CANARY_SCHEMA
+                or row.get("kind") != "eval"
+                or row.get("stage") != layout.STAGE_EVAL
+                or row.get("depends_on") != []
+                or not isinstance(row.get("task_names"), list)
+                or not row.get("task_names")
+                or row.get("record_capacity") != int(row.get("n_walkers", 0)) * int(row.get("n_draws", 0))
+            ):
+                raise CanaryError(f"canary row {row.get('row_id')!r} changed its runtime graph")
+            expected = row.get("checkpoint_source")
+            if not isinstance(expected, Mapping):
+                raise CanaryError(f"canary row {row.get('row_id')!r} has no source binding")
+            source_id = str(expected.get("source_id") or "")
+            if bindings.get(source_id) != dict(expected):
+                raise CanaryError(f"canary row {row.get('row_id')!r} source binding changed after planning")
+        return sources
     if len(rows) != 2:
         raise CanaryError(f"canary manifest requires exactly two rows, found {len(rows)}")
     expected_coordinates = [
@@ -458,7 +614,7 @@ def reconcile_manifest_sources(
             or row.get("kind") != "eval"
             or row.get("stage") != layout.STAGE_EVAL
             or row.get("depends_on") != []
-            or row.get("task_names") != list(TASK_NAMES)
+            or row.get("task_names") != list(DEFAULT_TASK_NAMES)
             or row.get("record_capacity")
             != int(row.get("n_walkers", 0)) * int(row.get("n_draws", 0))
         ):

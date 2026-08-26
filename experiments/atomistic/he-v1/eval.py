@@ -166,43 +166,58 @@ def checkpoint_replay_semantics_overrides(
 
 
 def configure_canary_evaluation(cfg: Any, row: Mapping[str, Any]) -> Any:
-    """Select only retained-energy evaluation and apply reduced scale knobs."""
+    """Select exactly the task graph declared by one canary row."""
 
     from omegaconf import OmegaConf  # noqa: PLC0415 - driver-only dependency
 
-    if list(row.get("task_names", [])) != ["mcmc_energy"]:
-        raise driver.DriverError("canary row must select only mcmc_energy")
-    task = cfg.evaluation_tasks.mcmc_energy
+    task_names = list(row.get("task_names", []))
+    if not task_names or any(not str(name).strip() for name in task_names):
+        raise driver.DriverError("canary row must declare one or more task names")
+    if len(set(task_names)) != len(task_names):
+        raise driver.DriverError("canary row task_names must be unique")
+    selected = []
+    for name in task_names:
+        try:
+            task = cfg.evaluation_tasks[name]
+        except (KeyError, TypeError):
+            raise driver.DriverError(f"canary row selected unknown evaluation task {name!r}") from None
+        selected.append(task)
     cfg.evaluation_sampler.seed = int(row["seed"])
     cfg.evaluation_sampler.n_walkers = int(row["n_walkers"])
     cfg.evaluation_sampler.burn_in = int(row["burn_in"])
     cfg.evaluation_sampler.n_steps = int(row["stride"])
-    task.generator.n_draws = int(row["n_draws"])
-    task.generator.discard_draws = int(row["discard_draws"])
-    task.generator.chunk_size = int(row["chunk_size"])
-
-    local_energy = [
-        calculator
-        for calculator in task.calculators
-        if str(calculator.get("_target_"))
-        == "tpen.evaluation.calculators.LocalEnergyCalculator"
-    ]
-    writers = [
-        summary
-        for summary in task.summaries
-        if str(summary.get("_target_"))
-        == "tpen.evaluation.summaries.SampledRecordWriter"
-    ]
-    if len(local_energy) != 1 or len(writers) != 1:
-        raise driver.DriverError(
-            "generic eval graph lost its single LocalEnergyCalculator or SampledRecordWriter"
-        )
-    local_energy[0].chunk_size = int(row["chunk_size"])
-    writers[0].max_samples = int(row["record_capacity"])
+    for task in selected:
+        if str(task.name) != "mcmc_energy":
+            if str(task.name) == "factor_response_re_equilibrated" and row.get("factor_arm"):
+                arm = OmegaConf.create(dict(row["factor_arm"]))
+                task.generator.arm = arm
+                for calculator in task.calculators:
+                    if str(calculator.get("_target_")) == "tpen.evaluation.calculators.FactorArmCalculator":
+                        calculator.arm = arm
+            continue
+        task.generator.n_draws = int(row["n_draws"])
+        task.generator.discard_draws = int(row["discard_draws"])
+        task.generator.chunk_size = int(row["chunk_size"])
+        local_energy = [
+            calculator for calculator in task.calculators
+            if str(calculator.get("_target_"))
+            == "tpen.evaluation.calculators.LocalEnergyCalculator"
+        ]
+        writers = [
+            summary for summary in task.summaries
+            if str(summary.get("_target_"))
+            == "tpen.evaluation.summaries.SampledRecordWriter"
+        ]
+        if len(local_energy) != 1 or len(writers) != 1:
+            raise driver.DriverError(
+                "generic eval graph lost its single LocalEnergyCalculator or SampledRecordWriter"
+            )
+        local_energy[0].chunk_size = int(row["chunk_size"])
+        writers[0].max_samples = int(row["record_capacity"])
     # Clone only after every reduced-scale value is applied. OmegaConf.create
     # owns a distinct evaluator task; mutating the declaration afterwards does
     # not update that clone.
-    cfg.evaluator.tasks = OmegaConf.create([task])
+    cfg.evaluator.tasks = OmegaConf.create(selected)
     cfg.callbacks.append(OmegaConf.create({"_target_": "tpen.callback.ArtifactIndex"}))
     cfg.callbacks.append(OmegaConf.create({"_target_": "tpen.callback.FailureLog"}))
     return cfg

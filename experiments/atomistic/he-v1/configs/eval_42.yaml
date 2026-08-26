@@ -1,0 +1,79 @@
+# Frozen He-v1 external-checkpoint evaluation grid.
+# Every row names its task graph, sampling shape, factor arm (when relevant),
+# and placement. Checkpoint paths and hashes remain in the external source map.
+schema: he-v1-eval-canary-grid/v2
+study: he-v1-eval-canary-v1
+eval_config: experiments/atomistic/he-v1/configs/eval.yaml
+
+checkpoints:
+  - {source_id: actual-step-025000, checkpoint_step: 25000, evaluation_seed: 25001}
+  - {source_id: actual-step-050000, checkpoint_step: 50000, evaluation_seed: 50001}
+
+rows:
+  - row_id: eval-canary-step000025000-primary-0
+    checkpoint_step: 25000
+    seed: 1000
+    task_names: [mcmc_energy]
+    scale: &primary_scale {n_walkers: 4096, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}
+    resources: &production_resources {partition: kozinsky_gpu, stratum: a100, constraint: a100, timeout_min: 10080, cpus: 32, mem_gb: 120, gpus: 1}
+    factor_arm: null
+  - {row_id: eval-canary-step000025000-primary-1, checkpoint_step: 25000, seed: 1001, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-primary-2, checkpoint_step: 25000, seed: 1002, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-primary-3, checkpoint_step: 25000, seed: 1003, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - row_id: eval-canary-step000025000-long-0
+    checkpoint_step: 25000
+    seed: 2000
+    task_names: [mcmc_energy]
+    scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}
+    resources: *production_resources
+    factor_arm: null
+  - {row_id: eval-canary-step000025000-long-1, checkpoint_step: 25000, seed: 2001, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-long-2, checkpoint_step: 25000, seed: 2002, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-long-3, checkpoint_step: 25000, seed: 2003, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-burn-50, checkpoint_step: 25000, seed: 3000, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 50, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-burn-200, checkpoint_step: 25000, seed: 3001, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 200, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-stride-10, checkpoint_step: 25000, seed: 3100, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 10, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000025000-stride-40, checkpoint_step: 25000, seed: 3101, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 40, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - row_id: eval-canary-step000025000-factor-common
+    checkpoint_step: 25000
+    seed: 5000
+    task_names: [mcmc_energy, factor_response]
+    scale: {n_walkers: 1024, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}
+    resources: *production_resources
+    factor_arm: null
+  - {row_id: eval-canary-step000025000-factor-reeq-0, checkpoint_step: 25000, seed: 4000, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: baseline}}
+  - {row_id: eval-canary-step000025000-factor-reeq-1, checkpoint_step: 25000, seed: 4001, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: b_ee_minus_10, b_ee: 0.9}}
+  - {row_id: eval-canary-step000025000-factor-reeq-2, checkpoint_step: 25000, seed: 4002, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: b_ee_plus_10, b_ee: 1.1}}
+  - {row_id: eval-canary-step000025000-factor-reeq-3, checkpoint_step: 25000, seed: 4003, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: c_en_minus_10, c_electron_nucleus: 0.9}}
+  - {row_id: eval-canary-step000025000-factor-reeq-4, checkpoint_step: 25000, seed: 4004, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: c_en_plus_10, c_electron_nucleus: 1.1}}
+  - {row_id: eval-canary-step000025000-factor-reeq-5, checkpoint_step: 25000, seed: 4005, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: d_en_minus_10, d_electron_nucleus: 0.9}}
+  - {row_id: eval-canary-step000025000-factor-reeq-6, checkpoint_step: 25000, seed: 4006, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: d_en_plus_10, d_electron_nucleus: 1.1}}
+  - row_id: eval-canary-step000025000-diagnostics
+    checkpoint_step: 25000
+    seed: 6000
+    task_names: [mcmc_energy, factor_response, factor_response_re_equilibrated, he_radial_profiles, full_model_antisymmetry, spatial_exchange_symmetry, trace_equivariance, he_en_numerical_atlas, he_ee_ideal_vs_executed_numerical_atlas, he_one_electron_tail_atlas, he_center_of_mass_tail_atlas, he_angular_shell_atlas]
+    scale: {n_walkers: 4096, n_draws: 4096, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}
+    resources: *production_resources
+    factor_arm: null
+
+  - {row_id: eval-canary-step000050000-primary-0, checkpoint_step: 50000, seed: 1000, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-primary-1, checkpoint_step: 50000, seed: 1001, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-primary-2, checkpoint_step: 50000, seed: 1002, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-primary-3, checkpoint_step: 50000, seed: 1003, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-long-0, checkpoint_step: 50000, seed: 2000, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-long-1, checkpoint_step: 50000, seed: 2001, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-long-2, checkpoint_step: 50000, seed: 2002, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-long-3, checkpoint_step: 50000, seed: 2003, task_names: [mcmc_energy], scale: {n_walkers: 1024, n_draws: 1024, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-burn-50, checkpoint_step: 50000, seed: 3000, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 50, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-burn-200, checkpoint_step: 50000, seed: 3001, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 200, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-stride-10, checkpoint_step: 50000, seed: 3100, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 10, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-stride-40, checkpoint_step: 50000, seed: 3101, task_names: [mcmc_energy], scale: {n_walkers: 256, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 40, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-factor-common, checkpoint_step: 50000, seed: 5000, task_names: [mcmc_energy, factor_response], scale: {n_walkers: 1024, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
+  - {row_id: eval-canary-step000050000-factor-reeq-0, checkpoint_step: 50000, seed: 4000, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: baseline}}
+  - {row_id: eval-canary-step000050000-factor-reeq-1, checkpoint_step: 50000, seed: 4001, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: b_ee_minus_10, b_ee: 0.9}}
+  - {row_id: eval-canary-step000050000-factor-reeq-2, checkpoint_step: 50000, seed: 4002, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: b_ee_plus_10, b_ee: 1.1}}
+  - {row_id: eval-canary-step000050000-factor-reeq-3, checkpoint_step: 50000, seed: 4003, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: c_en_minus_10, c_electron_nucleus: 0.9}}
+  - {row_id: eval-canary-step000050000-factor-reeq-4, checkpoint_step: 50000, seed: 4004, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: c_en_plus_10, c_electron_nucleus: 1.1}}
+  - {row_id: eval-canary-step000050000-factor-reeq-5, checkpoint_step: 50000, seed: 4005, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: d_en_minus_10, d_electron_nucleus: 0.9}}
+  - {row_id: eval-canary-step000050000-factor-reeq-6, checkpoint_step: 50000, seed: 4006, task_names: [mcmc_energy, factor_response_re_equilibrated], scale: {n_walkers: 256, n_draws: 128, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: {label: d_en_plus_10, d_electron_nucleus: 1.1}}
+  - {row_id: eval-canary-step000050000-diagnostics, checkpoint_step: 50000, seed: 6000, task_names: [mcmc_energy, factor_response, factor_response_re_equilibrated, he_radial_profiles, full_model_antisymmetry, spatial_exchange_symmetry, trace_equivariance, he_en_numerical_atlas, he_ee_ideal_vs_executed_numerical_atlas, he_one_electron_tail_atlas, he_center_of_mass_tail_atlas, he_angular_shell_atlas], scale: {n_walkers: 4096, n_draws: 4096, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}, resources: *production_resources, factor_arm: null}
