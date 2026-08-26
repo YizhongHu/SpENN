@@ -167,11 +167,7 @@ def sbatch_directives(
             f"row {row['row_id']!r} requests {gpus} GPUs; this study has no CPU-only rows, "
             "so a zero-GPU row is a planning error"
         )
-    validator = (
-        strata.validate_canary_gpu_placement
-        if row.get("canary_protocol") == canary.CANARY_SCHEMA
-        else strata.validate_gpu_placement
-    )
+    validator = canary.resource_validator(partition, str(resources["stratum"]))
     resolved = validator(
         partition=partition,
         stratum_name=str(resources["stratum"]),

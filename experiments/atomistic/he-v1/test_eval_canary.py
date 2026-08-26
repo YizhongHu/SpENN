@@ -168,6 +168,29 @@ def test_frozen_grid_rejects_a_real_gpu_constraint_drift() -> None:
         canary._load_grid_v2(payload)
 
 
+def test_production_row_passes_plan_and_launch_with_stratum_constraint(
+    tmp_path: Path,
+) -> None:
+    """Planner and launcher must share the production stratum validator."""
+
+    grid = canary.load_grid(GRID_42_PATH)
+    row = dict(grid["rows"][0])
+    planned_resources = canary._resolve_resources(row["resources"], "production row")
+    assert planned_resources["partition"] == "kozinsky_gpu"
+    assert planned_resources["stratum"] == "a100"
+    assert planned_resources["constraint"] == "a100"
+
+    directives = launch.sbatch_directives(
+        row,
+        job_name="he-v1-eval42-production",
+        log_dir=tmp_path,
+        account=None,
+        dependency=None,
+    )
+    assert "#SBATCH --partition=kozinsky_gpu" in directives
+    assert "#SBATCH --constraint=a100" in directives
+
+
 @pytest.mark.parametrize(
     "fault, match",
     [

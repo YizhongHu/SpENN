@@ -380,9 +380,9 @@ def _resolve_resources(value: Any, field: str) -> dict[str, Any]:
         **{key: _require_positive_int(value[key], f"{field}.resources.{key}")
            for key in ("timeout_min", "cpus", "mem_gb", "gpus")},
     }
-    validator = (strata.validate_canary_gpu_placement
-                 if (resolved_resources["partition"], resolved_resources["stratum"])
-                 == ("gpu_test", "a100_mig") else strata.validate_gpu_placement)
+    validator = resource_validator(
+        resolved_resources["partition"], resolved_resources["stratum"]
+    )
     try:
         resolved = validator(partition=resolved_resources["partition"],
                              stratum_name=resolved_resources["stratum"],
@@ -396,6 +396,16 @@ def _resolve_resources(value: Any, field: str) -> dict[str, Any]:
     elif resolved_resources["constraint"] != resolved.constraint:
         raise CanaryError(f"{field} resources constraint disagrees with its GPU stratum")
     return resolved_resources
+
+
+def resource_validator(partition: str, stratum: str):
+    """Select placement validation from the row's declared resource pair."""
+
+    return (
+        strata.validate_canary_gpu_placement
+        if (str(partition), str(stratum)) == ("gpu_test", "a100_mig")
+        else strata.validate_gpu_placement
+    )
 
 
 def load_source_map(path: str | Path) -> dict[str, CheckpointSource]:
