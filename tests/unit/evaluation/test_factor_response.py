@@ -13,7 +13,7 @@ from tpen.data.batch import ElectronBatch
 from tpen.evaluation.bundle import EvaluationBundle, FactorResponseArmValues, FactorResponseValues, GeneratedConfigurations
 from tpen.evaluation.calculators.factor_response import FactorArmCalculator
 from tpen.evaluation.factor_response import FactorParameterScale, helium_factor_parameter_scale
-from tpen.evaluation.factor_response import _parameter_matches_snapshot
+from tpen.evaluation.factor_response import _clone_preserving_layout, _parameter_matches_snapshot, _storage_byte_view
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.summaries.factor_response import FactorResponseSummary
 from tpen.nn.cusp import CurvatureElectronNucleusCuspLaw, ElectronElectronCusp, ElectronNucleusCusp
@@ -67,6 +67,15 @@ def test_parameter_byte_guard_distinguishes_layout_and_storage() -> None:
     ).as_strided((2, 2), (2, 1))
     reference = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
     assert not _parameter_matches_snapshot(same_stride_different_storage, reference)
+
+
+def test_parameter_byte_guard_uses_the_tensor_storage_window() -> None:
+    backing = torch.tensor([0.0, 1.0, 2.0, 99.0, 3.0, 4.0], dtype=torch.float64)
+    view = backing.as_strided((2, 2), (3, 1))
+    snapshot = _clone_preserving_layout(view)
+    assert view.stride() == snapshot.stride()
+    assert _storage_byte_view(view).shape == _storage_byte_view(snapshot).shape
+    assert _parameter_matches_snapshot(view, snapshot)
 
 
 def test_factor_scale_changes_physical_values_and_restores_every_parameter() -> None:

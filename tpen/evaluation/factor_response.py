@@ -63,7 +63,9 @@ def helium_factor_parameter_scale(
 
     resolved = arm if isinstance(arm, FactorParameterScale) else FactorParameterScale.from_mapping(arm)
     ee_factor, en_law = _helium_factor_owners(model)
-    parameter_snapshot = {name: parameter.detach().clone() for name, parameter in model.named_parameters()}
+    parameter_snapshot = {
+        name: _clone_preserving_layout(parameter) for name, parameter in model.named_parameters()
+    }
     parameter_identity = tuple((name, id(parameter)) for name, parameter in model.named_parameters())
     target_snapshot = {
         "raw_opposite_range": ee_factor.raw_opposite_range.detach().clone(),
@@ -114,13 +116,32 @@ def _parameter_matches_snapshot(parameter: torch.Tensor, snapshot: torch.Tensor)
         or parameter.stride() != snapshot.stride()
     ):
         return False
-    current_storage = parameter.detach().untyped_storage()
-    snapshot_storage = snapshot.detach().untyped_storage()
-    if current_storage.nbytes() != snapshot_storage.nbytes():
-        return False
-    current_bytes = torch.as_tensor(current_storage, dtype=torch.uint8, device=parameter.device)
-    snapshot_bytes = torch.as_tensor(snapshot_storage, dtype=torch.uint8, device=snapshot.device)
+    current_bytes = _storage_byte_view(parameter)
+    snapshot_bytes = _storage_byte_view(snapshot)
     return torch.equal(current_bytes, snapshot_bytes)
+
+
+def _clone_preserving_layout(value: torch.Tensor) -> torch.Tensor:
+    """Clone values into a tensor with the original shape and stride."""
+
+    clone = torch.empty_strided(
+        size=tuple(value.shape), stride=tuple(value.stride()), dtype=value.dtype, device=value.device
+    )
+    return clone.copy_(value)
+
+
+def _storage_byte_view(value: torch.Tensor) -> torch.Tensor:
+    """View each tensor element as raw bytes at its original storage location."""
+
+    storage = value.detach().untyped_storage()
+    raw = torch.as_tensor(storage, dtype=torch.uint8, device=value.device)
+    byte_size = value.element_size()
+    return torch.as_strided(
+        raw,
+        size=tuple(value.shape) + (byte_size,),
+        stride=tuple(int(stride) * byte_size for stride in value.stride()) + (1,),
+        storage_offset=int(value.storage_offset()) * byte_size,
+    )
 
 
 def _helium_factor_owners(model: torch.nn.Module) -> tuple[ElectronElectronCusp, CurvatureElectronNucleusCuspLaw]:
