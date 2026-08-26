@@ -57,6 +57,18 @@ def test_parameter_byte_guard_distinguishes_signed_zero() -> None:
     assert not _parameter_matches_snapshot(negative_zero, positive_zero)
 
 
+def test_parameter_byte_guard_distinguishes_layout_and_storage() -> None:
+    snapshot = torch.ones((2, 2), dtype=torch.float64)
+    same_storage_different_stride = snapshot.transpose(0, 1)
+    assert not _parameter_matches_snapshot(same_storage_different_stride, snapshot)
+
+    same_stride_different_storage = torch.tensor(
+        [1.0, 2.0, 3.0, 4.0, 9.0, 10.0], dtype=torch.float64
+    ).as_strided((2, 2), (2, 1))
+    reference = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
+    assert not _parameter_matches_snapshot(same_stride_different_storage, reference)
+
+
 def test_factor_scale_changes_physical_values_and_restores_every_parameter() -> None:
     model = _HeliumFactorModel()
     before_state = {name: value.detach().clone() for name, value in model.state_dict().items()}

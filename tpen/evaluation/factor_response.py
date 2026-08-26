@@ -111,11 +111,16 @@ def _parameter_matches_snapshot(parameter: torch.Tensor, snapshot: torch.Tensor)
         parameter.dtype != snapshot.dtype
         or parameter.shape != snapshot.shape
         or parameter.device != snapshot.device
+        or parameter.stride() != snapshot.stride()
     ):
         return False
-    current_bytes = parameter.detach().contiguous().reshape(-1).view(torch.uint8)
-    snapshot_bytes = snapshot.detach().contiguous().reshape(-1).view(torch.uint8)
-    return current_bytes.shape == snapshot_bytes.shape and torch.equal(current_bytes, snapshot_bytes)
+    current_storage = parameter.detach().untyped_storage()
+    snapshot_storage = snapshot.detach().untyped_storage()
+    if current_storage.nbytes() != snapshot_storage.nbytes():
+        return False
+    current_bytes = torch.as_tensor(current_storage, dtype=torch.uint8, device=parameter.device)
+    snapshot_bytes = torch.as_tensor(snapshot_storage, dtype=torch.uint8, device=snapshot.device)
+    return torch.equal(current_bytes, snapshot_bytes)
 
 
 def _helium_factor_owners(model: torch.nn.Module) -> tuple[ElectronElectronCusp, CurvatureElectronNucleusCuspLaw]:
