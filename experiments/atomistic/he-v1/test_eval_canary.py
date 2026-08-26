@@ -150,6 +150,12 @@ def test_frozen_grid_declares_42_rows_and_all_required_arms() -> None:
     )
 
 
+def test_frozen_grid_schema_matches_canary_consumer_constant() -> None:
+    payload = yaml.safe_load(GRID_42_PATH.read_text(encoding="utf-8"))
+    assert payload["schema"] == canary.GRID_SCHEMA
+    assert canary.load_grid(GRID_42_PATH)["schema"] == canary.GRID_SCHEMA
+
+
 def test_frozen_grid_rejects_a_real_gpu_constraint_drift() -> None:
     payload = yaml.safe_load(GRID_42_PATH.read_text(encoding="utf-8"))
     payload["rows"][0]["resources"]["constraint"] = None

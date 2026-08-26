@@ -522,7 +522,11 @@ def reconcile_canary_row(
         run_dir / "diagnostics" / "index.json", "artifact index", reasons
     )
     task_artifacts = _reconcile_canary_index(
-        index, run_dir=run_dir, task_names=row.get("task_names", []), reasons=reasons
+        index,
+        run_dir=run_dir,
+        task_names=row.get("task_names", []),
+        row=row,
+        reasons=reasons,
     )
     if "mcmc_energy" in row.get("task_names", []):
         task_dir = run_dir / "mcmc_energy"
@@ -617,7 +621,12 @@ def _reconcile_canary_config(
 
 
 def _reconcile_canary_index(
-    index: Any, *, run_dir: Path, task_names: Sequence[str], reasons: list[str]
+    index: Any,
+    *,
+    run_dir: Path,
+    task_names: Sequence[str],
+    row: Mapping[str, Any],
+    reasons: list[str],
 ) -> dict[str, dict[str, Mapping[str, Any]]]:
     tasks = index.get("tasks") if isinstance(index, Mapping) else None
     expected_names = list(task_names)

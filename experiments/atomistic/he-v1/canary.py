@@ -31,7 +31,8 @@ import layout  # noqa: E402
 import plan as plan_stage  # noqa: E402
 import strata  # noqa: E402
 
-GRID_SCHEMA = "he-v1-eval-canary-grid/v1"
+GRID_SCHEMA = "he-v1-eval42-grid/v2"
+LEGACY_GRID_SCHEMA = "he-v1-eval-canary-grid/v1"
 SOURCE_SCHEMA = "he-v1-eval-canary-sources/v1"
 CANARY_SCHEMA = "he-v1-eval-canary-plan/v1"
 STUDY = "he-v1-eval-canary-v1"
@@ -237,9 +238,9 @@ def load_grid(path: str | Path) -> dict[str, Any]:
         raise CanaryError("canary grid schema/study identity changed")
     if payload["eval_config"] != "experiments/atomistic/he-v1/configs/eval.yaml":
         raise CanaryError("canary must reuse the generic He-v1 evaluation config")
-    if payload.get("schema") == GRID_SCHEMA:
+    if payload.get("schema") == LEGACY_GRID_SCHEMA:
         _require_exact_keys(payload, _GRID_KEYS, "canary grid")
-    elif payload.get("schema") == "he-v1-eval-canary-grid/v2":
+    elif payload.get("schema") == GRID_SCHEMA:
         _require_exact_keys(payload, _GRID_V2_KEYS, "canary grid")
         return _load_grid_v2(payload)
     else:
@@ -298,7 +299,7 @@ def load_grid(path: str | Path) -> dict[str, Any]:
     resolved_resources["constraint"] = None
 
     return {
-        "schema": GRID_SCHEMA,
+        "schema": LEGACY_GRID_SCHEMA,
         "study": STUDY,
         "eval_config": str(payload["eval_config"]),
         "task_names": list(DEFAULT_TASK_NAMES),
@@ -360,7 +361,7 @@ def _load_grid_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
     if counts != {25_000: 21, 50_000: 21}:
         raise CanaryError(f"frozen canary grid must contain 21 rows per checkpoint, got {counts}")
     return {
-        "schema": "he-v1-eval-canary-grid/v2",
+        "schema": GRID_SCHEMA,
         "study": FROZEN_STUDY,
         "eval_config": str(payload["eval_config"]),
         "checkpoints": [dict(item) for item in checkpoints],
@@ -570,7 +571,7 @@ def reconcile_manifest_sources(
     sources = load_source_map(source_map_path)
     bindings = reconcile_grid_sources(manifest["grid_config"], sources)
     rows = list(manifest.get("rows", []))
-    if manifest.get("grid_config", {}).get("schema") == "he-v1-eval-canary-grid/v2":
+    if manifest.get("grid_config", {}).get("schema") == GRID_SCHEMA:
         if len(rows) != 42:
             raise CanaryError(f"frozen canary manifest requires exactly 42 rows, found {len(rows)}")
         if manifest.get("plan_hash") != plan_stage.plan_hash(rows):
