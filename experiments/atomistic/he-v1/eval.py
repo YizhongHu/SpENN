@@ -189,8 +189,30 @@ def configure_canary_evaluation(cfg: Any, row: Mapping[str, Any]) -> Any:
     for task in selected:
         if str(task.name) != "mcmc_energy":
             if str(task.name) == "factor_response_re_equilibrated" and row.get("factor_arm"):
+                # Re-equilibrated factor rows are trajectory evaluations.  The
+                # nested generator is deliberately configured here, rather
+                # than relying on the sampler's one-batch snapshot default.
                 arm = OmegaConf.create(dict(row["factor_arm"]))
                 task.generator.arm = arm
+                trajectory_generator = task.generator.generator
+                trajectory_generator.n_draws = int(row["n_draws"])
+                trajectory_generator.discard_draws = int(row["discard_draws"])
+                trajectory_generator.chunk_size = int(row["chunk_size"])
+                # The generator cap limits its final snapshot, while the
+                # writer cap protects the complete draw-by-walker artifact;
+                # both must be derived from the row rather than a stale YAML
+                # literal that truncates the declared trajectory.
+                trajectory_generator.max_samples = int(row["record_capacity"])
+                writers = [
+                    summary for summary in task.summaries
+                    if str(summary.get("_target_"))
+                    == "tpen.evaluation.summaries.SampledRecordWriter"
+                ]
+                if len(writers) != 1:
+                    raise driver.DriverError(
+                        "re-equilibrated factor graph lost its single SampledRecordWriter"
+                    )
+                writers[0].max_samples = int(row["record_capacity"])
                 for calculator in task.calculators:
                     if str(calculator.get("_target_")) == "tpen.evaluation.calculators.FactorArmCalculator":
                         calculator.arm = arm

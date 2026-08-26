@@ -11,7 +11,12 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import torch
 import yaml
+
+from tpen.data.batch import Walkers
+from tpen.evaluation.generators import MCMCGenerator
+from tpen.evaluation.protocols import EvaluationContext
 
 STUDY_DIR = Path(__file__).resolve().parent
 GRID_PATH = STUDY_DIR / "configs" / "eval_canary.yaml"
@@ -296,6 +301,112 @@ def test_runtime_transform_selects_declared_multi_task_row_and_factor_task_is_in
     assert [task.name for task in configured.evaluator.tasks] == [
         "mcmc_energy", "factor_response"
     ]
+
+
+def test_factor_common_collector_contract_uses_real_generator_emission() -> None:
+    """The common factor oracle must agree with the producer's real snapshot."""
+
+    class FixedSampler:
+        def collect_samples(self, model, *, device=None):
+            del model, device
+            walkers = Walkers(positions=torch.zeros(3, 1, 3, dtype=torch.float64))
+            return walkers, object()
+
+    row = {"n_walkers": 3, "n_draws": 8, "record_capacity": 24}
+    generator = MCMCGenerator(sampler=FixedSampler(), max_samples=row["n_walkers"])
+    generated = generator.generate(
+        model=None,
+        context=EvaluationContext(
+            namespace="eval/factor_response",
+            artifact_level="metrics_only",
+            task_failure_policy="fail_fast",
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+            seed=None,
+            run_dir=Path("/tmp"),
+            task_output_dir=Path("/tmp"),
+            metadata={},
+        ),
+    )
+    emitted_configurations = generated.batch.batch_size
+    assert emitted_configurations == row["n_walkers"]
+
+    reasons: list[str] = []
+    collect._reconcile_canary_task_content(
+        "factor_response",
+        {
+            "factor_response_common_configuration": {
+                "metadata": {
+                    "comparison_kind": "common_configuration",
+                    "rows": emitted_configurations * 7,
+                    "arm_count": 7,
+                    "configuration_count": emitted_configurations,
+                    "model_state_restored": True,
+                }
+            }
+        },
+        row=row,
+        reasons=reasons,
+    )
+    assert reasons == []
+
+    truncated = MCMCGenerator(sampler=FixedSampler(), max_samples=2).generate(
+        model=None,
+        context=EvaluationContext(
+            namespace="eval/factor_response",
+            artifact_level="metrics_only",
+            task_failure_policy="fail_fast",
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+            seed=None,
+            run_dir=Path("/tmp"),
+            task_output_dir=Path("/tmp"),
+            metadata={},
+        ),
+    )
+    assert truncated.batch.batch_size != row["n_walkers"]
+
+
+def test_factor_task_caps_are_row_overrides_and_common_cap_covers_all_arms() -> None:
+    config = yaml.safe_load((STUDY_DIR / "configs" / "eval.yaml").read_text(encoding="utf-8"))
+    common = config["evaluation_tasks"]["factor_response"]
+    assert int(common["summaries"][0]["max_records"]) >= 4096 * 7
+    reequilibrated = config["evaluation_tasks"]["factor_response_re_equilibrated"]
+    assert "max_samples" not in reequilibrated["generator"]["generator"]
+    assert "max_samples" not in reequilibrated["summaries"][1]
+
+
+def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
+    tmp_path: Path,
+) -> None:
+    """The configured re-equilibrated producer must receive the row draw count."""
+
+    _, source_map_path, _ = _case(tmp_path)
+    grid = canary.load_grid(GRID_42_PATH)
+    rows = canary.expand_rows(grid, canary.reconcile_grid_sources(
+        grid, canary.load_source_map(source_map_path)
+    ))
+    row = next(row for row in rows if "factor_response_re_equilibrated" in row["task_names"])
+    cfg = collect.eval_stage.driver.build_config(
+        STUDY_DIR.parents[2] / row["config"], row["overrides"]
+    )
+
+    configured = eval_stage.configure_canary_evaluation(cfg, row)
+    task = next(
+        task for task in configured.evaluator.tasks
+        if task.name == "factor_response_re_equilibrated"
+    )
+    assert task.generator.generator._target_ == (
+        "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    )
+    assert task.generator.generator.n_draws == row["n_draws"]
+    assert task.generator.generator.discard_draws == row["discard_draws"]
+    assert task.generator.generator.max_samples == row["record_capacity"]
+    writer = next(
+        summary for summary in task.summaries
+        if summary._target_ == "tpen.evaluation.summaries.SampledRecordWriter"
+    )
+    assert writer.max_samples == row["record_capacity"]
 
 
 def test_runtime_transform_rejects_unknown_or_duplicate_declared_tasks(
@@ -711,9 +822,9 @@ def test_collection_reconciles_artifacts_for_each_declared_task(tmp_path: Path) 
                     "path": str(factor_path.resolve()),
                     "metadata": {
                         "comparison_kind": "common_configuration",
-                        "rows": row["record_capacity"] * 7,
+                        "rows": row["n_walkers"] * 7,
                         "arm_count": 7,
-                        "configuration_count": row["record_capacity"],
+                        "configuration_count": row["n_walkers"],
                         "model_state_restored": True,
                     },
                 }
@@ -759,7 +870,7 @@ def test_collection_rejects_factor_content_shape_mismatch(tmp_path: Path) -> Non
             "name": "factor_response_common_configuration", "kind": "csv",
             "path": str(factor_path.resolve()),
             "metadata": {"comparison_kind": "common_configuration", "rows": 1,
-                         "arm_count": 1, "configuration_count": row["record_capacity"],
+                         "arm_count": 1, "configuration_count": row["n_walkers"],
                          "model_state_restored": True},
         }],
     })

@@ -715,12 +715,16 @@ def _reconcile_canary_task_content(
     review point instead of silently inheriting a weaker generic check.
     """
 
-    capacity = int(row["record_capacity"])
     if task_name == "factor_response":
         artifact = artifacts.get("factor_response_common_configuration")
         if artifact is None:
             reasons.append("factor_response is missing its common-configuration artifact")
             return
+        # Common-configuration compares seven factor arms on one sampler
+        # snapshot.  Its producer intentionally emits one batch per walker;
+        # the row's n_draws belongs to co-selected trajectory tasks, not this
+        # snapshot task.
+        capacity = int(row["n_walkers"])
         metadata = artifact.get("metadata")
         expected = {
             "comparison_kind": "common_configuration",
@@ -741,6 +745,7 @@ def _reconcile_canary_task_content(
         if artifact is None:
             reasons.append("re-equilibrated factor task is missing its sampled table artifact")
             return
+        capacity = int(row["record_capacity"])
         metadata = artifact.get("metadata")
         if not isinstance(metadata, Mapping) or metadata.get("rows") != capacity:
             reasons.append(
