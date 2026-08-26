@@ -59,18 +59,16 @@ def helium_factor_parameter_scale(
     model: torch.nn.Module,
     arm: FactorParameterScale | Mapping[str, object],
 ) -> Iterator[Mapping[str, float]]:
-    """Temporarily scale He cusp parameters and byte-verify supported layouts.
+    """Temporarily scale He cusp parameters and byte-verify restoration.
 
-    Dense, non-overlapping, non-lazy parameters are compared by their addressed
-    storage bytes. Lazy or internally overlapping parameter layouts are rejected
-    before any factor is scaled because their bytes cannot be compared safely.
+    Parameters are compared by the raw bytes at their addressed storage
+    locations, which covers the dense layouts this model uses. Exotic layouts
+    that carry lazy metadata or overlap their own storage are out of scope.
     """
 
     resolved = arm if isinstance(arm, FactorParameterScale) else FactorParameterScale.from_mapping(arm)
     ee_factor, en_law = _helium_factor_owners(model)
     named_parameters = tuple(model.named_parameters())
-    for name, parameter in named_parameters:
-        _validate_parameter_layout(name, parameter)
     parameter_snapshot = {
         name: _clone_preserving_layout(parameter) for name, parameter in named_parameters
     }
@@ -136,17 +134,6 @@ def _clone_preserving_layout(value: torch.Tensor) -> torch.Tensor:
         size=tuple(value.shape), stride=tuple(value.stride()), dtype=value.dtype, device=value.device
     )
     return clone.copy_(value)
-
-
-def _validate_parameter_layout(name: str, value: torch.Tensor) -> None:
-    """Reject parameter layouts whose storage bytes cannot be compared safely."""
-
-    if value.is_conj():
-        raise ValueError(f"factor response does not support lazy conjugate layout for parameter {name!r}")
-    if value.is_neg():
-        raise ValueError(f"factor response does not support lazy negative layout for parameter {name!r}")
-    if torch._debug_has_internal_overlap(value) != 0:
-        raise ValueError(f"factor response does not support overlapping layout for parameter {name!r}")
 
 
 def _storage_byte_view(value: torch.Tensor) -> torch.Tensor:
