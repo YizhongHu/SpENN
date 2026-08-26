@@ -634,6 +634,42 @@ def _refresh_record_identity(run_dir: Path) -> None:
     _write_artifact_index(run_dir, index)
 
 
+def _refresh_trajectory_identity(
+    manifest: dict[str, Any], row: dict[str, Any], source: Any, run_dir: Path
+) -> None:
+    """Refresh fixture-owned trajectory identity after mutating the planned row."""
+
+    config_sha = eval_stage.config_identity_hash(
+        STUDY_DIR.parents[2] / row["config"],
+        row["overrides"],
+        identity_values={
+            key: row.get(key)
+            for key in (
+                "canary_protocol", "checkpoint_source", "task_names", "n_walkers",
+                "n_draws", "burn_in", "discard_draws", "stride", "chunk_size",
+                "record_capacity",
+            )
+        },
+    )
+    trajectory_path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
+    receipt = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    receipt.update({"stage": row["stage"], "run_id": row["row_id"],
+                   "attempt_id": manifest["attempt_id"],
+                   "checkpoint_sha256": source.model_sha256,
+                   "config_sha256": config_sha,
+                   "observable": "local_energy", "evaluator_id": eval_stage.EVALUATOR_ID})
+    trajectory_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    metadata = _artifact(index, "local_energy_trajectory_statistics")["metadata"]
+    metadata.update({"stage": row["stage"], "run_id": row["row_id"],
+                     "attempt_id": manifest["attempt_id"],
+                     "checkpoint_sha256": source.model_sha256,
+                     "config_sha256": config_sha,
+                     "observable": "local_energy", "evaluator_id": eval_stage.EVALUATOR_ID,
+                     "status": receipt["status"]})
+    _write_artifact_index(run_dir, index)
+
+
 def test_collection_accepts_exact_three_artifact_contract(tmp_path: Path) -> None:
     manifest, source_map_path, _ = _case(tmp_path)
     written = _write_canary_outputs(
@@ -650,8 +686,9 @@ def test_collection_accepts_exact_three_artifact_contract(tmp_path: Path) -> Non
 def test_collection_reconciles_artifacts_for_each_declared_task(tmp_path: Path) -> None:
     manifest, source_map_path, _ = _case(tmp_path)
     written = _write_canary_outputs(tmp_path, manifest, source_map_path)
-    row, _, _, run_dir, _, _ = written
+    row, source, _, run_dir, _, _ = written
     row["task_names"].append("factor_response")
+    _refresh_trajectory_identity(manifest, row, source, run_dir)
     config_path = run_dir / "resolved_config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config["evaluator"]["tasks"].append({"name": "factor_response"})
@@ -731,6 +768,43 @@ def test_collection_rejects_factor_content_shape_mismatch(tmp_path: Path) -> Non
     reasons = _reconcile_written_outputs(manifest, written)
 
     assert any("factor_response artifact metadata disagrees" in reason for reason in reasons)
+
+
+def test_collection_rejects_reequilibrated_factor_row_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, source, _, run_dir, _, _ = written
+    row["task_names"].append("factor_response_re_equilibrated")
+    _refresh_trajectory_identity(manifest, row, source, run_dir)
+    config_path = run_dir / "resolved_config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["evaluator"]["tasks"].append({"name": "factor_response_re_equilibrated"})
+    config_path.write_text(yaml.safe_dump(config, sort_keys=True), encoding="utf-8")
+    factor_dir = run_dir / "factor_response_re_equilibrated"
+    factor_dir.mkdir()
+    factor_path = factor_dir / "sampled_eval_table.csv"
+    factor_path.write_text("sample_index\n0\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"].append({
+        "name": "factor_response_re_equilibrated",
+        "namespace": "eval/factor_response_re_equilibrated",
+        "output_dir": str(factor_dir.resolve()), "status": "success",
+        "artifacts": [{
+            "name": "sampled_eval_table", "kind": "csv",
+            "path": str(factor_path.resolve()),
+            "metadata": {"rows": 1},
+        }],
+    })
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any(
+        "re-equilibrated factor sampled table metadata disagrees" in reason
+        for reason in reasons
+    )
 
 
 def test_collection_rejects_a_declared_task_missing_from_artifact_index(
