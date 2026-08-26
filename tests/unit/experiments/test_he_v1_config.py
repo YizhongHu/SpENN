@@ -273,6 +273,33 @@ def _import_target(dotted: str) -> type:
     return getattr(module, attribute)
 
 
+def _calculator_bundle_fields(entry: dict) -> set[str]:
+    """Resolve bundle fields through any config-declared calculator delegate."""
+
+    delegate = entry.get("calculator")
+    if isinstance(delegate, dict):
+        return _calculator_bundle_fields(delegate)
+    calculator = _import_target(entry["_target_"])
+    return {
+        _CALCULATOR_BUNDLE_FIELD.get(
+            calculator.__name__, getattr(calculator, "name", None)
+        )
+    }
+
+
+def _missing_summary_fields(task: dict) -> set[str]:
+    """Return summary requirements not produced by a task's calculators."""
+
+    produced = set(_GENERATOR_SUPPLIED_FIELDS)
+    for entry in task["calculators"]:
+        produced.update(_calculator_bundle_fields(entry))
+    required: set[str] = set()
+    for entry in task["summaries"]:
+        summary = _import_target(entry["_target_"])
+        required.update(getattr(summary, "required_fields", frozenset()))
+    return required - produced
+
+
 @pytest.mark.parametrize("task_name", sorted(_load(EVAL)["evaluation_tasks"]))
 def test_every_summary_field_is_produced_by_a_calculator(task_name: str) -> None:
     """No summary may consume a bundle field nothing in its task produces.
@@ -292,20 +319,24 @@ def test_every_summary_field_is_produced_by_a_calculator(task_name: str) -> None
     """
 
     task = _load(EVAL)["evaluation_tasks"][task_name]
-    produced = set(_GENERATOR_SUPPLIED_FIELDS)
-    for entry in task["calculators"]:
-        calculator = _import_target(entry["_target_"])
-        produced.add(_CALCULATOR_BUNDLE_FIELD.get(calculator.__name__, calculator.name))
+    missing = sorted(_missing_summary_fields(task))
+    assert not missing, (
+        f"{task_name}: summaries require {missing}, which no calculator in "
+        "this task produces. The summary runs last, so "
+        "this fails only after the whole chain has been paid for."
+    )
 
-    for entry in task["summaries"]:
-        summary = _import_target(entry["_target_"])
-        required = set(getattr(summary, "required_fields", frozenset()))
-        missing = sorted(required - produced)
-        assert not missing, (
-            f"{task_name}: {summary.__name__} requires {missing}, which no calculator in "
-            f"this task produces (produced: {sorted(produced)}). The summary runs last, so "
-            "this fails only after the whole chain has been paid for."
-        )
+
+def test_summary_field_oracle_rejects_an_unproduced_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A summary pointed at an unknown bundle field must remain a failure."""
+
+    summary_target = _load(EVAL)["evaluation_tasks"]["factor_response_re_equilibrated"]["summaries"][0]["_target_"]
+    summary = _import_target(summary_target)
+    monkeypatch.setattr(summary, "required_fields", frozenset({"not_a_bundle_field"}))
+
+    task = _load(EVAL)["evaluation_tasks"]["factor_response_re_equilibrated"]
+
+    assert _missing_summary_fields(task) == {"not_a_bundle_field"}
 
 
 #: Positional overrides the H-F1 job scripts depend on, as (config, list key,
@@ -521,10 +552,8 @@ def test_the_calculator_field_mapping_names_real_bundle_fields() -> None:
     for task_name, task in _load(EVAL)["evaluation_tasks"].items():
         for entry in task["calculators"]:
             calculator = _import_target(entry["_target_"])
-            resolved = _CALCULATOR_BUNDLE_FIELD.get(
-                calculator.__name__, getattr(calculator, "name", None)
-            )
-            assert resolved in bundle_fields, (
+            resolved = _calculator_bundle_fields(entry)
+            assert resolved <= bundle_fields, (
                 f"{task_name}: {calculator.__name__} resolves to bundle field "
                 f"{resolved!r}, which EvaluationBundle does not have. Either the "
                 f"calculator's name differs from the field it writes and belongs in "
