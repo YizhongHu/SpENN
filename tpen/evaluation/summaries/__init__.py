@@ -8,6 +8,7 @@ from tpen.evaluation.summaries.atom import (
     ElectronNucleusTailSummary,
 )
 from tpen.evaluation.summaries.conditioned_local_energy import ConditionedLocalEnergySummary
+from tpen.evaluation.summaries.factor_response import FactorResponseSummary
 from tpen.evaluation.summaries.hooke import (
     CoalescenceDivergenceSummary,
     LocalEnergyPathologySummary,
@@ -40,6 +41,7 @@ __all__ = [
     "ElectronNucleusRadialProfileWriter",
     "ElectronNucleusTailSummary",
     "FeatureTraceSummary",
+    "FactorResponseSummary",
     "HamiltonianTermSummary",
     "HeliumAtlasWriter",
     "HeliumCurvatureSummary",

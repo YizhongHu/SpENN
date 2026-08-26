@@ -19,7 +19,9 @@ from tpen.evaluation.results import ArtifactRecord
 
 
 def test_evaluation_bundle_fields_are_intentional() -> None:
-    assert {field.name for field in fields(EvaluationBundle)} <= {
+    bundle_fields = {field.name for field in fields(EvaluationBundle)}
+    assert "factor_response" in bundle_fields
+    assert bundle_fields <= {
         "generated",
         "wavefunction",
         "local_energy",
@@ -31,6 +33,7 @@ def test_evaluation_bundle_fields_are_intentional() -> None:
         "trace_comparison",
         "feature_trace",
         "readout_trace",
+        "factor_response",
     }
 
 

@@ -1012,6 +1012,29 @@ class ReadoutTraceValues:
 
 
 @dataclass(frozen=True)
+class FactorResponseArmValues:
+    """Row-aligned fixed-configuration values for one declared factor arm."""
+
+    label: str
+    parameter_scales: Mapping[str, float]
+    realized_parameters: Mapping[str, float]
+    local_energy: torch.Tensor
+    logabs: torch.Tensor
+    sign: torch.Tensor
+    term_energies: Mapping[str, torch.Tensor]
+
+
+@dataclass(frozen=True)
+class FactorResponseValues:
+    """Common-configuration factor responses with explicit comparison semantics."""
+
+    comparison_kind: str
+    baseline_label: str
+    arms: Sequence[FactorResponseArmValues]
+    model_state_restored: bool
+
+
+@dataclass(frozen=True)
 class EvaluationBundle:
     """Reusable primitive outputs for one evaluation task."""
 
@@ -1026,6 +1049,7 @@ class EvaluationBundle:
     trace_comparison: TraceComparisonValues | None = None
     feature_trace: FeatureTraceValues | None = None
     readout_trace: ReadoutTraceValues | None = None
+    factor_response: FactorResponseValues | None = None
 
 
 __all__ = [
@@ -1034,6 +1058,8 @@ __all__ = [
     "DerivativeValues",
     "ElectronNucleusRadialValues",
     "EvaluationBundle",
+    "FactorResponseArmValues",
+    "FactorResponseValues",
     "FeatureTraceValues",
     "GeneratedConfigurations",
     "HeliumAtlasValues",
