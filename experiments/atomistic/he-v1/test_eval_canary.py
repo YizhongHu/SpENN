@@ -12,6 +12,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+from hydra.utils import instantiate
 import pytest
 import torch
 import yaml
@@ -418,6 +419,7 @@ def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
     cfg = collect.eval_stage.driver.build_config(
         STUDY_DIR.parents[2] / row["config"], row["overrides"]
     )
+    cfg.run.dir = str(tmp_path)
 
     configured = eval_stage.configure_canary_evaluation(cfg, row)
     task = next(
@@ -430,19 +432,25 @@ def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
     assert task.generator.generator.n_draws == row["n_draws"]
     assert task.generator.generator.discard_draws == row["discard_draws"]
     assert task.generator.generator.max_samples == row["record_capacity"]
-    writer = next(
+    resolved_writer = next(
         summary for summary in task.summaries
         if summary._target_ == "tpen.evaluation.summaries.SampledRecordWriter"
     )
-    assert writer.max_samples == row["record_capacity"]
-    assert writer.include_term_energies is True
-    trajectory = SimpleNamespace(row_count=1, path=Path("trajectory.csv"))
-    resolved_writer = SampledRecordWriter(
-        include_term_energies=writer.include_term_energies,
-        max_samples=writer.max_samples,
+    assert resolved_writer.max_samples == row["record_capacity"]
+    assert resolved_writer.include_term_energies is True
+
+    runtime_evaluator = instantiate(configured.evaluator)
+    runtime_task = next(
+        task for task in runtime_evaluator.tasks
+        if task.name == "factor_response_re_equilibrated"
     )
+    writer = next(
+        summary for summary in runtime_task.summaries
+        if isinstance(summary, SampledRecordWriter)
+    )
+    trajectory = SimpleNamespace(row_count=1, path=Path("trajectory.csv"))
     with pytest.raises(ValueError, match="filename disagrees"):
-        resolved_writer.summarize(
+        writer.summarize(
             bundle=SimpleNamespace(
                 generated=SimpleNamespace(trajectory_records=trajectory)
             ),
