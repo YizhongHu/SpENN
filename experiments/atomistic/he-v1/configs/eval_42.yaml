@@ -20,7 +20,7 @@ rows:
     seed: 1000
     task_names: [mcmc_energy]
     scale: &primary_scale {n_walkers: 4096, n_draws: 256, burn_in: 100, discard_draws: 0, stride: 20, chunk_size: 256}
-    resources: &production_resources {partition: kozinsky_gpu, stratum: a100, constraint: a100, timeout_min: 120, cpus: 4, mem_gb: 32, gpus: 1}
+    resources: &production_resources {partition: "kozinsky_gpu,seas_gpu", stratum: a100, constraint: a100, timeout_min: 120, cpus: 4, mem_gb: 32, gpus: 1}
     factor_arm: null
   - {row_id: he-v1-eval42-step000025000-primary-1, checkpoint_step: 25000, seed: 1001, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}
   - {row_id: he-v1-eval42-step000025000-primary-2, checkpoint_step: 25000, seed: 1002, task_names: [mcmc_energy], scale: *primary_scale, resources: *production_resources, factor_arm: null}

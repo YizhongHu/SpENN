@@ -212,6 +212,7 @@ def _materialize_row(
     metrics: dict[str, Any] | None = None,
     extra_namespaces: dict[str, dict[str, Any]] | None = None,
     delivered_device: str | None = None,
+    delivered_partition: str | None = None,
     matches: bool = True,
     status: str = "completed",
     checkpoint_payload: str = "weights",
@@ -229,6 +230,11 @@ def _materialize_row(
                 "row_id": row["row_id"],
                 "job_id": f"job-{row['index']}",
                 "hostname": "holygpu8a16101",
+                "partition": (
+                    row["resources"]["partition"]
+                    if delivered_partition is None
+                    else delivered_partition
+                ),
                 "requested_stratum": stratum,
                 "requested_constraint": row["resources"]["constraint"],
                 "delivered_device": default_device if delivered_device is None else delivered_device,
@@ -456,6 +462,31 @@ def test_delivered_stratum_mismatch_fails_the_row(study: dict[str, Any]) -> None
     row = next(r for r in collected["rows"] if r["identity"]["row_id"] == eval_row["row_id"])
     assert row["status"] == "fail"
     assert any("does not match requested stratum" in reason for reason in row["reasons"])
+
+
+def test_rows_csv_reports_delivered_and_requested_partitions(study: dict[str, Any]) -> None:
+    """A fallback allocation is provenance, not the comma-list request."""
+
+    manifest = study["manifest"]
+    eval_row = next(row for row in manifest["rows"] if row["kind"] == "eval")
+    eval_row["resources"]["partition"] = "kozinsky_gpu,seas_gpu"
+    # Collection reloads the manifest from disk; persist the changed request so
+    # the premise reaches the subject rather than only changing this fixture.
+    plan.write_plan(manifest, results_root=study["root"])
+    _materialize_row(
+        study["root"],
+        manifest,
+        eval_row,
+        delivered_partition="seas_gpu",
+    )
+
+    collected = _collect(study)
+    directory = collect.write_collected(collected, results_root=study["root"])
+    with (directory / collect.ROWS_CSV).open(newline="", encoding="utf-8") as handle:
+        table = list(csv.DictReader(handle))
+    target = next(record for record in table if record["row_id"] == eval_row["row_id"])
+    assert target["partition"] == "seas_gpu"
+    assert target["requested_partition"] == "kozinsky_gpu,seas_gpu"
 
 
 def test_missing_allocation_receipt_is_a_failure(study: dict[str, Any]) -> None:

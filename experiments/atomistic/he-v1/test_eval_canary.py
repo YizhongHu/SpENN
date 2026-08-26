@@ -262,7 +262,7 @@ def test_production_row_passes_plan_and_launch_with_stratum_constraint(
     grid = canary.load_grid(GRID_42_PATH)
     row = dict(grid["rows"][0])
     planned_resources = canary._resolve_resources(row["resources"], "production row")
-    assert planned_resources["partition"] == "kozinsky_gpu"
+    assert planned_resources["partition"] == "kozinsky_gpu,seas_gpu"
     assert planned_resources["stratum"] == "a100"
     assert planned_resources["constraint"] == "a100"
 
@@ -273,7 +273,7 @@ def test_production_row_passes_plan_and_launch_with_stratum_constraint(
         account=None,
         dependency=None,
     )
-    assert "#SBATCH --partition=kozinsky_gpu" in directives
+    assert "#SBATCH --partition=kozinsky_gpu,seas_gpu" in directives
     assert "#SBATCH --constraint=a100" in directives
 
 
