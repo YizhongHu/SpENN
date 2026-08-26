@@ -113,8 +113,8 @@ def _parameter_matches_snapshot(parameter: torch.Tensor, snapshot: torch.Tensor)
         or parameter.device != snapshot.device
     ):
         return False
-    current_bytes = parameter.detach().contiguous().view(torch.uint8)
-    snapshot_bytes = snapshot.detach().contiguous().view(torch.uint8)
+    current_bytes = parameter.detach().contiguous().reshape(-1).view(torch.uint8)
+    snapshot_bytes = snapshot.detach().contiguous().reshape(-1).view(torch.uint8)
     return current_bytes.shape == snapshot_bytes.shape and torch.equal(current_bytes, snapshot_bytes)
 
 
