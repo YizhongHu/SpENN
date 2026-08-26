@@ -6,8 +6,10 @@ import csv
 import importlib.util
 import json
 import sys
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,6 +19,7 @@ import yaml
 from tpen.data.batch import Walkers
 from tpen.evaluation.generators import MCMCGenerator
 from tpen.evaluation.protocols import EvaluationContext
+from tpen.evaluation.summaries.records import SampledRecordWriter
 
 STUDY_DIR = Path(__file__).resolve().parent
 GRID_PATH = STUDY_DIR / "configs" / "eval_canary.yaml"
@@ -432,6 +435,44 @@ def test_re_equilibrated_factor_task_applies_row_draws_to_trajectory_generator(
         if summary._target_ == "tpen.evaluation.summaries.SampledRecordWriter"
     )
     assert writer.max_samples == row["record_capacity"]
+    assert writer.include_term_energies is True
+    trajectory = SimpleNamespace(row_count=1, path=Path("trajectory.csv"))
+    resolved_writer = SampledRecordWriter(
+        include_term_energies=writer.include_term_energies,
+        max_samples=writer.max_samples,
+    )
+    with pytest.raises(ValueError, match="filename disagrees"):
+        resolved_writer.summarize(
+            bundle=SimpleNamespace(
+                generated=SimpleNamespace(trajectory_records=trajectory)
+            ),
+            context=SimpleNamespace(
+                task_output_dir=tmp_path, artifact_level="records"
+            ),
+            namespace="eval/factor_response_re_equilibrated",
+        )
+
+
+def test_planner_receipt_reports_the_actual_v2_plan_row_count(tmp_path: Path) -> None:
+    """The planner's user-facing receipt must describe the plan it wrote."""
+
+    _, source_map_path, _ = _case(tmp_path)
+    results_root = tmp_path / "results"
+    output = StringIO()
+    with redirect_stdout(output):
+        assert canary.main(
+            [
+                "--grid-config", str(GRID_42_PATH),
+                "--checkpoint-source-map", str(source_map_path),
+                "--results-root", str(results_root),
+                "--attempt-id", "20260825T120000",
+                "--evaluation-git-sha", EVALUATION_SHA,
+            ]
+        ) == 0
+
+    manifest = plan.read_manifest(results_root, "20260825T120000")
+    assert manifest["n_rows"] == 42
+    assert f"wrote {manifest['n_rows']} rows" in output.getvalue()
 
 
 def test_runtime_transform_rejects_unknown_or_duplicate_declared_tasks(
