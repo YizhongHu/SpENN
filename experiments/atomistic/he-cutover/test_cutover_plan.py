@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 
 import pytest
 import yaml
@@ -12,6 +13,7 @@ import run_train_row
 
 GRID = Path(__file__).with_name("smoke_grid.yaml")
 PRODUCTION_GRID = Path(__file__).with_name("production_grid.yaml")
+PROOF_GRID = Path(__file__).with_name("proof_grid.yaml")
 
 
 def _override_value(overrides: list[str], key: str) -> str:
@@ -102,6 +104,47 @@ def test_production_plan_has_three_train_and_thirty_six_full_eval_rows(tmp_path:
     assert {task.params["checkpoint_dir"].rsplit("/", 1)[-1] for task in evaluation.tasks} == {
         "step_100000", "step_200000", "step_300000"
     }
+
+
+def test_proof_plan_has_one_train_and_forty_eval_rows(tmp_path: Path) -> None:
+    train, evaluation, manifest = cutover_plan.build_plans(
+        cutover_plan.load_grid(PROOF_GRID), facility="cannon", results_root=tmp_path / "results", plan_id="proof-1"
+    )
+    assert [task.run_id for task in train.tasks] == ["seed-000"]
+    assert len(evaluation.tasks) == 40
+    assert len(manifest["rows"]) == 41
+    assert all(task.params["scale"] == "proof" for task in (*train.tasks, *evaluation.tasks))
+    assert all(task.params["max_steps"] == 25 and task.params["n_walkers"] == 16 for task in train.tasks)
+    assert {task.params["seed"] for task in evaluation.tasks} == set(range(1, 41))
+
+
+def test_proof_eval_rows_all_depend_on_single_train_row(tmp_path: Path) -> None:
+    train, evaluation, _ = cutover_plan.build_plans(
+        cutover_plan.load_grid(PROOF_GRID), facility="cannon", results_root=tmp_path / "results", plan_id="proof-1"
+    )
+    assert len(train.tasks) == 1
+    assert all(task.dependencies == (train.tasks[0].logical_task_id,) for task in evaluation.tasks)
+
+
+def test_proof_row_ids_are_unique_in_result_and_checkpoint_paths(tmp_path: Path) -> None:
+    rows = cutover_plan.expand_rows(
+        cutover_plan.load_grid(PROOF_GRID), facility="cannon", results_root=tmp_path / "results"
+    )
+    assert len({row["result_dir"] for row in rows}) == len(rows)
+    for row in rows:
+        assert Path(row["result_dir"]).parts.count(row["row_id"]) == 1
+        checkpoint = Path(row["checkpoint_dir"])
+        if row["kind"] == "train":
+            assert checkpoint.parts.count(row["row_id"]) == 1
+        else:
+            assert checkpoint.parts.count("seed-000") == 1
+
+
+def test_smoke_grid_bytes_and_expansion_are_unchanged(tmp_path: Path) -> None:
+    smoke_bytes = GRID.read_bytes()
+    assert hashlib.sha256(smoke_bytes).hexdigest() == "2b1a8a0a277a34e8c3b536cbfe27545b8e0f644ee9e1efebf15cb74f4e65d8e1"
+    rows = cutover_plan.expand_rows(cutover_plan.load_grid(GRID), facility="cannon", results_root=tmp_path)
+    assert [row["row_id"] for row in rows] == ["seed-000", "seed-000-chain-00", "seed-000-chain-01"]
 
 
 def test_every_row_id_occurs_once_in_its_result_and_checkpoint_paths(tmp_path: Path) -> None:

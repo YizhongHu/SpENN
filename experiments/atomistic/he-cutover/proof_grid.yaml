@@ -1,0 +1,26 @@
+schema: he-cutover-proof-grid/v1
+study: he-cutover
+train_config: experiments/atomistic/he-v1/configs/train.yaml
+eval_config: experiments/atomistic/he-v1/configs/eval.yaml
+train:
+  seed: 0
+  max_steps: 25
+  n_walkers: 16
+eval:
+  chains: 40
+  n_walkers: 16
+  n_draws: 4
+  burn_in: 4
+  discard_draws: 0
+  stride: 2
+  chunk_size: 16
+  task_names: [mcmc_energy]
+facilities:
+  cannon:
+    runtime: tpen-cu126
+    partition: gpu_test
+    stratum: a100_mig
+    timeout_min: 120
+    cpus: 4
+    mem_gb: 32
+    gpus: 1
