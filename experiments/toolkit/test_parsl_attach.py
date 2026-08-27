@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import types
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -281,6 +282,7 @@ def test_worker_binding_is_measured_not_selected_by_dispatch_index(tmp_path: Pat
             str(output),
             kwargs["attempt_id"],
             kwargs["visibility_variable"],
+            kwargs.get("visibility_value"),
         )
         observed.append(str(payload["inherited_visibility_value"]))
         return payload
@@ -292,6 +294,81 @@ def test_worker_binding_is_measured_not_selected_by_dispatch_index(tmp_path: Pat
 
     assert observed == ["3", "0"]
     assert observed != [context.visibility_values[i % 4] for i in range(2)]
+
+
+def test_rendered_provider_options_keep_single_node_legacy_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    _parsl_app_runner(_context(tmp_path), tmp_path / "launch")
+    assert captured["provider"] == {"init_blocks": 1, "min_blocks": 1, "max_blocks": 1}
+
+
+def test_rendered_provider_options_use_alcf_multinode_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=3)
+    _parsl_app_runner(context, tmp_path / "launch")
+    assert captured["provider"]["nodes_per_block"] == 3
+    assert captured["provider"]["launcher"].__dict__ == {
+        "bind_cmd": "--cpu-bind",
+        "overrides": "--depth=64 --ppn 1",
+    }
+    assert captured["provider"]["worker_init"] == "export TMPDIR=/tmp"
+    assert captured["executor"]["max_workers_per_node"] == 4
+    assert captured["executor"]["available_accelerators"] == ("0", "1", "2", "3")
+
+
+def _install_fake_parsl(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Provide tiny Parsl constructor doubles for rendered-config tests."""
+
+    captured: dict[str, Any] = {}
+
+    class Config:
+        def __init__(self, *, executors: list[Any], **kwargs: Any) -> None:
+            self.executors = executors
+            self.__dict__.update(kwargs)
+
+    class HighThroughputExecutor:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["executor"] = kwargs
+            self.__dict__.update(kwargs)
+
+    class LocalProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["provider"] = kwargs
+            self.__dict__.update(kwargs)
+
+    class MpiExecLauncher:
+        def __init__(self, **kwargs: Any) -> None:
+            self.__dict__.update(kwargs)
+            captured["provider_launcher"] = kwargs
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, dict) and self.__dict__ == other
+
+    parsl = types.ModuleType("parsl")
+    parsl.load = lambda config: None
+    config_module = types.ModuleType("parsl.config")
+    config_module.Config = Config
+    executors_module = types.ModuleType("parsl.executors")
+    executors_module.HighThroughputExecutor = HighThroughputExecutor
+    providers_module = types.ModuleType("parsl.providers")
+    providers_module.LocalProvider = LocalProvider
+    launchers_module = types.ModuleType("parsl.launchers")
+    launchers_module.MpiExecLauncher = MpiExecLauncher
+    app_module = types.ModuleType("parsl.app")
+    app_app_module = types.ModuleType("parsl.app.app")
+    app_app_module.python_app = lambda function: function
+    for name, module in {
+        "parsl": parsl,
+        "parsl.config": config_module,
+        "parsl.executors": executors_module,
+        "parsl.providers": providers_module,
+        "parsl.launchers": launchers_module,
+        "parsl.app": app_module,
+        "parsl.app.app": app_app_module,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(parsl, "load", lambda config: captured.update(config=config))
+    return captured
 
 
 def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
