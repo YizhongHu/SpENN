@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import cutover_strata
-import hev1
 
 
 def require_allocation(environ: Mapping[str, str] | None = None) -> str:
@@ -55,11 +54,14 @@ def output_overrides(row: Mapping[str, Any]) -> list[str]:
     return [f"run.root={result_dir.parent}", f"run.run_id={row['row_id']}", "run.layout=flat"]
 
 
-def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, str] | None = None, device_reader=hev1.driver.torch_device_name, runner=None) -> int:
+def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, str] | None = None, device_reader=None, runner=None) -> int:
     """Validate allocation/device and invoke the sanctioned TPEN entrypoint."""
 
     environ = os.environ if environ is None else environ
     require_allocation(environ)
+    import hev1
+
+    device_reader = device_reader or hev1.driver.torch_device_name
     delivered = device_reader()
     cutover_strata.check_delivered_device(facility=str(row["facility"]), stratum=str(row["resources"]["stratum"]), delivered=delivered)
     config_path = Path(__file__).resolve().parents[3] / str(row["config"])

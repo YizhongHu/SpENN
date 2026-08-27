@@ -76,8 +76,8 @@ def load_grid(path: str | Path) -> dict[str, Any]:
         expected_eval = {"chains": 40, "n_walkers": 16, "n_draws": 4, "burn_in": 4, "discard_draws": 0, "stride": 2, "chunk_size": 16, "task_names": ["mcmc_energy"]}
         if dict(evaluation) != expected_eval:
             raise PlanError("evaluation proof coordinates changed")
-        if set(facilities) != {"cannon"}:
-            raise PlanError("proof facility must be exactly cannon")
+        if set(facilities) != {"polaris", "polaris_scaling"}:
+            raise PlanError("proof facilities must be exactly polaris and polaris_scaling")
     else:
         expected_train = {"seeds": [0, 1, 2], "max_steps": 300000, "n_walkers": 4096, "checkpoint_steps": [100000, 200000, 300000]}
         if dict(train) != expected_train:

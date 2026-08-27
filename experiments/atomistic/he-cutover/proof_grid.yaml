@@ -16,11 +16,19 @@ eval:
   chunk_size: 16
   task_names: [mcmc_energy]
 facilities:
-  cannon:
-    runtime: tpen-cu126
-    partition: gpu_test
-    stratum: a100_mig
-    timeout_min: 120
+  polaris:
+    runtime: tpen-polaris
+    partition: debug
+    stratum: a100_40gb
+    timeout_min: 50
+    cpus: 4
+    mem_gb: 32
+    gpus: 1
+  polaris_scaling:
+    runtime: tpen-polaris
+    partition: debug-scaling
+    stratum: a100_40gb
+    timeout_min: 50
     cpus: 4
     mem_gb: 32
     gpus: 1

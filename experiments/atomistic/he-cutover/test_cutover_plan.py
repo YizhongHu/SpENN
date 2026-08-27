@@ -106,9 +106,10 @@ def test_production_plan_has_three_train_and_thirty_six_full_eval_rows(tmp_path:
     }
 
 
-def test_proof_plan_has_one_train_and_forty_eval_rows(tmp_path: Path) -> None:
+@pytest.mark.parametrize("facility", ["polaris", "polaris_scaling"])
+def test_proof_plan_has_one_train_and_forty_eval_rows(tmp_path: Path, facility: str) -> None:
     train, evaluation, manifest = cutover_plan.build_plans(
-        cutover_plan.load_grid(PROOF_GRID), facility="cannon", results_root=tmp_path / "results", plan_id="proof-1"
+        cutover_plan.load_grid(PROOF_GRID), facility=facility, results_root=tmp_path / "results", plan_id="proof-1"
     )
     assert [task.run_id for task in train.tasks] == ["seed-000"]
     assert len(evaluation.tasks) == 40
@@ -118,17 +119,19 @@ def test_proof_plan_has_one_train_and_forty_eval_rows(tmp_path: Path) -> None:
     assert {task.params["seed"] for task in evaluation.tasks} == set(range(1, 41))
 
 
-def test_proof_eval_rows_all_depend_on_single_train_row(tmp_path: Path) -> None:
+@pytest.mark.parametrize("facility", ["polaris", "polaris_scaling"])
+def test_proof_eval_rows_all_depend_on_single_train_row(tmp_path: Path, facility: str) -> None:
     train, evaluation, _ = cutover_plan.build_plans(
-        cutover_plan.load_grid(PROOF_GRID), facility="cannon", results_root=tmp_path / "results", plan_id="proof-1"
+        cutover_plan.load_grid(PROOF_GRID), facility=facility, results_root=tmp_path / "results", plan_id="proof-1"
     )
     assert len(train.tasks) == 1
     assert all(task.dependencies == (train.tasks[0].logical_task_id,) for task in evaluation.tasks)
 
 
-def test_proof_row_ids_are_unique_in_result_and_checkpoint_paths(tmp_path: Path) -> None:
+@pytest.mark.parametrize("facility", ["polaris", "polaris_scaling"])
+def test_proof_row_ids_are_unique_in_result_and_checkpoint_paths(tmp_path: Path, facility: str) -> None:
     rows = cutover_plan.expand_rows(
-        cutover_plan.load_grid(PROOF_GRID), facility="cannon", results_root=tmp_path / "results"
+        cutover_plan.load_grid(PROOF_GRID), facility=facility, results_root=tmp_path / "results"
     )
     assert len({row["result_dir"] for row in rows}) == len(rows)
     for row in rows:
