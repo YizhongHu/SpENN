@@ -51,3 +51,16 @@ def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
                 stack.extend(value)
             elif isinstance(value, str):
                 assert not value.startswith("/")
+
+
+def test_hev1_is_the_only_cross_study_path_accessor_and_configs_are_referenced() -> None:
+    study = Path(__file__).resolve().parent
+    accessors = {
+        path.name
+        for path in study.glob("*.py")
+        if "sys.path.insert" in path.read_text(encoding="utf-8")
+    }
+    assert accessors == {"hev1.py"}
+    assert not (study / "configs").exists()
+    forbidden_basenames = {"layout", "strata", "plan", "driver", "eval", "collect", "canary", "launch"}
+    assert not ({path.stem for path in study.glob("*.py")} & forbidden_basenames)
