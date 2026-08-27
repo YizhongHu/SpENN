@@ -47,7 +47,7 @@ def test_cannon_directives_and_runtime_policy() -> None:
 
 def test_polaris_directives_and_runtime_policy() -> None:
     text = (TEMPLATES / "polaris_smoke.pbs").read_text(encoding="utf-8")
-    for required in ("-A HetRxnEnergy", "-q debug", "select=1", "walltime=00:50:00", "filesystems=home:eagle", "-k doe", "LD_LIBRARY_PATH", "-m uv sync --project", "--inexact --locked --extra parsl"):
+    for required in ("-A HetRxnEnergy", "-q debug", "select=1", "walltime=00:50:00", "filesystems=home:eagle", "-k doe", "LD_LIBRARY_PATH"):
         assert required in text
     assert 'PYTHONPATH="${TPEN_CHECKOUT:?}${PYTHONPATH:+:$PYTHONPATH}" "$TPEN_UV_ENV/bin/python"' in text
     assert ': "${TPEN_CUDA13_LIB:?}"' in text
@@ -61,6 +61,14 @@ def test_polaris_directives_and_runtime_policy() -> None:
     assert not any(line.lstrip().startswith("uv ") for line in text.splitlines())
 
 
+def test_polaris_template_only_reads_operator_overlay() -> None:
+    text = (TEMPLATES / "polaris_smoke.pbs").read_text(encoding="utf-8")
+    assert "UV_PROJECT_ENVIRONMENT" not in text
+    assert "uv sync" not in text
+    assert 'export PATH="$TPEN_UV_ENV/bin${PATH:+:$PATH}"' in text
+    assert '"$TPEN_UV_ENV/bin/python"' in text
+
+
 def test_operator_runbook_uses_facility_owned_uv_entrypoints() -> None:
     text = README.read_text(encoding="utf-8")
     assert "development checkout" in text
@@ -70,7 +78,9 @@ def test_operator_runbook_uses_facility_owned_uv_entrypoints() -> None:
     assert 'case "$TPEN_UV" in /*)' in text
     assert text.count('PYTHONPATH="${TPEN_CHECKOUT:?checkout root required}${PYTHONPATH:+:$PYTHONPATH}"') == 2
     assert '"$TPEN_UV" run --project "$TPEN_CHECKOUT" --locked --extra cpu' in text
-    assert '"$TPEN_PYBIN" -m uv sync --project "$TPEN_CHECKOUT" --inexact --locked --extra parsl' in text
+    assert "A syncing `uv` must never target this overlay" in text
+    assert 'export PATH="$TPEN_UV_ENV/bin${PATH:+:$PATH}"' in text
+    assert '"$TPEN_UV_ENV/bin/python"' in text
     assert '"$TPEN_UV_ENV/bin/python" "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/cutover_plan.py" --facility polaris' in text
     assert "TPEN_CUDA13_LIB" in text
     assert "TPEN_CUDA129_LIB" in text
