@@ -577,14 +577,54 @@ def test_allocation_context_explicit_deadline_wins() -> None:
     assert context.deadline_unix({"PBS_JOB_END_TIME": "1700000000"}) == 1800000000.0
 
 
-def test_allocation_context_rejects_empty_visibility_values() -> None:
-    """An attach context with no workers cannot bind accelerators."""
+def test_allocation_context_empty_visibility_values_inherits_and_round_trips() -> None:
+    """An empty binding leaves visibility ownership with the scheduler."""
 
-    with pytest.raises(ValueError, match="visibility_values must be non-empty"):
+    context = AllocationContext(
+        allocation_id="alloc-1",
+        visibility_variable="CUDA_VISIBLE_DEVICES",
+        visibility_values=(),
+    ).validate()
+
+    serialized = json.loads(json.dumps(context.to_dict()))
+    round_tripped = AllocationContext(
+        **{**serialized, "visibility_values": tuple(serialized["visibility_values"])}
+    ).validate()
+
+    assert serialized["visibility_values"] == []
+    assert round_tripped == context
+
+
+def test_allocation_context_rejects_blank_visibility_entry() -> None:
+    """Worker-specific bindings cannot contain an empty visibility value."""
+
+    with pytest.raises(ValueError, match="visibility_values"):
         AllocationContext(
             allocation_id="alloc-1",
             visibility_variable="CUDA_VISIBLE_DEVICES",
-            visibility_values=(),
+            visibility_values=("0", " "),
+        ).validate()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"allocation_id": " "}, "allocation_id"),
+        ({"visibility_variable": " "}, "visibility_variable"),
+        ({"deadline_guard_min": -1}, "deadline_guard_min"),
+    ],
+)
+def test_allocation_context_keeps_other_validation_rules(
+    kwargs: dict[str, str | int], message: str
+) -> None:
+    """The inherit correction does not relax unrelated attach validation."""
+
+    with pytest.raises(ValueError, match=message):
+        AllocationContext(
+            allocation_id="alloc-1",
+            visibility_variable="CUDA_VISIBLE_DEVICES",
+            visibility_values=("0",),
+            **kwargs,
         ).validate()
 
 
