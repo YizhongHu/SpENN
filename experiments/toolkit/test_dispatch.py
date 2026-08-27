@@ -595,6 +595,70 @@ def test_allocation_context_empty_visibility_values_inherits_and_round_trips() -
     assert round_tripped == context
 
 
+def test_allocation_context_defaults_nodes_per_block_to_none_and_omits_it() -> None:
+    """The optional node requirement is absent from legacy payloads."""
+
+    context = AllocationContext(
+        allocation_id="alloc-1",
+        visibility_variable="CUDA_VISIBLE_DEVICES",
+        visibility_values=(),
+    ).validate()
+
+    assert context.nodes_per_block is None
+    assert "nodes_per_block" not in context.to_dict()
+
+
+def test_allocation_context_nodes_per_block_round_trips() -> None:
+    """A declared node requirement survives JSON-compatible serialization."""
+
+    context = AllocationContext(
+        allocation_id="alloc-1",
+        visibility_variable="CUDA_VISIBLE_DEVICES",
+        visibility_values=(),
+        nodes_per_block=2,
+    ).validate()
+
+    serialized = json.loads(json.dumps(context.to_dict()))
+    round_tripped = AllocationContext(
+        **{**serialized, "visibility_values": tuple(serialized["visibility_values"])}
+    ).validate()
+
+    assert serialized["nodes_per_block"] == 2
+    assert round_tripped == context
+
+
+@pytest.mark.parametrize("nodes_per_block", [0, -1])
+def test_allocation_context_rejects_non_positive_nodes_per_block(nodes_per_block: int) -> None:
+    """Node blocks must request at least one node."""
+
+    with pytest.raises(ValueError, match="nodes_per_block"):
+        AllocationContext(
+            allocation_id="alloc-1",
+            visibility_variable="CUDA_VISIBLE_DEVICES",
+            visibility_values=(),
+            nodes_per_block=nodes_per_block,
+        ).validate()
+
+
+def test_allocation_context_legacy_serialization_is_byte_identical() -> None:
+    """Legacy serialization remains an explicit, byte-for-byte payload."""
+
+    context = AllocationContext(
+        allocation_id="alloc-1",
+        visibility_variable="CUDA_VISIBLE_DEVICES",
+        visibility_values=(),
+    ).validate()
+
+    actual = json.dumps(context.to_dict(), separators=(",", ":")).encode()
+    expected = (
+        b'{"allocation_id":"alloc-1","visibility_variable":"CUDA_VISIBLE_DEVICES",'
+        b'"visibility_values":[],"run_root":null,"deadline":null,'
+        b'"deadline_env_var":null,"deadline_guard_min":1,"environment":{}}'
+    )
+
+    assert actual == expected
+
+
 def test_allocation_context_rejects_blank_visibility_entry() -> None:
     """Worker-specific bindings cannot contain an empty visibility value."""
 

@@ -609,6 +609,9 @@ class AllocationContext:
         Minutes before the deadline at which workers stop claiming new work.
     environment : Mapping of str to str
         Extra environment entries inherited by every task.
+    nodes_per_block : int, optional
+        Number of nodes required per execution block. ``None`` preserves the
+        legacy single-node attach behavior and is omitted from serialization.
     """
 
     allocation_id: str
@@ -619,6 +622,7 @@ class AllocationContext:
     deadline_env_var: str | None = None
     deadline_guard_min: int = 1
     environment: Mapping[str, str] = field(default_factory=dict)
+    nodes_per_block: int | None = None
 
     def validate(self) -> "AllocationContext":
         """Validate the attach contract and return ``self``.
@@ -641,6 +645,8 @@ class AllocationContext:
         _require_non_empty_sequence("visibility_values", self.visibility_values)
         if self.deadline_guard_min < 0:
             raise ValueError("allocation context deadline_guard_min must be non-negative")
+        if self.nodes_per_block is not None and self.nodes_per_block <= 0:
+            raise ValueError("allocation context nodes_per_block must be positive")
         return self
 
     def deadline_unix(self, environ: Mapping[str, str] | None = None) -> float | None:
@@ -674,7 +680,7 @@ class AllocationContext:
             Serialized attach context.
         """
 
-        return {
+        serialized = {
             "allocation_id": self.allocation_id,
             "visibility_variable": self.visibility_variable,
             "visibility_values": list(self.visibility_values),
@@ -684,6 +690,9 @@ class AllocationContext:
             "deadline_guard_min": self.deadline_guard_min,
             "environment": {str(key): str(value) for key, value in self.environment.items()},
         }
+        if self.nodes_per_block is not None:
+            serialized["nodes_per_block"] = self.nodes_per_block
+        return serialized
 
 
 def mint_admission_id(label: str) -> str:
