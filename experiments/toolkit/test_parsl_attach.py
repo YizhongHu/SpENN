@@ -304,6 +304,9 @@ def test_rendered_provider_options_keep_single_node_legacy_shape(tmp_path: Path,
 
 def test_rendered_provider_options_use_alcf_multinode_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _install_fake_parsl(monkeypatch)
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\nnode-03\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
     context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=3)
     _parsl_app_runner(context, tmp_path / "launch")
     assert captured["provider"]["nodes_per_block"] == 3
