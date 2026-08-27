@@ -55,9 +55,8 @@ def run_pipeline(*, train_plan: StagePlanV2, eval_plan: StagePlanV2, facility: s
         records.extend(executor.dispatch(train, context=context))
         if not all(task.completion.is_complete() for task in train_plan.tasks):
             raise RuntimeError("training completion barrier failed")
-        hev1.eval_stage.require_complete_checkpoint(
-            train_plan.tasks[0].params["checkpoint_dir"]
-        )
+        for task in eval_plan.tasks:
+            hev1.eval_stage.require_complete_checkpoint(task.params["checkpoint_dir"])
         evaluation = admit_plan(eval_plan, admission_id=admission_id, cwd=Path.cwd(), environment={}, python=python)
         write_dispatch_specs(launch / "03_eval" / "dispatch_specs.jsonl", evaluation)
         records.extend(executor.dispatch(evaluation, context=context))

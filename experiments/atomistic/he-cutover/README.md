@@ -51,3 +51,14 @@ qsub -v TPEN_CHECKOUT,TPEN_RESULTS_ROOT,TPEN_UV_ENV,TPEN_LIBSHIM,TPEN_CUDA13_LIB
 ```
 
 Success is scheduler exit status zero and `verification.json` containing `"complete": true` and `"exit_code": 0`. S1 and S2 own real smoke submissions; P2 only prepares and unit-tests these files.
+
+## Full production
+
+`production_grid.yaml` is separate from the immutable smoke grid. It expands the
+frozen He-v1 production science to three 300,000-step training seeds and 36
+evaluations: three declared checkpoints by four fresh chains for each seed,
+using all ten tasks selected by `configs/eval.yaml`. Plan it explicitly with
+`--grid experiments/atomistic/he-cutover/production_grid.yaml` and submit
+`templates/polaris_production.pbs` only after inspecting all 39 rows and passing
+the full dry-run path/cardinality gate. The production template targets the
+operator-selected `capacity` queue and logs the checkout's own full HEAD SHA.

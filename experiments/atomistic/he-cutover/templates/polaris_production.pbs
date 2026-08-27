@@ -1,0 +1,25 @@
+#!/bin/bash -l
+#PBS -N he-cutover-full
+#PBS -A HetRxnEnergy
+#PBS -q capacity
+#PBS -l select=1
+#PBS -l walltime=96:00:00
+#PBS -l filesystems=home:eagle
+#PBS -o /dev/null
+#PBS -e /dev/null
+set -euo pipefail
+: "${TPEN_CHECKOUT:?}"
+: "${TPEN_RESULTS_ROOT:?}"
+: "${TPEN_UV_ENV:?}"
+: "${TPEN_LIBSHIM:?}"
+: "${TPEN_CUDA13_LIB:?}"
+: "${TPEN_CUDA129_LIB:?}"
+: "${TPEN_PLAN_ATTEMPT_ID:?}"
+mkdir -p "${TPEN_RESULTS_ROOT:?}/scheduler"
+exec >"${TPEN_RESULTS_ROOT:?}/scheduler/pbs-${PBS_JOBID:?}.out" 2>"${TPEN_RESULTS_ROOT:?}/scheduler/pbs-${PBS_JOBID:?}.err"
+printf 'TPEN_CHECKOUT_HEAD=%s\n' "$(git -C "$TPEN_CHECKOUT" rev-parse HEAD)"
+export LD_LIBRARY_PATH="$TPEN_LIBSHIM:$TPEN_CUDA13_LIB:$TPEN_CUDA129_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH="$TPEN_UV_ENV/bin${PATH:+:$PATH}"
+PYTHONPATH="${TPEN_CHECKOUT:?}${PYTHONPATH:+:$PYTHONPATH}" "$TPEN_UV_ENV/bin/python" "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/pipeline.py" \
+  --plan-dir "$TPEN_RESULTS_ROOT/00_plan/$TPEN_PLAN_ATTEMPT_ID" --facility polaris \
+  --launch-dir "$TPEN_RESULTS_ROOT/01_launch/$TPEN_PLAN_ATTEMPT_ID" --admission-id "$TPEN_PLAN_ATTEMPT_ID"
