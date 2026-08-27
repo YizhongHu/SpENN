@@ -596,7 +596,9 @@ class AllocationContext:
     visibility_variable : str
         Per-worker environment variable, such as ``CUDA_VISIBLE_DEVICES``.
     visibility_values : tuple of str
-        One visibility value per worker, in worker-index order.
+        One visibility value per worker, in worker-index order. An empty tuple
+        means inherit mode: no per-worker visibility binding is applied because
+        the scheduler owns the variable.
     run_root : str, optional
         Root under which claim state lives. ``None`` means the caller decides.
     deadline : str or float, optional
@@ -629,14 +631,13 @@ class AllocationContext:
         Raises
         ------
         ValueError
-            If a required string is blank, ``visibility_values`` is empty or
-            contains a blank entry, or the guard is negative.
+            If a required string is blank, ``visibility_values`` contains a
+            blank entry, or the guard is negative. An empty
+            ``visibility_values`` tuple is valid inherit mode.
         """
 
         _require_non_empty("allocation_id", self.allocation_id)
         _require_non_empty("visibility_variable", self.visibility_variable)
-        if not self.visibility_values:
-            raise ValueError("allocation context visibility_values must be non-empty")
         _require_non_empty_sequence("visibility_values", self.visibility_values)
         if self.deadline_guard_min < 0:
             raise ValueError("allocation context deadline_guard_min must be non-negative")
