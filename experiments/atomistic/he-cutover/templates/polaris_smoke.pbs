@@ -9,15 +9,15 @@
 set -euo pipefail
 : "${TPEN_CHECKOUT:?}"
 : "${TPEN_RESULTS_ROOT:?}"
-: "${TPEN_PYBIN:?}"
 : "${TPEN_UV_ENV:?}"
 : "${TPEN_LIBSHIM:?}"
 : "${TPEN_CUDA13_LIB:?}"
 : "${TPEN_CUDA129_LIB:?}"
 : "${TPEN_PLAN_ATTEMPT_ID:?}"
 export LD_LIBRARY_PATH="$TPEN_LIBSHIM:$TPEN_CUDA13_LIB:$TPEN_CUDA129_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export UV_PROJECT_ENVIRONMENT="$TPEN_UV_ENV"
-"$TPEN_PYBIN" -m uv sync --project "$TPEN_CHECKOUT" --inexact --locked --extra parsl
+# The operator owns this facility-inheriting overlay.  A syncing uv must never
+# target it: uv may recreate project environments as isolated virtualenvs.
+export PATH="$TPEN_UV_ENV/bin${PATH:+:$PATH}"
 PYTHONPATH="${TPEN_CHECKOUT:?}${PYTHONPATH:+:$PYTHONPATH}" "$TPEN_UV_ENV/bin/python" "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/pipeline.py" \
   --plan-dir "$TPEN_RESULTS_ROOT/00_plan/$TPEN_PLAN_ATTEMPT_ID" --facility polaris \
   --launch-dir "$TPEN_RESULTS_ROOT/01_launch/$TPEN_PLAN_ATTEMPT_ID" --admission-id "$TPEN_PLAN_ATTEMPT_ID"
