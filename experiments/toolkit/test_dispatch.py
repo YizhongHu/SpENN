@@ -621,10 +621,12 @@ def test_allocation_context_keeps_other_validation_rules(
 
     with pytest.raises(ValueError, match=message):
         AllocationContext(
-            allocation_id="alloc-1",
-            visibility_variable="CUDA_VISIBLE_DEVICES",
-            visibility_values=("0",),
-            **kwargs,
+            **{
+                "allocation_id": "alloc-1",
+                "visibility_variable": "CUDA_VISIBLE_DEVICES",
+                "visibility_values": ("0",),
+                **kwargs,
+            }
         ).validate()
 
 
