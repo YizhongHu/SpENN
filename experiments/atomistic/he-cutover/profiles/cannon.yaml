@@ -1,0 +1,8 @@
+schema: he-cutover-runtime-profile/v1
+facility: cannon
+runtimes:
+  tpen-cu126:
+    binding: inherit
+    interpreter: uv-managed
+    available_accelerators: null
+
