@@ -355,7 +355,7 @@ def test_worker_binding_is_measured_not_selected_by_dispatch_index(tmp_path: Pat
     assert observed != [context.visibility_values[i % 4] for i in range(2)]
 
 
-def test_rendered_provider_options_keep_single_node_legacy_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rendered_provider_options_keep_single_node_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _install_fake_parsl(monkeypatch)
     _parsl_app_runner(_context(tmp_path), tmp_path / "launch")
     assert captured["provider"] == {"init_blocks": 1, "min_blocks": 1, "max_blocks": 1}

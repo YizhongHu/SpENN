@@ -20,7 +20,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .dispatch import AllocationContext, DispatchRecord, DispatchSpec
 from .task_state import _deadline_guard_reached
-from .placement import capture_attempt_placement
 
 
 _HOSTNAME_PATTERN = re.compile(
@@ -132,9 +131,40 @@ def _run_dispatch_payload(
     if visibility_variable is not None and visibility_value is not None:
         worker_environment[visibility_variable] = visibility_value
     started_at = time.time()
-    placement = capture_attempt_placement(
-        attempt_id=attempt_id, cwd=cwd, result_dir=output_directory, started_at_unix=started_at
-    )
+    # Keep this worker payload stdlib-only. Parsl serializes it by value, and
+    # importing the toolkit here would make worker deserialization depend on
+    # the submission checkout being present on every worker's sys.path.
+    import socket
+
+    hostname = socket.gethostname().lower()
+    placement: dict[str, Any] = {
+        "attempt_id": attempt_id,
+        "hostname": hostname,
+        "fqdn": socket.getfqdn(),
+        "pbs_job_id": os.environ.get("PBS_JOBID"),
+        "identity": os.environ.get("PARSL_WORKER_ID") or os.environ.get("PARSL_MANAGER_ID"),
+        "registration_at_unix": started_at,
+        "pid": os.getpid(),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+        "cuda_visible_devices": worker_environment.get("CUDA_VISIBLE_DEVICES"),
+        "cwd": str(Path(cwd).resolve()),
+        "result_dir": str(output_path.resolve()),
+        "started_at_unix": started_at,
+        "gpus": [],
+    }
+    try:
+        query = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,uuid,pci.bus_id", "--format=csv,noheader,nounits"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        query = None
+    if query is not None and query.returncode == 0:
+        for line in query.stdout.splitlines():
+            name, uuid, bus_id = (part.strip() for part in line.split(",", 2))
+            placement["gpus"].append({"name": name, "uuid": uuid, "pci_bus_id": bus_id})
     launch_error: str | None = None
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         try:
