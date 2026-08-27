@@ -128,6 +128,8 @@ def validate_placement_evidence(
         raise ValueError("requested node count does not equal unique nodefile hosts")
     if set(manager_hosts) != allocated:
         raise ValueError("observed manager host set does not equal allocated host set")
+    if manifest.expected_managers and len(manager_hosts) != manifest.expected_managers:
+        raise ValueError("observed manager count does not equal expected manager count")
     physical = [gpu_id for attempt in attempts for gpu_id in attempt.physical_gpu_ids]
     if len(physical) != 4 * manifest.requested_nodes or len(set(physical)) != 4 * manifest.requested_nodes:
         raise ValueError("placement census is not exactly four distinct physical GPUs per allocated node")
@@ -136,6 +138,8 @@ def validate_placement_evidence(
     if {attempt.hostname for attempt in attempts} != allocated:
         raise ValueError("placement records do not cover every allocated host")
     if worker_count is not None and worker_count != len(attempts):
+        raise ValueError("observed worker count does not equal expected worker count")
+    if manifest.expected_workers and worker_count != manifest.expected_workers:
         raise ValueError("observed worker count does not equal expected worker count")
     if any(not completion_ok.get(attempt.attempt_id, False) for attempt in attempts):
         raise ValueError("at least one row completion predicate failed")
@@ -176,6 +180,7 @@ def capture_attempt_placement(*, attempt_id: str, cwd: str, result_dir: str, sta
         "fqdn": socket.getfqdn(),
         "pbs_job_id": os.environ.get("PBS_JOBID"),
         "identity": os.environ.get("PARSL_WORKER_ID") or os.environ.get("PARSL_MANAGER_ID"),
+        "registration_at_unix": started_at_unix,
         "pid": os.getpid(),
         "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
