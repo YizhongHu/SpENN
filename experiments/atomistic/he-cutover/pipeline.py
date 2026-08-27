@@ -29,12 +29,12 @@ def allocation_context(*, facility: str, run_root: str | Path, environ: Mapping[
     return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={}).validate()
 
 
-def preflight_dispatch(*, context: AllocationContext, cwd: str | Path, admission_id: str, runtime: str) -> DispatchSpec:
+def preflight_dispatch(*, context: AllocationContext, cwd: str | Path, admission_id: str, runtime: str, python: str) -> DispatchSpec:
     """Create the worker-side environment and torch.cuda probe."""
 
     code = "import os,sys; print(sys.executable); print(sys.version); assert sys.version_info >= (3,10); import torch; print(os.environ.get('CUDA_VISIBLE_DEVICES')); print(torch.cuda.get_device_name(0)); assert torch.cuda.is_available()"
     from experiments.toolkit.specs import CompletionSpec
-    return DispatchSpec("preflight", admission_id, f"{admission_id}:preflight", "01_preflight", "preflight", (sys.executable, "-c", code), str(context.run_root), runtime, str(cwd), completion=CompletionSpec(policy="none"))
+    return DispatchSpec("preflight", admission_id, f"{admission_id}:preflight", "01_preflight", "preflight", (python, "-c", code), str(context.run_root), runtime, str(cwd), completion=CompletionSpec(policy="none"))
 
 
 def run_pipeline(*, train_plan: StagePlanV2, eval_plan: StagePlanV2, facility: str, launch_dir: str | Path, admission_id: str, executor=None, environ: Mapping[str, str] | None = None) -> int:
@@ -48,8 +48,9 @@ def run_pipeline(*, train_plan: StagePlanV2, eval_plan: StagePlanV2, facility: s
     verification = {"schema": "he-cutover-verification/v1", "complete": False, "exit_code": 1, "stages": []}
     try:
         runtime = str(train_plan.tasks[0].metadata["runtime"])
-        records.extend(executor.dispatch((preflight_dispatch(context=context, cwd=Path.cwd(), admission_id=admission_id, runtime=runtime),), context=context))
-        train = admit_plan(train_plan, admission_id=admission_id, cwd=Path.cwd(), environment={})
+        python = sys.executable
+        records.extend(executor.dispatch((preflight_dispatch(context=context, cwd=Path.cwd(), admission_id=admission_id, runtime=runtime, python=python),), context=context))
+        train = admit_plan(train_plan, admission_id=admission_id, cwd=Path.cwd(), environment={}, python=python)
         write_dispatch_specs(launch / "02_train" / "dispatch_specs.jsonl", train)
         records.extend(executor.dispatch(train, context=context))
         if not all(task.completion.is_complete() for task in train_plan.tasks):
@@ -57,7 +58,7 @@ def run_pipeline(*, train_plan: StagePlanV2, eval_plan: StagePlanV2, facility: s
         hev1.eval_stage.require_complete_checkpoint(
             train_plan.tasks[0].params["checkpoint_dir"]
         )
-        evaluation = admit_plan(eval_plan, admission_id=admission_id, cwd=Path.cwd(), environment={})
+        evaluation = admit_plan(eval_plan, admission_id=admission_id, cwd=Path.cwd(), environment={}, python=python)
         write_dispatch_specs(launch / "03_eval" / "dispatch_specs.jsonl", evaluation)
         records.extend(executor.dispatch(evaluation, context=context))
         verification.update(complete=True, exit_code=0, stages=["01_preflight", "02_train", "03_eval"])
