@@ -129,7 +129,7 @@ def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monk
     assert config.run_dir == str(tmp_path / "launch" / "parsl")
     assert config.usage_tracking is False
     assert executor.max_workers_per_node == 1
-    assert executor.available_accelerators == ("0",)
+    assert executor.available_accelerators == ["0"]
 
     _parsl_app_runner(
         _context(tmp_path, visibility_values=()),
