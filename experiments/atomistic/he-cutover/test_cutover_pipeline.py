@@ -78,10 +78,15 @@ def test_preflight_failure_prevents_all_science_and_is_truthful(tmp_path: Path) 
     assert (code, verification["exit_code"], verification["complete"]) == (1, 1, False)
 
 
-def test_missing_train_completion_prevents_eval_and_is_truthful(tmp_path: Path) -> None:
+def test_missing_train_completion_prevents_eval_and_is_truthful(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     train, evaluation = _plans(tmp_path)
     executor = RecordingExecutor(materialize_completion=False)
+    checkpoint_checks = []
+    monkeypatch.setattr(pipeline.hev1.eval_stage, "require_complete_checkpoint", checkpoint_checks.append)
     code = pipeline.run_pipeline(train_plan=train, eval_plan=evaluation, facility="cannon", launch_dir=tmp_path / "launch", admission_id="a", executor=executor, environ={"SLURM_JOB_ID": "1", "CUDA_VISIBLE_DEVICES": "MIG-owned-by-slurm"})
     verification = json.loads((tmp_path / "launch/verification.json").read_text())
     assert executor.stages == ["01_preflight", "02_train"]
+    assert checkpoint_checks == []
+    assert not (tmp_path / "launch/03_eval/dispatch_specs.jsonl").exists()
+    assert "training completion barrier failed" in verification["error"]
     assert (code, verification["exit_code"], verification["complete"]) == (1, 1, False)
