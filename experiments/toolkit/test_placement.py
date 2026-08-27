@@ -32,12 +32,12 @@ def _attempt(host: str, attempt_id: str, *, uuids: tuple[str, ...] | None = None
     )
 
 
-def _green(*, attempts=None, managers=HOSTS, admission=NOW, planned=None, census=None, row_hosts=None):
+def _green(*, attempts=None, managers=HOSTS, admission=NOW, planned=None, census=None, row_hosts=None, completed=None):
     attempts = attempts or tuple(_attempt(host, f"row-{index}") for index, host in enumerate(HOSTS))
     return validate_placement_evidence(
         manifest=AllocationManifest.from_nodefile("\n".join(HOSTS) + "\n", requested_nodes=2),
         attempts=attempts, dispatch_ids=tuple(item.attempt_id for item in attempts),
-        completed_result_dirs=tuple(item.result_dir for item in attempts), admission_time_unix=admission,
+        completed_result_dirs=completed or tuple(item.result_dir for item in attempts), admission_time_unix=admission,
         completion_ok={item.attempt_id: True for item in attempts}, manager_hosts=managers,
         worker_count=len(attempts), planned_result_dirs=planned,
         gpu_census=census, row_hosts=row_hosts,
@@ -50,7 +50,7 @@ def test_valid_two_node_census_is_green() -> None:
 
 def test_all_tasks_on_first_host_rejected() -> None:
     attempts = tuple(_attempt(HOSTS[0], f"row-{index}") for index in range(2))
-    with pytest.raises(ValueError, match="four distinct physical GPUs|every allocated host"):
+    with pytest.raises(ValueError, match="placement records do not cover every allocated host"):
         _green(attempts=attempts, managers=HOSTS, census=(_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1")), row_hosts=(HOSTS[0], HOSTS[0]))
 
 
@@ -69,7 +69,7 @@ def test_repeated_physical_gpu_uuid_rejected() -> None:
 def test_fewer_observed_nodes_than_allocated_rejected() -> None:
     attempts = (_attempt(HOSTS[0], "row-0"),)
     census = (_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1"))
-    with pytest.raises(ValueError, match="four distinct physical GPUs|every allocated host"):
+    with pytest.raises(ValueError, match="placement records do not cover every allocated host"):
         _green(attempts=attempts, census=census)
 
 
@@ -84,8 +84,8 @@ def test_doubly_nested_result_directory_rejected() -> None:
     attempts = tuple(_attempt(host, f"row-{index}", result=f"/runs/results/row-{index}/row-{index}") for index, host in enumerate(HOSTS))
     census = (_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1"))
     planned = {f"row-{index}": f"/runs/results/row-{index}" for index in range(2)}
-    with pytest.raises(ValueError, match="exact planned directory"):
-        _green(attempts=attempts, planned=planned, census=census)
+    with pytest.raises(ValueError, match="completed result directory is not the exact planned directory"):
+        _green(attempts=attempts, planned=planned, census=census, completed=tuple(planned.values()))
 
 
 def test_unknown_and_contradictory_hostnames_fail_closed() -> None:
@@ -97,7 +97,7 @@ def test_unknown_and_contradictory_hostnames_fail_closed() -> None:
 
 def test_scheduler_tiers_are_cross_checked() -> None:
     manifest = AllocationManifest.from_nodefile("\n".join(HOSTS), requested_nodes=2, scheduler_tiers={HOSTS[0]: {"tier0": "wrong", "tier1": "g0"}})
-    with pytest.raises(ValueError, match="contradict"):
+    with pytest.raises(ValueError, match="scheduler topology tiers contradict hostname decoding"):
         validate_placement_evidence(
             manifest=manifest, attempts=(_attempt(HOSTS[0], "row-0"), _attempt(HOSTS[1], "row-1")),
             dispatch_ids=("row-0", "row-1"), completed_result_dirs=("/runs/results/row-0", "/runs/results/row-1"),
