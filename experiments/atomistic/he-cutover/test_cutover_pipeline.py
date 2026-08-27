@@ -69,7 +69,7 @@ def test_nodes_per_block_intent_two_selects_multinode_path(tmp_path: Path) -> No
     context = pipeline.allocation_context(
         facility="polaris",
         run_root=tmp_path / "two",
-        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2", "PBS_NODEFILE": str(nodefile)},
+        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2"},
     )
     assert context.nodes_per_block == 2
     assert context.visibility_values == ("0", "1", "2", "3")
@@ -81,7 +81,7 @@ def test_nodefile_guard_compares_hosts_with_independent_pipeline_intent(tmp_path
     context = pipeline.allocation_context(
         facility="polaris",
         run_root=tmp_path / "two",
-        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2"},
+        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2", "PBS_NODEFILE": str(nodefile)},
     )
     assert context.nodes_per_block == 2
     with pytest.raises(RuntimeError, match=r"actual host count 1.*expected 2"):
