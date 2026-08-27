@@ -1,4 +1,8 @@
-"""Durable task and stage plan specifications."""
+"""Durable task and stage plan specifications.
+
+This is the legacy surface, retained for the stale Hooke studies only. New
+work imports ``experiments.toolkit.dispatch``.
+"""
 
 from __future__ import annotations
 
