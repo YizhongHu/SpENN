@@ -1,4 +1,8 @@
-"""Executor interfaces and launcher adapters."""
+"""Executor interfaces and launcher adapters.
+
+This is the legacy surface, retained for the stale Hooke studies only. New
+work imports ``experiments.toolkit.dispatch``.
+"""
 
 from __future__ import annotations
 
