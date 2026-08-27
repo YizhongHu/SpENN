@@ -174,6 +174,16 @@ def test_inherit_visibility_keeps_scheduler_binding(tmp_path: Path, monkeypatch:
     assert payload["returncode"] == 0
     assert (output / "stdout.log").read_text() == "scheduler-mig\n"
 
+    parsl = pytest.importorskip("parsl")
+    captured: dict[str, Any] = {}
+
+    def fake_load(config: Any) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(parsl, "load", fake_load)
+    _parsl_app_runner(context, tmp_path / "inherit-launch")
+    assert captured["config"].executors[0].max_workers_per_node == 1
+
 
 def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     parsl = pytest.importorskip("parsl")
