@@ -1,4 +1,8 @@
-"""Execution records shared by replaceable experiment backends."""
+"""Execution records shared by replaceable experiment backends.
+
+This is the legacy surface, retained for the stale Hooke studies only. New
+work imports ``experiments.toolkit.dispatch``.
+"""
 
 from __future__ import annotations
 
