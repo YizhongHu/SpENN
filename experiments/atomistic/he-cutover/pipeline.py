@@ -66,6 +66,8 @@ def run_pipeline(*, train_plan: StagePlanV2, eval_plan: StagePlanV2, facility: s
         verification["error"] = repr(exc)
         return 1
     finally:
+        if isinstance(executor, ParslAttachExecutor):
+            executor.close()
         write_dispatch_records(launch, records)
         (launch / "verification.json").write_text(json.dumps(verification, indent=2) + "\n", encoding="utf-8")
 

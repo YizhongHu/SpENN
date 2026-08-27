@@ -7,11 +7,13 @@ the optional ``parsl`` extra.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import subprocess
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -93,6 +95,14 @@ class ParslAttachExecutor:
     """
 
     app_runner: AppRunner | None = None
+    _runner: AppRunner | None = field(default=None, init=False, repr=False, compare=False)
+    _context_key: str | None = field(default=None, init=False, repr=False, compare=False)
+    _runner_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def dispatch(
         self,
@@ -117,7 +127,7 @@ class ParslAttachExecutor:
             raise ValueError("ParslAttachExecutor requires context.run_root as the launch attempt directory")
 
         launch_attempt_dir = Path(context.run_root)
-        runner = self.app_runner or _parsl_app_runner(context, launch_attempt_dir)
+        runner = self.app_runner or self._real_runner(context, launch_attempt_dir)
         submitted: list[tuple[DispatchSpec, Any]] = []
         for index, dispatch in enumerate(ready_dispatches):
             output_directory = launch_attempt_dir / "dispatch" / dispatch.attempt_id
@@ -154,6 +164,37 @@ class ParslAttachExecutor:
                 )
             )
         return tuple(records)
+
+    def _real_runner(self, context: AllocationContext, launch_attempt_dir: Path) -> AppRunner:
+        """Load the process-global Parsl DFK once and reuse its application."""
+
+        context_key = json.dumps(context.to_dict(), sort_keys=True, separators=(",", ":"))
+        with self._runner_lock:
+            if self._runner is None:
+                runner = _parsl_app_runner(context, launch_attempt_dir)
+                object.__setattr__(self, "_runner", runner)
+                object.__setattr__(self, "_context_key", context_key)
+                atexit.register(self.close)
+                return runner
+            if self._context_key != context_key:
+                raise RuntimeError(
+                    "ParslAttachExecutor cannot reuse its loaded DFK with a different "
+                    "AllocationContext"
+                )
+            return self._runner
+
+    def close(self) -> None:
+        """Clean up the DFK loaded by this executor and clear Parsl global state."""
+
+        with self._runner_lock:
+            if self._runner is None:
+                return
+            import parsl
+
+            parsl.dfk().cleanup()
+            parsl.clear()
+            object.__setattr__(self, "_runner", None)
+            object.__setattr__(self, "_context_key", None)
 
 
 def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> AppRunner:
