@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .dispatch import AllocationContext, DispatchRecord, DispatchSpec
 from .task_state import _deadline_guard_reached
+from .placement import capture_attempt_placement
 
 
 _HOSTNAME_PATTERN = re.compile(
@@ -131,6 +132,9 @@ def _run_dispatch_payload(
     if visibility_variable is not None and visibility_value is not None:
         worker_environment[visibility_variable] = visibility_value
     started_at = time.time()
+    placement = capture_attempt_placement(
+        attempt_id=attempt_id, cwd=cwd, result_dir=output_directory, started_at_unix=started_at
+    )
     launch_error: str | None = None
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         try:
@@ -161,6 +165,7 @@ def _run_dispatch_payload(
         "started_at_unix": started_at,
         "ended_at_unix": ended_at,
         "elapsed_sec": ended_at - started_at,
+        "placement": {**placement, "ended_at_unix": ended_at, "returncode": returncode},
     }
     if launch_error is not None:
         status["error"] = launch_error
