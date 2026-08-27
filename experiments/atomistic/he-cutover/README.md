@@ -6,6 +6,11 @@ Acceptance requires strict plan tests, the exact three-field training-scale diff
 
 ## Operator runbook
 
+Set `TPEN_CHECKOUT` to the development checkout that carries the he-cutover
+stack and tracks `dev`. Never point these planning or smoke commands at the
+production checkout that tracks `main`. The checkout path remains an
+operator-supplied variable rather than a tracked facility default.
+
 Cannon planning (login node):
 
 ```bash
@@ -27,6 +32,9 @@ Polaris planning uses the facility Python and its `uv` module from the approved 
 : "${TPEN_CHECKOUT:?checkout root required}"
 : "${TPEN_PYBIN:?facility python required}"
 : "${TPEN_UV_ENV:?facility uv environment required}"
+: "${TPEN_LIBSHIM:?existing libmpi shim directory required}"
+: "${TPEN_CUDA13_LIB:?CUDA 13 lib64 directory required}"
+: "${TPEN_CUDA129_LIB:?CUDA 12.9 lib64 directory required}"
 "$TPEN_PYBIN" -m uv sync --project "$TPEN_CHECKOUT" --inexact --locked --extra parsl
 PYTHONPATH="${TPEN_CHECKOUT:?checkout root required}${PYTHONPATH:+:$PYTHONPATH}" "$TPEN_UV_ENV/bin/python" "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/cutover_plan.py" --facility polaris --results-root "${TPEN_RESULTS_ROOT:?}" --plan-attempt-id "${TPEN_PLAN_ATTEMPT_ID:?}"
 ```
@@ -34,7 +42,7 @@ PYTHONPATH="${TPEN_CHECKOUT:?checkout root required}${PYTHONPATH:+:$PYTHONPATH}"
 Inspect the manifest and task files, then submit:
 
 ```bash
-qsub -v TPEN_CHECKOUT,TPEN_RESULTS_ROOT,TPEN_PYBIN,TPEN_UV_ENV,TPEN_LIBSHIM,TPEN_PLAN_ATTEMPT_ID experiments/atomistic/he-cutover/templates/polaris_smoke.pbs
+qsub -v TPEN_CHECKOUT,TPEN_RESULTS_ROOT,TPEN_PYBIN,TPEN_UV_ENV,TPEN_LIBSHIM,TPEN_CUDA13_LIB,TPEN_CUDA129_LIB,TPEN_PLAN_ATTEMPT_ID experiments/atomistic/he-cutover/templates/polaris_smoke.pbs
 ```
 
 Success is scheduler exit status zero and `verification.json` containing `"complete": true` and `"exit_code": 0`. S1 and S2 own real smoke submissions; P2 only prepares and unit-tests these files.
