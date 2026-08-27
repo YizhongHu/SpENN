@@ -311,6 +311,22 @@ def select_rows(
     return rows
 
 
+def _submission_records(attempt_dir: Path) -> dict[str, dict[str, Any]]:
+    """Read the per-row submission records for one launch attempt."""
+
+    rows_dir = attempt_dir / "rows"
+    if not rows_dir.is_dir():
+        return {}
+    records: dict[str, dict[str, Any]] = {}
+    for record_path in sorted(rows_dir.glob("*/submission.json")):
+        record = layout.read_json(record_path)
+        if not isinstance(record, dict) or "row_id" not in record:
+            raise LaunchError(f"invalid submission record: {record_path}")
+        row_id = str(record["row_id"])
+        records[row_id] = record
+    return records
+
+
 def launch(
     *,
     manifest: Mapping[str, Any],
@@ -350,11 +366,27 @@ def launch(
         _require_repo_identity(repo_root, evaluation_git_sha)
     attempt_dir = layout.launch_attempt_dir(results_root, launch_attempt_id)
     submitted_job_ids: dict[str, str] = {}
+    submission_records = _submission_records(attempt_dir)
     launched_row_ids = {str(row["row_id"]) for row in rows}
     records: list[dict[str, Any]] = []
 
     for row in rows:
         row_id = str(row["row_id"])
+        prior_record = submission_records.get(row_id)
+        if prior_record is not None:
+            # Dry-run records are durable review artifacts; refusing to replace
+            # one preserves the no-rewrite invariant and requires a new attempt.
+            if (
+                prior_record.get("submitted") is False
+                and prior_record.get("job_id") is None
+            ):
+                prior = "prior record was a dry run (not submitted)"
+            else:
+                prior = f"prior job id {prior_record.get('job_id')!r}"
+            raise LaunchError(
+                f"row {row_id!r} already has a submission record in launch attempt "
+                f"{launch_attempt_id!r}; {prior}"
+            )
         row_launch_dir = attempt_dir / "rows" / row_id
         log_dir = row_launch_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -431,6 +463,7 @@ def launch(
             "resume": False,
         }
         layout.write_json(row_launch_dir / "submission.json", record)
+        submission_records[row_id] = record
         records.append(record)
 
     summary = {

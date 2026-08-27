@@ -325,6 +325,115 @@ def test_submission_records_are_written_per_row(planned: dict[str, Any], tmp_pat
         assert payload["run_dir"].endswith(record["row_id"])
 
 
+def test_duplicate_row_is_refused_before_script_or_record_write(
+    planned: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row is submitted at most once within one launch attempt."""
+
+    seen: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = "424242\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        launch.subprocess,
+        "run",
+        lambda command, **kwargs: seen.append(list(command)) or _Completed(),
+    )
+    row = planned["rows"][0]
+    _launch(planned, tmp_path, rows=[row], submit=True)
+    row_dir = tmp_path / "01_launch" / "20260815T130000" / "rows" / str(row["row_id"])
+    script_before = (row_dir / "sbatch.sh").read_text(encoding="utf-8")
+    record_before = (row_dir / "submission.json").read_text(encoding="utf-8")
+    writes: list[Path] = []
+    original_write_text = Path.write_text
+
+    def _record_write(path: Path, *args: Any, **kwargs: Any) -> int:
+        writes.append(path)
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _record_write)
+    with pytest.raises(launch.LaunchError, match=r"row .*prior job id '424242'"):
+        _launch(planned, tmp_path, rows=[row], submit=True)
+
+    assert seen == [["sbatch", "--parsable", str(row_dir / "sbatch.sh")]]
+    assert writes == []
+    assert (row_dir / "sbatch.sh").read_text(encoding="utf-8") == script_before
+    assert (row_dir / "submission.json").read_text(encoding="utf-8") == record_before
+
+
+def test_same_row_is_accepted_in_a_different_launch_attempt(
+    planned: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new launch attempt permits deliberate recovery resubmission."""
+
+    class _Completed:
+        returncode = 0
+        stdout = "424242\n"
+        stderr = ""
+
+    monkeypatch.setattr(launch.subprocess, "run", lambda command, **kwargs: _Completed())
+    row = planned["rows"][0]
+    _launch(planned, tmp_path, rows=[row], submit=True)
+    second = launch.launch(
+        manifest=planned,
+        results_root=tmp_path,
+        repo_root=tmp_path / "checkout",
+        rows=[row],
+        launch_attempt_id="20260815T140000",
+        uv_bin=UV_BIN,
+        uv_extras=["cu128"],
+        uv_project_environment="/work/env",
+        uv_cache_root="/work/uv-cache",
+        account="kozinsky_lab",
+        submit=True,
+    )
+    assert second["rows"][0]["launch_attempt_id"] == "20260815T140000"
+    second_record = (
+        tmp_path
+        / "01_launch"
+        / "20260815T140000"
+        / "rows"
+        / str(row["row_id"])
+        / "submission.json"
+    )
+    first_record = (
+        tmp_path
+        / "01_launch"
+        / "20260815T130000"
+        / "rows"
+        / str(row["row_id"])
+        / "submission.json"
+    )
+    assert json.loads(second_record.read_text(encoding="utf-8"))["launch_attempt_id"] == (
+        "20260815T140000"
+    )
+    assert json.loads(first_record.read_text(encoding="utf-8"))["launch_attempt_id"] == (
+        "20260815T130000"
+    )
+
+
+def test_dry_run_record_blocks_submit_in_the_same_launch_attempt(
+    planned: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dry-run record is retained; submitting it requires a new attempt id."""
+
+    _launch(planned, tmp_path, rows=planned["rows"][:1], submit=False)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        launch.subprocess,
+        "run",
+        lambda command, **kwargs: seen.append(list(command)),
+    )
+    with pytest.raises(
+        launch.LaunchError, match=r"prior record was a dry run \(not submitted\)"
+    ):
+        _launch(planned, tmp_path, rows=planned["rows"][:1], submit=True)
+    assert seen == []
+
+
 def test_row_selection_rejects_unknown_row_ids(planned: dict[str, Any]) -> None:
     """A typo'd row id selects nothing rather than silently launching everything."""
 
