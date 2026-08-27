@@ -59,6 +59,7 @@ def test_polaris_directives_and_runtime_policy() -> None:
     )
     assert "/soft/compilers/cudatoolkit/" not in text
     assert not any(line.lstrip().startswith("uv ") for line in text.splitlines())
+    assert ': "${TPEN_NODES_PER_BLOCK:?must match the PBS select value}"' in text
 
 
 def test_polaris_production_uses_capacity_and_logs_checkout_head() -> None:
@@ -71,6 +72,7 @@ def test_polaris_production_uses_capacity_and_logs_checkout_head() -> None:
     assert "UV_PROJECT_ENVIRONMENT" not in text
     assert "uv sync" not in text
     assert "/soft/compilers/cudatoolkit/" not in text
+    assert ': "${TPEN_NODES_PER_BLOCK:?must match the PBS select value}"' in text
 
 
 def test_templates_put_scheduler_logs_under_guarded_results_root() -> None:
