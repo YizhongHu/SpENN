@@ -10,6 +10,7 @@ import run_train_row
 
 
 ROOT = Path(__file__).resolve().parents[3]
+HEV1_BARE_MODULES = {"layout", "strata", "plan", "driver", "eval", "collect", "canary", "launch"}
 
 
 def _differences(before, after, prefix=""):
@@ -35,6 +36,18 @@ def test_smoke_training_diff_is_exactly_three_scale_fields() -> None:
     assert _differences(before, after) == {"trainer.max_steps", "sampler.n_walkers", "callbacks.tpen.callback.Checkpoint.every_n_steps"}
 
 
+def test_smoke_training_finds_checkpoint_by_target_when_not_last() -> None:
+    path = ROOT / "experiments/atomistic/he-v1/configs/train.yaml"
+    cfg = OmegaConf.load(path)
+    checkpoint = next(callback for callback in cfg.callbacks if callback.get("_target_") == "tpen.callback.Checkpoint")
+    cfg.callbacks.append({"_target_": "tests.DummyCallback", "every_n_steps": 999})
+
+    run_train_row.configure_smoke_training(cfg, {"max_steps": 25, "n_walkers": 16})
+
+    assert checkpoint.every_n_steps == 25
+    assert cfg.callbacks[-1].every_n_steps == 999
+
+
 def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
     profiles = Path(__file__).with_name("profiles")
     cannon = yaml.safe_load((profiles / "cannon.yaml").read_text())
@@ -54,24 +67,35 @@ def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
                 assert not value.startswith("/")
 
 
-def test_hev1_is_the_only_cross_study_path_accessor_and_configs_are_referenced() -> None:
-    study = Path(__file__).resolve().parent
-    accessors = set()
+def _cross_study_violations(study: Path) -> set[str]:
+    violations = set()
     for path in study.glob("*.py"):
+        if path.name == "hev1.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(alias.name.split(".", 1)[0] in HEV1_BARE_MODULES for alias in node.names):
+                violations.add(f"{path.name}:bare-import")
+                continue
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".", 1)[0] in HEV1_BARE_MODULES:
+                violations.add(f"{path.name}:bare-from-import")
+                continue
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             owner = node.func.value
             if (
-                node.func.attr == "insert"
+                node.func.attr in {"insert", "append", "extend"}
                 and isinstance(owner, ast.Attribute)
                 and owner.attr == "path"
                 and isinstance(owner.value, ast.Name)
                 and owner.value.id == "sys"
             ):
-                accessors.add(path.name)
-    assert accessors == {"hev1.py"}
+                violations.add(f"{path.name}:sys-path-{node.func.attr}")
+    return violations
+
+
+def test_hev1_is_the_only_cross_study_accessor_and_import_gateway() -> None:
+    study = Path(__file__).resolve().parent
+    assert _cross_study_violations(study) == set()
     assert not (study / "configs").exists()
-    forbidden_basenames = {"layout", "strata", "plan", "driver", "eval", "collect", "canary", "launch"}
-    assert not ({path.stem for path in study.glob("*.py")} & forbidden_basenames)
+    assert not ({path.stem for path in study.glob("*.py")} & HEV1_BARE_MODULES)
