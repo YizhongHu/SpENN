@@ -24,8 +24,12 @@ def test_admission_resolves_python_and_aligns_runtime(tmp_path: Path) -> None:
 
 def test_admission_rejects_visibility_environment_before_writing(tmp_path: Path) -> None:
     output = tmp_path / "dispatch_specs.jsonl"
-    with pytest.raises(ValueError, match="allocation binding"):
+    error = None
+    try:
         rows = admission.admit_plan(_plan(tmp_path), admission_id="a", cwd=tmp_path, environment={"CUDA_VISIBLE_DEVICES": "0"})
         admission.write_dispatch_specs(output, rows)
+    except ValueError as exc:
+        error = exc
+    assert error is not None
+    assert "allocation binding" in str(error)
     assert not output.exists()
-
