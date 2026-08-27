@@ -34,6 +34,15 @@ def configure_smoke_training(cfg: Any, row: Mapping[str, Any]) -> Any:
     return cfg
 
 
+def output_overrides(row: Mapping[str, Any]) -> list[str]:
+    """Return overrides that realize the plan-owned row directory."""
+
+    result_dir = Path(str(row["result_dir"]))
+    if result_dir.name != str(row["row_id"]):
+        raise ValueError("planned train result_dir must end with row_id")
+    return [f"run.root={result_dir.parent}", f"run.run_id={row['row_id']}", "run.layout=flat"]
+
+
 def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, str] | None = None, device_reader=hev1.driver.torch_device_name, runner=None) -> int:
     """Validate allocation/device and invoke the sanctioned TPEN entrypoint."""
 
@@ -42,7 +51,7 @@ def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, s
     delivered = device_reader()
     cutover_strata.check_delivered_device(facility=str(row["facility"]), stratum=str(row["resources"]["stratum"]), delivered=delivered)
     config_path = Path(__file__).resolve().parents[3] / str(row["config"])
-    overrides = [f"runtime.seed={row['seed']}", f"run.root={row['result_dir']}", f"run.run_id={row['row_id']}", "run.layout=flat"]
+    overrides = [f"runtime.seed={row['seed']}", *output_overrides(row)]
     cfg = hev1.driver.build_config(config_path, overrides, checked=[overrides[0]])
     configure_smoke_training(cfg, row)
     if runner is None:
