@@ -160,6 +160,13 @@ def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monk
     assert executor.available_accelerators == ["0"]
 
     _parsl_app_runner(
+        _context(tmp_path, visibility_values=("0", "1")),
+        tmp_path / "two-worker-launch",
+    )
+    assert captured["config"].executors[0].max_workers_per_node == 2
+    assert captured["config"].executors[0].available_accelerators == ["0", "1"]
+
+    _parsl_app_runner(
         _context(tmp_path, visibility_values=()),
         tmp_path / "inherit-launch",
     )
