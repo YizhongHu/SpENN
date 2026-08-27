@@ -67,6 +67,7 @@ def test_protocol_records_verbatim_argv_and_worker_layout(tmp_path: Path) -> Non
     assert calls[0]["argv"] == spec.argv
     assert calls[0]["environment"]["EXTRA"] == "one"
     assert "CUDA_VISIBLE_DEVICES" not in calls[0]["environment"]
+    assert calls[0]["visibility_value"] == "0"
     assert Path(calls[0]["output_directory"]) == tmp_path / "launch" / "dispatch" / spec.attempt_id
 
 
@@ -100,7 +101,11 @@ def test_deadline_guard_refuses_new_dispatches(tmp_path: Path) -> None:
 def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:
     output = tmp_path / "dispatch" / "attempt-1"
     payload = _run_dispatch_payload(
-        (sys.executable, "-c", "print('worker')"),
+        (
+            sys.executable,
+            "-c",
+            "import os; print(os.environ['EXTRA']); print(os.environ['CUDA_VISIBLE_DEVICES'])",
+        ),
         str(tmp_path),
         {"EXTRA": "one"},
         "CUDA_VISIBLE_DEVICES",
@@ -109,7 +114,7 @@ def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:
         "attempt-1",
     )
     assert payload["returncode"] == 0
-    assert (output / "stdout.log").read_text() == "worker\n"
+    assert (output / "stdout.log").read_text() == "one\n0\n"
     assert (output / "stderr.log").is_file()
     assert json.loads((output / "attempt_status.json").read_text())["visibility_value"] == "0"
 
