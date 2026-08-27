@@ -11,18 +11,20 @@ from experiments.toolkit.dispatch import DispatchRecord
 
 
 class RecordingExecutor:
-    def __init__(self, fail_stage=None):
+    def __init__(self, fail_stage=None, materialize_completion=True):
         self.stages = []
         self.fail_stage = fail_stage
+        self.materialize_completion = materialize_completion
 
     def dispatch(self, dispatches, *, context):
+        context.validate()
         stage = dispatches[0].stage
         self.stages.append(stage)
         if stage == self.fail_stage:
             raise RuntimeError("injected failure")
         records = []
         for dispatch in dispatches:
-            if stage == "02_train":
+            if stage == "02_train" and self.materialize_completion:
                 status = Path(dispatch.completion.status_path)
                 status.parent.mkdir(parents=True, exist_ok=True)
                 status.write_text('{"status":"completed"}\n')
@@ -31,7 +33,7 @@ class RecordingExecutor:
                 checkpoint.write_text("complete\n")
                 checkpoint_dir = checkpoint.parent
                 (checkpoint_dir / "manifest.json").write_text("{}\n")
-            elif stage == "03_eval":
+            elif stage == "03_eval" and self.materialize_completion:
                 status = Path(dispatch.completion.status_path)
                 status.parent.mkdir(parents=True, exist_ok=True)
                 status.write_text('{"status":"completed"}\n')
@@ -73,4 +75,13 @@ def test_preflight_failure_prevents_all_science_and_is_truthful(tmp_path: Path) 
     code = pipeline.run_pipeline(train_plan=train, eval_plan=evaluation, facility="cannon", launch_dir=tmp_path / "launch", admission_id="a", executor=executor, environ={"SLURM_JOB_ID": "1"})
     verification = json.loads((tmp_path / "launch/verification.json").read_text())
     assert executor.stages == ["01_preflight"]
+    assert (code, verification["exit_code"], verification["complete"]) == (1, 1, False)
+
+
+def test_missing_train_completion_prevents_eval_and_is_truthful(tmp_path: Path) -> None:
+    train, evaluation = _plans(tmp_path)
+    executor = RecordingExecutor(materialize_completion=False)
+    code = pipeline.run_pipeline(train_plan=train, eval_plan=evaluation, facility="cannon", launch_dir=tmp_path / "launch", admission_id="a", executor=executor, environ={"SLURM_JOB_ID": "1", "CUDA_VISIBLE_DEVICES": "MIG-owned-by-slurm"})
+    verification = json.loads((tmp_path / "launch/verification.json").read_text())
+    assert executor.stages == ["01_preflight", "02_train"]
     assert (code, verification["exit_code"], verification["complete"]) == (1, 1, False)

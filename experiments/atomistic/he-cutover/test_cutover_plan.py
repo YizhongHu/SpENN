@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
 
 import cutover_plan
 
@@ -16,6 +16,15 @@ def test_strict_grid_rejects_unknown_key(tmp_path: Path) -> None:
     path = tmp_path / "grid.yaml"
     path.write_text(text, encoding="utf-8")
     with pytest.raises(cutover_plan.PlanError, match="keys mismatch"):
+        cutover_plan.load_grid(path)
+
+
+def test_strict_grid_rejects_invalid_facility_placement(tmp_path: Path) -> None:
+    payload = cutover_plan.load_grid(GRID)
+    payload["facilities"]["polaris"]["partition"] = "not-debug"
+    path = tmp_path / "grid.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="debug/a100_40gb"):
         cutover_plan.load_grid(path)
 
 

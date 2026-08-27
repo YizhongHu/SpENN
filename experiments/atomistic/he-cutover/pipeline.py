@@ -26,7 +26,7 @@ def allocation_context(*, facility: str, run_root: str | Path, environ: Mapping[
     # neither the executor nor Parsl may replace it. Polaris PBS leaves the
     # variable unset, so its four workers receive explicit accelerator ids.
     values = () if facility == "cannon" else ("0", "1", "2", "3")
-    return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={})
+    return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={}).validate()
 
 
 def preflight_dispatch(*, context: AllocationContext, cwd: str | Path, admission_id: str, runtime: str) -> DispatchSpec:
