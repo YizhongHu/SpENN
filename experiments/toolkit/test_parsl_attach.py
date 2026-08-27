@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -92,10 +93,32 @@ def test_completion_rechecked_after_success(tmp_path: Path) -> None:
 def test_deadline_guard_refuses_new_dispatches(tmp_path: Path) -> None:
     spec = _dispatch(tmp_path)
     context = _context(tmp_path, deadline=time.time() + 1, deadline_guard_min=1)
-    with pytest.raises(RuntimeError, match="deadline guard"):
-        ParslAttachExecutor(app_runner=lambda **kwargs: pytest.fail("must not run")).dispatch(
-            (spec,), context=context
-        )
+    calls = 0
+
+    def fake_runner(**kwargs: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"returncode": 0}
+
+    error: RuntimeError | None = None
+    try:
+        ParslAttachExecutor(app_runner=fake_runner).dispatch((spec,), context=context)
+    except RuntimeError as exc:
+        error = exc
+    assert str(error) == "allocation deadline guard reached; refusing new Parsl dispatches"
+    assert calls == 0
+    assert not (tmp_path / "launch" / "dispatch" / spec.attempt_id).exists()
+
+
+def test_module_imports_without_parsl_site_package() -> None:
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", "import experiments.toolkit.parsl_attach"],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:
