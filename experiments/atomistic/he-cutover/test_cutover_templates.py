@@ -58,8 +58,9 @@ def test_operator_runbook_uses_facility_owned_uv_entrypoints() -> None:
 
 
 def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
-    uv = shutil.which("uv")
+    uv = os.environ.get("TPEN_UV") or shutil.which("uv")
     assert uv is not None
+    assert Path(uv).is_absolute()
     results = tmp_path / "results"
     outside = tmp_path / "outside"
     outside.mkdir()
