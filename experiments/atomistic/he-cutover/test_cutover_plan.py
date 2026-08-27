@@ -29,3 +29,11 @@ def test_plan_has_one_train_two_eval_and_exact_completion_specs(tmp_path: Path, 
     assert {task.completion.policy for task in evaluation.tasks} == {"status_completed"}
     assert all(task.dependencies == (train.tasks[0].logical_task_id,) for task in evaluation.tasks)
     assert len(manifest["rows"]) == 3
+
+
+def test_plan_writer_emits_rows_and_both_v2_stage_tables(tmp_path: Path) -> None:
+    plans = cutover_plan.build_plans(cutover_plan.load_grid(GRID), facility="cannon", results_root=tmp_path / "results", plan_id="plan-1")
+    output = cutover_plan.write_plans(tmp_path / "plan", *plans)
+    assert (output / "rows.csv").read_text().splitlines()[0] == "stage,kind,row_id,facility,runtime,result_dir,checkpoint_dir"
+    assert (output / "02_train/tasks.jsonl").is_file()
+    assert (output / "03_eval/tasks.jsonl").is_file()

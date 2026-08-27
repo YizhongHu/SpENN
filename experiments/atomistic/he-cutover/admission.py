@@ -37,5 +37,6 @@ def admit_plan(plan: StagePlanV2, *, admission_id: str, cwd: str | Path, environ
 def write_dispatch_specs(path: str | Path, dispatches: Sequence[DispatchSpec]) -> Path:
     """Write the exact admitted rows as JSONL."""
 
-    return write_jsonl(Path(path), (dispatch.to_dict() for dispatch in dispatches))
-
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return write_jsonl(path, (dispatch.to_dict() for dispatch in dispatches))

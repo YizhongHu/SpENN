@@ -13,6 +13,7 @@ from experiments.toolkit.dispatch import AllocationContext, DispatchSpec, StageP
 from experiments.toolkit.parsl_attach import ParslAttachExecutor
 
 from admission import admit_plan, write_dispatch_specs
+import hev1
 from run_train_row import require_allocation
 
 
@@ -21,8 +22,11 @@ def allocation_context(*, facility: str, run_root: str | Path, environ: Mapping[
 
     environ = os.environ if environ is None else environ
     allocation_id = require_allocation(environ)
-    values = (str(environ.get("CUDA_VISIBLE_DEVICES") or "inherit"),) if facility == "cannon" else ("0", "1", "2", "3")
-    return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={}).validate()
+    # Empty means true inheritance: Slurm owns the MIG visibility value and
+    # neither the executor nor Parsl may replace it. Polaris PBS leaves the
+    # variable unset, so its four workers receive explicit accelerator ids.
+    values = () if facility == "cannon" else ("0", "1", "2", "3")
+    return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={})
 
 
 def preflight_dispatch(*, context: AllocationContext, cwd: str | Path, admission_id: str, runtime: str) -> DispatchSpec:
@@ -46,12 +50,15 @@ def run_pipeline(*, train_plan: StagePlanV2, eval_plan: StagePlanV2, facility: s
         runtime = str(train_plan.tasks[0].metadata["runtime"])
         records.extend(executor.dispatch((preflight_dispatch(context=context, cwd=Path.cwd(), admission_id=admission_id, runtime=runtime),), context=context))
         train = admit_plan(train_plan, admission_id=admission_id, cwd=Path.cwd(), environment={})
-        write_dispatch_specs(launch / "train_dispatch_specs.jsonl", train)
+        write_dispatch_specs(launch / "02_train" / "dispatch_specs.jsonl", train)
         records.extend(executor.dispatch(train, context=context))
         if not all(task.completion.is_complete() for task in train_plan.tasks):
             raise RuntimeError("training completion barrier failed")
+        hev1.eval_stage.require_complete_checkpoint(
+            train_plan.tasks[0].params["checkpoint_dir"]
+        )
         evaluation = admit_plan(eval_plan, admission_id=admission_id, cwd=Path.cwd(), environment={})
-        write_dispatch_specs(launch / "eval_dispatch_specs.jsonl", evaluation)
+        write_dispatch_specs(launch / "03_eval" / "dispatch_specs.jsonl", evaluation)
         records.extend(executor.dispatch(evaluation, context=context))
         verification.update(complete=True, exit_code=0, stages=["01_preflight", "02_train", "03_eval"])
         return 0
@@ -75,4 +82,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

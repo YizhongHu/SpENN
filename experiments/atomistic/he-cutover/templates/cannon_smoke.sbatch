@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=p2-cutover
 #SBATCH --partition=gpu_test
-#SBATCH --gres=gpu:a100_mig:1
+#SBATCH --gres=gpu:nvidia_a100_3g.20gb:1
+# a100_mig smoke stratum
 #SBATCH --time=02:00:00
 #SBATCH --no-requeue
 #SBATCH --cpus-per-task=4
@@ -17,4 +18,3 @@ export UV_CACHE_DIR="${TMPDIR:?}/uv-cache-${SLURM_JOB_ID:?}"
 "$TPEN_UV" run --locked --extra cu126 --extra parsl python "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/pipeline.py" \
   --plan-dir "$TPEN_RESULTS_ROOT/00_plan/$TPEN_PLAN_ATTEMPT_ID" --facility cannon \
   --launch-dir "$TPEN_RESULTS_ROOT/01_launch/$TPEN_PLAN_ATTEMPT_ID" --admission-id "$TPEN_PLAN_ATTEMPT_ID"
-

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -113,6 +114,12 @@ def write_plans(output_dir: str | Path, train_plan: StagePlanV2, eval_plan: Stag
     eval_plan.write(output / "03_eval")
     output.mkdir(parents=True, exist_ok=True)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    with (output / "rows.csv").open("w", encoding="utf-8", newline="") as handle:
+        fields = ("stage", "kind", "row_id", "facility", "runtime", "result_dir", "checkpoint_dir")
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in manifest["rows"]:
+            writer.writerow({field: row.get(field, "") for field in fields})
     return output
 
 
