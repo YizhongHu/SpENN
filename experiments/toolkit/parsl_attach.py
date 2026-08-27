@@ -33,7 +33,11 @@ def validate_pbs_nodefile(
     *,
     requested_node_count: int,
 ) -> tuple[str, ...]:
-    """Validate and canonicalize the host list supplied by ``PBS_NODEFILE``.
+    """Validate and canonicalize ``PBS_NODEFILE`` without importing Parsl.
+
+    This is intentionally an independently callable preflight boundary: the
+    executor invokes it before its first Parsl import, and tests exercise it
+    directly in environments where the optional Parsl dependency is absent.
 
     Parameters
     ----------
