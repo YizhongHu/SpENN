@@ -120,6 +120,8 @@ def validate_placement_evidence(
     manager_hosts: Sequence[str],
     worker_count: int | None = None,
     planned_result_dirs: Mapping[str, str | Path] | None = None,
+    gpu_census: Sequence[AttemptPlacement] | None = None,
+    row_hosts: Sequence[str] | None = None,
 ) -> None:
     """Raise ``ValueError`` unless every placement claim is independently green."""
 
@@ -130,12 +132,11 @@ def validate_placement_evidence(
         raise ValueError("observed manager host set does not equal allocated host set")
     if manifest.expected_managers and len(manager_hosts) != manifest.expected_managers:
         raise ValueError("observed manager count does not equal expected manager count")
-    physical = [gpu_id for attempt in attempts for gpu_id in attempt.physical_gpu_ids]
+    physical = [gpu_id for attempt in (gpu_census or attempts) for gpu_id in attempt.physical_gpu_ids]
     if len(physical) != 4 * manifest.requested_nodes or len(set(physical)) != 4 * manifest.requested_nodes:
         raise ValueError("placement census is not exactly four distinct physical GPUs per allocated node")
-    if len(physical) != len(set(physical)):
-        raise ValueError("duplicate simultaneous physical GPU use")
-    if {attempt.hostname for attempt in attempts} != allocated:
+    observed_row_hosts = set(row_hosts or (attempt.hostname for attempt in attempts))
+    if observed_row_hosts != allocated:
         raise ValueError("placement records do not cover every allocated host")
     if worker_count is not None and worker_count != len(attempts):
         raise ValueError("observed worker count does not equal expected worker count")

@@ -32,7 +32,7 @@ def _attempt(host: str, attempt_id: str, *, uuids: tuple[str, ...] | None = None
     )
 
 
-def _green(*, attempts=None, managers=HOSTS, admission=NOW, planned=None):
+def _green(*, attempts=None, managers=HOSTS, admission=NOW, planned=None, census=None, row_hosts=None):
     attempts = attempts or tuple(_attempt(host, f"row-{index}") for index, host in enumerate(HOSTS))
     return validate_placement_evidence(
         manifest=AllocationManifest.from_nodefile("\n".join(HOSTS) + "\n", requested_nodes=2),
@@ -40,6 +40,7 @@ def _green(*, attempts=None, managers=HOSTS, admission=NOW, planned=None):
         completed_result_dirs=tuple(item.result_dir for item in attempts), admission_time_unix=admission,
         completion_ok={item.attempt_id: True for item in attempts}, manager_hosts=managers,
         worker_count=len(attempts), planned_result_dirs=planned,
+        gpu_census=census, row_hosts=row_hosts,
     )
 
 
@@ -50,7 +51,7 @@ def test_valid_two_node_census_is_green() -> None:
 def test_all_tasks_on_first_host_rejected() -> None:
     attempts = tuple(_attempt(HOSTS[0], f"row-{index}") for index in range(2))
     with pytest.raises(ValueError, match="four distinct physical GPUs|every allocated host"):
-        _green(attempts=attempts, managers=HOSTS)
+        _green(attempts=attempts, managers=HOSTS, census=(_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1")), row_hosts=(HOSTS[0], HOSTS[0]))
 
 
 def test_absent_manager_rejected() -> None:
@@ -59,28 +60,32 @@ def test_absent_manager_rejected() -> None:
 
 
 def test_repeated_physical_gpu_uuid_rejected() -> None:
-    attempts = (_attempt(HOSTS[0], "row-0", uuids=("same", "same", "same", "same")), _attempt(HOSTS[1], "row-1"))
+    attempts = (_attempt(HOSTS[0], "row-0"), _attempt(HOSTS[1], "row-1"))
+    census = (_attempt(HOSTS[0], "census-0", uuids=("same", "same", "same", "same")), _attempt(HOSTS[1], "census-1"))
     with pytest.raises(ValueError, match="four distinct physical GPUs"):
-        _green(attempts=attempts)
+        _green(attempts=attempts, census=census)
 
 
 def test_fewer_observed_nodes_than_allocated_rejected() -> None:
     attempts = (_attempt(HOSTS[0], "row-0"),)
+    census = (_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1"))
     with pytest.raises(ValueError, match="four distinct physical GPUs|every allocated host"):
-        _green(attempts=attempts)
+        _green(attempts=attempts, census=census)
 
 
 def test_stale_completion_evidence_rejected() -> None:
     attempts = tuple(_attempt(host, f"row-{index}", started=NOW - 1) for index, host in enumerate(HOSTS))
+    census = (_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1"))
     with pytest.raises(ValueError, match="predates admission"):
-        _green(attempts=attempts)
+        _green(attempts=attempts, census=census)
 
 
 def test_doubly_nested_result_directory_rejected() -> None:
     attempts = tuple(_attempt(host, f"row-{index}", result=f"/runs/results/row-{index}/row-{index}") for index, host in enumerate(HOSTS))
+    census = (_attempt(HOSTS[0], "census-0"), _attempt(HOSTS[1], "census-1"))
     planned = {f"row-{index}": f"/runs/results/row-{index}" for index in range(2)}
     with pytest.raises(ValueError, match="exact planned directory"):
-        _green(attempts=attempts, planned=planned)
+        _green(attempts=attempts, planned=planned, census=census)
 
 
 def test_unknown_and_contradictory_hostnames_fail_closed() -> None:
