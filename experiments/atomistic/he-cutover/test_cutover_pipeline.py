@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from experiments.toolkit.dispatch import DispatchRecord
 class RecordingExecutor:
     def __init__(self, fail_stage=None, materialize_completion=True):
         self.stages = []
+        self.interpreters = []
         self.fail_stage = fail_stage
         self.materialize_completion = materialize_completion
 
@@ -20,6 +22,7 @@ class RecordingExecutor:
         context.validate()
         stage = dispatches[0].stage
         self.stages.append(stage)
+        self.interpreters.extend(dispatch.argv[0] for dispatch in dispatches)
         if stage == self.fail_stage:
             raise RuntimeError("injected failure")
         records = []
@@ -51,6 +54,23 @@ def test_facility_binding_branches_are_exercised_end_to_end(tmp_path: Path) -> N
     polaris = pipeline.allocation_context(facility="polaris", run_root=tmp_path / "polaris", environ={"PBS_JOBID": "2.server"})
     assert cannon.visibility_values == ()
     assert polaris.visibility_values == ("0", "1", "2", "3")
+
+
+def test_preflight_and_science_record_the_same_unresolved_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prefix = tmp_path / "venv"
+    executable = prefix / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.symlink_to(sys.executable)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "executable", str(executable))
+    train, evaluation = _plans(tmp_path)
+    executor = RecordingExecutor()
+
+    code = pipeline.run_pipeline(train_plan=train, eval_plan=evaluation, facility="cannon", launch_dir=tmp_path / "launch", admission_id="a", executor=executor, environ={"SLURM_JOB_ID": "1"})
+
+    assert code == 0
+    assert executor.interpreters == [str(executable)] * 4
+    assert all(interpreter != str(executable.resolve()) for interpreter in executor.interpreters)
 
 
 @pytest.mark.parametrize(
