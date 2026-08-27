@@ -48,6 +48,9 @@ wandb = [
 submitit = [
   "hydra-submitit-launcher>=1.2",
 ]
+parsl = [
+  "parsl>=2024.10",
+]
 
 [dependency-groups]
 dev = [
