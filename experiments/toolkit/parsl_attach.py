@@ -23,10 +23,10 @@ def _run_dispatch_payload(
     argv: tuple[str, ...],
     cwd: str,
     environment: Mapping[str, str],
-    visibility_variable: str,
-    visibility_value: str,
     output_directory: str,
     attempt_id: str,
+    visibility_variable: str | None = None,
+    visibility_value: str | None = None,
 ) -> dict[str, Any]:
     """Run one immutable argv and write only stdlib worker evidence.
 
@@ -40,7 +40,8 @@ def _run_dispatch_payload(
     stderr_path = output_path / "stderr.log"
     status_path = output_path / "attempt_status.json"
     worker_environment = os.environ | {str(key): str(value) for key, value in environment.items()}
-    worker_environment[visibility_variable] = visibility_value
+    if visibility_variable is not None and visibility_value is not None:
+        worker_environment[visibility_variable] = visibility_value
     started_at = time.time()
     launch_error: str | None = None
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
@@ -105,7 +106,13 @@ class ParslAttachExecutor:
         supplied batch, waits for it, and verifies its declared completion.
         """
 
-        context.validate()
+        # C1's general allocation validator requires an assigned visibility
+        # value, but Cannon inherit mode deliberately has none: Slurm owns the
+        # variable and workers must leave it untouched.
+        if context.visibility_values:
+            context.validate()
+        elif not context.allocation_id or not context.visibility_variable:
+            raise ValueError("inherit-mode allocation context requires allocation and visibility names")
         ready_dispatches = tuple(dispatch.validate() for dispatch in dispatches)
         if not ready_dispatches:
             return ()
@@ -120,19 +127,22 @@ class ParslAttachExecutor:
         submitted: list[tuple[DispatchSpec, Any]] = []
         for index, dispatch in enumerate(ready_dispatches):
             output_directory = launch_attempt_dir / "dispatch" / dispatch.attempt_id
-            visibility_value = context.visibility_values[index % len(context.visibility_values)]
+            runner_kwargs: dict[str, Any] = {
+                "argv": dispatch.argv,
+                "cwd": dispatch.cwd,
+                "environment": os.environ | {**context.environment, **dispatch.environment},
+                "output_directory": str(output_directory),
+                "attempt_id": dispatch.attempt_id,
+            }
+            if context.visibility_values:
+                runner_kwargs.update(
+                    visibility_variable=context.visibility_variable,
+                    visibility_value=context.visibility_values[index % len(context.visibility_values)],
+                )
             submitted.append(
                 (
                     dispatch,
-                    runner(
-                        argv=dispatch.argv,
-                        cwd=dispatch.cwd,
-                        environment=os.environ | {**context.environment, **dispatch.environment},
-                        visibility_variable=context.visibility_variable,
-                        visibility_value=visibility_value,
-                        output_directory=str(output_directory),
-                        attempt_id=dispatch.attempt_id,
-                    ),
+                    runner(**runner_kwargs),
                 )
             )
 

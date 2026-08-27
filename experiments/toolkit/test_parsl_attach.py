@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -105,9 +106,9 @@ def test_deadline_guard_refuses_new_dispatches(tmp_path: Path) -> None:
         ParslAttachExecutor(app_runner=fake_runner).dispatch((spec,), context=context)
     except RuntimeError as exc:
         error = exc
-    assert str(error) == "allocation deadline guard reached; refusing new Parsl dispatches"
     assert calls == 0
     assert not (tmp_path / "launch" / "dispatch" / spec.attempt_id).exists()
+    assert str(error) == "allocation deadline guard reached; refusing new Parsl dispatches"
 
 
 def test_module_imports_without_parsl_site_package() -> None:
@@ -131,15 +132,47 @@ def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:
         ),
         str(tmp_path),
         {"EXTRA": "one"},
-        "CUDA_VISIBLE_DEVICES",
-        "0",
         str(output),
         "attempt-1",
+        "CUDA_VISIBLE_DEVICES",
+        "0",
     )
     assert payload["returncode"] == 0
     assert (output / "stdout.log").read_text() == "one\n0\n"
     assert (output / "stderr.log").is_file()
     assert json.loads((output / "attempt_status.json").read_text())["visibility_value"] == "0"
+
+
+def test_inherit_visibility_keeps_scheduler_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "scheduler-mig")
+    calls: list[dict[str, Any]] = []
+
+    def fake_runner(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        output = Path(kwargs["output_directory"])
+        output.mkdir(parents=True)
+        status = output / "attempt_status.json"
+        status.write_text(json.dumps({"status": "success"}) + "\n")
+        return {"returncode": 0, "attempt_status_path": str(status)}
+
+    spec = _dispatch(tmp_path)
+    ParslAttachExecutor(app_runner=fake_runner).dispatch(
+        (spec,), context=_context(tmp_path, visibility_values=())
+    )
+    assert "visibility_variable" not in calls[0]
+    assert "visibility_value" not in calls[0]
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "scheduler-mig"
+
+    output = tmp_path / "inherit-worker"
+    payload = _run_dispatch_payload(
+        (sys.executable, "-c", "import os; print(os.environ['CUDA_VISIBLE_DEVICES'])"),
+        str(tmp_path),
+        {},
+        str(output),
+        "inherit-attempt",
+    )
+    assert payload["returncode"] == 0
+    assert (output / "stdout.log").read_text() == "scheduler-mig\n"
 
 
 def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
