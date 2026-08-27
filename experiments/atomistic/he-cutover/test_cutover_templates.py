@@ -47,7 +47,7 @@ def test_cannon_directives_and_runtime_policy() -> None:
 
 def test_polaris_directives_and_runtime_policy() -> None:
     text = (TEMPLATES / "polaris_smoke.pbs").read_text(encoding="utf-8")
-    for required in ("-A HetRxnEnergy", "-q debug", "select=1", "walltime=00:50:00", "filesystems=home:eagle", "-k doe", "LD_LIBRARY_PATH"):
+    for required in ("-A HetRxnEnergy", "-q debug", "select=1", "walltime=00:50:00", "filesystems=home:eagle", "LD_LIBRARY_PATH"):
         assert required in text
     assert 'PYTHONPATH="${TPEN_CHECKOUT:?}${PYTHONPATH:+:$PYTHONPATH}" "$TPEN_UV_ENV/bin/python"' in text
     assert ': "${TPEN_CUDA13_LIB:?}"' in text
@@ -59,6 +59,21 @@ def test_polaris_directives_and_runtime_policy() -> None:
     )
     assert "/soft/compilers/cudatoolkit/" not in text
     assert not any(line.lstrip().startswith("uv ") for line in text.splitlines())
+
+
+def test_templates_put_scheduler_logs_under_guarded_results_root() -> None:
+    cannon = (TEMPLATES / "cannon_smoke.sbatch").read_text(encoding="utf-8")
+    assert "#SBATCH --output=/dev/null" in cannon
+    assert "#SBATCH --error=/dev/null" in cannon
+    assert 'exec >"${TPEN_RESULTS_ROOT:?}/scheduler/slurm-${SLURM_JOB_ID:?}.out"' in cannon
+    assert '2>"${TPEN_RESULTS_ROOT:?}/scheduler/slurm-${SLURM_JOB_ID:?}.err"' in cannon
+
+    polaris = (TEMPLATES / "polaris_smoke.pbs").read_text(encoding="utf-8")
+    assert "#PBS -o /dev/null" in polaris
+    assert "#PBS -e /dev/null" in polaris
+    assert "#PBS -k doe" not in polaris
+    assert 'exec >"${TPEN_RESULTS_ROOT:?}/scheduler/pbs-${PBS_JOBID:?}.out"' in polaris
+    assert '2>"${TPEN_RESULTS_ROOT:?}/scheduler/pbs-${PBS_JOBID:?}.err"' in polaris
 
 
 def test_polaris_template_only_reads_operator_overlay() -> None:
