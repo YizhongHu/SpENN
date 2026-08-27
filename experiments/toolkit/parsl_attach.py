@@ -106,13 +106,7 @@ class ParslAttachExecutor:
         supplied batch, waits for it, and verifies its declared completion.
         """
 
-        # C1's general allocation validator requires an assigned visibility
-        # value, but Cannon inherit mode deliberately has none: Slurm owns the
-        # variable and workers must leave it untouched.
-        if context.visibility_values:
-            context.validate()
-        elif not context.allocation_id or not context.visibility_variable:
-            raise ValueError("inherit-mode allocation context requires allocation and visibility names")
+        context.validate()
         ready_dispatches = tuple(dispatch.validate() for dispatch in dispatches)
         if not ready_dispatches:
             return ()

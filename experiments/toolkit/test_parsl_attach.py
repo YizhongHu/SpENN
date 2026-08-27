@@ -156,9 +156,9 @@ def test_inherit_visibility_keeps_scheduler_binding(tmp_path: Path, monkeypatch:
         return {"returncode": 0, "attempt_status_path": str(status)}
 
     spec = _dispatch(tmp_path)
-    ParslAttachExecutor(app_runner=fake_runner).dispatch(
-        (spec,), context=_context(tmp_path, visibility_values=())
-    )
+    context = _context(tmp_path, visibility_values=())
+    assert context.validate() is context
+    ParslAttachExecutor(app_runner=fake_runner).dispatch((spec,), context=context)
     assert "visibility_variable" not in calls[0]
     assert "visibility_value" not in calls[0]
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "scheduler-mig"
