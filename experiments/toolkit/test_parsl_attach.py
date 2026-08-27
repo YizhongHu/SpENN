@@ -361,6 +361,17 @@ def test_rendered_provider_options_keep_single_node_shape(tmp_path: Path, monkey
     assert captured["provider"] == {"init_blocks": 1, "min_blocks": 1, "max_blocks": 1}
 
 
+def test_parsl_payload_is_by_value_and_keeps_optional_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_parsl(monkeypatch)
+
+    payload = _parsl_app_runner(_context(tmp_path), tmp_path / "launch")
+
+    assert payload.__module__ == "__parsl_worker_payload__"
+    assert payload.__defaults__ == (None, None)
+
+
 def test_rendered_provider_options_use_alcf_multinode_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _install_fake_parsl(monkeypatch)
     nodefile = tmp_path / "PBS_NODEFILE"

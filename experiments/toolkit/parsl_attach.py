@@ -382,6 +382,7 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
             "time": time,
         },
         _run_dispatch_payload.__name__,
+        _run_dispatch_payload.__defaults__,
     )
     return python_app(worker_payload)
 
