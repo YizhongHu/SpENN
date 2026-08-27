@@ -69,7 +69,7 @@ def test_nodes_per_block_intent_two_selects_multinode_path(tmp_path: Path) -> No
     context = pipeline.allocation_context(
         facility="polaris",
         run_root=tmp_path / "two",
-        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2"},
+        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2", "PBS_NODEFILE": str(nodefile)},
     )
     assert context.nodes_per_block == 2
     assert context.visibility_values == ("0", "1", "2", "3")
