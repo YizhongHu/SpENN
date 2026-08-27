@@ -9,7 +9,7 @@ import subprocess
 
 TEMPLATES = Path(__file__).with_name("templates")
 README = TEMPLATES.parent / "README.md"
-REPO_ROOT = README.parents[2]
+REPO_ROOT = README.parents[3]
 
 
 def _runbook_block(heading: str) -> str:
