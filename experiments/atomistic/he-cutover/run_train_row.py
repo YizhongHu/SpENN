@@ -41,7 +41,7 @@ def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, s
     require_allocation(environ)
     delivered = device_reader()
     cutover_strata.check_delivered_device(facility=str(row["facility"]), stratum=str(row["resources"]["stratum"]), delivered=delivered)
-    config_path = Path(__file__).resolve().parents[2] / str(row["config"])
+    config_path = Path(__file__).resolve().parents[3] / str(row["config"])
     overrides = [f"runtime.seed={row['seed']}", f"run.root={row['result_dir']}", f"run.run_id={row['row_id']}", "run.layout=flat"]
     cfg = hev1.driver.build_config(config_path, overrides, checked=[overrides[0]])
     configure_smoke_training(cfg, row)

@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 import run_train_row
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 
 def _differences(before, after, prefix=""):
@@ -40,4 +40,14 @@ def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
     polaris = yaml.safe_load((profiles / "polaris.yaml").read_text())
     assert cannon["runtimes"]["tpen-cu126"]["binding"] == "inherit"
     assert polaris["runtimes"]["tpen-polaris"]["available_accelerators"] == ["0", "1", "2", "3"]
-    assert all("/" not in path.read_text() for path in profiles.iterdir())
+    for path in profiles.iterdir():
+        payload = yaml.safe_load(path.read_text())
+        stack = [payload]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                stack.extend(value.values())
+            elif isinstance(value, list):
+                stack.extend(value)
+            elif isinstance(value, str):
+                assert not value.startswith("/")

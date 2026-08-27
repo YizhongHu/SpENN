@@ -20,7 +20,7 @@ def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, s
     require_allocation(environ)
     cutover_strata.check_delivered_device(facility=str(row["facility"]), stratum=str(row["resources"]["stratum"]), delivered=device_reader())
     checkpoint = hev1.eval_stage.require_complete_checkpoint(row["checkpoint_dir"])
-    config_path = Path(__file__).resolve().parents[2] / str(row["config"])
+    config_path = Path(__file__).resolve().parents[3] / str(row["config"])
     base_overrides = [f"run.root={row['result_dir']}", f"run.run_id={row['row_id']}", "run.layout=flat", f"load.path={checkpoint}"]
     identity_hash = hev1.eval_stage.config_identity_hash(config_path, base_overrides, identity_values={key: row[key] for key in ("task_names", "n_walkers", "n_draws", "burn_in", "discard_draws", "stride", "chunk_size")})
     semantic = hev1.eval_stage.checkpoint_replay_semantics_overrides(checkpoint, binding=None)
