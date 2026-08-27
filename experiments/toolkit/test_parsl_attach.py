@@ -193,12 +193,71 @@ def test_pbs_nodefile_unknown_hostname_format_is_attributable(tmp_path: Path) ->
         validate_pbs_nodefile(nodefile, requested_node_count=2)
 
 
+def test_single_node_four_gpus_validates_one_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=1)
+
+    _parsl_app_runner(context, tmp_path / "launch")
+
+    assert captured["provider"]["nodes_per_block"] == 1
+
+
+def test_four_nodes_four_gpus_per_node_validate_four_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\nnode-03\nnode-04\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=4)
+
+    _parsl_app_runner(context, tmp_path / "launch")
+
+    assert captured["provider"]["nodes_per_block"] == 4
+
+
+def test_multi_node_attach_rejects_host_count_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=4)
+
+    with pytest.raises(RuntimeError, match=r"actual host count 1.*expected 4"):
+        _parsl_app_runner(context, tmp_path / "launch")
+
+
+def test_multi_node_attach_rejects_extra_hosts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\nnode-03\nnode-04\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=1)
+
+    with pytest.raises(RuntimeError, match=r"actual host count 4.*expected 1"):
+        _parsl_app_runner(context, tmp_path / "launch")
+
+
+def test_legacy_single_node_does_not_validate_gpu_count_as_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_parsl(monkeypatch)
+    monkeypatch.delenv("PBS_NODEFILE", raising=False)
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"))
+
+    _parsl_app_runner(context, tmp_path / "launch")
+
+
 def test_multi_node_attach_rejects_missing_nodefile_before_parsl_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PBS_NODEFILE", raising=False)
     with pytest.raises(RuntimeError, match=r"PBS_NODEFILE missing.*expected 2"):
-        _parsl_app_runner(_context(tmp_path, visibility_values=("0", "1")), tmp_path / "launch")
+        _parsl_app_runner(
+            _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=2),
+            tmp_path / "launch",
+        )
 
 
 def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:

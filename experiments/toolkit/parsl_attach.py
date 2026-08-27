@@ -300,12 +300,6 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
         validate_pbs_nodefile(
             os.environ.get("PBS_NODEFILE"), requested_node_count=context.nodes_per_block
         )
-    else:
-        requested_node_count = len(context.visibility_values) or 1
-        if requested_node_count > 1:
-            validate_pbs_nodefile(
-                os.environ.get("PBS_NODEFILE"), requested_node_count=requested_node_count
-            )
 
     import parsl
     from parsl.app.app import python_app
