@@ -9,9 +9,11 @@ Acceptance requires strict plan tests, the exact three-field training-scale diff
 Cannon planning (login node):
 
 ```bash
+: "${TPEN_CHECKOUT:?checkout root required}"
 : "${TPEN_UV:?absolute uv executable required}"
 case "$TPEN_UV" in /*) ;; *) echo "TPEN_UV must be absolute" >&2; exit 2;; esac
-"$TPEN_UV" run --locked --extra cpu python experiments/atomistic/he-cutover/cutover_plan.py --facility cannon --results-root "${TPEN_RESULTS_ROOT:?}" --plan-attempt-id "${TPEN_PLAN_ATTEMPT_ID:?}"
+export PYTHONPATH="$TPEN_CHECKOUT${PYTHONPATH:+:$PYTHONPATH}"
+"$TPEN_UV" run --project "$TPEN_CHECKOUT" --locked --extra cpu python "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/cutover_plan.py" --facility cannon --results-root "${TPEN_RESULTS_ROOT:?}" --plan-attempt-id "${TPEN_PLAN_ATTEMPT_ID:?}"
 ```
 
 Inspect `00_plan/$TPEN_PLAN_ATTEMPT_ID/manifest.json` and both `tasks.jsonl` files, then submit:
@@ -23,10 +25,12 @@ sbatch experiments/atomistic/he-cutover/templates/cannon_smoke.sbatch
 Polaris planning uses the facility Python and its `uv` module from the approved overlay:
 
 ```bash
+: "${TPEN_CHECKOUT:?checkout root required}"
 : "${TPEN_PYBIN:?facility python required}"
 : "${TPEN_UV_ENV:?facility uv environment required}"
-"$TPEN_PYBIN" -m uv sync --inexact --locked --extra parsl
-"$TPEN_UV_ENV/bin/python" experiments/atomistic/he-cutover/cutover_plan.py --facility polaris --results-root "${TPEN_RESULTS_ROOT:?}" --plan-attempt-id "${TPEN_PLAN_ATTEMPT_ID:?}"
+export PYTHONPATH="$TPEN_CHECKOUT${PYTHONPATH:+:$PYTHONPATH}"
+"$TPEN_PYBIN" -m uv sync --project "$TPEN_CHECKOUT" --inexact --locked --extra parsl
+"$TPEN_UV_ENV/bin/python" "$TPEN_CHECKOUT/experiments/atomistic/he-cutover/cutover_plan.py" --facility polaris --results-root "${TPEN_RESULTS_ROOT:?}" --plan-attempt-id "${TPEN_PLAN_ATTEMPT_ID:?}"
 ```
 
 Inspect the manifest and task files, then submit:
