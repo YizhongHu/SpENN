@@ -365,7 +365,25 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
         usage_tracking=False,
     )
     parsl.load(config)
-    return python_app(_run_dispatch_payload)
+    # ``dill`` serializes module-level functions by reference.  Construct a
+    # by-value function with only stdlib globals so workers never need the
+    # submission checkout to import ``experiments`` while deserializing it.
+    import types
+
+    worker_payload = types.FunctionType(
+        _run_dispatch_payload.__code__,
+        {
+            "__builtins__": __builtins__,
+            "__name__": "__parsl_worker_payload__",
+            "Path": Path,
+            "json": json,
+            "os": os,
+            "subprocess": subprocess,
+            "time": time,
+        },
+        _run_dispatch_payload.__name__,
+    )
+    return python_app(worker_payload)
 
 
 def _result_payload(value: Any) -> Mapping[str, Any]:
