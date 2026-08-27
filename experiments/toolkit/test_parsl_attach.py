@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -216,3 +217,18 @@ def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monk
     inherit_executor = captured["config"].executors[0]
     assert inherit_executor.max_workers_per_node == 1
     assert inherit_executor.available_accelerators == []
+
+
+def test_real_parsl_reuses_one_dfk_across_sequential_dispatches(tmp_path: Path) -> None:
+    pytest.importorskip("parsl")
+    executor = ParslAttachExecutor()
+    context = _context(tmp_path, visibility_values=())
+    first = _dispatch(tmp_path)
+    second = replace(first, attempt_id="attempt-2", logical_task_id="logical-2")
+    try:
+        assert len(executor.dispatch((first,), context=context)) == 1
+        assert len(executor.dispatch((second,), context=context)) == 1
+        with pytest.raises(RuntimeError, match="different AllocationContext"):
+            executor.dispatch((second,), context=_context(tmp_path, allocation_id="allocation-2"))
+    finally:
+        executor.close()
