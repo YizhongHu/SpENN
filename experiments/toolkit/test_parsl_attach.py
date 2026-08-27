@@ -142,4 +142,4 @@ def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monk
     )
     inherit_executor = captured["config"].executors[0]
     assert inherit_executor.max_workers_per_node == 1
-    assert inherit_executor.available_accelerators in (None, ())
+    assert inherit_executor.available_accelerators == []
