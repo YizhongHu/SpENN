@@ -119,13 +119,13 @@ def expand_rows(grid: Mapping[str, Any], *, facility: str, results_root: str | P
         row_id = f"seed-{seed:03d}"
         train_dir = root / "02_train" / row_id
         terminal = train_dir / "checkpoints" / f"step_{grid['train']['max_steps']:06d}"
-        rows.append({**common, "scale": "proof" if proof else "smoke" if smoke else "production", "kind": "train", "stage": "02_train", "row_id": row_id, "config": grid["train_config"], "seed": seed, "max_steps": grid["train"]["max_steps"], "n_walkers": grid["train"]["n_walkers"], "result_dir": str(train_dir), "checkpoint_dir": str(terminal)})
+        rows.append({**common, "scale": "smoke" if smoke else "production", "kind": "train", "stage": "02_train", "row_id": row_id, "config": grid["train_config"], "seed": seed, "max_steps": grid["train"]["max_steps"], "n_walkers": grid["train"]["n_walkers"], "result_dir": str(train_dir), "checkpoint_dir": str(terminal)})
     if smoke:
         checkpoint = rows[0]["checkpoint_dir"]
         for chain in range(grid["eval"]["chains"]):
             row_id = f"seed-000-chain-{chain:02d}"
             evaluation = dict(grid["eval"])
-            rows.append({**common, "scale": "proof" if proof else "smoke", "kind": "eval", "stage": "03_eval", "row_id": row_id, "config": grid["eval_config"], "seed": chain + 1, **evaluation, "record_capacity": grid["eval"]["n_walkers"] * grid["eval"]["n_draws"], "result_dir": str(root / "03_eval" / row_id), "checkpoint_dir": str(checkpoint)})
+            rows.append({**common, "scale": "smoke" if smoke else "production", "kind": "eval", "stage": "03_eval", "row_id": row_id, "config": grid["eval_config"], "seed": chain + 1, **evaluation, "record_capacity": grid["eval"]["n_walkers"] * grid["eval"]["n_draws"], "result_dir": str(root / "03_eval" / row_id), "checkpoint_dir": str(checkpoint)})
         return tuple(rows)
     for seed in seeds:
         for step in checkpoint_steps:

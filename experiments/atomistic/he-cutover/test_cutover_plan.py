@@ -5,6 +5,7 @@ import hashlib
 
 import pytest
 import yaml
+from omegaconf import OmegaConf
 
 import cutover_plan
 import run_eval_row
@@ -114,7 +115,7 @@ def test_proof_plan_has_one_train_and_forty_eval_rows(tmp_path: Path, facility: 
     assert [task.run_id for task in train.tasks] == ["seed-000"]
     assert len(evaluation.tasks) == 40
     assert len(manifest["rows"]) == 41
-    assert all(task.params["scale"] == "proof" for task in (*train.tasks, *evaluation.tasks))
+    assert all(task.params["scale"] == "smoke" for task in (*train.tasks, *evaluation.tasks))
     assert all(task.params["max_steps"] == 25 and task.params["n_walkers"] == 16 for task in train.tasks)
     assert {task.params["seed"] for task in evaluation.tasks} == set(range(1, 41))
 
@@ -126,6 +127,15 @@ def test_proof_eval_rows_all_depend_on_single_train_row(tmp_path: Path, facility
     )
     assert len(train.tasks) == 1
     assert all(task.dependencies == (train.tasks[0].logical_task_id,) for task in evaluation.tasks)
+
+
+def test_proof_train_row_is_accepted_by_runner_configuration_path(tmp_path: Path) -> None:
+    grid = cutover_plan.load_grid(PROOF_GRID)
+    train_row = cutover_plan.expand_rows(grid, facility="polaris", results_root=tmp_path / "results")[0]
+    cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "he-v1" / "configs" / "train.yaml")
+    run_train_row.configure_training(cfg, train_row)
+    assert cfg.trainer.max_steps == 25
+    assert cfg.sampler.n_walkers == 16
 
 
 @pytest.mark.parametrize("facility", ["polaris", "polaris_scaling"])
