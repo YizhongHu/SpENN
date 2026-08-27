@@ -48,6 +48,16 @@ def test_smoke_training_finds_checkpoint_by_target_when_not_last() -> None:
     assert cfg.callbacks[-1].every_n_steps == 999
 
 
+def test_production_training_preserves_frozen_checkpoint_cadence() -> None:
+    path = ROOT / "experiments/atomistic/he-v1/configs/train.yaml"
+    cfg = OmegaConf.load(path)
+    checkpoint = next(callback for callback in cfg.callbacks if callback.get("_target_") == "tpen.callback.Checkpoint")
+    run_train_row.configure_training(
+        cfg, {"scale": "production", "max_steps": 300000, "n_walkers": 4096}
+    )
+    assert checkpoint.every_n_steps == 25000
+
+
 def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
     profiles = Path(__file__).with_name("profiles")
     cannon = yaml.safe_load((profiles / "cannon.yaml").read_text())

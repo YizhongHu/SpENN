@@ -61,6 +61,18 @@ def test_polaris_directives_and_runtime_policy() -> None:
     assert not any(line.lstrip().startswith("uv ") for line in text.splitlines())
 
 
+def test_polaris_production_uses_capacity_and_logs_checkout_head() -> None:
+    text = (TEMPLATES / "polaris_production.pbs").read_text(encoding="utf-8")
+    for required in (
+        "-A HetRxnEnergy", "-q capacity", "select=1", "walltime=96:00:00",
+        "filesystems=home:eagle", "TPEN_CHECKOUT_HEAD", "git -C \"$TPEN_CHECKOUT\" rev-parse HEAD",
+    ):
+        assert required in text
+    assert "UV_PROJECT_ENVIRONMENT" not in text
+    assert "uv sync" not in text
+    assert "/soft/compilers/cudatoolkit/" not in text
+
+
 def test_templates_put_scheduler_logs_under_guarded_results_root() -> None:
     cannon = (TEMPLATES / "cannon_smoke.sbatch").read_text(encoding="utf-8")
     assert "#SBATCH --output=/dev/null" in cannon

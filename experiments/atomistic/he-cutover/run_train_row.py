@@ -34,6 +34,18 @@ def configure_smoke_training(cfg: Any, row: Mapping[str, Any]) -> Any:
     return cfg
 
 
+def configure_training(cfg: Any, row: Mapping[str, Any]) -> Any:
+    """Apply smoke reductions or assert the frozen production scale."""
+
+    if row.get("scale") == "smoke":
+        return configure_smoke_training(cfg, row)
+    if row.get("scale") != "production":
+        raise RuntimeError("training row scale must be smoke or production")
+    if int(cfg.trainer.max_steps) != int(row["max_steps"]) or int(cfg.sampler.n_walkers) != int(row["n_walkers"]):
+        raise RuntimeError("production row disagrees with the frozen He-v1 train config")
+    return cfg
+
+
 def output_overrides(row: Mapping[str, Any]) -> list[str]:
     """Return overrides that realize the plan-owned row directory."""
 
@@ -53,7 +65,7 @@ def run(row: Mapping[str, Any], *, plan_attempt_id: str, environ: Mapping[str, s
     config_path = Path(__file__).resolve().parents[3] / str(row["config"])
     overrides = [f"runtime.seed={row['seed']}", *output_overrides(row)]
     cfg = hev1.driver.build_config(config_path, overrides, checked=[overrides[0]])
-    configure_smoke_training(cfg, row)
+    configure_training(cfg, row)
     if runner is None:
         from tpen.run import run_from_config
         runner = run_from_config
