@@ -75,7 +75,7 @@ def test_protocol_records_verbatim_argv_and_worker_layout(tmp_path: Path) -> Non
     assert calls[0]["argv"] == spec.argv
     assert calls[0]["environment"]["EXTRA"] == "one"
     assert "CUDA_VISIBLE_DEVICES" not in calls[0]["environment"]
-    assert calls[0]["visibility_value"] == "0"
+    assert "visibility_value" not in calls[0]
     assert Path(calls[0]["output_directory"]) == tmp_path / "launch" / "dispatch" / spec.attempt_id
 
 
@@ -261,6 +261,37 @@ def test_inherit_visibility_keeps_scheduler_binding(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(parsl, "load", fake_load)
     _parsl_app_runner(context, tmp_path / "inherit-launch")
     assert captured["config"].executors[0].max_workers_per_node == 1
+
+
+def test_worker_binding_is_measured_not_selected_by_dispatch_index(tmp_path: Path) -> None:
+    """A worker assignment differing from submission order must be preserved."""
+
+    observed: list[str] = []
+    # The first submitted task happens to execute on worker GPU 3 and the
+    # second on worker GPU 0.  Dispatch-index modulo four would report 0, 1.
+    worker_bindings = iter(("3", "0"))
+
+    def fake_runner(**kwargs: Any) -> dict[str, Any]:
+        worker_binding = next(worker_bindings)
+        output = Path(kwargs["output_directory"])
+        payload = _run_dispatch_payload(
+            kwargs["argv"],
+            kwargs["cwd"],
+            {**kwargs["environment"], "CUDA_VISIBLE_DEVICES": worker_binding},
+            str(output),
+            kwargs["attempt_id"],
+            kwargs["visibility_variable"],
+        )
+        observed.append(str(payload["inherited_visibility_value"]))
+        return payload
+
+    first = _dispatch(tmp_path)
+    second = replace(first, attempt_id="attempt-2", logical_task_id="logical-2")
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"))
+    ParslAttachExecutor(app_runner=fake_runner).dispatch((first, second), context=context)
+
+    assert observed == ["3", "0"]
+    assert observed != [context.visibility_values[i % 4] for i in range(2)]
 
 
 def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -160,6 +160,9 @@ def _run_dispatch_payload(
         "returncode": returncode,
         "visibility_variable": visibility_variable,
         "visibility_value": visibility_value,
+        "inherited_visibility_value": (
+            worker_environment.get(visibility_variable) if visibility_variable is not None else None
+        ),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
         "started_at_unix": started_at,
@@ -220,7 +223,7 @@ class ParslAttachExecutor:
         launch_attempt_dir = Path(context.run_root)
         runner = self.app_runner or self._real_runner(context, launch_attempt_dir)
         submitted: list[tuple[DispatchSpec, Any]] = []
-        for index, dispatch in enumerate(ready_dispatches):
+        for dispatch in ready_dispatches:
             output_directory = launch_attempt_dir / "dispatch" / dispatch.attempt_id
             runner_kwargs: dict[str, Any] = {
                 "argv": dispatch.argv,
@@ -229,11 +232,11 @@ class ParslAttachExecutor:
                 "output_directory": str(output_directory),
                 "attempt_id": dispatch.attempt_id,
             }
-            if context.visibility_values:
-                runner_kwargs.update(
-                    visibility_variable=context.visibility_variable,
-                    visibility_value=context.visibility_values[index % len(context.visibility_values)],
-                )
+            # ``available_accelerators`` binds each HTEX worker.  The task must
+            # inherit that worker-owned environment; dispatch order is not a
+            # resource identity and must never select a GPU.
+            if context.visibility_values or context.nodes_per_block is not None:
+                runner_kwargs["visibility_variable"] = context.visibility_variable
             submitted.append(
                 (
                     dispatch,
@@ -291,11 +294,18 @@ class ParslAttachExecutor:
 def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> AppRunner:
     """Build and load the allocation-local Parsl application lazily."""
 
-    requested_node_count = len(context.visibility_values) or 1
-    if requested_node_count > 1:
+    if context.nodes_per_block is not None:
+        if len(context.visibility_values) != 4:
+            raise ValueError("multi-node Parsl attach requires exactly four accelerators per node")
         validate_pbs_nodefile(
-            os.environ.get("PBS_NODEFILE"), requested_node_count=requested_node_count
+            os.environ.get("PBS_NODEFILE"), requested_node_count=context.nodes_per_block
         )
+    else:
+        requested_node_count = len(context.visibility_values) or 1
+        if requested_node_count > 1:
+            validate_pbs_nodefile(
+                os.environ.get("PBS_NODEFILE"), requested_node_count=requested_node_count
+            )
 
     import parsl
     from parsl.app.app import python_app
@@ -303,9 +313,23 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
     from parsl.executors import HighThroughputExecutor
     from parsl.providers import LocalProvider
 
+    provider_options: dict[str, Any] = {
+        "init_blocks": 1,
+        "min_blocks": 1,
+        "max_blocks": 1,
+    }
+    if context.nodes_per_block is not None:
+        from parsl.launchers import MpiExecLauncher
+
+        provider_options.update(
+            nodes_per_block=context.nodes_per_block,
+            launcher=MpiExecLauncher(bind_cmd="--cpu-bind", overrides="--depth=64 --ppn 1"),
+            worker_init="export TMPDIR=/tmp",
+        )
+
     executor_options: dict[str, Any] = {
         "label": "parsl-attach",
-        "provider": LocalProvider(init_blocks=1, min_blocks=1, max_blocks=1),
+        "provider": LocalProvider(**provider_options),
         "max_workers_per_node": len(context.visibility_values) or 1,
     }
     if context.visibility_values:
