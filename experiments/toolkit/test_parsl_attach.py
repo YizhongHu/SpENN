@@ -14,7 +14,12 @@ from typing import Any
 import pytest
 
 from experiments.toolkit.dispatch import AllocationContext, DispatchExecutor, DispatchSpec
-from experiments.toolkit.parsl_attach import ParslAttachExecutor, _parsl_app_runner, _run_dispatch_payload
+from experiments.toolkit.parsl_attach import (
+    ParslAttachExecutor,
+    _parsl_app_runner,
+    _run_dispatch_payload,
+    validate_pbs_nodefile,
+)
 from experiments.toolkit.specs import CompletionSpec
 
 
@@ -121,6 +126,78 @@ def test_module_imports_without_parsl_site_package() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_pbs_nodefile_missing_is_attributable(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match=r"PBS_NODEFILE missing.*actual host count 0.*expected 2"):
+        validate_pbs_nodefile(tmp_path / "missing", requested_node_count=2)
+
+
+def test_pbs_nodefile_empty_is_attributable(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("\n  \n")
+    with pytest.raises(RuntimeError, match=r"PBS_NODEFILE empty.*actual host count 0.*expected 2"):
+        validate_pbs_nodefile(nodefile, requested_node_count=2)
+
+
+def test_pbs_nodefile_unreadable_is_attributable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("node01\n")
+    def deny_read(*args: Any, **kwargs: Any) -> str:
+        raise PermissionError("permission denied")
+    monkeypatch.setattr(Path, "read_text", deny_read)
+    with pytest.raises(RuntimeError, match=r"PBS_NODEFILE unreadable.*actual host count unavailable.*expected 1"):
+        validate_pbs_nodefile(nodefile, requested_node_count=1)
+
+
+def test_pbs_nodefile_duplicates_report_unique_count(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("node01\nnode01\nnode02\n")
+    with pytest.raises(RuntimeError, match=r"host count mismatch.*actual host count 2.*expected 3"):
+        validate_pbs_nodefile(nodefile, requested_node_count=3)
+
+
+def test_pbs_nodefile_one_when_two_reports_counts(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("node01\n")
+    with pytest.raises(RuntimeError, match=r"host count mismatch.*actual host count 1.*expected 2"):
+        validate_pbs_nodefile(nodefile, requested_node_count=2)
+
+
+def test_pbs_nodefile_ten_hosts_passes(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("".join(f"node-{index:02d}\n" for index in range(10)))
+    assert validate_pbs_nodefile(nodefile, requested_node_count=10) == tuple(
+        f"node-{index:02d}" for index in range(10)
+    )
+
+
+def test_pbs_nodefile_ten_when_two_reports_counts(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("".join(f"node-{index:02d}\n" for index in range(10)))
+    with pytest.raises(RuntimeError, match=r"host count mismatch.*actual host count 10.*expected 2"):
+        validate_pbs_nodefile(nodefile, requested_node_count=2)
+
+
+def test_pbs_nodefile_ignores_blank_lines_and_canonicalizes_whitespace(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("  NODE-01  \n\n node-02\t\n NODE-01\n")
+    assert validate_pbs_nodefile(nodefile, requested_node_count=2) == ("node-01", "node-02")
+
+
+def test_pbs_nodefile_unknown_hostname_format_is_attributable(tmp_path: Path) -> None:
+    nodefile = tmp_path / "nodes"
+    nodefile.write_text("node 01\nnode-02\n")
+    with pytest.raises(RuntimeError, match=r"unknown hostname format on line 1.*expected 2"):
+        validate_pbs_nodefile(nodefile, requested_node_count=2)
+
+
+def test_multi_node_attach_rejects_missing_nodefile_before_parsl_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PBS_NODEFILE", raising=False)
+    with pytest.raises(RuntimeError, match=r"PBS_NODEFILE missing.*expected 2"):
+        _parsl_app_runner(_context(tmp_path, visibility_values=("0", "1")), tmp_path / "launch")
 
 
 def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:

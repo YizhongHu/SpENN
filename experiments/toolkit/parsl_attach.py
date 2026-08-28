@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -19,6 +20,91 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .dispatch import AllocationContext, DispatchRecord, DispatchSpec
 from .task_state import _deadline_guard_reached
+
+
+_HOSTNAME_PATTERN = re.compile(
+    r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+
+
+def validate_pbs_nodefile(
+    nodefile: str | os.PathLike[str] | None,
+    *,
+    requested_node_count: int,
+) -> tuple[str, ...]:
+    """Validate and canonicalize ``PBS_NODEFILE`` without importing Parsl.
+
+    This is intentionally an independently callable preflight boundary: the
+    executor invokes it before its first Parsl import, and tests exercise it
+    directly in environments where the optional Parsl dependency is absent.
+
+    Parameters
+    ----------
+    nodefile : path-like or None
+        Path supplied by the scheduler.
+    requested_node_count : int
+        Number of distinct hosts requested by the allocation.
+
+    Returns
+    -------
+    tuple of str
+        Unique, lower-case hostnames in first-seen order.
+
+    Raises
+    ------
+    RuntimeError
+        If the nodefile is missing, unreadable, empty, malformed, or contains
+        a host count different from the requested count.
+    """
+
+    if requested_node_count < 1:
+        raise ValueError("requested node count must be positive")
+    if nodefile is None:
+        raise RuntimeError(
+            "PBS_NODEFILE missing: actual host count 0, "
+            f"expected {requested_node_count}"
+        )
+    path = Path(nodefile)
+    if not path.exists():
+        raise RuntimeError(
+            f"PBS_NODEFILE missing at {path}: actual host count 0, "
+            f"expected {requested_node_count}"
+        )
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(
+            f"PBS_NODEFILE unreadable at {path}: actual host count unavailable, "
+            f"expected {requested_node_count} ({exc})"
+        ) from exc
+
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for line_number, line in enumerate(contents.splitlines(), start=1):
+        host = line.strip().lower()
+        if not host:
+            continue
+        if not _HOSTNAME_PATTERN.fullmatch(host):
+            raise RuntimeError(
+                f"PBS_NODEFILE unknown hostname format on line {line_number}: {line.strip()!r}; "
+                f"actual host count {len(hosts)}, expected {requested_node_count}"
+            )
+        if host not in seen:
+            seen.add(host)
+            hosts.append(host)
+
+    if not hosts:
+        raise RuntimeError(
+            f"PBS_NODEFILE empty at {path}: actual host count 0, "
+            f"expected {requested_node_count}"
+        )
+    if len(hosts) != requested_node_count:
+        raise RuntimeError(
+            f"PBS_NODEFILE host count mismatch at {path}: actual host count {len(hosts)}, "
+            f"expected {requested_node_count}"
+        )
+    return tuple(hosts)
 
 
 def _run_dispatch_payload(
@@ -199,6 +285,12 @@ class ParslAttachExecutor:
 
 def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> AppRunner:
     """Build and load the allocation-local Parsl application lazily."""
+
+    requested_node_count = len(context.visibility_values) or 1
+    if requested_node_count > 1:
+        validate_pbs_nodefile(
+            os.environ.get("PBS_NODEFILE"), requested_node_count=requested_node_count
+        )
 
     import parsl
     from parsl.app.app import python_app
