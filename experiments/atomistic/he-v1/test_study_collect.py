@@ -1153,16 +1153,24 @@ def test_a_truncated_sequence_is_flagged_beside_the_bar_it_understates(
     """
 
     manifest = study["manifest"]
-    eval_row = next(row for row in manifest["rows"] if row["kind"] == "eval")
+    eval_rows = [row for row in manifest["rows"] if row["kind"] == "eval"]
+    # Stated rather than assumed: the contrast below needs two eval rows, and a
+    # shrunken fixture should say so instead of raising IndexError.
+    assert len(eval_rows) >= 2
+    truncated, healthy = eval_rows[0], eval_rows[1]
     metrics = {**HEALTHY_METRICS, **ENERGY_METRICS, "local_energy_plateau_reached": False}
-    _materialize_row(study["root"], manifest, eval_row, metrics=metrics)
+    _materialize_row(study["root"], manifest, truncated, metrics=metrics)
 
     text = report.render(_collect(study))
     header, rows = _rows_table(text)
-    cells = rows[eval_row["row_id"]]
 
-    assert _cell_for(header, cells, "plateau") == "False"
-    assert _cell_for(header, cells, "MCSE, correlation-corrected") == "0.0009"
+    # `absence.render` emits booleans lowercase, JSON-style, for CSV compatibility.
+    assert _cell_for(header, rows[truncated["row_id"]], "plateau") == "false"
+    # Discriminating: an untruncated row on the same table reads the other way, so
+    # this cannot pass by every row rendering the same thing.
+    assert _cell_for(header, rows[healthy["row_id"]], "plateau") == "true"
+    # The bar itself still resolved -- that is what makes this the dangerous case.
+    assert _cell_for(header, rows[truncated["row_id"]], "MCSE, correlation-corrected") == "0.0009"
     assert "UNDERSTATED" in text
 
 
