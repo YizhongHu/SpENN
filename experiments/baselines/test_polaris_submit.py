@@ -78,6 +78,20 @@ def test_template_sets_binding_and_memory_before_python() -> None:
     assert "XLA_PYTHON_CLIENT_PREALLOCATE=false" in worker
 
 
+def test_device_probe_selects_physical_gpu_because_pbs_leaves_smi_unfiltered(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
+    monkeypatch.setattr(submission, "_probe_jax", lambda: {"device_kinds": ["NVIDIA A100"], "jax_version": "0"})
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="GPU-physical-3\n", stderr="")
+
+    monkeypatch.setattr(submission.subprocess, "run", fake_run)
+    assert submission._bound_device()["device_uuid"] == "GPU-physical-3"
+    assert calls[0][0:3] == ["nvidia-smi", "-i", "3"]
+
+
 def test_mpi_is_only_the_template_launcher() -> None:
     template = (Path(__file__).with_name("templates") / "polaris_production.pbs").read_text()
     assert "mpiexec -n @ROW_COUNT@ -ppn 4" in template

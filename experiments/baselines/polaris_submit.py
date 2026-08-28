@@ -443,7 +443,7 @@ def _bound_device() -> dict[str, Any]:
         )
     try:
         smi = subprocess.run(
-            ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "-i", visible, "--query-gpu=uuid", "--format=csv,noheader,nounits"],
             check=True,
             capture_output=True,
             text=True,
