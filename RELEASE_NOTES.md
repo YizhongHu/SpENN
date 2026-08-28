@@ -1,5 +1,89 @@
 # Release Notes
 
+## v0.3.3 - Trajectory energy estimand correction
+
+34 commits since v0.3.2 (`dd49cc1`). Two are `dev`/`main` merges; the rest
+fall into three areas: the He-v1 42-row evaluation study, the He-cutover
+multi-node Polaris port, and agent/cluster infrastructure.
+
+### Added
+
+**He-v1 evaluation study**
+
+- Factor-response evaluation: scale the trained envelope parameters (`b_ee`,
+  `c_en`, `d_en`) in a bounded context with byte-verified restore (#337)
+- Evaluation rows declare their own task graph; the 42-row evaluation grid is
+  frozen (#339)
+- The frozen grid's metric-namespace bindings are carried into the plan
+  manifest, so a tolerance cannot land on a different task that happens to
+  emit the same metric name (#348)
+- Production evaluation rows are placed on `kozinsky_gpu` and `seas_gpu`
+  together in one job (#349)
+
+**He-cutover: multi-node execution on Polaris**
+
+- Parsl attach executor for allocation-attached batches, with immutable
+  dispatch receipts and completion verification (#354)
+- He cutover study: two-facility smoke plan, runtime admission,
+  allocation-local Parsl pipeline, facility templates, and contract tests
+  (#358)
+- Attempt-free dispatch seam (#352)
+- Full He cutover plan, production grid, and Polaris production template
+  (`4410890`; this commit has no PR number in its subject or body)
+- Optional `nodes_per_block` on the dispatch context (#367)
+- Placement and topology evidence for multi-node runs: which nodes and which
+  physical GPUs actually ran (#369)
+- Proof manifest of 1 train + 40 eval rows (#371)
+
+### Changed
+
+- **The He-v1 study's canonical energy is now the whole-trajectory estimate
+  with its MCSE.** The final-draw snapshot is retained beside it and explicitly
+  labelled as a snapshot; `plateau_reached` travels with the MCSE, because a
+  Geyer sequence truncated at the window edge understates it. A row whose
+  trajectory statistics never resolved renders `absent` and never falls back
+  to the snapshot (#373)
+- Duplicate row submission is refused before the allocation rather than
+  inside it (#357)
+- Legacy Hooke studies marked stale with provenance banners; legacy toolkit
+  deprecation recorded (#351)
+- Running the authoritative-edit guard outside the agent sandbox is sanctioned
+  in AGENTS.md (#338)
+
+### Fixed
+
+**He-v1 collector and planner**
+
+- Collection completeness is derived from the plan, not a row-count literal
+  (#342)
+- Term energies are included in re-equilibrated records, and the planner no
+  longer claims two rows (#343)
+- Metrics-only evaluation tasks are no longer required to emit an artifact
+  (#345)
+- The summary-field oracle unwraps delegating calculators (#346)
+- The collector's numeric oracles are boundary-sensitive (#341)
+- Evaluation task order restored (#375)
+- Test files excluded from the import-boundary check (#376)
+
+**He-cutover and Parsl**
+
+- `AllocationContext` accepts empty `visibility_values` in inherit mode (#355)
+- he-cutover entrypoints are importable (#359)
+- Polaris Torch bootstrap paths repaired (#360)
+- Polaris operator overlay protected (#361)
+- Parsl dataflow kernel reused across batches (#362)
+- Virtualenv interpreter preserved in dispatches (#363)
+- The plan owns `result_dir`, so completion probes the path the runner
+  actually writes (#364)
+- A bad `PBS_NODEFILE` is rejected before Parsl loads, removing a localhost
+  false-green (#368)
+- Multi-node `LocalProvider` branch; GPUs are no longer assigned by dispatch
+  index (#370)
+
+**Cluster tooling**
+
+- Cannon `uv` resolved outside `PATH` (#374)
+
 ## v0.3.2 - Current-dev baseline release
 
 Covers the exact 29-commit `origin/main..origin/dev` range ending at
