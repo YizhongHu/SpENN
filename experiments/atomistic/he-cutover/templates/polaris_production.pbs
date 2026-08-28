@@ -8,6 +8,7 @@
 #PBS -o /dev/null
 #PBS -e /dev/null
 set -euo pipefail
+: "${TPEN_NODES_PER_BLOCK:?must match the PBS select value}"
 : "${TPEN_CHECKOUT:?}"
 : "${TPEN_RESULTS_ROOT:?}"
 : "${TPEN_UV_ENV:?}"

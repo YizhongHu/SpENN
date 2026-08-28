@@ -17,6 +17,7 @@ from experiments.toolkit.specs import CompletionSpec
 import cutover_strata
 
 SMOKE_SCHEMA = "he-cutover-smoke-grid/v1"
+PROOF_SCHEMA = "he-cutover-proof-grid/v1"
 PRODUCTION_SCHEMA = "he-cutover-production-grid/v1"
 STUDY = "he-cutover"
 GRID_KEYS = {"schema", "study", "train_config", "eval_config", "train", "eval", "facilities"}
@@ -50,16 +51,18 @@ def load_grid(path: str | Path) -> dict[str, Any]:
         raise PlanError("grid must be a mapping")
     _exact(payload, GRID_KEYS, "grid")
     schema = payload["schema"]
-    if schema not in {SMOKE_SCHEMA, PRODUCTION_SCHEMA} or payload["study"] != STUDY:
+    if schema not in {SMOKE_SCHEMA, PROOF_SCHEMA, PRODUCTION_SCHEMA} or payload["study"] != STUDY:
         raise PlanError("grid schema/study identity changed")
     if payload["train_config"] != "experiments/atomistic/he-v1/configs/train.yaml" or payload["eval_config"] != "experiments/atomistic/he-v1/configs/eval.yaml":
         raise PlanError("He-v1 configs must be referenced verbatim")
     train, evaluation, facilities = payload["train"], payload["eval"], payload["facilities"]
     if not all(isinstance(item, Mapping) for item in (train, evaluation, facilities)):
         raise PlanError("train, eval, and facilities must be mappings")
-    _exact(train, SMOKE_TRAIN_KEYS if schema == SMOKE_SCHEMA else PRODUCTION_TRAIN_KEYS, "train")
-    _exact(evaluation, SMOKE_EVAL_KEYS if schema == SMOKE_SCHEMA else PRODUCTION_EVAL_KEYS, "eval")
-    if schema == SMOKE_SCHEMA:
+    is_smoke = schema == SMOKE_SCHEMA
+    is_proof = schema == PROOF_SCHEMA
+    _exact(train, SMOKE_TRAIN_KEYS if (is_smoke or is_proof) else PRODUCTION_TRAIN_KEYS, "train")
+    _exact(evaluation, SMOKE_EVAL_KEYS if (is_smoke or is_proof) else PRODUCTION_EVAL_KEYS, "eval")
+    if is_smoke:
         if dict(train) != {"seed": 0, "max_steps": 25, "n_walkers": 16}:
             raise PlanError("train smoke must be seed 0, 25 steps, 16 walkers")
         expected_eval = {"chains": 2, "n_walkers": 16, "n_draws": 4, "burn_in": 4, "discard_draws": 0, "stride": 2, "chunk_size": 16, "task_names": ["mcmc_energy"]}
@@ -67,6 +70,14 @@ def load_grid(path: str | Path) -> dict[str, Any]:
             raise PlanError("evaluation smoke coordinates changed")
         if set(facilities) != {"cannon", "polaris"}:
             raise PlanError("smoke facilities must be exactly cannon and polaris")
+    elif is_proof:
+        if dict(train) != {"seed": 0, "max_steps": 25, "n_walkers": 16}:
+            raise PlanError("proof training must be seed 0, 25 steps, 16 walkers")
+        expected_eval = {"chains": 40, "n_walkers": 16, "n_draws": 4, "burn_in": 4, "discard_draws": 0, "stride": 2, "chunk_size": 16, "task_names": ["mcmc_energy"]}
+        if dict(evaluation) != expected_eval:
+            raise PlanError("evaluation proof coordinates changed")
+        if set(facilities) != {"polaris", "polaris_scaling"}:
+            raise PlanError("proof facilities must be exactly polaris and polaris_scaling")
     else:
         expected_train = {"seeds": [0, 1, 2], "max_steps": 300000, "n_walkers": 4096, "checkpoint_steps": [100000, 200000, 300000]}
         if dict(train) != expected_train:
@@ -99,7 +110,8 @@ def expand_rows(grid: Mapping[str, Any], *, facility: str, results_root: str | P
     placement = dict(grid["facilities"][facility])
     root = Path(results_root).resolve()
     common = {"facility": facility, "runtime": placement.pop("runtime"), "resources": placement}
-    smoke = grid["schema"] == SMOKE_SCHEMA
+    smoke = grid["schema"] in {SMOKE_SCHEMA, PROOF_SCHEMA}
+    proof = grid["schema"] == PROOF_SCHEMA
     seeds = [grid["train"]["seed"]] if smoke else list(grid["train"]["seeds"])
     checkpoint_steps = [grid["train"]["max_steps"]] if smoke else list(grid["train"]["checkpoint_steps"])
     rows = []
@@ -113,7 +125,7 @@ def expand_rows(grid: Mapping[str, Any], *, facility: str, results_root: str | P
         for chain in range(grid["eval"]["chains"]):
             row_id = f"seed-000-chain-{chain:02d}"
             evaluation = dict(grid["eval"])
-            rows.append({**common, "scale": "smoke", "kind": "eval", "stage": "03_eval", "row_id": row_id, "config": grid["eval_config"], "seed": chain + 1, **evaluation, "record_capacity": grid["eval"]["n_walkers"] * grid["eval"]["n_draws"], "result_dir": str(root / "03_eval" / row_id), "checkpoint_dir": str(checkpoint)})
+            rows.append({**common, "scale": "smoke" if smoke else "production", "kind": "eval", "stage": "03_eval", "row_id": row_id, "config": grid["eval_config"], "seed": chain + 1, **evaluation, "record_capacity": grid["eval"]["n_walkers"] * grid["eval"]["n_draws"], "result_dir": str(root / "03_eval" / row_id), "checkpoint_dir": str(checkpoint)})
         return tuple(rows)
     for seed in seeds:
         for step in checkpoint_steps:

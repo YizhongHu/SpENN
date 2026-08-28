@@ -9,6 +9,7 @@ import pytest
 import cutover_plan
 import pipeline
 from experiments.toolkit.dispatch import DispatchRecord
+from experiments.toolkit.parsl_attach import validate_pbs_nodefile
 
 
 class RecordingExecutor:
@@ -54,6 +55,50 @@ def test_facility_binding_branches_are_exercised_end_to_end(tmp_path: Path) -> N
     polaris = pipeline.allocation_context(facility="polaris", run_root=tmp_path / "polaris", environ={"PBS_JOBID": "2.server"})
     assert cannon.visibility_values == ()
     assert polaris.visibility_values == ("0", "1", "2", "3")
+
+
+def test_nodes_per_block_intent_keeps_absent_and_one_on_legacy_path(tmp_path: Path) -> None:
+    absent = pipeline.allocation_context(facility="polaris", run_root=tmp_path / "absent", environ={"PBS_JOBID": "1.server"})
+    one = pipeline.allocation_context(facility="polaris", run_root=tmp_path / "one", environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "1"})
+    assert absent.nodes_per_block is None
+    assert one.nodes_per_block is None
+    assert absent.to_dict() | {"run_root": str(tmp_path / "one")} == one.to_dict()
+
+
+def test_nodes_per_block_intent_two_selects_multinode_path(tmp_path: Path) -> None:
+    context = pipeline.allocation_context(
+        facility="polaris",
+        run_root=tmp_path / "two",
+        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2"},
+    )
+    assert context.nodes_per_block == 2
+    assert context.visibility_values == ("0", "1", "2", "3")
+
+
+def test_nodefile_guard_compares_hosts_with_independent_pipeline_intent(tmp_path: Path) -> None:
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\n")
+    context = pipeline.allocation_context(
+        facility="polaris",
+        run_root=tmp_path / "two",
+        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2", "PBS_NODEFILE": str(nodefile)},
+    )
+    assert context.nodes_per_block == 2
+    with pytest.raises(RuntimeError, match=r"actual host count 1.*expected 2"):
+        validate_pbs_nodefile(nodefile, requested_node_count=context.nodes_per_block)
+
+
+def test_nodefile_guard_accepts_two_hosts_against_intent_two(tmp_path: Path) -> None:
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\n")
+    context = pipeline.allocation_context(
+        facility="polaris",
+        run_root=tmp_path / "two",
+        environ={"PBS_JOBID": "1.server", "TPEN_NODES_PER_BLOCK": "2"},
+    )
+    assert validate_pbs_nodefile(nodefile, requested_node_count=context.nodes_per_block) == (
+        "node-01", "node-02"
+    )
 
 
 def test_preflight_and_science_record_the_same_unresolved_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

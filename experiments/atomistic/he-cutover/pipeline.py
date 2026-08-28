@@ -22,11 +22,22 @@ def allocation_context(*, facility: str, run_root: str | Path, environ: Mapping[
 
     environ = os.environ if environ is None else environ
     allocation_id = require_allocation(environ)
+    raw_nodes = str(environ.get("TPEN_NODES_PER_BLOCK", "")).strip()
+    if raw_nodes:
+        try:
+            requested_nodes = int(raw_nodes)
+        except ValueError as exc:
+            raise ValueError("TPEN_NODES_PER_BLOCK must be a positive integer") from exc
+        if requested_nodes <= 0:
+            raise ValueError("TPEN_NODES_PER_BLOCK must be a positive integer")
+        nodes_per_block = requested_nodes if requested_nodes > 1 else None
+    else:
+        nodes_per_block = None
     # Empty means true inheritance: Slurm owns the MIG visibility value and
     # neither the executor nor Parsl may replace it. Polaris PBS leaves the
     # variable unset, so its four workers receive explicit accelerator ids.
     values = () if facility == "cannon" else ("0", "1", "2", "3")
-    return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={}).validate()
+    return AllocationContext(allocation_id=allocation_id, visibility_variable="CUDA_VISIBLE_DEVICES", visibility_values=values, run_root=str(run_root), deadline=deadline, environment={}, nodes_per_block=nodes_per_block).validate()
 
 
 def preflight_dispatch(*, context: AllocationContext, cwd: str | Path, admission_id: str, runtime: str, python: str) -> DispatchSpec:
