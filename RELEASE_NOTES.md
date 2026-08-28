@@ -5,13 +5,12 @@
 ### Added
 
 - OneQMC/Orbformer results adapter, emitting baseline records from `result.h5` (#290)
-- Fail-loud timing reducer (#312)
-- Accelerator-aware timing callbacks (#311)
 
 ### Changed
 
 - Baseline records reported against published values (#335)
 - OneQMC adapter: `--allow-short-tail` help no longer asserts a resolution rule that was removed (#294)
+- Timing callback stack (#311, #312) was reverted before release after its cadence test conflicted with the configured callback cadence.
 
 ### Fixed
 
