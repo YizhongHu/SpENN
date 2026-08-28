@@ -25,7 +25,9 @@ from experiments.baselines.check_polaris_deepqmc_env import (
     HYDRA_CONFIG_RELPATH,
     EnvCheckError,
     check_seed,
+    backend_platform_version,
     compare_energy,
+    loaded_cuda_libraries,
     read_seed,
 )
 
@@ -198,3 +200,67 @@ def test_verdict_is_derived_from_the_numbers_it_reports() -> None:
             "sane" if magnitude < 1e-4 else "investigate" if magnitude < 1e-3 else "broken"
         )
         assert result["verdict"] == expected, (offset, result)
+
+
+# --- Optional-evidence collection must never be fatal ------------------------
+# Regression for PBS 7571666 on Polaris: check_env reached
+# jax.extend.backend.get_backend() to read an OPTIONAL context field. On jax
+# 0.8.3 `jax.extend` raises AttributeError from a deprecation shim, which aborted
+# the whole environment check and left a 0-byte env-check.json -- losing the
+# interpreter, device kind and DeepQMC commit evidence that the acceptance
+# criteria actually require, none of which had anything to do with the failure.
+
+
+class _StubDevice:
+    def __init__(self, client: object | None) -> None:
+        self.client = client
+        self.id = 0
+        self.device_kind = "stub"
+        self.platform = "gpu"
+
+
+class _StubClient:
+    platform_version = "cuda 12090"
+
+
+class _JaxWithoutExtend:
+    """Reproduces jax 0.8.3: touching `.extend` raises, as the real shim does."""
+
+    def __init__(self, devices: list[_StubDevice]) -> None:
+        self._devices = devices
+
+    def devices(self) -> list[_StubDevice]:
+        return self._devices
+
+    def __getattr__(self, name: str):
+        # The exact message the real deprecation shim produced in the job log.
+        raise AttributeError(f"module 'jax' has no attribute {name!r}")
+
+
+def test_platform_version_is_read_through_the_device_client() -> None:
+    result = backend_platform_version(_JaxWithoutExtend([_StubDevice(_StubClient())]))
+    assert result["platform_version"] == "cuda 12090"
+    assert result["via"] == "device.client"
+
+
+def test_missing_jax_extend_does_not_raise() -> None:
+    """The exact Polaris failure: every route dead, and it must still return."""
+    stub = _JaxWithoutExtend([_StubDevice(None)])  # client is None -> attribute error
+    result = backend_platform_version(stub)
+    assert result["platform_version"] is None
+    assert result["via"] is None
+    # The failures are reported as data rather than raised, so the job log says
+    # why the field is absent instead of losing everything else.
+    assert result["attempts"], result
+    assert any("device.client" in a for a in result["attempts"])
+
+
+def test_no_devices_at_all_does_not_raise() -> None:
+    result = backend_platform_version(_JaxWithoutExtend([]))
+    assert result["platform_version"] is None
+    assert any("IndexError" in a for a in result["attempts"]), result["attempts"]
+
+
+def test_loaded_cuda_libraries_never_raises_off_linux() -> None:
+    """Returns an empty mapping where /proc/self/maps does not exist."""
+    assert isinstance(loaded_cuda_libraries(), dict)

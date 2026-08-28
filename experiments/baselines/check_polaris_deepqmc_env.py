@@ -90,6 +90,61 @@ def _git_commit(source_root: Path) -> dict[str, str]:
     }
 
 
+def backend_platform_version(jax_module: Any) -> dict[str, Any]:
+    """Resolve the backend's platform version without ever raising.
+
+    The accessor for this moved between JAX releases, and reaching for the wrong
+    one is fatal in a way that is out of all proportion to the value: on jax
+    0.8.3 ``jax.extend`` raises ``AttributeError`` from a deprecation shim, which
+    took down an entire GPU environment check on Polaris (PBS 7571666) and cost
+    the interpreter, device and provenance evidence along with it. Optional
+    evidence must never be able to do that, so every route is attempted in turn
+    and the failures are reported as data.
+
+    Parameters
+    ----------
+    jax_module : module
+        The imported ``jax`` module.
+
+    Returns
+    -------
+    dict
+        ``platform_version`` (None if no route worked), ``via`` naming the route
+        that succeeded, and ``attempts`` listing what each failed route said.
+        The attempts are kept even on success: knowing which API this JAX build
+        answers to is itself useful when comparing two facilities.
+    """
+    def _via_device_client() -> Any:
+        # Works across the range this project uses, because a device always
+        # carries the client that produced it.
+        return jax_module.devices()[0].client.platform_version
+
+    def _via_extend() -> Any:
+        import jax.extend  # noqa: PLC0415 -- probing availability deliberately
+
+        return jax.extend.backend.get_backend().platform_version
+
+    def _via_xla_bridge() -> Any:
+        from jax.lib import xla_bridge  # noqa: PLC0415
+
+        return xla_bridge.get_backend().platform_version
+
+    attempts: list[str] = []
+    routes = (
+        ("device.client", _via_device_client),
+        ("jax.extend.backend", _via_extend),
+        ("jax.lib.xla_bridge", _via_xla_bridge),
+    )
+    for name, route in routes:
+        try:
+            value = route()
+        except Exception as exc:  # noqa: BLE001 -- any failure is just a dead route
+            attempts.append(f"{name}: {type(exc).__name__}: {exc}")
+            continue
+        return {"platform_version": value, "via": name, "attempts": attempts}
+    return {"platform_version": None, "via": None, "attempts": attempts}
+
+
 def loaded_cuda_libraries() -> dict[str, str]:
     """Report the CUDA shared objects this process has actually mapped.
 
@@ -207,7 +262,6 @@ def check_env(
     import deepqmc
 
     devices = jax.devices()
-    backend = jax.extend.backend.get_backend()
     report: dict[str, Any] = {
         "executable": sys.executable,
         "prefix": sys.prefix,
@@ -222,13 +276,25 @@ def check_env(
         "device_kinds": sorted({d.device_kind for d in devices}),
         "platforms": sorted({d.platform for d in devices}),
         "deepqmc_file": deepqmc.__file__,
-        # platform_version is the backend's own statement of the CUDA runtime and
-        # driver it is talking to -- the artefact, rather than the wheel version
-        # it was inferred from.
-        "backend_platform_version": getattr(backend, "platform_version", None),
-        "loaded_cuda_libraries": loaded_cuda_libraries(),
-        "gpu_memory": gpu_memory_high_water(),
     }
+
+    # OPTIONAL EVIDENCE, collected defensively and deliberately AFTER the report
+    # dict exists. None of it may abort the run: these fields are useful context,
+    # while the interpreter, jax version, device kind and DeepQMC commit above are
+    # the evidence the acceptance criteria actually require. Letting a nice-to-have
+    # field take down a required one is how PBS 7571666 produced a 0-byte
+    # env-check.json.
+    for key, collect in (
+        # The backend's own statement of the CUDA runtime and driver it talks to
+        # -- the artefact, rather than the wheel version it was inferred from.
+        ("backend_platform_version", lambda: backend_platform_version(jax)),
+        ("loaded_cuda_libraries", loaded_cuda_libraries),
+        ("gpu_memory", gpu_memory_high_water),
+    ):
+        try:
+            report[key] = collect()
+        except Exception as exc:  # noqa: BLE001 -- context must never be fatal
+            report[key] = {"error": f"{type(exc).__name__}: {exc}"}
 
     root = source_root
     if root is None:
