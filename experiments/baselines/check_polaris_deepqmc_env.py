@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -368,6 +369,105 @@ def check_seed(run_dir: Path, expect_seed: int) -> dict[str, Any]:
     return found
 
 
+# --- A5 pre-registered comparison ------------------------------------------
+# These thresholds were fixed BEFORE any Polaris energy existed (Task
+# Orchestrator note a5-preregistered-criterion-2026-08-28) so the result cannot
+# choose its own criterion. They are encoded here rather than applied by hand
+# because a narrated verdict drifts from its numbers: a label reading "sane"
+# beside a difference that is not is a failure this program has already seen.
+SANE_HARTREE = 1e-4
+BROKEN_HARTREE = 1e-3
+# Exact non-relativistic, infinite-nuclear-mass He ground state. Aznabaev,
+# Bekbaev and Korobov, arXiv:1810.11288 Table 3, attributing to Schwartz (2006);
+# recorded as confirmed in NNQMC-REFERENCE-ENERGIES.md.
+HE_EXACT_HARTREE = -2.903724377034119598
+
+
+def compare_energy(
+    polaris_energy: float,
+    polaris_stderr: float,
+    reference_energy: float,
+    exact_energy: float | None = HE_EXACT_HARTREE,
+    steps_observed: int | None = None,
+    steps_expected: int | None = None,
+) -> dict[str, Any]:
+    """Apply the pre-registered A5 criterion to a Polaris energy.
+
+    Parameters
+    ----------
+    polaris_energy, polaris_stderr : float
+        The Polaris row's tail-mean energy and its blocked standard error, in
+        hartree, from the same estimator used for the reference row.
+    reference_energy : float
+        The Cannon comparator's energy in hartree.
+    exact_energy : float or None
+        Exact ground-state energy used for the variational check. Pass ``None``
+        to skip that check for a system with no exact value.
+    steps_observed, steps_expected : int or None
+        Row lengths. A short row is BROKEN regardless of its energy, because a
+        truncated run's tail mean is not the quantity being compared.
+
+    Returns
+    -------
+    dict
+        ``delta``, ``verdict`` (``sane`` / ``investigate`` / ``broken``) and
+        ``reasons``. The verdict is derived, never passed in.
+    """
+    delta = polaris_energy - reference_energy
+    magnitude = abs(delta)
+    reasons: list[str] = []
+
+    # Any single disqualifier forces BROKEN regardless of how small delta is.
+    if not all(map(_finite, (polaris_energy, polaris_stderr))):
+        reasons.append("energy or stderr is not finite")
+    if steps_expected is not None and (steps_observed or 0) < steps_expected:
+        reasons.append(
+            f"row is short: {steps_observed} of {steps_expected} steps recorded"
+        )
+    if exact_energy is not None and polaris_stderr > 0:
+        # A variational energy cannot lie below the exact ground state. This
+        # program has produced below-exact energies four times from too-short
+        # tails, so it is a live failure mode rather than a hypothetical.
+        below_by = exact_energy - polaris_energy
+        if below_by > 3 * polaris_stderr:
+            reasons.append(
+                f"energy is {below_by:.3e} Ha below exact, more than 3 sigma "
+                f"({3 * polaris_stderr:.3e} Ha): variationally impossible"
+            )
+
+    if reasons:
+        verdict = "broken"
+    elif magnitude >= BROKEN_HARTREE:
+        verdict = "broken"
+        reasons.append(f"|delta| {magnitude:.3e} Ha >= {BROKEN_HARTREE:.0e}")
+    elif magnitude >= SANE_HARTREE:
+        verdict = "investigate"
+        reasons.append(
+            f"|delta| {magnitude:.3e} Ha is in [{SANE_HARTREE:.0e}, "
+            f"{BROKEN_HARTREE:.0e}): report as a finding, do NOT call this verified"
+        )
+    else:
+        verdict = "sane"
+        reasons.append(f"|delta| {magnitude:.3e} Ha < {SANE_HARTREE:.0e}")
+
+    return {
+        "polaris_energy_hartree": polaris_energy,
+        "polaris_stderr_hartree": polaris_stderr,
+        "reference_energy_hartree": reference_energy,
+        "exact_energy_hartree": exact_energy,
+        "delta_hartree": delta,
+        "abs_delta_hartree": magnitude,
+        "thresholds": {"sane_below": SANE_HARTREE, "broken_at_or_above": BROKEN_HARTREE},
+        "verdict": verdict,
+        "reasons": reasons,
+    }
+
+
+def _finite(value: float) -> bool:
+    """True when ``value`` is a finite real number."""
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point. Returns 0 on success, 1 on a failed check."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -388,6 +488,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     seed.add_argument("--run-dir", type=Path, required=True)
     seed.add_argument("--expect-seed", type=int, required=True)
 
+    cmp_ = sub.add_parser("compare", help="apply the pre-registered A5 criterion")
+    cmp_.add_argument("--polaris-energy", type=float, required=True)
+    cmp_.add_argument("--polaris-stderr", type=float, required=True)
+    cmp_.add_argument("--reference-energy", type=float, required=True)
+    cmp_.add_argument("--exact-energy", type=float, default=HE_EXACT_HARTREE)
+    cmp_.add_argument("--steps-observed", type=int, default=None)
+    cmp_.add_argument("--steps-expected", type=int, default=None)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "env":
@@ -398,8 +506,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_root=args.source_root,
                 require_gpu=not args.allow_no_gpu,
             )
-        else:
+        elif args.command == "seed":
             report = check_seed(args.run_dir, args.expect_seed)
+        else:
+            report = compare_energy(
+                polaris_energy=args.polaris_energy,
+                polaris_stderr=args.polaris_stderr,
+                reference_energy=args.reference_energy,
+                exact_energy=args.exact_energy,
+                steps_observed=args.steps_observed,
+                steps_expected=args.steps_expected,
+            )
+            print(json.dumps(report, indent=2))
+            # A non-sane verdict must not exit 0: a green exit beside an
+            # investigate verdict is how a finding gets lost in a job log.
+            return 0 if report["verdict"] == "sane" else 1
     except EnvCheckError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
         return 1

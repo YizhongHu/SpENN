@@ -21,9 +21,11 @@ from pathlib import Path
 import pytest
 
 from experiments.baselines.check_polaris_deepqmc_env import (
+    HE_EXACT_HARTREE,
     HYDRA_CONFIG_RELPATH,
     EnvCheckError,
     check_seed,
+    compare_energy,
     read_seed,
 )
 
@@ -107,3 +109,92 @@ def test_seed_outside_the_task_block_is_not_mistaken_for_task_seed(tmp_path: Pat
     assert found["seed"] == 4
     assert found["line_number"] == 5
     assert found["raw_line"] == "  seed: 4"
+
+
+# --- A5 pre-registered comparison -------------------------------------------
+# The comparator is Cannon run dqmc-he-39358341/default: 20000 steps, batch 4096,
+# seed 0, code_commit edf373e7, on an A100-SXM4-80GB.
+CANNON_HE_DEFAULT_20K = -2.9036863634347916
+CANNON_HE_DEFAULT_20K_STDERR = 1.6026224325770225e-05
+
+
+def test_a_matching_energy_is_sane() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K + 2e-5,
+        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["verdict"] == "sane"
+
+
+def test_the_investigate_band_is_not_silently_absorbed_into_either_verdict() -> None:
+    """A difference between 1e-4 and 1e-3 is a finding, not a pass and not a fail."""
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K + 5e-4,
+        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["verdict"] == "investigate"
+
+
+def test_a_third_decimal_difference_is_broken() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K + 2e-3,
+        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["verdict"] == "broken"
+
+
+def test_below_exact_is_broken_even_when_the_delta_is_tiny() -> None:
+    """The disqualifier must outrank a small delta, not be averaged with it.
+
+    An energy can sit very close to the Cannon row and still be variationally
+    impossible. This program has produced below-exact energies four times from
+    too-short tails, so this is the check that must not be conditional on delta.
+    """
+    below = HE_EXACT_HARTREE - 1e-3
+    result = compare_energy(
+        polaris_energy=below,
+        polaris_stderr=1e-6,
+        reference_energy=below,  # delta is exactly zero
+    )
+    assert result["abs_delta_hartree"] == 0.0
+    assert result["verdict"] == "broken"
+    assert any("variationally impossible" in r for r in result["reasons"])
+
+
+def test_a_short_row_is_broken_regardless_of_energy() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        steps_observed=11000,
+        steps_expected=20000,
+    )
+    assert result["verdict"] == "broken"
+    assert any("short" in r for r in result["reasons"])
+
+
+def test_non_finite_energy_is_broken() -> None:
+    result = compare_energy(
+        polaris_energy=float("nan"),
+        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["verdict"] == "broken"
+
+
+def test_verdict_is_derived_from_the_numbers_it_reports() -> None:
+    """Guard against a label drifting from the value printed beside it."""
+    for offset in (0.0, 5e-5, 2e-4, 5e-3):
+        result = compare_energy(
+            polaris_energy=CANNON_HE_DEFAULT_20K + offset,
+            polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
+            reference_energy=CANNON_HE_DEFAULT_20K,
+        )
+        magnitude = result["abs_delta_hartree"]
+        expected = (
+            "sane" if magnitude < 1e-4 else "investigate" if magnitude < 1e-3 else "broken"
+        )
+        assert result["verdict"] == expected, (offset, result)
