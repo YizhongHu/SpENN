@@ -399,3 +399,122 @@ def test_check_env_requires_a_gpu_when_asked(monkeypatch, tmp_path: Path) -> Non
             source_root=None,
             require_gpu=True,
         )
+
+
+# --- Cross-facility criterion, the second pre-registered test ----------------
+# Separate from physics validity and TIGHTER than it: 3 combined sigma is about
+# 6.8e-5 Ha against the locked 1e-4 SANE threshold, so a result can pass the
+# physics test and fail this one.
+CANNON_STDERR = 1.6026224325770225e-05
+
+
+def test_agreement_within_combined_sigma_is_consistent() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K + 2e-5,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        reference_stderr=CANNON_STDERR,
+    )
+    assert result["cross_facility"]["verdict"] == "consistent"
+    assert result["cross_facility"]["delta_in_sigma"] < 3
+
+
+def test_the_cross_facility_test_is_tighter_than_the_physics_threshold() -> None:
+    """A delta can pass SANE and still fail cross-facility. That is the point.
+
+    If these two ever agree on every input, one of them is redundant and the
+    pre-registration of both was pointless.
+    """
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K + 9e-5,  # under the 1e-4 SANE line
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        reference_stderr=CANNON_STDERR,
+    )
+    assert result["verdict"] == "sane"
+    assert result["cross_facility"]["verdict"] in ("marginal", "inconsistent")
+
+
+def test_mismatched_estimator_windows_refuse_to_combine_sigmas(monkeypatch) -> None:
+    """Two sigmas from different tail windows are not the same quantity.
+
+    The emitted record schema cannot express this -- a 10000-step tail and a
+    750-step tail both serialise as estimator "training_tail" -- so the check
+    has to live where the windows are still known.
+    """
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        reference_stderr=CANNON_STDERR,
+        tail_steps=750,
+        reference_tail_steps=10000,
+    )
+    assert result["estimator_windows"]["comparable"] is False
+    assert result["cross_facility"]["verdict"] == "not_evaluated"
+    assert "not the same quantity" in result["cross_facility"]["reason"]
+
+
+def test_matching_windows_are_marked_comparable() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        reference_stderr=CANNON_STDERR,
+        tail_steps=10000,
+        reference_tail_steps=10000,
+    )
+    assert result["estimator_windows"]["comparable"] is True
+    assert result["cross_facility"]["verdict"] == "consistent"
+
+
+def test_absent_reference_stderr_is_not_evaluated_rather_than_passed() -> None:
+    """A missing input must not read as agreement."""
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["cross_facility"]["verdict"] == "not_evaluated"
+
+
+def test_exit_status_reflects_the_cross_facility_verdict(capsys) -> None:
+    """A physics-SANE result that fails cross-facility must NOT exit 0.
+
+    Found by mutation: removing the cross_facility term from main's exit
+    condition killed no test, because every existing test asserted on
+    compare_energy's RETURN VALUE and none on main's EXIT STATUS. The verdict
+    logic and the wiring that acts on it are two links, and only one was tested.
+    A green exit is what a job script keys on, so this is the link that matters
+    operationally.
+    """
+    from experiments.baselines.check_polaris_deepqmc_env import main
+
+    # 9e-5 Ha: inside the locked 1e-4 SANE threshold, but ~4 combined sigma.
+    rc = main([
+        "compare",
+        "--polaris-energy", repr(CANNON_HE_DEFAULT_20K + 9e-5),
+        "--polaris-stderr", repr(CANNON_STDERR),
+        "--reference-energy", repr(CANNON_HE_DEFAULT_20K),
+        "--reference-stderr", repr(CANNON_STDERR),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verdict"] == "sane"
+    assert payload["cross_facility"]["verdict"] in ("marginal", "inconsistent")
+    assert rc == 1, "exit 0 would report the weaker of the two criteria as the answer"
+
+
+def test_exit_status_is_zero_when_both_criteria_pass(capsys) -> None:
+    from experiments.baselines.check_polaris_deepqmc_env import main
+
+    rc = main([
+        "compare",
+        "--polaris-energy", repr(CANNON_HE_DEFAULT_20K + 1e-5),
+        "--polaris-stderr", repr(CANNON_STDERR),
+        "--reference-energy", repr(CANNON_HE_DEFAULT_20K),
+        "--reference-stderr", repr(CANNON_STDERR),
+    ])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verdict"] == "sane"
+    assert payload["cross_facility"]["verdict"] == "consistent"
+    assert rc == 0

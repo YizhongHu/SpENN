@@ -480,6 +480,9 @@ def compare_energy(
     exact_energy: float | None = HE_EXACT_HARTREE,
     steps_observed: int | None = None,
     steps_expected: int | None = None,
+    reference_stderr: float | None = None,
+    tail_steps: int | None = None,
+    reference_tail_steps: int | None = None,
 ) -> dict[str, Any]:
     """Apply the pre-registered A5 criterion to a Polaris energy.
 
@@ -540,7 +543,50 @@ def compare_energy(
         verdict = "sane"
         reasons.append(f"|delta| {magnitude:.3e} Ha < {SANE_HARTREE:.0e}")
 
+    # --- Cross-facility agreement, the SECOND pre-registered criterion ---------
+    # A separate question from physics validity, with a different tolerance.
+    # Matching the seed does NOT license a tighter expectation: same seed on
+    # different hardware does not reproduce a trajectory, because float addition
+    # is not associative and XLA compiles different kernels per hardware and
+    # shape. The PRNG stream is identical; the arithmetic consuming it is not.
+    # So the two runs diverge by construction, and the only meaningful yardstick
+    # is the combined statistical error of the two estimates.
+    cross: dict[str, Any] = {"verdict": "not_evaluated"}
+    if reference_stderr is not None and _finite(reference_stderr) and _finite(polaris_stderr):
+        combined = math.sqrt(polaris_stderr**2 + reference_stderr**2)
+        cross = {
+            "combined_sigma_hartree": combined,
+            "delta_in_sigma": (magnitude / combined) if combined > 0 else None,
+        }
+        n_sigma = cross["delta_in_sigma"]
+        if n_sigma is None:
+            cross["verdict"] = "not_evaluated"
+        elif n_sigma <= 3:
+            cross["verdict"] = "consistent"
+        elif n_sigma <= 5:
+            cross["verdict"] = "marginal"
+        else:
+            cross["verdict"] = "inconsistent"
+
+    # The estimator window is NOT carried by the emitted record schema: a
+    # 10000-step tail and a 750-step tail both serialise as estimator
+    # "training_tail". Two records therefore cannot be checked for sigma
+    # comparability from the artefacts alone. Echo the windows here so THIS
+    # verdict is self-describing even though the record is not, and refuse to
+    # call the facilities consistent when the windows are known to differ.
+    windows = {"tail_steps": tail_steps, "reference_tail_steps": reference_tail_steps}
+    if tail_steps is not None and reference_tail_steps is not None:
+        windows["comparable"] = tail_steps == reference_tail_steps
+        if not windows["comparable"] and cross.get("verdict") != "not_evaluated":
+            cross["verdict"] = "not_evaluated"
+            cross["reason"] = (
+                f"estimator windows differ ({tail_steps} vs {reference_tail_steps} steps): "
+                "the two sigmas are not the same quantity and must not be combined"
+            )
+
     return {
+        "estimator_windows": windows,
+        "cross_facility": cross,
         "polaris_energy_hartree": polaris_energy,
         "polaris_stderr_hartree": polaris_stderr,
         "reference_energy_hartree": reference_energy,
@@ -585,6 +631,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     cmp_.add_argument("--exact-energy", type=float, default=HE_EXACT_HARTREE)
     cmp_.add_argument("--steps-observed", type=int, default=None)
     cmp_.add_argument("--steps-expected", type=int, default=None)
+    cmp_.add_argument("--reference-stderr", type=float, default=None)
+    cmp_.add_argument("--tail-steps", type=int, default=None)
+    cmp_.add_argument("--reference-tail-steps", type=int, default=None)
 
     args = parser.parse_args(argv)
     try:
@@ -606,11 +655,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 exact_energy=args.exact_energy,
                 steps_observed=args.steps_observed,
                 steps_expected=args.steps_expected,
+                reference_stderr=args.reference_stderr,
+                tail_steps=args.tail_steps,
+                reference_tail_steps=args.reference_tail_steps,
             )
             print(json.dumps(report, indent=2))
             # A non-sane verdict must not exit 0: a green exit beside an
             # investigate verdict is how a finding gets lost in a job log.
-            return 0 if report["verdict"] == "sane" else 1
+            # Both criteria must pass. The cross-facility test is the TIGHTER
+            # of the two (3 combined sigma is about 6.8e-5 Ha here, against the
+            # locked 1e-4 SANE threshold), so a green exit on the physics
+            # threshold alone would report the weaker result as the answer.
+            ok = report["verdict"] == "sane" and report["cross_facility"].get(
+                "verdict"
+            ) in ("consistent", "not_evaluated")
+            return 0 if ok else 1
     except EnvCheckError as exc:
         payload: dict[str, Any] = {"ok": False, "error": str(exc)}
         # Emit whatever WAS established before the check failed.
