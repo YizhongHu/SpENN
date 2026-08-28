@@ -209,7 +209,36 @@ if [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then
 fi
 
 RESULT="$RD/training/result.h5"
-echo "result_h5_bytes=$(stat -c%s "$RESULT" 2>/dev/null || echo 0)"
+RESULT_BYTES=$(stat -c%s "$RESULT" 2>/dev/null || echo 0)
+echo "result_h5_bytes=$RESULT_BYTES"
+
+# ACT on those numbers rather than only printing them. Without this the job
+# exits with the row's own status, so a run that finished cleanly but wrote no
+# result.h5 -- or a truncated one -- exits 0 and reads as a successful row. The
+# Cannon sbatch this was modelled on carries the equivalent check; dropping it
+# here left a computed value with nothing consuming it.
+if [ "$RC" -eq 0 ] && [ "$RESULT_BYTES" -eq 0 ]; then
+    echo "OUTPUT_MISSING: row reported rc=0 but $RESULT is absent or empty"
+    exit 4
+fi
+
+# The row length is the other silent failure: a short run still writes a valid
+# HDF5, and a tail estimator over the wrong number of steps is not the quantity
+# the comparison needs. Assert the dataset actually holds the steps requested.
+if [ "$RC" -eq 0 ]; then
+    "$VENV/bin/python" - "$RESULT" "$STEPS" <<'PYEOF' || exit 5
+import sys
+import h5py
+
+path, expected = sys.argv[1], int(sys.argv[2])
+with h5py.File(path, "r", swmr=True) as handle:
+    observed = handle["local_energy/mean"].shape[0]
+print(f"local_energy_rows={observed} expected={expected}")
+if observed != expected:
+    print(f"ROW_LENGTH_MISMATCH: {observed} rows against {expected} requested")
+    raise SystemExit(1)
+PYEOF
+fi
 
 # The row's OWN seed, read back from its OWN resolved config. With seed 0 this
 # is NOT a discriminating check (0 is the default); it is recorded for
