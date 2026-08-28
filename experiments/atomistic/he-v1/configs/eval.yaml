@@ -307,60 +307,6 @@ evaluation_tasks:
       - _target_: tpen.evaluation.summaries.SampledRecordWriter
         max_samples: 1048576
         include_term_energies: true
-  factor_response:
-    name: factor_response
-    namespace: ${evaluation.namespace}/factor_response
-    output_dir: ${run.dir}/factor_response
-    generator:
-      _target_: tpen.evaluation.generators.MCMCGenerator
-      sampler: ${evaluation_sampler}
-      seed: ${evaluation.seed}
-      max_samples: 4096
-    calculators:
-      - _target_: tpen.evaluation.calculators.FactorResponseCalculator
-        hamiltonian_terms: ${hamiltonian_terms}
-        chunk_size: 256
-        arms:
-          - {label: baseline}
-          - {label: b_ee_minus_10, b_ee: 0.9}
-          - {label: b_ee_plus_10, b_ee: 1.1}
-          - {label: c_en_minus_10, c_electron_nucleus: 0.9}
-          - {label: c_en_plus_10, c_electron_nucleus: 1.1}
-          - {label: d_en_minus_10, d_electron_nucleus: 0.9}
-          - {label: d_en_plus_10, d_electron_nucleus: 1.1}
-    summaries:
-      - _target_: tpen.evaluation.summaries.FactorResponseSummary
-        filename: factor_response.csv
-        max_records: 28672
-  factor_response_re_equilibrated:
-    name: factor_response_re_equilibrated
-    namespace: ${evaluation.namespace}/factor_response_re_equilibrated
-    output_dir: ${run.dir}/factor_response_re_equilibrated
-    generator:
-      _target_: tpen.evaluation.generators.ReequilibratedFactorGenerator
-      generator:
-        _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
-        sampler: ${evaluation_sampler}
-        hamiltonian_terms: ${hamiltonian_terms}
-        n_draws: 1
-        discard_draws: 0
-        chunk_size: 256
-        reset: true
-        seed: ${evaluation.seed}
-      arm: {label: baseline}
-    calculators:
-      - _target_: tpen.evaluation.calculators.FactorArmCalculator
-        calculator:
-          _target_: tpen.evaluation.calculators.LocalEnergyCalculator
-          hamiltonian_terms: ${hamiltonian_terms}
-          return_terms: ${evaluation.return_terms}
-          chunk_size: 256
-        arm: {label: baseline}
-      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
-    summaries:
-      - _target_: tpen.evaluation.summaries.LocalEnergySummary
-      - _target_: tpen.evaluation.summaries.SampledRecordWriter
-        include_term_energies: true
   he_radial_profiles:
     name: he_radial_profiles
     namespace: ${evaluation.namespace}/he_radial_profiles
@@ -443,6 +389,61 @@ evaluation_tasks:
       - _target_: tpen.evaluation.calculators.TraceEquivarianceCalculator
     summaries:
       - _target_: tpen.evaluation.summaries.TraceEquivarianceSummary
+
+  factor_response:
+    name: factor_response
+    namespace: ${evaluation.namespace}/factor_response
+    output_dir: ${run.dir}/factor_response
+    generator:
+      _target_: tpen.evaluation.generators.MCMCGenerator
+      sampler: ${evaluation_sampler}
+      seed: ${evaluation.seed}
+      max_samples: 4096
+    calculators:
+      - _target_: tpen.evaluation.calculators.FactorResponseCalculator
+        hamiltonian_terms: ${hamiltonian_terms}
+        chunk_size: 256
+        arms:
+          - {label: baseline}
+          - {label: b_ee_minus_10, b_ee: 0.9}
+          - {label: b_ee_plus_10, b_ee: 1.1}
+          - {label: c_en_minus_10, c_electron_nucleus: 0.9}
+          - {label: c_en_plus_10, c_electron_nucleus: 1.1}
+          - {label: d_en_minus_10, d_electron_nucleus: 0.9}
+          - {label: d_en_plus_10, d_electron_nucleus: 1.1}
+    summaries:
+      - _target_: tpen.evaluation.summaries.FactorResponseSummary
+        filename: factor_response.csv
+        max_records: 28672
+  factor_response_re_equilibrated:
+    name: factor_response_re_equilibrated
+    namespace: ${evaluation.namespace}/factor_response_re_equilibrated
+    output_dir: ${run.dir}/factor_response_re_equilibrated
+    generator:
+      _target_: tpen.evaluation.generators.ReequilibratedFactorGenerator
+      generator:
+        _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
+        sampler: ${evaluation_sampler}
+        hamiltonian_terms: ${hamiltonian_terms}
+        n_draws: 1
+        discard_draws: 0
+        chunk_size: 256
+        reset: true
+        seed: ${evaluation.seed}
+      arm: {label: baseline}
+    calculators:
+      - _target_: tpen.evaluation.calculators.FactorArmCalculator
+        calculator:
+          _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+          hamiltonian_terms: ${hamiltonian_terms}
+          return_terms: ${evaluation.return_terms}
+          chunk_size: 256
+        arm: {label: baseline}
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator
+    summaries:
+      - _target_: tpen.evaluation.summaries.LocalEnergySummary
+      - _target_: tpen.evaluation.summaries.SampledRecordWriter
+        include_term_energies: true
 
   # P3 singular/tail atlas block: kept contiguous and appended so the records
   # and physics stacks can converge without interleaving shared-list edits.
