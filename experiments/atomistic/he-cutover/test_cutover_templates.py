@@ -24,6 +24,21 @@ def _runbook_command(heading: str, script: str) -> str:
     return lines[0]
 
 
+def _resolve_uv() -> str | None:
+    configured = os.environ.get("TPEN_UV")
+    if configured:
+        candidate = Path(configured).expanduser()
+        return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+    candidates = [shutil.which("uv"), str(Path.home() / ".local" / "bin" / "uv")]
+    for candidate in candidates:
+        if candidate:
+            path = Path(candidate).expanduser()
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+    return None
+
+
 def test_templates_have_no_operator_roots() -> None:
     for path in TEMPLATES.iterdir():
         text = path.read_text(encoding="utf-8")
@@ -117,8 +132,8 @@ def test_operator_runbook_uses_facility_owned_uv_entrypoints() -> None:
 
 
 def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
-    uv = os.environ.get("TPEN_UV") or shutil.which("uv")
-    assert uv is not None
+    uv = _resolve_uv()
+    assert uv is not None, "uv executable could not be resolved; set TPEN_UV to an executable absolute path"
     assert Path(uv).is_absolute()
     results = tmp_path / "results"
     outside = tmp_path / "outside"
