@@ -1633,7 +1633,7 @@ def _write_rows_csv(path: Path, collected: Mapping[str, Any]) -> None:
                 "requested_constraint": identity["requested_constraint"],
                 "delivered_device": _render_cell(identity["delivered_device"]),
                 "config_sha256": _render_cell(identity["config_sha256"]),
-                "config_identity_match": row.get("config_identity_match"),
+                "config_identity_match": _render_cell(row.get("config_identity_match")),
                 "checkpoint_sha256": _render_cell(identity["checkpoint_sha256"]),
                 "run_status": _render_cell(row["run_status"]),
                 "reasons": "; ".join(row["reasons"]) or "none",
