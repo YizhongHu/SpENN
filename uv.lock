@@ -3132,6 +3132,7 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-cu126') or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-cu128') or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-cu130') or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-rocm71') or (extra == 'extra-4-tpen-cu126' and extra == 'extra-4-tpen-cu128') or (extra == 'extra-4-tpen-cu126' and extra == 'extra-4-tpen-cu130') or (extra == 'extra-4-tpen-cu126' and extra == 'extra-4-tpen-rocm71') or (extra == 'extra-4-tpen-cu128' and extra == 'extra-4-tpen-cu130') or (extra == 'extra-4-tpen-cu128' and extra == 'extra-4-tpen-rocm71') or (extra == 'extra-4-tpen-cu130' and extra == 'extra-4-tpen-rocm71')" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-cu126') or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-cu128') or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-cu130') or (extra == 'extra-4-tpen-cpu' and extra == 'extra-4-tpen-rocm71') or (extra == 'extra-4-tpen-cu126' and extra == 'extra-4-tpen-cu128') or (extra == 'extra-4-tpen-cu126' and extra == 'extra-4-tpen-cu130') or (extra == 'extra-4-tpen-cu126' and extra == 'extra-4-tpen-rocm71') or (extra == 'extra-4-tpen-cu128' and extra == 'extra-4-tpen-cu130') or (extra == 'extra-4-tpen-cu128' and extra == 'extra-4-tpen-rocm71') or (extra == 'extra-4-tpen-cu130' and extra == 'extra-4-tpen-rocm71')" },
     { name = "omegaconf" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -3186,6 +3187,7 @@ requires-dist = [
     { name = "omegaconf" },
     { name = "parsl", marker = "extra == 'parsl'", specifier = ">=2024.10" },
     { name = "pytest", marker = "extra == 'test'" },
+    { name = "pyyaml" },
     { name = "torch", marker = "extra == 'cpu'", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "tpen", extra = "cpu" } },
     { name = "torch", marker = "extra == 'cu126'", index = "https://download.pytorch.org/whl/cu126", conflict = { package = "tpen", extra = "cu126" } },
     { name = "torch", marker = "extra == 'cu128'", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "tpen", extra = "cu128" } },

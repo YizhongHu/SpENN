@@ -10,6 +10,7 @@ number attributed to the wrong model.
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import hashlib
 import json
 import subprocess
@@ -116,36 +117,45 @@ def legacy_config_identity_hash(
     """
 
     path = Path(config_path)
-    config_payload = path.read_bytes()
-    if source_git_sha is not None:
-        try:
-            repo_root = Path(
-                subprocess.run(
-                    ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                ).stdout.strip()
-            )
-            relative_path = path.resolve().relative_to(repo_root.resolve())
-            config_payload = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo_root),
-                    "show",
-                    f"{source_git_sha}:{relative_path.as_posix()}",
-                ],
-                check=True,
-                capture_output=True,
-            ).stdout
-        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
-            raise ValueError(
-                f"config {config_path} is unavailable at evaluation revision {source_git_sha}"
-            ) from exc
+    config_payload = (
+        path.read_bytes()
+        if source_git_sha is None
+        else _config_bytes_at_revision(path, source_git_sha)
+    )
     return _config_identity_digest(
         config_payload, overrides, identity_values
     )
+
+
+@lru_cache(maxsize=32)
+def _config_bytes_at_revision(config_path: Path, source_git_sha: str) -> bytes:
+    """Read and cache one historical config payload for a collection attempt."""
+
+    try:
+        repo_root = Path(
+            subprocess.run(
+                ["git", "-C", str(config_path.parent), "rev-parse", "--show-toplevel"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        relative_path = config_path.resolve().relative_to(repo_root.resolve())
+        return subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "show",
+                f"{source_git_sha}:{relative_path.as_posix()}",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        raise ValueError(
+            f"config {config_path} is unavailable at evaluation revision {source_git_sha}"
+        ) from exc
 
 
 def _config_identity_digest(

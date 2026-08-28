@@ -973,6 +973,36 @@ def test_collection_rejects_unknown_config_identity(tmp_path: Path) -> None:
     assert any("matches neither canonical nor legacy hash" in reason for reason in reasons)
 
 
+def test_collection_reports_missing_legacy_revision_per_row(tmp_path: Path) -> None:
+    """An unavailable historical revision must not abort the whole collector."""
+
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, source, result_dir, run_dir, row_record, metadata = written
+    trajectory_path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
+    receipt = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    receipt["config_sha256"] = "0" * 64
+    trajectory_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"][0]["artifacts"][1]["metadata"]["config_sha256"] = "0" * 64
+    _write_artifact_index(run_dir, index)
+
+    reasons = collect.reconcile_canary_row(
+        row,
+        source=source,
+        result_dir=result_dir,
+        run_dir=run_dir,
+        plan_attempt_id=manifest["attempt_id"],
+        manifest=manifest,
+        row_record=row_record,
+        metadata=metadata,
+        source_git_sha="f" * 40,
+    )
+
+    assert any("legacy config identity unavailable" in reason for reason in reasons)
+    assert any("matches neither canonical nor legacy hash" in reason for reason in reasons)
+
+
 def _completion_manifest_42(tmp_path: Path) -> dict[str, Any]:
     """Build the shipped 42-row plan with the fixture's immutable sources."""
 

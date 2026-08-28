@@ -570,23 +570,28 @@ def reconcile_canary_row(
             "record_capacity": row.get("record_capacity"),
         },
     )
-    legacy_config_sha = eval_stage.legacy_config_identity_hash(
-        STUDY_DIR.parents[2] / str(row["config"]),
-        [str(item) for item in row["overrides"]],
-        identity_values={
-            "canary_protocol": row.get("canary_protocol"),
-            "checkpoint_source": row.get("checkpoint_source"),
-            "task_names": row.get("task_names"),
-            "n_walkers": row.get("n_walkers"),
-            "n_draws": row.get("n_draws"),
-            "burn_in": row.get("burn_in"),
-            "discard_draws": row.get("discard_draws"),
-            "stride": row.get("stride"),
-            "chunk_size": row.get("chunk_size"),
-            "record_capacity": row.get("record_capacity"),
-        },
-        source_git_sha=source_git_sha,
-    )
+    legacy_config_error: str | None = None
+    try:
+        legacy_config_sha: str | None = eval_stage.legacy_config_identity_hash(
+            STUDY_DIR.parents[2] / str(row["config"]),
+            [str(item) for item in row["overrides"]],
+            identity_values={
+                "canary_protocol": row.get("canary_protocol"),
+                "checkpoint_source": row.get("checkpoint_source"),
+                "task_names": row.get("task_names"),
+                "n_walkers": row.get("n_walkers"),
+                "n_draws": row.get("n_draws"),
+                "burn_in": row.get("burn_in"),
+                "discard_draws": row.get("discard_draws"),
+                "stride": row.get("stride"),
+                "chunk_size": row.get("chunk_size"),
+                "record_capacity": row.get("record_capacity"),
+            },
+            source_git_sha=source_git_sha,
+        )
+    except ValueError as exc:
+        legacy_config_sha = None
+        legacy_config_error = str(exc)
     _reconcile_canary_config(config, row=row, source=source, reasons=reasons)
 
     index = _required_json(
@@ -622,6 +627,7 @@ def reconcile_canary_row(
             source=source,
             canonical_config_sha256=expected_config_sha,
             legacy_config_sha256=legacy_config_sha,
+            legacy_config_error=legacy_config_error,
             plan_attempt_id=plan_attempt_id,
             artifact=artifacts.get("local_energy_trajectory_statistics"),
             reasons=reasons,
@@ -907,7 +913,8 @@ def _reconcile_canary_trajectory(
     row: Mapping[str, Any],
     source: canary.CheckpointSource,
     canonical_config_sha256: str,
-    legacy_config_sha256: str,
+    legacy_config_sha256: str | None,
+    legacy_config_error: str | None,
     plan_attempt_id: str,
     artifact: Mapping[str, Any] | None,
     reasons: list[str],
@@ -943,6 +950,10 @@ def _reconcile_canary_trajectory(
         "evaluator_id": eval_stage.EVALUATOR_ID,
     }
     if config_identity_match is None:
+        if legacy_config_error is not None:
+            reasons.append(
+                f"legacy config identity unavailable: {legacy_config_error}"
+            )
         reasons.append(
             "trajectory-statistics receipt config identity matches neither canonical "
             "nor legacy hash"
@@ -973,13 +984,13 @@ def _reconcile_canary_trajectory(
 
 
 def _match_config_identity(
-    observed: Any, *, canonical: str, legacy: str
+    observed: Any, *, canonical: str, legacy: str | None
 ) -> str | None:
     """Classify one receipt hash without accepting an unknown identity."""
 
     if observed == canonical:
         return "canonical"
-    if observed == legacy:
+    if legacy is not None and observed == legacy:
         return "legacy"
     return None
 

@@ -12,6 +12,7 @@ dependencies = [
   "hydra-core",
   "numpy",
   "omegaconf",
+  "PyYAML",
 ]
 
 [project.scripts]
