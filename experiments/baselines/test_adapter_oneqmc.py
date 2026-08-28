@@ -883,8 +883,17 @@ DECISION_DATE = "2026-08-21"
 #: Exact objects the pilot expectation is measured against, so a future reader
 #: can tell a stale expectation from a regression. The blob is the more precise
 #: of the two: it is the file whose rule produced the number.
-STATISTICS_BLOB_AT_PIN = "5d4fa8eb38878bd2ccb22e3230c7ad26b63d3808"
-DEV_COMMIT_AT_PIN = "7d8391a750e1e4b97421ffdfb53e3ef7a2e0b12c"
+#:
+#: Re-pinned 2026-08-28 after this branch was rebased and picked up dev's
+#: statistics.py. The move was fdb6127 "docs(baselines): record the below-floor
+#: fallback decision on select_tail" -- 17 insertions, 0 deletions, entirely
+#: inside select_tail's docstring. PILOT_WINDOW_AT_PIN is deliberately NOT
+#: changed: the rule is byte-identical once docstrings are stripped (ASTs
+#: compare equal), and select_tail was re-measured at the new blob and still
+#: resolves this shape to 500. So this is a provenance re-pin, not a value
+#: flip -- contrast PILOT_WINDOW_BEFORE_291 above, which records a real one.
+STATISTICS_BLOB_AT_PIN = "017e201e5a84c0c6451d4c7ad0b3f4c69830f9ba"
+DEV_COMMIT_AT_PIN = "fdb6127fb3247e6ef7ba802de0dedf2c41527217"
 
 #: The file whose rule produces :data:`PILOT_WINDOW_AT_PIN`. Resolved as a
 #: sibling of this test rather than from the repository root, so the blob check
