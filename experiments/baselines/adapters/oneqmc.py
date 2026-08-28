@@ -888,6 +888,20 @@ def record_from_series(
             "logged rows up to unlogged steps, which assumes this molecule also "
             "occupied a slot in the steps between rows; result.h5 does not record that."
         )
+    # The field changes character under this adapter and the record must say so.
+    # `energy_hartree` and the error bar are measured from datasets in the file;
+    # `steps` is not, because result.h5 carries no step or iteration index of any
+    # kind, so the logger period that converts logged rows into optimizer steps
+    # can only come from the operator. A reader comparing this row's efficiency
+    # denominator against another code's has to know which of the two they are
+    # looking at.
+    coverage += (
+        f" NOTE ON PROVENANCE OF `steps`: it is DECLARED, not measured. result.h5 "
+        "records no step or iteration index, so the logger period above is an "
+        "operator-supplied value rather than something read from the file, and both "
+        "efficiency denominators rest on it. The energy and its error bar, by "
+        "contrast, are computed from the file's own datasets."
+    )
     # F1: nothing in result.h5 names the system, so this pairing is an operator
     # assertion and the record says so out loud rather than implying the adapter
     # checked it.

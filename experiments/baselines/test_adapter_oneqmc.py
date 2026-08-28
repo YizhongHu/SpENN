@@ -519,6 +519,85 @@ def test_window_below_the_block_floor_is_refused_not_labelled_naive() -> None:
     assert at_floor.energy_stderr_hartree > 0.0
 
 
+@pytest.mark.parametrize("length", [2, 3, 4, 20, MIN_BLOCKS - 1])
+def test_below_floor_refusal_holds_across_the_whole_short_range(length: int) -> None:
+    """Deliberate below-floor coverage at the lengths that used to be incidental.
+
+    Before this change several fixtures sat at 3, 4, 20 and 25 rows and emitted
+    records through the lowered-floor branch. Their PURPOSE was elsewhere -- ansatz
+    labels, provenance text, device fields -- so they exercised the short-window
+    path only by accident, and lengthening them to clear the floor would have left
+    the below-floor path with no test standing between it and the next person to
+    touch ``select_tail``.
+
+    So the short lengths are pinned here on purpose instead, spanning the range
+    those fixtures covered. ``tail_fraction=1.0`` and a lowered ``min_tail_steps``
+    make the WINDOW selectable at every one of them, so the refusal being tested
+    is unambiguously the blocking floor rather than the window floor.
+    """
+
+    with pytest.raises(AdapterError, match="block minimum"):
+        _record(_series(length), tail_fraction=1.0, min_tail_steps=2)
+
+
+def test_short_window_refusal_names_the_block_floor_not_zero_variance() -> None:
+    """The refusal must say the window is too short, not that it is constant.
+
+    This pins why ``allow_below_floor`` is FORWARDED into ``blocking_stderr``
+    rather than withheld, which looks redundant given the refusal below it is
+    unconditional. It is not redundant, it is what makes the message true.
+
+    With the flag withheld, ``blocking_stderr`` RAISES for a below-floor window
+    instead of returning a ``None`` block count. That raise is an
+    :class:`AdapterError`, so it is caught by the ``except AdapterError`` around
+    the call -- which exists for the degenerate zero-variance case -- and
+    re-emitted as "zero-variance window ... every step carries the identical
+    energy". That sentence would be false: the window here varies perfectly well,
+    it is merely short. An operator told their sampler had stopped moving, when
+    the real fix is a longer window or a lower logger period, is sent to debug the
+    wrong thing entirely.
+
+    Measured, not assumed: with the flag off, lengths 2 through 31 all raise the
+    32-block message from inside ``blocking_stderr``; with it on they return a
+    ``None`` block count and this adapter's own refusal fires.
+    """
+
+    with pytest.raises(AdapterError) as error_info:
+        _record(_series(20), tail_fraction=1.0, min_tail_steps=2)
+
+    message = str(error_info.value)
+    assert "block minimum" in message
+    assert "UNASSESSED" in message
+    assert "zero-variance" not in message
+    assert "identical energy" not in message
+
+
+def test_the_two_floors_are_independent_and_the_short_tail_flag_is_still_live() -> None:
+    """MIN_TAIL_STEPS and MIN_BLOCKS are different floors answering to different guards.
+
+    Worth pinning in one place, because the F3 change is easy to read as "the flag
+    no longer does anything" and the next reader would then delete it.
+
+    ``--allow-short-tail`` governs the WINDOW floor, MIN_TAIL_STEPS, and it is
+    fully alive: below that floor it is the difference between a refusal and an
+    emitted record marked provisional. It does NOT govern the BLOCKING floor,
+    MIN_BLOCKS, which is not opt-outable at all -- below it the adapter refuses
+    whichever way the flag is set, because what the opt-in would buy there is an
+    uncorrected naive error bar published as though it had been blocked.
+    """
+
+    # Window floor: the flag decides, and the record says so. Well above MIN_BLOCKS.
+    above_block_floor = _series(EMITTABLE_STEPS)
+    with pytest.raises(AdapterError, match="minimum"):
+        _record(above_block_floor, allow_short_tail=False)
+    assert "provisional" in _record(above_block_floor, allow_short_tail=True).notes
+
+    # Blocking floor: the flag decides nothing.
+    for flag in (False, True):
+        with pytest.raises(AdapterError):
+            _record(_series(20), tail_fraction=1.0, min_tail_steps=2, allow_short_tail=flag)
+
+
 def test_no_record_ever_carries_the_unblocked_naive_caveat() -> None:
     """The naive-bar prose is gone, because the path that needed it now refuses.
 
@@ -1460,6 +1539,26 @@ def test_blank_optimizer_is_refused() -> None:
 
     with pytest.raises(AdapterError, match="optimizer must be named"):
         _record(_series(EMITTABLE_STEPS), optimizer="   ")
+
+
+def test_notes_mark_steps_as_declared_rather_than_measured() -> None:
+    """The record must not let `steps` pass as a measured quantity.
+
+    Making the logger period a required argument fixed the silent default but
+    changed what the field IS: `energy_hartree` and the error bar are computed from
+    datasets in result.h5, whereas `steps` and `samples` now rest entirely on a
+    value the operator supplied, because the file carries no step or iteration
+    index to check it against. Someone comparing this row's efficiency denominator
+    against another code's needs to know which of the two they are reading, and
+    nothing else in the record distinguishes them.
+    """
+
+    record = _record(_series(EMITTABLE_STEPS))
+
+    assert "DECLARED, not measured" in record.notes
+    assert "records no step or iteration index" in record.notes
+    # And the contrast is stated, not merely the caveat.
+    assert "computed from the file's own datasets" in record.notes
 
 
 def test_notes_state_that_the_system_to_molecule_pairing_is_unverified() -> None:
