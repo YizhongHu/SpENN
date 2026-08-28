@@ -1,0 +1,14 @@
+schema: nnqmc-polaris-runtime-profile/v1
+facility: polaris
+runtime: tpen-polaris
+interpreter: operator-supplied
+ferminet:
+  root: operator-supplied
+  branch: tpen/configurable-seed
+  commit: f4b1846
+  installed: true
+optional_codes:
+  - lapnet
+  - deepqmc
+  - neural_pfaffian
+  - oneqmc

@@ -1,0 +1,15 @@
+schema: nnqmc-polaris-manifest/v1
+facility: polaris
+runtime:
+  ferminet_root: /path/supplied/by/operator
+  ferminet_branch: tpen/configurable-seed
+  ferminet_commit: f4b1846
+rows:
+  - id: ferminet-he-seed-000
+    code: ferminet
+    ansatz: ferminet
+    system: he
+    seed: 0
+    steps: 200000
+    # The command is code-owned.  {python} is replaced by the overlay Python.
+    command: ["{python}", "-c", "print('replace with the validated FermiNet command')"]

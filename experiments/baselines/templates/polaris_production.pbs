@@ -1,0 +1,38 @@
+#!/bin/bash -l
+#PBS -N nnqmc-baselines
+#PBS -A HetRxnEnergy
+#PBS -q @QUEUE@
+#PBS -l select=@NODES@:system=polaris
+#PBS -l walltime=@WALLTIME@
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -k doe
+# PBS is told this job is not rerunnable.  Row markers also reject a manual
+# restart, so a node failure cannot silently replay a stochastic row.
+#PBS -r n
+# TPEN_ROUTED_DESTINATION=@DESTINATION@
+#PBS -o /dev/null
+#PBS -e /dev/null
+set -euo pipefail
+: "${TPEN_CHECKOUT:?checkout root required}"
+: "${TPEN_MANIFEST:?validated manifest required}"
+: "${TPEN_RESULTS_ROOT:?Eagle results root required}"
+: "${TPEN_UV_ENV:?validated facility overlay required}"
+mkdir -p "${TPEN_RESULTS_ROOT:?}/scheduler"
+exec >"${TPEN_RESULTS_ROOT:?}/scheduler/pbs-${PBS_JOBID:?}.out" 2>"${TPEN_RESULTS_ROOT:?}/scheduler/pbs-${PBS_JOBID:?}.err"
+
+# JAX otherwise preallocates roughly 75% of every A100 before a row starts.
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export PATH="$TPEN_UV_ENV/bin${PATH:+:$PATH}"
+export PYTHONPATH="${TPEN_CHECKOUT:?}${PYTHONPATH:+:$PYTHONPATH}"
+
+# This is intentionally a single, fatal preflight before mpiexec.  It records
+# the actual interpreter, JAX GPU stack, and patched FermiNet git provenance.
+"$TPEN_UV_ENV/bin/python" -m experiments.baselines.polaris_submit preflight \
+  --manifest "$TPEN_MANIFEST" --results-root "$TPEN_RESULTS_ROOT"
+
+# mpiexec is only a process launcher.  Each worker is an ordinary independent
+# Python process and binds one local GPU before importing JAX.
+mpiexec -n @ROW_COUNT@ -ppn 4 \
+  "$TPEN_CHECKOUT/experiments/baselines/templates/polaris_worker.sh" \
+  --manifest "$TPEN_MANIFEST" --results-root "$TPEN_RESULTS_ROOT"

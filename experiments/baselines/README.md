@@ -417,6 +417,42 @@ Householder tridiagonalization, or signed `sqrt(det)` with tracked sign) with
 signed-log output, validated against the recursive version at small `n`.
 Item `8e1a56dd`. Also note `channel_weights` defaults to `trainable=False`.
 
+## Polaris submission path
+
+The tracked Polaris path is owned by `polaris_submit.py`. A manifest contains
+independent rows with exactly `code`, `ansatz`, `system`, `seed`, `steps`, and a
+code-owned command. Unknown or not-yet-installed codes are valid manifest data;
+the worker does not import every listed code during planning.
+
+Create a request and rendered PBS script on a login node after validating the
+manifest:
+
+```bash
+python -m experiments.baselines.polaris_submit validate-manifest \
+  experiments/baselines/polaris_manifest.example.yaml
+python -m experiments.baselines.polaris_submit plan \
+  --manifest "$TPEN_MANIFEST" --walltime 02:30:00 \
+  --results-root "$TPEN_RESULTS_ROOT"
+qsub -v TPEN_CHECKOUT,TPEN_MANIFEST,TPEN_RESULTS_ROOT,TPEN_UV_ENV \
+  "$TPEN_RESULTS_ROOT/scheduler/polaris.pbs"
+```
+
+The plan sizes the routed `prod` request from the measured destination table:
+`small` is 10–24 nodes up to 3 hours, `medium` is 25–99 nodes up to 6 hours,
+and `large` is 100–496 nodes up to 24 hours. Thus 24 hours always requests at
+least 100 nodes. The PBS job uses `#PBS -r n`, runs one fatal preflight, and
+then launches ordinary independent workers with `mpiexec`; it does not use
+MPI collectives, DDP, or a resume path. `started.json` is exclusive, so a
+restarted row fails loudly, while `result.json` and `terminal.json` are written
+for each row that returns.
+
+The operator supplies `TPEN_UV_ENV`, `TPEN_CHECKOUT`, and the Eagle results
+root. The validated runtime profile records the patched FermiNet branch and
+commit (`tpen/configurable-seed`, `f4b1846`); every row result copies the exact
+commit observed by preflight. Polaris preflight and row workers export
+`XLA_PYTHON_CLIENT_PREALLOCATE=false`; GPU visibility is assigned from the
+reversed Polaris local-rank mapping before JAX import.
+
 ## Sources
 
 - [FermiNet (Pfau et al. 2020), arXiv:1909.02487](https://arxiv.org/pdf/1909.02487) · [code](https://github.com/google-deepmind/ferminet) · [DeepMind blog](https://deepmind.google/blog/ferminet-quantum-physics-and-chemistry-from-first-principles/)
