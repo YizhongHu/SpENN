@@ -163,6 +163,22 @@ fi
 RD="$D/training-row"
 mkdir -p "$RD"
 echo "=== row: steps=$STEPS seed=$SEED batch=4096 ansatz=default hamil/mol=He"
+# --- Sample the TRAINING process's real device memory (E6) -------------------
+# JAX memory statistics are PER PROCESS, so a checker run after the row reports
+# the checker's own peak and not the row's. PBS 7571675 reported peak 0.0 MiB
+# with preallocation correctly disabled, which reads like a real measurement of
+# a run that used no memory; it was not a measurement of that run at all.
+# Sampling nvidia-smi WHILE the row is running measures the row.
+: > "$D/gpu-mem-samples.csv"
+(
+    while true; do
+        # pid,used_memory for every process with a context on this GPU.
+        nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader             >> "$D/gpu-mem-samples.csv" 2>/dev/null
+        sleep 5
+    done
+) &
+MEM_SAMPLER=$!
+
 ROW_START=$(date +%s)
 set +e
 "$VENV/bin/deepqmc" hydra.run.dir="$RD" task.steps="$STEPS" task.pretrain_steps=100 \
@@ -171,6 +187,22 @@ set +e
 RC=$?
 set -e
 ROW_ELAPSED=$(( $(date +%s) - ROW_START ))
+# Stop the sampler. This is a local background shell belonging to this job, not
+# a scheduler job; no qdel/scancel is involved.
+kill "$MEM_SAMPLER" 2>/dev/null || true
+wait "$MEM_SAMPLER" 2>/dev/null || true
+echo "=== E6 GPU memory high-water, sampled from the TRAINING process"
+if [ -s "$D/gpu-mem-samples.csv" ]; then
+    awk -F'[ ,]+' '{ if ($2+0 > max) { max = $2+0; pid = $1 } }
+                   END { if (max > 0)
+                             printf "row_peak_mib=%d row_peak_pid=%s samples=%d\n", max, pid, NR;
+                         else
+                             print "row_peak_mib=UNKNOWN: no non-zero sample captured" }'         "$D/gpu-mem-samples.csv"
+else
+    # Said out loud rather than left as an absent line: a missing measurement
+    # must not be readable as a small one.
+    echo "row_peak_mib=UNKNOWN: sampler produced no rows"
+fi
 echo "row rc=$RC elapsed_s=$ROW_ELAPSED"
 if [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then
     echo "measured_steps_per_second=$(awk -v s="$STEPS" -v t="$ROW_ELAPSED" 'BEGIN{printf "%.3f", s/t}')"
@@ -187,7 +219,10 @@ if [ -f "$RD/training/.hydra/config.yaml" ]; then
     grep -n 'seed:\|steps:\|electron_batch_size:' "$RD/training/.hydra/config.yaml" | head -10
 fi
 
-echo "=== GPU memory high-water after the row (E6)"
+# NOT the row's memory: a fresh process, reported for interpreter/CUDA
+# provenance after the row. Its gpu_memory block carries its own warning saying
+# so. The row's figure is the sampled one above.
+echo "=== post-row environment re-check (provenance, NOT the row's memory)"
 "$VENV/bin/python" -m experiments.baselines.check_polaris_deepqmc_env env \
     --expect-prefix "$VENV" --expect-jax 0.8.3 | tee "$D/env-check-post.json"
 

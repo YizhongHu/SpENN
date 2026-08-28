@@ -208,7 +208,20 @@ def gpu_memory_high_water() -> list[dict[str, Any]]:
         entry["peak_bytes_in_use"] = peak
         entry["peak_mib"] = None if peak is None else round(peak / 1024 / 1024, 1)
         entry["preallocate_env"] = os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE")
-        if entry["preallocate_env"] != "false":
+        # THIS PROCESS ONLY. Device memory statistics are per-process, so a
+        # checker launched after a training run reports the checker's own peak,
+        # not the run's. On Polaris PBS 7571675 that produced peak_mib 0.0 with
+        # preallocate correctly set to 'false' and no warning attached, which
+        # reads like a real measurement of a run that used no memory. It is not a
+        # measurement of that run at all.
+        entry["scope"] = "this process only; not any earlier process on this device"
+        if peak == 0:
+            entry["warning"] = (
+                "peak_bytes_in_use is 0: this process did no device work, so this "
+                "reading says NOTHING about a training run in another process. "
+                "Measure the training process itself (see gpu-mem-samples.csv)"
+            )
+        elif entry["preallocate_env"] != "false":
             # Stated inline so a reader of the job log cannot take the number at
             # face value without also seeing why it may be meaningless.
             entry["warning"] = (
