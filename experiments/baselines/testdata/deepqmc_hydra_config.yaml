@@ -1,0 +1,283 @@
+task:
+  workdir: ???
+  sampler_factory:
+    elec_sampler:
+      _target_: deepqmc.sampling.combine_samplers
+      _partial_: true
+      samplers:
+      - _target_: deepqmc.sampling.DecorrSampler
+        length: 30
+      - _target_: deepqmc.sampling.MetropolisSampler
+        _partial_: true
+        tau: 1.0
+        max_age: null
+        sample_initializer:
+          _target_: deepqmc.sampling.electron_sample_initializers.AtomCenteredElectronInitializer
+          atom_centered_distribution:
+            _target_: deepqmc.sampling.electron_sample_initializers.ShellBasedDistribution
+    nuc_sampler:
+      _target_: deepqmc.sampling.nuclei_samplers.IdleNucleiSampler
+      _partial_: true
+    elec_warp_fn:
+      _target_: deepqmc.sampling.nuclei_samplers.no_elec_warp
+      _partial_: true
+    _target_: deepqmc.sampling.initialize_sampling
+    _partial_: true
+  opt:
+    _target_: deepqmc.optimizer.KFACOptimizer
+    _partial_: true
+    kfac:
+      _target_: kfac_jax.Optimizer
+      _partial_: true
+      learning_rate_schedule:
+        _target_: deepqmc.utils.InverseSchedule
+        init_value: 0.05
+        decay_rate: 10000
+      norm_constraint: 0.001
+      damping_schedule:
+        _target_: deepqmc.utils.ConstantSchedule
+        value: 0.001
+      estimation_mode: fisher_exact
+      num_burnin_steps: 0
+      inverse_update_period: 1
+  _target_: deepqmc.app.train_from_factories
+  hamil: ${hamil}
+  ansatz: ${ansatz}
+  steps: 200000
+  molecule_batch_size: 1
+  electron_batch_size: 4096
+  electronic_states: 1
+  seed: 1
+  pretrain_steps: 100
+  pretrain_kwargs:
+    opt: adam
+    opt_kwargs:
+      learning_rate: 0.0003
+      b1: 0.9
+      b2: 0.999
+    scf_kwargs:
+      basis: sto-6g
+  loss_function_factory:
+    _target_: deepqmc.loss.create_loss_fn
+    _partial_: true
+    alpha: 4.0
+    clip_mask_fn:
+      _target_: deepqmc.loss.median_log_squeeze_and_mask
+      _partial_: true
+    clip_mask_overlap_fn:
+      _target_: deepqmc.loss.psi_ratio_clip_and_mask
+      _partial_: true
+  mols:
+    _target_: deepqmc.app.read_molecules
+    directory: null
+  observable_monitors:
+  - local_energy
+  metric_logger_constructor:
+    _target_: deepqmc.log.TensorboardMetricLogger
+    _partial_: true
+    max_queue: 10
+  chkpt_constructor:
+    _target_: deepqmc.log.CheckpointStore
+    _partial_: true
+  h5_logger_constructor:
+    _target_: deepqmc.log.H5Logger
+    _partial_: true
+logging:
+  deepqmc: 10
+  jax: 40
+  kfac: 40
+ansatz:
+  _target_: deepqmc.wf.NeuralNetworkWaveFunction
+  _partial_: true
+  envelope:
+    _target_: deepqmc.wf.env.ExponentialEnvelopes
+    _partial_: true
+    isotropic: true
+    per_shell: false
+    per_orbital_exponent: true
+    spin_restricted: false
+    init_to_ones: true
+    softplus_zeta: false
+  backflow_op:
+    _target_: deepqmc.wf.nn_wave_function.BackflowOp
+    _partial_: true
+    mult_act: '${eval:"lambda x: x"}'
+  n_determinants: 16
+  full_determinant: true
+  cusp_electrons:
+    _target_: deepqmc.wf.cusp.ElectronicCuspAsymptotic
+    _partial_: true
+    same_scale: 0.25
+    anti_scale: 0.5
+    alpha: 10.0
+    trainable_alpha: false
+    cusp_function:
+      _target_: deepqmc.wf.cusp.DeepQMCCusp
+  cusp_nuclei: false
+  backflow_transform: mult
+  conf_coeff:
+    _target_: haiku.Linear
+    _partial_: true
+    with_bias: false
+    w_init:
+      _target_: jax.numpy.ones
+      _partial_: true
+  omni_factory:
+    _target_: deepqmc.wf.omni.OmniNet
+    _partial_: true
+    embedding_dim: 128
+    jastrow_factory:
+      _target_: deepqmc.wf.omni.Jastrow
+      _partial_: true
+      sum_first: true
+      subnet_factory:
+        _target_: deepqmc.hkext.MLP
+        _partial_: true
+        hidden_layers:
+        - log
+        - 1
+        bias: false
+        last_linear: true
+        activation: null
+        init: default
+    backflow_factory:
+      _target_: deepqmc.wf.omni.Backflow
+      _partial_: true
+      subnet_factory:
+        _target_: deepqmc.hkext.MLP
+        _partial_: true
+        hidden_layers:
+        - log
+        - 1
+        bias: false
+        last_linear: true
+        activation: null
+        init: default
+    gnn_factory:
+      _target_: deepqmc.gnn.ElectronGNN
+      _partial_: true
+      n_interactions: 3
+      nuclei_embedding: null
+      electron_embedding:
+        _target_: deepqmc.gnn.electron_gnn.ElectronEmbedding
+        _partial_: true
+        positional_embeddings:
+          ne:
+            _target_: deepqmc.gnn.edge_features.CombinedEdgeFeature
+            features:
+            - _target_: deepqmc.gnn.edge_features.DistancePowerEdgeFeature
+              powers:
+              - 1
+            - _target_: deepqmc.gnn.edge_features.DifferenceEdgeFeature
+        use_spin: false
+        project_to_embedding_dim: false
+      two_particle_stream_dim: 32
+      self_interaction: false
+      edge_features:
+        same:
+          _target_: deepqmc.gnn.edge_features.CombinedEdgeFeature
+          features:
+          - _target_: deepqmc.gnn.edge_features.DistancePowerEdgeFeature
+            powers:
+            - 1
+          - _target_: deepqmc.gnn.edge_features.DifferenceEdgeFeature
+        anti:
+          _target_: deepqmc.gnn.edge_features.CombinedEdgeFeature
+          features:
+          - _target_: deepqmc.gnn.edge_features.DistancePowerEdgeFeature
+            powers:
+            - 1
+          - _target_: deepqmc.gnn.edge_features.DifferenceEdgeFeature
+      layer_factory:
+        _target_: deepqmc.gnn.electron_gnn.ElectronGNNLayer
+        _partial_: true
+        subnet_factory:
+          _target_: deepqmc.hkext.MLP
+          _partial_: true
+          hidden_layers:
+          - log
+          - 2
+          bias: true
+          last_linear: false
+          activation:
+            _target_: jax.numpy.tanh
+            _partial_: true
+          init: default
+        subnet_factory_by_lbl:
+          g:
+            _target_: deepqmc.hkext.MLP
+            _partial_: true
+            hidden_layers:
+            - log
+            - 1
+            bias: false
+            last_linear: false
+            activation:
+              _target_: jax.numpy.tanh
+              _partial_: true
+            init: default
+        electron_residual:
+          _target_: deepqmc.hkext.ResidualConnection
+          normalize: true
+        nucleus_residual: null
+        two_particle_residual:
+          _target_: deepqmc.hkext.ResidualConnection
+          normalize: true
+        deep_features: shared
+        update_rule: concatenate
+        update_features:
+        - _target_: deepqmc.gnn.update_features.ResidualElectronUpdateFeature
+          _partial_: true
+        - _target_: deepqmc.gnn.update_features.NodeSumElectronUpdateFeature
+          _partial_: true
+          node_types:
+          - up
+          - down
+          normalize: true
+        - _target_: deepqmc.gnn.update_features.ConvolutionElectronUpdateFeature
+          _partial_: true
+          edge_types:
+          - same
+          - anti
+          normalize: false
+          w_factory:
+            _target_: deepqmc.hkext.MLP
+            _partial_: true
+            hidden_layers:
+            - log
+            - 2
+            bias: true
+            last_linear: false
+            activation:
+              _target_: jax.numpy.tanh
+              _partial_: true
+            init: default
+          h_factory:
+            _target_: deepqmc.hkext.MLP
+            _partial_: true
+            hidden_layers:
+            - log
+            - 2
+            bias: true
+            last_linear: false
+            activation:
+              _target_: jax.numpy.tanh
+              _partial_: true
+            init: default
+hamil:
+  _target_: deepqmc.hamil.MolecularHamiltonian
+  mol:
+    _target_: deepqmc.molecule.Molecule
+    coords:
+    - - 0.0
+      - 0.0
+      - 0.0
+    charges:
+    - 2
+    charge: 0
+    spin: 0
+    unit: angstrom
+  laplacian_factory:
+    _target_: folx.ForwardLaplacianOperator
+    _partial_: false
+    sparsity_threshold: 0

@@ -1,0 +1,196 @@
+#!/bin/bash -l
+#PBS -A HetRxnEnergy
+#PBS -q debug
+#PBS -l select=1:system=polaris
+#PBS -l walltime=01:00:00
+#PBS -l filesystems=home:eagle
+#PBS -l place=scatter
+#PBS -k doe
+#PBS -r n
+#
+# Verify the DeepQMC-on-Polaris environment (Task Orchestrator item 9f762980).
+#
+# WHY -r n, AND WHY IT IS THE FIRST THING IN THIS FILE.
+# A Cannon production row was requeued after a NODE_FAIL today and silently
+# restarted from step 0. It failed to emit an invalid record only by luck: a
+# stale HDF5 SWMR lock happened to block the restart. This program DISCARDS
+# restarted stochastic runs, so a silent restart is a correctness bug, not an
+# inconvenience. `-r n` asks PBS not to rerun this job. Because "asks" is not
+# "guarantees", the script ALSO refuses to start twice on its own evidence (see
+# the restart guard below), and it RECORDS the queue's own Rerunable field
+# rather than assuming PBS's default matches Slurm's. Two independent guards,
+# because the failure is silent and the cost of missing it is a published row.
+#
+# WHY debug. 1-2 nodes, 1 h, and receipt-backed for HetRxnEnergy. `prod` is a
+# ROUTING queue whose walltime is bought with nodes (small 10-24/3h,
+# medium 25-99/6h, large 100-496/24h); a select=10 + 24h request is rejected
+# with "Job rejected by all possible destinations" naming no cause. Nothing here
+# needs more than one node. `debug-scaling` is DEBUG ONLY by operator
+# instruction and is deliberately not used.
+#
+# Parameters, all read from the environment so the script itself is durable:
+#   TPEN_DQMC_MODE    probe (default) | row
+#   TPEN_DQMC_STEPS   training steps for the row  (probe default 500, row 20000)
+#   TPEN_DQMC_SEED    seed for the row            (default 0, to match the
+#                     Cannon comparator dqmc-he-39358341/default)
+#   TPEN_DQMC_OUT     run root (default /eagle/HetRxnEnergy/rhu/runs)
+#   TPEN_REPO         TPEN checkout carrying experiments/baselines
+#                     (default /home/rhu/src/TPEN-deepqmc-polaris-env)
+#
+# Submit with, for example:
+#   qsub -v TPEN_DQMC_MODE=probe experiments/baselines/polaris_deepqmc_verify.pbs
+#   qsub -v TPEN_DQMC_MODE=row,TPEN_DQMC_STEPS=20000 \
+#        experiments/baselines/polaris_deepqmc_verify.pbs
+
+set -euo pipefail
+
+VENV=/home/rhu/.venvs/deepqmc-jax083-edf373e7
+SRC=/home/rhu/src/deepqmc-edf373e7
+COMMIT=edf373e7c26545616f87b3b10c3e48b25c70f627
+MODE="${TPEN_DQMC_MODE:-probe}"
+SEED="${TPEN_DQMC_SEED:-0}"
+OUT_ROOT="${TPEN_DQMC_OUT:-/eagle/HetRxnEnergy/rhu/runs}"
+TPEN_REPO="${TPEN_REPO:-/home/rhu/src/TPEN-deepqmc-polaris-env}"
+if [ "$MODE" = "row" ]; then
+    STEPS="${TPEN_DQMC_STEPS:-20000}"
+else
+    STEPS="${TPEN_DQMC_STEPS:-500}"
+fi
+
+test -n "${PBS_JOBID:-}" || { echo "REFUSING: not running under PBS"; exit 2; }
+JOB="${PBS_JOBID%%.*}"
+D="$OUT_ROOT/deepqmc-polaris-verify-$MODE-$JOB"
+
+# --- Restart guard -----------------------------------------------------------
+# If this directory already carries a start marker, this is a second entry into
+# the same job id: a requeue. Refuse loudly. A restarted stochastic run must
+# never quietly resume or overwrite, because the resulting record looks exactly
+# like a clean one.
+if [ -e "$D/STARTED" ]; then
+    echo "REFUSING: $D/STARTED already exists -- this job has been requeued and restarted."
+    echo "Existing evidence is left untouched. Investigate before rerunning."
+    exit 9
+fi
+mkdir -p "$D"
+date -Iseconds > "$D/STARTED"
+
+exec > >(tee -a "$D/job.log") 2>&1
+echo "=== job=$PBS_JOBID host=$(hostname) mode=$MODE steps=$STEPS seed=$SEED start=$(date -Iseconds)"
+
+# The check module is invoked as `python -m experiments.baselines....`, which
+# resolves through sys.path[0] -- the process working directory. Set it
+# explicitly and assert it, rather than relying on PYTHONPATH or on wherever PBS
+# happened to drop us: a stray checkout earlier on the path would silently run a
+# DIFFERENT copy of the checker and the job log would look identical.
+cd "$TPEN_REPO"
+echo "TPEN_REPO=$TPEN_REPO"
+git -C "$TPEN_REPO" rev-parse HEAD
+git -C "$TPEN_REPO" status --porcelain=v1 --untracked-files=no | head
+test -f experiments/baselines/check_polaris_deepqmc_env.py || {
+    echo "REFUSING: no experiments/baselines/check_polaris_deepqmc_env.py under $TPEN_REPO"; exit 3; }
+
+# --- Record PBS's ACTUAL rerun policy, rather than assuming it ---------------
+# PBS Pro is not Slurm and its default is not assumed here. Whatever the queue
+# reports is what goes in the receipt.
+echo "=== PBS rerun policy, as reported by the scheduler"
+qstat -f "$PBS_JOBID" 2>/dev/null | grep -iE 'Rerunable|Resource_List.(walltime|select)|queue' || \
+    echo "(qstat -f unavailable from the compute node)"
+
+# --- GPU visibility, set BEFORE any Python starts ----------------------------
+# PBS does NOT constrain GPU visibility on Polaris; that is the job's
+# responsibility. This job is single-process, so it takes one card explicitly
+# rather than inheriting all four -- otherwise the memory high-water reading
+# below would be reported per-device for three idle cards as well.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+# Without this, JAX preallocates ~75% of the device and EVERY memory reading
+# comes back the same regardless of workload. E6 is meaningless without it.
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES XLA_PYTHON_CLIENT_PREALLOCATE=$XLA_PYTHON_CLIENT_PREALLOCATE"
+nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv,noheader
+
+# --- E2: interpreter, jax, device kind, DeepQMC provenance, vendored CUDA ----
+echo "=== E2 environment check"
+"$VENV/bin/python" -m experiments.baselines.check_polaris_deepqmc_env env \
+    --expect-prefix "$VENV" \
+    --expect-jax 0.8.3 \
+    --expect-commit "$COMMIT" \
+    --source-root "$SRC" \
+    | tee "$D/env-check.json"
+
+echo "=== DeepQMC version banner"
+"$VENV/bin/deepqmc" --version 2>&1 | tee "$D/deepqmc-version.txt" || \
+    echo "(no --version flag; see env-check.json deepqmc_source for provenance)"
+
+# --- A4: the DISCRIMINATING seed pair ---------------------------------------
+# Both halves are required and neither alone proves anything.
+#
+# The comparator's seed is 0, which is ALSO DeepQMC's default. So a run launched
+# with `task.seed=0` whose override is silently dropped still writes `seed: 0`,
+# and a check of that run passes identically whether the override mechanism
+# works or is completely broken. Probe X uses a non-default seed so the value
+# can only appear if the override took; probe Y establishes that 0 is what the
+# file says WITHOUT an override, so X's 7 cannot be explained by some unrelated
+# default. Hydra writes .hydra/config.yaml at startup, before training, so both
+# probes cost seconds rather than a training row.
+if [ "$MODE" = "probe" ]; then
+    for probe in X Y; do
+        PD="$D/seed-probe-$probe"
+        mkdir -p "$PD"
+        if [ "$probe" = "X" ]; then
+            EXPECT=7
+            SEED_ARG="task.seed=7"
+        else
+            EXPECT=0
+            SEED_ARG=""
+        fi
+        echo "=== A4 probe $probe (expect task.seed=$EXPECT; override arg: '${SEED_ARG:-<none>}')"
+        # steps=1 so Hydra writes the config and the process exits immediately.
+        # shellcheck disable=SC2086
+        "$VENV/bin/deepqmc" hydra.run.dir="$PD" task.steps=1 task.pretrain_steps=1 \
+            task.electron_batch_size=64 hamil/mol=He ansatz=default $SEED_ARG \
+            > "$PD/stdout.txt" 2> "$PD/stderr.txt" || true
+        "$VENV/bin/python" -m experiments.baselines.check_polaris_deepqmc_env seed \
+            --run-dir "$PD" --expect-seed "$EXPECT" | tee "$D/seed-probe-$probe.json"
+        # Quote the file itself, not the command line that requested the value.
+        echo "--- quoted from $PD/training/.hydra/config.yaml:"
+        grep -n 'seed:' "$PD/training/.hydra/config.yaml" || true
+    done
+fi
+
+# --- A3: the row ------------------------------------------------------------
+# Same stage stack, same flags, same batch as the Cannon comparator
+# dqmc-he-39358341/default; only the step count varies, and only in probe mode.
+RD="$D/training-row"
+mkdir -p "$RD"
+echo "=== row: steps=$STEPS seed=$SEED batch=4096 ansatz=default hamil/mol=He"
+ROW_START=$(date +%s)
+set +e
+"$VENV/bin/deepqmc" hydra.run.dir="$RD" task.steps="$STEPS" task.pretrain_steps=100 \
+    task.electron_batch_size=4096 hamil/mol=He ansatz=default task.seed="$SEED" \
+    > "$RD/stdout.txt" 2> "$RD/stderr.txt"
+RC=$?
+set -e
+ROW_ELAPSED=$(( $(date +%s) - ROW_START ))
+echo "row rc=$RC elapsed_s=$ROW_ELAPSED"
+if [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then
+    echo "measured_steps_per_second=$(awk -v s="$STEPS" -v t="$ROW_ELAPSED" 'BEGIN{printf "%.3f", s/t}')"
+fi
+
+RESULT="$RD/training/result.h5"
+echo "result_h5_bytes=$(stat -c%s "$RESULT" 2>/dev/null || echo 0)"
+
+# The row's OWN seed, read back from its OWN resolved config. With seed 0 this
+# is NOT a discriminating check (0 is the default); it is recorded for
+# provenance, and the discriminating evidence is the probe pair above.
+if [ -f "$RD/training/.hydra/config.yaml" ]; then
+    echo "=== row config seed, quoted from the file (provenance, not the A4 proof)"
+    grep -n 'seed:\|steps:\|electron_batch_size:' "$RD/training/.hydra/config.yaml" | head -10
+fi
+
+echo "=== GPU memory high-water after the row (E6)"
+"$VENV/bin/python" -m experiments.baselines.check_polaris_deepqmc_env env \
+    --expect-prefix "$VENV" --expect-jax 0.8.3 | tee "$D/env-check-post.json"
+
+echo "=== end=$(date -Iseconds) rc=$RC"
+date -Iseconds > "$D/FINISHED"
+exit "$RC"

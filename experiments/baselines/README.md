@@ -417,6 +417,93 @@ Householder tridiagonalization, or signed `sqrt(det)` with tracked sign) with
 signed-log output, validated against the recursive version at small `n`.
 Item `8e1a56dd`. Also note `channel_weights` defaults to `trainable=False`.
 
+## 9. DeepQMC on Polaris (item `9f762980`)
+
+Only FermiNet and PsiFormer were installed on Polaris, so the four
+DeepQMC-driven ansatzes — `default`/PauliNet, `deeperwin`, `lapnet`,
+`transpsiformer` — could not use any of that allocation. This section records
+the environment that changes it, and the two things about it that are easy to
+get wrong.
+
+### The environment is a NEW venv, not an addition to the FermiNet one
+
+DeepQMC's `pyproject.toml` declares `jax<0.9.0`. The existing Polaris
+environment `~/.venvs/ferminet-jax092-60c9fab3` carries jax 0.9.2 and is
+therefore excluded by that constraint. It must not be modified or upgraded to
+suit DeepQMC: it is the only working JAX-on-Polaris environment this program
+has, it survived the 2026-08-19 facility CUDA 13 upgrade, and breaking it would
+strand the FermiNet and PsiFormer work as well.
+
+```text
+interpreter  /soft/applications/conda/2025-09-25/mconda3/bin/python   (3.12.11)
+venv         /home/rhu/.venvs/deepqmc-jax083-edf373e7
+source       /home/rhu/src/deepqmc-edf373e7, detached at edf373e7
+pins         experiments/baselines/polaris_deepqmc_requirements.txt
+```
+
+The recipe that works is an **absolute** facility interpreter, a venv on top of
+it, and `jax[cuda12]` pip wheels that vendor their own CUDA runtime. That path
+never consults the facility CUDA stack, which is exactly why it survived a
+facility CUDA change. `module load conda` currently fails on missing
+`gcc-native/14.2` and `cray-hdf5-parallel/1.14.3.5`, and is not needed.
+
+Two build details are deliberate. The pins are **generated** by enumerating a
+working reference environment, never hand-written, so a transcription slip
+cannot enter a version. And DeepQMC is installed editable with `--no-deps`, so
+the resolver gets no opportunity to move a pin underneath the install. Verify
+the result by comparing the whole name-to-version map against the reference —
+a clean install log is not the check.
+
+Note that `pip freeze` is useless for that comparison: these venvs are built by
+`uv` and contain no `pip`, so `pip freeze` returns **empty and exits 0**, which
+reads exactly like "nothing is installed". Enumerate with
+`importlib.metadata.distributions()` instead.
+
+### The seed override fails silently, so it is checked in a pair
+
+`task.seed=N` is what the whole seed-spread contribution rests on, and if it
+does not take, every row runs the default seed, produces near-identical
+energies, and looks like a legitimate result.
+
+`check_polaris_deepqmc_env.py seed` reads the value back out of the run's own
+`training/.hydra/config.yaml` — the file the run actually resolved — rather than
+trusting the command line that requested it. One trap: `task:` is line 1 of that
+file and `seed:` is around line 50, so `grep -A2 task: | grep seed` prints
+nothing and reads as "no seed key". It is there.
+
+The check must be run as a **pair**, and neither half is sufficient alone:
+
+| probe | override | config must read |
+|-------|----------|------------------|
+| X     | `task.seed=7` | 7 |
+| Y     | *(none)* | 0 |
+
+The reason is that DeepQMC's default seed is 0, which is also the seed of the
+Cannon comparator row. A run launched with `task.seed=0` whose override is
+silently dropped still writes `seed: 0`, so that check passes identically
+whether the mechanism works or is entirely broken. Probe X uses a non-default
+value so it can only appear if the override took; probe Y establishes what the
+file says without an override, so X cannot be explained away as some unrelated
+default. Hydra writes the config at startup, before training, so both probes
+cost seconds rather than a training row.
+
+### Running the verification
+
+`experiments/baselines/polaris_deepqmc_verify.pbs` carries both the environment
+check and the row. It runs on `debug` (1-2 nodes, 1 h, receipt-backed for
+`HetRxnEnergy`); `prod` is a routing queue whose walltime is bought with nodes,
+and `debug-scaling` is debug-only by operator instruction.
+
+Two properties of that script matter beyond convenience. It sets
+`XLA_PYTHON_CLIENT_PREALLOCATE=false` before any JAX import, without which JAX
+takes ~75% of the card and every memory reading is identical and meaningless.
+And it is submitted `-r n` *and* refuses to start twice against its own marker
+file, because a Cannon row was requeued after a `NODE_FAIL` today and silently
+restarted from step 0 — this program discards restarted stochastic runs, so a
+silent restart is a correctness bug rather than an inconvenience. PBS is not
+Slurm, so the job records the scheduler's own `Rerunable` field rather than
+assuming the default.
+
 ## Sources
 
 - [FermiNet (Pfau et al. 2020), arXiv:1909.02487](https://arxiv.org/pdf/1909.02487) · [code](https://github.com/google-deepmind/ferminet) · [DeepMind blog](https://deepmind.google/blog/ferminet-quantum-physics-and-chemistry-from-first-principles/)
