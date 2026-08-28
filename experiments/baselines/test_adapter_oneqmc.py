@@ -534,6 +534,41 @@ def test_no_record_ever_carries_the_unblocked_naive_caveat() -> None:
     assert "UNDERSTATES" not in record.notes
 
 
+def test_above_floor_windows_are_untouched_by_the_short_tail_flag() -> None:
+    """The F3 refusal must be confined to windows below the floor.
+
+    Regression oracle for over-broadness. The already-published orbformer row has
+    a 10000-step tail against MIN_BLOCKS of 32, so it never entered the lowered-
+    floor branch, and its reported inflation must therefore be exactly what it was
+    before the fix. If this fix moved that number, the fix is too wide rather than
+    the record being wrong.
+
+    The property asserted here is the one that makes that true: above the floor,
+    nothing the adapter reports depends on ``allow_short_tail`` at all. It is
+    structural rather than incidental -- ``blocking_stderr`` consults
+    ``min_blocks``/``allow_below_floor`` only in its short-window guard and its
+    ladder condition, and for a window of at least MIN_BLOCKS the old
+    ``min(MIN_BLOCKS, len(tail))`` expression evaluates to MIN_BLOCKS, which is
+    the default the new call uses. Both spellings therefore walk the same ladder,
+    and the behaviour change is confined to windows below the floor.
+
+    ``min_tail_steps`` is lowered so that the flag is not the thing making the
+    window selectable; otherwise only one arm could run and there would be
+    nothing to compare.
+    """
+
+    energies = _series(EMITTABLE_STEPS)
+
+    permitted = _record(energies, tail_fraction=1.0, min_tail_steps=2, allow_short_tail=True)
+    refused_flag = _record(
+        energies, tail_fraction=1.0, min_tail_steps=2, allow_short_tail=False
+    )
+
+    assert _reported_inflation(permitted) == _reported_inflation(refused_flag)
+    assert permitted.energy_stderr_hartree == refused_flag.energy_stderr_hartree
+    assert permitted.energy_hartree == refused_flag.energy_hartree
+
+
 def _reported_inflation(record) -> float:
     """Pull the autocorrelation ratio back out of the notes as a number."""
 
