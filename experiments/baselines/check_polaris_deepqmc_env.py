@@ -48,6 +48,7 @@ import math
 import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -56,7 +57,17 @@ HYDRA_CONFIG_RELPATH = Path("training") / ".hydra" / "config.yaml"
 
 
 class EnvCheckError(RuntimeError):
-    """Raised when a checked property of the environment or run is not as required."""
+    """Raised when a checked property of the environment or run is not as required.
+
+    Carries the partial report alongside the message. A failed required check
+    does not invalidate the evidence gathered before it -- knowing WHICH
+    interpreter and WHICH commit failed is most of the diagnostic value -- so
+    that evidence travels with the exception instead of being discarded.
+    """
+
+    def __init__(self, message: str, report: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.report = report
 
 
 def _git_commit(source_root: Path) -> dict[str, str]:
@@ -340,7 +351,7 @@ def check_env(
     report["ok"] = not failures
     report["failures"] = failures
     if failures:
-        raise EnvCheckError("; ".join(failures))
+        raise EnvCheckError("; ".join(failures), report=report)
     return report
 
 
@@ -601,7 +612,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             # investigate verdict is how a finding gets lost in a job log.
             return 0 if report["verdict"] == "sane" else 1
     except EnvCheckError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+        payload: dict[str, Any] = {"ok": False, "error": str(exc)}
+        # Emit whatever WAS established before the check failed.
+        if getattr(exc, "report", None):
+            payload["report"] = exc.report
+        print(json.dumps(payload, indent=2))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        # THE ARTEFACT MUST NEVER BE EMPTY. The caller redirects stdout into
+        # env-check.json, so an uncaught exception writes its traceback to
+        # stderr and leaves a 0-byte file -- which is what PBS 7571666 produced,
+        # and a 0-byte file records nothing about which environment failed.
+        # Any unanticipated failure still yields valid, parseable JSON.
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "traceback": traceback.format_exc(),
+                },
+                indent=2,
+            )
+        )
         return 1
     print(json.dumps(report, indent=2))
     return 0

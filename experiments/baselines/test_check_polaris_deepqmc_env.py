@@ -15,7 +15,9 @@ log instead.
 
 from __future__ import annotations
 
+import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -264,3 +266,136 @@ def test_no_devices_at_all_does_not_raise() -> None:
 def test_loaded_cuda_libraries_never_raises_off_linux() -> None:
     """Returns an empty mapping where /proc/self/maps does not exist."""
     assert isinstance(loaded_cuda_libraries(), dict)
+
+
+# --- The artefact must never be empty ---------------------------------------
+# The job pipes this command's stdout into env-check.json. An uncaught exception
+# writes a traceback to stderr and leaves a 0-byte file, which records nothing
+# about WHICH environment failed -- the outcome of PBS 7571666. Guarding the
+# optional collectors is not sufficient on its own: the report is serialised at
+# the end, so any late raise still empties the file. These tests assert on what
+# actually reaches stdout, which is what becomes the artefact.
+
+
+def _stdout_json(capsys) -> dict:
+    out = capsys.readouterr().out
+    assert out.strip(), "nothing was written to stdout: the artefact would be 0 bytes"
+    return json.loads(out)
+
+
+def test_unexpected_exception_still_writes_parseable_json(capsys, monkeypatch) -> None:
+    """An error nobody anticipated must still leave a usable artefact."""
+    import experiments.baselines.check_polaris_deepqmc_env as mod
+
+    def boom(**_kwargs):
+        raise AttributeError("module 'jax' has no attribute 'extend'")
+
+    monkeypatch.setattr(mod, "check_env", boom)
+    assert mod.main(["env"]) == 1
+    payload = _stdout_json(capsys)
+    assert payload["ok"] is False
+    assert "no attribute 'extend'" in payload["error"]
+    # The traceback is retained: knowing where it failed is the diagnostic value.
+    assert "traceback" in payload
+
+
+def test_a_failed_required_check_still_reports_what_was_established(
+    capsys, monkeypatch
+) -> None:
+    """A wrong jax version must not discard the interpreter and commit evidence."""
+    import experiments.baselines.check_polaris_deepqmc_env as mod
+
+    partial = {"prefix": "/some/venv", "jax": "0.9.2", "ok": False, "failures": ["jax mismatch"]}
+
+    def failing(**_kwargs):
+        raise mod.EnvCheckError("jax '0.9.2' != expected '0.8.3'", report=partial)
+
+    monkeypatch.setattr(mod, "check_env", failing)
+    assert mod.main(["env"]) == 1
+    payload = _stdout_json(capsys)
+    assert payload["ok"] is False
+    # The partial evidence survives the failure.
+    assert payload["report"]["prefix"] == "/some/venv"
+    assert payload["report"]["jax"] == "0.9.2"
+
+
+def test_seed_failure_also_writes_json_rather_than_a_traceback(
+    capsys, tmp_path
+) -> None:
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+    from experiments.baselines.check_polaris_deepqmc_env import main
+
+    assert main(["seed", "--run-dir", str(empty), "--expect-seed", "7"]) == 1
+    payload = _stdout_json(capsys)
+    assert payload["ok"] is False
+
+
+# --- check_env's own failure path, driven for real ---------------------------
+# The tests above monkeypatch check_env wholesale, so they establish that main()
+# FORWARDS a partial report but not that check_env ATTACHES one. That gap was
+# found by mutation: removing `report=report` from the raise killed no test.
+# These drive the real function with stub jax/deepqmc modules instead.
+
+
+class _StubJax:
+    __version__ = "0.9.2"
+
+    def devices(self):
+        return [_StubDevice(_StubClient())]
+
+
+def _install_stub_modules(monkeypatch, tmp_path: Path) -> None:
+    """Make `import jax` and `import deepqmc` inside check_env resolve to stubs."""
+    import types
+
+    deepqmc = types.ModuleType("deepqmc")
+    # An editable install leaves __file__ inside the checkout; check_env walks up
+    # two parents from it, so the path needs that much depth to be realistic.
+    pkg = tmp_path / "src" / "deepqmc"
+    pkg.mkdir(parents=True)
+    deepqmc.__file__ = str(pkg / "__init__.py")
+    monkeypatch.setitem(sys.modules, "jax", _StubJax())
+    monkeypatch.setitem(sys.modules, "deepqmc", deepqmc)
+
+
+def test_check_env_attaches_the_partial_report_to_its_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A required-check failure must carry the evidence gathered before it."""
+    _install_stub_modules(monkeypatch, tmp_path)
+    from experiments.baselines.check_polaris_deepqmc_env import EnvCheckError, check_env
+
+    with pytest.raises(EnvCheckError) as excinfo:
+        check_env(
+            expect_prefix=None,
+            expect_jax="0.8.3",  # stub reports 0.9.2, so this must fail
+            expect_commit=None,
+            source_root=None,
+            require_gpu=False,
+        )
+    report = excinfo.value.report
+    assert report is not None, "the partial report was discarded on failure"
+    # The evidence established BEFORE the failing assertion survives it.
+    assert report["jax"] == "0.9.2"
+    assert report["python"] == sys.version.split()[0]
+    assert report["ok"] is False
+    assert any("0.8.3" in f for f in report["failures"])
+
+
+def test_check_env_requires_a_gpu_when_asked(monkeypatch, tmp_path: Path) -> None:
+    """require_gpu must actually fail on a CPU-only backend, not just record it."""
+    _install_stub_modules(monkeypatch, tmp_path)
+    from experiments.baselines.check_polaris_deepqmc_env import EnvCheckError, check_env
+
+    cpu_device = _StubDevice(_StubClient())
+    cpu_device.platform = "cpu"
+    monkeypatch.setattr(sys.modules["jax"], "devices", lambda: [cpu_device])
+    with pytest.raises(EnvCheckError, match="no GPU device visible"):
+        check_env(
+            expect_prefix=None,
+            expect_jax=None,
+            expect_commit=None,
+            source_root=None,
+            require_gpu=True,
+        )
