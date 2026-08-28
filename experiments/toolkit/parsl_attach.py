@@ -20,7 +20,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .dispatch import AllocationContext, DispatchRecord, DispatchSpec
 from .task_state import _deadline_guard_reached
-from .placement import capture_attempt_placement
 
 
 _HOSTNAME_PATTERN = re.compile(
@@ -132,9 +131,40 @@ def _run_dispatch_payload(
     if visibility_variable is not None and visibility_value is not None:
         worker_environment[visibility_variable] = visibility_value
     started_at = time.time()
-    placement = capture_attempt_placement(
-        attempt_id=attempt_id, cwd=cwd, result_dir=output_directory, started_at_unix=started_at
-    )
+    # Keep this worker payload stdlib-only. Parsl serializes it by value, and
+    # importing the toolkit here would make worker deserialization depend on
+    # the submission checkout being present on every worker's sys.path.
+    import socket
+
+    hostname = socket.gethostname().lower()
+    placement: dict[str, Any] = {
+        "attempt_id": attempt_id,
+        "hostname": hostname,
+        "fqdn": socket.getfqdn(),
+        "pbs_job_id": os.environ.get("PBS_JOBID"),
+        "identity": os.environ.get("PARSL_WORKER_ID") or os.environ.get("PARSL_MANAGER_ID"),
+        "registration_at_unix": started_at,
+        "pid": os.getpid(),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+        "cuda_visible_devices": worker_environment.get("CUDA_VISIBLE_DEVICES"),
+        "cwd": str(Path(cwd).resolve()),
+        "result_dir": str(output_path.resolve()),
+        "started_at_unix": started_at,
+        "gpus": [],
+    }
+    try:
+        query = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,uuid,pci.bus_id", "--format=csv,noheader,nounits"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        query = None
+    if query is not None and query.returncode == 0:
+        for line in query.stdout.splitlines():
+            name, uuid, bus_id = (part.strip() for part in line.split(",", 2))
+            placement["gpus"].append({"name": name, "uuid": uuid, "pci_bus_id": bus_id})
     launch_error: str | None = None
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         try:
@@ -160,6 +190,9 @@ def _run_dispatch_payload(
         "returncode": returncode,
         "visibility_variable": visibility_variable,
         "visibility_value": visibility_value,
+        "inherited_visibility_value": (
+            worker_environment.get(visibility_variable) if visibility_variable is not None else None
+        ),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
         "started_at_unix": started_at,
@@ -220,7 +253,7 @@ class ParslAttachExecutor:
         launch_attempt_dir = Path(context.run_root)
         runner = self.app_runner or self._real_runner(context, launch_attempt_dir)
         submitted: list[tuple[DispatchSpec, Any]] = []
-        for index, dispatch in enumerate(ready_dispatches):
+        for dispatch in ready_dispatches:
             output_directory = launch_attempt_dir / "dispatch" / dispatch.attempt_id
             runner_kwargs: dict[str, Any] = {
                 "argv": dispatch.argv,
@@ -229,11 +262,11 @@ class ParslAttachExecutor:
                 "output_directory": str(output_directory),
                 "attempt_id": dispatch.attempt_id,
             }
-            if context.visibility_values:
-                runner_kwargs.update(
-                    visibility_variable=context.visibility_variable,
-                    visibility_value=context.visibility_values[index % len(context.visibility_values)],
-                )
+            # ``available_accelerators`` binds each HTEX worker.  The task must
+            # inherit that worker-owned environment; dispatch order is not a
+            # resource identity and must never select a GPU.
+            if context.visibility_values or context.nodes_per_block is not None:
+                runner_kwargs["visibility_variable"] = context.visibility_variable
             submitted.append(
                 (
                     dispatch,
@@ -291,10 +324,11 @@ class ParslAttachExecutor:
 def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> AppRunner:
     """Build and load the allocation-local Parsl application lazily."""
 
-    requested_node_count = len(context.visibility_values) or 1
-    if requested_node_count > 1:
+    if context.nodes_per_block is not None:
+        if len(context.visibility_values) != 4:
+            raise ValueError("multi-node Parsl attach requires exactly four accelerators per node")
         validate_pbs_nodefile(
-            os.environ.get("PBS_NODEFILE"), requested_node_count=requested_node_count
+            os.environ.get("PBS_NODEFILE"), requested_node_count=context.nodes_per_block
         )
 
     import parsl
@@ -303,9 +337,23 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
     from parsl.executors import HighThroughputExecutor
     from parsl.providers import LocalProvider
 
+    provider_options: dict[str, Any] = {
+        "init_blocks": 1,
+        "min_blocks": 1,
+        "max_blocks": 1,
+    }
+    if context.nodes_per_block is not None:
+        from parsl.launchers import MpiExecLauncher
+
+        provider_options.update(
+            nodes_per_block=context.nodes_per_block,
+            launcher=MpiExecLauncher(bind_cmd="--cpu-bind", overrides="--depth=64 --ppn 1"),
+            worker_init="export TMPDIR=/tmp",
+        )
+
     executor_options: dict[str, Any] = {
         "label": "parsl-attach",
-        "provider": LocalProvider(init_blocks=1, min_blocks=1, max_blocks=1),
+        "provider": LocalProvider(**provider_options),
         "max_workers_per_node": len(context.visibility_values) or 1,
     }
     if context.visibility_values:
@@ -317,7 +365,26 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
         usage_tracking=False,
     )
     parsl.load(config)
-    return python_app(_run_dispatch_payload)
+    # ``dill`` serializes module-level functions by reference.  Construct a
+    # by-value function with only stdlib globals so workers never need the
+    # submission checkout to import ``experiments`` while deserializing it.
+    import types
+
+    worker_payload = types.FunctionType(
+        _run_dispatch_payload.__code__,
+        {
+            "__builtins__": __builtins__,
+            "__name__": "__parsl_worker_payload__",
+            "Path": Path,
+            "json": json,
+            "os": os,
+            "subprocess": subprocess,
+            "time": time,
+        },
+        _run_dispatch_payload.__name__,
+        _run_dispatch_payload.__defaults__,
+    )
+    return python_app(worker_payload)
 
 
 def _result_payload(value: Any) -> Mapping[str, Any]:

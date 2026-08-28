@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import types
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,7 @@ def test_protocol_records_verbatim_argv_and_worker_layout(tmp_path: Path) -> Non
     assert calls[0]["argv"] == spec.argv
     assert calls[0]["environment"]["EXTRA"] == "one"
     assert "CUDA_VISIBLE_DEVICES" not in calls[0]["environment"]
-    assert calls[0]["visibility_value"] == "0"
+    assert "visibility_value" not in calls[0]
     assert Path(calls[0]["output_directory"]) == tmp_path / "launch" / "dispatch" / spec.attempt_id
 
 
@@ -192,12 +193,71 @@ def test_pbs_nodefile_unknown_hostname_format_is_attributable(tmp_path: Path) ->
         validate_pbs_nodefile(nodefile, requested_node_count=2)
 
 
+def test_single_node_four_gpus_validates_one_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=1)
+
+    _parsl_app_runner(context, tmp_path / "launch")
+
+    assert captured["provider"]["nodes_per_block"] == 1
+
+
+def test_four_nodes_four_gpus_per_node_validate_four_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\nnode-03\nnode-04\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=4)
+
+    _parsl_app_runner(context, tmp_path / "launch")
+
+    assert captured["provider"]["nodes_per_block"] == 4
+
+
+def test_multi_node_attach_rejects_host_count_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=4)
+
+    with pytest.raises(RuntimeError, match=r"actual host count 1.*expected 4"):
+        _parsl_app_runner(context, tmp_path / "launch")
+
+
+def test_multi_node_attach_rejects_extra_hosts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\nnode-03\nnode-04\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=1)
+
+    with pytest.raises(RuntimeError, match=r"actual host count 4.*expected 1"):
+        _parsl_app_runner(context, tmp_path / "launch")
+
+
+def test_legacy_single_node_does_not_validate_gpu_count_as_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_parsl(monkeypatch)
+    monkeypatch.delenv("PBS_NODEFILE", raising=False)
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"))
+
+    _parsl_app_runner(context, tmp_path / "launch")
+
+
 def test_multi_node_attach_rejects_missing_nodefile_before_parsl_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PBS_NODEFILE", raising=False)
     with pytest.raises(RuntimeError, match=r"PBS_NODEFILE missing.*expected 2"):
-        _parsl_app_runner(_context(tmp_path, visibility_values=("0", "1")), tmp_path / "launch")
+        _parsl_app_runner(
+            _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=2),
+            tmp_path / "launch",
+        )
 
 
 def test_stdlib_worker_writes_output_layout(tmp_path: Path) -> None:
@@ -261,6 +321,127 @@ def test_inherit_visibility_keeps_scheduler_binding(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(parsl, "load", fake_load)
     _parsl_app_runner(context, tmp_path / "inherit-launch")
     assert captured["config"].executors[0].max_workers_per_node == 1
+
+
+def test_worker_binding_is_measured_not_selected_by_dispatch_index(tmp_path: Path) -> None:
+    """A worker assignment differing from submission order must be preserved."""
+
+    observed: list[str] = []
+    # The first submitted task happens to execute on worker GPU 3 and the
+    # second on worker GPU 0.  Dispatch-index modulo four would report 0, 1.
+    worker_bindings = iter(("3", "0"))
+
+    def fake_runner(**kwargs: Any) -> dict[str, Any]:
+        worker_binding = next(worker_bindings)
+        output = Path(kwargs["output_directory"])
+        payload = _run_dispatch_payload(
+            kwargs["argv"],
+            kwargs["cwd"],
+            {**kwargs["environment"], "CUDA_VISIBLE_DEVICES": worker_binding},
+            str(output),
+            kwargs["attempt_id"],
+            kwargs["visibility_variable"],
+            kwargs.get("visibility_value"),
+        )
+        observed.append(str(payload["inherited_visibility_value"]))
+        return payload
+
+    first = _dispatch(tmp_path)
+    second = replace(first, attempt_id="attempt-2", logical_task_id="logical-2")
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"))
+    ParslAttachExecutor(app_runner=fake_runner).dispatch((first, second), context=context)
+
+    assert observed == ["3", "0"]
+    assert observed != [context.visibility_values[i % 4] for i in range(2)]
+
+
+def test_rendered_provider_options_keep_single_node_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    _parsl_app_runner(_context(tmp_path), tmp_path / "launch")
+    assert captured["provider"] == {"init_blocks": 1, "min_blocks": 1, "max_blocks": 1}
+
+
+def test_parsl_payload_is_by_value_and_keeps_optional_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_parsl(monkeypatch)
+
+    payload = _parsl_app_runner(_context(tmp_path), tmp_path / "launch")
+
+    assert payload.__module__ == "__parsl_worker_payload__"
+    assert payload.__defaults__ == (None, None)
+
+
+def test_rendered_provider_options_use_alcf_multinode_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _install_fake_parsl(monkeypatch)
+    nodefile = tmp_path / "PBS_NODEFILE"
+    nodefile.write_text("node-01\nnode-02\nnode-03\n")
+    monkeypatch.setenv("PBS_NODEFILE", str(nodefile))
+    context = _context(tmp_path, visibility_values=("0", "1", "2", "3"), nodes_per_block=3)
+    _parsl_app_runner(context, tmp_path / "launch")
+    assert captured["provider"]["nodes_per_block"] == 3
+    assert captured["provider"]["launcher"].__dict__ == {
+        "bind_cmd": "--cpu-bind",
+        "overrides": "--depth=64 --ppn 1",
+    }
+    assert captured["provider"]["worker_init"] == "export TMPDIR=/tmp"
+    assert captured["executor"]["max_workers_per_node"] == 4
+    assert captured["executor"]["available_accelerators"] == ("0", "1", "2", "3")
+
+
+def _install_fake_parsl(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Provide tiny Parsl constructor doubles for rendered-config tests."""
+
+    captured: dict[str, Any] = {}
+
+    class Config:
+        def __init__(self, *, executors: list[Any], **kwargs: Any) -> None:
+            self.executors = executors
+            self.__dict__.update(kwargs)
+
+    class HighThroughputExecutor:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["executor"] = kwargs
+            self.__dict__.update(kwargs)
+
+    class LocalProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["provider"] = kwargs
+            self.__dict__.update(kwargs)
+
+    class MpiExecLauncher:
+        def __init__(self, **kwargs: Any) -> None:
+            self.__dict__.update(kwargs)
+            captured["provider_launcher"] = kwargs
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, dict) and self.__dict__ == other
+
+    parsl = types.ModuleType("parsl")
+    parsl.load = lambda config: None
+    config_module = types.ModuleType("parsl.config")
+    config_module.Config = Config
+    executors_module = types.ModuleType("parsl.executors")
+    executors_module.HighThroughputExecutor = HighThroughputExecutor
+    providers_module = types.ModuleType("parsl.providers")
+    providers_module.LocalProvider = LocalProvider
+    launchers_module = types.ModuleType("parsl.launchers")
+    launchers_module.MpiExecLauncher = MpiExecLauncher
+    app_module = types.ModuleType("parsl.app")
+    app_app_module = types.ModuleType("parsl.app.app")
+    app_app_module.python_app = lambda function: function
+    for name, module in {
+        "parsl": parsl,
+        "parsl.config": config_module,
+        "parsl.executors": executors_module,
+        "parsl.providers": providers_module,
+        "parsl.launchers": launchers_module,
+        "parsl.app": app_module,
+        "parsl.app.app": app_app_module,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(parsl, "load", lambda config: captured.update(config=config))
+    return captured
 
 
 def test_parsl_config_has_no_retries_and_accelerator_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
