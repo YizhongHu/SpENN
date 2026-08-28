@@ -1294,11 +1294,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=(
             "accept an estimator window below --min-tail-steps when the run is "
-            "too short to fill it, instead of refusing the run; the notes then "
-            "say the estimate is provisional. How wide the accepted window ends "
-            "up is select_tail's rule in experiments/baselines/statistics.py, "
+            "too short to fill it, instead of refusing on that ground; the notes "
+            "then say the estimate is provisional. How wide the accepted window "
+            "ends up is select_tail's rule in experiments/baselines/statistics.py, "
             "not this flag's, and that rule has changed there before -- read it "
-            "there rather than assuming a value"
+            "there rather than assuming a value. This flag does NOT relax the "
+            "separate MIN_BLOCKS floor: a window with too few steps to run one "
+            "blocking level is still refused, because its error bar would be an "
+            "uncorrected naive estimate. Two different floors, one flag, and it "
+            "only governs the first"
         ),
     )
     parser.add_argument("--code-commit", default=None)

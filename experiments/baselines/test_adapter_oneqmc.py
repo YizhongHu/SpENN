@@ -981,9 +981,13 @@ def test_notes_window_is_the_window_actually_averaged(
 
 @pytest.mark.parametrize(
     "total, min_tail_steps",
-    # The last case is the short-window regime, where the block floor is
-    # lowered and any "no blocks measured" sentinel would come from.
-    [(200, MIN_TAIL_STEPS), (PILOT_LOGGED_STEPS, MIN_TAIL_STEPS), (200, 2), (20, 2)],
+    # (200, 2) is the short-window regime: a 50-step window, still above
+    # MIN_BLOCKS, so a record is emitted and its notes must carry a real
+    # count rather than a sentinel. The old (20, 2) case -- a 5-step window --
+    # was removed when the adapter began REFUSING below-floor windows: it can
+    # no longer produce notes to inspect. That refusal is asserted directly by
+    # test_a_below_floor_window_is_refused_rather_than_measured below.
+    [(200, MIN_TAIL_STEPS), (PILOT_LOGGED_STEPS, MIN_TAIL_STEPS), (200, 2)],
 )
 def test_notes_never_render_a_literal_none(total: int, min_tail_steps: int) -> None:
     """No notes field may contain the literal string "None".
@@ -1004,31 +1008,33 @@ def test_notes_never_render_a_literal_none(total: int, min_tail_steps: int) -> N
     assert "None" not in record.notes
 
 
-def test_lowering_the_block_floor_is_what_keeps_the_ladder_running() -> None:
-    """``min(MIN_BLOCKS, len(tail))`` is load-bearing; do not simplify it away.
+def test_a_below_floor_window_is_refused_rather_than_measured() -> None:
+    """A window too short to run one blocking level is refused, not rescued.
 
-    A short Orbformer window is shorter than ``MIN_BLOCKS``, so with the default
-    floor blocking's loop condition is false before its first level and the
-    function never measures anything -- it either returns a degenerate bar or
-    refuses, depending on the ``statistics`` version. Lowering the floor to the
-    window length makes the first level run, which is what gives this adapter a
-    real number and what makes any "no blocks measured" sentinel unreachable
-    from here.
+    This test previously asserted the OPPOSITE, under the name
+    ``test_lowering_the_block_floor_is_what_keeps_the_ladder_running``. The
+    adapter used to compute ``min(MIN_BLOCKS, len(tail))`` so that blocking's
+    first level would run on a short window, and this test called that lowering
+    "load-bearing" and warned against simplifying it away.
 
-    Both halves are asserted, because the second is the reason for the first.
+    It was the defect, not the design. Lowering the floor to the sample count
+    makes exactly one level run, so the returned ratio is ``1.00x`` by
+    construction -- it reports "no autocorrelation" when what actually happened
+    is that no level ever compared blocks. The adapter now refuses instead,
+    matching ``deepqmc`` and ``ferminet``.
+
+    The old name is kept in this docstring on purpose: a bare rewrite would
+    leave no trace that the previous contract was asserted and believed.
+
+    Both halves below are still asserted, because the first is why the floor
+    exists at all.
     """
 
     tail = _series(20)
     assert len(tail) < MIN_BLOCKS
 
-    lowered = min(MIN_BLOCKS, len(tail))
-    stderr, blocks = blocking_stderr(tail, min_blocks=lowered)
-    assert stderr > 0.0
-    assert blocks == len(tail)
-    assert blocking_inflation(tail, min_blocks=lowered) >= 1.0
-
-    # The unlowered floor, for contrast. Which way it fails is the shared
-    # module's business; that it yields nothing usable is the point.
+    # Why the floor exists: at the unlowered floor blocking yields nothing
+    # usable. Which way it fails is the shared module's business.
     try:
         degenerate, _ = blocking_stderr(tail, min_blocks=MIN_BLOCKS)
     except AdapterError:
@@ -1036,18 +1042,19 @@ def test_lowering_the_block_floor_is_what_keeps_the_ladder_running() -> None:
     else:
         assert degenerate <= 0.0, (
             "blocking measured something at the unlowered floor, so this test no "
-            "longer demonstrates why the adapter lowers it"
+            "longer demonstrates why the floor matters"
         )
 
-    # And the adapter's own output on such a window: a numeric inflation ratio,
-    # never a sentinel.
-    # tail_fraction=1.0 so the record's window is the same 20 steps the
-    # blocking assertions above were made on.
-    record = _record(tail, min_tail_steps=2, tail_fraction=1.0)
-    assert _window_from_notes(record.notes) == (len(tail), len(tail))
-    assert re.search(r"inflation \d+\.\d\dx", record.notes)
-    assert "None" not in record.notes
+    # The adapter's contract on such a window: refuse, and say why in terms an
+    # operator can act on. Asserting the remedy text too, because a refusal that
+    # does not tell you which knob to turn is a dead end rather than a guard.
+    with pytest.raises(AdapterError) as excinfo:
+        _record(tail, min_tail_steps=2, tail_fraction=1.0)
 
+    message = str(excinfo.value)
+    assert "UNASSESSED" in message
+    assert str(MIN_BLOCKS) in message
+    assert "--tail-fraction" in message
 
 def _git_blob_sha1(path: Path) -> str:
     """Return the git blob SHA-1 of ``path``, computed without invoking git.
