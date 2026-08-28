@@ -7,7 +7,14 @@ The report states what it does not know as loudly as what it does:
   nine rows cannot be read as a median over nine;
 - ``local_energy_stderr`` is labelled an IID standard error, because pairing an
   IID bar against a correlation-corrected one is the comparison the
-  estimator-pairing rule forbids; and
+  estimator-pairing rule forbids;
+- the canonical energy is the whole-trajectory estimate with its MCSE. The
+  final-draw snapshot is retained beside it and labelled a snapshot, because an
+  unqualified ``local_energy_mean`` is a slice of ~0.4% of the sampled records
+  and was previously indistinguishable from an estimate over all of them;
+- a trajectory statistic that never resolved renders ``absent`` and is never
+  backfilled from the snapshot, and ``plateau_reached`` travels beside the MCSE
+  because a truncated sequence understates it; and
 - a row whose delivered GPU did not match its requested stratum is listed as a
   failure, not a footnote.
 
@@ -33,9 +40,26 @@ import plan as plan_stage  # noqa: E402
 REPORT_FILENAME = "report.md"
 
 #: Columns whose estimator has to be named wherever the number appears.
+#:
+#: The snapshot entries are labelled for the same reason the IID bar always was:
+#: an unqualified name is what let a final-draw slice be read as an estimate over
+#: the whole chain. Naming the estimand is cheaper than expecting every reader to
+#: know which ``local_energy_mean`` they are looking at.
 ESTIMATOR_LABELS: Mapping[str, str] = {
+    "local_energy_mean": "final-draw snapshot, not the trajectory estimate",
     "local_energy_stderr": "IID stderr (not an MCSE)",
+    "local_energy_variance": "final-draw snapshot",
+    "local_energy_trajectory_mean": "whole-trajectory estimate",
+    "local_energy_mcse": "MCSE, correlation-corrected",
+    "local_energy_stderr_iid": "IID stderr over the trajectory",
+    "local_energy_mcse_inflation": "MCSE / IID stderr",
+    "local_energy_plateau_reached": "false ⇒ the MCSE beside it is UNDERSTATED",
 }
+
+#: The pair a reader should quote. Named once, here, so the row table and the
+#: prose below cannot drift apart about which column is canonical.
+HEADLINE_ENERGY_KEY = "local_energy_trajectory_mean"
+HEADLINE_ERROR_KEY = "local_energy_mcse"
 
 
 def read_collected(results_root: str | Path, collect_attempt_id: str) -> dict[str, Any]:
@@ -98,7 +122,20 @@ def _header_lines(collected: Mapping[str, Any]) -> list[str]:
 
 
 def _row_lines(collected: Mapping[str, Any]) -> list[str]:
-    lines = ["## Rows", "", "One line per planned row, in manifest order.", ""]
+    lines = [
+        "## Rows",
+        "",
+        "One line per planned row, in manifest order.",
+        "",
+        "The canonical energy is the whole-trajectory estimate and its MCSE. The",
+        "final-draw snapshot is kept beside it for comparison and is labelled as a",
+        "snapshot; it is not the study's answer. `plateau` is the truncation flag",
+        "that qualifies the MCSE: `False` means Geyer's sequence was cut at the",
+        "window edge and the bar is UNDERSTATED. A row whose trajectory statistics",
+        "never resolved shows `absent` in the trajectory columns -- it never borrows",
+        "the snapshot to fill the gap.",
+        "",
+    ]
     header = [
         "row_id",
         "kind",
@@ -108,8 +145,11 @@ def _row_lines(collected: Mapping[str, Any]) -> list[str]:
         "chain",
         "stratum",
         "delivered",
-        "energy",
-        f"stderr ({ESTIMATOR_LABELS['local_energy_stderr']})",
+        f"energy ({ESTIMATOR_LABELS[HEADLINE_ENERGY_KEY]})",
+        f"mcse ({ESTIMATOR_LABELS[HEADLINE_ERROR_KEY]})",
+        "plateau",
+        f"snapshot energy ({ESTIMATOR_LABELS['local_energy_mean']})",
+        f"snapshot stderr ({ESTIMATOR_LABELS['local_energy_stderr']})",
         "checkpoint_sha256",
     ]
     lines.append("| " + " | ".join(header) + " |")
@@ -128,6 +168,12 @@ def _row_lines(collected: Mapping[str, Any]) -> list[str]:
                     _cell(identity["chain"]),
                     str(identity["requested_stratum"]),
                     _cell(identity["delivered_device"]),
+                    # Headline first. These read `absent` on a row whose receipt
+                    # was unresolved, and no branch here substitutes the snapshot
+                    # columns to the right of them.
+                    _metric(row, HEADLINE_ENERGY_KEY),
+                    _metric(row, HEADLINE_ERROR_KEY),
+                    _metric(row, "local_energy_plateau_reached"),
                     _metric(row, "local_energy_mean"),
                     _metric(row, "local_energy_stderr"),
                     _short_hash(_cell(identity["checkpoint_sha256"])),

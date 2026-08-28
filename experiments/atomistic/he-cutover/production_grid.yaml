@@ -1,0 +1,38 @@
+schema: he-cutover-production-grid/v1
+study: he-cutover
+train_config: experiments/atomistic/he-v1/configs/train.yaml
+eval_config: experiments/atomistic/he-v1/configs/eval.yaml
+train:
+  seeds: [0, 1, 2]
+  max_steps: 300000
+  n_walkers: 4096
+  checkpoint_steps: [100000, 200000, 300000]
+eval:
+  chains: 4
+  chain_seed_base: 1000
+  n_walkers: 4096
+  n_draws: 256
+  burn_in: 100
+  discard_draws: 0
+  stride: 20
+  chunk_size: 256
+  task_names:
+    - mcmc_energy
+    - he_radial_profiles
+    - full_model_antisymmetry
+    - spatial_exchange_symmetry
+    - trace_equivariance
+    - he_en_numerical_atlas
+    - he_ee_ideal_vs_executed_numerical_atlas
+    - he_one_electron_tail_atlas
+    - he_center_of_mass_tail_atlas
+    - he_angular_shell_atlas
+facilities:
+  polaris:
+    runtime: tpen-polaris
+    partition: capacity
+    stratum: a100_40gb
+    timeout_min: 5760
+    cpus: 4
+    mem_gb: 32
+    gpus: 1

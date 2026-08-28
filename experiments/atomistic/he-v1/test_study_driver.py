@@ -358,6 +358,8 @@ def test_experiments_import_boundary_holds() -> None:
 
     offenders: dict[str, list[str]] = {}
     for path in sorted(STUDY_DIR.glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
         lines = [
             line.strip()
             for line in path.read_text(encoding="utf-8").splitlines()

@@ -195,6 +195,30 @@ tree on an agent-namespaced branch plus a claimed TPEN `implementation-slice`
 already in `work` with a non-empty `acceptance-contract`. Existing untracked
 research and run data are deliberately ignored and must remain untouched.
 
+**Run the guard outside the agent sandbox.** This is allowed and encouraged, not
+a workaround. The guard reads the Task Orchestrator HTTP API, and sandboxed
+coding agents deny outbound network, so it returns
+`{"status": "blocked"}` with `urlopen error [Errno 1] Operation not permitted`.
+The same sandboxes deny paths named `.git`, which breaks `uv` outright because
+`uv` writes a zero-byte `.git` marker into every cache directory on init;
+redirecting `UV_CACHE_DIR` does not help, because `uv` recreates the marker
+wherever it is pointed. Do not send a sandboxed agent at this guard and do not
+escalate sandbox permissions for it.
+
+Instead, an unsandboxed party — normally the orchestrator — runs it from the
+lane's own worktree, and records the output as an
+`authoritative-edit-launch-receipt` note on that lane's item. Invoking the
+script through an interpreter directly instead of `uv run --no-project` is
+acceptable here: the script performs no dependency resolution, and
+`uv run --no-project` resolves to the project interpreter anyway. Record both
+deviations in the receipt — interpreter-direct, and executed by someone other
+than the editing agent — together with what that does *not* establish: the
+editing agent did not confirm its own preconditions. The receipt is
+point-in-time, so the lane must not reset, rebase, or switch branches between
+the receipt and its first edit. One caution: an agent may run the guard
+successfully early in a session and be denied later, so an early success is not
+evidence the restriction is absent.
+
 ## Branches
 
 ### Sectioning

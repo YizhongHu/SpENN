@@ -1,0 +1,8 @@
+schema: he-cutover-runtime-profile/v1
+facility: polaris
+runtimes:
+  tpen-polaris:
+    binding: explicit
+    interpreter: facility-overlay
+    available_accelerators: ["0", "1", "2", "3"]
+

@@ -1,7 +1,9 @@
+> **STALE as of 2026-08-26.** This material is retained for provenance of already-archived results. These studies run on the *legacy* experiment-toolkit surface and are **not a template for new work**; new work uses the dispatch seam in `experiments/toolkit/dispatch.py`. These studies were deliberately **not migrated to the new seam**—this is an operator ruling of 2026-08-26, not an oversight or a pending task.
+
 # Hooke pair-stability V3 study
 
-This is the current runnable pair-stability study and the behavioral baseline
-for future restructuring work (which continues in a v4 study, compared back
+As of its last run, this was the runnable pair-stability study and behavioral
+baseline for restructuring work (which continued in a v4 study, compared back
 against this one). It descends from `experiments/hooke/pair_stability_v2`
 (retired as a comparison target after end-to-end parity was confirmed) with
 the same stage layout, scan axes, validation/final-evaluation task suites,
