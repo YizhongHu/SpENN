@@ -52,7 +52,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 import yaml
 
@@ -522,6 +522,8 @@ def reconcile_canary_row(
     manifest: Mapping[str, Any],
     row_record: Any,
     metadata: Any,
+    identity_diagnostics: MutableMapping[str, Any] | None = None,
+    source_git_sha: str | None = None,
 ) -> list[str]:
     """Reconcile one canary's source, execution, records, and trajectory receipt."""
 
@@ -568,6 +570,28 @@ def reconcile_canary_row(
             "record_capacity": row.get("record_capacity"),
         },
     )
+    legacy_config_error: str | None = None
+    try:
+        legacy_config_sha: str | None = eval_stage.legacy_config_identity_hash(
+            STUDY_DIR.parents[2] / str(row["config"]),
+            [str(item) for item in row["overrides"]],
+            identity_values={
+                "canary_protocol": row.get("canary_protocol"),
+                "checkpoint_source": row.get("checkpoint_source"),
+                "task_names": row.get("task_names"),
+                "n_walkers": row.get("n_walkers"),
+                "n_draws": row.get("n_draws"),
+                "burn_in": row.get("burn_in"),
+                "discard_draws": row.get("discard_draws"),
+                "stride": row.get("stride"),
+                "chunk_size": row.get("chunk_size"),
+                "record_capacity": row.get("record_capacity"),
+            },
+            source_git_sha=source_git_sha,
+        )
+    except ValueError as exc:
+        legacy_config_sha = None
+        legacy_config_error = str(exc)
     _reconcile_canary_config(config, row=row, source=source, reasons=reasons)
 
     index = _required_json(
@@ -597,15 +621,19 @@ def reconcile_canary_row(
             artifact=artifacts.get("sampled_eval_table"),
             reasons=reasons,
         )
-        _reconcile_canary_trajectory(
+        config_identity_match = _reconcile_canary_trajectory(
             trajectory_path,
             row=row,
             source=source,
-            config_sha256=expected_config_sha,
+            canonical_config_sha256=expected_config_sha,
+            legacy_config_sha256=legacy_config_sha,
+            legacy_config_error=legacy_config_error,
             plan_attempt_id=plan_attempt_id,
             artifact=artifacts.get("local_energy_trajectory_statistics"),
             reasons=reasons,
         )
+        if identity_diagnostics is not None:
+            identity_diagnostics["config_identity_match"] = config_identity_match
         _reconcile_canary_sampler_diagnostics(
             sampler_diagnostics_path,
             row=row,
@@ -884,32 +912,52 @@ def _reconcile_canary_trajectory(
     *,
     row: Mapping[str, Any],
     source: canary.CheckpointSource,
-    config_sha256: str,
+    canonical_config_sha256: str,
+    legacy_config_sha256: str | None,
+    legacy_config_error: str | None,
     plan_attempt_id: str,
     artifact: Mapping[str, Any] | None,
     reasons: list[str],
-) -> None:
+) -> str | None:
     if not path.is_file():
         reasons.append(f"missing trajectory-statistics sidecar: {path}")
-        return
+        return None
     try:
         records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         reasons.append(f"trajectory-statistics sidecar is unreadable: {exc}")
-        return
+        return None
     if len(records) != 1 or not isinstance(records[0], Mapping):
         reasons.append("trajectory-statistics sidecar must contain exactly one receipt")
-        return
+        return None
     receipt = records[0]
+    config_identity_match = _match_config_identity(
+        receipt.get("config_sha256"),
+        canonical=canonical_config_sha256,
+        legacy=legacy_config_sha256,
+    )
     expected_identity = {
         "stage": row["stage"],
         "run_id": row["row_id"],
         "attempt_id": plan_attempt_id,
         "checkpoint_sha256": source.model_sha256,
-        "config_sha256": config_sha256,
+        "config_sha256": (
+            canonical_config_sha256
+            if config_identity_match != "legacy"
+            else legacy_config_sha256
+        ),
         "observable": "local_energy",
         "evaluator_id": eval_stage.EVALUATOR_ID,
     }
+    if config_identity_match is None:
+        if legacy_config_error is not None:
+            reasons.append(
+                f"legacy config identity unavailable: {legacy_config_error}"
+            )
+        reasons.append(
+            "trajectory-statistics receipt config identity matches neither canonical "
+            "nor legacy hash"
+        )
     if any(receipt.get(key) != value for key, value in expected_identity.items()):
         reasons.append("trajectory-statistics receipt join identity mismatch")
     shape = receipt.get("shape")
@@ -932,6 +980,19 @@ def _reconcile_canary_trajectory(
         for key, value in {**expected_identity, "status": receipt.get("status")}.items()
     ):
         reasons.append("trajectory-statistics artifact metadata disagrees with its sidecar")
+    return config_identity_match
+
+
+def _match_config_identity(
+    observed: Any, *, canonical: str, legacy: str | None
+) -> str | None:
+    """Classify one receipt hash without accepting an unknown identity."""
+
+    if observed == canonical:
+        return "canonical"
+    if legacy is not None and observed == legacy:
+        return "legacy"
+    return None
 
 
 def _reconcile_canary_sampler_diagnostics(
@@ -1135,6 +1196,7 @@ def collect_row(
     checkpoint_step = row.get("checkpoint_step")
     checkpoint_hash: Any = absence.ABSENT
     checkpoint_dir: Any = absence.ABSENT
+    identity_diagnostics: dict[str, Any] = {}
     if kind == "eval":
         if row.get("canary_protocol") == canary.CANARY_SCHEMA:
             if checkpoint_sources is None:
@@ -1156,6 +1218,8 @@ def collect_row(
                             manifest=manifest,
                             row_record=row_record,
                             metadata=metadata,
+                            identity_diagnostics=identity_diagnostics,
+                            source_git_sha=manifest.get("evaluation_git_sha"),
                         )
                     )
                 except canary.CanaryError as exc:
@@ -1291,6 +1355,7 @@ def collect_row(
         "ambiguous_metric_namespaces": {key: list(ambiguous[key]) for key in sorted(ambiguous)},
         "logged_namespaces": sorted(namespaces),
         "namespaced_metric_count": len(namespaced),
+        "config_identity_match": identity_diagnostics.get("config_identity_match"),
     }
 
 
@@ -1541,6 +1606,7 @@ def _write_rows_csv(path: Path, collected: Mapping[str, Any]) -> None:
         "requested_constraint",
         "delivered_device",
         "config_sha256",
+        "config_identity_match",
         "checkpoint_sha256",
         "run_status",
         *metric_keys,
@@ -1567,6 +1633,7 @@ def _write_rows_csv(path: Path, collected: Mapping[str, Any]) -> None:
                 "requested_constraint": identity["requested_constraint"],
                 "delivered_device": _render_cell(identity["delivered_device"]),
                 "config_sha256": _render_cell(identity["config_sha256"]),
+                "config_identity_match": _render_cell(row.get("config_identity_match")),
                 "checkpoint_sha256": _render_cell(identity["checkpoint_sha256"]),
                 "run_status": _render_cell(row["run_status"]),
                 "reasons": "; ".join(row["reasons"]) or "none",

@@ -1,5 +1,21 @@
 # Release Notes
 
+## v0.3.4
+
+### Added
+
+- OneQMC/Orbformer results adapter, emitting baseline records from `result.h5` (#290)
+
+### Changed
+
+- Baseline records reported against published values (#335)
+- OneQMC adapter: `--allow-short-tail` help no longer asserts a resolution rule that was removed (#294)
+- Timing callback stack (#311, #312) was reverted before release after its cadence test conflicted with the configured callback cadence.
+
+### Fixed
+
+- **Config identity is semantic rather than byte-based** (#379). A YAML reorder whose parsed form is identical previously changed the config hash, which failed all 42 identity joins of a completed, archived study and took it to `n_pass=0`. Identity is now computed over the canonicalised document, so an inert reformat leaves it unchanged while a genuine semantic edit still changes it. Receipts written under the old byte-based scheme stay joinable through an explicitly classified legacy path that refuses an identity it cannot account for, and a missing historical revision now fails one row instead of aborting the whole collection. `PyYAML` is declared directly rather than relied on transitively.
+
 ## v0.3.3 - Trajectory energy estimand correction
 
 34 commits since v0.3.2 (`dd49cc1`). Two are `dev`/`main` merges; the rest
