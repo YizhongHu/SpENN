@@ -12,9 +12,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+import yaml
 
 STUDY_DIR = Path(__file__).resolve().parent
 if str(STUDY_DIR) not in sys.path:
@@ -74,15 +77,86 @@ def config_identity_hash(
 ) -> str:
     """Return the deterministic config hash recorded in the join identity.
 
-    Computed over the config FILE BYTES plus the row's overrides, both before
-    injection. Hashing the resolved document after the identity is injected
-    would be self-referential -- the hash would be an input to the thing it
-    describes -- so the inputs are deliberately the two things that fully
-    determine the run and do not depend on the hash.
+    Computed over the parsed config document plus the row's overrides, both
+    before injection. Hashing the resolved document after the identity is
+    injected would be self-referential -- the hash would be an input to the
+    thing it describes -- so the inputs are deliberately the two things that
+    fully determine the run and do not depend on the hash.
     """
 
+    try:
+        config_document = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+        config_payload = json.dumps(
+            config_document,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"config {config_path} cannot be represented by the canonical JSON identity"
+        ) from exc
+    return _config_identity_digest(config_payload, overrides, identity_values)
+
+
+def legacy_config_identity_hash(
+    config_path: str | Path,
+    overrides: Sequence[str],
+    *,
+    identity_values: Mapping[str, Any] | None = None,
+    source_git_sha: str | None = None,
+) -> str:
+    """Return the pre-canonical byte-based config identity.
+
+    This is retained solely so collection can re-join receipts written before
+    config canonicalisation. New evaluation rows must use
+    :func:`config_identity_hash`. When ``source_git_sha`` is supplied, the
+    bytes are read from that historical evaluation revision; this is required
+    when the current checkout has since reordered the YAML document.
+    """
+
+    path = Path(config_path)
+    config_payload = path.read_bytes()
+    if source_git_sha is not None:
+        try:
+            repo_root = Path(
+                subprocess.run(
+                    ["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            )
+            relative_path = path.resolve().relative_to(repo_root.resolve())
+            config_payload = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "show",
+                    f"{source_git_sha}:{relative_path.as_posix()}",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            raise ValueError(
+                f"config {config_path} is unavailable at evaluation revision {source_git_sha}"
+            ) from exc
+    return _config_identity_digest(
+        config_payload, overrides, identity_values
+    )
+
+
+def _config_identity_digest(
+    config_payload: bytes,
+    overrides: Sequence[str],
+    identity_values: Mapping[str, Any] | None,
+) -> str:
+    """Hash one config payload with the shared identity suffix convention."""
+
     digest = hashlib.sha256()
-    digest.update(Path(config_path).read_bytes())
+    digest.update(config_payload)
     digest.update(b"\0overrides\0")
     digest.update(json.dumps(sorted(str(item) for item in overrides)).encode("utf-8"))
     if identity_values is not None:

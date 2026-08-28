@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import importlib.util
 import json
@@ -164,6 +165,50 @@ def test_frozen_grid_schema_matches_canary_consumer_constant() -> None:
     assert payload["schema"] == canary.GRID_SCHEMA
     assert canary.load_grid(GRID_42_PATH)["schema"] == canary.GRID_SCHEMA
     assert canary.METRIC_NAMESPACE_SPEC_KEY == collect.METRIC_NAMESPACE_SPEC_KEY
+
+
+def test_config_identity_hash_ignores_yaml_mapping_order(tmp_path: Path) -> None:
+    """Formatting and mapping order must not change the config identity."""
+
+    config = yaml.safe_load(
+        (STUDY_DIR / "configs" / "eval.yaml").read_text(encoding="utf-8")
+    )
+    reordered = dict(reversed(list(config.items())))
+    original_path = tmp_path / "eval-original.yaml"
+    reordered_path = tmp_path / "eval-reordered.yaml"
+    original_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    reordered_path.write_text(yaml.safe_dump(reordered, sort_keys=False), encoding="utf-8")
+
+    overrides = ["run.root=results", "run.run_id=row-1"]
+    assert yaml.safe_load(original_path.read_text(encoding="utf-8")) == yaml.safe_load(
+        reordered_path.read_text(encoding="utf-8")
+    )
+    assert eval_stage.config_identity_hash(
+        original_path, overrides
+    ) == eval_stage.config_identity_hash(reordered_path, overrides)
+    # Mutation kill: replacing the canonical JSON payload with read_bytes()
+    # makes this assertion fail on the reordered YAML bytes.
+
+
+def test_config_identity_hash_changes_for_semantic_config_edit(tmp_path: Path) -> None:
+    """A meaningful scalar change must remain visible in the identity."""
+
+    config = yaml.safe_load(
+        (STUDY_DIR / "configs" / "eval.yaml").read_text(encoding="utf-8")
+    )
+    changed = copy.deepcopy(config)
+    changed["evaluation_sampler"]["proposal_scale"] = 0.75
+    original_path = tmp_path / "eval-original.yaml"
+    changed_path = tmp_path / "eval-changed.yaml"
+    original_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    changed_path.write_text(yaml.safe_dump(changed, sort_keys=False), encoding="utf-8")
+
+    overrides = ["run.root=results", "run.run_id=row-1"]
+    assert eval_stage.config_identity_hash(
+        original_path, overrides
+    ) != eval_stage.config_identity_hash(changed_path, overrides)
+    # Mutation kill: returning a constant digest (or omitting config_payload
+    # from _config_identity_digest) makes this assertion fail.
 
 
 def test_frozen_grid_bindings_are_carried_into_the_manifest(tmp_path: Path) -> None:
@@ -843,6 +888,89 @@ def _reconcile_written_outputs(
         row_record=row_record,
         metadata=metadata,
     )
+
+
+def test_collection_accepts_legacy_config_identity_and_records_match(
+    tmp_path: Path,
+) -> None:
+    """Pre-canonical trajectory receipts remain re-collectable and explicit."""
+
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    row, _, _, run_dir, row_record, metadata = written
+    identity_values = {
+        key: row.get(key)
+        for key in (
+            "canary_protocol",
+            "checkpoint_source",
+            "task_names",
+            "n_walkers",
+            "n_draws",
+            "burn_in",
+            "discard_draws",
+            "stride",
+            "chunk_size",
+            "record_capacity",
+        )
+    }
+    canonical = eval_stage.config_identity_hash(
+        STUDY_DIR.parents[2] / row["config"],
+        row["overrides"],
+        identity_values=identity_values,
+    )
+    legacy = eval_stage.legacy_config_identity_hash(
+        STUDY_DIR.parents[2] / row["config"],
+        row["overrides"],
+        identity_values=identity_values,
+    )
+    assert canonical != legacy
+
+    trajectory_path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
+    receipt = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    assert receipt["config_sha256"] == canonical
+    receipt["config_sha256"] = legacy
+    trajectory_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    artifact = index["tasks"][0]["artifacts"][1]
+    artifact["metadata"]["config_sha256"] = legacy
+    _write_artifact_index(run_dir, index)
+
+    diagnostics: dict[str, Any] = {}
+    reasons = collect.reconcile_canary_row(
+        row,
+        source=written[1],
+        result_dir=written[2],
+        run_dir=run_dir,
+        plan_attempt_id=manifest["attempt_id"],
+        manifest=manifest,
+        row_record=row_record,
+        metadata=metadata,
+        identity_diagnostics=diagnostics,
+    )
+
+    assert reasons == []
+    assert diagnostics == {"config_identity_match": "legacy"}
+    # Mutation kill: removing the legacy candidate from _match_config_identity
+    # makes this receipt fail and leaves the recorded match unset.
+
+
+def test_collection_rejects_unknown_config_identity(tmp_path: Path) -> None:
+    """A hash matching neither accepted identity must fail closed."""
+
+    manifest, source_map_path, _ = _case(tmp_path)
+    written = _write_canary_outputs(tmp_path, manifest, source_map_path)
+    run_dir = written[3]
+    trajectory_path = run_dir / "mcmc_energy" / "trajectory_statistics.jsonl"
+    receipt = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    receipt["config_sha256"] = "0" * 64
+    trajectory_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    index = _artifact_index(run_dir)
+    index["tasks"][0]["artifacts"][1]["metadata"]["config_sha256"] = "0" * 64
+    _write_artifact_index(run_dir, index)
+
+    reasons = _reconcile_written_outputs(manifest, written)
+
+    assert any("matches neither canonical nor legacy hash" in reason for reason in reasons)
 
 
 def _completion_manifest_42(tmp_path: Path) -> dict[str, Any]:
