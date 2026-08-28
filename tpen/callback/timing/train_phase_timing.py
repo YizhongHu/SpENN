@@ -10,7 +10,7 @@ from tpen.events import Ended, Event as TypedEvent, Occurrence, Started
 from tpen.events import Subscription, ended, started
 
 from ..cadence import Cadence, SubscriptionGroup
-from .base import Callback, _occurrence_time, _sync_device
+from .base import Callback, TimingSource, _occurrence_time, _sync_device
 
 
 class TrainPhaseTiming(Callback):
@@ -66,6 +66,8 @@ class TrainPhaseTiming(Callback):
         max_calls = kwargs.pop("max_calls", None)
         probability = kwargs.pop("probability", 1.0)
         seed = kwargs.pop("seed", None)
+        timing_backend = kwargs.pop("timing_backend", None)
+        device_backend = kwargs.pop("device_backend", None)
         report_cadence = Cadence(
             every_n=1 if every_n_steps is None else int(every_n_steps),
             # Legacy step 0 is the first one-based occurrence coordinate.
@@ -92,10 +94,11 @@ class TrainPhaseTiming(Callback):
         super().__init__(typed_groups=typed_groups, **kwargs)
         self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
+        self._timing = TimingSource(clock=self.clock, backend=timing_backend, device_backend=device_backend)
         self._phase_type = TrainingPhase
         self._training_iteration_type = TrainingIteration
         self._completion_type = TrainingIterationCompleted
-        self._phase_starts: dict[tuple[type[object], int], tuple[int, float]] = {}
+        self._phase_starts: dict[tuple[type[object], int], tuple[int, tuple[Any, Any | None]]] = {}
         self._durations: dict[int, dict[str, float]] = {}
 
     def handle_occurrence_impl(
@@ -107,21 +110,26 @@ class TrainPhaseTiming(Callback):
         if isinstance(event, (Started, Ended)) and isinstance(event.operation, self._phase_type):
             key = (type(event.operation), occurrence.count)
             if isinstance(event, Started):
-                _sync_device(self.accelerator_synchronize)
+                if self.accelerator_synchronize:
+                    _sync_device(True)
                 self._phase_starts[key] = (
                     int(event.operation.step),
-                    _occurrence_time(occurrence, self.clock),
+                    self._timing.start(_occurrence_time(occurrence, self.clock)),
                 )
             else:
                 start = self._phase_starts.pop(key, None)
                 if start is not None and event.succeeded:
-                    _sync_device(self.accelerator_synchronize)
                     step, timestamp = start
+                    if self.accelerator_synchronize:
+                        _sync_device(True)
+                    elapsed = self._timing.elapsed(timestamp, _occurrence_time(occurrence, self.clock))
                     metric_key = f"{event.operation.phase_name}_time_sec"
                     metrics = self._durations.setdefault(step, {})
                     if metric_key in metrics:
                         raise RuntimeError(f"duplicate {metric_key} for training step {step}")
-                    metrics[metric_key] = _occurrence_time(occurrence, self.clock) - timestamp
+                    metrics[metric_key] = elapsed.host
+                    if elapsed.device is not None:
+                        metrics[f"{event.operation.phase_name}_device_time_sec"] = elapsed.device
             return
         if isinstance(event, self._completion_type):
             self._report_completed_iteration(int(event.iteration.step), context)

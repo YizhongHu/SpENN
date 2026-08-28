@@ -64,6 +64,24 @@ class FakeClock:
         return self.values.pop(0)
 
 
+class FakeDeviceBackend:
+    """Deterministic device elapsed source for typed-state contract tests."""
+
+    metric_suffix = "_device"
+
+    def __init__(self, elapsed: float) -> None:
+        self.elapsed_value = elapsed
+        self.starts = 0
+
+    def start(self) -> int:
+        self.starts += 1
+        return self.starts
+
+    def elapsed(self, marker: int) -> float:
+        assert marker == self.starts
+        return self.elapsed_value
+
+
 def _dispatch_iteration_start(
     callback: TrainPhaseTiming,
     context: RecordingContext,
@@ -211,15 +229,43 @@ def test_train_step_timing_logs_duration_and_rolling_mean() -> None:
     ]
     assert state.timing is not None
     assert state.timing.step_time_sec_rolling_mean == 0.75
+    assert state.timing.step_device_time_sec is None
+
+
+def test_train_step_timing_accepts_distinct_device_duration_in_typed_state() -> None:
+    context = RecordingContext()
+    device = FakeDeviceBackend(0.25)
+    callback = TrainStepTiming(
+        clock=FakeClock([1.0, 1.5]),
+        device_backend=device,
+    )
+    state = training_state()
+    iteration = TrainingIteration(step=1)
+
+    callback.handle_occurrence(Occurrence(event=Started(iteration), count=1), context, state)
+    callback.handle_occurrence(Occurrence(event=Ended(iteration), count=1), context, state)
+
+    assert state.timing is not None
+    assert state.timing.step_device_time_sec == 0.25
+    assert context.latest("train/perf")["step_device_time_sec"] == 0.25
+
+
+def test_training_timing_rejects_invalid_device_duration() -> None:
+    from tpen.events import TrainingTiming
+
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        TrainingTiming(1.0, 1.0, float("nan"))
 
 
 
-def test_train_step_timing_applies_legacy_step_cadence_to_typed_boundaries() -> None:
-    """The paired lifecycle gate preserves the legacy one-based cadence."""
+def test_train_step_timing_uses_durable_step_cadence() -> None:
+    """Cadence follows the typed training step, not occurrence count."""
 
     context = RecordingContext()
     callback = TrainStepTiming(
-        every_n_steps=2, clock=FakeClock([1.0, 1.5])
+        # Both dispatched iterations have valid start/end boundaries; step 1
+        # is measured and discarded by the durable-step cadence gate.
+        every_n_steps=2, clock=FakeClock([1.0, 1.5, 3.0, 3.5])
     )
     state = training_state()
 
@@ -231,7 +277,7 @@ def test_train_step_timing_applies_legacy_step_cadence_to_typed_boundaries() -> 
     assert context.by_namespace("train/perf") == [
         {
             "metrics": {"step_time_sec": 0.5, "step_time_sec_rolling_mean": 0.5},
-            "step": 1,
+            "step": 2,
             "namespace": "train/perf",
         }
     ]
