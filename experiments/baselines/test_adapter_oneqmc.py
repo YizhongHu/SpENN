@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from experiments.baselines.adapters.oneqmc import (
     build_record,
     gather_molecule,
     huber_mean,
+    main,
     metadata_from_attrs,
     read_attrs,
     read_series,
@@ -41,6 +43,7 @@ from experiments.baselines.adapters.oneqmc import (
     result_path,
     write_record,
 )
+from experiments.baselines.statistics import MIN_BLOCKS
 
 #: Exact non-relativistic helium ground state, for orientation only. No test
 #: asserts agreement with it: this adapter reports what a run produced, and a
@@ -50,6 +53,13 @@ HE_EXACT_HARTREE = -2.903724
 # Below MIN_TAIL_STEPS, so tests must pass allow_short_tail. That is faithful to
 # the lane: an Orbformer evaluation pass is a few thousand steps, not 10000.
 SHORT_KWARGS = dict(allow_short_tail=True)
+
+# Every fixture that expects a record to be EMITTED must leave a window of at
+# least MIN_BLOCKS steps, because the adapter refuses a shorter one rather than
+# publishing an unblocked naive error bar. At the default quarter tail that means
+# at least 4 * MIN_BLOCKS logged steps, so the fixtures below are sized from the
+# constant instead of from a literal that would silently stop clearing it.
+EMITTABLE_STEPS = 4 * MIN_BLOCKS + 72  # 200 at MIN_BLOCKS == 32
 
 
 def _series(count: int = 200, mean: float = HE_EXACT_HARTREE, seed: int = 5) -> list[float]:
@@ -71,6 +81,16 @@ def _record(energies, spreads=None, **overrides):
         training_provenance="from-scratch",
         run_id="test-run",
         allow_short_tail=True,
+        # Arguments the adapter refuses to default. They are stated once here so
+        # every test carries them and can override one at a time; the adapter
+        # itself has no fallback, which is the point -- result.h5 records neither
+        # the logger period nor the optimizer, and defaulting them published
+        # `steps` and an optimizer name that nothing sourced.
+        logged_steps=len(energies),
+        nonfinite_dropped=0,
+        mol_idx=0,
+        metric_logger_period=1,
+        optimizer="kfac",
     )
     kwargs.update(overrides)
     return record_from_series(
@@ -218,6 +238,70 @@ def test_gather_rejects_mismatched_slot_counts() -> None:
         gather_molecule([[0, 1]], [[-2.9]], [[0.05, 0.4]], 0)
 
 
+def test_non_integral_slot_index_does_not_truncate_into_a_valid_molecule() -> None:
+    """A fractional ``mol_idx`` entry raises instead of being truncated.
+
+    The comparison was ``int(value) == mol_idx``, and ``int`` truncates: a corrupt
+    ``2.7`` became ``2`` and selected molecule 2's slot. That is the
+    slot-versus-molecule failure arriving through the dataset rather than through
+    column position -- one molecule's energy published under another's label, with
+    a plausible number and no error anywhere. Every earlier fixture used integral
+    map entries, so nothing tested it.
+    """
+
+    with pytest.raises(AdapterError, match="whole number"):
+        gather_molecule([[2.7, 1.0]], [[-2.9, -7.4]], [[0.05, 0.4]], 2)
+
+    # The integral arm still selects, so the check rejects corruption rather than
+    # rejecting float-typed datasets -- h5py hands these back as float arrays.
+    series = gather_molecule([[2.0, 1.0]], [[-2.9, -7.4]], [[0.05, 0.4]], 2)
+    assert series.energies == (-2.9,)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_slot_index_raises_an_adapter_error(bad: float) -> None:
+    """NaN or infinity in the slot map is an AdapterError, not a raw builtin one.
+
+    ``int(float("nan"))`` raises ValueError and ``int(float("inf"))`` raises
+    OverflowError. Both escaped the adapter's error contract, so the CLI's
+    ``except AdapterError`` could not turn either into an exit code and the
+    operator got a stack trace instead of a message naming the dataset.
+    """
+
+    with pytest.raises(AdapterError, match="non-finite molecule index"):
+        gather_molecule([[bad]], [[-2.9]], [[0.05]], 0)
+
+
+def test_negative_gathered_spread_is_refused() -> None:
+    """A negative ``std_elec`` raises instead of being squared into a variance.
+
+    Only finiteness was checked, and the published variance is the mean of
+    ``spread ** 2``. Squaring destroys the sign, so a corrupt negative standard
+    deviation came out as a perfectly plausible positive variance -- the one
+    corruption no downstream reader could question, because the number looks
+    exactly like a real one.
+    """
+
+    with pytest.raises(AdapterError, match="cannot be negative"):
+        gather_molecule([[0], [0]], [[-2.9], [-2.9]], [[0.05], [-0.4]], 0)
+
+
+def test_negative_spread_is_refused_on_the_direct_api_too() -> None:
+    """The same check on ``record_from_series``, which is a supported entry point.
+
+    A caller that gathered its own series never passes through
+    ``gather_molecule``, so a check living only there would leave the squaring
+    reachable.
+    """
+
+    energies = _series(EMITTABLE_STEPS)
+    spreads = [0.05] * len(energies)
+    spreads[-1] = -0.4
+
+    with pytest.raises(AdapterError, match="cannot be negative"):
+        _record(energies, spreads=spreads)
+
+
 # --------------------------------------------------------------------------
 # the Huber estimator
 # --------------------------------------------------------------------------
@@ -313,7 +397,7 @@ def test_code_is_oneqmc_and_ansatz_carries_the_model() -> None:
     grouped by code.
     """
 
-    record = _record(_series(100))
+    record = _record(_series(EMITTABLE_STEPS))
 
     assert record.code == "oneqmc"
     assert record.ansatz == "orbformer-se"
@@ -323,7 +407,7 @@ def test_code_is_oneqmc_and_ansatz_carries_the_model() -> None:
 def test_native_ansatz_is_labelled_native(ansatz: str) -> None:
     """An ``orbformer-*`` row is OneQMC's own work, and says so."""
 
-    record = _record(_series(100), ansatz=ansatz)
+    record = _record(_series(EMITTABLE_STEPS), ansatz=ansatz)
 
     assert "native" in record.notes
     assert "REIMPLEMENTATION" not in record.notes
@@ -337,7 +421,7 @@ def test_foreign_ansatz_is_labelled_a_reimplementation(ansatz: str) -> None:
     and any deficit gets attributed to the wrong group's method.
     """
 
-    record = _record(_series(100), ansatz=ansatz)
+    record = _record(_series(EMITTABLE_STEPS), ansatz=ansatz)
 
     assert "REIMPLEMENTATION" in record.notes
 
@@ -351,7 +435,7 @@ def test_finetuned_record_denies_being_a_reproduction() -> None:
     """
 
     record = _record(
-        _series(100),
+        _series(EMITTABLE_STEPS),
         training_provenance="finetune-from-release",
         checkpoint_provenance="lac.chkpt sha256:7c140f15",
     )
@@ -368,13 +452,13 @@ def test_finetuned_record_requires_checkpoint_provenance() -> None:
     """
 
     with pytest.raises(AdapterError, match="checkpoint_provenance"):
-        _record(_series(100), training_provenance="finetune-from-release")
+        _record(_series(EMITTABLE_STEPS), training_provenance="finetune-from-release")
 
 
 def test_from_scratch_record_says_from_scratch() -> None:
     """A from-scratch row states that too, rather than staying silent."""
 
-    record = _record(_series(100), training_provenance="from-scratch")
+    record = _record(_series(EMITTABLE_STEPS), training_provenance="from-scratch")
 
     assert "trained from scratch" in record.notes
     assert "NOT a from-scratch reproduction" not in record.notes
@@ -384,7 +468,7 @@ def test_unknown_provenance_tier_is_refused() -> None:
     """Provenance is a closed vocabulary; a free-text tier raises."""
 
     with pytest.raises(AdapterError, match="training_provenance"):
-        _record(_series(100), training_provenance="pretrained-ish")
+        _record(_series(EMITTABLE_STEPS), training_provenance="pretrained-ish")
 
 
 # --------------------------------------------------------------------------
@@ -408,30 +492,81 @@ def test_notes_disclaim_the_paper_error_bar() -> None:
     assert "Appendix H" in record.notes
 
 
-def test_short_window_never_emits_a_zero_error_bar() -> None:
-    """A sub-32-step window still gets a positive bar, marked as naive.
+def test_window_below_the_block_floor_is_refused_not_labelled_naive() -> None:
+    """A sub-MIN_BLOCKS window emits nothing, even under --allow-short-tail.
 
-    ``blocking_stderr`` stops before its first blocking level when the window
-    holds fewer than 32 values and returns 0.0. The record schema accepts a zero
-    bar as non-negative, so it would be published as infinite precision on a
-    20-step estimate. This is the reachable case, not a hypothetical: a
-    2000-step evaluation at ``--metric-logger-period 25`` logs 80 rows.
+    This replaces a test that asserted the defect. The adapter used to lower the
+    blocking floor to the raw window length so that blocking's first level always
+    ran, publish the uncorrected naive bar, and print an autocorrelation
+    inflation of "1.00x" beside it. That ratio is blocked-over-naive, and with
+    only one level the numerator and denominator are the same quantity, so 1.00
+    was arithmetic rather than a measurement: no blocking level had assessed
+    autocorrelation at all, yet a reader saw a number saying there was none.
+
+    A wide interval would have been acceptable; a confident one is not, and the
+    record had no field in which to say which it was. So the window is refused,
+    the way `deepqmc` and `ferminet` already refuse it. `--allow-short-tail`
+    widens the estimator WINDOW; it was never a licence to publish an unblocked
+    bar as a blocked one, and it no longer acts as one.
     """
 
-    record = _record(_series(20), tail_fraction=1.0)
+    with pytest.raises(AdapterError, match="block minimum"):
+        _record(_series(MIN_BLOCKS - 1), tail_fraction=1.0)
 
-    assert record.energy_stderr_hartree > 0.0
-    assert "NAIVE standard error" in record.notes
-    assert "UNDERSTATES" in record.notes
+    # The boundary itself is emittable, so the refusal is the floor and not a
+    # blanket ban on short runs.
+    at_floor = _record(_series(MIN_BLOCKS), tail_fraction=1.0)
+    assert at_floor.energy_stderr_hartree > 0.0
 
 
-def test_long_window_bar_is_blocked_not_naive() -> None:
-    """Above the block floor the bar is the blocked one, with no naive caveat."""
+def test_no_record_ever_carries_the_unblocked_naive_caveat() -> None:
+    """The naive-bar prose is gone, because the path that needed it now refuses.
 
-    record = _record(_series(200), tail_fraction=1.0)
+    Kept as a regression: reintroducing the lowered floor would have to
+    reintroduce this sentence, and a caveat is not a substitute for a refusal
+    when the accompanying number is indistinguishable from a measured one.
+    """
+
+    record = _record(_series(EMITTABLE_STEPS), tail_fraction=1.0)
 
     assert record.energy_stderr_hartree > 0.0
     assert "NAIVE standard error" not in record.notes
+    assert "UNDERSTATES" not in record.notes
+
+
+def _reported_inflation(record) -> float:
+    """Pull the autocorrelation ratio back out of the notes as a number."""
+
+    match = re.search(r"inflation ([0-9]+\.[0-9]+)x", record.notes)
+    assert match is not None, record.notes
+    return float(match.group(1))
+
+
+def test_reported_inflation_discriminates_autocorrelated_from_iid_windows() -> None:
+    """The printed ratio is a measurement, so two regimes must print differently.
+
+    The previous assertions only checked that the bar was positive, which the
+    adapter guarantees for every record it returns, and never looked at the ratio
+    at all. Hardcoding any fixed inflation string therefore survived. Two windows
+    with deliberately different autocorrelation pin it from both sides: no
+    constant can satisfy both bounds, and the ordering is asserted directly.
+    """
+
+    iid = _reported_inflation(_record(_series(EMITTABLE_STEPS), tail_fraction=1.0))
+
+    rng = random.Random(11)
+    value = HE_EXACT_HARTREE
+    walk = []
+    for _ in range(EMITTABLE_STEPS):
+        # A random walk: each step carries almost all of the previous step's
+        # displacement, which is what blocking is built to detect.
+        value += rng.gauss(0.0, 1e-6)
+        walk.append(value)
+    correlated = _reported_inflation(_record(walk, tail_fraction=1.0))
+
+    assert iid < 1.2
+    assert correlated > 1.5
+    assert correlated > iid
 
 
 def test_local_energy_variance_is_the_mean_squared_spread() -> None:
@@ -451,36 +586,89 @@ def test_local_energy_variance_is_the_mean_squared_spread() -> None:
 
 
 def test_samples_counts_walkers_times_steps() -> None:
-    """``samples`` is steps times electron batch size."""
+    """At full coverage ``samples`` is steps times electron batch size."""
 
-    record = _record(_series(100), electron_batch_size=1024)
+    record = _record(_series(EMITTABLE_STEPS), electron_batch_size=1024)
 
-    assert record.steps == 100
-    assert record.samples == 100 * 1024
+    assert record.steps == EMITTABLE_STEPS
+    assert record.samples == EMITTABLE_STEPS * 1024
 
 
-def test_logger_period_scales_steps_but_not_the_window() -> None:
-    """Logged steps times the logger period recovers real steps.
+def test_steps_counts_the_runs_rows_not_the_rows_this_molecule_kept() -> None:
+    """``steps`` is the run's optimizer steps, so sparse coverage cannot shrink it.
 
-    Walkers are propagated on unlogged steps too, so a period-25 run of 100
-    logged rows performed 2500 steps. Counting rows would understate the cost by
+    ``records.py`` defines ``steps`` as optimizer steps TAKEN. The adapter used to
+    compute it from the rows retained for the requested molecule, which is a
+    different quantity: in a mol-batch run this molecule need not occupy a slot at
+    every step, and a row whose energy was non-finite is dropped after the run had
+    already paid for it. Both cases understated the work, and understating the
+    denominator of an efficiency comparison flatters the run.
+
+    The two formulas coincide at full coverage with no drops, which is why every
+    earlier fixture hid the difference. Here they are pulled apart on purpose:
+    the molecule was carried by a minority of the rows the run wrote.
+    """
+
+    energies = _series(EMITTABLE_STEPS)
+    logged = 4 * EMITTABLE_STEPS
+
+    record = _record(energies, logged_steps=logged, nonfinite_dropped=3)
+
+    # The run's own row count, not len(energies).
+    assert record.steps == logged
+    assert record.steps != len(energies)
+    # `samples` stays attributed to this molecule: only the rows that carried it
+    # produced local energies for this row. Dropped rows are counted, because a
+    # row that produced a NaN was still evaluated.
+    assert record.samples == (len(energies) + 3) * 1024
+    assert f"{len(energies)} of {logged} logged steps" in record.notes
+    assert "run's optimizer steps" in record.notes
+
+
+def test_impossible_coverage_counts_are_refused() -> None:
+    """A file cannot hold fewer rows than were gathered from it.
+
+    With ``logged_steps`` defaulted these two contradictions were unstatable, so
+    nothing rejected them; now that it is a required argument, a caller can pass a
+    count that disagrees with the series, and ``steps`` is computed from it.
+    """
+
+    energies = _series(EMITTABLE_STEPS)
+
+    with pytest.raises(AdapterError, match="smaller than"):
+        _record(energies, logged_steps=len(energies) - 1)
+    with pytest.raises(AdapterError, match="smaller than"):
+        _record(energies, logged_steps=len(energies), nonfinite_dropped=1)
+    with pytest.raises(AdapterError, match="nonfinite_dropped"):
+        _record(energies, nonfinite_dropped=-1)
+
+
+def test_logger_period_scales_both_denominators() -> None:
+    """Logged rows times the logger period recovers real steps.
+
+    Walkers are propagated on unlogged steps too, so a period-25 run of 200
+    logged rows performed 5000 steps. Counting rows would understate the cost by
     the period and make the run look 25 times cheaper than it was.
     """
 
-    record = _record(_series(100), metric_logger_period=25, electron_batch_size=1024)
+    record = _record(
+        _series(EMITTABLE_STEPS), metric_logger_period=25, electron_batch_size=1024
+    )
 
-    assert record.steps == 2500
-    assert record.samples == 2500 * 1024
-    assert "Logger period 25" in record.notes
+    assert record.steps == EMITTABLE_STEPS * 25
+    assert record.samples == EMITTABLE_STEPS * 25 * 1024
+    assert "Logger period is 25" in record.notes
+    # The window is in logged rows and must NOT be scaled by the period.
+    assert f"of {EMITTABLE_STEPS} logged steps" in record.notes
 
 
 def test_non_positive_batch_size_and_period_are_refused() -> None:
     """A zero or negative scale factor raises rather than zeroing ``samples``."""
 
     with pytest.raises(AdapterError, match="electron_batch_size"):
-        _record(_series(100), electron_batch_size=0)
+        _record(_series(EMITTABLE_STEPS), electron_batch_size=0)
     with pytest.raises(AdapterError, match="metric_logger_period"):
-        _record(_series(100), metric_logger_period=0)
+        _record(_series(EMITTABLE_STEPS), metric_logger_period=0)
 
 
 def test_mismatched_energy_and_spread_lengths_are_refused() -> None:
@@ -497,6 +685,11 @@ def test_mismatched_energy_and_spread_lengths_are_refused() -> None:
             training_provenance="from-scratch",
             run_id="r",
             allow_short_tail=True,
+            logged_steps=2,
+            nonfinite_dropped=0,
+            mol_idx=0,
+            metric_logger_period=1,
+            optimizer="kfac",
         )
 
 
@@ -568,16 +761,24 @@ def test_plateaued_series_is_not_flagged() -> None:
     assert "MONOTONE" not in record.notes
 
 
-def test_window_too_short_for_the_sign_test_says_unassessed() -> None:
-    """Fewer steps than windows reports UNASSESSED, not silent success.
+def test_window_too_short_for_the_sign_test_is_refused_before_it_is_reported() -> None:
+    """A window too short to sign-test is now refused, not annotated.
 
-    A missing check must read as missing. Printing nothing would let a
-    four-step estimate look as vetted as a converged one.
+    This test used to assert that such a window emitted a record whose notes said
+    convergence was UNASSESSED. It cannot: MIN_BLOCKS is 32 and SIGN_TEST_WINDOWS
+    is 8, so any window short enough to defeat the sign test is also short enough
+    to defeat blocking, and the blocking refusal now comes first. The adapter's
+    UNASSESSED branch is retained as a defence -- the relation between those two
+    constants lives in another module -- but it is unreachable from here, and a
+    test that claimed to exercise it would be asserting the wrong layer.
+
+    What is worth pinning is the ordering: the caller is told the bar cannot be
+    assessed, which is the fatal condition, rather than being handed a record
+    carrying a prose caveat about convergence.
     """
 
-    record = _record(_series(4))
-
-    assert "UNASSESSED" in record.notes
+    with pytest.raises(AdapterError, match="block minimum"):
+        _record(_series(4), tail_fraction=1.0)
 
 
 def test_zero_variance_window_is_refused_rather_than_given_a_zero_bar() -> None:
@@ -598,8 +799,8 @@ def test_zero_variance_window_is_refused_rather_than_given_a_zero_bar() -> None:
 def test_estimator_text_distinguishes_inference_from_training_tail() -> None:
     """The two estimators are different quantities and are named differently."""
 
-    inference = _record(_series(100), estimator="inference")
-    training = _record(_series(100), estimator="training_tail")
+    inference = _record(_series(EMITTABLE_STEPS), estimator="inference")
+    training = _record(_series(EMITTABLE_STEPS), estimator="training_tail")
 
     assert inference.estimator == "inference"
     assert "Fixed-parameter inference pass" in inference.notes
@@ -610,17 +811,22 @@ def test_estimator_text_distinguishes_inference_from_training_tail() -> None:
 def test_coverage_sentence_reports_the_gathered_fraction() -> None:
     """The notes say how many of the file's steps carried this molecule.
 
-    Twelve logged steps of which three carried molecule 2 is a mol batch of
-    four, and a reader has to be able to see that the estimate rests on three
-    points rather than twelve.
+    A quarter of the run's rows carrying molecule 2 is a mol batch of four, and a
+    reader has to be able to see that the estimate rests on that quarter rather
+    than on every row the run wrote.
     """
 
+    kept = MIN_BLOCKS + 8
     record = _record(
-        _series(3), logged_steps=12, mol_idx=2, nonfinite_dropped=1, tail_fraction=1.0
+        _series(kept),
+        logged_steps=4 * kept,
+        mol_idx=2,
+        nonfinite_dropped=1,
+        tail_fraction=1.0,
     )
 
     assert "molecule index 2" in record.notes
-    assert "3 of 12" in record.notes
+    assert f"{kept} of {4 * kept}" in record.notes
     assert "forward-filled" in record.notes
     assert "1 step(s) dropped as non-finite" in record.notes
 
@@ -633,7 +839,7 @@ def test_coverage_sentence_reports_the_gathered_fraction() -> None:
 def test_operator_note_is_appended_never_substituted() -> None:
     """An operator caveat is added to the generated notes, not in place of them."""
 
-    record = _record(_series(100), note="He is outside the LAC-supported atom set.")
+    record = _record(_series(EMITTABLE_STEPS), note="He is outside the LAC-supported atom set.")
 
     assert "He is outside the LAC-supported atom set." in record.notes
     assert "NOT the across-chain variance" in record.notes
@@ -643,7 +849,7 @@ def test_blank_operator_note_is_refused() -> None:
     """A whitespace-only note raises: a caveat that vanishes is worse than none."""
 
     with pytest.raises(AdapterError, match="non-empty"):
-        _record(_series(100), note="   ")
+        _record(_series(EMITTABLE_STEPS), note="   ")
 
 
 def test_metadata_from_attrs_parses_bytes_and_spans() -> None:
@@ -672,10 +878,64 @@ def test_metadata_reports_a_cpu_run_as_cpu() -> None:
     Mapping it to ``cuda`` would put a CPU timing into a GPU-hours comparison.
     """
 
-    metadata = metadata_from_attrs({"gpu_type": "cpu", "num_gpus": 1})
+    metadata = metadata_from_attrs({"gpu_type": "cpu", "num_gpus": 0})
 
     assert metadata["device_type"] == "cpu"
     assert metadata["gpu_model"] is None
+    assert metadata["n_gpus"] == 0
+
+
+def test_cpu_device_with_a_positive_gpu_count_is_refused() -> None:
+    """``gpu_type="cpu"`` beside ``num_gpus=1`` is a contradiction, not a record.
+
+    The two attrs were read independently, so this pair produced a record
+    carrying ``device_type="cpu"`` and ``n_gpus=1`` together -- a machine that
+    cannot exist. The earlier CPU test asserted the label and simply omitted the
+    ``n_gpus`` assertion, so it passed on exactly this input. Whichever attr is
+    right, emitting both asserts something false, and neither can be preferred
+    from inside the adapter.
+    """
+
+    with pytest.raises(AdapterError, match="contradict"):
+        metadata_from_attrs({"gpu_type": "cpu", "num_gpus": 1})
+
+
+@pytest.mark.parametrize(
+    "kind", ["TPU v4", "AMD Instinct MI250X", "Metal", "", "   ", "unknown-accelerator"]
+)
+def test_unrecognised_device_kind_does_not_become_cuda(kind: str) -> None:
+    """Only NVIDIA-family kinds are CUDA; everything else states no device type.
+
+    ``gpu_type`` is JAX's ``device_kind``, which names TPU, ROCm and Metal
+    devices too, and may be blank. Every non-CPU string used to map to ``"cuda"``,
+    so a TPU run was published as a CUDA run and an empty attribute became a
+    positive hardware claim. The raw kind is still carried in ``gpu_model``, so
+    refusing to classify it loses nothing a reader had before.
+    """
+
+    metadata = metadata_from_attrs({"gpu_type": kind})
+
+    assert metadata["device_type"] is None
+    assert metadata["gpu_model"] == kind
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "NVIDIA A100-SXM4-40GB",
+        "NVIDIA H100 80GB HBM3",
+        "Tesla V100-SXM2-16GB",
+        "NVIDIA GeForce RTX 3090",
+    ],
+)
+def test_nvidia_device_kinds_are_recognised_as_cuda(kind: str) -> None:
+    """The recognition arm: real device_kind strings still classify as CUDA.
+
+    Without this the previous test would be satisfied by never returning "cuda"
+    at all, which would be a different defect rather than a fix.
+    """
+
+    assert metadata_from_attrs({"gpu_type": kind})["device_type"] == "cuda"
 
 
 def test_missing_stop_time_yields_no_duration() -> None:
@@ -692,24 +952,63 @@ def test_missing_stop_time_yields_no_duration() -> None:
     assert metadata["device_type"] is None
 
 
-def test_unparseable_and_negative_spans_yield_no_duration() -> None:
-    """A malformed or reversed stamp pair gives None rather than nonsense."""
+def test_unparseable_and_reversed_spans_are_refused_not_coerced_to_none() -> None:
+    """A malformed or reversed stamp pair raises; absent still yields None.
 
-    assert (
-        metadata_from_attrs({"start_time": "yesterday", "stop_time": "today"})[
-            "wall_clock_seconds"
-        ]
-        is None
-    )
-    assert (
+    This reverses what the file used to assert. Coercing a corrupt pair to None
+    made present-but-broken metadata indistinguishable from a run that never
+    wrote it, and the two want opposite responses: absent timing is normal for
+    some runs and the record simply omits it, while a stop_time that will not
+    parse, or that precedes start_time, means the file's own schema is damaged
+    and every other attribute read from it is suspect. Emitting a record that
+    silently omits the duration hides that.
+
+    `test_missing_stop_time_yields_no_duration` holds the absent case, so the
+    distinction is pinned from both sides.
+    """
+
+    with pytest.raises(AdapterError, match="malformed timestamp"):
+        metadata_from_attrs({"start_time": "yesterday", "stop_time": "today"})
+
+    with pytest.raises(AdapterError, match="precedes"):
         metadata_from_attrs(
             {
                 "start_time": "2026-08-20 11:00:00.000000",
                 "stop_time": "2026-08-20 10:00:00.000000",
             }
-        )["wall_clock_seconds"]
-        is None
-    )
+        )
+
+
+def test_mixed_aware_and_naive_timestamps_raise_an_adapter_error() -> None:
+    """One offset-aware stamp and one naive stamp is an AdapterError, not TypeError.
+
+    Both parse fine on their own; it is the SUBTRACTION that raises, and it
+    raises TypeError, which `except ValueError` did not catch. So this input
+    escaped an adapter whose entire error contract is AdapterError, and surfaced
+    as an unhandled TypeError from inside a library call -- a stack trace instead
+    of a diagnosis, and not something the CLI's `except AdapterError` could turn
+    into an exit code.
+    """
+
+    with pytest.raises(AdapterError, match="malformed timestamp"):
+        metadata_from_attrs(
+            {
+                "start_time": "2026-08-20 10:00:00.000000",
+                "stop_time": "2026-08-20 11:00:00.000000+00:00",
+            }
+        )
+
+
+def test_present_but_unparseable_gpu_count_is_refused() -> None:
+    """A non-integer ``num_gpus`` raises rather than reading as absent.
+
+    Same masking as the timestamps: the attribute is there and unusable, which is
+    file corruption, and coercing it to None published a record that read as "the
+    run did not record this".
+    """
+
+    with pytest.raises(AdapterError, match="num_gpus"):
+        metadata_from_attrs({"num_gpus": "four"})
 
 
 def test_wall_clock_note_states_it_is_a_lower_bound() -> None:
@@ -720,7 +1019,7 @@ def test_wall_clock_note_states_it_is_a_lower_bound() -> None:
     would understate cost by an unknown amount.
     """
 
-    record = _record(_series(100), wall_clock_seconds=5400.0)
+    record = _record(_series(EMITTABLE_STEPS), wall_clock_seconds=5400.0)
 
     assert record.wall_clock_seconds == 5400.0
     assert "lower bound" in record.notes
@@ -729,7 +1028,7 @@ def test_wall_clock_note_states_it_is_a_lower_bound() -> None:
 def test_record_leaves_run_dir_for_the_collector() -> None:
     """``run_dir`` stays empty; the adapter cannot know the collector's root."""
 
-    assert _record(_series(100)).run_dir is None
+    assert _record(_series(EMITTABLE_STEPS)).run_dir is None
 
 
 # --------------------------------------------------------------------------
@@ -754,7 +1053,7 @@ def test_result_path_accepts_the_run_root_or_the_training_subdir(tmp_path: Path)
 def test_write_record_round_trips_through_json(tmp_path: Path) -> None:
     """The emitted file is the record, readable back without loss."""
 
-    record = _record(_series(100))
+    record = _record(_series(EMITTABLE_STEPS))
     path = write_record(record, tmp_path)
 
     assert path.name == "baseline_record.json"
@@ -864,7 +1163,7 @@ def test_build_record_reads_a_real_hdf5_file(tmp_path: Path, mol_idx: int) -> No
 
     h5py = pytest.importorskip("h5py", reason="h5py is not a TPEN dependency")
 
-    steps = 40
+    steps = MIN_BLOCKS + 8
     energies, spreads, indices = [], [], []
     for step in range(steps):
         # Molecule 0 in the right-hand slot, molecule 1 in the left: a
@@ -893,6 +1192,8 @@ def test_build_record_reads_a_real_hdf5_file(tmp_path: Path, mol_idx: int) -> No
         training_provenance="finetune-from-release",
         checkpoint_provenance="lac.chkpt sha256:7c140f15",
         mol_idx=mol_idx,
+        metric_logger_period=1,
+        optimizer="kfac",
         tail_fraction=1.0,
         allow_short_tail=True,
     )
@@ -903,6 +1204,86 @@ def test_build_record_reads_a_real_hdf5_file(tmp_path: Path, mol_idx: int) -> No
     assert record.device_type == "cuda"
     assert record.wall_clock_seconds == 1800.0
     assert record.steps == steps
+    # The variance must come from the SPREAD dataset, gathered through the same
+    # slot map. The two molecules were given deliberately different spreads, so
+    # reading the energy dataset instead -- or reading the other molecule's
+    # column -- lands nowhere near these values.
+    expected_spread = 0.05 if mol_idx == 0 else 0.4
+    assert record.local_energy_variance_hartree2 == pytest.approx(expected_spread**2)
+
+
+def _write_fixture_h5(tmp_path: Path, h5py: object, **attrs: object) -> Path:
+    """Write a minimal single-molecule ``result.h5`` and return its run root."""
+
+    rows = MIN_BLOCKS + 8
+    training = tmp_path / "training"
+    training.mkdir()
+    with h5py.File(training / "result.h5", "w", libver="v110") as handle:  # type: ignore[attr-defined]
+        for key, value in attrs.items():
+            handle.attrs[key] = value
+        handle.create_dataset(MOL_INDEX_DATASET, data=[[0]] * rows)
+        handle.create_dataset(
+            ENERGY_DATASET, data=[[HE_EXACT_HARTREE + 1e-5 * (i % 3)] for i in range(rows)]
+        )
+        handle.create_dataset(SPREAD_DATASET, data=[[0.05]] * rows)
+    return tmp_path
+
+
+def _build_fixture_record(run_dir: Path, **overrides: object):
+    """Run ``build_record`` over a fixture directory with lane-typical arguments."""
+
+    kwargs = dict(
+        system_id="he_atom",
+        electron_batch_size=1024,
+        ansatz="orbformer-se",
+        estimator="inference",
+        training_provenance="from-scratch",
+        mol_idx=0,
+        metric_logger_period=1,
+        optimizer="kfac",
+        tail_fraction=1.0,
+        allow_short_tail=True,
+    )
+    kwargs.update(overrides)
+    return build_record(run_dir, **kwargs)  # type: ignore[arg-type]
+
+
+def test_caller_supplies_the_device_type_the_file_cannot_classify(tmp_path: Path) -> None:
+    """An unrecognised ``gpu_type`` leaves ``device_type`` for the operator to state.
+
+    The adapter no longer guesses "cuda" from any non-CPU string, which means a
+    TPU or ROCm run now reports no device type from the file alone. That gap has
+    to be fillable, or the fix would have removed a field rather than corrected
+    it -- so ``--device-type`` supplies it, following the neural Pfaffian adapter.
+    """
+
+    h5py = pytest.importorskip("h5py", reason="h5py is not a TPEN dependency")
+    run_dir = _write_fixture_h5(tmp_path, h5py, gpu_type="TPU v4", num_gpus=4)
+
+    from_file = _build_fixture_record(run_dir)
+    assert from_file.device_type is None
+    assert from_file.gpu_model == "TPU v4"
+
+    stated = _build_fixture_record(run_dir, device_type="tpu")
+    assert stated.device_type == "tpu"
+
+
+def test_caller_device_type_contradicting_the_file_is_refused(tmp_path: Path) -> None:
+    """The operator may fill a gap, never overwrite a reading.
+
+    Otherwise the flag would become a way to relabel measured hardware, which is
+    a worse version of the defect it exists to fix.
+    """
+
+    h5py = pytest.importorskip("h5py", reason="h5py is not a TPEN dependency")
+    run_dir = _write_fixture_h5(
+        tmp_path, h5py, gpu_type="NVIDIA A100-SXM4-40GB", num_gpus=1
+    )
+
+    assert _build_fixture_record(run_dir).device_type == "cuda"
+
+    with pytest.raises(AdapterError, match="contradicts"):
+        _build_fixture_record(run_dir, device_type="cpu")
 
 
 def test_hdf5_file_missing_a_dataset_raises(tmp_path: Path) -> None:
@@ -928,3 +1309,138 @@ def test_defaults_are_the_documented_ones() -> None:
     assert DEFAULT_TAIL_FRACTION == 0.25
     assert HUBER_DELTA_HARTREE == 1.0
     assert math.isfinite(HUBER_DELTA_HARTREE)
+
+
+# --------------------------------------------------------------------------
+# the command line refuses to invent a run fact
+# --------------------------------------------------------------------------
+
+#: Every flag needed for a complete, accepted invocation. Tests drop exactly one.
+_REQUIRED_CLI_FLAGS = (
+    ("--system-id", "he_atom"),
+    ("--electron-batch-size", "1024"),
+    ("--ansatz", "orbformer-se"),
+    ("--estimator", "inference"),
+    ("--training-provenance", "from-scratch"),
+    ("--mol-idx", "0"),
+    ("--metric-logger-period", "1"),
+    ("--optimizer", "kfac"),
+)
+
+
+def _argv(run_dir: Path, drop: str | None = None) -> list[str]:
+    """Return a complete argv for :func:`main`, minus one flag."""
+
+    argv = ["--run-dir", str(run_dir)]
+    for flag, value in _REQUIRED_CLI_FLAGS:
+        if flag != drop:
+            argv += [flag, value]
+    return argv
+
+
+def test_a_complete_invocation_is_accepted_by_the_parser(tmp_path: Path) -> None:
+    """The control arm: with every flag present, parsing succeeds.
+
+    Without this the tests below would also pass if the parser rejected
+    everything, which would be a different defect rather than a fix. The run
+    directory is empty, so ``main`` gets as far as the missing file and returns
+    the error exit code -- that return, rather than a SystemExit, is what proves
+    the arguments were accepted.
+    """
+
+    assert main(_argv(tmp_path)) == 1
+
+
+@pytest.mark.parametrize(
+    "flag", ["--mol-idx", "--metric-logger-period", "--optimizer"]
+)
+def test_uninferable_run_facts_have_no_command_line_default(
+    tmp_path: Path, flag: str
+) -> None:
+    """Dropping any of these three flags is a parser error, not a silent default.
+
+    All three used to default, and none of the three is recoverable from
+    ``result.h5``:
+
+    ``--mol-idx`` defaulted to 0 while ``--system-id`` was independent, so an
+    operator could ask for a system belonging to another molecule, omit the
+    index, and publish molecule 0's energy under that system's label. Nothing in
+    the file names a system, so no cross-check is possible; the only available
+    fix is to stop letting the value arrive unstated.
+
+    ``--metric-logger-period`` defaulted to 1, and the file carries no step or
+    iteration index anywhere, so the period genuinely cannot be recovered from
+    it. It multiplies straight into ``steps`` and ``samples``.
+
+    ``--optimizer`` defaulted to "kfac", which is a provenance claim about the
+    run that no part of the run's output supports.
+    """
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(_argv(tmp_path, drop=flag))
+
+    # argparse's own usage error, not an adapter exit code.
+    assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "missing", ["logged_steps", "nonfinite_dropped", "metric_logger_period", "optimizer"]
+)
+def test_record_from_series_has_no_default_for_these_either(missing: str) -> None:
+    """The API mirrors the CLI: these four are required keyword arguments.
+
+    Guards the direct entry point too. A CLI-only fix would leave every
+    programmatic caller -- including a future adapter or a notebook -- able to
+    omit them and get the old silent values back.
+    """
+
+    energies = _series(EMITTABLE_STEPS)
+    kwargs = dict(
+        system_id="he_atom",
+        electron_batch_size=1024,
+        ansatz="orbformer-se",
+        estimator="inference",
+        training_provenance="from-scratch",
+        run_id="test-run",
+        allow_short_tail=True,
+        logged_steps=len(energies),
+        nonfinite_dropped=0,
+        mol_idx=0,
+        metric_logger_period=1,
+        optimizer="kfac",
+    )
+    del kwargs[missing]
+
+    with pytest.raises(TypeError, match=missing):
+        record_from_series(energies, [0.05] * len(energies), **kwargs)
+
+
+def test_blank_optimizer_is_refused() -> None:
+    """A whitespace-only optimizer name is refused rather than emitted.
+
+    Making the argument required stops it defaulting; it does not stop a caller
+    from passing an empty string to satisfy the signature, which would reinstate
+    the unsourced field while looking like a stated value.
+    """
+
+    with pytest.raises(AdapterError, match="optimizer must be named"):
+        _record(_series(EMITTABLE_STEPS), optimizer="   ")
+
+
+def test_notes_state_that_the_system_to_molecule_pairing_is_unverified() -> None:
+    """The record says out loud that the adapter did not check the pairing.
+
+    ``--system-id`` and ``--mol-idx`` are independent and no file content relates
+    them, so requiring both is as far as the adapter can go: it removes the case
+    where the index was never stated, but an operator who states the wrong index
+    still gets a row labelled with the wrong system. The only remaining defence
+    is that the record must not imply a check it never performed, so the notes
+    name both values and call the correspondence an operator assertion.
+    """
+
+    record = _record(_series(EMITTABLE_STEPS), system_id="li_atom", mol_idx=3)
+
+    assert "system_id 'li_atom'" in record.notes
+    assert "molecule index 3" in record.notes
+    assert "ASSERTED BY THE OPERATOR" in record.notes
+    assert "NOT verifiable from result.h5" in record.notes

@@ -193,10 +193,11 @@ def gather_molecule(
     Raises
     ------
     AdapterError
-        If the three inputs disagree in shape; if ``mol_idx`` never appears (an
-        empty series would otherwise look like a short run); if a single step
-        carries the molecule in more than one slot; or if every step was
-        dropped as non-finite.
+        If the three inputs disagree in shape; if a ``mol_idx`` entry is not a
+        finite whole number; if ``mol_idx`` never appears (an empty series would
+        otherwise look like a short run); if a single step carries the molecule
+        in more than one slot; if a gathered spread is negative; or if every
+        step was dropped as non-finite.
 
     Notes
     -----
@@ -228,7 +229,11 @@ def gather_molecule(
                 f"step {step} has {len(slots)} mol_idx slots but "
                 f"{len(energies[step])} energy and {len(spreads[step])} spread slots"
             )
-        hits = [column for column, value in enumerate(slots) if int(value) == mol_idx]
+        hits = [
+            column
+            for column, value in enumerate(slots)
+            if _exact_slot_index(value, step, column) == mol_idx
+        ]
         if not hits:
             continue
         seen = True
@@ -242,6 +247,12 @@ def gather_molecule(
         if not _is_finite(energy) or not _is_finite(spread):
             nonfinite += 1
             continue
+        # Checked here and not only at the variance sum: `std_elec` is an
+        # across-walker standard deviation, so a negative value is a corrupt
+        # dataset rather than an unusually wide one. Squaring it downstream
+        # would turn the corruption into an entirely plausible positive
+        # variance, which is the one outcome no reader could detect.
+        _reject_negative_spread(spread, f"step {step}")
         kept_energies.append(energy)
         kept_spreads.append(spread)
 
@@ -383,9 +394,19 @@ def metadata_from_attrs(attrs: Mapping[str, Any]) -> dict[str, Any]:
     -------
     dict
         ``device_type``, ``gpu_model``, ``n_gpus`` and ``wall_clock_seconds``,
-        each ``None`` when the corresponding attribute is missing or
-        unparseable. Nothing is guessed: a missing ``stop_time`` yields no
-        duration rather than a fabricated one.
+        each ``None`` when the corresponding attribute is ABSENT. Nothing is
+        guessed: a missing ``stop_time`` yields no duration rather than a
+        fabricated one, and a device kind this function does not recognise
+        yields no ``device_type`` rather than ``"cuda"``.
+
+    Raises
+    ------
+    AdapterError
+        If an attribute is PRESENT but unusable: a non-integer ``num_gpus``, an
+        unparseable or mixed-offset timestamp pair, a ``stop_time`` before
+        ``start_time``, or a CPU ``gpu_type`` contradicted by a positive
+        ``num_gpus``. Absent and corrupt are different conditions and a record
+        that renders them identically hides schema damage as missing metadata.
 
     Notes
     -----
@@ -406,28 +427,70 @@ def metadata_from_attrs(attrs: Mapping[str, Any]) -> dict[str, Any]:
         device_type = None
     elif gpu_type.strip().lower() == "cpu":
         device_type, gpu_type = "cpu", None
-    else:
+    elif _is_cuda_device_kind(gpu_type):
         device_type = "cuda"
+    else:
+        # Not "cuda". `gpu_type` is JAX's `device_kind`, which also names TPU,
+        # ROCm and Metal devices, and an unrecognised or blank string is not
+        # evidence of NVIDIA hardware. Mapping every non-CPU string to "cuda"
+        # made `device_type` a field the file did not support. Left as None for
+        # the caller to state through --device-type, the same way the neural
+        # Pfaffian adapter takes it; `gpu_model` still carries the raw kind, so
+        # nothing is lost.
+        device_type = None
 
-    n_gpus = attrs.get("num_gpus")
-    try:
-        n_gpus = int(n_gpus) if n_gpus is not None else None
-    except (TypeError, ValueError):
+    raw_n_gpus = attrs.get("num_gpus")
+    n_gpus: int | None
+    if raw_n_gpus is None:
         n_gpus = None
+    else:
+        # Present but unparseable is NOT the same as absent. Coercing it to None
+        # published a record that read as "the run did not say", when in fact the
+        # run said something unusable -- schema damage, silently laundered into a
+        # missing field.
+        try:
+            n_gpus = int(raw_n_gpus)
+        except (TypeError, ValueError) as error:
+            raise AdapterError(
+                f"attrs num_gpus is {raw_n_gpus!r}, which is not an integer count; "
+                "the attribute is present but unusable, which is a corrupt file rather "
+                "than a run that omitted it"
+            ) from error
+    if device_type == "cpu" and n_gpus is not None and n_gpus > 0:
+        # The two attrs contradict each other, and the record would have carried
+        # both: device_type="cpu" beside n_gpus=1. Whichever is right, emitting
+        # the pair asserts something no run can be.
+        raise AdapterError(
+            f"attrs say gpu_type is a CPU but num_gpus is {n_gpus}; these contradict, "
+            "so the device metadata cannot be reported as measured"
+        )
 
     start, stop = _decode(attrs.get("start_time")), _decode(attrs.get("stop_time"))
     wall_clock: float | None = None
     if start is not None and stop is not None:
         try:
+            # TypeError, not only ValueError. `datetime.fromisoformat` parses an
+            # offset-aware and an offset-naive stamp equally happily, and it is
+            # the SUBTRACTION that then raises TypeError -- which no
+            # `except ValueError` catches, so a mixed pair escaped this function
+            # as an uncaught TypeError from inside an adapter whose contract is
+            # AdapterError.
             wall_clock = (
                 datetime.fromisoformat(stop) - datetime.fromisoformat(start)
             ).total_seconds()
-        except ValueError:
-            wall_clock = None
-        if wall_clock is not None and wall_clock < 0.0:
-            # Cannot happen from a single writer, and a negative duration would
-            # fail record validation; drop it rather than pass it on.
-            wall_clock = None
+        except (TypeError, ValueError) as error:
+            raise AdapterError(
+                f"attrs carry start_time {start!r} and stop_time {stop!r}, which cannot "
+                f"be differenced ({error}); both are present, so this is a malformed "
+                "timestamp pair rather than missing timing"
+            ) from error
+        if wall_clock < 0.0:
+            # Cannot happen from a single writer. Previously dropped to None,
+            # which reported a corrupt pair as an absent one.
+            raise AdapterError(
+                f"attrs stop_time {stop!r} precedes start_time {start!r}, giving a "
+                f"duration of {wall_clock} seconds; the pair is corrupt"
+            )
 
     return {
         "device_type": device_type,
@@ -516,16 +579,16 @@ def record_from_series(
     estimator: str,
     training_provenance: str,
     checkpoint_provenance: str | None = None,
-    logged_steps: int | None = None,
-    nonfinite_dropped: int = 0,
-    mol_idx: int = 0,
-    metric_logger_period: int = 1,
+    logged_steps: int,
+    nonfinite_dropped: int,
+    mol_idx: int,
+    metric_logger_period: int,
     tail_fraction: float = DEFAULT_TAIL_FRACTION,
     min_tail_steps: int = MIN_TAIL_STEPS,
     allow_short_tail: bool = False,
     run_id: str,
     code_commit: str | None = None,
-    optimizer: str = "kfac",
+    optimizer: str,
     dtype: str | None = None,
     seed: int | None = None,
     parameter_count: int | None = None,
@@ -566,13 +629,30 @@ def record_from_series(
         Identity of the released checkpoint -- URL, hash, or both. Mandatory for
         a fine-tuned row: without it the row cannot be reproduced and cannot be
         audited against the release it claims to start from.
-    logged_steps : int or None, optional
+    logged_steps : int
         Rows the run wrote, which exceeds ``len(energies)`` when other molecules
-        shared the mol batch. Reported in the notes as coverage.
-    metric_logger_period : int, optional
-        ``--metric-logger-period`` of the run. Logged steps are multiplied by it
+        shared the mol batch. Required, not defaulted to ``len(energies)``: that
+        default silently asserted full coverage, and ``steps`` is computed from
+        this count.
+    nonfinite_dropped : int
+        Rows that carried this molecule but whose energy or spread was
+        non-finite. Required for the same reason: a defaulted ``0`` asserted that
+        nothing was dropped. Counted into ``samples``, because a row that
+        produced a NaN was still evaluated.
+    mol_idx : int
+        Molecule index these series were gathered for. Appears in the notes
+        beside ``system_id``, whose correspondence to it is an operator
+        assertion that no file content can confirm.
+    metric_logger_period : int
+        ``--metric-logger-period`` of the run. Logged rows are multiplied by it
         to recover optimizer/evaluation steps, since walkers are propagated on
-        unlogged steps too.
+        unlogged steps too. Required: ``result.h5`` holds no step or iteration
+        index anywhere, so this is not recoverable from the file, and it scales
+        both ``steps`` and ``samples``.
+    optimizer : str
+        Optimizer the run used, e.g. ``"kfac"``. Required for the same reason:
+        the file does not record it, so a default would be an unsourced
+        provenance claim.
     note : str or None, optional
         Operator caveat, appended to the generated notes. Never replaces any
         generated sentence.
@@ -586,9 +666,12 @@ def record_from_series(
     ------
     AdapterError
         On a shape mismatch, an unknown provenance tier, a fine-tuned row with
-        no checkpoint provenance, a blank ``note``, a non-positive
-        ``electron_batch_size`` or ``metric_logger_period``, or a window that
-        cannot be selected.
+        no checkpoint provenance, a blank ``note`` or ``optimizer``, a
+        non-positive ``electron_batch_size`` or ``metric_logger_period``, a
+        negative spread or drop count, a ``logged_steps`` smaller than the rows
+        gathered from it, a window that cannot be selected, or a window below the
+        blocking floor -- which is refused rather than answered with an
+        uncorrected naive error bar.
     """
 
     energy_series = [float(value) for value in energies]
@@ -616,6 +699,28 @@ def record_from_series(
         raise AdapterError(f"electron_batch_size must be positive, got {electron_batch_size}")
     if metric_logger_period <= 0:
         raise AdapterError(f"metric_logger_period must be positive, got {metric_logger_period}")
+    if not optimizer.strip():
+        raise AdapterError(
+            "optimizer must be named: it is not recorded anywhere in result.h5, so a "
+            "blank value is an unsourced claim rather than a missing field"
+        )
+    # Checked on the direct API too, not only in `gather_molecule`: this function
+    # is the supported entry point for a caller that gathered its own series,
+    # and the variance below squares every one of these values.
+    for position, spread in enumerate(spread_series):
+        _reject_negative_spread(spread, f"series position {position}")
+    if nonfinite_dropped < 0:
+        raise AdapterError(
+            f"nonfinite_dropped must not be negative, got {nonfinite_dropped}; a "
+            "negative drop count would overstate this molecule's coverage"
+        )
+    if logged_steps < len(energy_series) + nonfinite_dropped:
+        raise AdapterError(
+            f"logged_steps={logged_steps} is smaller than the {len(energy_series)} "
+            f"retained plus {nonfinite_dropped} dropped rows that carried this "
+            "molecule; the file cannot hold fewer rows than were gathered from it, so "
+            "one of the two counts is wrong"
+        )
 
     window = select_tail(
         len(energy_series),
@@ -628,17 +733,25 @@ def record_from_series(
 
     energy, clipped = huber_mean(tail)
 
-    # The block floor is lowered to the window length so that blocking's first
-    # level always runs. An Orbformer evaluation pass logs every
-    # `--metric-logger-period` step, so a 2000-step run at period 25 yields 80
-    # rows and a quarter-tail of 20 -- fewer than MIN_BLOCKS. Passing the default
-    # floor on such a window leaves `blocking_stderr` free to stop before
-    # measuring anything, and what it returns then is its business, not this
-    # adapter's. Lowering the floor makes the short case measurable, and the
-    # notes then say the bar is the naive one.
-    block_floor = min(MIN_BLOCKS, len(tail))
+    # The window floor and the BLOCKING floor are different floors, and only the
+    # first is opt-outable. `allow_short_tail` is forwarded rather than withheld,
+    # so one flag does not mean two things at two call sites -- but the reply is
+    # then checked, because the opt-in buys the uncorrected naive bar, not a
+    # licence to publish it. This is the stance deepqmc and ferminet already
+    # take; see `deepqmc.py` and `ferminet.py` around their `blocking_stderr`
+    # calls.
+    #
+    # What this replaces: `block_floor = min(MIN_BLOCKS, len(tail))`, which
+    # lowered the floor to the raw sample count so that blocking's first level
+    # always ran. On a short window that made the blocked-over-naive ratio
+    # exactly 1.00 by construction -- one level, so numerator and denominator
+    # were the same quantity -- and the record then printed "1.00x" as an
+    # autocorrelation diagnostic although no blocking level had assessed
+    # autocorrelation at all. A reader cannot tell that number from a genuine
+    # measurement of no autocorrelation, so it was false reassurance rather than
+    # a wide interval. Refusing is the only honest option available here.
     try:
-        stderr, _ = blocking_stderr(tail, min_blocks=block_floor)
+        stderr, blocks = blocking_stderr(tail, allow_below_floor=allow_short_tail)
     except AdapterError as error:
         # A zero-variance window is the other route to a zero bar, and it is not
         # a measurement: every step in the window carries the identical value,
@@ -657,6 +770,20 @@ def record_from_series(
             f"zero-variance window of {len(tail)} steps: blocking returned a "
             f"non-positive error bar ({stderr!r}), which the record schema would "
             "accept as non-negative and publish as infinite precision"
+        )
+    # A block count of `None` means no blocking level ran, so autocorrelation is
+    # unassessed and the bar is the uncorrected naive one. Reached under
+    # `allow_short_tail`, which is exactly the case the lowered floor used to
+    # paper over: `--allow-short-tail` widens the estimator WINDOW, and it is not
+    # also a licence to publish an unblocked bar as though it had been blocked.
+    if blocks is None:
+        raise AdapterError(
+            f"the {len(tail)}-step window is below the {MIN_BLOCKS}-block minimum for "
+            "blocking, so no blocking level ran and this run's autocorrelation is "
+            "UNASSESSED; refusing to emit a record whose error bar is an uncorrected "
+            "naive estimate that understates the uncertainty. Raise --tail-fraction, "
+            f"lower --metric-logger-period, or log at least {MIN_BLOCKS} steps in the "
+            "window"
         )
     # `std_elec` is the across-walker spread of the local energy, so its square
     # is the local-energy variance itself -- not the variance of the mean.
@@ -686,17 +813,36 @@ def record_from_series(
     # window below two values or with zero variance, and both are already
     # refused above. Swallowing an exception that cannot fire would hide a real
     # regression behind the word "undefined".
-    inflation = f"{blocking_inflation(tail, min_blocks=block_floor):.2f}x"
+    #
+    # The VALUE is branched on before formatting, though. Under
+    # `allow_below_floor` this returns None rather than raising, and
+    # `f"{None:.2f}x"` is a TypeError that `except AdapterError` would not catch,
+    # while `f"{None}x"` would render the word "None" into an emitted record.
+    # Unreachable while the block-count refusal above precedes it -- both read
+    # the same tail against the same floor -- and kept so that reordering the two
+    # cannot resurrect a formatted None.
+    inflation_factor = blocking_inflation(tail, allow_below_floor=allow_short_tail)
+    if inflation_factor is None:
+        raise AdapterError(
+            f"autocorrelation inflation is unmeasurable for a window of {len(tail)} "
+            "steps, so no diagnostic can be reported for it"
+        )
+    inflation = f"{inflation_factor:.2f}x"
 
-    unblocked = (
-        f" The window of {len(tail)} steps is below the {MIN_BLOCKS}-block floor, so "
-        "blocking had only its first level and this bar is the NAIVE standard error: "
-        "it ignores autocorrelation and therefore UNDERSTATES the uncertainty."
-        if block_floor < MIN_BLOCKS
-        else ""
-    )
-
-    steps = len(energy_series) * metric_logger_period
+    # `steps` is what records.py defines it to be -- optimizer steps TAKEN -- so it
+    # is the file's own row count times the logger period, not the rows retained
+    # for this molecule. Those differ whenever coverage is sparse (a mol-batch run
+    # need not carry this molecule at every step) or a row was dropped as
+    # non-finite, and the retained-row form understated the work the run actually
+    # did. The two coincide only at full coverage with no drops, which is why the
+    # difference is invisible on a single-molecule fixture.
+    steps = logged_steps * metric_logger_period
+    # `samples` is cumulative local-energy evaluations, and only the rows that
+    # carried THIS molecule produced any for this row. Dropped rows are counted:
+    # a non-finite energy was still evaluated, and hiding the cost of a failed
+    # evaluation flatters the run.
+    covered_rows = len(energy_series) + nonfinite_dropped
+    samples = covered_rows * metric_logger_period * electron_batch_size
 
     short = (
         " Window is BELOW the standard minimum, so this estimate is provisional."
@@ -723,23 +869,41 @@ def record_from_series(
 
     coverage = (
         f"Gathered through {MOL_INDEX_DATASET} for molecule index {mol_idx}: "
-        f"{len(energy_series)} of {logged_steps if logged_steps is not None else len(energy_series)} "
-        "logged steps carried it, gaps skipped rather than forward-filled"
+        f"{len(energy_series)} of {logged_steps} logged steps carried it, gaps skipped "
+        "rather than forward-filled"
         + (f", {nonfinite_dropped} step(s) dropped as non-finite" if nonfinite_dropped else "")
         + "."
     )
+    coverage += (
+        f" Efficiency denominators: `steps` is the run's optimizer steps, {logged_steps} "
+        f"logged rows times logger period {metric_logger_period}, so it counts the whole "
+        "run's work and is NOT reduced to the rows that carried this molecule; "
+        f"`samples` is this molecule's own local-energy evaluations, {covered_rows} of "
+        f"those rows times the period times electron batch {electron_batch_size}, "
+        "because a mol-batch step divides its walkers among several molecules."
+    )
     if metric_logger_period != 1:
         coverage += (
-            f" Logger period {metric_logger_period}, so `steps` counts "
-            "optimizer/evaluation steps while the window is in logged steps."
+            f" Logger period is {metric_logger_period}, so both denominators scale "
+            "logged rows up to unlogged steps, which assumes this molecule also "
+            "occupied a slot in the steps between rows; result.h5 does not record that."
         )
+    # F1: nothing in result.h5 names the system, so this pairing is an operator
+    # assertion and the record says so out loud rather than implying the adapter
+    # checked it.
+    pairing = (
+        f" The pairing of system_id '{system_id}' with molecule index {mol_idx} is "
+        "ASSERTED BY THE OPERATOR and is NOT verifiable from result.h5, which records "
+        "which molecule occupied each mol-batch slot but never names a system. Both "
+        "values are explicit arguments with no default for that reason."
+    )
 
     bar_text = (
         "Error bar is a blocked (Flyvbjerg-Petersen) standard error over the step "
         f"series, autocorrelation inflation {inflation} over the naive estimate. This "
         "is NOT the across-chain variance the Orbformer paper reports (arXiv:2506.19960 "
         "Appendix H): per-walker local energies are not logged, so that quantity is not "
-        "reconstructible from result.h5." + unblocked
+        "reconstructible from result.h5."
     )
 
     native = (
@@ -768,7 +932,7 @@ def record_from_series(
     )
 
     notes = (
-        f"{estimator_text} {huber_text}. {bar_text} {coverage} {verdict}."
+        f"{estimator_text} {huber_text}. {bar_text} {coverage}{pairing} {verdict}."
         f"{native}{provenance_text}{clock_text}"
     )
     if note is not None:
@@ -783,7 +947,7 @@ def record_from_series(
         energy_stderr_hartree=stderr,
         local_energy_variance_hartree2=local_variance,
         steps=steps,
-        samples=steps * electron_batch_size,
+        samples=samples,
         wall_clock_seconds=wall_clock_seconds,
         estimator=estimator,
         device_type=device_type,
@@ -811,16 +975,17 @@ def build_record(
     estimator: str,
     training_provenance: str,
     checkpoint_provenance: str | None = None,
-    mol_idx: int = 0,
-    metric_logger_period: int = 1,
+    mol_idx: int,
+    metric_logger_period: int,
     tail_fraction: float = DEFAULT_TAIL_FRACTION,
     min_tail_steps: int = MIN_TAIL_STEPS,
     allow_short_tail: bool = False,
     code_commit: str | None = None,
-    optimizer: str = "kfac",
+    optimizer: str,
     dtype: str | None = None,
     seed: int | None = None,
     parameter_count: int | None = None,
+    device_type: str | None = None,
     run_id: str | None = None,
     note: str | None = None,
 ) -> BaselineRecord:
@@ -828,10 +993,51 @@ def build_record(
 
     Reads the gathered series and the device/timing attrs from ``result.h5``,
     then delegates every decision to :func:`record_from_series`.
+
+    Parameters
+    ----------
+    run_dir : pathlib.Path
+        Run root, or its ``training`` subdirectory.
+    system_id, electron_batch_size, ansatz, estimator, training_provenance, checkpoint_provenance, mol_idx, metric_logger_period, tail_fraction, min_tail_steps, allow_short_tail, code_commit, optimizer, dtype, seed, parameter_count, note
+        Forwarded unchanged to :func:`record_from_series`; see its parameter
+        list. ``mol_idx``, ``metric_logger_period`` and ``optimizer`` are
+        required here too, because nothing in the run directory supplies them.
+    device_type : str or None, optional
+        Device kind to record when ``gpu_type`` in the file is one this adapter
+        does not recognise. Refused when it contradicts a kind the file did
+        state.
+    run_id : str or None, optional
+        Record identifier; defaults to ``run_dir.name``.
+
+    Returns
+    -------
+    BaselineRecord
+        Validated record carrying ``code="oneqmc"``.
+
+    Raises
+    ------
+    AdapterError
+        From the read helpers, from :func:`record_from_series`, or when
+        ``device_type`` contradicts the file.
     """
 
     series = read_series(run_dir, mol_idx=mol_idx)
     metadata = metadata_from_attrs(read_attrs(run_dir))
+    if device_type is not None:
+        # `metadata_from_attrs` reports a device type only for a device kind it
+        # recognises, so this fills the gap for TPU/ROCm/Metal or an unknown
+        # string rather than overriding a reading. A caller assertion that
+        # CONTRADICTS the file is refused: the point of taking the value from the
+        # operator is to cover what the file cannot say, not to overwrite what it
+        # did say.
+        recorded = metadata.get("device_type")
+        if recorded is not None and recorded != device_type:
+            raise AdapterError(
+                f"device_type={device_type!r} contradicts the file's own gpu_type, "
+                f"which reads as {recorded!r}; refusing to replace measured metadata "
+                "with an assertion"
+            )
+        metadata["device_type"] = device_type
 
     return record_from_series(
         series.energies,
@@ -886,6 +1092,119 @@ def _decode(value: Any) -> str | None:
     return str(value)
 
 
+#: Lowercased prefixes of JAX ``device_kind`` strings that denote CUDA hardware.
+#: JAX reports the marketing name, e.g. ``"NVIDIA A100-SXM4-40GB"`` or
+#: ``"Tesla V100-SXM2-16GB"``, never the literal word ``"cuda"`` -- which is
+#: accepted anyway, for a caller that normalised the string before storing it.
+CUDA_DEVICE_KINDS = ("nvidia", "tesla", "quadro", "geforce", "titan", "cuda")
+
+
+def _is_cuda_device_kind(gpu_type: str) -> bool:
+    """Return True when a JAX ``device_kind`` string names CUDA hardware.
+
+    Parameters
+    ----------
+    gpu_type : str
+        The ``gpu_type`` file attribute, as decoded.
+
+    Returns
+    -------
+    bool
+        True for a recognised NVIDIA-family device kind.
+
+    Notes
+    -----
+    Recognition, not a fallback. The alternative -- treat every non-CPU string
+    as CUDA -- labelled TPU, ROCm, Metal and blank device kinds as CUDA, which
+    is a claim about hardware made from a string that contradicted it.
+    """
+
+    kind = gpu_type.strip().lower()
+    return bool(kind) and kind.startswith(CUDA_DEVICE_KINDS)
+
+
+def _exact_slot_index(value: Any, step: int, column: int) -> int:
+    """Return a ``metrics/mol_idx`` entry as an exact molecule index.
+
+    Parameters
+    ----------
+    value : Any
+        One entry of the ``mol_idx`` dataset.
+    step, column : int
+        Position of the entry, for the error message only.
+
+    Returns
+    -------
+    int
+        The entry, when it is a finite whole number.
+
+    Raises
+    ------
+    AdapterError
+        If the entry is not numeric, not finite, or not integral.
+
+    Notes
+    -----
+    ``int(value)`` truncates. A corrupt ``2.7`` would silently become ``2`` and
+    select molecule 2's slot, publishing one molecule's energy under another
+    molecule's label -- the exact failure this adapter exists to prevent, but
+    arriving through the dataset instead of through column position. A
+    non-finite entry would raise ``ValueError``/``OverflowError`` out of ``int``
+    rather than an :class:`AdapterError`, so it is converted here too.
+    """
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise AdapterError(
+            f"{MOL_INDEX_DATASET} step {step} slot {column} holds {value!r}, which is "
+            "not a number; the molecule index cannot be read from it"
+        ) from error
+    if not math.isfinite(number):
+        raise AdapterError(
+            f"{MOL_INDEX_DATASET} step {step} slot {column} is {number!r}; a "
+            "non-finite molecule index means the dataset is corrupt"
+        )
+    if number != int(number):
+        raise AdapterError(
+            f"{MOL_INDEX_DATASET} step {step} slot {column} is {number!r}, which is not "
+            "a whole number; truncating it would select a molecule the run never put "
+            "in that slot"
+        )
+    return int(number)
+
+
+def _reject_negative_spread(spread: float, where: str) -> None:
+    """Raise if an ``E_loc/std_elec`` value is negative.
+
+    Parameters
+    ----------
+    spread : float
+        A single across-walker standard deviation.
+    where : str
+        Location text for the message, e.g. ``"step 7"``.
+
+    Raises
+    ------
+    AdapterError
+        If ``spread`` is negative.
+
+    Notes
+    -----
+    Finiteness alone is not enough. The variance this adapter publishes is the
+    mean of ``spread ** 2``, and squaring destroys the sign, so a negative
+    standard deviation is laundered into a perfectly plausible positive
+    variance that no downstream reader can question.
+    """
+
+    if spread < 0.0:
+        raise AdapterError(
+            f"{SPREAD_DATASET} at {where} is {spread!r}; an across-walker standard "
+            "deviation cannot be negative, and squaring it would publish the "
+            "corruption as a plausible variance"
+        )
+
+
 def _is_finite(value: float) -> bool:
     """Return True for a real, finite float."""
 
@@ -925,8 +1244,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="URL and/or hash of the released checkpoint; required when fine-tuned",
     )
-    parser.add_argument("--mol-idx", type=int, default=0)
-    parser.add_argument("--metric-logger-period", type=int, default=1)
+    # Required, not defaulted to 0. `--system-id` and `--mol-idx` are
+    # independent, and nothing in result.h5 names a system, so a defaulted index
+    # let an operator ask for one system, omit the index, and publish molecule
+    # 0's energy under that system's label. Making the index explicit does not
+    # let the adapter VERIFY the pairing -- no file content can -- but it removes
+    # the case where the operator never stated it, and the record's notes say
+    # plainly that the pairing is an operator assertion.
+    parser.add_argument(
+        "--mol-idx",
+        type=int,
+        required=True,
+        help="molecule index within metrics/mol_idx; must correspond to --system-id, "
+        "which result.h5 cannot confirm",
+    )
+    # Required: result.h5 carries no step or iteration index anywhere, so the
+    # logger period is not recoverable from the file, and it multiplies straight
+    # into `steps` and `samples`.
+    parser.add_argument(
+        "--metric-logger-period",
+        type=int,
+        required=True,
+        help="steps between logged rows; not recoverable from result.h5 and it scales "
+        "both efficiency denominators",
+    )
     parser.add_argument("--tail-fraction", type=float, default=DEFAULT_TAIL_FRACTION)
     parser.add_argument(
         "--min-tail-steps",
@@ -945,7 +1286,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--code-commit", default=None)
-    parser.add_argument("--optimizer", default="kfac")
+    # Required: the file does not record the optimizer either, and "kfac"
+    # arriving by default is a provenance claim nothing sourced.
+    parser.add_argument(
+        "--optimizer", required=True, help="not recorded in result.h5; never inferred"
+    )
+    parser.add_argument(
+        "--device-type",
+        default=None,
+        help="e.g. cuda; needed only when gpu_type is a kind this adapter does not "
+        "recognise, and refused if it contradicts the file",
+    )
     parser.add_argument("--dtype", default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--parameter-count", type=int, default=None)
@@ -976,6 +1327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dtype=args.dtype,
             seed=args.seed,
             parameter_count=args.parameter_count,
+            device_type=args.device_type,
             note=args.note,
         )
     except AdapterError as error:
