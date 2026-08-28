@@ -15,6 +15,7 @@ built so that a positional read returns a plausible energy rather than an error.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -25,6 +26,13 @@ from pathlib import Path
 import pytest
 
 from experiments.baselines.errors import AdapterError
+from experiments.baselines.statistics import (
+    MIN_BLOCKS,
+    MIN_TAIL_STEPS,
+    blocking_inflation,
+    blocking_stderr,
+    select_tail,
+)
 from experiments.baselines.adapters.oneqmc import (
     DEFAULT_TAIL_FRACTION,
     ENERGY_DATASET,
@@ -850,6 +858,346 @@ def test_whole_trace_window_mixes_in_relaxation_and_a_fraction_does_not() -> Non
     genuine = _record(energies, tail_fraction=0.25, min_tail_steps=2)
     assert "last 50 of 200 logged steps" in genuine.notes
     assert genuine.energy_hartree == pytest.approx(huber_mean(energies[-50:])[0])
+
+
+#: Shape of this lane's Orbformer pilot: 2000 logged evaluation steps, the
+#: default fraction, and the standard floor it cannot reach. Named constants
+#: because the tripwire below reads as arbitrary numbers otherwise.
+PILOT_LOGGED_STEPS = 2000
+PILOT_WINDOW_AT_PIN = 500
+
+#: The window this shape resolved to BEFORE #291: the whole trace. Kept named
+#: after the flip rather than deleted, so the tripwire can say which value it
+#: discriminates against in *each* direction. 2000 now means this branch was
+#: rebased BACKWARD onto a dev predating #291, which is a different diagnosis
+#: from "select_tail regressed" and wants a different repair.
+PILOT_WINDOW_BEFORE_291 = 2000
+
+#: PR #291's squash-merge commit on dev. The merge commit is quoted rather than
+#: the branch head because a squash merge leaves the head an ancestor of
+#: nothing, so the head binds nothing; the merge commit is immutable and does.
+MERGE_COMMIT_291 = "bec0219f5cf87dd008c3d40c34b7256cff9b9e0b"
+DECISION_ITEM_ID = "573509bb-58ef-45f7-a34d-3f5b110597e0"
+DECISION_DATE = "2026-08-21"
+
+#: Exact objects the pilot expectation is measured against, so a future reader
+#: can tell a stale expectation from a regression. The blob is the more precise
+#: of the two: it is the file whose rule produced the number.
+#:
+#: Re-pinned 2026-08-28 after this branch was rebased and picked up dev's
+#: statistics.py. The move was fdb6127 "docs(baselines): record the below-floor
+#: fallback decision on select_tail" -- 17 insertions, 0 deletions, entirely
+#: inside select_tail's docstring. PILOT_WINDOW_AT_PIN is deliberately NOT
+#: changed: the rule is byte-identical once docstrings are stripped (ASTs
+#: compare equal), and select_tail was re-measured at the new blob and still
+#: resolves this shape to 500. So this is a provenance re-pin, not a value
+#: flip -- contrast PILOT_WINDOW_BEFORE_291 above, which records a real one.
+STATISTICS_BLOB_AT_PIN = "017e201e5a84c0c6451d4c7ad0b3f4c69830f9ba"
+DEV_COMMIT_AT_PIN = "fdb6127fb3247e6ef7ba802de0dedf2c41527217"
+
+#: The file whose rule produces :data:`PILOT_WINDOW_AT_PIN`. Resolved as a
+#: sibling of this test rather than from the repository root, so the blob check
+#: below does not depend on the directory pytest was launched from.
+STATISTICS_SOURCE = Path(__file__).with_name("statistics.py")
+
+#: The window sentence the adapter writes, e.g. "the last 50 of 200 logged
+#: steps". Anchored on "last " because the coverage sentence also ends in
+#: "logged steps" and would otherwise match.
+_WINDOW_SENTENCE = re.compile(r"last (\d+) of (\d+) logged steps")
+
+
+def _window_from_notes(notes: str) -> tuple[int, int]:
+    """Return the (window, total) the notes report, requiring exactly one match.
+
+    Raises rather than returning a best guess when the count is not one: an
+    ambiguous parse here would silently compare the wrong number, and this
+    check is meant to fail loudly instead.
+    """
+
+    matches = _WINDOW_SENTENCE.findall(notes)
+    assert len(matches) == 1, f"expected one window sentence, found {matches}: {notes}"
+    window, total = matches[0]
+    return int(window), int(total)
+
+
+@pytest.mark.parametrize(
+    "total, fraction, min_tail_steps",
+    [
+        # Floor reachable, fraction governs.
+        (200, 0.25, 2),
+        # Whole trace requested explicitly.
+        (200, 1.0, 2),
+        # Sub-floor run: how select_tail resolves this is its business and has
+        # changed there, so nothing here pins the value -- only the invariants.
+        (200, 0.25, MIN_TAIL_STEPS),
+        (PILOT_LOGGED_STEPS, DEFAULT_TAIL_FRACTION, MIN_TAIL_STEPS),
+    ],
+)
+def test_notes_window_is_the_window_actually_averaged(
+    total: int, fraction: float, min_tail_steps: int
+) -> None:
+    """The reported window is the averaged window, whatever select_tail resolves to.
+
+    These are the properties this adapter owns, stated without pinning
+    ``select_tail``'s resolution rule: the window lies inside the run, the
+    sentence in the notes names the window the energy was actually computed
+    from, and the provisional caveat appears exactly when the window is below
+    the floor the caller asked for. Written this way so a change in
+    ``select_tail`` moves the numbers without falsifying the assertions -- the
+    previous version of these tests pinned nothing at all here, which is why a
+    help string could go stale unnoticed.
+
+    The energy comparison is what makes the parsed window trustworthy: a notes
+    sentence that disagreed with the slice would pass a substring check and fail
+    this one.
+    """
+
+    # A relaxation prefix half a hartree above the plateau, so a window that
+    # mis-reports its own length disagrees with the energy by far more than
+    # float noise. On a flat series the difference between a quarter-tail mean
+    # and a whole-trace mean is ~1e-6 relative, which pytest.approx's default
+    # tolerance accepts -- that looseness let a mutant that reported the whole
+    # trace while averaging the tail pass this test.
+    plateau = total - max(2, round(0.25 * total))
+    energies = [HE_EXACT_HARTREE + 0.5] * plateau + _series(total - plateau)
+    record = _record(
+        energies,
+        tail_fraction=fraction,
+        min_tail_steps=min_tail_steps,
+        allow_short_tail=True,
+    )
+
+    window, reported_total = _window_from_notes(record.notes)
+
+    assert reported_total == total
+    assert 2 <= window <= total
+    # Exact rather than approximate: the same slice through the same estimator
+    # is the same float.
+    assert record.energy_hartree == pytest.approx(
+        huber_mean(energies[-window:])[0], rel=0.0, abs=1e-12
+    )
+    assert ("provisional" in record.notes) == (window < min_tail_steps)
+
+
+@pytest.mark.parametrize(
+    "total, min_tail_steps",
+    # (200, 2) is the short-window regime: a 50-step window, still above
+    # MIN_BLOCKS, so a record is emitted and its notes must carry a real
+    # count rather than a sentinel. The old (20, 2) case -- a 5-step window --
+    # was removed when the adapter began REFUSING below-floor windows: it can
+    # no longer produce notes to inspect. That refusal is asserted directly by
+    # test_a_below_floor_window_is_refused_rather_than_measured below.
+    [(200, MIN_TAIL_STEPS), (PILOT_LOGGED_STEPS, MIN_TAIL_STEPS), (200, 2)],
+)
+def test_notes_never_render_a_literal_none(total: int, min_tail_steps: int) -> None:
+    """No notes field may contain the literal string "None".
+
+    A bare replacement field holding ``None`` -- ``f"from {count} blocks"`` --
+    renders "from None blocks" without raising, which reads as a forgotten
+    count rather than as "blocking never ran". That silent branch is the shared
+    failure mode across the adapters in this program, so it is asserted at the
+    output rather than trusted to the call sites.
+    """
+
+    record = _record(
+        _series(total),
+        min_tail_steps=min_tail_steps,
+        allow_short_tail=True,
+    )
+
+    assert "None" not in record.notes
+
+
+def test_a_below_floor_window_is_refused_rather_than_measured() -> None:
+    """A window too short to run one blocking level is refused, not rescued.
+
+    This test previously asserted the OPPOSITE, under the name
+    ``test_lowering_the_block_floor_is_what_keeps_the_ladder_running``. The
+    adapter used to compute ``min(MIN_BLOCKS, len(tail))`` so that blocking's
+    first level would run on a short window, and this test called that lowering
+    "load-bearing" and warned against simplifying it away.
+
+    It was the defect, not the design. Lowering the floor to the sample count
+    makes exactly one level run, so the returned ratio is ``1.00x`` by
+    construction -- it reports "no autocorrelation" when what actually happened
+    is that no level ever compared blocks. The adapter now refuses instead,
+    matching ``deepqmc`` and ``ferminet``.
+
+    The old name is kept in this docstring on purpose: a bare rewrite would
+    leave no trace that the previous contract was asserted and believed.
+
+    Both halves below are still asserted, because the first is why the floor
+    exists at all.
+    """
+
+    tail = _series(20)
+    assert len(tail) < MIN_BLOCKS
+
+    # Why the floor exists: at the unlowered floor blocking yields nothing
+    # usable. Which way it fails is the shared module's business.
+    try:
+        degenerate, _ = blocking_stderr(tail, min_blocks=MIN_BLOCKS)
+    except AdapterError:
+        pass
+    else:
+        assert degenerate <= 0.0, (
+            "blocking measured something at the unlowered floor, so this test no "
+            "longer demonstrates why the floor matters"
+        )
+
+    # The adapter's contract on such a window: refuse, and say why in terms an
+    # operator can act on. Asserting the remedy text too, because a refusal that
+    # does not tell you which knob to turn is a dead end rather than a guard.
+    with pytest.raises(AdapterError) as excinfo:
+        _record(tail, min_tail_steps=2, tail_fraction=1.0)
+
+    message = str(excinfo.value)
+    assert "UNASSESSED" in message
+    assert str(MIN_BLOCKS) in message
+    assert "--tail-fraction" in message
+
+def _git_blob_sha1(path: Path) -> str:
+    """Return the git blob SHA-1 of ``path``, computed without invoking git.
+
+    Git hashes a blob as ``sha1(b"blob <bytelength>\\0" + content)``, so the
+    result is directly comparable to a ``git rev-parse <ref>:<path>`` value and
+    can be pinned as a constant.
+
+    Computed in process on purpose. Shelling out to ``git`` would make the
+    check depend on the tree being a git checkout, and the only graceful
+    response to a missing checkout is a skip -- which would switch the alarm
+    off in precisely the environments (sdist, exported tree, CI cache) where a
+    silently stale pin is hardest to notice. A hash of the bytes on disk needs
+    nothing but the file.
+
+    Kept local to this test module rather than promoted into
+    ``experiments.baselines``: git object hashing is not a concept that package
+    owns, and its only consumer is the tripwire below.
+    """
+
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def test_pilot_window_pin_still_describes_the_statistics_it_was_measured_against() -> None:
+    """Alarm on the *condition* that invalidates the pin below, not on its effect.
+
+    The previous shape of this tripwire pinned only the resolved window, so the
+    fact that ``statistics.py`` had changed underneath it was observable solely
+    through a downstream arithmetic assertion. That is an indirect instrument:
+    it fires late, it reports a number rather than a cause, and it cannot fire
+    at all if some other edit happens to restore the same window by a different
+    rule. This check fires on the blob itself.
+
+    A failure here is not a defect in ``statistics.py``. It means the file whose
+    rule produced :data:`PILOT_WINDOW_AT_PIN` is no longer the file that was
+    measured, so the pin's provenance has lapsed and must be re-measured and
+    re-recorded -- both constants, in the commit that moves the blob.
+    """
+
+    actual = _git_blob_sha1(STATISTICS_SOURCE)
+
+    assert actual == STATISTICS_BLOB_AT_PIN, (
+        f"experiments/baselines/statistics.py hashes to {actual}, but "
+        f"{PILOT_WINDOW_AT_PIN} was measured against blob "
+        f"{STATISTICS_BLOB_AT_PIN} (dev commit {DEV_COMMIT_AT_PIN}). The rule "
+        "that produces the pinned window has moved, so the pin is unprovenanced "
+        "until someone re-derives it. Correct response: re-measure "
+        "select_tail for the pilot shape at the new blob, update "
+        "STATISTICS_BLOB_AT_PIN, DEV_COMMIT_AT_PIN and PILOT_WINDOW_AT_PIN "
+        "together in the same commit, and name the move in that commit "
+        f"message. Decision history is on Task Orchestrator item "
+        f"{DECISION_ITEM_ID}. Do not silence this by widening the assertion: "
+        "the whole point is that a stale pin should be visible as a stale pin "
+        "rather than as an arithmetic surprise somewhere downstream."
+    )
+
+
+def test_pilot_window_is_the_requested_fraction() -> None:
+    """Deliberate merge-order tripwire on ``select_tail``'s sub-floor resolution.
+
+    This is the only test here that pins a resolved window, and it is pinned on
+    purpose: the ``--allow-short-tail`` help used to describe the resolution
+    rule, went stale when the rule changed, and nothing caught it because
+    nothing pinned the value. The failure message below carries the whole
+    diagnosis, so a future reader does not have to reconstruct it.
+
+    The pin was ``PILOT_WINDOW_BEFORE_291`` until #291 reached dev. It fired
+    exactly as designed and was flipped in the commit that names the flip; the
+    history is kept in the message rather than deleted, because a bare ``== 500``
+    is what made the previous stale value invisible.
+    """
+
+    window = select_tail(
+        PILOT_LOGGED_STEPS,
+        DEFAULT_TAIL_FRACTION,
+        min_steps=MIN_TAIL_STEPS,
+        allow_below_floor=True,
+    )
+
+    assert window == PILOT_WINDOW_AT_PIN, (
+        f"select_tail resolved the pilot shape (total_steps={PILOT_LOGGED_STEPS}, "
+        f"fraction={DEFAULT_TAIL_FRACTION}, min_steps={MIN_TAIL_STEPS}, "
+        f"allow_below_floor=True) to {window}, not {PILOT_WINDOW_AT_PIN}. "
+        "This is a deliberate alarm, not a flaky test. Read the value before "
+        "changing anything, because the two failing values mean different "
+        "things and want different repairs.\n"
+        f"  window == {PILOT_WINDOW_BEFORE_291}: this branch is sitting on a "
+        "dev that PREDATES #291, where select_tail clipped the floor to the run "
+        "length so a sub-floor run kept its whole trace. That is a rebase "
+        "problem, not a statistics problem. #291 merged to dev as "
+        f"{MERGE_COMMIT_291}; confirm with `git merge-base --is-ancestor "
+        f"{MERGE_COMMIT_291} HEAD` before concluding anything, since a squash "
+        "merge leaves #291's own branch head an ancestor of nothing.\n"
+        "  any OTHER value: a real regression in select_tail, to be fixed "
+        "there and not here.\n"
+        f"For provenance: {PILOT_WINDOW_AT_PIN} was measured against "
+        f"experiments/baselines/statistics.py at blob {STATISTICS_BLOB_AT_PIN} "
+        f"(dev commit {DEV_COMMIT_AT_PIN}), where a below-floor run returns the "
+        "requested fraction. This lane argued for the whole trace instead, on "
+        "the grounds that it maximises information in the one regime where the "
+        f"run is definitionally short; the program ruled against that on "
+        f"{DECISION_DATE} and left #291's below-floor behaviour unchanged, in "
+        "part because select_tail takes no estimator argument, so a single "
+        "hard-coded fallback is necessarily wrong for one of its two callers. "
+        "No branch tip is quoted anywhere above: an open PR's head moves, so a "
+        "tip SHA here would decay into a false statement without anyone editing "
+        "this file. Blobs and merge commits are immutable and are what is "
+        f"quoted. Decision history is on Task Orchestrator item "
+        f"{DECISION_ITEM_ID}."
+    )
+
+
+def test_short_tail_help_does_not_state_a_resolution_rule(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The flag's help must describe the decision, not select_tail's arithmetic.
+
+    It previously promised that "the floor is clipped to the run length, so on
+    a short run this widens the window to the whole trace", which is a claim
+    about ``select_tail`` rather than about this flag, and would become false
+    the moment that rule changed. Help text is the one part of this adapter an
+    operator reads instead of the code, so a false sentence there is acted on.
+    """
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+    assert exit_info.value.code == 0
+
+    # argparse re-wraps help to the terminal width, so compare on collapsed
+    # whitespace rather than on the emitted line breaks.
+    help_text = " ".join(capsys.readouterr().out.split())
+
+    assert "--allow-short-tail" in help_text
+    # Asserted before the positive checks so that a reverted help string fails
+    # on the false claim itself rather than on a missing word.
+    for stale in (
+        "clipped to the run length",
+        "widens the window to the whole trace",
+    ):
+        assert stale not in help_text, f"help still asserts {stale!r}: {help_text}"
+    assert "provisional" in help_text
+    assert "select_tail" in help_text
 
 
 def test_drifting_series_is_flagged_monotone() -> None:

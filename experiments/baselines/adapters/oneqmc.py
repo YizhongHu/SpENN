@@ -1293,10 +1293,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--allow-short-tail",
         action="store_true",
         help=(
-            "accept a window below the floor for a short run; the record says so. "
-            "Note the floor is clipped to the run length, so on a short run this "
-            "widens the window to the whole trace unless --min-tail-steps is lowered "
-            "too"
+            "accept an estimator window below --min-tail-steps when the run is "
+            "too short to fill it, instead of refusing on that ground; the notes "
+            "then say the estimate is provisional. How wide the accepted window "
+            "ends up is select_tail's rule in experiments/baselines/statistics.py, "
+            "not this flag's, and that rule has changed there before -- read it "
+            "there rather than assuming a value. This flag does NOT relax the "
+            "separate MIN_BLOCKS floor: a window with too few steps to run one "
+            "blocking level is still refused, because its error bar would be an "
+            "uncorrected naive estimate. Two different floors, one flag, and it "
+            "only governs the first"
         ),
     )
     parser.add_argument("--code-commit", default=None)
