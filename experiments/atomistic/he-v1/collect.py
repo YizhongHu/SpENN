@@ -89,15 +89,53 @@ def _load_gates() -> ModuleType:
 
 gates = _load_gates()
 
-#: Energy columns retained for every evaluation row. ``local_energy_stderr`` is
-#: an IID standard error and is labelled as such wherever it is rendered; it is
-#: never presented as an MCSE.
+#: Energy columns retained for every evaluation row.
+#:
+#: TWO ESTIMANDS LIVE HERE AND THEY ARE NOT INTERCHANGEABLE. The ``local_energy_*``
+#: names without ``trajectory`` describe the FINAL DRAW ONLY -- a deliberate slice
+#: that discards ~99.6% of the sampled records -- while the ``trajectory`` family
+#: describes the whole retained chain. Both were already produced per row; only the
+#: snapshot was ever selected here, so it reached the report under an unqualified
+#: name and read as a trajectory estimate. ``report.py`` now names the estimator of
+#: every column, and the trajectory pair is the headline.
+#:
+#: ``local_energy_stderr`` is an IID standard error over the snapshot and is
+#: labelled as such wherever it is rendered; it is never presented as an MCSE.
+#: ``local_energy_mcse`` is the correlation-corrected bar and is the one to quote.
+#:
+#: ABSENT IS NOT ZERO, AND ABSENT MUST NOT FALL BACK. ``TrajectoryStatisticsSummary``
+#: withholds the payload statistics when Geyer's initial positive sequence never
+#: terminated inside the data, so a row can legitimately report
+#: ``..._trajectory_statistics_available`` false while carrying no mean, MCSE, ESS
+#: or tau -- measured on both ``*-diagnostics`` rows of the 42-row study, whose
+#: single-draw shape leaves no lags to sum. Such a row renders ``absent``. Falling
+#: back to the snapshot there would reinstate exactly the conflation this list
+#: exists to end, and would do it on precisely the rows that cannot support the
+#: claim. ``..._plateau_reached`` is retained beside the MCSE because a truncated
+#: sequence UNDERSTATES it, and a reader cannot otherwise tell a well-estimated bar
+#: from a clipped one.
 ENERGY_METRIC_KEYS: tuple[str, ...] = (
+    # Final-draw snapshot. Retained for continuity and comparison, no longer the
+    # headline.
     "local_energy_mean",
     "local_energy_stderr",
     "local_energy_variance",
     "local_energy_n_finite",
     "local_energy_nonfinite_count",
+    # Whole-trajectory estimates. Computed per row all along; selected by nothing
+    # until now, which is the entire defect.
+    "local_energy_trajectory_mean",
+    "local_energy_mcse",
+    "local_energy_trajectory_variance",
+    "local_energy_ess",
+    "local_energy_tau_int",
+    "local_energy_stderr_iid",
+    "local_energy_mcse_inflation",
+    # Quality of the two blocks above: whether the estimate resolved at all,
+    # whether its error bar is truncated, and how many draws it spans.
+    "local_energy_trajectory_statistics_available",
+    "local_energy_plateau_reached",
+    "local_energy_trajectory_total_draws",
     "reference_energy",
     "energy_error",
     "energy_abs_error",

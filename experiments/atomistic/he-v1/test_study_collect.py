@@ -38,7 +38,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Sequence
 
 import pytest
 
@@ -177,15 +177,45 @@ def qualified(namespace: str, key: str) -> str:
     return f"{namespace}{collect.NAMESPACE_SEPARATOR}{key}"
 
 
+#: Both estimands a real ``eval/mcmc_energy`` row emits, deliberately given
+#: DIFFERENT values. The snapshot mean is the final draw alone; the trajectory
+#: mean spans every retained draw and sits far closer to the reference. A fixture
+#: that gave them one value could not distinguish "the report headlines the
+#: trajectory" from "the report headlines the snapshot", which is the exact
+#: confusion these columns exist to end.
 ENERGY_METRICS: dict[str, Any] = {
+    # Final-draw snapshot.
     "local_energy_mean": -2.85,
     "local_energy_stderr": 0.004,
     "local_energy_variance": 0.02,
     "local_energy_n_finite": 1024,
     "local_energy_nonfinite_count": 0,
+    # Whole-trajectory estimate. ``mcse_inflation`` is mcse/stderr_iid exactly,
+    # as the producer computes it.
+    "local_energy_trajectory_mean": -2.9035,
+    "local_energy_mcse": 0.0009,
+    "local_energy_trajectory_variance": 0.0134,
+    "local_energy_ess": 900.0,
+    "local_energy_tau_int": 1.1,
+    "local_energy_stderr_iid": 0.0006,
+    "local_energy_mcse_inflation": 1.5,
+    "local_energy_trajectory_statistics_available": True,
+    "local_energy_plateau_reached": True,
+    "local_energy_trajectory_total_draws": 262144,
     "reference_energy": -2.903724377034119598,
     "energy_error": 0.0537,
     "energy_abs_error": 0.0537,
+}
+
+#: What the producer leaves on a row whose Geyer sequence never terminated inside
+#: the data: the availability and truncation flags survive, every payload
+#: statistic is withheld. Measured on both ``*-diagnostics`` rows of the 42-row
+#: study, whose shape left no lags to sum. Omitting rather than zero-filling is
+#: the producer's contract, so the collector and report must preserve it.
+UNRESOLVED_TRAJECTORY_METRICS: dict[str, Any] = {
+    "local_energy_trajectory_statistics_available": False,
+    "local_energy_plateau_reached": False,
+    "local_energy_max_lag": 0,
 }
 
 
@@ -1020,6 +1050,167 @@ def test_report_round_trips_through_disk(study: dict[str, Any]) -> None:
     reread = report.read_collected(study["root"], "C1")
     path = report.write_report(reread, results_root=study["root"], attempt_id="R1")
     assert path.read_text(encoding="utf-8") == report.render(collected)
+
+
+def _rows_table(text: str) -> tuple[list[str], dict[str, list[str]]]:
+    """Parse the report's Rows table into its header and one entry per row_id.
+
+    Cells are located by HEADER TEXT rather than by position, so inserting a
+    column cannot silently move an assertion onto its neighbour while the test
+    keeps passing.
+    """
+
+    section = text.split("## Rows", 1)[1].split("## ", 1)[0]
+    table = [line for line in section.splitlines() if line.startswith("|")]
+    header = [cell.strip() for cell in table[0].strip("|").split("|")]
+    rows: dict[str, list[str]] = {}
+    for line in table[2:]:  # [1] is the markdown separator
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        rows[cells[0].strip("`")] = cells
+    return header, rows
+
+
+def _cell_for(header: Sequence[str], cells: Sequence[str], label: str) -> str:
+    """Return the cell under the one column whose header contains ``label``."""
+
+    matches = [index for index, name in enumerate(header) if label in name]
+    assert len(matches) == 1, f"{label!r} matched {len(matches)} columns in {header}"
+    return cells[matches[0]]
+
+
+def test_a_multi_draw_row_headlines_the_trajectory_not_the_snapshot(
+    study: dict[str, Any],
+) -> None:
+    """The canonical energy is the whole chain; the snapshot is kept but demoted.
+
+    The fixture gives the two estimands DIFFERENT values on purpose, so this
+    cannot pass by them coinciding. Both must be present -- the snapshot is
+    retained for comparison -- but the headline column has to carry the
+    trajectory number.
+    """
+
+    manifest = study["manifest"]
+    eval_row = next(row for row in manifest["rows"] if row["kind"] == "eval")
+    text = report.render(_collect(study))
+    header, rows = _rows_table(text)
+    cells = rows[eval_row["row_id"]]
+
+    assert _cell_for(header, cells, "whole-trajectory estimate") == "-2.9035"
+    assert _cell_for(header, cells, "MCSE, correlation-corrected") == "0.0009"
+    # The snapshot survives, labelled, and is NOT what the headline shows.
+    assert _cell_for(header, cells, "final-draw snapshot, not the trajectory") == "-2.85"
+    assert _cell_for(header, cells, "IID stderr (not an MCSE)") == "0.004"
+
+
+def test_unresolved_trajectory_statistics_render_absent_and_never_borrow_the_snapshot(
+    study: dict[str, Any],
+) -> None:
+    """The defect this slice removes must not come back on the very rows that
+    cannot support the claim.
+
+    A row whose Geyer sequence never terminated has no trajectory mean and no
+    MCSE. Filling those cells from the final-draw snapshot would restate a
+    snapshot as a trajectory estimate -- exactly the conflation being fixed, and
+    on the rows least able to bear it. ``absent`` is the only honest cell.
+    """
+
+    manifest = study["manifest"]
+    eval_row = next(row for row in manifest["rows"] if row["kind"] == "eval")
+    metrics = {**HEALTHY_METRICS, **ENERGY_METRICS}
+    for key in (
+        "local_energy_trajectory_mean",
+        "local_energy_mcse",
+        "local_energy_trajectory_variance",
+        "local_energy_ess",
+        "local_energy_tau_int",
+        "local_energy_stderr_iid",
+        "local_energy_mcse_inflation",
+    ):
+        metrics.pop(key)
+    metrics.update(UNRESOLVED_TRAJECTORY_METRICS)
+    _materialize_row(study["root"], manifest, eval_row, metrics=metrics)
+
+    text = report.render(_collect(study))
+    header, rows = _rows_table(text)
+    cells = rows[eval_row["row_id"]]
+
+    assert _cell_for(header, cells, "whole-trajectory estimate") == "absent"
+    assert _cell_for(header, cells, "MCSE, correlation-corrected") == "absent"
+    # The snapshot is still there -- absence of the trajectory estimate is not
+    # absence of data -- which is precisely why a fallback would be so easy and
+    # so wrong.
+    assert _cell_for(header, cells, "final-draw snapshot, not the trajectory") == "-2.85"
+
+
+def test_a_truncated_sequence_is_flagged_beside_the_bar_it_understates(
+    study: dict[str, Any],
+) -> None:
+    """``plateau_reached`` false means the MCSE is UNDERSTATED, not merely noted.
+
+    This is the dangerous case: a bar that resolved, looks ordinary, and is too
+    small. A reader who cannot see the flag beside the number has no way to tell
+    it from a well-estimated one.
+    """
+
+    manifest = study["manifest"]
+    eval_rows = [row for row in manifest["rows"] if row["kind"] == "eval"]
+    # Stated rather than assumed: the contrast below needs two eval rows, and a
+    # shrunken fixture should say so instead of raising IndexError.
+    assert len(eval_rows) >= 2
+    truncated, healthy = eval_rows[0], eval_rows[1]
+    metrics = {**HEALTHY_METRICS, **ENERGY_METRICS, "local_energy_plateau_reached": False}
+    _materialize_row(study["root"], manifest, truncated, metrics=metrics)
+
+    text = report.render(_collect(study))
+    header, rows = _rows_table(text)
+
+    # `absence.render` emits booleans lowercase, JSON-style, for CSV compatibility.
+    assert _cell_for(header, rows[truncated["row_id"]], "plateau") == "false"
+    # Discriminating: an untruncated row on the same table reads the other way, so
+    # this cannot pass by every row rendering the same thing.
+    assert _cell_for(header, rows[healthy["row_id"]], "plateau") == "true"
+    # The bar itself still resolved -- that is what makes this the dangerous case.
+    assert _cell_for(header, rows[truncated["row_id"]], "MCSE, correlation-corrected") == "0.0009"
+    assert "UNDERSTATED" in text
+
+
+def test_a_trajectory_key_logged_under_two_namespaces_is_not_guessed(
+    study: dict[str, Any],
+) -> None:
+    """A collision on a headline metric fails loudly rather than picking one.
+
+    Because these keys are now REQUESTED by the collector, an unresolved
+    collision on them is not tolerated the way an unarmed gate metric is: the
+    row fails and both namespaces are named. Silently choosing either value
+    would attribute an energy to a task that did not produce it.
+    """
+
+    manifest = study["manifest"]
+    eval_row = next(row for row in manifest["rows"] if row["kind"] == "eval")
+    _materialize_row(
+        study["root"],
+        manifest,
+        eval_row,
+        extra_namespaces={
+            "eval/factor_response_re_equilibrated": {
+                "local_energy_trajectory_mean": -2.5,
+                "local_energy_mcse": 0.07,
+            }
+        },
+    )
+
+    collected = _collect(study)
+    row = next(r for r in collected["rows"] if r["identity"]["row_id"] == eval_row["row_id"])
+    assert row["status"] == "fail"
+    reasons = " ".join(row["reasons"])
+    assert "eval/mcmc_energy" in reasons
+    assert "eval/factor_response_re_equilibrated" in reasons
+
+    header, rows = _rows_table(report.render(collected))
+    cells = rows[eval_row["row_id"]]
+    # Neither candidate value is shown.
+    assert _cell_for(header, cells, "whole-trajectory estimate") == "absent"
+    assert _cell_for(header, cells, "MCSE, correlation-corrected") == "absent"
 
 
 PURITY_METRIC = "triplet_fraction_mean_under_psi_orig_sq"
