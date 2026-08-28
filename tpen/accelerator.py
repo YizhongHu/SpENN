@@ -185,13 +185,7 @@ class DeviceEventTimer:
         try:
             end_event = self._event_factory(enable_timing=True)
             end_event.record()
-            event_synchronize = getattr(end_event, "synchronize", None)
-            if callable(event_synchronize):
-                event_synchronize()
-            else:
-                # Older backends expose no event-local wait. Keep this fallback
-                # explicit and isolated to the opt-in device-event backend.
-                self._module.synchronize()
+            self._module.synchronize()
             return float(start_event.elapsed_time(end_event)) / 1_000.0
         finally:
             self._start_event = None

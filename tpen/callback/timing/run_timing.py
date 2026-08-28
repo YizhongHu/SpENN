@@ -11,7 +11,7 @@ from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, TimingSource, _occurrence_time, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class RunTiming(Callback):
@@ -56,8 +56,6 @@ class RunTiming(Callback):
         accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
         wall_clock: Callable[[], float] | None = None,
-        timing_backend: Any | None = None,
-        device_backend: Any | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -77,8 +75,7 @@ class RunTiming(Callback):
         self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
         self.wall_clock = time.time if wall_clock is None else wall_clock
-        self._timing = TimingSource(clock=self.clock, backend=timing_backend, device_backend=device_backend)
-        self._start_perf: tuple[Any, Any | None] | None = None
+        self._start_perf: float | None = None
 
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
@@ -96,26 +93,21 @@ class RunTiming(Callback):
             self._log_end(occurrence, context, failed=True)
 
     def _start(self, occurrence: Occurrence[TypedEvent], context: RunContext) -> None:
-        if self.accelerator_synchronize:
-            _sync_device(True)
-        self._start_perf = self._timing.start(_occurrence_time(occurrence, self.clock))
+        _sync_device(self.accelerator_synchronize)
+        self._start_perf = _occurrence_time(occurrence, self.clock)
         if self.log_start_end_timestamps:
             context.log({"start_time_unix": self.wall_clock()}, step=0, namespace="runtime")
 
     def _log_end(
         self, occurrence: Occurrence[TypedEvent], context: RunContext, *, failed: bool
     ) -> None:
-        if self.accelerator_synchronize:
-            _sync_device(True)
+        _sync_device(self.accelerator_synchronize)
+        now = _occurrence_time(occurrence, self.clock)
         metrics: dict[str, float | bool] = {}
         if self.log_start_end_timestamps:
             metrics["end_time_unix"] = self.wall_clock()
-        if self._start_perf is not None:
-            elapsed = self._timing.elapsed(self._start_perf, _occurrence_time(occurrence, self.clock))
-            if self.log_wall_time:
-                metrics["wall_time_sec"] = elapsed.host
-            if elapsed.device is not None:
-                metrics["device_wall_time_sec"] = elapsed.device
+        if self.log_wall_time and self._start_perf is not None:
+            metrics["wall_time_sec"] = now - self._start_perf
         if failed:
             metrics["failed"] = True
         if metrics:

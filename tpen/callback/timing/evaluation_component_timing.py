@@ -11,7 +11,7 @@ from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Operation, Started, ended, started
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, TimingSource, _occurrence_time, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class EvaluationComponentTiming(Callback):
@@ -53,8 +53,6 @@ class EvaluationComponentTiming(Callback):
         *,
         accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
-        timing_backend: Any | None = None,
-        device_backend: Any | None = None,
         **kwargs: Any,
     ) -> None:
         # Deferred so that importing ``tpen.callback.timing`` stays torch-free;
@@ -82,7 +80,6 @@ class EvaluationComponentTiming(Callback):
         )
         self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
-        self._timing = TimingSource(clock=self.clock, backend=timing_backend, device_backend=device_backend)
         self._task_run_type = EvaluationTaskRun
         self._component_run_type = ComponentRun
         self._generator_run_type = GeneratorRun
@@ -91,7 +88,7 @@ class EvaluationComponentTiming(Callback):
         self._task: str | None = None
         # Keyed by the paired scope coordinate ``(concrete type, count)`` so
         # Started and Ended always match; the value carries the owning task.
-        self._starts: dict[tuple[type[object], int], tuple[str, str, tuple[Any, Any | None]]] = {}
+        self._starts: dict[tuple[type[object], int], tuple[str, str, float]] = {}
         self._durations: dict[str, dict[str, float]] = {}
 
     def handle_occurrence_impl(
@@ -130,7 +127,7 @@ class EvaluationComponentTiming(Callback):
             )
         metric_key = self._metric_key(operation)
         _sync_device(self.accelerator_synchronize)
-        self._starts[key] = (task, metric_key, self._timing.start(timestamp))
+        self._starts[key] = (task, metric_key, timestamp)
 
     def _record_end(self, key: tuple[type[object], int], timestamp: float) -> None:
         """Accumulate one component duration under its task."""
@@ -140,12 +137,8 @@ class EvaluationComponentTiming(Callback):
             return
         _sync_device(self.accelerator_synchronize)
         task, metric_key, start = start_record
-        elapsed = self._timing.elapsed(start, timestamp)
         durations = self._durations.setdefault(task, {})
-        durations[metric_key] = durations.get(metric_key, 0.0) + elapsed.host
-        if elapsed.device is not None:
-            device_key = metric_key.replace("_time_sec", "_device_time_sec")
-            durations[device_key] = durations.get(device_key, 0.0) + elapsed.device
+        durations[metric_key] = durations.get(metric_key, 0.0) + (timestamp - start)
 
     def _metric_key(self, operation: Operation) -> str:
         """Return the durable metric key for one component operation."""

@@ -245,7 +245,6 @@ _DASHBOARD_ALIASES = {
     "train/grad_norm": "dashboard/grad_norm",
     "train/local_energy_finite_fraction": "dashboard/local_energy_finite_fraction",
     "train/perf/step_time_sec": "dashboard/step_time_sec",
-    "train/perf/step_device_time_sec": "dashboard/step_device_time_sec",
 }
 
 
