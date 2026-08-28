@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.3.3 - Trajectory energy estimand correction
+
+This release distinguishes the Stage 0 He-v1 trajectory energy estimate from
+the previous final-draw snapshot headline. The canonical report now uses the
+whole-trajectory estimate together with its Monte Carlo standard error.
+
 ## v0.3.2 - Current-dev baseline release
 
 Covers the exact 29-commit `origin/main..origin/dev` range ending at
