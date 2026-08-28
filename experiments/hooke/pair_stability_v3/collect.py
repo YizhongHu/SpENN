@@ -71,6 +71,7 @@ from experiments.toolkit.cost import (  # noqa: E402
     cost_by_run_row,
     cost_by_task_rows,
 )
+from experiments.toolkit.timing import provenance_from_metadata  # noqa: E402
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 
@@ -332,6 +333,11 @@ def _run_device(attempt_dir: Path) -> str:
     return str(runtime.get("device", metadata.get("device", "")))
 
 
+def _timing_receipt(attempt_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return only explicit timing provenance/allocation metadata."""
+    return provenance_from_metadata(load_json_dict_if_present(attempt_dir / "metadata.json"))
+
+
 def _cost_tables(
     rows: Sequence[dict[str, Any]],
     consumed: Sequence[dict[str, Any]],
@@ -350,6 +356,7 @@ def _cost_tables(
         axes = {axis: row.get(axis, "") for axis in run_axes}
         validation_metrics = read_metrics_rows(attempt_dir / "metrics.jsonl")
         device = _run_device(attempt_dir)
+        provenance, allocation = _timing_receipt(attempt_dir)
         cost_rows.append(
             cost_by_run_row(
                 validation_metrics,
@@ -359,6 +366,10 @@ def _cost_tables(
                 status=str(row["status"]),
                 device_type=device,
                 axes=axes,
+                warmup_steps=0,
+                provenance=provenance,
+                allocation=allocation,
+                identity_required=True,
             )
         )
         task_rows.extend(
@@ -374,6 +385,7 @@ def _cost_tables(
         source = read_json(source_path) if source_path.is_file() else {}
         train_dir = _train_attempt_dir(source)
         if train_dir is not None and train_dir.is_dir():
+            train_provenance, train_allocation = _timing_receipt(train_dir)
             cost_rows.append(
                 cost_by_run_row(
                     read_metrics_rows(train_dir / "metrics.jsonl"),
@@ -381,8 +393,12 @@ def _cost_tables(
                     attempt_id=str(source.get("train_attempt_id", "")),
                     stage="train",
                     status=status_of(train_dir),
-                    device_type=_run_device(train_dir),
-                    axes=axes,
+                device_type=_run_device(train_dir),
+                axes=axes,
+                warmup_steps=0,
+                provenance=train_provenance,
+                allocation=train_allocation,
+                identity_required=True,
                 )
             )
     return cost_rows, task_rows
