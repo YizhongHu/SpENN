@@ -2,7 +2,7 @@
 #PBS -N nnqmc-baselines
 #PBS -A HetRxnEnergy
 #PBS -q @QUEUE@
-#PBS -l select=@NODES@:system=polaris
+#PBS -l select=@NODES@:system=polaris:ngpus=4
 #PBS -l walltime=@WALLTIME@
 #PBS -l filesystems=home:eagle
 #PBS -l place=scatter
