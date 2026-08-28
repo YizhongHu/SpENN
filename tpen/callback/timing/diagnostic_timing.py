@@ -20,7 +20,7 @@ from tpen.events import Occurrence, Started, ended, started
 
 from ..base import StatefulCallback
 from ..cadence import SubscriptionGroup
-from .base import TimingSource, _occurrence_time, _sync_device
+from .base import _occurrence_time, _sync_device
 
 
 class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
@@ -62,8 +62,6 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
         *,
         accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
-        timing_backend: Any | None = None,
-        device_backend: Any | None = None,
         **kwargs: Any,
     ) -> None:
         from tpen.evaluation.events import EvaluationTaskRun
@@ -78,10 +76,9 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
         )
         self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
-        self._timing = TimingSource(clock=self.clock, backend=timing_backend, device_backend=device_backend)
         self._task_run_type = EvaluationTaskRun
         # Keyed by the paired scope coordinate so Started and Ended always match.
-        self._starts: dict[tuple[type[object], int], tuple[Any, Any | None]] = {}
+        self._starts: dict[tuple[type[object], int], float] = {}
 
     def handle_occurrence_impl(
         self,
@@ -100,7 +97,7 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
         key = (type(operation), occurrence.count)
         if isinstance(event, Started):
             _sync_device(self.accelerator_synchronize)
-            self._starts[key] = self._timing.start(_occurrence_time(occurrence, self.clock))
+            self._starts[key] = _occurrence_time(occurrence, self.clock)
             return
         if key not in self._starts:
             return
@@ -115,12 +112,9 @@ class DiagnosticTiming(StatefulCallback[EvaluationRunState]):
             self._starts.pop(key)
             return
         _sync_device(self.accelerator_synchronize)
-        elapsed = self._timing.elapsed(
-            self._starts.pop(key), _occurrence_time(occurrence, self.clock)
-        )
-        metrics: dict[str, float | bool] = {"time_sec": elapsed.host}
-        if elapsed.device is not None:
-            metrics["device_time_sec"] = elapsed.device
+        metrics: dict[str, float | bool] = {
+            "time_sec": _occurrence_time(occurrence, self.clock) - self._starts.pop(key)
+        }
         if result.failed:
             metrics["failed"] = True
         # The task identity rides the typed operation, and evaluation's step

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import ContextManager, Generic, Protocol, TypeVar
 
 
@@ -44,22 +43,6 @@ class TrainingTiming:
 
     step_time_sec: float
     step_time_sec_rolling_mean: float
-    step_device_time_sec: float | None = None
-
-    def __post_init__(self) -> None:
-        """Validate host and optional device durations at the typed boundary."""
-
-        for name, value in (
-            ("step_time_sec", self.step_time_sec),
-            ("step_time_sec_rolling_mean", self.step_time_sec_rolling_mean),
-            ("step_device_time_sec", self.step_device_time_sec),
-        ):
-            if value is None and name == "step_device_time_sec":
-                continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TypeError(f"{name} must be a real duration or None")
-            if not math.isfinite(float(value)) or value < 0:
-                raise ValueError(f"{name} must be finite and non-negative, got {value!r}")
 
 
 class TrainingTimingState(DomainState):

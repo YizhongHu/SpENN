@@ -11,7 +11,7 @@ from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunFailed
 
 from ..cadence import SubscriptionGroup
-from .base import Callback, TimingSource, _occurrence_time, _sync_device
+from .base import Callback, _occurrence_time, _sync_device
 
 
 class EvaluationTiming(Callback):
@@ -53,8 +53,6 @@ class EvaluationTiming(Callback):
         *,
         accelerator_synchronize: bool = False,
         clock: Callable[[], float] | None = None,
-        timing_backend: Any | None = None,
-        device_backend: Any | None = None,
         **kwargs: Any,
     ) -> None:
         # Importing ``tpen.callback.timing`` must stay torch-free, and importing
@@ -78,10 +76,9 @@ class EvaluationTiming(Callback):
         )
         self.accelerator_synchronize = bool(accelerator_synchronize)
         self.clock = time.perf_counter if clock is None else clock
-        self._timing = TimingSource(clock=self.clock, backend=timing_backend, device_backend=device_backend)
         self._started_type = EvaluationStarted
         self._completed_type = EvaluationCompleted
-        self._start: tuple[Any, Any | None] | None = None
+        self._start: float | None = None
 
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
@@ -103,7 +100,7 @@ class EvaluationTiming(Callback):
 
     def _start_timing(self, occurrence: Occurrence[TypedEvent]) -> None:
         _sync_device(self.accelerator_synchronize)
-        self._start = self._timing.start(_occurrence_time(occurrence, self.clock))
+        self._start = _occurrence_time(occurrence, self.clock)
 
     def _log_end(
         self, occurrence: Occurrence[TypedEvent], context: RunContext, *, failed: bool
@@ -111,10 +108,9 @@ class EvaluationTiming(Callback):
         if self._start is None:
             return
         _sync_device(self.accelerator_synchronize)
-        elapsed = self._timing.elapsed(self._start, _occurrence_time(occurrence, self.clock))
-        metrics: dict[str, float | bool] = {"wall_time_sec": elapsed.host}
-        if elapsed.device is not None:
-            metrics["device_wall_time_sec"] = elapsed.device
+        metrics: dict[str, float | bool] = {
+            "wall_time_sec": _occurrence_time(occurrence, self.clock) - self._start
+        }
         if failed:
             metrics["failed"] = True
         # Evaluation has no step coordinate: its coordinate is a task namespace

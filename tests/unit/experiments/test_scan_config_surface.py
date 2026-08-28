@@ -704,18 +704,32 @@ def test_the_eval_stage_requires_an_injected_checkpoint_path() -> None:
     assert _raw("eval").load.strict is True
 
 
-def test_the_timing_cadence_knob_is_explicit_for_both_timing_callbacks() -> None:
-    """Both timing callbacks use the durable-step cadence contract.
+def test_the_timing_cadence_knob_is_passed_only_where_it_works() -> None:
+    """`every_n_steps` throttles `TrainPhaseTiming` and is inert on `TrainStepTiming`.
 
-    The configured value is passed to both callbacks and evaluated against the
-    typed durable step, so resume reconstruction cannot reset the schedule.
+    Measured on a 60-step GPU smoke: 6 phase rows, 60 step rows, from one
+    ``every_n_steps: 10``. The asymmetry is real. `TrainPhaseTiming` pops the
+    kwarg and builds its own report `Cadence` (``train_phase_timing.py:64-74``);
+    `TrainStepTiming` forwards it to the base, which stores it as an attribute
+    (``callback/base.py:104``) while typed delivery is gated by
+    ``SubscriptionGroup(cadence=...)`` — and that callback builds its group
+    without one, so every occurrence is delivered.
+
+    So the kwarg is passed to the callback that honours it and withheld from the
+    one that does not. Passing it to both would read as a throttle on the step
+    stream and silently be nothing, which is worse than the untuned default: it
+    would make a ~500-row-per-run `train/perf` stream look like a ~50-row one in
+    any cost estimate built from the config.
     """
 
     registered = {entry._target_: entry for entry in _raw("train").callbacks}
     step_timing = registered["tpen.callback.TrainStepTiming"]
     phase_timing = registered["tpen.callback.TrainPhaseTiming"]
 
-    assert step_timing.every_n_steps == _config("train").timing.every_n_steps
+    assert "every_n_steps" not in step_timing, (
+        "every_n_steps is inert on TrainStepTiming; passing it claims a throttle "
+        "that does not exist"
+    )
     assert step_timing.rolling_window >= 20, "the rolling mean is what carries the signal"
     assert phase_timing.every_n_steps == _config("train").timing.every_n_steps
     assert _config("train").timing.every_n_steps > 1
