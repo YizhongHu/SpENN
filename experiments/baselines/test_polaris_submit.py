@@ -82,6 +82,7 @@ def test_mpi_is_only_the_template_launcher() -> None:
     template = (Path(__file__).with_name("templates") / "polaris_production.pbs").read_text()
     assert "mpiexec -n @ROW_COUNT@ -ppn 4" in template
     assert "select=@NODES@:system=polaris:ngpus=4" in template
+    assert '"$TPEN_MANIFEST" "$TPEN_RESULTS_ROOT"' in template
     assert "mpi4py" not in template
     assert "DDP" not in template
     assert "#PBS -r n" in template

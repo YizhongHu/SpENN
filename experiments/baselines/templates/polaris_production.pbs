@@ -35,4 +35,4 @@ export PYTHONPATH="${TPEN_CHECKOUT:?}${PYTHONPATH:+:$PYTHONPATH}"
 # Python process and binds one local GPU before importing JAX.
 mpiexec -n @ROW_COUNT@ -ppn 4 \
   "$TPEN_CHECKOUT/experiments/baselines/templates/polaris_worker.sh" \
-  --manifest "$TPEN_MANIFEST" --results-root "$TPEN_RESULTS_ROOT"
+  "$TPEN_MANIFEST" "$TPEN_RESULTS_ROOT"
