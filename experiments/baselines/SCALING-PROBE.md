@@ -23,10 +23,14 @@ FermiNet's MCMC construction call and emits a blocking-error training-tail
 energy after the run. It instruments the public call boundary at runtime; it
 does not modify FermiNet.
 
-After all arms are complete, run `scaling_probe.py summarize` over the arm JSON
-files. The summary compares each N-GPU energy to the matching 1-GPU arm using
-combined statistical error, then and only then reports the warm-up-cut-100
-speed efficiency `t1 / (N * tN)`. It also retains independent 100 through 400
+After a 1-GPU arm and *before* advancing each higher-GPU rung, run
+`scaling_probe.py gate` over that baseline and candidate JSON. It writes the
+same structured comparison as `summarize` but exits non-zero unless each arm
+has valid process evidence and their energies agree within combined statistical
+error. A scheduler script should use that exit status to stop the ladder at a
+wrong arm. After the completed ladder, `scaling_probe.py summarize` writes the
+full table and reports warm-up-cut-100 speed efficiency `t1 / (N * tN)` only
+for correctness-passing arms. It also retains independent 100 through 400
 warm-up-cut fits plus consecutive-interval min, max, and median. Do not average
 rates across systems or GPU counts.
 
