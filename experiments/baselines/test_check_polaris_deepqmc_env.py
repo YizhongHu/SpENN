@@ -465,6 +465,19 @@ def test_valid_yaml_spellings_of_the_same_key_are_not_refused(
     assert found["line_number"] == 2
 
 
+def test_a_yaml_merge_key_seed_is_reported_not_refused(tmp_path: Path) -> None:
+    """A merge key resolves task.seed with no `seed:` line inside the task block.
+
+    Named by an independent verifier alongside the spelling cases. It is valid
+    YAML and a legitimate Hydra shape, so refusing it would reject a real config;
+    the value is verified and the absent evidence is stated.
+    """
+    text = "defaults: &d\n  seed: 7\ntask:\n  <<: *d\n"
+    found = read_seed(_run_dir(tmp_path, text))
+    assert found["seed"] == 7
+    assert found["evidence_available"] is False
+
+
 def test_a_seed_with_no_quoteable_line_is_reported_not_refused(tmp_path: Path) -> None:
     """Inline flow style carries a real value and no line to quote.
 

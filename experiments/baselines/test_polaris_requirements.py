@@ -16,6 +16,7 @@ this suite because the CUDA wheels are Linux-only.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REQUIREMENTS = Path(__file__).parent / "polaris_deepqmc_requirements.txt"
@@ -110,6 +111,19 @@ FULL_REFERENCE = {
 MUST_BE_ABSENT = ("e3nn-jax", "tensorboard")
 
 
+def _normalise(name: str) -> str:
+    """PEP 503 name normalisation.
+
+    Previously this only lowercased and mapped underscores to hyphens, so a name
+    differing by a DOT -- which PEP 503 also folds -- would have been reported as
+    a mismatch rather than recognised as the same distribution. No current name
+    contains a dot, so the shortcut happened to work; it is the kind of
+    almost-right that fails when the input set changes rather than when the code
+    does.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _pins() -> dict[str, str]:
     pins: dict[str, str] = {}
     for line in REQUIREMENTS.read_text().splitlines():
@@ -117,8 +131,16 @@ def _pins() -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         name, _, version = line.partition("==")
-        pins[name.strip().lower().replace("_", "-")] = version.strip()
+        pins[_normalise(name.strip())] = version.strip()
     return pins
+
+
+def test_normalisation_folds_dots_underscores_and_case_alike() -> None:
+    """PEP 503 folds -, _ and . to a single hyphen and lowercases."""
+    assert _normalise("jax_dataclasses") == "jax-dataclasses"
+    assert _normalise("PyYAML") == "pyyaml"
+    assert _normalise("zope.interface") == "zope-interface"
+    assert _normalise("Foo__Bar.baz") == "foo-bar-baz"
 
 
 def test_the_load_bearing_pins_are_exactly_the_reference_versions() -> None:
@@ -155,7 +177,7 @@ def test_every_pin_matches_the_full_reference_environment() -> None:
     already was, and the gap is everywhere else.
     """
     pins = _pins()
-    expected = {name.lower().replace("_", "-"): v for name, v in FULL_REFERENCE.items()}
+    expected = {_normalise(name): v for name, v in FULL_REFERENCE.items()}
     assert pins == expected, {
         "only_in_file": {k: v for k, v in pins.items() if expected.get(k) != v},
         "only_in_reference": {k: v for k, v in expected.items() if pins.get(k) != v},
