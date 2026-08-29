@@ -370,6 +370,21 @@ def summarize_ladder(paths: Sequence[str | Path]) -> dict[str, Any]:
     return {"schema": SCHEMA, "ladder": results}
 
 
+def correctness_gate_passed(summary: dict[str, Any]) -> bool:
+    """Return whether every supplied ladder result clears scientific correctness.
+
+    A caller supplies a matching 1-GPU reference and a prospective higher-GPU
+    rung.  Keeping this check in the reusable probe lets a scheduler script
+    stop immediately after a wrong arm, before it can spend an allocation on
+    timing a numerically invalid ladder.
+    """
+
+    ladder = summary.get("ladder")
+    if not isinstance(ladder, list) or not ladder:
+        raise ScalingProbeError("correctness gate requires a non-empty ladder summary")
+    return all(isinstance(entry, dict) and entry.get("correctness") == "passed" for entry in ladder)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -391,6 +406,9 @@ def _parser() -> argparse.ArgumentParser:
     summary = subparsers.add_parser("summarize", help="compare structured arms with 1-GPU baselines")
     summary.add_argument("--output", type=Path, required=True)
     summary.add_argument("results", nargs="+", type=Path)
+    gate = subparsers.add_parser("gate", help="write a comparison and fail if any arm is scientifically invalid")
+    gate.add_argument("--output", type=Path, required=True)
+    gate.add_argument("results", nargs="+", type=Path)
     return parser
 
 
@@ -422,6 +440,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = summarize_ladder(args.results)
         args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(summary, indent=2, sort_keys=True))
+        if args.action == "gate":
+            return 0 if correctness_gate_passed(summary) else 1
         return 0
     except ScalingProbeError as exc:
         print(f"error: {exc}", file=sys.stderr)

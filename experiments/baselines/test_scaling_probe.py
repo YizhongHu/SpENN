@@ -69,6 +69,7 @@ def test_summary_stops_scaling_when_energy_disagrees(tmp_path: Path) -> None:
     summary = scaling_probe.summarize_ladder([one, four])
     assert summary["ladder"][1]["correctness"] == "failed"
     assert summary["ladder"][1]["scaling"] == "unassessed"
+    assert not scaling_probe.correctness_gate_passed(summary)
 
 
 def test_summary_reports_combined_error_and_efficiency(tmp_path: Path) -> None:
@@ -81,6 +82,7 @@ def test_summary_reports_combined_error_and_efficiency(tmp_path: Path) -> None:
     summary = scaling_probe.summarize_ladder([one, two])
     assert summary["ladder"][1]["correctness"] == "passed"
     assert summary["ladder"][1]["efficiency"] == pytest.approx(0.04 / (2 * 0.024))
+    assert scaling_probe.correctness_gate_passed(summary)
 
 
 def test_run_arm_writes_microsecond_wrapper_log_and_structured_result(tmp_path: Path) -> None:
