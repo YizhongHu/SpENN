@@ -9,6 +9,7 @@ import torch
 from tpen.evaluation.bundle import EvaluationBundle
 from tpen.evaluation.protocols import EvaluationContext
 from tpen.evaluation.results import MetricScalar, SummaryResult
+from tpen.physics.terms import PHYSICAL_TERM_NAMES, summarize_physical_terms
 
 
 class HamiltonianTermSummary:
@@ -38,6 +39,8 @@ class HamiltonianTermSummary:
             variance = finite.var(unbiased=False) if finite.numel() > 1 else torch.zeros((), dtype=finite.dtype, device=finite.device)
             metrics[f"term/{name}_mean"] = float(finite.mean().item())
             metrics[f"term/{name}_variance"] = float(variance.item())
+        if all(name in local.term_energies for name in PHYSICAL_TERM_NAMES):
+            metrics.update(summarize_physical_terms(local.term_energies))
         return SummaryResult(metrics=metrics)
 
 

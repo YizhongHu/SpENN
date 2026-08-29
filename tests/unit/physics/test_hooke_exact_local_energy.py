@@ -7,6 +7,9 @@ local energy is the exact eigenvalue everywhere (and has near-zero variance).
 
 from __future__ import annotations
 
+import math
+
+import pytest
 import torch
 
 from tpen.data.batch import ElectronBatch
@@ -14,6 +17,7 @@ from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
 from tpen.physics.hooke import HookeSingletExact, HookeTripletExact
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.physics.terms import summarize_physical_terms
 
 DTYPE = torch.float64
 BATCH_SIZE = 64
@@ -75,6 +79,31 @@ def test_singlet_local_energy_variance_near_zero() -> None:
     eloc = local_energy(terms, wf, batch)
     assert isinstance(eloc, torch.Tensor)
     assert eloc.var().item() < VARIANCE_ATOL
+
+
+def test_exact_singlet_physical_term_summary_reports_virial_diagnostic() -> None:
+    wf = HookeSingletExact()
+    result = local_energy(_hooke_terms(wf), wf, ElectronBatch(positions=_singlet_positions()), return_terms=True)
+    metrics = summarize_physical_terms(result.terms)
+
+    # This diagnostic vanishes only for an exact eigenstate averaged under
+    # |psi|^2. Neither this fixed point set nor a finite walker sample provides
+    # that exact expectation, so do not assert that it vanishes here.
+    assert math.isfinite(metrics["virial_residual"])
+    assert math.isfinite(metrics["virial_relative_residual"])
+
+
+def test_physical_term_summary_matches_virial_formula() -> None:
+    metrics = summarize_physical_terms(
+        {
+            "kinetic": torch.tensor([1.0, 3.0], dtype=DTYPE),
+            "harmonic_trap": torch.tensor([2.0, 4.0], dtype=DTYPE),
+            "electron_electron": torch.tensor([0.5, 1.5], dtype=DTYPE),
+        }
+    )
+
+    assert metrics["virial_residual"] == pytest.approx(-1.0)
+    assert metrics["virial_relative_residual"] == pytest.approx(1.0 / 11.0)
 
 
 def test_triplet_local_energy_constant_at_exact_energy() -> None:

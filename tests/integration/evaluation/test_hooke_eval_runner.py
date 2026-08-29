@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -584,6 +585,15 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     assert metrics["local_energy_variance"] < variance_max
     for term in ("kinetic", "harmonic_trap", "electron_electron"):
         assert f"term/{term}_mean" in metrics
+        assert f"term/{term}_variance" in metrics
+    assert "virial_residual" in metrics
+    assert "virial_relative_residual" in metrics
+    assert math.isfinite(metrics["virial_residual"])
+    assert math.isfinite(metrics["virial_relative_residual"])
+    # This sampled estimator has finite-walker noise, and neither this sample
+    # nor the fixed-point unit fixture is an exact |psi|^2 expectation. A
+    # restricted variational ansatz need not have a vanishing residual because
+    # the identity requires dilation stationarity.
     assert metrics["sampler_n_walkers"] == 512
     assert "acceptance_rate" in {key.removeprefix("sampler_") for key in metrics}
     assert "wall_time_sec" in _metrics(tmp_path, "eval/perf")
