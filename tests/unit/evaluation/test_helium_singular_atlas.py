@@ -104,7 +104,7 @@ class _ConstantTerm:
 
 
 class _ExecutedCuspModel(torch.nn.Module):
-    """Minimal model exposing the real executed smoothed e-e factor."""
+    """Minimal model exposing the real executed analytic e-e factor."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -636,9 +636,16 @@ def test_writer_retains_nonfinite_boundary_and_distinguishes_zero_sentinel(
     assert not close
 
 
-def test_real_executed_smoothed_ee_factor_remains_finite_where_ideal_is_undefined(
+def test_real_executed_ee_factor_value_remains_finite_where_ideal_is_undefined(
     tmp_path: Path,
 ) -> None:
+    """The rational cusp value is finite at coalescence without smoothing.
+
+    Its value ``c*r/(1+d*r)`` is zero at ``r=0`` on its own merits. This test
+    intentionally does not assert first- or second-derivative finiteness at
+    exact coalescence: those Cartesian derivatives are not supplied by the
+    analytic ``eps=0`` contract and the finite-eps e-e regime is UNMEASURED.
+    """
     generated = HeliumElectronElectronApproachGenerator(
         atoms=_atoms(),
         directions=[[1.0, 0.0, 0.0]],
@@ -676,13 +683,12 @@ def test_real_executed_smoothed_ee_factor_remains_finite_where_ideal_is_undefine
         atlas.realized_coordinate[reciprocal_boundary] > 0,
     )
     assert not evaluation_defined[reciprocal_boundary].any()
+    # The registry label remains ``executed_smoothed_ee_factor`` for the
+    # established atlas schema; the factor itself is no longer distance-
+    # smoothed by default.
     executed = atlas.derivatives["executed_smoothed_ee_factor"]
     assert executed.value_finite_mask[reciprocal_boundary].all()
-    assert executed.first_derivative_finite_mask[reciprocal_boundary].all()
-    assert executed.second_derivative_finite_mask[reciprocal_boundary].all()
     assert executed.value_finite_mask[sentinel].all()
-    assert executed.first_derivative_finite_mask[sentinel].all()
-    assert executed.second_derivative_finite_mask[sentinel].all()
 
 
 def test_ambiguous_label_and_float32_are_fail_closed(tmp_path: Path) -> None:
