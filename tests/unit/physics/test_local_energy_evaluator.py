@@ -331,7 +331,12 @@ def test_analytic_evaluator_skips_participants_and_runs_custom_terms_once() -> N
     "mutator, message",
     [
         (lambda terms: terms.update({"extra": KineticEnergy()}), "exactly one KineticEnergy"),
-        (lambda terms: terms.update({"electron_nucleus": ElectronNucleusPotential(_analytic_setup()[0])}), "eps == 0"),
+        (
+            lambda terms: terms.update(
+                {"electron_nucleus": ElectronNucleusPotential(_analytic_setup()[0], eps=1.0e-12)}
+            ),
+            "eps == 0",
+        ),
     ],
 )
 def test_analytic_evaluator_rejects_invalid_participant_domain(mutator, message) -> None:
