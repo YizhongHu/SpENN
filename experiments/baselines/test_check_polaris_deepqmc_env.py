@@ -518,3 +518,24 @@ def test_exit_status_is_zero_when_both_criteria_pass(capsys) -> None:
     assert payload["verdict"] == "sane"
     assert payload["cross_facility"]["verdict"] == "consistent"
     assert rc == 0
+
+
+def test_a_low_z_is_labelled_as_ordinary_not_as_tight_agreement() -> None:
+    """Guard against "consistent at 0.21 sigma" being requoted as sub-error-bar agreement.
+
+    E|Z| for one draw is sqrt(2/pi) = 0.798, so |z| < 1 is the ordinary outcome.
+    Claiming the facilities agree better than their error bars is a statement
+    about a distribution of z, and one pair cannot support it.
+    """
+    result = compare_energy(
+        polaris_energy=-2.9036814794540406,
+        polaris_stderr=1.6173570569821275e-05,
+        reference_energy=-2.9036863634347916,
+        reference_stderr=1.6026224325770225e-05,
+    )
+    cross = result["cross_facility"]
+    assert cross["verdict"] == "consistent"
+    assert round(cross["delta_in_sigma"], 4) == 0.2145
+    # The number travels with the caveat that bounds how it may be read.
+    assert cross["expected_abs_z_for_one_draw"] == pytest.approx(0.7979, abs=1e-4)
+    assert "NOT evidence of sub-error-bar agreement" in cross["interpretation"]

@@ -559,6 +559,17 @@ def compare_energy(
             "delta_in_sigma": (magnitude / combined) if combined > 0 else None,
         }
         n_sigma = cross["delta_in_sigma"]
+        # A LOW |z| IS NOT EVIDENCE OF UNUSUALLY GOOD AGREEMENT. For a single
+        # comparison E|Z| is sqrt(2/pi) = 0.798, so anything under 1 is the
+        # ordinary case rather than a tight one. Stating this beside the number
+        # stops "consistent at 0.21 sigma" being quoted later as "the facilities
+        # agree better than their own error bars" -- a claim about a
+        # DISTRIBUTION of z, which one pair cannot support.
+        cross["expected_abs_z_for_one_draw"] = 0.7978845608028654
+        cross["interpretation"] = (
+            "consistency only; a single |z| below 1 is the ordinary outcome and is "
+            "NOT evidence of sub-error-bar agreement"
+        )
         if n_sigma is None:
             cross["verdict"] = "not_evaluated"
         elif n_sigma <= 3:
