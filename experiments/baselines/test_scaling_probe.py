@@ -86,6 +86,25 @@ def test_summary_reports_combined_error_and_efficiency(tmp_path: Path) -> None:
     assert scaling_probe.correctness_gate_passed(summary)
 
 
+def test_gate_records_marginal_agreement_but_stops_only_above_five_sigma(tmp_path: Path) -> None:
+    one_log, marginal_log, failed_log = tmp_path / "one.log", tmp_path / "marginal.log", tmp_path / "failed.log"
+    _write_log(one_log, devices=1, batch=4096, energy=-2.90, error=0.01, interval=0.04)
+    _write_log(marginal_log, devices=2, batch=2048, energy=-2.84, error=0.01, interval=0.024)
+    _write_log(failed_log, devices=4, batch=1024, energy=-2.80, error=0.01, interval=0.012)
+    one, marginal, failed = tmp_path / "one.json", tmp_path / "marginal.json", tmp_path / "failed.json"
+    _result(one, one_log, devices=1, energy=-2.90, error=0.01, interval=0.04)
+    _result(marginal, marginal_log, devices=2, energy=-2.84, error=0.01, interval=0.024)
+    _result(failed, failed_log, devices=4, energy=-2.80, error=0.01, interval=0.012)
+    marginal_summary = scaling_probe.summarize_ladder([one, marginal])
+    assert marginal_summary["ladder"][1]["correctness"] == "marginal"
+    assert marginal_summary["ladder"][1]["agreement"] == "marginal"
+    assert scaling_probe.correctness_gate_passed(marginal_summary)
+    failed_summary = scaling_probe.summarize_ladder([one, failed])
+    assert failed_summary["ladder"][1]["correctness"] == "failed"
+    assert failed_summary["ladder"][1]["agreement"] == "inconsistent"
+    assert not scaling_probe.correctness_gate_passed(failed_summary)
+
+
 def test_gate_cli_creates_a_missing_result_directory(tmp_path: Path) -> None:
     one_log, two_log = tmp_path / "one.log", tmp_path / "two.log"
     _write_log(one_log, devices=1, batch=4096, energy=-2.90, error=0.02, interval=0.04)

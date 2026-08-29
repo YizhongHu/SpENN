@@ -32,6 +32,8 @@ LOG_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 WARMUP_CUTS = tuple(range(100, 401, 50))
 DEFAULT_DEVICE_REGEX = r"Starting QMC with (?P<devices>\d+) XLA devices"
 DEFAULT_STEP_REGEX = r"(?i)\bstep\s*(?P<step>\d+)\b"
+CONSISTENT_SIGMA = 3.0
+STOP_SIGMA = 5.0
 
 
 class ScalingProbeError(ValueError):
@@ -372,6 +374,26 @@ def _load_result(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def agreement_band(delta: float, combined_error: float) -> tuple[str, float]:
+    """Classify one energy comparison under the registered 3σ/5σ policy.
+
+    A finite statistical comparison is consistent through 3σ, marginal from
+    3σ through 5σ, and inconsistent above 5σ.  Marginal arms remain measured
+    and the scheduler advances, while an inconsistent arm stops that system's
+    ladder.  This separates an unusual finite sample from a demonstrated
+    numerical defect.
+    """
+
+    if delta < 0 or combined_error < 0:
+        raise ScalingProbeError("energy deltas and combined errors cannot be negative")
+    sigma = 0.0 if delta == 0 else math.inf if combined_error == 0 else delta / combined_error
+    if sigma <= CONSISTENT_SIGMA:
+        return "consistent", sigma
+    if sigma <= STOP_SIGMA:
+        return "marginal", sigma
+    return "inconsistent", sigma
+
+
 def summarize_ladder(paths: Sequence[str | Path]) -> dict[str, Any]:
     """Compare each arm with its matching 1-GPU energy and timing arm."""
 
@@ -400,8 +422,17 @@ def summarize_ladder(paths: Sequence[str | Path]) -> dict[str, Any]:
             continue
         delta = abs(float(energy["hartree"]) - float(baseline_energy["hartree"]))
         combined_error = math.hypot(float(energy["stderr"]), float(baseline_energy["stderr"]))
-        correctness = "passed" if delta <= combined_error else "failed"
-        comparison.update({"correctness": correctness, "energy_delta_hartree": delta, "combined_stderr_hartree": combined_error})
+        agreement, sigma = agreement_band(delta, combined_error)
+        correctness = "failed" if agreement == "inconsistent" else "marginal" if agreement == "marginal" else "passed"
+        comparison.update(
+            {
+                "correctness": correctness,
+                "agreement": agreement,
+                "sigma_distance": sigma,
+                "energy_delta_hartree": delta,
+                "combined_stderr_hartree": combined_error,
+            }
+        )
         if correctness == "failed":
             comparison.update({"scaling": "unassessed", "reason": "correctness gate failed"})
             results.append(comparison)
@@ -432,7 +463,10 @@ def correctness_gate_passed(summary: dict[str, Any]) -> bool:
     ladder = summary.get("ladder")
     if not isinstance(ladder, list) or not ladder:
         raise ScalingProbeError("correctness gate requires a non-empty ladder summary")
-    return all(isinstance(entry, dict) and entry.get("correctness") == "passed" for entry in ladder)
+    return all(
+        isinstance(entry, dict) and entry.get("correctness") in {"passed", "marginal"}
+        for entry in ladder
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -456,7 +490,7 @@ def _parser() -> argparse.ArgumentParser:
     summary = subparsers.add_parser("summarize", help="compare structured arms with 1-GPU baselines")
     summary.add_argument("--output", type=Path, required=True)
     summary.add_argument("results", nargs="+", type=Path)
-    gate = subparsers.add_parser("gate", help="write a comparison and fail if any arm is scientifically invalid")
+    gate = subparsers.add_parser("gate", help="write a comparison and stop only inconsistent (>5σ) arms")
     gate.add_argument("--output", type=Path, required=True)
     gate.add_argument("results", nargs="+", type=Path)
     reanalyse = subparsers.add_parser("reanalyse", help="re-extract a completed arm using a stricter log-line contract")

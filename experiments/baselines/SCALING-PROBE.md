@@ -45,14 +45,16 @@ appropriate tail cut: its known slow ramp extends beyond step 9000, so a
 
 After a 1-GPU arm and *before* advancing each higher-GPU rung, run
 `scaling_probe.py gate` over that baseline and candidate JSON. It writes the
-same structured comparison as `summarize` but exits non-zero unless each arm
-has valid process evidence and their energies agree within combined statistical
-error. A scheduler script should use that exit status to stop the ladder at a
-wrong arm. After the completed ladder, `scaling_probe.py summarize` writes the
-full table and reports warm-up-cut-100 speed efficiency `t1 / (N * tN)` only
-for correctness-passing arms. It also retains independent 100 through 400
-warm-up-cut fits plus consecutive-interval min, max, and median. Do not average
-rates across systems or GPU counts.
+same structured comparison as `summarize` and applies the registered combined-
+error bands: <=3σ is `consistent` and continues; >3σ through <=5σ is
+`marginal`, remains measured, and continues with the finding recorded; >5σ is
+`inconsistent` and exits non-zero, stopping that system's ladder. This avoids
+calling a finite-sample fluctuation a defect while still preventing a clearly
+wrong-but-fast arm from becoming a speed result. After the completed ladder,
+`scaling_probe.py summarize` writes the full table and reports warm-up-cut-100
+speed efficiency `t1 / (N * tN)` for consistent and marginal arms. It also
+retains independent 100 through 400 warm-up-cut fits plus consecutive-interval
+min, max, and median. Do not average rates across systems or GPU counts.
 
 On Polaris, schedule arms sequentially on one exclusive node, and include at
 least one reverse-order pair after the forward 1 -> 2 -> 4 ladder. Store the
