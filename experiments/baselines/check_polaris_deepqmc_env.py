@@ -566,10 +566,20 @@ def compare_energy(
         # agree better than their own error bars" -- a claim about a
         # DISTRIBUTION of z, which one pair cannot support.
         cross["expected_abs_z_for_one_draw"] = 0.7978845608028654
+        # WHAT IS AND IS NOT ENFORCEABLE HERE, stated so the caveat is not
+        # mistaken for a guarantee. `expected_abs_z_for_one_draw` is a NUMBER a
+        # downstream check can act on -- it can compare delta_in_sigma against it
+        # and refuse a sub-error-bar claim mechanically. `interpretation` is
+        # PROSE: it now travels with the number and cannot separate from it,
+        # which beats a caveat in a note beside it, but no script can act on it.
+        # The caveat is INSEPARABLE, not ENFORCED. Reading "the caveat is in the
+        # artefact" as "the artefact is checkable" is the same confusion as a
+        # record field that looks like it carries a guarantee.
         cross["interpretation"] = (
             "consistency only; a single |z| below 1 is the ordinary outcome and is "
             "NOT evidence of sub-error-bar agreement"
         )
+        cross["caveat_is"] = "inseparable, not enforced: interpretation is prose"
         if n_sigma is None:
             cross["verdict"] = "not_evaluated"
         elif n_sigma <= 3:
