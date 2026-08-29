@@ -584,6 +584,13 @@ def test_hooke_eval_runner_matches_exact_energy(tmp_path, fixture: str, exact_en
     assert metrics["local_energy_variance"] < variance_max
     for term in ("kinetic", "harmonic_trap", "electron_electron"):
         assert f"term/{term}_mean" in metrics
+        assert f"term/{term}_variance" in metrics
+    assert "virial_residual" in metrics
+    assert "virial_relative_residual" in metrics
+    # This is a diagnostic: exact eigenstates are stationary under dilation.
+    # A restricted variational ansatz need not have a vanishing virial residual.
+    assert metrics["virial_residual"] == pytest.approx(0.0, abs=1.0e-12)
+    assert metrics["virial_relative_residual"] == pytest.approx(0.0, abs=1.0e-12)
     assert metrics["sampler_n_walkers"] == 512
     assert "acceptance_rate" in {key.removeprefix("sampler_") for key in metrics}
     assert "wall_time_sec" in _metrics(tmp_path, "eval/perf")

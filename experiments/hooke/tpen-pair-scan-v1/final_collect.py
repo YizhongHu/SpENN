@@ -736,7 +736,10 @@ def _energy_row(context: dict[str, Any]) -> dict[str, Any]:
     kinetic = _as_float(metrics.get("eval/mcmc_energy/term/kinetic_mean"))
     harmonic = _as_float(metrics.get("eval/mcmc_energy/term/harmonic_trap_mean"))
     electron_electron = _as_float(metrics.get("eval/mcmc_energy/term/electron_electron_mean"))
-    virial = _derive_virial_metrics(kinetic, harmonic, electron_electron)
+    virial = {
+        "residual": _as_float(metrics.get("eval/mcmc_energy/virial_residual")),
+        "relative_residual": _as_float(metrics.get("eval/mcmc_energy/virial_relative_residual")),
+    }
     n_finite = _as_float(metrics.get("eval/mcmc_energy/local_energy_n_finite"))
     n_total = _as_float(metrics.get("eval/mcmc_energy/local_energy_n_total"))
     finite_fraction = _as_float(metrics.get("eval/mcmc_energy/local_energy_finite_fraction"))
@@ -760,21 +763,6 @@ def _energy_row(context: dict[str, Any]) -> dict[str, Any]:
         "finite_fraction": _format_number(finite_fraction),
         "pathology_fraction": _format_number(pathology_fraction),
     }
-
-
-def _derive_virial_metrics(
-    kinetic: float | None,
-    harmonic_trap: float | None,
-    electron_electron: float | None,
-) -> dict[str, float | None]:
-    """Return Hooke-pair virial residuals from energy components."""
-
-    if kinetic is None or harmonic_trap is None or electron_electron is None:
-        return {"residual": None, "relative_residual": None}
-    residual = 2.0 * kinetic - 2.0 * harmonic_trap + electron_electron
-    denominator = abs(2.0 * kinetic) + abs(2.0 * harmonic_trap) + abs(electron_electron)
-    relative = abs(residual) / denominator if denominator else 0.0
-    return {"residual": residual, "relative_residual": relative}
 
 
 def _bin_edges(values: Sequence[float], n_bins: int = DEFAULT_HISTOGRAM_BINS) -> list[float]:

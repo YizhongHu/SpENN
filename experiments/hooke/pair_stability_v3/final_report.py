@@ -118,25 +118,9 @@ COMPACT_TABLES = (
 )
 
 
-def _derive_virial_metrics(row: dict[str, Any]) -> dict[str, float | None]:
-    kinetic = _as_float(row.get("kinetic_mean"))
-    harmonic = _as_float(row.get("harmonic_trap_mean"))
-    electron_electron = _as_float(row.get("electron_electron_mean"))
-    if kinetic is None or harmonic is None or electron_electron is None:
-        return {"virial_residual": None, "virial_relative_residual": None}
-    residual = 2.0 * kinetic - 2.0 * harmonic + electron_electron
-    denominator = abs(2.0 * kinetic) + abs(2.0 * harmonic) + abs(electron_electron)
-    relative = abs(residual) / denominator if denominator else 0.0
-    return {"virial_residual": residual, "virial_relative_residual": relative}
-
-
 def _energy_component_value(row: dict[str, Any], key: str) -> float | None:
     value = _as_float(row.get(key))
-    if value is not None:
-        return value
-    if key in {"virial_residual", "virial_relative_residual"}:
-        return _derive_virial_metrics(row)[key]
-    return None
+    return value
 
 
 def _winner_id(basis_class: str, normalization: str, winner_kind: str) -> str:

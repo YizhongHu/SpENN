@@ -7,6 +7,7 @@ local energy is the exact eigenvalue everywhere (and has near-zero variance).
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from tpen.data.batch import ElectronBatch
@@ -14,6 +15,7 @@ from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
 from tpen.physics.hooke import HookeSingletExact, HookeTripletExact
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronElectronInteraction, HarmonicTrap
+from tpen.physics.terms import summarize_physical_terms
 
 DTYPE = torch.float64
 BATCH_SIZE = 64
@@ -75,6 +77,42 @@ def test_singlet_local_energy_variance_near_zero() -> None:
     eloc = local_energy(terms, wf, batch)
     assert isinstance(eloc, torch.Tensor)
     assert eloc.var().item() < VARIANCE_ATOL
+
+
+def test_exact_singlet_physical_term_summary_has_zero_virial_residual() -> None:
+    wf = HookeSingletExact()
+    result = local_energy(_hooke_terms(wf), wf, ElectronBatch(positions=_singlet_positions()), return_terms=True)
+    metrics = summarize_physical_terms(result.terms)
+
+    assert metrics["term/kinetic_mean"] is not None
+    assert metrics["term/kinetic_variance"] is not None
+    assert metrics["term/harmonic_trap_mean"] is not None
+    assert metrics["term/harmonic_trap_variance"] is not None
+    assert metrics["term/electron_electron_mean"] is not None
+    assert metrics["term/electron_electron_variance"] is not None
+    # This diagnostic is zero for an exact eigenstate; do not impose it on a
+    # restricted variational ansatz, which need not be dilation-stationary.
+    assert metrics["virial_residual"] == pytest.approx(0.0, abs=1.0e-12)
+    assert metrics["virial_relative_residual"] == pytest.approx(0.0, abs=1.0e-12)
+
+
+def test_physical_term_summary_matches_virial_formula() -> None:
+    metrics = summarize_physical_terms(
+        {
+            "kinetic": torch.tensor([1.0, 3.0], dtype=DTYPE),
+            "harmonic_trap": torch.tensor([2.0, 4.0], dtype=DTYPE),
+            "electron_electron": torch.tensor([0.5, 1.5], dtype=DTYPE),
+        }
+    )
+
+    assert metrics["term/kinetic_mean"] == pytest.approx(2.0)
+    assert metrics["term/kinetic_variance"] == pytest.approx(1.0)
+    assert metrics["term/harmonic_trap_mean"] == pytest.approx(3.0)
+    assert metrics["term/harmonic_trap_variance"] == pytest.approx(1.0)
+    assert metrics["term/electron_electron_mean"] == pytest.approx(1.0)
+    assert metrics["term/electron_electron_variance"] == pytest.approx(0.25)
+    assert metrics["virial_residual"] == pytest.approx(-1.0)
+    assert metrics["virial_relative_residual"] == pytest.approx(1.0 / 11.0)
 
 
 def test_triplet_local_energy_constant_at_exact_energy() -> None:
