@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from tpen.data.batch import ElectronBatch, WavefunctionOutput
+from tpen.data.batch import ElectronBatch, FactorizedLocalEnergyInput, WavefunctionOutput
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
+from tpen.nn.cusp import ElectronNucleusCusp
 from tpen.nn.tpen_stack import TPENStack
 
 torch = require_torch(feature="TPEN wavefunction modules")
@@ -71,6 +72,7 @@ class TPENWaveFunction(EquivariantMap):
         envelope: nn.Module | None = None,
         factors: Iterable[nn.Module] = (),
         basis: nn.Module | None = None,
+        analytic_cusp_provider: ElectronNucleusCusp | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -79,16 +81,46 @@ class TPENWaveFunction(EquivariantMap):
         self.stack = layers if isinstance(layers, TPENStack) else TPENStack(layers)
         self.readout = readout
         self.envelope = envelope
+        factors = tuple(factors)
         self.factors = nn.ModuleList(factors)
+        if analytic_cusp_provider is not None:
+            if not isinstance(analytic_cusp_provider, ElectronNucleusCusp):
+                raise TypeError("analytic_cusp_provider must be an ElectronNucleusCusp")
+            occurrences = sum(factor is analytic_cusp_provider for factor in factors)
+            if occurrences != 1:
+                raise ValueError(
+                    "analytic_cusp_provider must be the unique participating ElectronNucleusCusp factor"
+                )
+        self.analytic_cusp_provider = analytic_cusp_provider
 
     def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
 
+        output = self._construct_output(batch, include_analytic_cusp=True)
+        return output
+
+    def factorized_local_energy_input(self, batch: ElectronBatch) -> FactorizedLocalEnergyInput:
+        """Return the regular output and analytic data for local-energy evaluation.
+
+        The explicitly bound cusp is omitted while constructing the regular
+        output, then queried once from that same live factor instance.
+        """
+
+        provider = self.analytic_cusp_provider
+        if provider is None:
+            raise ValueError("factorized local-energy input requires an analytic_cusp_provider at construction")
+        regular = self._construct_output(batch, include_analytic_cusp=False)
+        evaluation = provider.analytic_evaluation(batch)
+        return FactorizedLocalEnergyInput(regular, evaluation)
+
+    def _construct_output(self, batch: ElectronBatch, *, include_analytic_cusp: bool) -> WavefunctionOutput:
         output = self._readout_output(batch)
         logabs = output.logabs
         if self.envelope is not None:
             logabs = logabs + _log_factor(self.envelope, batch, logabs.shape, name="Envelope")
         for index, factor in enumerate(self.factors):
+            if not include_analytic_cusp and factor is self.analytic_cusp_provider:
+                continue
             logabs = logabs + _log_factor(factor, batch, logabs.shape, name=f"factors[{index}]")
         return WavefunctionOutput(logabs=logabs, sign=output.sign, phase=output.phase, aux=dict(output.aux))
 

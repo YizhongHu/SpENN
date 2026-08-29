@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from math import prod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from tpen.data.batch.base import _coerce_optional_tensor
 from tpen.data.equivariant_state import EquivariantState, compare_tensor_blocks
 from tpen.data.permutation import Permutation
+
+if TYPE_CHECKING:
+    from tpen.nn.cusp import ElectronNucleusCuspEvaluation
 
 
 @dataclass
@@ -163,4 +166,59 @@ class WavefunctionOutput(EquivariantState):
         return compare_tensor_blocks(blocks_self, blocks_other, atol=atol, rtol=rtol)
 
 
-__all__ = ["WavefunctionOutput"]
+@dataclass(frozen=True)
+class FactorizedLocalEnergyInput(EquivariantState):
+    """Regular wavefunction output paired with one analytic cusp evaluation."""
+
+    regular_wavefunction_output: WavefunctionOutput
+    electron_nucleus_cusp_evaluation: "ElectronNucleusCuspEvaluation"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self, *, batch_size: int | None = None) -> "FactorizedLocalEnergyInput":
+        """Validate both typed components and their shared batch contract."""
+
+        from tpen.nn.cusp import ElectronNucleusCuspEvaluation
+
+        if not isinstance(self.regular_wavefunction_output, WavefunctionOutput):
+            raise TypeError("regular_wavefunction_output must be a WavefunctionOutput")
+        if not isinstance(self.electron_nucleus_cusp_evaluation, ElectronNucleusCuspEvaluation):
+            raise TypeError("electron_nucleus_cusp_evaluation must be an ElectronNucleusCuspEvaluation")
+        self.regular_wavefunction_output.validate(batch_size=batch_size)
+        self.electron_nucleus_cusp_evaluation.validate()
+        if self.regular_wavefunction_output.logabs.shape[0] != self.electron_nucleus_cusp_evaluation.distance.shape[0]:
+            raise ValueError("regular output and cusp evaluation must have the same batch size")
+        return self
+
+    def permute(self, permutation: Permutation) -> "FactorizedLocalEnergyInput":
+        """Permute both components through their typed semantic contracts."""
+
+        return type(self)(
+            regular_wavefunction_output=self.regular_wavefunction_output.permute(permutation),
+            electron_nucleus_cusp_evaluation=self.electron_nucleus_cusp_evaluation.permute(permutation),
+        )
+
+    def compare(
+        self,
+        other: "FactorizedLocalEnergyInput",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, dict[str, float]]:
+        """Compare both semantic components."""
+
+        if type(self) is not type(other):
+            return False, {"max_abs_error": float("inf")}
+        output_close, output_metrics = self.regular_wavefunction_output.compare(
+            other.regular_wavefunction_output, atol=atol, rtol=rtol
+        )
+        cusp_close, cusp_metrics = self.electron_nucleus_cusp_evaluation.compare(
+            other.electron_nucleus_cusp_evaluation, atol=atol, rtol=rtol
+        )
+        return output_close and cusp_close, {
+            "max_abs_error": max(output_metrics["max_abs_error"], cusp_metrics["max_abs_error"])
+        }
+
+
+__all__ = ["FactorizedLocalEnergyInput", "WavefunctionOutput"]

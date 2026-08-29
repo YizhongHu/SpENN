@@ -12,10 +12,11 @@ from tpen.data.batch.geometry import (
     two_electron_atomic_geometry_reference,
 )
 from tpen.data.batch.walkers import Walkers
-from tpen.data.batch.wavefunction_output import WavefunctionOutput
+from tpen.data.batch.wavefunction_output import FactorizedLocalEnergyInput, WavefunctionOutput
 
 __all__ = [
     "ElectronBatch",
+    "FactorizedLocalEnergyInput",
     "TwoElectronAtomicGeometry",
     "Walkers",
     "WavefunctionOutput",
