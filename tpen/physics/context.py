@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Protocol
 
 
@@ -45,7 +46,9 @@ class ReadOnlyContext:
                     f"got {type(value).__name__}"
                 )
             entries[key] = value
-        self._entries = entries
+        # Keep the mutable construction buffer private and expose only its
+        # immutable proxy. No consumer-reachable reference can mutate entries.
+        self._entries = MappingProxyType(entries)
 
     def __getitem__[T](self, key: ContextKey[T]) -> T:
         if not isinstance(key, ContextKey):
@@ -53,11 +56,6 @@ class ReadOnlyContext:
         value = self._entries.get(key)
         if value is None and key not in self._entries:
             raise KeyError(key.name)
-        if not isinstance(value, key.value_type):
-            raise TypeError(
-                f"context artifact {key.name!r} must be {key.value_type.__name__}, "
-                f"got {type(value).__name__}"
-            )
         return value
 
     def __contains__(self, key: object) -> bool:

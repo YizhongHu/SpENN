@@ -39,6 +39,15 @@ def test_context_is_read_only() -> None:
     assert key in context
     with pytest.raises((AttributeError, TypeError)):
         context[key] = 8  # type: ignore[index]
+    with pytest.raises(TypeError):
+        context._entries[key] = 8  # type: ignore[index]
+
+
+def test_context_rejects_value_with_wrong_type() -> None:
+    key = ContextKey("answer", int)
+
+    with pytest.raises(TypeError, match="answer.*int.*str"):
+        ReadOnlyContext({key: "not an answer"})  # type: ignore[dict-item]
 
 
 def test_provider_graph_reports_missing_dependency_and_operator() -> None:
