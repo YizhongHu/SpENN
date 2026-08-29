@@ -97,7 +97,7 @@ class LocalEnergyOperator(Protocol):
 _OPERATOR_REGISTRY: dict[type[LocalEnergyOperator], OperatorId] = {}
 
 
-def register_operator[T](operator_id: OperatorId) -> Callable[[type[T]], type[T]]:
+def register_operator[T](operator_id: object) -> Callable[[type[T]], type[T]]:
     """Declare and register a local-energy operator class in one act."""
 
     if not isinstance(operator_id, OperatorId):
