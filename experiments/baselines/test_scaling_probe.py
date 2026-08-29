@@ -9,6 +9,7 @@ import json
 import pytest
 
 from experiments.baselines import scaling_probe
+from experiments.baselines.run_ferminet_scaling_arm import summarize_training_tail
 
 
 DEVICE = r"Starting QMC with (?P<devices>\d+) XLA devices"
@@ -109,3 +110,14 @@ def test_run_arm_writes_microsecond_wrapper_log_and_structured_result(tmp_path: 
     assert json.loads((tmp_path / "arm.json").read_text())["observed_devices"] == 1
     wrapper_line = (tmp_path / "arm.log").read_text().splitlines()[0]
     assert wrapper_line.startswith("202") and "." in wrapper_line.split("\t", 1)[0]
+
+
+def test_ferminet_runner_uses_a_blocking_training_tail(tmp_path: Path) -> None:
+    stats = tmp_path / "train_stats.csv"
+    stats.write_text(
+        "step,energy\n" + "\n".join(f"{step},{-2.9 + step * 1.e-5}" for step in range(500)) + "\n",
+        encoding="utf-8",
+    )
+    energy, stderr = summarize_training_tail(tmp_path, first_step=400)
+    assert energy == pytest.approx(-2.895505)
+    assert stderr > 0
