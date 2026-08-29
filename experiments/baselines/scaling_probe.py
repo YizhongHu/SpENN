@@ -438,6 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "passed" else 1
         summary = summarize_ladder(args.results)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(json.dumps(summary, indent=2, sort_keys=True))
         if args.action == "gate":

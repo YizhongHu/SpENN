@@ -85,6 +85,18 @@ def test_summary_reports_combined_error_and_efficiency(tmp_path: Path) -> None:
     assert scaling_probe.correctness_gate_passed(summary)
 
 
+def test_gate_cli_creates_a_missing_result_directory(tmp_path: Path) -> None:
+    one_log, two_log = tmp_path / "one.log", tmp_path / "two.log"
+    _write_log(one_log, devices=1, batch=4096, energy=-2.90, error=0.02, interval=0.04)
+    _write_log(two_log, devices=2, batch=2048, energy=-2.88, error=0.02, interval=0.024)
+    one, two = tmp_path / "one.json", tmp_path / "two.json"
+    _result(one, one_log, devices=1, energy=-2.90, error=0.02, interval=0.04)
+    _result(two, two_log, devices=2, energy=-2.88, error=0.02, interval=0.024)
+    output = tmp_path / "missing" / "gate.json"
+    assert scaling_probe.main(["gate", "--output", str(output), str(one), str(two)]) == 0
+    assert json.loads(output.read_text())["ladder"][1]["correctness"] == "passed"
+
+
 def test_run_arm_writes_microsecond_wrapper_log_and_structured_result(tmp_path: Path) -> None:
     command = [
         "python",
