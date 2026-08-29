@@ -17,11 +17,17 @@ analytic_local_energy_calculator:
   return_terms: true
   evaluator: ${local_energy_evaluator}
 
-# A trajectory task can select the same implementation directly on its
-# generator, preserving the fused term and provenance in streamed records.
+# The overlay is executable: replace the actual task nodes so the runner uses
+# these components rather than merely defining detached named components.
 analytic_trajectory_generator:
   _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
   sampler: ${evaluation_sampler}
   hamiltonian_terms: ${hamiltonian_terms}
   n_draws: 4
   evaluator: ${local_energy_evaluator}
+
+evaluation_tasks:
+  mcmc_energy:
+    generator: ${analytic_trajectory_generator}
+    calculators:
+      - ${analytic_local_energy_calculator}

@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[3]
 HEV1_BARE_MODULES = {"layout", "strata", "plan", "driver", "eval", "collect", "canary", "launch"}
 HEV1_EVAL = ROOT / "experiments/atomistic/he-v1/configs/eval.yaml"
 HEV1_ANALYTIC = ROOT / "experiments/atomistic/he-v1/configs/analytic_local_energy.yaml"
+H2V1_EVAL = ROOT / "experiments/atomistic/h2-v1/configs/eval.yaml"
+H2V1_ANALYTIC = ROOT / "experiments/atomistic/h2-v1/configs/analytic_local_energy.yaml"
 
 
 def _differences(before, after, prefix=""):
@@ -88,32 +90,39 @@ def test_cutover_grids_keep_naive_eval_config_as_the_default() -> None:
 
 
 def test_he_analytic_overlay_constructs_an_explicit_opt_in_row() -> None:
-    """A missing merge/wiring edit must fail before any evaluator is run."""
+    """The merged overlay changes the evaluator's real task graph."""
 
     base = OmegaConf.load(HEV1_EVAL)
     overlay = OmegaConf.load(HEV1_ANALYTIC)
     merged = OmegaConf.merge(base, overlay)
-    # These are the two production config edits required to make the overlay
-    # affect the actual mcmc_energy row rather than merely define unused named
-    # components.
-    OmegaConf.update(
-        merged,
-        "evaluation_tasks.mcmc_energy.generator.evaluator",
-        "${local_energy_evaluator}",
-        merge=False,
-    )
-    OmegaConf.update(
-        merged,
-        "evaluation_tasks.mcmc_energy.calculators.0.evaluator",
-        "${local_energy_evaluator}",
-        merge=False,
-    )
+    raw = OmegaConf.to_container(merged, resolve=False)
+    task = raw["evaluation_tasks"]["mcmc_energy"]
     assert merged.local_energy_evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
-    assert merged.evaluation_tasks.mcmc_energy.generator.evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
-    assert merged.evaluation_tasks.mcmc_energy.calculators[0].evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert task.generator == "${analytic_trajectory_generator}"
+    assert task.calculators[0] == "${analytic_local_energy_calculator}"
+    # This assertion follows the runner-owned evaluator task list, not a
+    # detached overlay component. A production edit that wires only named
+    # components (or forgets the task replacement) leaves this path naive.
+    assert raw["runner"]["evaluator"] == "${evaluator}"
+    resolved_task = OmegaConf.to_container(merged.runner.evaluator.tasks[0], resolve=True)
+    assert resolved_task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    assert resolved_task["generator"]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert resolved_task["calculators"][0]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
     assert merged.hamiltonian_terms.electron_nucleus.eps == 0.0
     assert merged.model.factors[0]._target_ == "tpen.nn.ElectronElectronCusp"
     assert "electron-electron coalescence is NOT" in HEV1_ANALYTIC.read_text()
+
+
+def test_h2_analytic_overlay_changes_the_real_runner_task_graph() -> None:
+    """H2's documented overlay is executable without detached-node overrides."""
+
+    merged = OmegaConf.merge(OmegaConf.load(H2V1_EVAL), OmegaConf.load(H2V1_ANALYTIC))
+    task = OmegaConf.to_container(merged.runner.evaluator.tasks[0], resolve=True)
+    assert task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    # This is the runner task graph; naming the overlay nodes alone would leave
+    # the base MCMCGenerator and would make this assertion fail.
+    assert task["generator"]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert task["calculators"][0]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
 
 
 def _cross_study_violations(study: Path) -> set[str]:

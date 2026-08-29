@@ -31,6 +31,7 @@ import torch
 from tpen.data.batch.walkers import Walkers
 from tpen.evaluation.bundle import GeneratedConfigurations
 from tpen.evaluation.calculators.local_energy import (
+    evaluator_identity,
     evaluate_local_energy_in_chunks,
     slice_flat_batch,
 )
@@ -316,6 +317,7 @@ class TrajectoryMCMCGenerator:
             sign=output.sign,
             finite_mask=torch.isfinite(result.total),
             term_provenance=result.term_provenance,
+            evaluator_id=(result.evaluator_id or evaluator_identity(self.evaluator)),
         )
 
 

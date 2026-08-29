@@ -7,6 +7,8 @@ import torch
 
 from tpen.data import AtomicConfiguration
 from tpen.evaluation.calculators.local_energy import LocalEnergyCalculator
+from tpen.evaluation import Evaluator
+from tpen.runner.evaluate import Evaluate
 from tpen.nn.cusp import ElectronNucleusCusp
 from tpen.physics.hamiltonian import AnalyticCuspEvaluator, NaiveLocalEnergyEvaluator
 from tpen.physics.kinetic import KineticEnergy
@@ -36,6 +38,49 @@ class _Sampler:
 
 class _Generator:
     sampler = _Sampler()
+
+
+class _Backend:
+    def __init__(self, evaluator_id):
+        self.evaluator_id = evaluator_id
+
+
+class _Trajectory:
+    name = "trajectory_mcmc"
+
+    def __init__(self, evaluator_id):
+        self.evaluator = _Backend(evaluator_id)
+
+
+class _LocalEnergy:
+    name = "local_energy"
+
+    def __init__(self, evaluator_id):
+        self.evaluator = _Backend(evaluator_id)
+
+
+def test_trajectory_rejects_generator_calculator_backend_mismatch() -> None:
+    """Selection disagreement fails before a trajectory can start sampling."""
+
+    evaluator = Evaluator(
+        namespace="eval",
+        tasks=[
+            {
+                "name": "trajectory",
+                "namespace": "eval/trajectory",
+                "output_dir": ".",
+                "generator": _Trajectory("analytic_cusp/v1"),
+                "calculators": [_LocalEnergy("naive/v1")],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="trajectory local-energy backend mismatch") as error:
+        Evaluate(model=object(), evaluator=evaluator)._validate_evaluator_configuration()
+    # The IDs in the message prove this was the intended cross-component gate,
+    # rather than a later evaluator capability or model validation failure.
+    assert "generator='analytic_cusp/v1'" in str(error.value)
+    assert "calculator='naive/v1'" in str(error.value)
 
 
 def test_calculator_defaults_to_naive_and_opt_in_is_explicit() -> None:

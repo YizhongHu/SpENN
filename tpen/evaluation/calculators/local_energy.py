@@ -25,6 +25,12 @@ from tpen.physics.hamiltonian import (
 _DEFAULT_EVALUATOR = NaiveLocalEnergyEvaluator()
 
 
+def evaluator_identity(evaluator: LocalEnergyEvaluator | None) -> str:
+    """Return the additive identity for an evaluator, including legacy unknown."""
+
+    return str(getattr(evaluator or _DEFAULT_EVALUATOR, "evaluator_id", "unknown"))
+
+
 class LocalEnergyCalculator:
     """Compute raw local-energy values for generated configurations.
 
@@ -67,6 +73,13 @@ class LocalEnergyCalculator:
         records = bundle.generated.trajectory_records
         if records is not None:
             records.validate(check_files=False)
+            record_id = str(records.evaluator_id or "unknown")
+            calculator_id = evaluator_identity(self.evaluator)
+            if record_id != "unknown" and record_id != calculator_id:
+                raise ValueError(
+                    "LocalEnergyCalculator evaluator identity disagrees with trajectory records: "
+                    f"calculator={calculator_id!r}, records={record_id!r}"
+                )
             sources = {source for names in records.term_provenance.values() for source in names}
             if tuple(self.hamiltonian_terms) != records.term_names and sources != set(self.hamiltonian_terms):
                 raise ValueError(
@@ -99,6 +112,7 @@ class LocalEnergyCalculator:
                         }
                         if terms is not None else None
                     ),
+                    evaluator_id=evaluator_identity(self.evaluator),
                 ),
             )
 
@@ -117,6 +131,8 @@ class LocalEnergyCalculator:
             local_energy=total,
             finite_mask=torch.isfinite(total),
             term_energies=terms,
+            term_provenance=(dict(getattr(result, "term_provenance", {})) or None),
+            evaluator_id=(getattr(result, "evaluator_id", "unknown") or evaluator_identity(self.evaluator)),
         )
         return replace(bundle, local_energy=local)
 
@@ -228,6 +244,7 @@ def evaluate_local_energy_in_chunks(
         wavefunction_output=wavefunction_output,
         per_electron_kinetic=per_electron_kinetic,
         term_provenance=dict(term_provenance or {}),
+        evaluator_id=evaluator_identity(selected_evaluator),
     )
 
 
@@ -277,4 +294,5 @@ __all__ = [
     "evaluate_local_energy_in_chunks",
     "slice_flat_batch",
     "split_local_energy_result",
+    "evaluator_identity",
 ]

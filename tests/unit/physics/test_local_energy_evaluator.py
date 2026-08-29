@@ -192,6 +192,9 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
     assert result.term_provenance == {
         "kinetic_plus_electron_nucleus": ("kinetic", "electron_nucleus")
     }
+    # A production edit that stops carrying backend identity with the fused
+    # result would make provenance ambiguous to ordinary calculators.
+    assert result.evaluator_id == "analytic_cusp/v1"
 
 
 def test_analytic_fast_kernel_matches_independent_reference_and_parameter_gradient() -> None:

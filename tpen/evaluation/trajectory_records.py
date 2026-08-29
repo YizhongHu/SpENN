@@ -54,6 +54,9 @@ class TrajectoryRecordBatch:
         the kinetic local-energy evaluation.
     finite_mask : torch.Tensor
         Boolean mask equal to ``isfinite(local_energy)``.
+    evaluator_id : str, optional
+        Additive backend identity, defaulting to ``"unknown"`` for historical
+        records that predate this field.
     """
 
     draw_index: torch.Tensor
@@ -65,6 +68,7 @@ class TrajectoryRecordBatch:
     sign: torch.Tensor
     finite_mask: torch.Tensor
     term_provenance: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    evaluator_id: str = "unknown"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "draw_index", _owned_cpu(self.draw_index, dtype=torch.int64))
@@ -206,6 +210,7 @@ class TrajectoryRecordArtifact:
     atomic_configuration: AtomicConfiguration
     final_draw: TrajectoryRecordBatch
     term_provenance: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    evaluator_id: str = "unknown"
 
     @property
     def nonfinite_count(self) -> int:
@@ -242,6 +247,8 @@ class TrajectoryRecordArtifact:
             raise ValueError("trajectory record final_draw coordinate shape disagrees with manifest")
         if tuple(final_draw.term_energies) != self.term_names:
             raise ValueError("trajectory record final_draw terms disagree with manifest")
+        if str(final_draw.evaluator_id or "unknown") != str(self.evaluator_id or "unknown"):
+            raise ValueError("trajectory record evaluator identity disagrees with final draw")
         if self.term_provenance and dict(self.term_provenance) != dict(final_draw.term_provenance):
             raise ValueError("trajectory record provenance disagrees with final draw")
         for name, value in (
@@ -334,6 +341,8 @@ class TrajectoryRecordArtifact:
             }
             if metadata.get("term_provenance") != expected_provenance:
                 raise ValueError("trajectory record metadata term_provenance disagrees with manifest")
+        if metadata.get("evaluator_id", "unknown") != self.evaluator_id:
+            raise ValueError("trajectory record metadata evaluator_id disagrees with manifest")
 
 
 class TrajectoryRecordStreamWriter:
@@ -356,6 +365,7 @@ class TrajectoryRecordStreamWriter:
         self.n_walkers = int(n_walkers)
         self.term_names = tuple(term_names)
         self.term_provenance = dict(first_draw.term_provenance)
+        self.evaluator_id = str(first_draw.evaluator_id or "unknown")
         self.atomic_configuration = atomic_configuration
         first_draw.validate()
         if first_draw.row_count != self.n_walkers:
@@ -404,6 +414,8 @@ class TrajectoryRecordStreamWriter:
             raise ValueError("trajectory record Hamiltonian terms changed between draws")
         if dict(draw.term_provenance) != self.term_provenance:
             raise ValueError("trajectory record term provenance changed between draws")
+        if str(draw.evaluator_id or "unknown") != self.evaluator_id:
+            raise ValueError("trajectory record evaluator identity changed between draws")
 
         values = draw.local_energy.contiguous()
         self._values_digest.update(values.numpy().astype("<f8", copy=False).tobytes())
@@ -464,6 +476,7 @@ class TrajectoryRecordStreamWriter:
             atomic_configuration=self.atomic_configuration,
             final_draw=self._final_draw,
             term_provenance=self.term_provenance,
+            evaluator_id=self.evaluator_id,
         )
         _write_metadata(artifact)
         artifact.validate()
@@ -562,6 +575,7 @@ def _write_metadata(artifact: TrajectoryRecordArtifact) -> None:
         "term_provenance": {
             name: list(sources) for name, sources in artifact.term_provenance.items()
         },
+        "evaluator_id": artifact.evaluator_id,
         "n_electrons": artifact.n_electrons,
         "spatial_dim": artifact.spatial_dim,
         "observable_values_content_id": artifact.observable_values_content_id,

@@ -11,12 +11,8 @@ The three tracked grids (`proof_grid.yaml`, `production_grid.yaml`, and
 that is the naive default and must not be repointed. To construct an isolated
 opt-in row, merge `experiments/atomistic/he-v1/configs/analytic_local_energy.yaml`
 into that base config and set the row's `config`/`eval_config` to the resulting
-temporary config. Wire both sides of `mcmc_energy` explicitly:
-
-```text
-evaluation_tasks.mcmc_energy.generator.evaluator=${local_energy_evaluator}
-evaluation_tasks.mcmc_energy.calculators.0.evaluator=${local_energy_evaluator}
-```
+temporary config. The overlay replaces both sides of the actual `mcmc_energy`
+task, so no additional wiring overrides are required.
 
 This route is for an explicitly selected analytic row only; it is not a change
 to any established proof, smoke, or production grid. The analytic overlay's

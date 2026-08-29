@@ -1,6 +1,7 @@
 # Opt-in overlay for the eligible helium electron-nucleus analytic path.
-# Merge this mapping into eval.yaml for an isolated analytic evaluation; an
-# omitted overlay leaves the NaiveLocalEnergyEvaluator path unchanged.
+# Merge this mapping into eval.yaml for an isolated analytic evaluation; the
+# task replacement below makes the overlay executable. Omission leaves the
+# NaiveLocalEnergyEvaluator path unchanged.
 
 local_energy_evaluator:
   _target_: tpen.physics.hamiltonian.AnalyticCuspEvaluator
@@ -31,3 +32,14 @@ analytic_trajectory_generator:
   hamiltonian_terms: ${hamiltonian_terms}
   n_draws: 4
   evaluator: ${local_energy_evaluator}
+
+# Replace the actual task nodes. These references are deliberately task-level:
+# run_from_config instantiates the runner subtree, so detached named components
+# alone cannot affect a run.
+evaluation_tasks:
+  mcmc_energy:
+    generator: ${analytic_trajectory_generator}
+    calculators:
+      - ${analytic_local_energy_calculator}
+      # Preserve the base task's producer for SampledRecordWriter.
+      - _target_: tpen.evaluation.calculators.WavefunctionCalculator

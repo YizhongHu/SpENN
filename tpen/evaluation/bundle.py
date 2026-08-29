@@ -71,6 +71,8 @@ class LocalEnergyValues:
     finite_mask: torch.Tensor
     term_energies: Mapping[str, torch.Tensor] | None = None
     term_provenance: Mapping[str, tuple[str, ...]] | None = None
+    # Additive backend identity; old in-memory/artifact records use unknown.
+    evaluator_id: str = "unknown"
 
 
 @dataclass(frozen=True)

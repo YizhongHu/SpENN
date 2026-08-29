@@ -8,6 +8,7 @@ from tpen.artifacts import RunContext, RunResult
 from tpen.checkpoint import CheckpointRestored, restore_checkpoint_with_events
 from tpen.dependencies import require_torch
 from tpen.evaluation import EvaluationResult, Evaluator
+from tpen.evaluation.calculators.local_energy import evaluator_identity
 from tpen.evaluation.events import EvaluationCompleted, EvaluationStarted
 
 from .base import (
@@ -101,6 +102,18 @@ class Evaluate(Runner):
         """Run preflight checks exposed by configured physics calculators."""
 
         for task in self.evaluator.tasks:
+            generator_evaluator = getattr(task.generator, "evaluator", None)
+            if generator_evaluator is not None or getattr(task.generator, "name", "") == "trajectory_mcmc":
+                generator_id = evaluator_identity(generator_evaluator)
+                for calculator in task.calculators:
+                    if getattr(calculator, "name", None) != "local_energy":
+                        continue
+                    calculator_id = evaluator_identity(getattr(calculator, "evaluator", None))
+                    if generator_id != calculator_id:
+                        raise ValueError(
+                            "trajectory local-energy backend mismatch: "
+                            f"generator={generator_id!r}, calculator={calculator_id!r}"
+                        )
             validate_generator = getattr(task.generator, "validate", None)
             if callable(validate_generator):
                 validate_generator(model=self.model, generator=task.generator)

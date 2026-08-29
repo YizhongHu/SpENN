@@ -55,6 +55,8 @@ class LocalEnergyResult:
     term_provenance : dict[str, tuple[str, ...]], optional
         Source term names represented by each decomposition entry. Fused
         analytic entries name both participant terms explicitly.
+    evaluator_id : str, optional
+        Additive backend identity; ``"unknown"`` preserves historical results.
     """
 
     total: torch.Tensor
@@ -62,6 +64,7 @@ class LocalEnergyResult:
     wavefunction_output: WavefunctionOutput | None = None
     per_electron_kinetic: torch.Tensor | None = None
     term_provenance: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    evaluator_id: str = "unknown"
 
 
 def normalize_hamiltonian_terms(
@@ -196,6 +199,8 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
     numerical reference for any later optimized evaluator.
     """
 
+    evaluator_id = "naive/v1"
+
     def evaluate(
         self,
         terms: Mapping[Any, Any] | Sequence[Any],
@@ -252,6 +257,7 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
                 wavefunction_output=wavefunction_output,
                 per_electron_kinetic=per_electron_kinetic,
                 term_provenance={name: (name,) for name in decomposition},
+                evaluator_id=self.evaluator_id,
             )
         return total
 
@@ -265,6 +271,7 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
     """
 
     fused_term_name = "kinetic_plus_electron_nucleus"
+    evaluator_id = "analytic_cusp/v1"
 
     def validate(
         self,
@@ -573,6 +580,7 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
                 wavefunction_output=wavefunction_output,
                 per_electron_kinetic=per_electron,
                 term_provenance=provenance,
+                evaluator_id=self.evaluator_id,
             )
         return total
 
