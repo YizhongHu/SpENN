@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from tpen.physics.virial import derive_virial_metrics
+
 
 PHYSICAL_TERM_NAMES = ("kinetic", "harmonic_trap", "electron_electron")
 
@@ -33,39 +35,25 @@ def summarize_physical_terms(terms: Mapping[str, torch.Tensor]) -> dict[str, Any
     """
 
     values: dict[str, float | None] = {}
-    variances: dict[str, float | None] = {}
     for name in PHYSICAL_TERM_NAMES:
         tensor = terms.get(name)
         if tensor is None:
             values[name] = None
-            variances[name] = None
             continue
         finite = tensor.detach().reshape(-1)
         finite = finite[torch.isfinite(finite)]
         if finite.numel() == 0:
             values[name] = None
-            variances[name] = None
             continue
         values[name] = float(finite.mean().item())
-        variances[name] = float(finite.var(unbiased=False).item())
 
-    kinetic = values["kinetic"]
-    harmonic = values["harmonic_trap"]
-    electron_electron = values["electron_electron"]
-    if kinetic is None or harmonic is None or electron_electron is None:
-        residual = relative = None
-    else:
-        residual = 2.0 * kinetic - 2.0 * harmonic + electron_electron
-        denominator = abs(2.0 * kinetic) + abs(2.0 * harmonic) + abs(electron_electron)
-        relative = abs(residual) / denominator if denominator else 0.0
-
-    metrics: dict[str, Any] = {}
-    for name in PHYSICAL_TERM_NAMES:
-        metrics[f"term/{name}_mean"] = values[name]
-        metrics[f"term/{name}_variance"] = variances[name]
-    metrics["virial_residual"] = residual
-    metrics["virial_relative_residual"] = relative
-    return metrics
+    virial = derive_virial_metrics(
+        values["kinetic"], values["harmonic_trap"], values["electron_electron"]
+    )
+    return {
+        "virial_residual": virial["residual"],
+        "virial_relative_residual": virial["relative_residual"],
+    }
 
 
 __all__ = ["PHYSICAL_TERM_NAMES", "summarize_physical_terms"]

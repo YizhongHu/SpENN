@@ -46,6 +46,7 @@ from experiments.toolkit.artifacts import (  # noqa: E402
     read_csv as _read_csv,
     write_csv as _write_csv_columns,
 )
+from tpen.physics.virial import derive_virial_metrics
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
@@ -120,6 +121,13 @@ COMPACT_TABLES = (
 
 def _energy_component_value(row: dict[str, Any], key: str) -> float | None:
     value = _as_float(row.get(key))
+    if value is None and key in {"virial_residual", "virial_relative_residual"}:
+        derived = derive_virial_metrics(
+            _as_float(row.get("kinetic_mean")),
+            _as_float(row.get("harmonic_trap_mean")),
+            _as_float(row.get("electron_electron_mean")),
+        )
+        return derived["residual" if key == "virial_residual" else "relative_residual"]
     return value
 
 

@@ -61,6 +61,7 @@ from experiments.toolkit.cost import (  # noqa: E402
     cost_by_run_row,
     cost_by_task_rows,
 )
+from tpen.physics.virial import derive_virial_metrics
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0
@@ -736,10 +737,13 @@ def _energy_row(context: dict[str, Any]) -> dict[str, Any]:
     kinetic = _as_float(metrics.get("eval/mcmc_energy/term/kinetic_mean"))
     harmonic = _as_float(metrics.get("eval/mcmc_energy/term/harmonic_trap_mean"))
     electron_electron = _as_float(metrics.get("eval/mcmc_energy/term/electron_electron_mean"))
-    virial = {
-        "residual": _as_float(metrics.get("eval/mcmc_energy/virial_residual")),
-        "relative_residual": _as_float(metrics.get("eval/mcmc_energy/virial_relative_residual")),
-    }
+    residual = _as_float(metrics.get("eval/mcmc_energy/virial_residual"))
+    relative = _as_float(metrics.get("eval/mcmc_energy/virial_relative_residual"))
+    virial = (
+        {"residual": residual, "relative_residual": relative}
+        if residual is not None and relative is not None
+        else derive_virial_metrics(kinetic, harmonic, electron_electron)
+    )
     n_finite = _as_float(metrics.get("eval/mcmc_energy/local_energy_n_finite"))
     n_total = _as_float(metrics.get("eval/mcmc_energy/local_energy_n_total"))
     finite_fraction = _as_float(metrics.get("eval/mcmc_energy/local_energy_finite_fraction"))
