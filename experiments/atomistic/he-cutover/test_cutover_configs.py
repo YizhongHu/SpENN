@@ -96,11 +96,12 @@ def test_he_analytic_overlay_constructs_an_explicit_opt_in_row() -> None:
     overlay = OmegaConf.load(HEV1_ANALYTIC)
     merged = OmegaConf.merge(base, overlay)
     raw = OmegaConf.to_container(merged, resolve=False)
+    overlay_raw = OmegaConf.to_container(overlay, resolve=False)
     task = raw["evaluation_tasks"]["mcmc_energy"]
     assert task["output_dir"] == "${run.dir}/mcmc_energy"
     assert merged.local_energy_evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
     assert task["generator"] == "${analytic_trajectory_generator}"
-    assert task["calculators"][0]["evaluator"] == "${local_energy_evaluator}"
+    assert overlay_raw["evaluation_tasks"]["mcmc_energy"]["calculators"][0] == "${analytic_local_energy_calculator}"
     # This assertion follows the runner-owned evaluator task list, not a
     # detached overlay component. A production edit that wires only named
     # components (or forgets the task replacement) leaves this path naive.
