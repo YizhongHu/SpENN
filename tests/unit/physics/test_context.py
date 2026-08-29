@@ -81,7 +81,7 @@ def test_provider_graph_reports_cycles() -> None:
         validate_provider_graph([First(), Second()], (), operator="op-8")
 
 
-def test_provider_graph_handles_deep_acyclic_chain_without_recursion() -> None:
+def test_provider_graph_reports_deep_cycle_without_recursion() -> None:
     keys = [ContextKey(f"key-{index}", int) for index in range(1_201)]
 
     @dataclass
@@ -96,6 +96,7 @@ def test_provider_graph_handles_deep_acyclic_chain_without_recursion() -> None:
         Provider(key, requirements(keys[index + 1]))
         for index, key in enumerate(keys[:-1])
     ]
-    providers.append(Provider(keys[-1], requirements()))
+    providers.append(Provider(keys[-1], requirements(keys[0])))
 
-    validate_provider_graph(providers, (), operator="op-deep")
+    with pytest.raises(ValueError, match="operator op-deep.*cyclic"):
+        validate_provider_graph(providers, (), operator="op-deep")
