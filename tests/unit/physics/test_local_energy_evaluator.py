@@ -13,9 +13,14 @@ import pytest
 import torch
 from typeguard import TypeCheckError, suppress_type_checks
 
-from tpen.data.batch import ElectronBatch
-from tpen.physics.potential import HarmonicTrap
+from tpen.data import AtomicConfiguration
+from tpen.data.batch import ElectronBatch, FactorizedLocalEnergyInput, WavefunctionOutput
+from tpen.nn.cusp import ElectronNucleusCusp
+from tpen.physics.kinetic import KineticEnergy
+from tpen.physics.potential import ElectronNucleusPotential, HarmonicTrap
 from tpen.physics.hamiltonian import (
+    AnalyticCuspContext,
+    AnalyticCuspEvaluator,
     LocalEnergyResult,
     NaiveLocalEnergyContext,
     NaiveLocalEnergyEvaluator,
@@ -23,6 +28,52 @@ from tpen.physics.hamiltonian import (
 )
 
 _DTYPE = torch.float64
+
+
+class _AnalyticWavefunction:
+    def __init__(self, provider, curvature: float = 0.0):
+        self.analytic_cusp_provider = provider
+        self.curvature = curvature
+        self.factorized_calls = 0
+
+    def factorized_local_energy_input(self, batch):
+        self.factorized_calls += 1
+        flat = batch.flatten_samples()
+        logabs = -self.curvature * flat.positions.square().sum(dim=(1, 2))
+        output = WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs), aux={"source": "regular"})
+        return FactorizedLocalEnergyInput(output, self.analytic_cusp_provider.analytic_evaluation(flat))
+
+
+class _BombKinetic(KineticEnergy):
+    def local_energy(self, wavefunction, batch):
+        raise AssertionError("kinetic participant was called")
+
+
+class _BombPotential(ElectronNucleusPotential):
+    def local_energy(self, wavefunction, batch):
+        raise AssertionError("potential participant was called")
+
+
+class _CountingTerm:
+    name = "counting"
+
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def local_energy(self, wavefunction, batch):
+        self.calls += 1
+        return LocalEnergyResult(total=torch.full((batch.flatten_samples().batch_size,), self.value, dtype=batch.positions.dtype))
+
+
+def _analytic_setup(*, z=1.0, nuclear_position=None, eps=0.0):
+    position = torch.zeros((1, 3), dtype=_DTYPE) if nuclear_position is None else torch.tensor([nuclear_position], dtype=_DTYPE)
+    atoms = AtomicConfiguration(position, torch.tensor([z], dtype=_DTYPE))
+    provider = ElectronNucleusCusp(atoms)
+    wavefunction = _AnalyticWavefunction(provider)
+    batch = ElectronBatch(positions=torch.tensor([[[0.4, 0.0, 0.0]]], dtype=_DTYPE))
+    terms = {"kinetic": KineticEnergy(), "electron_nucleus": ElectronNucleusPotential(atoms, eps=eps)}
+    return atoms, wavefunction, batch, terms
 
 
 def _batch(n_walkers: int = 3) -> ElectronBatch:
@@ -108,3 +159,46 @@ def test_sequence_terms_keep_snake_case_naming_through_delegation() -> None:
     result = local_energy([ConstantTerm(2.0)], None, batch, return_terms=True)
     assert list(result.terms) == ["constant_term"]
     torch.testing.assert_close(result.terms["constant_term"], torch.full((3,), 2.0, dtype=_DTYPE))
+
+
+def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
+    _, wavefunction, batch, terms = _analytic_setup()
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+
+    # A production edit that differentiates the cusp-free output incorrectly,
+    # or adds Coulomb separately, changes this exact hydrogenic value.
+    torch.testing.assert_close(result.total, torch.full((1,), -0.5, dtype=_DTYPE))
+    assert list(result.terms) == ["analytic_cusp"]
+    assert result.wavefunction_output is not None
+    torch.testing.assert_close(result.wavefunction_output.logabs, torch.tensor([-0.4], dtype=_DTYPE))
+    assert result.wavefunction_output.aux == {"source": "regular"}
+
+
+def test_analytic_evaluator_skips_participants_and_runs_custom_terms_once() -> None:
+    counting = _CountingTerm(2.25)
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    terms = {
+        "first": counting,
+        "kinetic": _BombKinetic(),
+        "electron_nucleus": _BombPotential(atoms, eps=0.0),
+    }
+    result = AnalyticCuspEvaluator().evaluate(terms, AnalyticCuspContext(wavefunction, batch), return_terms=True)
+    assert counting.calls == 1
+    assert list(result.terms) == ["first", "analytic_cusp"]
+    torch.testing.assert_close(result.total, torch.tensor([1.75], dtype=_DTYPE))
+
+
+@pytest.mark.parametrize(
+    "mutator, message",
+    [
+        (lambda terms: terms.update({"extra": KineticEnergy()}), "exactly one KineticEnergy"),
+        (lambda terms: terms.update({"electron_nucleus": ElectronNucleusPotential(_analytic_setup()[0])}), "eps == 0"),
+    ],
+)
+def test_analytic_evaluator_rejects_invalid_participant_domain(mutator, message) -> None:
+    atoms, wavefunction, batch, terms = _analytic_setup()
+    mutator(terms)
+    with pytest.raises(ValueError, match=message):
+        AnalyticCuspEvaluator().evaluate(terms, AnalyticCuspContext(wavefunction, batch))

@@ -154,6 +154,14 @@ class NaiveLocalEnergyContext:
     batch: ElectronBatch
 
 
+@dataclass(frozen=True)
+class AnalyticCuspContext:
+    """Typed input context for the analytic electron-nucleus evaluator."""
+
+    wavefunction: object
+    batch: ElectronBatch
+
+
 class LocalEnergyEvaluator(Protocol, Generic[ContextT]):
     """Protocol for local-energy evaluators over an open set of terms.
 
@@ -240,6 +248,179 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
                 wavefunction_output=wavefunction_output,
                 per_electron_kinetic=per_electron_kinetic,
             )
+        return total
+
+
+class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
+    """Slow reference evaluator that fuses kinetic energy with one cusp term.
+
+    The evaluator deliberately has a separate context and implementation from
+    :class:`NaiveLocalEnergyEvaluator`.  A missing analytic capability or an
+    invalid domain is an error, never a reason to silently change evaluators.
+    """
+
+    fused_term_name = "analytic_cusp"
+
+    def evaluate(
+        self,
+        terms: Mapping[Any, Any] | Sequence[Any],
+        context: AnalyticCuspContext,
+        *,
+        return_terms: bool = False,
+    ) -> torch.Tensor | LocalEnergyResult:
+        if not isinstance(context, AnalyticCuspContext):
+            raise TypeError(
+                "AnalyticCuspEvaluator requires an AnalyticCuspContext, "
+                f"got {type(context).__name__}"
+            )
+        from tpen.nn.cusp import ElectronNucleusCusp
+        from tpen.physics.kinetic import KineticEnergy
+        from tpen.physics.potential import ElectronNucleusPotential, _validate_batch_atoms_context
+
+        normalized = normalize_hamiltonian_terms(terms)
+        kinetic = [term for term in normalized.values() if isinstance(term, KineticEnergy)]
+        potentials = [term for term in normalized.values() if isinstance(term, ElectronNucleusPotential)]
+        if len(kinetic) != 1:
+            raise ValueError("analytic cusp evaluation requires exactly one KineticEnergy term")
+        if len(potentials) != 1:
+            raise ValueError("analytic cusp evaluation requires exactly one ElectronNucleusPotential term")
+        potential = potentials[0]
+        if potential.eps != 0:
+            raise ValueError("analytic cusp evaluation requires ElectronNucleusPotential.eps == 0")
+
+        wavefunction = context.wavefunction
+        provider = getattr(wavefunction, "analytic_cusp_provider", None)
+        if not isinstance(provider, ElectronNucleusCusp):
+            raise ValueError("analytic cusp evaluation requires one explicitly bound ElectronNucleusCusp provider")
+        factorized = getattr(wavefunction, "factorized_local_energy_input", None)
+        if not callable(factorized):
+            raise ValueError("analytic cusp evaluation requires factorized_local_energy_input capability")
+        same_geometry, _ = potential.atoms.compare(provider.atoms, atol=0.0, rtol=0.0)
+        if not same_geometry:
+            raise ValueError("ElectronNucleusPotential and analytic cusp provider must share matching atoms")
+
+        flat = context.batch.flatten_samples()
+        if flat.spatial_dim != 3:
+            raise ValueError("analytic cusp evaluation requires spatial dimension 3")
+        _validate_batch_atoms_context(potential.atoms, flat, term_name=type(potential).__name__)
+        positions = flat.positions.detach().clone().requires_grad_(True)
+        probe = ElectronBatch(
+            positions=positions,
+            system=flat.system,
+            nuclear_positions=flat.nuclear_positions,
+            nuclear_charges=flat.nuclear_charges,
+            atomic_configuration=flat.atomic_configuration,
+            spins=flat.spins,
+            aux=dict(flat.aux),
+        )
+        factorized_input = factorized(probe)
+        from tpen.data.batch import FactorizedLocalEnergyInput
+        if not isinstance(factorized_input, FactorizedLocalEnergyInput):
+            raise TypeError("factorized_local_energy_input must return FactorizedLocalEnergyInput")
+        factorized_input.validate(batch_size=flat.batch_size)
+        evaluation = factorized_input.electron_nucleus_cusp_evaluation
+        if evaluation.n_electrons != flat.n_electrons or evaluation.n_nuclei != provider.atoms.n_nuclei:
+            raise ValueError("analytic cusp evaluation geometry does not match the electron batch")
+        if evaluation.displacement.shape[-1] != 3:
+            raise ValueError("analytic cusp evaluation requires spatial dimension 3")
+        atoms_on_device = provider.atoms.to(device=positions.device, dtype=positions.dtype)
+        expected_displacement = positions.unsqueeze(2) - atoms_on_device.positions.view(1, 1, -1, 3)
+        if not torch.equal(evaluation.displacement, expected_displacement):
+            raise ValueError("analytic cusp evaluation displacement does not match the bound atoms")
+        if not torch.equal(evaluation.distance, expected_displacement.norm(dim=-1)):
+            raise ValueError("analytic cusp evaluation distance does not match its displacement")
+        if torch.any(evaluation.distance <= 0):
+            raise ValueError("analytic cusp evaluation does not support electron-nucleus coalescence")
+        if not torch.equal(evaluation.nuclear_charges, provider.atoms.charges.to(evaluation.displacement)):
+            raise ValueError("analytic cusp evaluation provider charges do not match its atoms")
+        expected_slope = -evaluation.nuclear_charges
+        if not torch.equal(evaluation.origin_radial_slope, expected_slope):
+            raise ValueError("analytic cusp evaluation provider origin slopes do not match nuclear charges")
+
+        regular = factorized_input.regular_wavefunction_output
+        if regular.phase is not None:
+            raise ValueError("analytic cusp evaluation requires a real wavefunction")
+        if not torch.isfinite(regular.logabs).all() or not torch.isfinite(regular.sign).all() or torch.any(regular.sign == 0):
+            raise ValueError("analytic cusp evaluation requires an off-node real wavefunction")
+        # The zero quadratic keeps even constant or affine regular factors in
+        # a second-derivative graph, without changing their value or gradient.
+        differentiable_logabs = regular.logabs + positions.square().sum(dim=(1, 2)) * 0.0
+        gradient = torch.autograd.grad(differentiable_logabs.sum(), positions, create_graph=True)[0]
+        if gradient.shape != positions.shape:
+            raise ValueError("regular wavefunction gradient must match electron positions")
+
+        fused = torch.zeros(flat.batch_size, device=positions.device, dtype=positions.dtype)
+        for sample in range(flat.batch_size):
+            for electron in range(flat.n_electrons):
+                laplacian = torch.zeros((), device=positions.device, dtype=positions.dtype)
+                for coordinate in range(3):
+                    second = torch.autograd.grad(
+                        gradient[:, electron, coordinate].sum(),
+                        positions,
+                        create_graph=True,
+                        retain_graph=True,
+                    )[0]
+                    laplacian = laplacian + second[sample, electron, coordinate]
+                cusp_gradient = torch.zeros(3, device=positions.device, dtype=positions.dtype)
+                for nucleus in range(evaluation.n_nuclei):
+                    cusp_gradient = cusp_gradient + (
+                        evaluation.radial_first_derivative[sample, electron, nucleus]
+                        * evaluation.displacement[sample, electron, nucleus]
+                        / evaluation.distance[sample, electron, nucleus]
+                    )
+                total_gradient = gradient[sample, electron] + cusp_gradient
+                fused[sample] = fused[sample] - 0.5 * (laplacian + total_gradient.square().sum())
+            fused[sample] = fused[sample] + evaluation.local_energy_pair()[sample].sum()
+
+        full_output = WavefunctionOutput(
+            logabs=regular.logabs + evaluation.pair_value.sum(dim=(1, 2)),
+            sign=regular.sign,
+            phase=regular.phase,
+            aux=dict(regular.aux),
+        )
+        return self._aggregate(
+            normalized,
+            context.batch,
+            wavefunction,
+            fused,
+            full_output,
+            return_terms=return_terms,
+        )
+
+    def _aggregate(self, normalized, batch, wavefunction, fused, full_output, *, return_terms):
+        flat = batch.flatten_samples()
+        decomposition = {}
+        total = None
+        wavefunction_output = full_output
+        per_electron = None
+        inserted = False
+        from tpen.physics.kinetic import KineticEnergy
+        from tpen.physics.potential import ElectronNucleusPotential
+        for name, term in normalized.items():
+            if isinstance(term, (KineticEnergy, ElectronNucleusPotential)):
+                if not inserted:
+                    decomposition[self.fused_term_name] = fused
+                    total = fused
+                    inserted = True
+                continue
+            result = _validate_local_energy_result(
+                name,
+                term.local_energy(wavefunction, batch),
+                batch_size=flat.batch_size,
+                n_electrons=flat.n_electrons,
+            )
+            decomposition[name] = result.total
+            total = result.total if total is None else total + result.total
+            if result.wavefunction_output is not None:
+                raise ValueError("analytic cusp evaluation cannot combine another wavefunction output")
+            if result.per_electron_kinetic is not None:
+                if per_electron is not None:
+                    raise ValueError("local-energy evaluation produced more than one per-electron kinetic attribution")
+                per_electron = result.per_electron_kinetic
+        if total is None:
+            total = fused
+        if return_terms:
+            return LocalEnergyResult(total=total, terms=decomposition, wavefunction_output=wavefunction_output, per_electron_kinetic=per_electron)
         return total
 
 
@@ -442,6 +623,8 @@ __all__ = [
     "LocalEnergyResult",
     "NaiveLocalEnergyContext",
     "NaiveLocalEnergyEvaluator",
+    "AnalyticCuspContext",
+    "AnalyticCuspEvaluator",
     "local_energy",
     "normalize_hamiltonian_terms",
     "summarize_local_energy",
