@@ -114,9 +114,6 @@ def test_seed_outside_the_task_block_is_not_mistaken_for_task_seed(tmp_path: Pat
     assert found["raw_line"] == "  seed: 4"
 
 
-# The comparator is Cannon run dqmc-he-39358341/default: 20000 steps, batch 4096,
-# seed 0, code_commit edf373e7, on an A100-SXM4-80GB.
-
 
 # --- Optional-evidence collection must never be fatal ------------------------
 # Regression for PBS 7571666 on Polaris: check_env reached
