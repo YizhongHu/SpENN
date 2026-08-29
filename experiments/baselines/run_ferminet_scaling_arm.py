@@ -96,11 +96,11 @@ def run(config_path: str | Path, *, run_dir: str | Path, first_tail_step: int) -
     class ScalingWriter(writers.Writer):
         """Preserve FermiNet's CSV while emitting timestampable actual steps."""
 
-        def write(self, step: int, **data: Any) -> None:
-            super().write(step, **data)
+        def write(self, iteration: int, **data: Any) -> None:
+            super().write(iteration, **data)
             # This runs inside FermiNet's actual logging branch, after an
             # optimizer step, rather than estimating progress externally.
-            print(f"SCALING_PROBE Step {step}", flush=True)
+            print(f"SCALING_PROBE Step {data.get('step', iteration)}", flush=True)
 
     def recorded_make_mcmc_step(*args: Any, **kwargs: Any) -> Any:
         # ``train.train`` has already validated divisibility and calculated this
