@@ -6,10 +6,10 @@ before checkpoint weights are loaded, so a result cannot claim one source,
 checkpoint, configuration, distance treatment, or dtype while executing
 another.
 
-The electron-electron fields describe the currently executed softened
-physical-separation calculation and the distinct positivity offset that happen
-to share one ``ElectronElectronCusp.eps`` value today.  Keeping them as two
-fields makes that overloading visible without changing it.
+The electron-electron fields describe the currently executed physical-
+separation calculation and its distinct positivity offset.  They are recorded
+as two fields because ``ElectronElectronCusp.eps`` and ``range_eps`` are now
+separate parameters.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ class CuspDistanceSemantics:
         ``softplus(raw_range) + eps``.
     electron_electron_range_offset_eps : float
         ``eps`` added after softplus.  It is recorded separately from the
-        distance value even though one implementation parameter supplies both.
+        distance value; the implementation parameters are separate.
     electron_nucleus_coulomb_distance_form : str
         Executed electron-nucleus Coulomb distance form.  He-v1 uses
         ``clamp_min(||r_i-R_A||, eps)``.
@@ -401,7 +401,9 @@ def verify_checkpoint_replay_semantics(
             "replay-verified model must contain exactly one ElectronElectronCusp, "
             f"got {len(electron_electron_cusps)}"
         )
-    cusp_eps = float(electron_electron_cusps[0].eps)
+    cusp = electron_electron_cusps[0]
+    cusp_eps = float(cusp.eps)
+    cusp_range_eps = float(cusp.range_eps)
     _require_equal(
         "electron_electron_distance_eps",
         semantics.cusp_distance.electron_electron_distance_eps,
@@ -410,7 +412,7 @@ def verify_checkpoint_replay_semantics(
     _require_equal(
         "electron_electron_range_offset_eps",
         semantics.cusp_distance.electron_electron_range_offset_eps,
-        cusp_eps,
+        cusp_range_eps,
     )
     _require_equal(
         "electron_nucleus_coulomb_distance_eps",
