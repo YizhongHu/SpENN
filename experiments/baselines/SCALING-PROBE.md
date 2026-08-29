@@ -21,7 +21,12 @@ For FermiNet and Psiformer, use `run_ferminet_scaling_arm.py` as the command
 inside the probe. It observes the exact per-device batch argument passed into
 FermiNet's MCMC construction call and emits a blocking-error training-tail
 energy after the run. It instruments the public call boundary at runtime; it
-does not modify FermiNet.
+does not modify FermiNet. Its progress matcher must be
+`SCALING_PROBE Step (?P<step>[0-9]+)`: FermiNet's own INFO progress and the
+wrapper marker are both valid logs, but combining them fabricates sub-step
+intervals. If a completed raw result used a broader matcher, use
+`scaling_probe.py reanalyse` to write a new result from the immutable wrapper
+log; retain the original result unchanged.
 
 After a 1-GPU arm and *before* advancing each higher-GPU rung, run
 `scaling_probe.py gate` over that baseline and candidate JSON. It writes the

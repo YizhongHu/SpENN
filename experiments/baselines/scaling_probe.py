@@ -288,7 +288,7 @@ def run_arm(
         energy_regex=energy_regex,
         step_regex=step_regex,
     )
-    if process_exit_code != 0:
+    if process_exit_code is not None and process_exit_code != 0:
         analysis["errors"].append(f"backend command exited {process_exit_code}")
         analysis["status"] = "failed"
     result = {
@@ -304,6 +304,56 @@ def run_arm(
         },
         "command": list(command),
         "process_exit_code": process_exit_code,
+        **analysis,
+    }
+    destination = Path(output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return result
+
+
+def reanalyse_arm(
+    source_result: str | Path,
+    *,
+    output: str | Path,
+    device_regex: str,
+    batch_regex: str,
+    energy_regex: str,
+    step_regex: str,
+) -> dict[str, Any]:
+    """Re-extract a completed arm from its immutable timestamped wrapper log.
+
+    Backends may emit more than one line that resembles a progress record.
+    This function preserves the raw arm JSON and log, while producing a new
+    result that names the source and uses the caller's exact line contract.
+    """
+
+    source_path = Path(source_result)
+    source = _load_result(source_path)
+    arm = source.get("arm")
+    if not isinstance(arm, dict):
+        raise ScalingProbeError(f"source result {source_path} has no arm metadata")
+    try:
+        analysis = analyse_log(
+            source["log"],
+            expected_devices=int(arm["gpu_count"]),
+            device_regex=device_regex,
+            batch_regex=batch_regex,
+            energy_regex=energy_regex,
+            step_regex=step_regex,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ScalingProbeError(f"source result {source_path} is missing valid arm evidence") from exc
+    process_exit_code = source.get("process_exit_code")
+    if process_exit_code != 0:
+        analysis["errors"].append(f"backend command exited {process_exit_code}")
+        analysis["status"] = "failed"
+    result = {
+        "schema": SCHEMA,
+        "arm": arm,
+        "command": source.get("command", []),
+        "process_exit_code": process_exit_code,
+        "reanalysed_from": str(source_path),
         **analysis,
     }
     destination = Path(output)
@@ -409,6 +459,13 @@ def _parser() -> argparse.ArgumentParser:
     gate = subparsers.add_parser("gate", help="write a comparison and fail if any arm is scientifically invalid")
     gate.add_argument("--output", type=Path, required=True)
     gate.add_argument("results", nargs="+", type=Path)
+    reanalyse = subparsers.add_parser("reanalyse", help="re-extract a completed arm using a stricter log-line contract")
+    reanalyse.add_argument("--source-result", type=Path, required=True)
+    reanalyse.add_argument("--output", type=Path, required=True)
+    reanalyse.add_argument("--device-regex", default=DEFAULT_DEVICE_REGEX)
+    reanalyse.add_argument("--batch-regex", required=True)
+    reanalyse.add_argument("--energy-regex", required=True)
+    reanalyse.add_argument("--step-regex", required=True)
     return parser
 
 
@@ -434,6 +491,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 energy_regex=args.energy_regex,
                 step_regex=args.step_regex,
                 visible_devices=args.visible_devices,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0 if result["status"] == "passed" else 1
+        if args.action == "reanalyse":
+            result = reanalyse_arm(
+                args.source_result,
+                output=args.output,
+                device_regex=args.device_regex,
+                batch_regex=args.batch_regex,
+                energy_regex=args.energy_regex,
+                step_regex=args.step_regex,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "passed" else 1

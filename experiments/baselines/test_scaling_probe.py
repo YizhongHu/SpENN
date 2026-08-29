@@ -97,6 +97,52 @@ def test_gate_cli_creates_a_missing_result_directory(tmp_path: Path) -> None:
     assert json.loads(output.read_text())["ladder"][1]["correctness"] == "passed"
 
 
+def test_reanalyse_uses_only_the_requested_progress_lines(tmp_path: Path) -> None:
+    log = tmp_path / "arm.log"
+    log.write_text(
+        "\n".join(
+            [
+                "2026-08-29T00:00:00.000000Z\tStarting QMC with 1 XLA devices",
+                "2026-08-29T00:00:00.000001Z\tdevice_batch_size=4096",
+                "2026-08-29T00:00:00.000002Z\tINFO Step 0",
+                "2026-08-29T00:00:00.010000Z\tSCALING_PROBE Step 0",
+                "2026-08-29T00:00:00.010001Z\tINFO Step 1",
+                "2026-08-29T00:00:00.020000Z\tSCALING_PROBE Step 1",
+                "2026-08-29T00:00:00.020001Z\tINFO Step 2",
+                "2026-08-29T00:00:00.030000Z\tSCALING_PROBE Step 2",
+                "2026-08-29T00:00:01.000000Z\tenergy=-2.900000 stderr=0.020000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "schema": scaling_probe.SCHEMA,
+                "arm": {"backend": "ferminet", "ansatz": "ferminet", "system": "he", "steps": 2, "gpu_count": 1, "total_batch_size": 4096},
+                "command": ["ferminet"],
+                "process_exit_code": 0,
+                "log": str(log),
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "reanalysed" / "result.json"
+    result = scaling_probe.reanalyse_arm(
+        source,
+        output=output,
+        device_regex=DEVICE,
+        batch_regex=BATCH,
+        energy_regex=ENERGY,
+        step_regex=r"SCALING_PROBE Step (?P<step>\d+)",
+    )
+    assert result["status"] == "passed"
+    assert result["intervals"][0]["seconds_per_step"] == pytest.approx(0.01)
+    assert result["reanalysed_from"] == str(source)
+
+
 def test_run_arm_writes_microsecond_wrapper_log_and_structured_result(tmp_path: Path) -> None:
     command = [
         "python",
