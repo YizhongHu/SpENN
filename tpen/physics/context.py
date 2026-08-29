@@ -12,9 +12,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ContextKey[T]:
-    """The typed identity of one context artifact."""
+    """The typed identity of one context artifact.
+
+    Keys use object identity deliberately: two distinct keys that happen to
+    have equal fields are distinct artifacts.
+    """
 
     name: str
     value_type: type[T]
@@ -26,13 +30,12 @@ type ContextRequirements = frozenset[ContextKey[object]]
 class ReadOnlyContext:
     """A context which permits typed reads but no writes.
 
-    Entries are indexed by the identity of their key object. This is
-    deliberate: ContextKey.name is diagnostic metadata and carries no
-    dispatch meaning.
+    Entries are indexed by their key objects. This is deliberate:
+    ContextKey.name is diagnostic metadata and carries no dispatch meaning.
     """
 
     def __init__(self, values: Mapping[ContextKey[object], object]) -> None:
-        entries: dict[int, tuple[ContextKey[object], object]] = {}
+        entries: dict[ContextKey[object], object] = {}
         for key, value in values.items():
             if not isinstance(key, ContextKey):
                 raise TypeError("context keys must be ContextKey instances")
@@ -41,16 +44,15 @@ class ReadOnlyContext:
                     f"context artifact {key.name!r} must be {key.value_type.__name__}, "
                     f"got {type(value).__name__}"
                 )
-            entries[id(key)] = (key, value)
+            entries[key] = value
         self._entries = entries
 
     def __getitem__[T](self, key: ContextKey[T]) -> T:
         if not isinstance(key, ContextKey):
             raise TypeError("context lookup requires a ContextKey")
-        entry = self._entries.get(id(key))
-        if entry is None or entry[0] is not key:
+        value = self._entries.get(key)
+        if value is None and key not in self._entries:
             raise KeyError(key.name)
-        value = entry[1]
         if not isinstance(value, key.value_type):
             raise TypeError(
                 f"context artifact {key.name!r} must be {key.value_type.__name__}, "
@@ -61,8 +63,7 @@ class ReadOnlyContext:
     def __contains__(self, key: object) -> bool:
         if not isinstance(key, ContextKey):
             return False
-        entry = self._entries.get(id(key))
-        return entry is not None and entry[0] is key
+        return key in self._entries
 
 
 class ContextProvider[T](Protocol):
@@ -97,35 +98,40 @@ def validate_provider_graph(
     # object is intentional: typeguard cannot runtime-check a Protocol with
     # data attributes. Providers are validated by their declarations below;
     # no structural probe selects a computation.
-    by_key: dict[int, object] = {id(provider.key): provider for provider in providers}
-    available = {id(key): key for key in required}
+    by_key: dict[ContextKey[object], object] = {provider.key: provider for provider in providers}
+    available = set(required)
     for provider in providers:
-        available[id(provider.key)] = provider.key
+        available.add(provider.key)
 
     for provider in providers:
         for dependency in provider.dependencies:
-            if id(dependency) not in available:
+            if dependency not in available:
                 raise ValueError(
                     f"operator {operator} requires missing context key {dependency.name!r}"
                 )
 
-    visiting: set[int] = set()
-    visited: set[int] = set()
-
-    def visit(key: ContextKey[object]) -> None:
-        marker = id(key)
-        if marker in visited or marker not in by_key:
-            return
-        if marker in visiting:
-            raise ValueError(f"operator {operator} has cyclic context dependency at {key.name!r}")
-        visiting.add(marker)
-        for dependency in by_key[marker].dependencies:
-            visit(dependency)
-        visiting.remove(marker)
-        visited.add(marker)
-
+    visited: set[ContextKey[object]] = set()
     for provider in providers:
-        visit(provider.key)
+        root = provider.key
+        if root in visited:
+            continue
+        visiting: set[ContextKey[object]] = set()
+        stack: list[tuple[ContextKey[object], bool]] = [(root, False)]
+        while stack:
+            key, leaving = stack.pop()
+            if leaving:
+                visiting.remove(key)
+                visited.add(key)
+                continue
+            if key in visited:
+                continue
+            if key in visiting:
+                raise ValueError(f"operator {operator} has cyclic context dependency at {key.name!r}")
+            if key not in by_key:
+                continue
+            visiting.add(key)
+            stack.append((key, True))
+            stack.extend((dependency, False) for dependency in by_key[key].dependencies)
 
 
 Context = ReadOnlyContext

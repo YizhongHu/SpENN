@@ -12,13 +12,24 @@ from tpen.physics.context import (
 )
 
 
-def test_context_resolves_by_key_identity_after_renaming() -> None:
-    key = ContextKey("original", int)
-    context = ReadOnlyContext({key: 7})
+def test_context_distinguishes_distinct_same_name_keys() -> None:
+    first = ContextKey("distances", int)
+    second = ContextKey("distances", int)
+    context = ReadOnlyContext({first: 1, second: 2})
 
-    object.__setattr__(key, "name", "renamed")
+    assert context[first] == 1
+    assert context[second] == 2
 
-    assert context[key] == 7
+
+def test_context_does_not_resolve_value_equal_key_from_elsewhere() -> None:
+    original = ContextKey("distances", int)
+    elsewhere = ContextKey("distances", int)
+    context = ReadOnlyContext({original: 1})
+
+    assert original != elsewhere
+    assert elsewhere not in context
+    with pytest.raises(KeyError):
+        context[elsewhere]
 
 
 def test_context_is_read_only() -> None:
@@ -68,3 +79,23 @@ def test_provider_graph_reports_cycles() -> None:
 
     with pytest.raises(ValueError, match="operator op-8.*cyclic"):
         validate_provider_graph([First(), Second()], (), operator="op-8")
+
+
+def test_provider_graph_handles_deep_acyclic_chain_without_recursion() -> None:
+    keys = [ContextKey(f"key-{index}", int) for index in range(1_201)]
+
+    @dataclass
+    class Provider:
+        key: ContextKey[int]
+        dependencies: frozenset[ContextKey[object]]
+
+        def build(self, context: ReadOnlyContext) -> int:
+            return 0
+
+    providers = [
+        Provider(key, requirements(keys[index + 1]))
+        for index, key in enumerate(keys[:-1])
+    ]
+    providers.append(Provider(keys[-1], requirements()))
+
+    validate_provider_graph(providers, (), operator="op-deep")
