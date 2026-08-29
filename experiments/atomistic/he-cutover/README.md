@@ -4,6 +4,29 @@ This study preserves He-v1 science by referencing its tracked train and evaluati
 
 Acceptance requires strict plan tests, the exact three-field training-scale diff, allocation and device refusal tests, probe-before-science ordering, immutable dispatch receipts, exit-code/verification agreement, and root-free facility templates. This smoke deliberately evaluates only `mcmc_energy`; it is not the five-task reduced suite.
 
+## Opt-in analytic local-energy evaluation
+
+The three tracked grids (`proof_grid.yaml`, `production_grid.yaml`, and
+`smoke_grid.yaml`) deliberately keep `eval_config: experiments/atomistic/he-v1/configs/eval.yaml`;
+that is the naive default and must not be repointed. To construct an isolated
+opt-in row, merge `experiments/atomistic/he-v1/configs/analytic_local_energy.yaml`
+into that base config and set the row's `config`/`eval_config` to the resulting
+temporary config. Wire both sides of `mcmc_energy` explicitly:
+
+```text
+evaluation_tasks.mcmc_energy.generator.evaluator=${local_energy_evaluator}
+evaluation_tasks.mcmc_energy.calculators.0.evaluator=${local_energy_evaluator}
+```
+
+This route is for an explicitly selected analytic row only; it is not a change
+to any established proof, smoke, or production grid. The analytic overlay's
+preflight must pass before sampling. Its grouping regularizes the
+electron-nucleus singularity only. Helium's `ElectronElectronCusp` remains in
+the autodiff regular factor and `electron_electron` remains an ordinary
+unclaimed term, so nothing is dropped or double-counted; however, helium's
+electron-electron coalescence is **not regularized**, and electron-electron cusp
+fusion is deferred by design.
+
 ## Operator runbook
 
 Set `TPEN_CHECKOUT` to the development checkout that carries the he-cutover

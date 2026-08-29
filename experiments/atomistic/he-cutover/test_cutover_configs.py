@@ -11,6 +11,8 @@ import run_train_row
 
 ROOT = Path(__file__).resolve().parents[3]
 HEV1_BARE_MODULES = {"layout", "strata", "plan", "driver", "eval", "collect", "canary", "launch"}
+HEV1_EVAL = ROOT / "experiments/atomistic/he-v1/configs/eval.yaml"
+HEV1_ANALYTIC = ROOT / "experiments/atomistic/he-v1/configs/analytic_local_energy.yaml"
 
 
 def _differences(before, after, prefix=""):
@@ -75,6 +77,43 @@ def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
                 stack.extend(value)
             elif isinstance(value, str):
                 assert not value.startswith("/")
+
+
+def test_cutover_grids_keep_naive_eval_config_as_the_default() -> None:
+    """A grid edit to the analytic overlay must fail this production pin."""
+
+    for name in ("proof_grid.yaml", "production_grid.yaml", "smoke_grid.yaml"):
+        grid = yaml.safe_load((Path(__file__).parent / name).read_text())
+        assert grid["eval_config"] == "experiments/atomistic/he-v1/configs/eval.yaml"
+
+
+def test_he_analytic_overlay_constructs_an_explicit_opt_in_row() -> None:
+    """A missing merge/wiring edit must fail before any evaluator is run."""
+
+    base = OmegaConf.load(HEV1_EVAL)
+    overlay = OmegaConf.load(HEV1_ANALYTIC)
+    merged = OmegaConf.merge(base, overlay)
+    # These are the two production config edits required to make the overlay
+    # affect the actual mcmc_energy row rather than merely define unused named
+    # components.
+    OmegaConf.update(
+        merged,
+        "evaluation_tasks.mcmc_energy.generator.evaluator",
+        "${local_energy_evaluator}",
+        merge=False,
+    )
+    OmegaConf.update(
+        merged,
+        "evaluation_tasks.mcmc_energy.calculators.0.evaluator",
+        "${local_energy_evaluator}",
+        merge=False,
+    )
+    assert merged.local_energy_evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert merged.evaluation_tasks.mcmc_energy.generator.evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert merged.evaluation_tasks.mcmc_energy.calculators[0].evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert merged.hamiltonian_terms.electron_nucleus.eps == 0.0
+    assert merged.model.factors[0]._target_ == "tpen.nn.ElectronElectronCusp"
+    assert "electron-electron coalescence is NOT" in HEV1_ANALYTIC.read_text()
 
 
 def _cross_study_violations(study: Path) -> set[str]:

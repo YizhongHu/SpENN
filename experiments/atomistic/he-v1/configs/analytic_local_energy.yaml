@@ -1,0 +1,27 @@
+# Opt-in overlay for the eligible helium electron-nucleus analytic path.
+# Merge this mapping into eval.yaml for an isolated analytic evaluation; an
+# omitted overlay leaves the NaiveLocalEnergyEvaluator path unchanged.
+
+local_energy_evaluator:
+  _target_: tpen.physics.hamiltonian.AnalyticCuspEvaluator
+
+# The analytic grouping fuses kinetic with the electron-nucleus Coulomb term
+# only. Helium also carries tpen.nn.ElectronElectronCusp: that factor remains
+# inside the regular part f and is handled by autodiff, while
+# electron_electron remains an ordinary unclaimed Hamiltonian term. Nothing is
+# dropped or double-counted, but helium's electron-electron coalescence is NOT
+# regularized; with two electrons that singularity matters more than in H2 at
+# typical geometries. Electron-electron cusp fusion is deferred by design.
+
+analytic_local_energy_calculator:
+  _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+  hamiltonian_terms: ${hamiltonian_terms}
+  return_terms: true
+  evaluator: ${local_energy_evaluator}
+
+analytic_trajectory_generator:
+  _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
+  sampler: ${evaluation_sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  n_draws: 4
+  evaluator: ${local_energy_evaluator}
