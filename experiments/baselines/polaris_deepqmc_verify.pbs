@@ -74,6 +74,31 @@ fi
 mkdir -p "$D"
 date -Iseconds > "$D/STARTED"
 
+# Record a teardown POSITIVELY rather than leaving it as an absence.
+# Measured on Polaris (PBS 7571815): when PALS mpiexec aborts a job because one
+# rank failed, surviving ranks are SIGTERMed mid-flight and never write their
+# result files. A torn-down row therefore leaves a start marker and nothing
+# else -- which is indistinguishable, to a reader arriving cold, from a row that
+# never got past setup. The same signature appears here on a wall expiry.
+# This trap converts that absence into a dated record naming the signal, so
+# "ran for 39 minutes and was killed" cannot be misread as "barely started".
+on_signal() {
+    trap - TERM INT
+    {
+        echo "signal=$1"
+        echo "at=$(date -Iseconds)"
+        echo "started=$(cat "$D/STARTED" 2>/dev/null)"
+        # Highest checkpoint reached, so the record says how far it actually got.
+        ls -1 "$D"/*/training/chkpt-*.pt 2>/dev/null \
+            | sed 's|.*chkpt-||; s|\.pt$||' | sort -n | tail -1 \
+            | sed 's/^/last_checkpoint_step=/'
+    } > "$D/KILLED"
+    echo "KILLED by SIG$1 -- see $D/KILLED"
+    exit $((128 + $2))
+}
+trap 'on_signal TERM 15' TERM
+trap 'on_signal INT 2' INT
+
 exec > >(tee -a "$D/job.log") 2>&1
 echo "=== job=$PBS_JOBID host=$(hostname) mode=$MODE steps=$STEPS seed=$SEED start=$(date -Iseconds)"
 
