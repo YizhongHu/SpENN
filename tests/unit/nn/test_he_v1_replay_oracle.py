@@ -92,7 +92,9 @@ def test_he_v1_cusp_replays_the_pinned_v031_cpu_float64_oracle(
         positions=torch.tensor([positions], device="cpu", dtype=torch.float64),
         spins=torch.tensor([[1, -1]], device="cpu"),
     )
-    cusp = ElectronElectronCusp(trainable_range=True).to(
+    # This replay intentionally pins the historical softened regime; the
+    # explicit eps keeps the old oracle meaningful after the default changes.
+    cusp = ElectronElectronCusp(trainable_range=True, eps=1.0e-12).to(
         device="cpu", dtype=torch.float64
     )
     distance = pairwise_distances(batch.positions, eps=cusp.eps)[0, 0, 1, 0].item()

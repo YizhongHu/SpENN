@@ -66,12 +66,28 @@ class ElectronElectronInteraction:
     Parameters
     ----------
     eps : float, optional
-        Minimum pair distance used for numerical safety.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+
+    Warning
+    -------
+    A positive floor removes the potential divergence and introduces a
+    divergence into the total; it is not numerical safety. The electron-nucleus
+    measurement found ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps``
+    across three eps scales and three directions (normalized error <=
+    ``1.11e-16``). The electron-electron finite-eps case is UNMEASURED; a
+    constant offset from identical clamps has not been tested and must not be
+    assumed benign.
     """
 
     name = "electron_electron"
 
-    def __init__(self, eps: float = 1e-12) -> None:
+    def __init__(self, eps: float = 0.0) -> None:
         self.eps = eps
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
@@ -102,7 +118,22 @@ class ElectronNucleusInteraction:
     nuclear_charges : torch.Tensor or None, optional
         Deprecated compatibility metadata paired with ``nuclear_positions``.
     eps : float, optional
-        Minimum electron-nucleus distance used for numerical safety.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+
+    Warning
+    -------
+    A positive floor removes the potential divergence and introduces a
+    divergence into the total; it is not numerical safety. Measurement found
+    ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps`` across three eps
+    scales and three directions, with normalized error <= ``1.11e-16``. The
+    electron-electron finite-eps case is UNMEASURED; a constant offset from
+    identical clamps has not been tested and must not be assumed benign.
     """
 
     name = "electron_nucleus"
@@ -111,7 +142,7 @@ class ElectronNucleusInteraction:
         self,
         nuclear_positions: torch.Tensor | None = None,
         nuclear_charges: torch.Tensor | None = None,
-        eps: float = 1e-12,
+        eps: float = 0.0,
     ) -> None:
         if (nuclear_positions is None) != (nuclear_charges is None):
             raise ValueError("nuclear_positions and nuclear_charges must be provided together")
@@ -222,12 +253,27 @@ class ElectronNucleusPotential:
     atoms : AtomicConfiguration
         Fixed nuclear geometry authority for this term.
     eps : float, optional
-        Minimum electron-nucleus distance used for numerical safety.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+
+    Warning
+    -------
+    A positive floor removes the potential divergence and introduces a
+    divergence into the total; it is not numerical safety. Measurement found
+    ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps`` across three eps
+    scales and three directions, with normalized error <= ``1.11e-16``. The
+    electron-electron finite-eps case is UNMEASURED; a constant offset from
+    identical clamps has not been tested and must not be assumed benign.
     """
 
     name = "electron_nucleus"
 
-    def __init__(self, atoms: object, eps: float = 1e-12) -> None:
+    def __init__(self, atoms: object, eps: float = 0.0) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
         self.atoms = atoms
