@@ -769,3 +769,25 @@ def test_duplicate_seed_keys_are_refused_rather_than_reported_inconsistently(
     run_dir = _run_dir(tmp_path, "task:\n  seed: 1\n  steps: 10\n  seed: 7\n")
     with pytest.raises(EnvCheckError, match="seed:. lines"):
         read_seed(run_dir)
+
+
+def test_inline_flow_style_seed_has_no_quoteable_line_and_is_refused(
+    tmp_path: Path,
+) -> None:
+    """`task: {seed: 7}` parses fine but yields no `seed:` line to quote.
+
+    It previously returned a confident value with line_number=None and
+    raw_line=None -- a successful check with nothing to show for it. A4's
+    evidence requirement is that the value be quoted FROM THE FILE, and None is
+    not a quotation.
+    """
+    run_dir = _run_dir(tmp_path, "task: {seed: 7, steps: 10}\nansatz:\n  name: default\n")
+    with pytest.raises(EnvCheckError, match="cannot be quoted from the file"):
+        read_seed(run_dir)
+
+
+def test_a_normal_block_style_seed_still_yields_its_line(tmp_path: Path) -> None:
+    """The negative control for the test above: the ordinary shape must pass."""
+    found = read_seed(_run_dir(tmp_path))
+    assert found["line_number"] == 50
+    assert found["raw_line"] == "  seed: 1"

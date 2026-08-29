@@ -492,6 +492,20 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
     # quoted line that DISAGREE, with no error. Since the whole point of this
     # function is to quote the file as evidence, contradictory evidence is worse
     # than no evidence.
+    # The whole contract of this function is to QUOTE THE FILE as evidence. Inline
+    # flow-style YAML (`task: {seed: 7}`) parses fine and yields a seed, but the
+    # line scan finds no `seed:` line of its own, so it previously returned
+    # line_number=None and raw_line=None alongside a confident value -- a
+    # successful check with nothing to show for it. A4's evidence requirement
+    # says "quoted FROM THE FILE", and None is not a quotation.
+    if line_number is None:
+        raise EnvCheckError(
+            f"{config_path} defines task.seed as {seed!r} but no `seed:` line was "
+            "found in the top-level task block (inline flow-style mapping?). The "
+            "value cannot be quoted from the file, which is the evidence this "
+            "check exists to produce"
+        )
+
     if seed_line_count > 1:
         raise EnvCheckError(
             f"{config_path} has {seed_line_count} `seed:` lines inside the top-level "

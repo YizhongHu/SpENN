@@ -161,3 +161,59 @@ def test_the_row_status_is_captured_without_errexit() -> None:
     )
     after = text[row:]
     assert after.index("RC=$?") < after.index("set -e")
+
+
+def test_an_unrecognised_mode_is_refused() -> None:
+    """A typo in -v must not silently become a different experiment.
+
+    Anything other than `row` or `probe` previously fell through: it skipped the
+    seed-probe pair but still ran the row, at the PROBE default of 500 steps. So
+    a mistyped MODE produced a run that completed successfully and wrote a
+    plausible result.h5 -- a wrong run that looks like a right one.
+    """
+    text = PBS.read_text()
+    case_line = _line_of(r"^case \"\$MODE\" in")
+    assert "probe|row) ;;" in text
+    assert 'echo "REFUSING: TPEN_DQMC_MODE must be' in text
+    # It must be refused BEFORE anything is written or the row is launched.
+    assert case_line < _line_of(r'^date -Iseconds > "\$GUARD"')
+    assert case_line < _line_of(r'"\$VENV/bin/deepqmc" hydra\.run\.dir="\$RD"')
+
+
+def test_the_throughput_guard_cannot_mask_a_failed_row() -> None:
+    """A guard that can override the result it guards is worse than no guard.
+
+    Without the RC gate, a row that failed SLOWLY exited 6 for anomalous
+    throughput instead of reporting its own failure -- the same status-masking
+    defect as the post-row env check, reintroduced by the fix for
+    "computed but never acted upon".
+    """
+    text = PBS.read_text()
+    marker = 'if [ "$RC" -eq 0 ] && [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then'
+    assert marker in text, "the throughput guard must be gated on a successful row"
+    # And the anomaly exit must live inside that gated block.
+    gated = text[text.index(marker) : text.index("ANOMALOUS_THROUGHPUT") ]
+    assert "fi" not in gated, "exit 6 escaped the RC-gated block"
+
+
+def test_the_default_step_count_is_selected_by_mode() -> None:
+    """`row` defaults to 20000 steps and `probe` to 500.
+
+    A verifier's mutant changed the branch condition from "row" to a value no
+    caller passes, so a MODE=row submission fell to the else and ran 500 steps
+    instead of 20000 -- a run that completes, writes a valid result.h5, and is
+    NOT the experiment that was asked for. Entry validation of MODE does not
+    catch this: MODE is valid, the branch that consumes it is not.
+    """
+    text = PBS.read_text()
+    branch = re.search(
+        r'if \[ "\$MODE" = "(?P<mode>[^"]+)" \]; then\s*\n'
+        r'\s*STEPS="\$\{TPEN_DQMC_STEPS:-(?P<row>\d+)\}"\s*\n'
+        r"\s*else\s*\n"
+        r'\s*STEPS="\$\{TPEN_DQMC_STEPS:-(?P<probe>\d+)\}"',
+        text,
+    )
+    assert branch is not None, "the MODE-to-STEPS branch is not in its expected shape"
+    assert branch.group("mode") == "row", branch.group("mode")
+    assert branch.group("row") == "20000"
+    assert branch.group("probe") == "500"

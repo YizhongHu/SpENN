@@ -59,6 +59,17 @@ fi
 
 test -n "${PBS_JOBID:-}" || { echo "REFUSING: not running under PBS"; exit 2; }
 
+# REFUSE AN UNRECOGNISED MODE. Previously anything other than `row` or `probe`
+# fell through: it skipped the seed-probe pair but still ran the row, at the
+# PROBE default of 500 steps. So a typo in -v silently produced a DIFFERENT
+# EXPERIMENT that completed successfully and wrote a plausible result.h5 -- a
+# wrong run that looks like a right one, which is the failure this whole item
+# exists to make impossible.
+case "$MODE" in
+    probe|row) ;;
+    *) echo "REFUSING: TPEN_DQMC_MODE must be 'probe' or 'row', got '$MODE'"; exit 7 ;;
+esac
+
 # TRAPS ARE INSTALLED HERE, BEFORE THE GUARD AND THE MARKER, AND DELIBERATELY SO.
 # They previously went in ~70 lines below, after the guard, the marker write and
 # the directory creation. A TERM or INT arriving in that window took the shell
@@ -118,7 +129,15 @@ on_signal() {
         echo "signal=$1 at=$(date -Iseconds) before_run_dir_existed" \
             > "$OUT_ROOT/KILLED-early-${PBS_JOBID%%.*}" 2>/dev/null || true
     }
-    echo "KILLED by SIG$1 -- see ${d}/KILLED"
+    if [ -s "${d}/KILLED" ]; then
+        echo "KILLED by SIG$1 -- see ${d}/KILLED"
+    else
+        # Name the path actually written. The message previously pointed at
+        # ${d}/KILLED even on the early path, where ${d} is a placeholder and
+        # nothing was written there -- sending a reader to a file that does not
+        # exist, in the exact situation where evidence is hardest to find.
+        echo "KILLED by SIG$1 before the run directory existed -- see $OUT_ROOT/KILLED-early-${PBS_JOBID%%.*}"
+    fi
     exit $((128 + $2))
 }
 trap 'on_signal TERM 15' TERM
@@ -281,7 +300,13 @@ else
     echo "row_peak_mib=UNKNOWN: sampler produced no rows"
 fi
 echo "row rc=$RC elapsed_s=$ROW_ELAPSED"
-if [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then
+# GATED ON A SUCCESSFUL ROW. Without the RC check this guard could exit 6 and
+# MASK a non-zero row status: a row that failed slowly would be reported as an
+# anomalous-throughput failure instead of as the failure it was. That is the same
+# status-masking defect as the post-row env check, reintroduced BY THE FIX for
+# "computed but never acted upon" one commit earlier. A guard that can override
+# the result it is guarding is worse than no guard.
+if [ "$RC" -eq 0 ] && [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then
     RATE=$(awk -v s="$STEPS" -v t="$ROW_ELAPSED" 'BEGIN{printf "%.3f", s/t}')
     echo "measured_steps_per_second=$RATE"
     # ACT on it, at a threshold loose enough to catch only a gross anomaly. This
