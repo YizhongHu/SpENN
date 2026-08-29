@@ -122,10 +122,29 @@ def test_analytic_provider_binding_rejects_missing_or_duplicate_identity() -> No
         TPENWaveFunction(**kwargs, factors=[cusp, cusp], analytic_cusp_provider=cusp)
     with pytest.raises(ValueError, match="unique participating"):
         TPENWaveFunction(**kwargs, factors=[other], analytic_cusp_provider=cusp)
+    equal_parameter_copy = ElectronNucleusCusp(atoms)
+    with pytest.raises(ValueError, match="unique participating"):
+        TPENWaveFunction(**kwargs, factors=[cusp], analytic_cusp_provider=equal_parameter_copy)
 
     model = TPENWaveFunction(**kwargs, factors=[cusp])
     with pytest.raises(ValueError, match="requires an analytic_cusp_provider"):
         model.factorized_local_energy_input(ElectronBatch(positions=torch.ones(1, 1, 1, dtype=torch.float64)))
+
+
+def test_provider_index_binds_live_factor_and_rejects_bad_factor_sets() -> None:
+    atoms = AtomicConfiguration(positions=torch.zeros(1, 1, dtype=torch.float64), charges=torch.ones(1, dtype=torch.float64))
+    cusp = ElectronNucleusCusp(atoms)
+    other = ElectronNucleusCusp(atoms)
+    kwargs = dict(embedding=EmptyEncoder(), layers=[nn.Identity()], readout=ConstantReadout())
+
+    model = TPENWaveFunction(**kwargs, factors=[nn.Identity(), cusp], analytic_cusp_provider_index=1)
+    # A copied factor could have equal parameters but must not satisfy the seam.
+    assert model.analytic_cusp_provider is model.factors[1]
+
+    with pytest.raises(ValueError, match="unique participating"):
+        TPENWaveFunction(**kwargs, factors=[nn.Identity(), cusp, other], analytic_cusp_provider_index=1)
+    with pytest.raises(TypeError, match="ElectronNucleusCusp"):
+        TPENWaveFunction(**kwargs, factors=[nn.Identity()], analytic_cusp_provider_index=0)
 
 
 def test_factorized_local_energy_input_typed_contracts_cover_both_components() -> None:

@@ -13,6 +13,12 @@ local_energy_evaluator:
 # regularized; with two electrons that singularity matters more than in H2 at
 # typical geometries. Electron-electron cusp fusion is deferred by design.
 
+# Bind the already-instantiated electron-nucleus factor by its position in
+# `model.factors`; TPENWaveFunction resolves this edge internally so Hydra
+# cannot create a non-identical provider object.
+model:
+  analytic_cusp_provider_index: 1
+
 analytic_local_energy_calculator:
   _target_: tpen.evaluation.calculators.LocalEnergyCalculator
   hamiltonian_terms: ${hamiltonian_terms}

@@ -6,8 +6,11 @@ local_energy_evaluator:
   _target_: tpen.physics.hamiltonian.AnalyticCuspEvaluator
 
 # This is the explicit calculator construction used in the eligible H2
-# example.  The surrounding config supplies `hamiltonian_terms`; its model
-# must bind the unique ElectronNucleusCusp factor as `analytic_cusp_provider`.
+# example. The model binds the participating factor by index; the constructor
+# resolves that index against already-instantiated factors, preserving identity.
+model:
+  analytic_cusp_provider_index: 1
+
 analytic_local_energy_calculator:
   _target_: tpen.evaluation.calculators.LocalEnergyCalculator
   hamiltonian_terms: ${hamiltonian_terms}
