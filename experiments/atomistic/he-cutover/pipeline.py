@@ -43,7 +43,7 @@ def allocation_context(*, facility: str, run_root: str | Path, environ: Mapping[
 def preflight_dispatch(*, context: AllocationContext, cwd: str | Path, admission_id: str, runtime: str, python: str) -> DispatchSpec:
     """Create the worker-side environment and torch.cuda probe."""
 
-    code = "import os,sys; print(sys.executable); print(sys.version); assert sys.version_info >= (3,10); import torch; print(os.environ.get('CUDA_VISIBLE_DEVICES')); print(torch.cuda.get_device_name(0)); assert torch.cuda.is_available()"
+    code = "import os,sys; print(sys.executable); print(sys.version); assert sys.version_info >= (3,12); import torch; print(os.environ.get('CUDA_VISIBLE_DEVICES')); print(torch.cuda.get_device_name(0)); assert torch.cuda.is_available()"
     from experiments.toolkit.specs import CompletionSpec
     return DispatchSpec("preflight", admission_id, f"{admission_id}:preflight", "01_preflight", "preflight", (python, "-c", code), str(context.run_root), runtime, str(cwd), completion=CompletionSpec(policy="none"))
 
