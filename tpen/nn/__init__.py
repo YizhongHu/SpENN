@@ -16,6 +16,7 @@ from tpen.nn.coordinate_envelopes import (
 )
 from tpen.nn.cusp import (
     ElectronElectronCusp,
+    ElectronNucleusCuspEvaluation,
     ElectronNucleusCusp,
     ElectronNucleusCuspLaw,
     LinearElectronNucleusCuspLaw,
@@ -47,6 +48,7 @@ __all__ = [
     "ElectronBasisFeatures",
     "ElectronElectronCusp",
     "ElectronNucleusCusp",
+    "ElectronNucleusCuspEvaluation",
     "ElectronNucleusCuspLaw",
     "Embedding",
     "Envelope",

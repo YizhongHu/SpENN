@@ -17,9 +17,14 @@ consequence is stated on the class and is executable through
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Mapping
 
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, electron_nuclear_displacements, pairwise_distances
+from tpen.data.equivariant_state import JsonScalar, compare_tensor_blocks
+from tpen.data.indices import permute_particle_axis
+from tpen.data.permutation import Permutation
 from tpen.dependencies import require_torch, require_torch_functional, require_torch_nn
 from tpen.nn.envelope import Envelope
 from tpen.nn.factor import LogAmplitudeFactor, _inverse_softplus
@@ -27,6 +32,110 @@ from tpen.nn.factor import LogAmplitudeFactor, _inverse_softplus
 torch = require_torch(feature="TPEN cusp modules")
 nn = require_torch_nn(feature="TPEN cusp modules")
 F = require_torch_functional(feature="TPEN cusp modules")
+
+
+@dataclass(frozen=True)
+class ElectronNucleusCuspEvaluation:
+    """Typed analytic radial data for one electron-nucleus cusp factor.
+
+    All pair fields retain the explicit ``[batch, electron, nucleus]`` axes.
+    ``slope_residual`` is the provider's already-cancelled value for
+    ``(u'(r) + Z) / r``; consumers must not reconstruct it by subtraction.
+    """
+
+    displacement: torch.Tensor
+    distance: torch.Tensor
+    pair_value: torch.Tensor
+    radial_first_derivative: torch.Tensor
+    radial_second_derivative: torch.Tensor
+    slope_residual: torch.Tensor
+    nuclear_charges: torch.Tensor
+    origin_radial_slope: torch.Tensor
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    @property
+    def n_electrons(self) -> int:
+        """Return the explicit electron count from the displacement axis."""
+
+        return int(self.displacement.shape[1])
+
+    @property
+    def n_nuclei(self) -> int:
+        """Return the explicit nucleus count from the charge axis."""
+
+        return int(self.nuclear_charges.shape[0])
+
+    def validate(self) -> "ElectronNucleusCuspEvaluation":
+        """Validate shape, dtype/device, finiteness, and axis contracts."""
+
+        if not isinstance(self.displacement, torch.Tensor) or self.displacement.ndim != 4:
+            raise ValueError("displacement must have shape [batch, electrons, nuclei, spatial_dim]")
+        pair_fields = (
+            self.distance,
+            self.pair_value,
+            self.radial_first_derivative,
+            self.radial_second_derivative,
+            self.slope_residual,
+        )
+        expected = self.displacement.shape[:3]
+        if any(not isinstance(field, torch.Tensor) or field.shape != expected for field in pair_fields):
+            raise ValueError("cusp pair fields must have shape [batch, electrons, nuclei]")
+        if (
+            not isinstance(self.nuclear_charges, torch.Tensor)
+            or not isinstance(self.origin_radial_slope, torch.Tensor)
+            or self.nuclear_charges.shape != (expected[2],)
+            or self.origin_radial_slope.shape != (expected[2],)
+        ):
+            raise ValueError("nuclear charges and origin slopes must have shape [nuclei]")
+        tensors = (self.displacement, *pair_fields, self.nuclear_charges, self.origin_radial_slope)
+        if any(field.device != self.displacement.device or field.dtype != self.displacement.dtype for field in tensors):
+            raise ValueError("all cusp evaluation tensors must share dtype and device")
+        if any(not torch.isfinite(field).all() for field in tensors):
+            raise ValueError("cusp evaluation tensors must be finite")
+        return self
+
+    def permute(self, permutation: Permutation) -> "ElectronNucleusCuspEvaluation":
+        """Return the evaluation under an active electron permutation."""
+
+        if len(permutation) != self.n_electrons:
+            raise ValueError("electron permutation has incompatible size")
+        return type(self)(
+            displacement=permute_particle_axis(self.displacement, permutation, axis=1),
+            distance=permute_particle_axis(self.distance, permutation, axis=1),
+            pair_value=permute_particle_axis(self.pair_value, permutation, axis=1),
+            radial_first_derivative=permute_particle_axis(self.radial_first_derivative, permutation, axis=1),
+            radial_second_derivative=permute_particle_axis(self.radial_second_derivative, permutation, axis=1),
+            slope_residual=permute_particle_axis(self.slope_residual, permutation, axis=1),
+            nuclear_charges=self.nuclear_charges.clone(),
+            origin_radial_slope=self.origin_radial_slope.clone(),
+        )
+
+    def compare(
+        self,
+        other: "ElectronNucleusCuspEvaluation",
+        *,
+        atol: float = 1.0e-6,
+        rtol: float = 1.0e-6,
+    ) -> tuple[bool, Mapping[str, JsonScalar]]:
+        """Compare every semantic tensor field and return error metrics."""
+
+        if type(self) is not type(other):
+            return False, {"max_abs_error": float("inf")}
+        return compare_tensor_blocks(
+            [self.displacement, self.distance, self.pair_value, self.radial_first_derivative,
+             self.radial_second_derivative, self.slope_residual, self.nuclear_charges, self.origin_radial_slope],
+            [other.displacement, other.distance, other.pair_value, other.radial_first_derivative,
+             other.radial_second_derivative, other.slope_residual, other.nuclear_charges, other.origin_radial_slope],
+            atol=atol,
+            rtol=rtol,
+        )
+
+    def local_energy_pair(self) -> torch.Tensor:
+        """Return the analytic kinetic-plus-Coulomb contribution per pair."""
+
+        return -0.5 * self.radial_second_derivative - self.slope_residual
 
 
 def rational_pair_cusp(
@@ -91,6 +200,18 @@ class ElectronNucleusCuspLaw(ABC):
             Cusp value with the same shape as `distance`.
         """
 
+    def analytic_terms(
+        self, distance: torch.Tensor, charges: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return value, first derivative, second derivative, and residual."""
+
+        raise NotImplementedError(f"{type(self).__name__} has no analytic cusp capability")
+
+    def origin_radial_slope(self, charges: torch.Tensor) -> torch.Tensor:
+        """Return the independently specified coalescence radial slope."""
+
+        raise NotImplementedError(f"{type(self).__name__} has no analytic cusp capability")
+
 
 class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
     """Compatibility law reproducing the existing He linear cusp ``-Z r``.
@@ -118,6 +239,16 @@ class LinearElectronNucleusCuspLaw(ElectronNucleusCuspLaw):
         """Return ``-Z r`` broadcast to the shape of `distance`."""
 
         return -charges * distance
+
+    def analytic_terms(self, distance: torch.Tensor, charges: torch.Tensor):
+        value = self.value(distance, charges)
+        zero = torch.zeros_like(distance)
+        return value, -torch.broadcast_to(charges, distance.shape), zero, zero
+
+    def origin_radial_slope(self, charges: torch.Tensor) -> torch.Tensor:
+        """Return the charge-fixed slope without consulting ``value``."""
+
+        return -charges
 
 
 class CurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw):
@@ -261,6 +392,24 @@ class CurvatureElectronNucleusCuspLaw(nn.Module, ElectronNucleusCuspLaw):
         curvature = coefficient * distance.square() / (1.0 + range_parameter * distance)
         return linear + curvature
 
+    def analytic_terms(self, distance: torch.Tensor, charges: torch.Tensor):
+        """Return closed-form radial derivatives and the cancelled residual."""
+
+        coefficient = self.curvature_coefficient.to(device=distance.device, dtype=distance.dtype)
+        range_parameter = self.curvature_range.to(device=distance.device, dtype=distance.dtype)
+        denominator = 1.0 + range_parameter * distance
+        value = self.value(distance, charges)
+        first = -charges + coefficient * distance * (2.0 + range_parameter * distance) / denominator.square()
+        second = 2.0 * coefficient / denominator.pow(3)
+        # This is deliberately algebraically cancelled; never form (first + Z) / r.
+        residual = coefficient * (2.0 + range_parameter * distance) / denominator.square()
+        return value, first, second, residual
+
+    def origin_radial_slope(self, charges: torch.Tensor) -> torch.Tensor:
+        """Return the charge-fixed slope independently of the value expression."""
+
+        return -charges
+
     def scalar_diagnostics(self) -> dict[str, float]:
         """Return ``c`` and ``d`` as constrained values, with the raws beside them.
 
@@ -324,6 +473,32 @@ class ElectronNucleusCusp(LogAmplitudeFactor):
                 f"{type(self.law).__name__}.value must have shape {tuple(distance.shape)}, got {tuple(value.shape)}"
             )
         return value.sum(dim=(1, 2))
+
+    def analytic_evaluation(self, batch: ElectronBatch) -> ElectronNucleusCuspEvaluation:
+        """Return opt-in closed-form radial data for local-energy consumers.
+
+        Ordinary :meth:`forward` and :meth:`factor_value` never call this
+        capability, keeping the value-only path free of derivative work.
+        """
+
+        flat_batch = batch.flatten_samples()
+        atoms = self.atoms.to(device=flat_batch.device, dtype=flat_batch.dtype)
+        displacement = electron_nuclear_displacements(flat_batch, nuclear_positions=atoms.positions)
+        distance = displacement.norm(dim=-1)
+        charges = atoms.charges.reshape(1, 1, -1)
+        pair_value, first, second, residual = self.law.analytic_terms(distance, charges)
+        origin_slope = self.law.origin_radial_slope(atoms.charges)
+        evaluation = ElectronNucleusCuspEvaluation(
+            displacement=displacement,
+            distance=distance,
+            pair_value=pair_value,
+            radial_first_derivative=first,
+            radial_second_derivative=second,
+            slope_residual=residual,
+            nuclear_charges=atoms.charges,
+            origin_radial_slope=origin_slope,
+        )
+        return evaluation
 
     def scalar_diagnostics(self) -> dict[str, float]:
         """Return the law's trainable scalars, and the tail slope they imply.
@@ -467,6 +642,7 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
 __all__ = [
     "ElectronElectronCusp",
     "ElectronNucleusCusp",
+    "ElectronNucleusCuspEvaluation",
     "ElectronNucleusCuspLaw",
     "LinearElectronNucleusCuspLaw",
     "CurvatureElectronNucleusCuspLaw",
