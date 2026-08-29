@@ -173,6 +173,23 @@ def test_electron_electron_cusp_splits_distance_floor_from_range_offset() -> Non
     assert explicit.range_eps == 3.0e-8
 
 
+@pytest.mark.parametrize("n_electrons", [1, 2])
+def test_electron_electron_cusp_eps_zero_has_finite_position_gradients(n_electrons: int) -> None:
+    # The one-electron case exercises only structural self-pairs; the
+    # two-electron case also exercises a genuine off-diagonal pair. Re-admitting
+    # the diagonal to sqrt's backward path makes these gradients non-finite.
+    positions = torch.arange(float(n_electrons), dtype=torch.float64).view(1, n_electrons, 1)
+    positions.requires_grad_()
+    batch = ElectronBatch(positions=positions)
+    cusp = ElectronElectronCusp(eps=0.0)
+
+    gradient = torch.autograd.grad(cusp(batch).sum(), positions)[0]
+
+    # The production diagonal exclusion is what makes the differentiated path
+    # finite; checking only cusp(batch) would miss the shipped NaN mechanism.
+    assert torch.isfinite(gradient).all()
+
+
 def test_disabled_envelope_returns_zero_batch_vector() -> None:
     batch = ElectronBatch(positions=torch.ones(4, 2, 3, dtype=torch.float64))
 

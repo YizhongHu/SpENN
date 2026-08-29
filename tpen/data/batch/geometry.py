@@ -100,7 +100,7 @@ def pairwise_displacements(positions: torch.Tensor) -> torch.Tensor:
 
 
 def pairwise_distances(positions: torch.Tensor, eps: float = 0.0) -> torch.Tensor:
-    """Return pairwise distances with a differentiable numerical floor.
+    """Return pairwise distances with a safe, discarded self-pair diagonal.
 
     Parameters
     ----------
@@ -124,6 +124,13 @@ def pairwise_distances(positions: torch.Tensor, eps: float = 0.0) -> torch.Tenso
     squared = displacement.square().sum(dim=-1, keepdim=True)
     if eps:
         squared = squared + float(eps) ** 2
+    # Self-pairs are structurally zero and are discarded by every physical
+    # pairwise sum. Replace only that meaningless diagonal before sqrt so its
+    # derivative is defined; genuine off-diagonal coalescences remain zero.
+    diagonal = torch.eye(
+        positions.shape[1], device=positions.device, dtype=torch.bool
+    ).view(1, positions.shape[1], positions.shape[1], 1)
+    squared = squared.masked_fill(diagonal, 1.0)
     return squared.sqrt()
 
 
