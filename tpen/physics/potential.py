@@ -30,6 +30,12 @@ import torch
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, electron_nuclear_distances, pairwise_distances
 from tpen.physics.hamiltonian import LocalEnergyResult
+from tpen.physics.operators import (
+    ELECTRON_ELECTRON_COULOMB,
+    ELECTRON_NUCLEUS_COULOMB,
+    HARMONIC_TRAP,
+    NUCLEUS_NUCLEUS_COULOMB,
+)
 
 
 class HarmonicTrap:
@@ -44,6 +50,7 @@ class HarmonicTrap:
     """
 
     name = "harmonic_trap"
+    operator_id = HARMONIC_TRAP
 
     def __init__(self, omega: float = 1.0) -> None:
         self.omega = omega
@@ -86,6 +93,7 @@ class ElectronElectronInteraction:
     """
 
     name = "electron_electron"
+    operator_id = ELECTRON_ELECTRON_COULOMB
 
     def __init__(self, eps: float = 0.0) -> None:
         self.eps = eps
@@ -137,6 +145,7 @@ class ElectronNucleusInteraction:
     """
 
     name = "electron_nucleus"
+    operator_id = ELECTRON_NUCLEUS_COULOMB
 
     def __init__(
         self,
@@ -197,6 +206,7 @@ class NucleusNucleusInteraction:
     """
 
     name = "nucleus_nucleus"
+    operator_id = NUCLEUS_NUCLEUS_COULOMB
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         """Return the pairwise nuclear repulsion for each batch sample."""
@@ -272,6 +282,7 @@ class ElectronNucleusPotential:
     """
 
     name = "electron_nucleus"
+    operator_id = ELECTRON_NUCLEUS_COULOMB
 
     def __init__(self, atoms: object, eps: float = 0.0) -> None:
         if not isinstance(atoms, AtomicConfiguration):
@@ -312,6 +323,7 @@ class NucleusNucleusPotential:
     """
 
     name = "nucleus_nucleus"
+    operator_id = NUCLEUS_NUCLEUS_COULOMB
 
     def __init__(self, atoms: object) -> None:
         if not isinstance(atoms, AtomicConfiguration):
