@@ -1,27 +1,9 @@
-"""Every shipped Hamiltonian term must declare which operator it computes.
-
-The discovery helper below enumerates terms by looking for a ``local_energy``
-attribute. That is deliberately **test-only** and is the thing this slice
-exists to make unnecessary in production code: TPEN terms are duck-typed
-against the ``HamiltonianTerm`` protocol and there is not yet a registry to
-enumerate, so a test that wants to catch "someone added a term and forgot to
-declare its identity" has nothing else to key on. It cannot key on
-``operator_id`` itself, which would be circular — the terms it must catch are
-exactly the ones missing that attribute.
-
-Once the lowering registry lands, this helper should be replaced by iterating
-the registry. Production dispatch must never enumerate this way.
-"""
+"""Every registered Hamiltonian term must declare its operator identity."""
 
 from __future__ import annotations
 
-import importlib
-import inspect
-import pkgutil
-
 import pytest
 
-import tpen.physics
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.operators import (
     ELECTRON_ELECTRON_COULOMB,
@@ -30,6 +12,8 @@ from tpen.physics.operators import (
     KINETIC_ENERGY,
     NUCLEUS_NUCLEUS_COULOMB,
     OperatorId,
+    register_operator,
+    registered_operators,
 )
 from tpen.physics.potential import (
     ElectronNucleusInteraction,
@@ -39,25 +23,6 @@ from tpen.physics.potential import (
 )
 
 
-def _shipped_terms() -> list[type]:
-    """Discover every Hamiltonian term class shipped under ``tpen.physics``."""
-
-    discovered: list[type] = []
-    for info in pkgutil.iter_modules(tpen.physics.__path__, f"{tpen.physics.__name__}."):
-        module = importlib.import_module(info.name)
-        for _, obj in inspect.getmembers(module, inspect.isclass):
-            # Only classes defined in this module, so a term is not counted
-            # once per module that imports it.
-            if obj.__module__ != info.name:
-                continue
-            # Protocols and result containers are not terms.
-            if getattr(obj, "_is_protocol", False):
-                continue
-            if callable(getattr(obj, "local_energy", None)):
-                discovered.append(obj)
-    return discovered
-
-
 def test_discovery_finds_the_known_terms() -> None:
     """Guard the guard: a discovery helper that finds nothing proves nothing.
 
@@ -65,7 +30,7 @@ def test_discovery_finds_the_known_terms() -> None:
     package layout) would silently yield an empty list and every
     parametrized test below would vacuously pass.
     """
-    discovered = {cls.__name__ for cls in _shipped_terms()}
+    discovered = {cls.__name__ for cls in registered_operators()}
 
     assert "KineticEnergy" in discovered
     assert "ElectronNucleusPotential" in discovered
@@ -74,17 +39,11 @@ def test_discovery_finds_the_known_terms() -> None:
     assert len(discovered) >= 7
 
 
-@pytest.mark.parametrize("term_type", _shipped_terms(), ids=lambda cls: cls.__name__)
+@pytest.mark.parametrize("term_type", registered_operators(), ids=lambda cls: cls.__name__)
 def test_every_shipped_term_declares_a_typed_operator_id(term_type: type) -> None:
     """A term declares its operator; nothing infers it from name or type."""
 
-    operator_id = getattr(term_type, "operator_id", None)
-
-    assert operator_id is not None, (
-        f"{term_type.__name__} does not declare operator_id. Add one from "
-        "tpen.physics.operators, or mint a new OperatorId there if it "
-        "computes an operator TPEN does not yet name."
-    )
+    operator_id = term_type.operator_id
     # A bare string would satisfy "declares something" while reintroducing
     # identity-by-string-literal at every consumer.
     assert isinstance(operator_id, OperatorId), (
@@ -170,3 +129,17 @@ def test_str_renders_the_namespaced_identity() -> None:
     """Plan diagnostics name operators; the rendering must stay stable."""
 
     assert str(KINETIC_ENERGY) == "tpen.physics:kinetic_energy"
+
+
+def test_registration_rejects_duplicate_class() -> None:
+    class NotAnOperator:
+        pass
+
+    register_operator(OperatorId("test", "one"))(NotAnOperator)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="already registered"):
+        register_operator(OperatorId("test", "two"))(NotAnOperator)  # type: ignore[arg-type]
+
+
+def test_registration_rejects_malformed_identity() -> None:
+    with pytest.raises(TypeError, match="must be an OperatorId"):
+        register_operator("not-an-operator-id")  # type: ignore[arg-type]

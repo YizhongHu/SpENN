@@ -35,9 +35,11 @@ from tpen.physics.operators import (
     ELECTRON_NUCLEUS_COULOMB,
     HARMONIC_TRAP,
     NUCLEUS_NUCLEUS_COULOMB,
+    register_operator,
 )
 
 
+@register_operator(HARMONIC_TRAP)
 class HarmonicTrap:
     """Hamiltonian term for a harmonic confinement potential.
 
@@ -50,8 +52,6 @@ class HarmonicTrap:
     """
 
     name = "harmonic_trap"
-    operator_id = HARMONIC_TRAP
-
     def __init__(self, omega: float = 1.0) -> None:
         self.omega = omega
 
@@ -65,6 +65,7 @@ class HarmonicTrap:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(ELECTRON_ELECTRON_COULOMB)
 class ElectronElectronInteraction:
     """Hamiltonian term for Coulomb electron-electron repulsion.
 
@@ -93,8 +94,6 @@ class ElectronElectronInteraction:
     """
 
     name = "electron_electron"
-    operator_id = ELECTRON_ELECTRON_COULOMB
-
     def __init__(self, eps: float = 0.0) -> None:
         self.eps = eps
 
@@ -113,6 +112,7 @@ class ElectronElectronInteraction:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(ELECTRON_NUCLEUS_COULOMB)
 class ElectronNucleusInteraction:
     """Hamiltonian term for Coulomb electron-nucleus attraction.
 
@@ -145,8 +145,6 @@ class ElectronNucleusInteraction:
     """
 
     name = "electron_nucleus"
-    operator_id = ELECTRON_NUCLEUS_COULOMB
-
     def __init__(
         self,
         nuclear_positions: torch.Tensor | None = None,
@@ -194,6 +192,7 @@ class ElectronNucleusInteraction:
             raise ValueError("legacy ElectronNucleusInteraction nuclear metadata must agree exactly with batch context")
 
 
+@register_operator(NUCLEUS_NUCLEUS_COULOMB)
 class NucleusNucleusInteraction:
     r"""Hamiltonian term for Born--Oppenheimer nuclear repulsion.
 
@@ -206,8 +205,6 @@ class NucleusNucleusInteraction:
     """
 
     name = "nucleus_nucleus"
-    operator_id = NUCLEUS_NUCLEUS_COULOMB
-
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         """Return the pairwise nuclear repulsion for each batch sample."""
 
@@ -244,6 +241,7 @@ class NucleusNucleusInteraction:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(ELECTRON_NUCLEUS_COULOMB)
 class ElectronNucleusPotential:
     """Hamiltonian term for Coulomb electron-nucleus attraction.
 
@@ -282,8 +280,6 @@ class ElectronNucleusPotential:
     """
 
     name = "electron_nucleus"
-    operator_id = ELECTRON_NUCLEUS_COULOMB
-
     def __init__(self, atoms: object, eps: float = 0.0) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
@@ -305,6 +301,7 @@ class ElectronNucleusPotential:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(NUCLEUS_NUCLEUS_COULOMB)
 class NucleusNucleusPotential:
     r"""Hamiltonian term for Born--Oppenheimer nuclear repulsion.
 
@@ -323,8 +320,6 @@ class NucleusNucleusPotential:
     """
 
     name = "nucleus_nucleus"
-    operator_id = NUCLEUS_NUCLEUS_COULOMB
-
     def __init__(self, atoms: object) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")

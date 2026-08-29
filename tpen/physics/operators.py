@@ -28,6 +28,7 @@ which is precisely the coupling the lowering registry exists to remove.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Protocol, final
 
 
@@ -93,6 +94,31 @@ class LocalEnergyOperator(Protocol):
     operator_id: OperatorId
 
 
+_OPERATOR_REGISTRY: dict[type[LocalEnergyOperator], OperatorId] = {}
+
+
+def register_operator[T: LocalEnergyOperator](operator_id: OperatorId) -> Callable[[type[T]], type[T]]:
+    """Declare and register a local-energy operator class in one act."""
+
+    if not isinstance(operator_id, OperatorId):
+        raise TypeError("operator_id must be an OperatorId")
+
+    def decorate(term_type: type[T]) -> type[T]:
+        if term_type in _OPERATOR_REGISTRY:
+            raise ValueError(f"{term_type.__name__} is already registered")
+        term_type.operator_id = operator_id  # type: ignore[attr-defined]
+        _OPERATOR_REGISTRY[term_type] = operator_id
+        return term_type
+
+    return decorate
+
+
+def registered_operators() -> tuple[type[LocalEnergyOperator], ...]:
+    """Return all operator classes declared through :func:`register_operator`."""
+
+    return tuple(_OPERATOR_REGISTRY)
+
+
 _TPEN = "tpen.physics"
 
 #: Kinetic energy, :math:`-\\tfrac{1}{2}\\sum_i \\nabla_i^2`.
@@ -122,4 +148,6 @@ __all__ = [
     "NUCLEUS_NUCLEUS_COULOMB",
     "LocalEnergyOperator",
     "OperatorId",
+    "register_operator",
+    "registered_operators",
 ]
