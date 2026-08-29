@@ -50,6 +50,32 @@ def test_context_rejects_value_with_wrong_type() -> None:
         ReadOnlyContext({key: "not an answer"})  # type: ignore[dict-item]
 
 
+def test_context_accepts_union_and_reports_invalid_union_value() -> None:
+    key = ContextKey("answer", int | str)
+
+    context = ReadOnlyContext({key: 7})  # type: ignore[dict-item]
+    assert context[key] == 7
+
+    with pytest.raises(TypeError, match=r"answer.*int \| str.*float"):
+        ReadOnlyContext({key: 3.5})  # type: ignore[dict-item]
+
+
+def test_context_accepts_object_values() -> None:
+    key = ContextKey("anything", object)
+    value = object()
+
+    context = ReadOnlyContext({key: value})
+
+    assert context[key] is value
+
+
+def test_context_round_trips_none() -> None:
+    key = ContextKey("optional", type(None))
+    context = ReadOnlyContext({key: None})
+
+    assert context[key] is None
+
+
 def test_provider_graph_reports_missing_dependency_and_operator() -> None:
     missing = ContextKey("missing_distances", tuple)
     output = ContextKey("potential", float)

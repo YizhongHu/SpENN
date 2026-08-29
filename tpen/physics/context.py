@@ -42,7 +42,9 @@ class ReadOnlyContext:
                 raise TypeError("context keys must be ContextKey instances")
             if not isinstance(value, key.value_type):
                 raise TypeError(
-                    f"context artifact {key.name!r} must be {key.value_type.__name__}, "
+                    # Interpolating the type object is total for runtime type-like values,
+                    # including PEP 604 unions, unlike reading a name attribute.
+                    f"context artifact {key.name!r} must be {key.value_type}, "
                     f"got {type(value).__name__}"
                 )
             entries[key] = value
