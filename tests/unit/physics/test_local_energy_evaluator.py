@@ -31,16 +31,25 @@ _DTYPE = torch.float64
 
 
 class _AnalyticWavefunction:
-    def __init__(self, provider, curvature: float = 0.0):
+    def __init__(self, provider, curvature: float = 0.0, linear=None, sign: float = 1.0):
         self.analytic_cusp_provider = provider
         self.curvature = curvature
+        self.linear = linear
+        self.sign = sign
         self.factorized_calls = 0
 
     def factorized_local_energy_input(self, batch):
         self.factorized_calls += 1
         flat = batch.flatten_samples()
         logabs = -self.curvature * flat.positions.square().sum(dim=(1, 2))
-        output = WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs), aux={"source": "regular"})
+        if self.linear is not None:
+            linear = torch.as_tensor(self.linear, dtype=flat.dtype, device=flat.device)
+            logabs = logabs + (flat.positions * linear).sum(dim=(1, 2))
+        output = WavefunctionOutput(
+            logabs=logabs,
+            sign=torch.full_like(logabs, self.sign),
+            aux={"source": "regular"},
+        )
         return FactorizedLocalEnergyInput(output, self.analytic_cusp_provider.analytic_evaluation(flat))
 
 
@@ -208,6 +217,88 @@ def test_analytic_fast_kernel_matches_independent_reference_and_parameter_gradie
     torch.testing.assert_close(fast_gradient, reference_gradient, rtol=1.0e-12, atol=1.0e-12)
     assert tuple(fast.total.shape) == (batch.flatten_samples().batch_size,)
     assert tuple(reference.total.shape) == (batch.flatten_samples().batch_size,)
+
+
+def test_analytic_evaluator_hydrogenic_near_cusp_ladder_has_derived_limit() -> None:
+    z = 2.0
+    _, wavefunction, _, terms = _analytic_setup(z=z)
+    directions = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]],
+        dtype=_DTYPE,
+    )
+    directions = directions / directions.norm(dim=1, keepdim=True)
+    radii = torch.tensor([1.0e-2, 1.0e-4, 1.0e-6, 1.0e-8, 1.0e-10], dtype=_DTYPE)
+    energies = []
+    for radius in radii:
+        batch = ElectronBatch(positions=(radius * directions).reshape(-1, 1, 3))
+        result = AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, batch)
+        )
+        # Changing the cusp cancellation, kinetic contraction, or Coulomb
+        # fusion changes these finite values or their derived -Z**2 / 2 limit.
+        assert torch.isfinite(result).all()
+        expected_limit = -(z**2) / 2.0
+        torch.testing.assert_close(
+            result,
+            torch.full_like(result, expected_limit),
+            atol=2.0 * radius.item() + 1.0e-12,
+            rtol=1.0e-12,
+        )
+        energies.append(result.detach())
+
+    # A production edit that reintroduces a radius-dependent singular term or
+    # drops the analytic cusp contribution prevents convergence at the last
+    # ladder point, even if a single radius happens to look finite.
+    torch.testing.assert_close(energies[-1], energies[-2], atol=3.0e-8, rtol=1.0e-12)
+
+
+def test_analytic_evaluator_near_cusp_with_regular_gradient_stays_finite() -> None:
+    z = 1.5
+    regular_gradient = torch.tensor([0.7, -0.2, 0.4], dtype=_DTYPE)
+    _, wavefunction, _, terms = _analytic_setup(z=z)
+    wavefunction.linear = regular_gradient
+    directions = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, -1.0, 0.5]],
+        dtype=_DTYPE,
+    )
+    directions = directions / directions.norm(dim=1, keepdim=True)
+    radii = torch.tensor([1.0e-3, 1.0e-5, 1.0e-7, 1.0e-9], dtype=_DTYPE)
+    energies = []
+    for radius in radii:
+        batch = ElectronBatch(positions=(radius * directions).reshape(-1, 1, 3))
+        result = AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, batch)
+        )
+        # The nonzero regular gradient makes direction-independence an
+        # invalid assertion; boundedness is the contract for this fixture.
+        assert torch.isfinite(result).all()
+        energies.append(result.detach())
+
+    spread = (energies[-1].max() - energies[-1].min()).item()
+    print(f"near-cusp directional spread (z={z}, eps=0): {spread:.17g}")
+
+
+@pytest.mark.parametrize("kernel", ["evaluate", "evaluate_reference"])
+def test_analytic_evaluator_rejects_exact_electron_nucleus_coalescence(kernel) -> None:
+    _, wavefunction, _, terms = _analytic_setup(z=1.0)
+    batch = ElectronBatch(positions=torch.zeros((1, 1, 3), dtype=_DTYPE))
+
+    # Removing the explicit distance gate exposes displacement / distance =
+    # 0 / 0 instead of rejecting the undefined unit direction.
+    with pytest.raises(ValueError, match="does not support electron-nucleus coalescence"):
+        getattr(AnalyticCuspEvaluator(), kernel)(terms, AnalyticCuspContext(wavefunction, batch))
+
+
+@pytest.mark.parametrize("kernel", ["evaluate", "evaluate_reference"])
+def test_analytic_evaluator_rejects_zero_sign_center_node(kernel) -> None:
+    _, wavefunction, _, terms = _analytic_setup(z=1.0)
+    wavefunction.sign = 0.0
+    batch = ElectronBatch(positions=torch.tensor([[[0.2, 0.0, 0.0]]], dtype=_DTYPE))
+
+    # Removing the off-node gate would allow a zero signed amplitude into the
+    # real-wavefunction local-energy path instead of failing for its true cause.
+    with pytest.raises(ValueError, match="requires an off-node real wavefunction"):
+        getattr(AnalyticCuspEvaluator(), kernel)(terms, AnalyticCuspContext(wavefunction, batch))
 
 
 def test_analytic_evaluator_skips_participants_and_runs_custom_terms_once() -> None:
