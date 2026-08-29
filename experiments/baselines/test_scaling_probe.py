@@ -9,6 +9,7 @@ import json
 import pytest
 
 from experiments.baselines import scaling_probe
+from experiments.baselines.run_deepqmc_scaling_arm import per_device_batch, training_tail
 from experiments.baselines.run_ferminet_scaling_arm import summarize_training_tail
 
 
@@ -179,5 +180,16 @@ def test_ferminet_runner_uses_a_blocking_training_tail(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     energy, stderr = summarize_training_tail(tmp_path, first_step=400)
+    assert energy == pytest.approx(-2.895505)
+    assert stderr > 0
+
+
+def test_deepqmc_runner_uses_total_batch_and_a_blocking_training_tail() -> None:
+    assert per_device_batch(4096, 4) == 1024
+    with pytest.raises(ValueError, match="does not divide"):
+        per_device_batch(4095, 4)
+    energy, stderr = training_tail(
+        [-2.9 + step * 1.e-5 for step in range(500)], first_tail_step=400
+    )
     assert energy == pytest.approx(-2.895505)
     assert stderr > 0

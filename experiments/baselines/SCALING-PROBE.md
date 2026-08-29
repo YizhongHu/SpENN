@@ -28,6 +28,21 @@ intervals. If a completed raw result used a broader matcher, use
 `scaling_probe.py reanalyse` to write a new result from the immutable wrapper
 log; retain the original result unchanged.
 
+For DeepQMC, use `run_deepqmc_scaling_arm.py`.  It invokes DeepQMC's public
+Hydra CLI unchanged, while runtime-instrumenting its sampler-state construction
+and HDF5 logger.  Thus `Running on N ...` remains DeepQMC's own process-level
+device evidence, `SCALING_PROBE device_batch_size` comes from the actual total
+electron batch passed to the sharding call, and `SCALING_PROBE Step` is emitted
+after each HDF5 optimizer-step write.  Pass an explicit non-empty Hydra
+override list after `--`; set `task.electron_batch_size=4096` for every arm and
+set `CUDA_VISIBLE_DEVICES` to a list (`0`, `0,1`, or `0,1,2,3`) before Python
+imports DeepQMC.  DeepQMC requires that visibility variable for multi-host
+initialization and validates total-batch divisibility itself.  Use a workload-
+appropriate tail cut: its known slow ramp extends beyond step 9000, so a
+1200-step FermiNet probe length is not suitable for DeepQMC.  Set
+`hydra.run.dir=<arm-run-dir>` because DeepQMC's application assigns
+`task.workdir` from Hydra's runtime directory.
+
 After a 1-GPU arm and *before* advancing each higher-GPU rung, run
 `scaling_probe.py gate` over that baseline and candidate JSON. It writes the
 same structured comparison as `summarize` but exits non-zero unless each arm
