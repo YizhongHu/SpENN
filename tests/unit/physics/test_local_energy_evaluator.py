@@ -31,11 +31,14 @@ _DTYPE = torch.float64
 
 
 class _AnalyticWavefunction:
-    def __init__(self, provider, curvature: float = 0.0, linear=None, sign: float = 1.0):
+    def __init__(
+        self, provider, curvature: float = 0.0, linear=None, sign: float = 1.0, node: bool = False
+    ):
         self.analytic_cusp_provider = provider
         self.curvature = curvature
         self.linear = linear
         self.sign = sign
+        self.node = node
         self.factorized_calls = 0
 
     def factorized_local_energy_input(self, batch):
@@ -45,6 +48,8 @@ class _AnalyticWavefunction:
         if self.linear is not None:
             linear = torch.as_tensor(self.linear, dtype=flat.dtype, device=flat.device)
             logabs = logabs + (flat.positions * linear).sum(dim=(1, 2))
+        if self.node:
+            logabs = torch.full_like(logabs, -torch.inf)
         output = WavefunctionOutput(
             logabs=logabs,
             sign=torch.full_like(logabs, self.sign),
@@ -293,10 +298,13 @@ def test_analytic_evaluator_rejects_exact_electron_nucleus_coalescence(kernel) -
 def test_analytic_evaluator_rejects_zero_sign_center_node(kernel) -> None:
     _, wavefunction, _, terms = _analytic_setup(z=1.0)
     wavefunction.sign = 0.0
+    wavefunction.node = True
     batch = ElectronBatch(positions=torch.tensor([[[0.2, 0.0, 0.0]]], dtype=_DTYPE))
 
-    # Removing the off-node gate would allow a zero signed amplitude into the
-    # real-wavefunction local-energy path instead of failing for its true cause.
+    # Exact zeros require the typed signed-log representation sign == 0 and
+    # logabs == -inf. Removing the off-node gate would allow that legitimate
+    # node into the real-wavefunction local-energy path instead of failing for
+    # its true cause.
     with pytest.raises(ValueError, match="requires an off-node real wavefunction"):
         getattr(AnalyticCuspEvaluator(), kernel)(terms, AnalyticCuspContext(wavefunction, batch))
 
