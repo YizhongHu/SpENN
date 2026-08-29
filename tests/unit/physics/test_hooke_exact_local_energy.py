@@ -7,6 +7,8 @@ local energy is the exact eigenvalue everywhere (and has near-zero variance).
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -79,15 +81,16 @@ def test_singlet_local_energy_variance_near_zero() -> None:
     assert eloc.var().item() < VARIANCE_ATOL
 
 
-def test_exact_singlet_physical_term_summary_has_zero_virial_residual() -> None:
+def test_exact_singlet_physical_term_summary_reports_virial_diagnostic() -> None:
     wf = HookeSingletExact()
     result = local_energy(_hooke_terms(wf), wf, ElectronBatch(positions=_singlet_positions()), return_terms=True)
     metrics = summarize_physical_terms(result.terms)
 
-    # This diagnostic is zero for an exact eigenstate; do not impose it on a
-    # restricted variational ansatz, which need not be dilation-stationary.
-    assert metrics["virial_residual"] == pytest.approx(0.0, abs=1.0e-12)
-    assert metrics["virial_relative_residual"] == pytest.approx(0.0, abs=1.0e-12)
+    # This diagnostic vanishes only for an exact eigenstate averaged under
+    # |psi|^2. Neither this fixed point set nor a finite walker sample provides
+    # that exact expectation, so do not assert that it vanishes here.
+    assert math.isfinite(metrics["virial_residual"])
+    assert math.isfinite(metrics["virial_relative_residual"])
 
 
 def test_physical_term_summary_matches_virial_formula() -> None:
