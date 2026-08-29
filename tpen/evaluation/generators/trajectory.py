@@ -182,7 +182,7 @@ class TrajectoryMCMCGenerator:
                             observable=self.observable_name,
                             n_draws=self.n_draws,
                             n_walkers=walkers.batch_size,
-                            term_names=tuple(self.hamiltonian_terms),
+                            term_names=tuple(record.term_energies),
                             atomic_configuration=atoms,
                             first_draw=record,
                         )
@@ -261,10 +261,11 @@ class TrajectoryMCMCGenerator:
                 "trajectory local-energy evaluation did not expose the wavefunction output "
                 "used by its kinetic term; a fallback model pass is forbidden"
             )
-        if tuple(result.terms) != tuple(self.hamiltonian_terms):
+        sources = {source for names in result.term_provenance.values() for source in names}
+        if tuple(result.terms) != tuple(self.hamiltonian_terms) and sources != set(self.hamiltonian_terms):
             raise ValueError("trajectory local-energy result omitted or reordered configured terms")
         reconstructed: torch.Tensor | None = None
-        for name in self.hamiltonian_terms:
+        for name in result.terms:
             value = result.terms[name]
             reconstructed = value if reconstructed is None else reconstructed + value
         if reconstructed is None or not torch.equal(reconstructed, result.total):
@@ -298,6 +299,7 @@ class TrajectoryMCMCGenerator:
             logabs=output.logabs,
             sign=output.sign,
             finite_mask=torch.isfinite(result.total),
+            term_provenance=result.term_provenance,
         )
 
 

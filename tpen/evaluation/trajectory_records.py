@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -64,6 +64,7 @@ class TrajectoryRecordBatch:
     logabs: torch.Tensor
     sign: torch.Tensor
     finite_mask: torch.Tensor
+    term_provenance: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "draw_index", _owned_cpu(self.draw_index, dtype=torch.int64))
@@ -78,6 +79,11 @@ class TrajectoryRecordBatch:
             for name, value in self.term_energies.items()
         }
         object.__setattr__(self, "term_energies", MappingProxyType(owned_terms))
+        object.__setattr__(
+            self,
+            "term_provenance",
+            MappingProxyType({name: tuple(sources) for name, sources in self.term_provenance.items()}),
+        )
         self._validate_fields()
 
     @property
@@ -169,6 +175,11 @@ class TrajectoryRecordBatch:
                 raise ValueError(
                     f"TrajectoryRecordBatch term {name!r} must have shape {expected}"
                 )
+        if self.term_provenance and tuple(self.term_provenance) != tuple(self.term_energies):
+            raise ValueError("trajectory term provenance must cover terms in deterministic order")
+        for name, sources in self.term_provenance.items():
+            if not sources or any(not source.strip() for source in sources):
+                raise ValueError(f"trajectory term {name!r} has invalid provenance")
 
 
 @dataclass(frozen=True)
@@ -194,6 +205,7 @@ class TrajectoryRecordArtifact:
     byte_count: int
     atomic_configuration: AtomicConfiguration
     final_draw: TrajectoryRecordBatch
+    term_provenance: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def nonfinite_count(self) -> int:
@@ -230,6 +242,8 @@ class TrajectoryRecordArtifact:
             raise ValueError("trajectory record final_draw coordinate shape disagrees with manifest")
         if tuple(final_draw.term_energies) != self.term_names:
             raise ValueError("trajectory record final_draw terms disagree with manifest")
+        if self.term_provenance and dict(self.term_provenance) != dict(final_draw.term_provenance):
+            raise ValueError("trajectory record provenance disagrees with final draw")
         for name, value in (
             ("observable_values_content_id", self.observable_values_content_id),
             ("csv_sha256", self.csv_sha256),
@@ -314,6 +328,12 @@ class TrajectoryRecordArtifact:
         for key, expected in expected_scalars.items():
             if metadata.get(key) != expected:
                 raise ValueError(f"trajectory record metadata {key!r} disagrees with typed manifest")
+        if self.term_provenance:
+            expected_provenance = {
+                name: list(sources) for name, sources in self.term_provenance.items()
+            }
+            if metadata.get("term_provenance") != expected_provenance:
+                raise ValueError("trajectory record metadata term_provenance disagrees with manifest")
 
 
 class TrajectoryRecordStreamWriter:
@@ -335,6 +355,7 @@ class TrajectoryRecordStreamWriter:
         self.n_draws = int(n_draws)
         self.n_walkers = int(n_walkers)
         self.term_names = tuple(term_names)
+        self.term_provenance = dict(first_draw.term_provenance)
         self.atomic_configuration = atomic_configuration
         first_draw.validate()
         if first_draw.row_count != self.n_walkers:
@@ -381,6 +402,8 @@ class TrajectoryRecordStreamWriter:
             raise ValueError("trajectory record coordinate shape changed between draws")
         if tuple(draw.term_energies) != self.term_names:
             raise ValueError("trajectory record Hamiltonian terms changed between draws")
+        if dict(draw.term_provenance) != self.term_provenance:
+            raise ValueError("trajectory record term provenance changed between draws")
 
         values = draw.local_energy.contiguous()
         self._values_digest.update(values.numpy().astype("<f8", copy=False).tobytes())
@@ -440,6 +463,7 @@ class TrajectoryRecordStreamWriter:
             byte_count=byte_count,
             atomic_configuration=self.atomic_configuration,
             final_draw=self._final_draw,
+            term_provenance=self.term_provenance,
         )
         _write_metadata(artifact)
         artifact.validate()
@@ -535,6 +559,9 @@ def _write_metadata(artifact: TrajectoryRecordArtifact) -> None:
         "mean": _json_float(artifact.mean),
         "variance": _json_float(artifact.variance),
         "term_names": list(artifact.term_names),
+        "term_provenance": {
+            name: list(sources) for name, sources in artifact.term_provenance.items()
+        },
         "n_electrons": artifact.n_electrons,
         "spatial_dim": artifact.spatial_dim,
         "observable_values_content_id": artifact.observable_values_content_id,

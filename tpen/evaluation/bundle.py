@@ -70,6 +70,7 @@ class LocalEnergyValues:
     local_energy: torch.Tensor
     finite_mask: torch.Tensor
     term_energies: Mapping[str, torch.Tensor] | None = None
+    term_provenance: Mapping[str, tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True)

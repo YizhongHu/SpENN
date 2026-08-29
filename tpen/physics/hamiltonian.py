@@ -52,12 +52,16 @@ class LocalEnergyResult:
         [batch, n_electrons]. The aggregate evaluator permits at most one
         producing term and carries it alongside the wavefunction output so
         diagnostics reuse the same differentiated model evaluation.
+    term_provenance : dict[str, tuple[str, ...]], optional
+        Source term names represented by each decomposition entry. Fused
+        analytic entries name both participant terms explicitly.
     """
 
     total: torch.Tensor
     terms: dict[str, torch.Tensor] = field(default_factory=dict)
     wavefunction_output: WavefunctionOutput | None = None
     per_electron_kinetic: torch.Tensor | None = None
+    term_provenance: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def normalize_hamiltonian_terms(
@@ -247,6 +251,7 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
                 terms=decomposition,
                 wavefunction_output=wavefunction_output,
                 per_electron_kinetic=per_electron_kinetic,
+                term_provenance={name: (name,) for name in decomposition},
             )
         return total
 
@@ -267,6 +272,29 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         context: AnalyticCuspContext,
         *,
         return_terms: bool = False,
+    ) -> torch.Tensor | LocalEnergyResult:
+        """Evaluate with the batched analytic kernel."""
+
+        return self._evaluate(terms, context, return_terms=return_terms, vectorized=True)
+
+    def evaluate_reference(
+        self,
+        terms: Mapping[Any, Any] | Sequence[Any],
+        context: AnalyticCuspContext,
+        *,
+        return_terms: bool = False,
+    ) -> torch.Tensor | LocalEnergyResult:
+        """Evaluate with the independent loop-based oracle."""
+
+        return self._evaluate(terms, context, return_terms=return_terms, vectorized=False)
+
+    def _evaluate(
+        self,
+        terms: Mapping[Any, Any] | Sequence[Any],
+        context: AnalyticCuspContext,
+        *,
+        return_terms: bool = False,
+        vectorized: bool,
     ) -> torch.Tensor | LocalEnergyResult:
         if not isinstance(context, AnalyticCuspContext):
             raise TypeError(
@@ -349,28 +377,70 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         if gradient.shape != positions.shape:
             raise ValueError("regular wavefunction gradient must match electron positions")
 
-        fused = torch.zeros(flat.batch_size, device=positions.device, dtype=positions.dtype)
-        for sample in range(flat.batch_size):
-            for electron in range(flat.n_electrons):
-                laplacian = torch.zeros((), device=positions.device, dtype=positions.dtype)
-                for coordinate in range(3):
-                    second = torch.autograd.grad(
-                        gradient[:, electron, coordinate].sum(),
-                        positions,
-                        create_graph=True,
-                        retain_graph=True,
-                    )[0]
-                    laplacian = laplacian + second[sample, electron, coordinate]
-                cusp_gradient = torch.zeros(3, device=positions.device, dtype=positions.dtype)
-                for nucleus in range(evaluation.n_nuclei):
-                    cusp_gradient = cusp_gradient + (
-                        evaluation.radial_first_derivative[sample, electron, nucleus]
-                        * evaluation.displacement[sample, electron, nucleus]
-                        / evaluation.distance[sample, electron, nucleus]
-                    )
-                total_gradient = gradient[sample, electron] + cusp_gradient
-                fused[sample] = fused[sample] - 0.5 * (laplacian + total_gradient.square().sum())
-            fused[sample] = fused[sample] + evaluation.local_energy_pair()[sample].sum()
+        if vectorized:
+            n_coordinates = flat.n_electrons * 3
+            if n_coordinates:
+                basis = torch.eye(n_coordinates, device=positions.device, dtype=positions.dtype)
+                basis = basis.reshape(n_coordinates, 1, flat.n_electrons, 3)
+                basis = basis.expand(-1, flat.batch_size, -1, -1)
+                hessian = torch.autograd.grad(
+                    gradient,
+                    positions,
+                    grad_outputs=basis,
+                    is_grads_batched=True,
+                    create_graph=True,
+                    retain_graph=True,
+                )[0]
+                electron_indices = torch.arange(flat.n_electrons, device=positions.device).repeat_interleave(3)
+                coordinate_indices = torch.arange(3, device=positions.device).repeat(flat.n_electrons)
+                diagonal = hessian[torch.arange(n_coordinates, device=positions.device), :, electron_indices, coordinate_indices]
+                laplacian = diagonal.transpose(0, 1).reshape(flat.batch_size, flat.n_electrons, 3).sum(dim=-1)
+            else:
+                laplacian = torch.zeros(
+                    (flat.batch_size, flat.n_electrons), device=positions.device, dtype=positions.dtype
+                )
+            cusp_gradient = (
+                evaluation.radial_first_derivative.unsqueeze(-1)
+                * evaluation.displacement
+                / evaluation.distance.unsqueeze(-1)
+            ).sum(dim=2)
+            total_gradient = gradient + cusp_gradient
+            fused = -0.5 * (
+                laplacian.sum(dim=-1)
+                + total_gradient.square().sum(dim=-1).sum(dim=-1)
+            )
+            fused = fused + evaluation.local_energy_pair().sum(dim=(1, 2))
+        else:
+            # Independent executable oracle: retain explicit sample/electron/
+            # coordinate/nucleus loops so the fast kernel has a real reference.
+            fused = torch.zeros(flat.batch_size, device=positions.device, dtype=positions.dtype)
+            for sample in range(flat.batch_size):
+                for electron in range(flat.n_electrons):
+                    laplacian = torch.zeros((), device=positions.device, dtype=positions.dtype)
+                    for coordinate in range(3):
+                        second = torch.autograd.grad(
+                            gradient[:, electron, coordinate].sum(),
+                            positions,
+                            create_graph=True,
+                            retain_graph=True,
+                        )[0]
+                        laplacian = laplacian + second[sample, electron, coordinate]
+                    cusp_gradient = torch.zeros(3, device=positions.device, dtype=positions.dtype)
+                    for nucleus in range(evaluation.n_nuclei):
+                        cusp_gradient = cusp_gradient + (
+                            evaluation.radial_first_derivative[sample, electron, nucleus]
+                            * evaluation.displacement[sample, electron, nucleus]
+                            / evaluation.distance[sample, electron, nucleus]
+                        )
+                    total_gradient = gradient[sample, electron] + cusp_gradient
+                    fused[sample] = fused[sample] - 0.5 * (laplacian + total_gradient.square().sum())
+                fused[sample] = fused[sample] + evaluation.local_energy_pair()[sample].sum()
+
+        if fused.shape != (flat.batch_size,):
+            raise ValueError(
+                "analytic cusp fused energy must have shape "
+                f"{(flat.batch_size,)}, got {tuple(fused.shape)}"
+            )
 
         full_output = WavefunctionOutput(
             logabs=regular.logabs + evaluation.pair_value.sum(dim=(1, 2)),
@@ -393,11 +463,14 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         total = None
         wavefunction_output = full_output
         per_electron = None
+        provenance: dict[str, tuple[str, ...]] = {}
+        fused_sources: list[str] = []
         inserted = False
         from tpen.physics.kinetic import KineticEnergy
         from tpen.physics.potential import ElectronNucleusPotential
         for name, term in normalized.items():
             if isinstance(term, (KineticEnergy, ElectronNucleusPotential)):
+                fused_sources.append(name)
                 if not inserted:
                     decomposition[self.fused_term_name] = fused
                     total = fused if total is None else total + fused
@@ -410,6 +483,7 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
                 n_electrons=flat.n_electrons,
             )
             decomposition[name] = result.total
+            provenance[name] = result.term_provenance.get(name, (name,))
             total = result.total if total is None else total + result.total
             if result.wavefunction_output is not None:
                 raise ValueError("analytic cusp evaluation cannot combine another wavefunction output")
@@ -419,8 +493,16 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
                 per_electron = result.per_electron_kinetic
         if total is None:
             total = fused
+        if inserted:
+            provenance[self.fused_term_name] = tuple(fused_sources)
         if return_terms:
-            return LocalEnergyResult(total=total, terms=decomposition, wavefunction_output=wavefunction_output, per_electron_kinetic=per_electron)
+            return LocalEnergyResult(
+                total=total,
+                terms=decomposition,
+                wavefunction_output=wavefunction_output,
+                per_electron_kinetic=per_electron,
+                term_provenance=provenance,
+            )
         return total
 
 
@@ -497,6 +579,15 @@ def _validate_local_energy_result(
                 f"hamiltonian term {name!r} decomposition {term_name!r} must have shape "
                 f"{expected_shape}, got {tuple(value.shape)}"
             )
+    if result.term_provenance:
+        if tuple(result.term_provenance) != tuple(result.terms):
+            raise ValueError(f"hamiltonian term {name!r} provenance must cover terms in order")
+        for decomposition_name, sources in result.term_provenance.items():
+            if not sources or any(not source.strip() for source in sources):
+                raise ValueError(
+                    f"hamiltonian term {name!r} decomposition {decomposition_name!r} "
+                    "has invalid provenance"
+                )
     if result.wavefunction_output is not None:
         if not isinstance(result.wavefunction_output, WavefunctionOutput):
             raise TypeError(

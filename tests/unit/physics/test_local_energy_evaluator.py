@@ -174,6 +174,40 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
     assert result.wavefunction_output is not None
     torch.testing.assert_close(result.wavefunction_output.logabs, torch.tensor([-0.4], dtype=_DTYPE))
     assert result.wavefunction_output.aux == {"source": "regular"}
+    assert result.per_electron_kinetic is None
+    assert result.term_provenance == {
+        "kinetic_plus_electron_nucleus": ("kinetic", "electron_nucleus")
+    }
+
+
+def test_analytic_fast_kernel_matches_independent_reference_and_parameter_gradient() -> None:
+    _, wavefunction, batch, terms = _analytic_setup()
+    # Deliberately use unequal batch/electron axes: equal axes can hide a
+    # missing electron reduction through accidental broadcasting.
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [
+                [[0.4, 0.0, 0.0], [0.0, 0.4, 0.0]],
+                [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]],
+                [[0.6, 0.0, 0.0], [0.0, 0.6, 0.0]],
+            ],
+            dtype=_DTYPE,
+        )
+    )
+    curvature = torch.nn.Parameter(torch.tensor(0.23, dtype=_DTYPE))
+    wavefunction.curvature = curvature
+    fast = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+    fast_gradient = torch.autograd.grad(fast.total.sum(), curvature, retain_graph=True)[0]
+    reference = AnalyticCuspEvaluator().evaluate_reference(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+    reference_gradient = torch.autograd.grad(reference.total.sum(), curvature)[0]
+    torch.testing.assert_close(fast.total, reference.total, rtol=1.0e-12, atol=1.0e-12)
+    torch.testing.assert_close(fast_gradient, reference_gradient, rtol=1.0e-12, atol=1.0e-12)
+    assert tuple(fast.total.shape) == (batch.flatten_samples().batch_size,)
+    assert tuple(reference.total.shape) == (batch.flatten_samples().batch_size,)
 
 
 def test_analytic_evaluator_skips_participants_and_runs_custom_terms_once() -> None:

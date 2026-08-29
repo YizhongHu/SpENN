@@ -42,7 +42,8 @@ class LocalEnergyCalculator:
         records = bundle.generated.trajectory_records
         if records is not None:
             records.validate(check_files=False)
-            if tuple(self.hamiltonian_terms) != records.term_names:
+            sources = {source for names in records.term_provenance.values() for source in names}
+            if tuple(self.hamiltonian_terms) != records.term_names and sources != set(self.hamiltonian_terms):
                 raise ValueError(
                     "LocalEnergyCalculator terms disagree with streamed trajectory records"
                 )
@@ -67,6 +68,12 @@ class LocalEnergyCalculator:
                     local_energy=total,
                     finite_mask=torch.isfinite(total),
                     term_energies=terms,
+                    term_provenance=(
+                        dict(records.term_provenance) or {
+                            name: (name,) for name in records.term_names
+                        }
+                        if terms is not None else None
+                    ),
                 ),
             )
 
@@ -117,6 +124,7 @@ def evaluate_local_energy_in_chunks(
     size = batch_size if chunk_size is None or int(chunk_size) <= 0 else int(chunk_size)
     total_chunks: list[torch.Tensor] = []
     term_chunks: dict[str, list[torch.Tensor]] = {}
+    term_provenance: Mapping[str, tuple[str, ...]] | None = None
     logabs_chunks: list[torch.Tensor] = []
     sign_chunks: list[torch.Tensor] = []
     per_electron_kinetic_chunks: list[torch.Tensor] = []
@@ -130,6 +138,12 @@ def evaluate_local_energy_in_chunks(
             if not isinstance(result, LocalEnergyResult):
                 raise TypeError("local_energy(return_terms=True) must return LocalEnergyResult")
             chunk_terms = tuple(result.terms)
+            if term_provenance is None:
+                term_provenance = dict(result.term_provenance) or {
+                    name: (name,) for name in chunk_terms
+                }
+            elif dict(result.term_provenance) != dict(term_provenance):
+                raise ValueError("chunked local-energy term provenance changed between chunks")
             if term_order is None:
                 term_order = chunk_terms
             elif chunk_terms != term_order:
@@ -181,6 +195,7 @@ def evaluate_local_energy_in_chunks(
         terms={name: torch.cat(chunks, dim=0) for name, chunks in term_chunks.items()},
         wavefunction_output=wavefunction_output,
         per_electron_kinetic=per_electron_kinetic,
+        term_provenance=dict(term_provenance or {}),
     )
 
 
