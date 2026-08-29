@@ -106,11 +106,14 @@ def test_he_analytic_overlay_constructs_an_explicit_opt_in_row() -> None:
     # detached overlay component. A production edit that wires only named
     # components (or forgets the task replacement) leaves this path naive.
     assert raw["runner"]["evaluator"] == "${evaluator}"
-    resolved_task = OmegaConf.to_container(merged.runner.evaluator.tasks[0], resolve=True)
-    assert resolved_task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
-    assert resolved_task["generator"]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
-    assert resolved_task["calculators"][0]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
-    assert resolved_task["output_dir"] == str(merged.run.dir) + "/mcmc_energy"
+    # Resolve only the runner-owned path under test. Whole-task resolution is
+    # invalid here because unrelated summaries contain driver-supplied `???`
+    # values such as trajectory_identity.stage.
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.name", throw_on_missing=True) == "mcmc_energy"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.generator._target_", throw_on_missing=True) == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.generator.evaluator._target_", throw_on_missing=True) == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.calculators.0.evaluator._target_", throw_on_missing=True) == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.output_dir", throw_on_missing=True) == str(merged.run.dir) + "/mcmc_energy"
     assert merged.hamiltonian_terms.electron_nucleus.eps == 0.0
     assert merged.model.factors[0]._target_ == "tpen.nn.ElectronElectronCusp"
     assert "electron-electron coalescence is NOT" in HEV1_ANALYTIC.read_text()
@@ -120,13 +123,13 @@ def test_h2_analytic_overlay_changes_the_real_runner_task_graph() -> None:
     """H2's documented overlay is executable without detached-node overrides."""
 
     merged = OmegaConf.merge(OmegaConf.load(H2V1_EVAL), OmegaConf.load(H2V1_ANALYTIC))
-    task = OmegaConf.to_container(merged.runner.evaluator.tasks[0], resolve=True)
-    assert task["output_dir"] == str(merged.run.dir) + "/mcmc_energy"
-    assert task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.name", throw_on_missing=True) == "mcmc_energy"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.output_dir", throw_on_missing=True) == str(merged.run.dir) + "/mcmc_energy"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.generator._target_", throw_on_missing=True) == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
     # This is the runner task graph; naming the overlay nodes alone would leave
     # the base MCMCGenerator and would make this assertion fail.
-    assert task["generator"]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
-    assert task["calculators"][0]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.generator.evaluator._target_", throw_on_missing=True) == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert OmegaConf.select(merged, "runner.evaluator.tasks.0.calculators.0.evaluator._target_", throw_on_missing=True) == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
 
 
 def _cross_study_violations(study: Path) -> set[str]:
