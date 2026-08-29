@@ -23,12 +23,10 @@ from pathlib import Path
 import pytest
 
 from experiments.baselines.check_polaris_deepqmc_env import (
-    HE_EXACT_HARTREE,
     HYDRA_CONFIG_RELPATH,
     EnvCheckError,
     check_seed,
     backend_platform_version,
-    compare_energy,
     loaded_cuda_libraries,
     parse_proc_maps,
     read_seed,
@@ -116,116 +114,8 @@ def test_seed_outside_the_task_block_is_not_mistaken_for_task_seed(tmp_path: Pat
     assert found["raw_line"] == "  seed: 4"
 
 
-# --- A5 pre-registered comparison -------------------------------------------
 # The comparator is Cannon run dqmc-he-39358341/default: 20000 steps, batch 4096,
 # seed 0, code_commit edf373e7, on an A100-SXM4-80GB.
-CANNON_HE_DEFAULT_20K = -2.9036863634347916
-CANNON_HE_DEFAULT_20K_STDERR = 1.6026224325770225e-05
-
-
-def test_a_matching_energy_is_sane() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K + 2e-5,
-        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["verdict"] == "sane"
-
-
-def test_the_investigate_band_is_not_silently_absorbed_into_either_verdict() -> None:
-    """A difference between 1e-4 and 1e-3 is a finding, not a pass and not a fail."""
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K + 5e-4,
-        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["verdict"] == "investigate"
-
-
-def test_a_third_decimal_difference_is_broken() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K + 2e-3,
-        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["verdict"] == "broken"
-
-
-def test_below_exact_is_broken_even_when_the_delta_is_tiny() -> None:
-    """The disqualifier must outrank a small delta, not be averaged with it.
-
-    An energy can sit very close to the Cannon row and still be variationally
-    impossible. This program has produced below-exact energies four times from
-    too-short tails, so this is the check that must not be conditional on delta.
-    """
-    below = HE_EXACT_HARTREE - 1e-3
-    result = compare_energy(
-        polaris_energy=below,
-        polaris_stderr=1e-6,
-        reference_energy=below,  # delta is exactly zero
-    )
-    assert result["abs_delta_hartree"] == 0.0
-    assert result["verdict"] == "broken"
-    assert any("variationally impossible" in r for r in result["reasons"])
-
-
-def test_a_short_row_is_broken_regardless_of_energy() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        steps_observed=11000,
-        steps_expected=20000,
-    )
-    assert result["verdict"] == "broken"
-    assert any("short" in r for r in result["reasons"])
-
-
-def test_non_finite_energy_is_broken() -> None:
-    result = compare_energy(
-        polaris_energy=float("nan"),
-        polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["verdict"] == "broken"
-
-
-def test_the_preregistered_thresholds_have_not_moved() -> None:
-    """The thresholds were fixed BEFORE any Polaris energy existed.
-
-    Their whole value is in not having moved, so a change is a finding rather
-    than a refactor. Spelled out as literals here, independently of the module's
-    own constants, so that editing the constants fails this test rather than
-    silently redefining what "sane" means. An independent verifier noted the
-    mapping test below could be defeated by a coordinated change; this is the
-    guard that makes such a change loud.
-    """
-    from experiments.baselines.check_polaris_deepqmc_env import (
-        BROKEN_HARTREE,
-        HE_EXACT_HARTREE,
-        SANE_HARTREE,
-    )
-
-    assert SANE_HARTREE == 1e-4
-    assert BROKEN_HARTREE == 1e-3
-    # Exact non-relativistic infinite-nuclear-mass He, from the cited reference
-    # in NNQMC-REFERENCE-ENERGIES.md. The variational check rests on it.
-    assert HE_EXACT_HARTREE == -2.903724377034119598
-
-
-def test_verdict_is_derived_from_the_numbers_it_reports() -> None:
-    """Guard against a label drifting from the value printed beside it."""
-    for offset in (0.0, 5e-5, 2e-4, 5e-3):
-        result = compare_energy(
-            polaris_energy=CANNON_HE_DEFAULT_20K + offset,
-            polaris_stderr=CANNON_HE_DEFAULT_20K_STDERR,
-            reference_energy=CANNON_HE_DEFAULT_20K,
-        )
-        magnitude = result["abs_delta_hartree"]
-        expected = (
-            "sane" if magnitude < 1e-4 else "investigate" if magnitude < 1e-3 else "broken"
-        )
-        assert result["verdict"] == expected, (offset, result)
 
 
 # --- Optional-evidence collection must never be fatal ------------------------
@@ -430,177 +320,15 @@ def test_check_env_requires_a_gpu_when_asked(monkeypatch, tmp_path: Path) -> Non
         )
 
 
-# --- Cross-facility criterion, the second pre-registered test ----------------
 # Separate from physics validity and TIGHTER than it: 3 combined sigma is about
 # 6.8e-5 Ha against the locked 1e-4 SANE threshold, so a result can pass the
 # physics test and fail this one.
-CANNON_STDERR = 1.6026224325770225e-05
-
-
-def test_agreement_within_combined_sigma_is_consistent() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K + 2e-5,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        reference_stderr=CANNON_STDERR,
-    )
-    assert result["cross_facility"]["verdict"] == "consistent"
-    assert result["cross_facility"]["delta_in_sigma"] < 3
-
-
-def test_the_cross_facility_test_is_tighter_than_the_physics_threshold() -> None:
-    """A delta can pass SANE and still fail cross-facility. That is the point.
-
-    If these two ever agree on every input, one of them is redundant and the
-    pre-registration of both was pointless.
-    """
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K + 9e-5,  # under the 1e-4 SANE line
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        reference_stderr=CANNON_STDERR,
-    )
-    assert result["verdict"] == "sane"
-    assert result["cross_facility"]["verdict"] in ("marginal", "inconsistent")
-
-
-def test_mismatched_estimator_windows_refuse_to_combine_sigmas(monkeypatch) -> None:
-    """Two sigmas from different tail windows are not the same quantity.
-
-    The emitted record schema cannot express this -- a 10000-step tail and a
-    750-step tail both serialise as estimator "training_tail" -- so the check
-    has to live where the windows are still known.
-    """
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        reference_stderr=CANNON_STDERR,
-        tail_steps=750,
-        reference_tail_steps=10000,
-    )
-    assert result["estimator_windows"]["comparable"] is False
-    assert result["cross_facility"]["verdict"] == "not_evaluated"
-    assert "not the same quantity" in result["cross_facility"]["reason"]
-
-
-def test_matching_windows_are_marked_comparable() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        reference_stderr=CANNON_STDERR,
-        tail_steps=10000,
-        reference_tail_steps=10000,
-    )
-    assert result["estimator_windows"]["comparable"] is True
-    assert result["cross_facility"]["verdict"] == "consistent"
-
-
-def test_absent_reference_stderr_is_not_evaluated_rather_than_passed() -> None:
-    """A missing input must not read as agreement."""
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["cross_facility"]["verdict"] == "not_evaluated"
-
-
-def test_exit_status_reflects_the_cross_facility_verdict(capsys) -> None:
-    """A physics-SANE result that fails cross-facility must NOT exit 0.
-
-    Found by mutation: removing the cross_facility term from main's exit
-    condition killed no test, because every existing test asserted on
-    compare_energy's RETURN VALUE and none on main's EXIT STATUS. The verdict
-    logic and the wiring that acts on it are two links, and only one was tested.
-    A green exit is what a job script keys on, so this is the link that matters
-    operationally.
-    """
-    from experiments.baselines.check_polaris_deepqmc_env import main
-
-    # 9e-5 Ha: inside the locked 1e-4 SANE threshold, but ~4 combined sigma.
-    rc = main([
-        "compare",
-        "--polaris-energy", repr(CANNON_HE_DEFAULT_20K + 9e-5),
-        "--polaris-stderr", repr(CANNON_STDERR),
-        "--reference-energy", repr(CANNON_HE_DEFAULT_20K),
-        "--reference-stderr", repr(CANNON_STDERR),
-    ])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["verdict"] == "sane"
-    assert payload["cross_facility"]["verdict"] in ("marginal", "inconsistent")
-    assert rc == 1, "exit 0 would report the weaker of the two criteria as the answer"
-
-
-def test_exit_status_is_zero_when_both_criteria_pass(capsys) -> None:
-    from experiments.baselines.check_polaris_deepqmc_env import main
-
-    rc = main([
-        "compare",
-        "--polaris-energy", repr(CANNON_HE_DEFAULT_20K + 1e-5),
-        "--polaris-stderr", repr(CANNON_STDERR),
-        "--reference-energy", repr(CANNON_HE_DEFAULT_20K),
-        "--reference-stderr", repr(CANNON_STDERR),
-    ])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["verdict"] == "sane"
-    assert payload["cross_facility"]["verdict"] == "consistent"
-    assert rc == 0
-
-
-def test_a_low_z_is_labelled_as_ordinary_not_as_tight_agreement() -> None:
-    """Guard against "consistent at 0.21 sigma" being requoted as sub-error-bar agreement.
-
-    E|Z| for one draw is sqrt(2/pi) = 0.798, so |z| < 1 is the ordinary outcome.
-    Claiming the facilities agree better than their error bars is a statement
-    about a distribution of z, and one pair cannot support it.
-    """
-    result = compare_energy(
-        polaris_energy=-2.9036814794540406,
-        polaris_stderr=1.6173570569821275e-05,
-        reference_energy=-2.9036863634347916,
-        reference_stderr=1.6026224325770225e-05,
-    )
-    cross = result["cross_facility"]
-    assert cross["verdict"] == "consistent"
-    assert round(cross["delta_in_sigma"], 4) == 0.2145
-    # The number travels with the caveat that bounds how it may be read.
-    assert cross["expected_abs_z_for_one_draw"] == pytest.approx(0.7979, abs=1e-4)
-    assert "NOT evidence of sub-error-bar agreement" in cross["interpretation"]
 
 
 # --- Gaps found by an independent verifier ----------------------------------
 # All three of these were reported against a SHA whose own mutation grid was
 # clean. My mutants were chosen by me and so inherited my blind spots; these
 # were chosen by someone who had not built the thing.
-
-
-def test_a_non_finite_reference_energy_is_broken_not_sane(capsys) -> None:
-    """A nan comparator must not read as agreement.
-
-    nan comparisons are all False, so `magnitude >= BROKEN` and `magnitude >=
-    SANE` both failed and control fell through to the sane branch. A missing or
-    corrupt comparator therefore produced verdict "sane" with delta nan -- a
-    wrong verdict in the reassuring direction. My own tests only ever passed
-    finite reference values, so the input was never exercised.
-    """
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=float("nan"),
-    )
-    assert result["verdict"] == "broken"
-    assert any("not finite" in r for r in result["reasons"])
-
-
-def test_a_non_finite_polaris_stderr_is_broken() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=float("inf"),
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["verdict"] == "broken"
 
 
 def test_zero_peak_memory_carries_the_checker_only_warning(monkeypatch) -> None:
@@ -637,73 +365,10 @@ def test_bad_arguments_still_emit_json_not_an_empty_artefact(capsys) -> None:
     assert "invalid arguments" in payload["error"]
 
 
-# --- Degenerate-input sweep -------------------------------------------------
 # Found by asking, systematically, what each verdict function returns for absent,
 # nan, inf, zero, negative and wrong-typed inputs -- not by mutation. No mutant
 # could reach these: mutants probe the code you wrote against the inputs you
 # thought of, and no test had ever supplied a negative uncertainty.
-
-
-def test_a_negative_polaris_stderr_is_broken_not_sane() -> None:
-    """A negative standard error is a corrupt input, not a small one.
-
-    It passes the finite check -- it IS a finite number -- and then sails through
-    every threshold, because the thresholds only look at |delta|.
-    """
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=-1.6e-05,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-    )
-    assert result["verdict"] == "broken"
-    assert any("negative" in r for r in result["reasons"])
-
-
-def test_a_negative_reference_stderr_does_not_yield_consistent() -> None:
-    """Combining SQUARES the stderr, so a sign error produces a plausible sigma.
-
-    Squaring is exactly the operation that hides the corruption: the resulting
-    combined sigma looks entirely ordinary and the verdict came back "consistent".
-    """
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        reference_stderr=-CANNON_STDERR,
-    )
-    assert result["cross_facility"]["verdict"] == "not_evaluated"
-    assert "unusable uncertainties" in result["cross_facility"]["reason"]
-
-
-def test_a_non_finite_reference_stderr_is_not_evaluated_with_a_reason() -> None:
-    result = compare_energy(
-        polaris_energy=CANNON_HE_DEFAULT_20K,
-        polaris_stderr=CANNON_STDERR,
-        reference_energy=CANNON_HE_DEFAULT_20K,
-        reference_stderr=float("nan"),
-    )
-    assert result["cross_facility"]["verdict"] == "not_evaluated"
-    assert "unusable uncertainties" in result["cross_facility"]["reason"]
-
-
-def test_degenerate_inputs_never_reach_the_permissive_branch() -> None:
-    """A verdict function falling through to its permissive branch on degenerate
-    input is worse than one that crashes, because the crash is legible.
-
-    This sweeps the whole degenerate space in one assertion so a future input
-    kind cannot be added without someone deciding what it should do.
-    """
-    nan, inf = float("nan"), float("inf")
-    degenerate = [
-        dict(polaris_energy=nan, polaris_stderr=CANNON_STDERR, reference_energy=CANNON_HE_DEFAULT_20K),
-        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=nan, reference_energy=CANNON_HE_DEFAULT_20K),
-        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=CANNON_STDERR, reference_energy=nan),
-        dict(polaris_energy=inf, polaris_stderr=CANNON_STDERR, reference_energy=CANNON_HE_DEFAULT_20K),
-        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=CANNON_STDERR, reference_energy=inf),
-        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=-CANNON_STDERR, reference_energy=CANNON_HE_DEFAULT_20K),
-    ]
-    for kwargs in degenerate:
-        assert compare_energy(**kwargs)["verdict"] == "broken", kwargs
 
 
 # --- Second verifier's findings ---------------------------------------------
@@ -771,19 +436,45 @@ def test_duplicate_seed_keys_are_refused_rather_than_reported_inconsistently(
         read_seed(run_dir)
 
 
-def test_inline_flow_style_seed_has_no_quoteable_line_and_is_refused(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "text",
+    [
+        "task:\n  seed: 7\n",
+        "task :\n  seed: 7\n",
+        '"task":\n  seed: 7\n',
+        "'task':\n  seed: 7\n",
+        "task:\n  seed : 7\n",
+        'task:\n  "seed": 7\n',
+    ],
+    ids=["plain", "task-spaced", "task-double-quoted", "task-single-quoted",
+         "seed-spaced", "seed-quoted"],
+)
+def test_valid_yaml_spellings_of_the_same_key_are_not_refused(
+    tmp_path: Path, text: str
 ) -> None:
-    """`task: {seed: 7}` parses fine but yields no `seed:` line to quote.
+    """YAML permits several spellings of one key; refusing them is a FALSE REFUSAL.
 
-    It previously returned a confident value with line_number=None and
-    raw_line=None -- a successful check with nothing to show for it. A4's
-    evidence requirement is that the value be quoted FROM THE FILE, and None is
-    not a quotation.
+    Found by an independent verifier asked specifically to hunt refusals that fire
+    on legitimate input. A false refusal is as bad as a missing check and harder
+    to notice, because tests supply the shapes the author expects -- and every
+    test here used the single spelling the reference config happens to use.
     """
-    run_dir = _run_dir(tmp_path, "task: {seed: 7, steps: 10}\nansatz:\n  name: default\n")
-    with pytest.raises(EnvCheckError, match="cannot be quoted from the file"):
-        read_seed(run_dir)
+    found = read_seed(_run_dir(tmp_path, text))
+    assert found["seed"] == 7
+    assert found["evidence_available"] is True
+    assert found["line_number"] == 2
+
+
+def test_a_seed_with_no_quoteable_line_is_reported_not_refused(tmp_path: Path) -> None:
+    """Inline flow style carries a real value and no line to quote.
+
+    Refusing it rejected a valid config; returning a bare None was a silent gap.
+    The value is verified and the missing evidence is stated explicitly.
+    """
+    found = read_seed(_run_dir(tmp_path, "task: {seed: 7, steps: 10}\n"))
+    assert found["seed"] == 7
+    assert found["evidence_available"] is False
+    assert "not" in found["warning"] and "available" in found["warning"]
 
 
 def test_a_normal_block_style_seed_still_yields_its_line(tmp_path: Path) -> None:

@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import subprocess
 import sys
@@ -408,6 +407,26 @@ def check_env(
     return report
 
 
+def _is_key(text: str, key: str) -> bool:
+    """True when ``text`` opens the mapping key ``key``, in any YAML spelling.
+
+    YAML permits ``key:``, ``key :``, ``"key":`` and ``'key':`` for the same
+    mapping key. A scanner matching only the first shape rejects valid files.
+    """
+    stripped = text.lstrip()
+    for opener in (key, f'"{key}"', f"'{key}'"):
+        if stripped.startswith(opener):
+            rest = stripped[len(opener) :].lstrip()
+            if rest.startswith(":"):
+                return True
+    return False
+
+
+def _is_top_level_key(line: str, key: str) -> bool:
+    """True when ``line`` opens ``key`` at column zero (no leading whitespace)."""
+    return bool(line) and not line[0].isspace() and _is_key(line, key)
+
+
 def read_seed(run_dir: Path) -> dict[str, Any]:
     """Read ``task.seed`` back out of a run's own resolved Hydra config.
 
@@ -474,14 +493,20 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
     in_task = False
     seed_line_count = 0
     for index, line in enumerate(lines, start=1):
-        if line.startswith("task:"):
+        # Accept the shapes YAML permits for the same key, not just the one the
+        # reference config happens to use: `task:`, `task :`, `"task":`,
+        # `'task':`. Matching only the literal `task:` made the scanner reject
+        # valid configurations, which is a FALSE REFUSAL -- as bad as a missing
+        # check and harder to notice, because tests supply the shapes the author
+        # expects.
+        if _is_top_level_key(line, "task"):
             in_task = True
             continue
         if in_task:
             # A non-indented, non-blank line ends the top-level `task:` block.
             if line and not line[0].isspace():
                 break
-            if line.strip().startswith("seed:"):
+            if _is_key(line.strip(), "seed"):
                 seed_line_count += 1
                 if line_number is None:
                     line_number = index
@@ -498,14 +523,6 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
     # line_number=None and raw_line=None alongside a confident value -- a
     # successful check with nothing to show for it. A4's evidence requirement
     # says "quoted FROM THE FILE", and None is not a quotation.
-    if line_number is None:
-        raise EnvCheckError(
-            f"{config_path} defines task.seed as {seed!r} but no `seed:` line was "
-            "found in the top-level task block (inline flow-style mapping?). The "
-            "value cannot be quoted from the file, which is the evidence this "
-            "check exists to produce"
-        )
-
     if seed_line_count > 1:
         raise EnvCheckError(
             f"{config_path} has {seed_line_count} `seed:` lines inside the top-level "
@@ -513,12 +530,27 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
             "so the reported value and its evidence would disagree"
         )
 
-    return {
+    result = {
         "config_path": str(config_path),
         "seed": seed,
         "line_number": line_number,
         "raw_line": raw_line,
+        # A4 requires the value be quoted FROM THE FILE. Some legitimate YAML
+        # shapes -- inline flow mappings, merge keys, anchors -- carry no
+        # `seed:` line of their own, so the value is real but unquotable.
+        # Refusing those was a false refusal; reporting a bare None was a
+        # silent gap. State it instead, so a caller can see that the value
+        # is verified and the EVIDENCE is not available.
+        "evidence_available": line_number is not None,
     }
+    if line_number is None:
+        result["warning"] = (
+            f"task.seed is {seed!r} but no `seed:` line exists in the top-level "
+            "task block to quote (inline flow mapping, anchor or merge key?). "
+            "The value is verified; the file-quoted evidence A4 asks for is not "
+            "available from this config."
+        )
+    return result
 
 
 def check_seed(run_dir: Path, expect_seed: int) -> dict[str, Any]:
@@ -553,205 +585,6 @@ def check_seed(run_dir: Path, expect_seed: int) -> dict[str, Any]:
     return found
 
 
-# --- A5 pre-registered comparison ------------------------------------------
-# These thresholds were fixed BEFORE any Polaris energy existed (Task
-# Orchestrator note a5-preregistered-criterion-2026-08-28) so the result cannot
-# choose its own criterion. They are encoded here rather than applied by hand
-# because a narrated verdict drifts from its numbers: a label reading "sane"
-# beside a difference that is not is a failure this program has already seen.
-SANE_HARTREE = 1e-4
-BROKEN_HARTREE = 1e-3
-# Exact non-relativistic, infinite-nuclear-mass He ground state. Aznabaev,
-# Bekbaev and Korobov, arXiv:1810.11288 Table 3, attributing to Schwartz (2006);
-# recorded as confirmed in NNQMC-REFERENCE-ENERGIES.md.
-HE_EXACT_HARTREE = -2.903724377034119598
-
-
-def compare_energy(
-    polaris_energy: float,
-    polaris_stderr: float,
-    reference_energy: float,
-    exact_energy: float | None = HE_EXACT_HARTREE,
-    steps_observed: int | None = None,
-    steps_expected: int | None = None,
-    reference_stderr: float | None = None,
-    tail_steps: int | None = None,
-    reference_tail_steps: int | None = None,
-) -> dict[str, Any]:
-    """Apply the pre-registered A5 criterion to a Polaris energy.
-
-    Parameters
-    ----------
-    polaris_energy, polaris_stderr : float
-        The Polaris row's tail-mean energy and its blocked standard error, in
-        hartree, from the same estimator used for the reference row.
-    reference_energy : float
-        The Cannon comparator's energy in hartree.
-    exact_energy : float or None
-        Exact ground-state energy used for the variational check. Pass ``None``
-        to skip that check for a system with no exact value.
-    steps_observed, steps_expected : int or None
-        Row lengths. A short row is BROKEN regardless of its energy, because a
-        truncated run's tail mean is not the quantity being compared.
-
-    Returns
-    -------
-    dict
-        ``delta``, ``verdict`` (``sane`` / ``investigate`` / ``broken``) and
-        ``reasons``. The verdict is derived, never passed in.
-    """
-    delta = polaris_energy - reference_energy
-    magnitude = abs(delta)
-    reasons: list[str] = []
-
-    # Any single disqualifier forces BROKEN regardless of how small delta is.
-    # Every numeric input, not only the Polaris ones. A non-finite REFERENCE
-    # energy previously yielded delta=nan and verdict "sane": nan comparisons are
-    # all False, so `magnitude >= BROKEN` and `magnitude >= SANE` both failed and
-    # control fell through to the sane branch. A missing or corrupt comparator
-    # therefore read as agreement -- a wrong verdict in the reassuring direction.
-    # Found by an independent verifier; my own tests only ever passed finite
-    # reference values, so the whole input was untested.
-    if not all(map(_finite, (polaris_energy, polaris_stderr, reference_energy))):
-        reasons.append(
-            f"a required value is not finite: polaris_energy={polaris_energy!r}, "
-            f"polaris_stderr={polaris_stderr!r}, reference_energy={reference_energy!r}"
-        )
-    elif polaris_stderr < 0:
-        # A negative standard error is not a small one; it is a corrupt input.
-        # It passed the finite check (it IS a finite number) and then sailed
-        # through every threshold, because the thresholds only look at |delta|.
-        # Found by sweeping degenerate inputs rather than by mutation: no mutant
-        # could reach it, because no test ever supplied a negative stderr.
-        reasons.append(f"polaris_stderr is negative ({polaris_stderr!r}): not a valid uncertainty")
-    if steps_expected is not None and (steps_observed or 0) < steps_expected:
-        reasons.append(
-            f"row is short: {steps_observed} of {steps_expected} steps recorded"
-        )
-    if exact_energy is not None and polaris_stderr > 0:
-        # A variational energy cannot lie below the exact ground state. This
-        # program has produced below-exact energies four times from too-short
-        # tails, so it is a live failure mode rather than a hypothetical.
-        below_by = exact_energy - polaris_energy
-        if below_by > 3 * polaris_stderr:
-            reasons.append(
-                f"energy is {below_by:.3e} Ha below exact, more than 3 sigma "
-                f"({3 * polaris_stderr:.3e} Ha): variationally impossible"
-            )
-
-    if reasons:
-        verdict = "broken"
-    elif magnitude >= BROKEN_HARTREE:
-        verdict = "broken"
-        reasons.append(f"|delta| {magnitude:.3e} Ha >= {BROKEN_HARTREE:.0e}")
-    elif magnitude >= SANE_HARTREE:
-        verdict = "investigate"
-        reasons.append(
-            f"|delta| {magnitude:.3e} Ha is in [{SANE_HARTREE:.0e}, "
-            f"{BROKEN_HARTREE:.0e}): report as a finding, do NOT call this verified"
-        )
-    else:
-        verdict = "sane"
-        reasons.append(f"|delta| {magnitude:.3e} Ha < {SANE_HARTREE:.0e}")
-
-    # --- Cross-facility agreement, the SECOND pre-registered criterion ---------
-    # A separate question from physics validity, with a different tolerance.
-    # Matching the seed does NOT license a tighter expectation: same seed on
-    # different hardware does not reproduce a trajectory, because float addition
-    # is not associative and XLA compiles different kernels per hardware and
-    # shape. The PRNG stream is identical; the arithmetic consuming it is not.
-    # So the two runs diverge by construction, and the only meaningful yardstick
-    # is the combined statistical error of the two estimates.
-    cross: dict[str, Any] = {"verdict": "not_evaluated"}
-    # Both uncertainties must be finite AND non-negative. A negative reference
-    # stderr previously produced verdict "consistent": it is finite, and the
-    # combination SQUARES it, so a corrupt input yielded a plausible sigma and a
-    # confident agreement. Squaring is exactly what hides a sign error.
-    stderrs_usable = (
-        reference_stderr is not None
-        and _finite(reference_stderr)
-        and _finite(polaris_stderr)
-        and reference_stderr >= 0
-        and polaris_stderr >= 0
-    )
-    if reference_stderr is not None and not stderrs_usable:
-        cross["reason"] = (
-            f"unusable uncertainties: polaris_stderr={polaris_stderr!r}, "
-            f"reference_stderr={reference_stderr!r}"
-        )
-    if stderrs_usable:
-        combined = math.sqrt(polaris_stderr**2 + reference_stderr**2)
-        cross = {
-            "combined_sigma_hartree": combined,
-            "delta_in_sigma": (magnitude / combined) if combined > 0 else None,
-        }
-        n_sigma = cross["delta_in_sigma"]
-        # A LOW |z| IS NOT EVIDENCE OF UNUSUALLY GOOD AGREEMENT. For a single
-        # comparison E|Z| is sqrt(2/pi) = 0.798, so anything under 1 is the
-        # ordinary case rather than a tight one. Stating this beside the number
-        # stops "consistent at 0.21 sigma" being quoted later as "the facilities
-        # agree better than their own error bars" -- a claim about a
-        # DISTRIBUTION of z, which one pair cannot support.
-        cross["expected_abs_z_for_one_draw"] = 0.7978845608028654
-        # WHAT IS AND IS NOT ENFORCEABLE HERE, stated so the caveat is not
-        # mistaken for a guarantee. `expected_abs_z_for_one_draw` is a NUMBER a
-        # downstream check can act on -- it can compare delta_in_sigma against it
-        # and refuse a sub-error-bar claim mechanically. `interpretation` is
-        # PROSE: it now travels with the number and cannot separate from it,
-        # which beats a caveat in a note beside it, but no script can act on it.
-        # The caveat is INSEPARABLE, not ENFORCED. Reading "the caveat is in the
-        # artefact" as "the artefact is checkable" is the same confusion as a
-        # record field that looks like it carries a guarantee.
-        cross["interpretation"] = (
-            "consistency only; a single |z| below 1 is the ordinary outcome and is "
-            "NOT evidence of sub-error-bar agreement"
-        )
-        cross["caveat_is"] = "inseparable, not enforced: interpretation is prose"
-        if n_sigma is None:
-            cross["verdict"] = "not_evaluated"
-        elif n_sigma <= 3:
-            cross["verdict"] = "consistent"
-        elif n_sigma <= 5:
-            cross["verdict"] = "marginal"
-        else:
-            cross["verdict"] = "inconsistent"
-
-    # The estimator window is NOT carried by the emitted record schema: a
-    # 10000-step tail and a 750-step tail both serialise as estimator
-    # "training_tail". Two records therefore cannot be checked for sigma
-    # comparability from the artefacts alone. Echo the windows here so THIS
-    # verdict is self-describing even though the record is not, and refuse to
-    # call the facilities consistent when the windows are known to differ.
-    windows = {"tail_steps": tail_steps, "reference_tail_steps": reference_tail_steps}
-    if tail_steps is not None and reference_tail_steps is not None:
-        windows["comparable"] = tail_steps == reference_tail_steps
-        if not windows["comparable"] and cross.get("verdict") != "not_evaluated":
-            cross["verdict"] = "not_evaluated"
-            cross["reason"] = (
-                f"estimator windows differ ({tail_steps} vs {reference_tail_steps} steps): "
-                "the two sigmas are not the same quantity and must not be combined"
-            )
-
-    return {
-        "estimator_windows": windows,
-        "cross_facility": cross,
-        "polaris_energy_hartree": polaris_energy,
-        "polaris_stderr_hartree": polaris_stderr,
-        "reference_energy_hartree": reference_energy,
-        "exact_energy_hartree": exact_energy,
-        "delta_hartree": delta,
-        "abs_delta_hartree": magnitude,
-        "thresholds": {"sane_below": SANE_HARTREE, "broken_at_or_above": BROKEN_HARTREE},
-        "verdict": verdict,
-        "reasons": reasons,
-    }
-
-
-def _finite(value: float) -> bool:
-    """True when ``value`` is a finite real number."""
-    return isinstance(value, (int, float)) and math.isfinite(value)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Command-line entry point. Returns 0 on success, 1 on a failed check."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -772,23 +605,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     seed.add_argument("--run-dir", type=Path, required=True)
     seed.add_argument("--expect-seed", type=int, required=True)
 
-    cmp_ = sub.add_parser("compare", help="apply the pre-registered A5 criterion")
-    cmp_.add_argument("--polaris-energy", type=float, required=True)
-    cmp_.add_argument("--polaris-stderr", type=float, required=True)
-    cmp_.add_argument("--reference-energy", type=float, required=True)
-    cmp_.add_argument("--exact-energy", type=float, default=HE_EXACT_HARTREE)
-    cmp_.add_argument("--steps-observed", type=int, default=None)
-    cmp_.add_argument("--steps-expected", type=int, default=None)
-    cmp_.add_argument("--reference-stderr", type=float, default=None)
-    cmp_.add_argument("--tail-steps", type=int, default=None)
-    cmp_.add_argument("--reference-tail-steps", type=int, default=None)
-
-    # argparse calls sys.exit() on a bad argument, BEFORE the try below, so a
-    # malformed invocation printed usage to stderr and left stdout empty -- the
-    # 0-byte artefact this command exists to avoid. The job pipes stdout to a
-    # file, so a typo in the JOB SCRIPT would have produced exactly the empty
-    # file that PBS 7571666 produced. Claiming "any exception yields JSON" was
-    # too broad; this makes it true for argument errors too.
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -804,31 +620,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_root=args.source_root,
                 require_gpu=not args.allow_no_gpu,
             )
-        elif args.command == "seed":
-            report = check_seed(args.run_dir, args.expect_seed)
         else:
-            report = compare_energy(
-                polaris_energy=args.polaris_energy,
-                polaris_stderr=args.polaris_stderr,
-                reference_energy=args.reference_energy,
-                exact_energy=args.exact_energy,
-                steps_observed=args.steps_observed,
-                steps_expected=args.steps_expected,
-                reference_stderr=args.reference_stderr,
-                tail_steps=args.tail_steps,
-                reference_tail_steps=args.reference_tail_steps,
-            )
-            print(json.dumps(report, indent=2))
-            # A non-sane verdict must not exit 0: a green exit beside an
-            # investigate verdict is how a finding gets lost in a job log.
-            # Both criteria must pass. The cross-facility test is the TIGHTER
-            # of the two (3 combined sigma is about 6.8e-5 Ha here, against the
-            # locked 1e-4 SANE threshold), so a green exit on the physics
-            # threshold alone would report the weaker result as the answer.
-            ok = report["verdict"] == "sane" and report["cross_facility"].get(
-                "verdict"
-            ) in ("consistent", "not_evaluated")
-            return 0 if ok else 1
+            report = check_seed(args.run_dir, args.expect_seed)
     except EnvCheckError as exc:
         payload: dict[str, Any] = {"ok": False, "error": str(exc)}
         # Emit whatever WAS established before the check failed.

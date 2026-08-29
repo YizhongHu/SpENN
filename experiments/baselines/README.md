@@ -489,20 +489,29 @@ cost seconds rather than a training row.
 
 ### Running the verification
 
-`experiments/baselines/polaris_deepqmc_verify.pbs` carries both the environment
-check and the row. It runs on `debug` (1-2 nodes, 1 h, receipt-backed for
-`HetRxnEnergy`); `prod` is a routing queue whose walltime is bought with nodes,
-and `debug-scaling` is debug-only by operator instruction.
+`check_polaris_deepqmc_env.py` has two subcommands and no submission machinery of
+its own, deliberately. Polaris submission belongs to the baselines submission
+path, not to this module.
 
-Two properties of that script matter beyond convenience. It sets
-`XLA_PYTHON_CLIENT_PREALLOCATE=false` before any JAX import, without which JAX
-takes ~75% of the card and every memory reading is identical and meaningless.
-And it is submitted `-r n` *and* refuses to start twice against its own marker
-file, because a Cannon row was requeued after a `NODE_FAIL` today and silently
-restarted from step 0 — this program discards restarted stochastic runs, so a
-silent restart is a correctness bug rather than an inconvenience. PBS is not
-Slurm, so the job records the scheduler's own `Rerunable` field rather than
-assuming the default.
+```bash
+# inside a PBS allocation, after XLA_PYTHON_CLIENT_PREALLOCATE=false
+python -m experiments.baselines.check_polaris_deepqmc_env env \
+    --expect-prefix /home/rhu/.venvs/deepqmc-jax083-edf373e7 --expect-jax 0.8.3
+
+python -m experiments.baselines.check_polaris_deepqmc_env seed \
+    --run-dir <run> --expect-seed 7
+```
+
+Two environment facts the caller owns, because this module cannot enforce them
+from inside a job it did not launch. `XLA_PYTHON_CLIENT_PREALLOCATE=false` must
+be set before any JAX import, or JAX takes ~75% of the card and every memory
+reading is identical regardless of workload. And GPU visibility is the job's
+responsibility: PBS does not constrain it on Polaris.
+
+The verification runs for this port are recorded on Task Orchestrator item
+`9f762980` with their PBS job ids and durable paths under
+`/eagle/HetRxnEnergy/rhu/runs`; the job script that produced them was scaffolding
+and is not carried here.
 
 ## Sources
 
