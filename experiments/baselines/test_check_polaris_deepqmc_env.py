@@ -220,6 +220,11 @@ class _StubDevice:
         self.device_kind = "stub"
         self.platform = "gpu"
 
+    def memory_stats(self) -> dict[str, int]:
+        # A fresh process that has done no device work: the exact case whose
+        # zero reading must not be mistaken for a training run's high-water.
+        return {"peak_bytes_in_use": 0}
+
 
 class _StubClient:
     platform_version = "cuda 12090"
@@ -539,3 +544,70 @@ def test_a_low_z_is_labelled_as_ordinary_not_as_tight_agreement() -> None:
     # The number travels with the caveat that bounds how it may be read.
     assert cross["expected_abs_z_for_one_draw"] == pytest.approx(0.7979, abs=1e-4)
     assert "NOT evidence of sub-error-bar agreement" in cross["interpretation"]
+
+
+# --- Gaps found by an independent verifier ----------------------------------
+# All three of these were reported against a SHA whose own mutation grid was
+# clean. My mutants were chosen by me and so inherited my blind spots; these
+# were chosen by someone who had not built the thing.
+
+
+def test_a_non_finite_reference_energy_is_broken_not_sane(capsys) -> None:
+    """A nan comparator must not read as agreement.
+
+    nan comparisons are all False, so `magnitude >= BROKEN` and `magnitude >=
+    SANE` both failed and control fell through to the sane branch. A missing or
+    corrupt comparator therefore produced verdict "sane" with delta nan -- a
+    wrong verdict in the reassuring direction. My own tests only ever passed
+    finite reference values, so the input was never exercised.
+    """
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=float("nan"),
+    )
+    assert result["verdict"] == "broken"
+    assert any("not finite" in r for r in result["reasons"])
+
+
+def test_a_non_finite_polaris_stderr_is_broken() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=float("inf"),
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["verdict"] == "broken"
+
+
+def test_zero_peak_memory_carries_the_checker_only_warning(monkeypatch) -> None:
+    """The zero-peak warning had NO test: a mutant flipping `== 0` to `< 0` survived.
+
+    That warning is the only thing stopping a fresh checker process's 0 MiB
+    reading from being quoted as a training run's memory high-water, which is
+    how E6 was nearly recorded as satisfied on a meaningless number.
+    """
+    import experiments.baselines.check_polaris_deepqmc_env as mod
+
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    monkeypatch.setitem(sys.modules, "jax", _StubJax())
+    stats = mod.gpu_memory_high_water()
+    assert stats[0]["peak_bytes_in_use"] == 0
+    assert "warning" in stats[0], "a zero peak must say it measures nothing"
+    assert "says NOTHING" in stats[0]["warning"]
+    assert stats[0]["scope"].startswith("this process only")
+
+
+def test_bad_arguments_still_emit_json_not_an_empty_artefact(capsys) -> None:
+    """argparse exits before main's handler, leaving stdout empty.
+
+    The job pipes stdout into a file, so a typo in the JOB SCRIPT would have
+    produced exactly the 0-byte artefact PBS 7571666 produced. My claim that any
+    exception yields JSON was too broad; argparse was outside it.
+    """
+    from experiments.baselines.check_polaris_deepqmc_env import main
+
+    with pytest.raises(SystemExit):
+        main(["definitely-not-a-subcommand"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "invalid arguments" in payload["error"]

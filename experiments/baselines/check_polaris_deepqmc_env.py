@@ -511,8 +511,18 @@ def compare_energy(
     reasons: list[str] = []
 
     # Any single disqualifier forces BROKEN regardless of how small delta is.
-    if not all(map(_finite, (polaris_energy, polaris_stderr))):
-        reasons.append("energy or stderr is not finite")
+    # Every numeric input, not only the Polaris ones. A non-finite REFERENCE
+    # energy previously yielded delta=nan and verdict "sane": nan comparisons are
+    # all False, so `magnitude >= BROKEN` and `magnitude >= SANE` both failed and
+    # control fell through to the sane branch. A missing or corrupt comparator
+    # therefore read as agreement -- a wrong verdict in the reassuring direction.
+    # Found by an independent verifier; my own tests only ever passed finite
+    # reference values, so the whole input was untested.
+    if not all(map(_finite, (polaris_energy, polaris_stderr, reference_energy))):
+        reasons.append(
+            f"a required value is not finite: polaris_energy={polaris_energy!r}, "
+            f"polaris_stderr={polaris_stderr!r}, reference_energy={reference_energy!r}"
+        )
     if steps_expected is not None and (steps_observed or 0) < steps_expected:
         reasons.append(
             f"row is short: {steps_observed} of {steps_expected} steps recorded"
@@ -656,7 +666,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     cmp_.add_argument("--tail-steps", type=int, default=None)
     cmp_.add_argument("--reference-tail-steps", type=int, default=None)
 
-    args = parser.parse_args(argv)
+    # argparse calls sys.exit() on a bad argument, BEFORE the try below, so a
+    # malformed invocation printed usage to stderr and left stdout empty -- the
+    # 0-byte artefact this command exists to avoid. The job pipes stdout to a
+    # file, so a typo in the JOB SCRIPT would have produced exactly the empty
+    # file that PBS 7571666 produced. Claiming "any exception yields JSON" was
+    # too broad; this makes it true for argument errors too.
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            print(json.dumps({"ok": False, "error": f"invalid arguments (argparse exit {exc.code})"}, indent=2))
+        raise
     try:
         if args.command == "env":
             report = check_env(

@@ -84,14 +84,34 @@ date -Iseconds > "$D/STARTED"
 # "ran for 39 minutes and was killed" cannot be misread as "barely started".
 on_signal() {
     trap - TERM INT
+    # DISABLE errexit AND pipefail INSIDE THE TRAP. With them on, the checkpoint
+    # lookup below is a pipeline whose first command (ls) exits non-zero when no
+    # checkpoint matches -- so pipefail failed the pipeline and errexit killed
+    # the trap MID-WRITE. Because the redirection truncates KILLED first, that
+    # left a ZERO-BYTE KILLED file: precisely the empty artefact this trap exists
+    # to prevent, in exactly the case it most matters (killed before the first
+    # checkpoint). Found by an independent verifier reading the script; it would
+    # have fired only on a teardown, which is the path never exercised in testing.
+    set +e +o pipefail
+    local last=""
+    # A plain glob with nullglob semantics avoids the failing pipeline entirely.
+    for f in "$D"/*/training/chkpt-*.pt; do
+        [ -e "$f" ] || continue
+        n=${f##*/chkpt-}; n=${n%.pt}
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        if [ -z "$last" ] || [ "$n" -gt "$last" ]; then last="$n"; fi
+    done
     {
         echo "signal=$1"
         echo "at=$(date -Iseconds)"
-        echo "started=$(cat "$D/STARTED" 2>/dev/null)"
-        # Highest checkpoint reached, so the record says how far it actually got.
-        ls -1 "$D"/*/training/chkpt-*.pt 2>/dev/null \
-            | sed 's|.*chkpt-||; s|\.pt$||' | sort -n | tail -1 \
-            | sed 's/^/last_checkpoint_step=/'
+        echo "started=$(cat "$D/STARTED" 2>/dev/null || echo unknown)"
+        if [ -n "$last" ]; then
+            echo "last_checkpoint_step=$last"
+        else
+            # Said explicitly. An absent line would be indistinguishable from a
+            # truncated write, which is the ambiguity this whole file fights.
+            echo "last_checkpoint_step=NONE_REACHED"
+        fi
     } > "$D/KILLED"
     echo "KILLED by SIG$1 -- see $D/KILLED"
     exit $((128 + $2))
