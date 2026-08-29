@@ -56,6 +56,12 @@ class Evaluate(Runner):
             self.model.eval()
             _assert_eager_initialized(self.model)
 
+        # Static evaluator capability/domain checks belong before checkpoint
+        # restore and before the run's evaluation boundary. In particular, an
+        # analytic evaluator must not discover an ineligible model or
+        # Hamiltonian after sampling begins.
+        self._validate_evaluator_configuration()
+
         replay_semantics = None
         mode = _load_mode(self.load)
         if mode == "train_resume":
@@ -90,6 +96,18 @@ class Evaluate(Runner):
         # verdict so timing consumers can close it truthfully.
         context.emit(EvaluationCompleted(status=result.status))
         return RunResult(status="completed" if result.status != "failed" else "failed")
+
+    def _validate_evaluator_configuration(self) -> None:
+        """Run preflight checks exposed by configured physics calculators."""
+
+        for task in self.evaluator.tasks:
+            validate_generator = getattr(task.generator, "validate", None)
+            if callable(validate_generator):
+                validate_generator(model=self.model, generator=task.generator)
+            for calculator in task.calculators:
+                validate = getattr(calculator, "validate", None)
+                if callable(validate):
+                    validate(model=self.model, generator=task.generator)
 
 
 def _load_mode(load) -> str:

@@ -1,0 +1,24 @@
+# Opt-in overlay for an eligible generic electron-nucleus evaluation.
+# Merge this mapping into an existing evaluation config; omission keeps the
+# NaiveLocalEnergyEvaluator default unchanged.
+
+local_energy_evaluator:
+  _target_: tpen.physics.hamiltonian.AnalyticCuspEvaluator
+
+# This is the explicit calculator construction used in the eligible H2
+# example.  The surrounding config supplies `hamiltonian_terms`; its model
+# must bind the unique ElectronNucleusCusp factor as `analytic_cusp_provider`.
+analytic_local_energy_calculator:
+  _target_: tpen.evaluation.calculators.LocalEnergyCalculator
+  hamiltonian_terms: ${hamiltonian_terms}
+  return_terms: true
+  evaluator: ${local_energy_evaluator}
+
+# A trajectory task can select the same implementation directly on its
+# generator, preserving the fused term and provenance in streamed records.
+analytic_trajectory_generator:
+  _target_: tpen.evaluation.generators.TrajectoryMCMCGenerator
+  sampler: ${evaluation_sampler}
+  hamiltonian_terms: ${hamiltonian_terms}
+  n_draws: 4
+  evaluator: ${local_energy_evaluator}

@@ -11,11 +11,27 @@ import torch
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.evaluation.bundle import EvaluationBundle, LocalEnergyValues
 from tpen.evaluation.protocols import EvaluationContext
-from tpen.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, local_energy, normalize_hamiltonian_terms
+from tpen.physics.hamiltonian import (
+    AnalyticCuspContext,
+    AnalyticCuspEvaluator,
+    HamiltonianTerm,
+    LocalEnergyEvaluator,
+    LocalEnergyResult,
+    NaiveLocalEnergyContext,
+    NaiveLocalEnergyEvaluator,
+    normalize_hamiltonian_terms,
+)
+
+_DEFAULT_EVALUATOR = NaiveLocalEnergyEvaluator()
 
 
 class LocalEnergyCalculator:
-    """Compute raw local-energy values for generated configurations."""
+    """Compute raw local-energy values for generated configurations.
+
+    ``evaluator`` is an explicit opt-in physics choice.  Omitting it selects
+    the independent :class:`NaiveLocalEnergyEvaluator`; no evaluator is
+    inferred from the model or Hamiltonian terms.
+    """
 
     name = "local_energy"
 
@@ -25,10 +41,19 @@ class LocalEnergyCalculator:
         hamiltonian_terms: Sequence[HamiltonianTerm] | Mapping[str, HamiltonianTerm],
         return_terms: bool = False,
         chunk_size: int | None = None,
+        evaluator: LocalEnergyEvaluator | None = None,
     ) -> None:
         self.hamiltonian_terms = normalize_hamiltonian_terms(hamiltonian_terms)
         self.return_terms = bool(return_terms)
         self.chunk_size = None if chunk_size is None else int(chunk_size)
+        self.evaluator = _DEFAULT_EVALUATOR if evaluator is None else evaluator
+
+    def validate(self, *, model, generator: object) -> None:
+        """Validate configured evaluator eligibility before generator execution."""
+
+        validate = getattr(self.evaluator, "validate_for_generator", None)
+        if callable(validate):
+            validate(self.hamiltonian_terms, model, generator)
 
     def calculate(
         self,
@@ -83,6 +108,7 @@ class LocalEnergyCalculator:
             bundle.generated.batch,
             return_terms=self.return_terms,
             chunk_size=self.chunk_size,
+            evaluator=self.evaluator,
         )
         total, term_energies = split_local_energy_result(result)
         total = total.detach()
@@ -112,6 +138,7 @@ def evaluate_local_energy_in_chunks(
     *,
     return_terms: bool = False,
     chunk_size: int | None = None,
+    evaluator: LocalEnergyEvaluator | None = None,
 ) -> torch.Tensor | LocalEnergyResult:
     """Evaluate local energy on bounded flattened batches."""
 
@@ -129,11 +156,16 @@ def evaluate_local_energy_in_chunks(
     sign_chunks: list[torch.Tensor] = []
     per_electron_kinetic_chunks: list[torch.Tensor] = []
     term_order: tuple[str, ...] | None = None
+    selected_evaluator = _DEFAULT_EVALUATOR if evaluator is None else evaluator
     captured_wavefunction = False
     captured_per_electron_kinetic = False
     for start in range(0, batch_size, size):
         chunk = slice_flat_batch(flat, start, min(start + size, batch_size))
-        result = local_energy(terms, wavefunction, chunk, return_terms=return_terms)
+        result = selected_evaluator.evaluate(
+            terms,
+            _context_for_evaluator(selected_evaluator, wavefunction, chunk),
+            return_terms=return_terms,
+        )
         if return_terms:
             if not isinstance(result, LocalEnergyResult):
                 raise TypeError("local_energy(return_terms=True) must return LocalEnergyResult")
@@ -196,6 +228,19 @@ def evaluate_local_energy_in_chunks(
         wavefunction_output=wavefunction_output,
         per_electron_kinetic=per_electron_kinetic,
         term_provenance=dict(term_provenance or {}),
+    )
+
+
+def _context_for_evaluator(evaluator: LocalEnergyEvaluator, wavefunction, batch: ElectronBatch):
+    """Construct the typed context for one supported runtime evaluator."""
+
+    if isinstance(evaluator, AnalyticCuspEvaluator):
+        return AnalyticCuspContext(wavefunction=wavefunction, batch=batch)
+    if isinstance(evaluator, NaiveLocalEnergyEvaluator):
+        return NaiveLocalEnergyContext(wavefunction=wavefunction, batch=batch)
+    raise TypeError(
+        "unsupported local-energy evaluator; use NaiveLocalEnergyEvaluator or "
+        "AnalyticCuspEvaluator"
     )
 
 

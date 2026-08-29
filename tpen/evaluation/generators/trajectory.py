@@ -40,7 +40,12 @@ from tpen.evaluation.trajectory_records import (
     TrajectoryRecordBatch,
     TrajectoryRecordStreamWriter,
 )
-from tpen.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, normalize_hamiltonian_terms
+from tpen.physics.hamiltonian import (
+    HamiltonianTerm,
+    LocalEnergyEvaluator,
+    LocalEnergyResult,
+    normalize_hamiltonian_terms,
+)
 from tpen.sampling.trajectory import collect_observable_trajectory_with_diagnostics
 
 TRAJECTORY_METADATA_KEY = "observable_trajectory"
@@ -109,6 +114,7 @@ class TrajectoryMCMCGenerator:
         record_filename: str = TRAJECTORY_RECORD_FILENAME,
         reset: bool = False,
         verify_model_unchanged: bool = True,
+        evaluator: LocalEnergyEvaluator | None = None,
     ) -> None:
         self.sampler = sampler
         self.hamiltonian_terms = normalize_hamiltonian_terms(hamiltonian_terms)
@@ -129,6 +135,15 @@ class TrajectoryMCMCGenerator:
             raise ValueError("record_filename must be non-empty")
         self.reset = bool(reset)
         self.verify_model_unchanged = bool(verify_model_unchanged)
+        self.evaluator = evaluator
+
+    def validate(self, *, model, generator: object | None = None) -> None:
+        """Validate configured evaluator eligibility before trajectory collection."""
+
+        del generator
+        validate = getattr(self.evaluator, "validate_for_generator", None)
+        if callable(validate):
+            validate(self.hamiltonian_terms, model, self)
 
     def generate(
         self,
@@ -253,6 +268,7 @@ class TrajectoryMCMCGenerator:
             batch,
             return_terms=True,
             chunk_size=self.chunk_size,
+            evaluator=self.evaluator,
         )
         if not isinstance(result, LocalEnergyResult):
             raise TypeError("trajectory local-energy evaluation must return LocalEnergyResult")

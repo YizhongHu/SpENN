@@ -266,6 +266,77 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
 
     fused_term_name = "kinetic_plus_electron_nucleus"
 
+    def validate(
+        self,
+        terms: Mapping[Any, Any] | Sequence[Any],
+        wavefunction: object,
+        *,
+        n_electrons: int | None = None,
+        spatial_dim: int | None = None,
+    ) -> None:
+        """Validate configuration-only analytic eligibility before sampling.
+
+        Batch-dependent checks remain in :meth:`evaluate`, where the actual
+        typed batch is available.  This method deliberately performs every
+        rejection that can be known from the configured model, Hamiltonian,
+        and sampler metadata before a runner emits its evaluation-start event.
+        """
+
+        from tpen.nn.cusp import ElectronNucleusCusp
+        from tpen.physics.kinetic import KineticEnergy
+        from tpen.physics.potential import ElectronNucleusPotential
+
+        normalized = normalize_hamiltonian_terms(terms)
+        kinetic = [term for term in normalized.values() if isinstance(term, KineticEnergy)]
+        potentials = [term for term in normalized.values() if isinstance(term, ElectronNucleusPotential)]
+        if len(kinetic) != 1:
+            raise ValueError("analytic cusp evaluation requires exactly one KineticEnergy term")
+        if len(potentials) != 1:
+            raise ValueError("analytic cusp evaluation requires exactly one ElectronNucleusPotential term")
+        potential = potentials[0]
+        if potential.eps != 0:
+            raise ValueError("analytic cusp evaluation requires ElectronNucleusPotential.eps == 0")
+        provider = getattr(wavefunction, "analytic_cusp_provider", None)
+        if not isinstance(provider, ElectronNucleusCusp):
+            raise ValueError(
+                "analytic cusp evaluation requires one explicitly bound ElectronNucleusCusp provider"
+            )
+        if not callable(getattr(wavefunction, "factorized_local_energy_input", None)):
+            raise ValueError("analytic cusp evaluation requires factorized_local_energy_input capability")
+        same_geometry, _ = potential.atoms.compare(provider.atoms, atol=0.0, rtol=0.0)
+        if not same_geometry:
+            raise ValueError("ElectronNucleusPotential and analytic cusp provider must share matching atoms")
+        if potential.atoms.spatial_dim != 3 or provider.atoms.spatial_dim != 3:
+            raise ValueError("analytic cusp evaluation requires spatial dimension 3")
+        if spatial_dim is not None and int(spatial_dim) != 3:
+            raise ValueError("analytic cusp evaluation requires spatial dimension 3")
+        if n_electrons is not None and int(n_electrons) < 1:
+            raise ValueError("analytic cusp evaluation requires at least one electron")
+
+    def validate_for_generator(self, terms, wavefunction, generator: object) -> None:
+        """Validate static eligibility using a configured generator's sampler."""
+
+        from tpen.physics.potential import ElectronNucleusPotential
+
+        sampler = getattr(generator, "sampler", None)
+        self.validate(
+            terms,
+            wavefunction,
+            n_electrons=getattr(sampler, "n_electrons", None),
+            spatial_dim=getattr(sampler, "spatial_dim", None),
+        )
+        sampler_atoms = getattr(sampler, "atomic_configuration", None)
+        if sampler_atoms is not None:
+            potential = next(
+                term for term in normalize_hamiltonian_terms(terms).values()
+                if isinstance(term, ElectronNucleusPotential)
+            )
+            same_geometry, _ = potential.atoms.compare(sampler_atoms, atol=0.0, rtol=0.0)
+            if not same_geometry:
+                raise ValueError(
+                    "ElectronNucleusPotential and sampler must share matching atoms"
+                )
+
     def evaluate(
         self,
         terms: Mapping[Any, Any] | Sequence[Any],
