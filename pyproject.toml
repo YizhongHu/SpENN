@@ -52,6 +52,9 @@ submitit = [
 parsl = [
   "parsl>=2024.10",
 ]
+finite-difference = [
+  "numdifftools==0.10.1",
+]
 
 [dependency-groups]
 dev = [
