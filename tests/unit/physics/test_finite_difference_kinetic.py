@@ -67,14 +67,18 @@ def test_numdifftools_full_output_contract_is_pinned() -> None:
 
 def test_gaussian_oracle_returns_hessian_kinetic_and_diagnostics() -> None:
     positions = torch.tensor([[[1.0, 2.0], [0.5, -1.0]]], dtype=torch.float64)
-    result = finite_difference_kinetic(GaussianModel(), ElectronBatch(positions=positions), tolerance=1.0e-6)
+    model = GaussianModel()
+    result = finite_difference_kinetic(model, ElectronBatch(positions=positions), tolerance=1.0e-6)
 
-    expected_diagonal = torch.full_like(positions, -0.6)
+    # This is the amplitude second derivative, not the constant logabs
+    # second derivative -2*alpha.
+    expected_diagonal = -2.0 * model.alpha + 4.0 * model.alpha**2 * positions.square()
+    expected_kinetic = -0.5 * expected_diagonal.sum(dim=(1, 2))
     assert result.center.logabs.shape == (1,)
     assert set(result.statuses) == {"center_node", "nonfinite_probe", "exceeded_tolerance"}
     assert result.hessian_diagonal.shape == (1, 2, 2)
     assert torch.allclose(result.hessian_diagonal, expected_diagonal, atol=1.0e-6)
-    assert torch.allclose(result.total_kinetic, torch.tensor([1.2], dtype=torch.float64), atol=1.0e-6)
+    assert torch.allclose(result.total_kinetic, expected_kinetic, atol=1.0e-6)
     assert torch.allclose(result.per_electron_kinetic.sum(dim=1), result.total_kinetic, atol=1.0e-12)
     assert torch.all(torch.isfinite(result.error_estimate))
     assert torch.all(torch.isfinite(result.final_step))
