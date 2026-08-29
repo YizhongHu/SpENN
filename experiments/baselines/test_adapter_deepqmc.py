@@ -241,6 +241,10 @@ def _cli_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
     run_dir = tmp_path / "run39411090"
     run_dir.mkdir()
+    (run_dir / "training" / ".hydra").mkdir(parents=True)
+    (run_dir / "training" / ".hydra" / "config.yaml").write_text(
+        "task:\n  seed: 0\n", encoding="utf-8"
+    )
     monkeypatch.setattr(deepqmc, "read_energies", lambda _: list(series))
     return run_dir
 
@@ -631,6 +635,8 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
     values = numpy.asarray(_converged(count=40000), dtype="float32").reshape(-1, 1, 1)
     with h5py.File(run / "result.h5", "w") as handle:
         handle.create_dataset(ENERGY_DATASET, data=values)
+    (run / ".hydra").mkdir()
+    (run / ".hydra" / "config.yaml").write_text("task:\n  seed: 17\n", encoding="utf-8")
     (tmp_path / "job.out").write_text(LOG_TEXT, encoding="utf-8")
 
     record = build_record(
@@ -648,4 +654,53 @@ def test_build_record_end_to_end(tmp_path: Path) -> None:
     assert "last 10000 of 40000 steps" in (record.notes or "")
     assert record.gpu_model == "NVIDIA H200"
     assert record.code_commit == "cafe1234"
+    assert record.seed == 17
     assert record.energy_hartree == pytest.approx(-2.9037, abs=1e-3)
+
+
+def test_build_record_refuses_when_hydra_seed_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deepqmc, "read_energies", lambda _: _converged())
+    with pytest.raises(AdapterError, match="no DeepQMC Hydra config"):
+        build_record(
+            tmp_path,
+            system_id="he_atom",
+            batch_size=4096,
+            ansatz="lapnet",
+        )
+
+
+def test_build_record_refuses_when_hydra_config_has_no_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "training" / ".hydra"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text("task:\n  steps: 200000\n", encoding="utf-8")
+    monkeypatch.setattr(deepqmc, "read_energies", lambda _: _converged())
+
+    with pytest.raises(AdapterError, match="has no task.seed"):
+        build_record(
+            tmp_path,
+            system_id="he_atom",
+            batch_size=4096,
+            ansatz="lapnet",
+        )
+
+
+def test_build_record_refuses_a_supplied_seed_that_contradicts_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "training" / ".hydra"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text("task:\n  seed: 23\n", encoding="utf-8")
+    monkeypatch.setattr(deepqmc, "read_energies", lambda _: _converged())
+
+    with pytest.raises(AdapterError, match="supplied seed 7 contradicts run config seed 23"):
+        build_record(
+            tmp_path,
+            system_id="he_atom",
+            batch_size=4096,
+            ansatz="lapnet",
+            seed=7,
+        )
