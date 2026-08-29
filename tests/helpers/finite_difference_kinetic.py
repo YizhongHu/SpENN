@@ -123,12 +123,13 @@ def finite_difference_kinetic(
             order=order,
             full_output=True,
         )
-        values, info = differentiator(flat.positions[sample].reshape(-1).numpy())
+        result = differentiator(flat.positions[sample].reshape(-1).numpy())
+        values = result.estimate
         if nonfinite_probe[sample] or not np.all(np.isfinite(values)):
             nonfinite_probe[sample] = True
             continue
-        error = np.asarray(info.error_estimate, dtype=np.float64).reshape(-1)
-        final_step = np.asarray(info.final_step, dtype=np.float64).reshape(-1)
+        error = np.asarray(result.error_estimate, dtype=np.float64).reshape(-1)
+        final_step = np.asarray(result.final_step, dtype=np.float64).reshape(-1)
         if error.size != n_electrons * spatial_dim or final_step.size != error.size:
             raise AssertionError("Numdifftools Hessdiag returned an unexpected diagnostic shape")
         hessian[sample] = torch.from_numpy(np.asarray(values, dtype=np.float64).reshape(shape[1:]))

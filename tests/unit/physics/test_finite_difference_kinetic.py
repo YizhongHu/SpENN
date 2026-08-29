@@ -51,12 +51,18 @@ class NonfiniteProbeModel(nn.Module):
 def test_numdifftools_full_output_contract_is_pinned() -> None:
     assert nd.__version__ == "0.10.1"
     hessdiag = nd.Hessdiag(lambda x: np.sum(x**2), full_output=True)
-    values, info = hessdiag(np.array([1.0, 2.0], dtype=np.float64))
+    result = hessdiag(np.array([1.0, 2.0], dtype=np.float64))
 
-    assert type(info).__name__ == "EstimateResult"
-    assert np.asarray(values).shape == (2,)
-    assert np.asarray(info.error_estimate).shape == (2,)
-    assert np.asarray(info.final_step).shape == (2,)
+    assert type(result).__name__ == "EstimateResult"
+    assert type(result)._fields == ("estimate", "error_estimate", "final_step", "best_index")
+    assert np.asarray(result.estimate).shape == (2,)
+    assert np.asarray(result.error_estimate).shape == (2,)
+    assert np.asarray(result.final_step).shape == (2,)
+    assert np.asarray(result.best_index).shape == (2,)
+    plain = nd.Hessdiag(lambda x: np.sum(x**2))(np.array([1.0, 2.0], dtype=np.float64))
+    assert type(plain) is np.ndarray
+    assert plain.shape == (2,)
+    assert np.allclose(result.estimate, [2.0, 2.0])
 
 
 def test_gaussian_oracle_returns_hessian_kinetic_and_diagnostics() -> None:
