@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 import torch
 
 from tpen.data import AtomicConfiguration
-from tpen.evaluation.calculators.local_energy import LocalEnergyCalculator
+from tpen.data.batch import ElectronBatch
+from tpen.evaluation.calculators.local_energy import (
+    LocalEnergyCalculator,
+    evaluate_local_energy_in_chunks,
+)
 from tpen.evaluation import Evaluator
 from tpen.runner.evaluate import Evaluate
 from tpen.nn.cusp import ElectronNucleusCusp
-from tpen.physics.hamiltonian import AnalyticCuspEvaluator, NaiveLocalEnergyEvaluator
+from tpen.physics.hamiltonian import (
+    AnalyticCuspEvaluator,
+    LocalEnergyResult,
+    NaiveLocalEnergyEvaluator,
+)
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import ElectronNucleusPotential
 
@@ -44,6 +54,12 @@ class _Backend:
     def __init__(self, evaluator_id):
         self.evaluator_id = evaluator_id
 
+    def make_context(self, wavefunction, batch):
+        return (wavefunction, batch)
+
+    def validate_for_generator(self, terms, wavefunction, generator):
+        del terms, wavefunction, generator
+
     def evaluate(self, terms, context, *, return_terms=False):
         """Conform to the evaluator protocol; the gate runs before execution."""
 
@@ -62,6 +78,41 @@ class _LocalEnergy:
 
     def __init__(self, evaluator_id):
         self.evaluator = _Backend(evaluator_id)
+
+
+@dataclass(frozen=True)
+class _ThirdContext:
+    """A test-only context proving the chunker has no closed evaluator list."""
+
+    wavefunction: object
+    batch: ElectronBatch
+
+
+class _ThirdEvaluator:
+    """Structural LocalEnergyEvaluator implementation unknown to TPEN core."""
+
+    evaluator_id = "test_third/v1"
+
+    def make_context(self, wavefunction: object, batch: ElectronBatch) -> _ThirdContext:
+        return _ThirdContext(wavefunction=wavefunction, batch=batch)
+
+    def validate_for_generator(self, terms, wavefunction: object, generator: object) -> None:
+        del terms, wavefunction, generator
+
+    def evaluate(
+        self, terms, context: _ThirdContext, *, return_terms: bool = False
+    ) -> torch.Tensor | LocalEnergyResult:
+        if not isinstance(context, _ThirdContext):
+            raise TypeError("_ThirdEvaluator requires _ThirdContext")
+        del terms
+        total = torch.full(
+            (context.batch.flatten_samples().batch_size,),
+            7.0,
+            dtype=context.batch.positions.dtype,
+        )
+        if return_terms:
+            return LocalEnergyResult(total=total, terms={"third": total})
+        return total
 
 
 def test_trajectory_rejects_generator_calculator_backend_mismatch() -> None:
@@ -102,6 +153,23 @@ def test_calculator_defaults_to_naive_and_opt_in_is_explicit() -> None:
     # terms would make this explicit-construction pin fail.
     assert default.evaluator is not analytic.evaluator
     assert atoms.n_nuclei == terms["electron_nucleus"].atoms.n_nuclei
+
+
+def test_chunking_delegates_context_creation_to_protocol_only_evaluator() -> None:
+    batch = torch.zeros((5, 2, 3), dtype=torch.float64)
+    evaluator = _ThirdEvaluator()
+
+    result = evaluate_local_energy_in_chunks(
+        {},
+        wavefunction=object(),
+        batch=ElectronBatch(positions=batch),
+        chunk_size=2,
+        evaluator=evaluator,
+    )
+
+    # A production edit that restores concrete evaluator dispatch or bypasses
+    # make_context makes this structural third backend fail before this value.
+    torch.testing.assert_close(result, torch.full((5,), 7.0, dtype=torch.float64))
 
 
 def test_analytic_calculator_preflight_rejects_missing_capability() -> None:

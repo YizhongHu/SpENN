@@ -142,9 +142,8 @@ class TrajectoryMCMCGenerator:
         """Validate configured evaluator eligibility before trajectory collection."""
 
         del generator
-        validate = getattr(self.evaluator, "validate_for_generator", None)
-        if callable(validate):
-            validate(self.hamiltonian_terms, model, self)
+        if self.evaluator is not None:
+            self.evaluator.validate_for_generator(self.hamiltonian_terms, model, self)
 
     def generate(
         self,

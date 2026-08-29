@@ -178,6 +178,18 @@ class LocalEnergyEvaluator(Protocol, Generic[ContextT]):
     optimized evaluator.
     """
 
+    evaluator_id: str
+
+    def make_context(self, wavefunction: object, batch: ElectronBatch) -> ContextT:
+        """Build this evaluator's typed context for one evaluation chunk."""
+        ...
+
+    def validate_for_generator(
+        self, terms: Mapping[Any, Any] | Sequence[Any], wavefunction: object, generator: object
+    ) -> None:
+        """Validate static evaluator eligibility before generator execution."""
+        ...
+
     def evaluate(
         self,
         terms: Mapping[Any, Any] | Sequence[Any],
@@ -200,6 +212,18 @@ class NaiveLocalEnergyEvaluator(LocalEnergyEvaluator[NaiveLocalEnergyContext]):
     """
 
     evaluator_id = "naive/v1"
+
+    def make_context(self, wavefunction: object, batch: ElectronBatch) -> NaiveLocalEnergyContext:
+        """Build the typed context consumed by the naive evaluator."""
+
+        return NaiveLocalEnergyContext(wavefunction=wavefunction, batch=batch)
+
+    def validate_for_generator(
+        self, terms: Mapping[Any, Any] | Sequence[Any], wavefunction: object, generator: object
+    ) -> None:
+        """Declare that the reference evaluator has no generator preflight."""
+
+        del terms, wavefunction, generator
 
     def evaluate(
         self,
@@ -272,6 +296,11 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
 
     fused_term_name = "kinetic_plus_electron_nucleus"
     evaluator_id = "analytic_cusp/v1"
+
+    def make_context(self, wavefunction: object, batch: ElectronBatch) -> AnalyticCuspContext:
+        """Build the typed context consumed by the analytic evaluator."""
+
+        return AnalyticCuspContext(wavefunction=wavefunction, batch=batch)
 
     def validate(
         self,
@@ -588,6 +617,12 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
 _NAIVE_EVALUATOR = NaiveLocalEnergyEvaluator()
 
 
+def default_local_energy_evaluator() -> LocalEnergyEvaluator:
+    """Return the process-wide default naive evaluator."""
+
+    return _NAIVE_EVALUATOR
+
+
 def local_energy(
     terms: Mapping[Any, Any] | Sequence[Any],
     wavefunction,
@@ -795,6 +830,7 @@ __all__ = [
     "NaiveLocalEnergyEvaluator",
     "AnalyticCuspContext",
     "AnalyticCuspEvaluator",
+    "default_local_energy_evaluator",
     "local_energy",
     "normalize_hamiltonian_terms",
     "summarize_local_energy",
