@@ -46,7 +46,7 @@ from experiments.toolkit.artifacts import (  # noqa: E402
     read_csv as _read_csv,
     write_csv as _write_csv_columns,
 )
-from tpen.physics.virial import derive_virial_metrics
+from experiments.toolkit.virial import derive_virial_metrics
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0

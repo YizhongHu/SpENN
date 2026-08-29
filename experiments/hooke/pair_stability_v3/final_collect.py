@@ -61,7 +61,7 @@ from experiments.toolkit.cost import (  # noqa: E402
     cost_by_run_row,
     cost_by_task_rows,
 )
-from tpen.physics.virial import derive_virial_metrics
+from experiments.toolkit.virial import derive_virial_metrics
 
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"
 EXACT_HOOKE_ENERGY = 2.0

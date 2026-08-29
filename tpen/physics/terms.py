@@ -29,9 +29,9 @@ def summarize_physical_terms(terms: Mapping[str, torch.Tensor]) -> dict[str, Any
     Returns
     -------
     dict
-        Mean and population variance for each physical term, followed by the
-        virial residual and relative residual. Missing or empty terms produce
-        ``None`` for the derived values.
+        The virial residual and relative residual. Missing or empty terms
+        produce ``None`` for the derived values; term means and variances are
+        owned by :class:`HamiltonianTermSummary`.
     """
 
     values: dict[str, float | None] = {}

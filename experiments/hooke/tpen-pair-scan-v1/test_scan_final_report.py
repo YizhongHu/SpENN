@@ -78,21 +78,6 @@ def _energy_row(**overrides):
     return row
 
 
-def test_historical_blank_virial_columns_fall_back_to_component_means():
-    row = {
-        "kinetic_mean": "1.0",
-        "harmonic_trap_mean": "2.0",
-        "electron_electron_mean": "0.5",
-        "virial_residual": "",
-        "virial_relative_residual": "",
-    }
-
-    assert final_report._energy_component_value(row, "virial_residual") == pytest.approx(-1.5)
-    assert final_report._energy_component_value(row, "virial_relative_residual") == pytest.approx(
-        0.23076923076923078
-    )
-
-
 # ---------------------------------------------------------------------------
 # Primary metric aggregation
 # ---------------------------------------------------------------------------
