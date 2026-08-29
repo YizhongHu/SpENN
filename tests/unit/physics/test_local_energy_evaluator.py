@@ -170,24 +170,28 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
     # A production edit that differentiates the cusp-free output incorrectly,
     # or adds Coulomb separately, changes this exact hydrogenic value.
     torch.testing.assert_close(result.total, torch.full((1,), -0.5, dtype=_DTYPE))
-    assert list(result.terms) == ["analytic_cusp"]
+    assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
     assert result.wavefunction_output is not None
     torch.testing.assert_close(result.wavefunction_output.logabs, torch.tensor([-0.4], dtype=_DTYPE))
     assert result.wavefunction_output.aux == {"source": "regular"}
 
 
 def test_analytic_evaluator_skips_participants_and_runs_custom_terms_once() -> None:
-    counting = _CountingTerm(2.25)
+    before = _CountingTerm(2.25)
+    after = _CountingTerm(-0.75)
     atoms, wavefunction, batch, _ = _analytic_setup()
     terms = {
-        "first": counting,
+        "before": before,
         "kinetic": _BombKinetic(),
         "electron_nucleus": _BombPotential(atoms, eps=0.0),
+        "after": after,
     }
     result = AnalyticCuspEvaluator().evaluate(terms, AnalyticCuspContext(wavefunction, batch), return_terms=True)
-    assert counting.calls == 1
-    assert list(result.terms) == ["first", "analytic_cusp"]
-    torch.testing.assert_close(result.total, torch.tensor([1.75], dtype=_DTYPE))
+    assert before.calls == 1
+    assert after.calls == 1
+    assert list(result.terms) == ["before", "kinetic_plus_electron_nucleus", "after"]
+    expected_total = sum(result.terms.values())
+    torch.testing.assert_close(result.total, expected_total)
 
 
 @pytest.mark.parametrize(

@@ -259,7 +259,7 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
     invalid domain is an error, never a reason to silently change evaluators.
     """
 
-    fused_term_name = "analytic_cusp"
+    fused_term_name = "kinetic_plus_electron_nucleus"
 
     def evaluate(
         self,
@@ -400,7 +400,7 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
             if isinstance(term, (KineticEnergy, ElectronNucleusPotential)):
                 if not inserted:
                     decomposition[self.fused_term_name] = fused
-                    total = fused
+                    total = fused if total is None else total + fused
                     inserted = True
                 continue
             result = _validate_local_energy_result(
