@@ -6,15 +6,50 @@ import pytest
 import torch
 
 from tpen.data import AtomicConfiguration
-from tpen.data.batch import ElectronBatch
+from tpen.data.batch import ElectronBatch, electron_nuclear_distances, nuclear_potential, pairwise_distances
 from tpen.data.permutation import Permutation
 from tpen.physics.hamiltonian import LocalEnergyResult, local_energy
 from tpen.physics.potential import (
+    ElectronElectronInteraction,
     ElectronNucleusInteraction,
     ElectronNucleusPotential,
     NucleusNucleusInteraction,
     NucleusNucleusPotential,
 )
+
+
+def test_analytic_distance_surfaces_default_unfloored_and_retain_explicit_eps() -> None:
+    positions = torch.tensor([[[0.0], [0.0]]], dtype=torch.float64)
+    batch = ElectronBatch(
+        positions=positions,
+        nuclear_positions=torch.tensor([[0.0]], dtype=torch.float64),
+        nuclear_charges=torch.tensor([1.0], dtype=torch.float64),
+    )
+    potential_batch = ElectronBatch(
+        positions=positions[:, :1],
+        nuclear_positions=batch.nuclear_positions,
+        nuclear_charges=batch.nuclear_charges,
+    )
+
+    # A default change away from 0.0 would make coincident ee distances finite.
+    assert pairwise_distances(positions)[0, 0, 1, 0].item() == 0.0
+    # The compatibility kwarg must still control the explicit ee floor.
+    assert pairwise_distances(positions, eps=0.25)[0, 0, 1, 0].item() == 0.25
+    # A default change away from 0.0 would make coincident en distances finite.
+    assert electron_nuclear_distances(batch)[0, 0, 0].item() == 0.0
+    # The compatibility kwarg must still control the explicit en floor.
+    assert electron_nuclear_distances(batch, eps=0.25)[0, 0, 0].item() == 0.25
+    # The potential must remain genuinely unfloored by default at coincidence.
+    assert torch.isinf(nuclear_potential(potential_batch)).all()
+    # The explicit floor must still reach the potential denominator.
+    assert nuclear_potential(potential_batch, eps=0.25).item() == 4.0
+    # Both potential constructors must expose the new analytic default.
+    assert ElectronElectronInteraction().eps == 0.0
+    assert ElectronNucleusInteraction().eps == 0.0
+    # Explicit constructor eps values must remain observable compatibility
+    # inputs rather than being discarded by the default migration.
+    assert ElectronElectronInteraction(eps=0.25).eps == 0.25
+    assert ElectronNucleusInteraction(eps=0.25).eps == 0.25
 
 
 def _atoms(nuclei, charges, dtype=torch.float64) -> AtomicConfiguration:
@@ -43,6 +78,12 @@ def test_electron_nucleus_potential_matches_hand_calculation() -> None:
     batch = ElectronBatch(positions=positions)
 
     result = ElectronNucleusPotential(atoms).local_energy(None, batch)
+
+    # The constructor-owned en potential must use the analytic unfloored
+    # default; changing that production default would fail this assertion.
+    assert ElectronNucleusPotential(atoms).eps == 0.0
+    # The canonical constructor must retain an explicit compatibility floor.
+    assert ElectronNucleusPotential(atoms, eps=0.25).eps == 0.25
 
     expected = -(
         atoms.charges.view(1, 1, -1)
@@ -259,7 +300,7 @@ def test_h2_electron_nucleus_potential_raw_exact_zero_boundary_at_one_nucleus() 
     assert (result.total < 0).all()
 
 
-def test_h2_electron_nucleus_potential_default_eps_floor_matches_hand_calculation_at_coincidence() -> None:
+def test_h2_electron_nucleus_potential_explicit_eps_floor_matches_hand_calculation_at_coincidence() -> None:
     atoms = _h2_atoms()
     positions = atoms.positions[0].clone().view(1, 1, 3)
     batch = ElectronBatch(positions=positions)

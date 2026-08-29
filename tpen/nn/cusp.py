@@ -547,7 +547,30 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
         Whether to optimize the range parameters through a softplus
         parametrization.
     eps : float, optional
-        Numerical distance floor and positivity offset.
+        Distance floor retained for backwards compatibility. The default is
+        the analytic unfloored distance (``0.0``). A non-zero value is
+        unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+    range_eps : float, optional
+        Independent positive offset for the softplus range parametrization.
+        Defaults effectively to ``1e-12`` so range parameters remain strictly
+        positive when ``eps=0.0``. For backwards compatibility, an old-style
+        call that supplies a non-zero ``eps`` and omits ``range_eps`` uses
+        that value for both historical roles; pass ``range_eps`` explicitly to
+        opt out of that coupling.
+
+    Warning
+    -------
+    The electron-nucleus measurement found ``E(r; eps) = Z/r - Z/eps -
+    Z^2/2`` for ``0 < r < eps`` across three eps scales and three directions,
+    with normalized error <= ``1.11e-16``. The electron-electron finite-eps
+    case is UNMEASURED; identical clamps might yield a constant offset rather
+    than a divergence, but this has not been tested and must not be assumed
+    benign.
     """
 
     def __init__(
@@ -560,7 +583,8 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
         same_range_parameter: float | None = None,
         opposite_range_parameter: float | None = None,
         trainable_range: bool = False,
-        eps: float = 1e-12,
+        eps: float = 0.0,
+        range_eps: float | None = None,
     ) -> None:
         super().__init__(enabled=enabled)
         self.same_spin_coefficient = float(same_spin_coefficient)
@@ -569,12 +593,18 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
             spinless_coefficient = same_spin_coefficient
         self.spinless_coefficient = float(spinless_coefficient)
         self.trainable_range = bool(trainable_range)
-        self.eps = eps
+        self.eps = float(eps)
+        if range_eps is None:
+            # Preserve the old single-eps behavior for explicit non-zero
+            # calls, while the new default keeps a fixed positivity offset.
+            self.range_eps = self.eps if self.eps != 0.0 else 1.0e-12
+        else:
+            self.range_eps = float(range_eps)
         same_range = range_parameter if same_range_parameter is None else same_range_parameter
         opposite_range = range_parameter if opposite_range_parameter is None else opposite_range_parameter
         if self.trainable_range:
-            self.raw_same_range = nn.Parameter(_inverse_softplus(float(same_range) - eps))
-            self.raw_opposite_range = nn.Parameter(_inverse_softplus(float(opposite_range) - eps))
+            self.raw_same_range = nn.Parameter(_inverse_softplus(float(same_range) - self.range_eps))
+            self.raw_opposite_range = nn.Parameter(_inverse_softplus(float(opposite_range) - self.range_eps))
         else:
             self.register_buffer("same_range", torch.tensor(float(same_range)), persistent=False)
             self.register_buffer("opposite_range", torch.tensor(float(opposite_range)), persistent=False)
@@ -584,7 +614,7 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
         """Return the positive same-spin range parameter."""
 
         if self.trainable_range:
-            return F.softplus(self.raw_same_range) + self.eps
+            return F.softplus(self.raw_same_range) + self.range_eps
         return self.same_range
 
     @property
@@ -592,7 +622,7 @@ class ElectronElectronCusp(Envelope, LogAmplitudeFactor):
         """Return the positive opposite-spin range parameter."""
 
         if self.trainable_range:
-            return F.softplus(self.raw_opposite_range) + self.eps
+            return F.softplus(self.raw_opposite_range) + self.range_eps
         return self.opposite_range
 
     def scalar_diagnostics(self) -> dict[str, float]:

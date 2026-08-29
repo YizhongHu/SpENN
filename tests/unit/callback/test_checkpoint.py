@@ -170,7 +170,7 @@ def _write_replay_checkpoint(
             electron_electron_distance_form="sqrt_squared_distance_plus_eps_squared",
             electron_electron_distance_eps=cusp.eps,
             electron_electron_range_offset_form="softplus_plus_eps",
-            electron_electron_range_offset_eps=cusp.eps,
+            electron_electron_range_offset_eps=cusp.range_eps,
             electron_nucleus_coulomb_distance_form="euclidean_norm_clamp_min_eps",
             electron_nucleus_coulomb_distance_eps=0.0,
         ),

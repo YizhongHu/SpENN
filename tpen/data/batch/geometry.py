@@ -99,7 +99,7 @@ def pairwise_displacements(positions: torch.Tensor) -> torch.Tensor:
     return positions.unsqueeze(2) - positions.unsqueeze(1)
 
 
-def pairwise_distances(positions: torch.Tensor, eps: float = 1.0e-12) -> torch.Tensor:
+def pairwise_distances(positions: torch.Tensor, eps: float = 0.0) -> torch.Tensor:
     """Return pairwise distances with a differentiable numerical floor.
 
     Parameters
@@ -107,8 +107,12 @@ def pairwise_distances(positions: torch.Tensor, eps: float = 1.0e-12) -> torch.T
     positions : torch.Tensor
         Tensor with shape ``[batch, n_electrons, spatial_dim]``.
     eps : float, optional
-        Positive distance floor. If nonzero, distances are
-        ``sqrt(||r_i - r_j||^2 + eps^2)``.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent with cusp factors and Coulomb
+        potentials, yielding a hybrid Hamiltonian: a clipped potential
+        evaluated with the boundary condition of an unclipped Coulomb
+        potential. Inspect and validate before use; finite-eps
+        electron-electron behaviour is UNMEASURED.
 
     Returns
     -------
@@ -169,7 +173,7 @@ def electron_nuclear_displacements(
 
 def electron_nuclear_distances(
     batch: ElectronBatch,
-    eps: float = 1.0e-12,
+    eps: float = 0.0,
     nuclear_positions: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Return electron-nuclear distances with a numerical floor.
@@ -179,7 +183,12 @@ def electron_nuclear_distances(
     batch : ElectronBatch
         Electron batch containing positions and nuclear coordinates.
     eps : float, optional
-        Minimum returned distance.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent with the cusp factor and Coulomb
+        potential, yielding a hybrid Hamiltonian: a clipped potential evaluated
+        with the boundary condition of an unclipped Coulomb potential. Inspect
+        and validate before use; finite-eps electron-electron behaviour is
+        UNMEASURED.
     nuclear_positions : torch.Tensor or None, optional
         Nuclear coordinates overriding `batch.nuclear_positions`.
 
@@ -198,7 +207,7 @@ def electron_nuclear_distances(
     return electron_nuclear_displacements(batch, nuclear_positions=nuclear_positions).norm(dim=-1).clamp_min(eps)
 
 
-def nuclear_potential(batch: ElectronBatch, eps: float = 1.0e-12) -> torch.Tensor:
+def nuclear_potential(batch: ElectronBatch, eps: float = 0.0) -> torch.Tensor:
     """Return ``sum_A Z_A / |r_i - R_A|`` for each electron.
 
     Parameters
@@ -208,7 +217,15 @@ def nuclear_potential(batch: ElectronBatch, eps: float = 1.0e-12) -> torch.Tenso
         charges. Nuclear data may be shared or sampled with the electron
         positions.
     eps : float, optional
-        Minimum electron-nuclear distance used in the denominator.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before use.
+        Measurement found
+        ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps`` across three
+        eps scales and three directions, with normalized error <= ``1.11e-16``;
+        electron-electron finite-eps behaviour is UNMEASURED.
 
     Returns
     -------
