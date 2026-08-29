@@ -60,19 +60,31 @@ fi
 test -n "${PBS_JOBID:-}" || { echo "REFUSING: not running under PBS"; exit 2; }
 JOB="${PBS_JOBID%%.*}"
 D="$OUT_ROOT/deepqmc-polaris-verify-$MODE-$JOB"
+# The restart guard must key on the JOB IDENTITY ALONE. Keying it on $D made it
+# bypassable: $D is derived from TPEN_DQMC_MODE and TPEN_DQMC_OUT, both settable
+# per submission, so the same job id under a different MODE wrote to a different
+# directory and found no marker. A guard whose scope is attacker-controlled --
+# or, more likely here, controlled by whoever is retrying and wants it to work --
+# is not a guard. This path depends on nothing but the job id.
+GUARD="$OUT_ROOT/.deepqmc-verify-guard-$JOB"
 
 # --- Restart guard -----------------------------------------------------------
 # If this directory already carries a start marker, this is a second entry into
 # the same job id: a requeue. Refuse loudly. A restarted stochastic run must
 # never quietly resume or overwrite, because the resulting record looks exactly
 # like a clean one.
-if [ -e "$D/STARTED" ]; then
-    echo "REFUSING: $D/STARTED already exists -- this job has been requeued and restarted."
+# --- BEGIN RESTART GUARD (extracted and executed by test_polaris_verify_pbs.py;
+# --- the test runs THIS text, so a mutation here changes what the test runs)
+if [ -e "$GUARD" ]; then
+    echo "REFUSING: $GUARD already exists -- job id $JOB has run before."
+    echo "This is a requeue or a resubmission under changed parameters."
     echo "Existing evidence is left untouched. Investigate before rerunning."
     exit 9
 fi
-mkdir -p "$D"
-date -Iseconds > "$D/STARTED"
+mkdir -p "$D" "$(dirname "$GUARD")"
+date -Iseconds > "$GUARD"
+cp "$GUARD" "$D/STARTED"
+# --- END RESTART GUARD
 
 # Record a teardown POSITIVELY rather than leaving it as an absence.
 # Measured on Polaris (PBS 7571815): when PALS mpiexec aborts a job because one
@@ -250,7 +262,18 @@ else
 fi
 echo "row rc=$RC elapsed_s=$ROW_ELAPSED"
 if [ "$STEPS" -gt 0 ] && [ "$ROW_ELAPSED" -gt 0 ]; then
-    echo "measured_steps_per_second=$(awk -v s="$STEPS" -v t="$ROW_ELAPSED" 'BEGIN{printf "%.3f", s/t}')"
+    RATE=$(awk -v s="$STEPS" -v t="$ROW_ELAPSED" 'BEGIN{printf "%.3f", s/t}')
+    echo "measured_steps_per_second=$RATE"
+    # ACT on it, at a threshold loose enough to catch only a gross anomaly. This
+    # is an AMORTISED rate including compile and pretrain, so it is NOT the
+    # marginal throughput and must not be compared against one; the floor exists
+    # to catch a pathologically slow run, not to grade performance. Cannon's
+    # amortised rate on the same shape was ~8.5 steps/s and Polaris measured
+    # 8.467; a tenth of that means something is badly wrong.
+    if awk -v r="$RATE" 'BEGIN{exit !(r < 0.85)}'; then
+        echo "ANOMALOUS_THROUGHPUT: $RATE steps/s is under 10% of the expected amortised rate"
+        exit 6
+    fi
 fi
 
 RESULT="$RD/training/result.h5"
@@ -297,8 +320,16 @@ fi
 # provenance after the row. Its gpu_memory block carries its own warning saying
 # so. The row's figure is the sampled one above.
 echo "=== post-row environment re-check (provenance, NOT the row's memory)"
+# MUST NOT REPLACE THE ROW'S STATUS. Under `set -e` a failure here aborted the
+# script with ITS OWN exit code, discarding a non-zero RC from the row -- so a
+# failed row followed by a failed post-check would have reported the post-check's
+# reason. The row's outcome is the result; this is provenance.
+set +e
 "$VENV/bin/python" -m experiments.baselines.check_polaris_deepqmc_env env \
     --expect-prefix "$VENV" --expect-jax 0.8.3 | tee "$D/env-check-post.json"
+POST_RC=$?
+set -e
+echo "post_check_rc=$POST_RC (informational; does not override row rc=$RC)"
 
 echo "=== end=$(date -Iseconds) rc=$RC"
 date -Iseconds > "$D/FINISHED"

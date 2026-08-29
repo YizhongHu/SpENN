@@ -177,11 +177,50 @@ def loaded_cuda_libraries() -> dict[str, str]:
     maps = Path("/proc/self/maps")
     if not maps.is_file():
         return {}
-    interesting = ("libcudart", "libcublas", "libcudnn", "libcufft", "libcusolver", "libnvrtc")
+    return parse_proc_maps(maps.read_text())
+
+
+#: Shared-object prefixes worth recording from a process memory map.
+CUDA_SONAME_PREFIXES = (
+    "libcudart",
+    "libcublas",
+    "libcudnn",
+    "libcufft",
+    "libcusolver",
+    "libnvrtc",
+)
+
+
+def parse_proc_maps(text: str) -> dict[str, str]:
+    """Extract CUDA shared-object mappings from ``/proc/self/maps`` content.
+
+    Split out as a pure function so it is testable on a machine without
+    ``/proc``. It previously lived inline and survived a mutation
+    (``startswith`` to ``endswith``) undetected, because the only test that could
+    run off-Linux asserted the return TYPE and never the parsing.
+
+    Parameters
+    ----------
+    text : str
+        Contents of a ``/proc/<pid>/maps`` file.
+
+    Returns
+    -------
+    dict of str to str
+        Library soname to the resolved path it was first mapped from.
+    """
+    interesting = CUDA_SONAME_PREFIXES
     found: dict[str, str] = {}
-    for line in maps.read_text().splitlines():
-        # Path is the last whitespace-separated field, when present at all.
-        path = line.rsplit(" ", 1)[-1]
+    for line in text.splitlines():
+        # /proc/self/maps is `address perms offset dev inode pathname`, and the
+        # PATHNAME MAY CONTAIN SPACES. Taking the last whitespace-separated field
+        # silently dropped any library under a path like "/opt/cuda libs/",
+        # reporting {} rather than an error -- an absent mapping that reads as
+        # "nothing loaded". Split on the fixed five leading fields instead.
+        fields = line.split(maxsplit=5)
+        if len(fields) < 6:
+            continue
+        path = fields[5]
         if not path.startswith("/"):
             continue
         name = path.rsplit("/", 1)[-1]
@@ -323,8 +362,22 @@ def check_env(
     root = source_root
     if root is None:
         # An editable install leaves __file__ inside the checkout, so walking up
-        # from the package directory finds the source root.
-        root = Path(deepqmc.__file__).resolve().parents[2]
+        # from the package directory finds the source root. A NON-editable or
+        # unusually shallow install may have fewer than three parents, which
+        # previously raised IndexError BEFORE the provenance try block -- so the
+        # function failed to produce the report it promises, for a reason that
+        # has nothing to do with the environment being wrong.
+        parents = Path(deepqmc.__file__).resolve().parents
+        root = parents[2] if len(parents) > 2 else None
+    if root is None:
+        report["deepqmc_source"] = {
+            "root": None,
+            "error": (
+                f"cannot derive a source root from {deepqmc.__file__!r}: fewer than "
+                "three parent directories. Pass --source-root explicitly."
+            ),
+        }
+        root = Path(deepqmc.__file__)  # keep the commit assertion below meaningful
     try:
         report["deepqmc_source"] = {"root": str(root), **_git_commit(root)}
     except (subprocess.CalledProcessError, OSError) as exc:
@@ -386,7 +439,20 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
         raise EnvCheckError(f"no Hydra config at {config_path}")
 
     text = config_path.read_text()
-    parsed = yaml.safe_load(text)
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        # Callers catch EnvCheckError. A raw ParserError escaping here reaches
+        # main's broad handler and is reported, but a DIRECT caller of read_seed
+        # gets an exception type the function never documents.
+        raise EnvCheckError(f"{config_path} is not valid YAML: {exc}") from exc
+    if parsed is not None and not isinstance(parsed, dict):
+        # A valid top-level list or string previously raised AttributeError from
+        # .get() -- a type error masquerading as a bug rather than as bad input.
+        raise EnvCheckError(
+            f"{config_path} is valid YAML but its top level is "
+            f"{type(parsed).__name__}, not a mapping"
+        )
     task = (parsed or {}).get("task")
     if not isinstance(task, dict) or "seed" not in task:
         raise EnvCheckError(
@@ -406,6 +472,7 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
     line_number: int | None = None
     raw_line: str | None = None
     in_task = False
+    seed_line_count = 0
     for index, line in enumerate(lines, start=1):
         if line.startswith("task:"):
             in_task = True
@@ -415,9 +482,22 @@ def read_seed(run_dir: Path) -> dict[str, Any]:
             if line and not line[0].isspace():
                 break
             if line.strip().startswith("seed:"):
-                line_number = index
-                raw_line = line
-                break
+                seed_line_count += 1
+                if line_number is None:
+                    line_number = index
+                    raw_line = line
+
+    # yaml.safe_load silently keeps the LAST duplicate key while the raw-line scan
+    # above quotes the FIRST, so a duplicated `seed:` produced a value and a
+    # quoted line that DISAGREE, with no error. Since the whole point of this
+    # function is to quote the file as evidence, contradictory evidence is worse
+    # than no evidence.
+    if seed_line_count > 1:
+        raise EnvCheckError(
+            f"{config_path} has {seed_line_count} `seed:` lines inside the top-level "
+            "task block; YAML keeps the last and the quoted line would be the first, "
+            "so the reported value and its evidence would disagree"
+        )
 
     return {
         "config_path": str(config_path),

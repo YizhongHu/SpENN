@@ -30,6 +30,7 @@ from experiments.baselines.check_polaris_deepqmc_env import (
     backend_platform_version,
     compare_energy,
     loaded_cuda_libraries,
+    parse_proc_maps,
     read_seed,
 )
 
@@ -680,3 +681,68 @@ def test_degenerate_inputs_never_reach_the_permissive_branch() -> None:
     ]
     for kwargs in degenerate:
         assert compare_energy(**kwargs)["verdict"] == "broken", kwargs
+
+
+# --- Second verifier's findings ---------------------------------------------
+
+
+MAPS_SAMPLE = """\
+7f0e00000000-7f0e00021000 r--p 00000000 08:01 1234 /usr/lib/x86_64-linux-gnu/libc.so.6
+7f0e10000000-7f0e10a00000 r-xp 00000000 08:01 5678 /venv/site-packages/nvidia/cuda_runtime/lib/libcudart.so.12
+7f0e20000000-7f0e21000000 r-xp 00000000 08:01 9012 /opt/cuda libs/libcublas.so.12
+7f0e30000000-7f0e31000000 rw-p 00000000 00:00 0 [heap]
+7f0e40000000-7f0e41000000 r-xp 00000000 08:01 3456 /venv/site-packages/nvidia/cudnn/lib/libcudnn.so.9
+"""
+
+
+def test_maps_parser_finds_cuda_libraries() -> None:
+    found = parse_proc_maps(MAPS_SAMPLE)
+    assert found["libcudart.so.12"].endswith("/nvidia/cuda_runtime/lib/libcudart.so.12")
+    assert found["libcudnn.so.9"].endswith("/nvidia/cudnn/lib/libcudnn.so.9")
+    # libc is not a CUDA library and must not be collected.
+    assert not any(k.startswith("libc.so") for k in found)
+
+
+def test_maps_parser_handles_a_path_containing_a_space() -> None:
+    """A mapped path with a space was silently DROPPED, reporting {} not an error.
+
+    /proc/self/maps is `address perms offset dev inode pathname` and the pathname
+    may contain spaces, so taking the last whitespace-separated field loses it.
+    An absent mapping reads as "nothing loaded", which is the reassuring
+    direction.
+    """
+    found = parse_proc_maps(MAPS_SAMPLE)
+    assert found["libcublas.so.12"] == "/opt/cuda libs/libcublas.so.12"
+
+
+def test_maps_parser_ignores_anonymous_and_pseudo_mappings() -> None:
+    assert parse_proc_maps("7f0e30000000-7f0e31000000 rw-p 00000000 00:00 0 [heap]\n") == {}
+    assert parse_proc_maps("7f0e30000000-7f0e31000000 rw-p 00000000 00:00 0\n") == {}
+
+
+def test_invalid_yaml_raises_env_check_error_not_a_parser_error(tmp_path: Path) -> None:
+    """Callers catch EnvCheckError; a raw yaml.ParserError is undocumented here."""
+    run_dir = _run_dir(tmp_path, "task:\n  seed: [unclosed\n")
+    with pytest.raises(EnvCheckError, match="not valid YAML"):
+        read_seed(run_dir)
+
+
+def test_a_non_mapping_top_level_is_an_error_not_an_attribute_error(tmp_path: Path) -> None:
+    """A valid top-level list previously raised AttributeError from .get()."""
+    run_dir = _run_dir(tmp_path, "- one\n- two\n")
+    with pytest.raises(EnvCheckError, match="not a mapping"):
+        read_seed(run_dir)
+
+
+def test_duplicate_seed_keys_are_refused_rather_than_reported_inconsistently(
+    tmp_path: Path,
+) -> None:
+    """YAML keeps the LAST duplicate; the raw-line scan quotes the FIRST.
+
+    So a duplicated key produced a value and a quoted line that DISAGREE, with no
+    error. For a function whose whole purpose is to quote the file as evidence,
+    contradictory evidence is worse than none.
+    """
+    run_dir = _run_dir(tmp_path, "task:\n  seed: 1\n  steps: 10\n  seed: 7\n")
+    with pytest.raises(EnvCheckError, match="seed:. lines"):
+        read_seed(run_dir)
