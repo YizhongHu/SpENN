@@ -143,7 +143,9 @@ def test_provider_index_binds_live_factor_and_rejects_bad_factor_sets() -> None:
 
     with pytest.raises(ValueError, match="unique participating"):
         TPENWaveFunction(**kwargs, factors=[nn.Identity(), cusp, other], analytic_cusp_provider_index=1)
-    with pytest.raises(TypeError, match="ElectronNucleusCusp"):
+    # If the indexed domain guard were removed, the later uniqueness check
+    # would raise ValueError instead; this pins the intended user-facing error.
+    with pytest.raises(TypeError, match="^analytic_cusp_provider must be an ElectronNucleusCusp$"):
         TPENWaveFunction(**kwargs, factors=[nn.Identity()], analytic_cusp_provider_index=0)
 
 

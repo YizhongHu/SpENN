@@ -89,6 +89,8 @@ class TPENWaveFunction(EquivariantMap):
         self.envelope = envelope
         factors = tuple(factors)
         self.factors = nn.ModuleList(factors)
+        if analytic_cusp_provider is not None and not isinstance(analytic_cusp_provider, ElectronNucleusCusp):
+            raise TypeError("analytic_cusp_provider must be an ElectronNucleusCusp")
         if analytic_cusp_provider is not None and analytic_cusp_provider_index is not None:
             raise TypeError(
                 "specify either analytic_cusp_provider or analytic_cusp_provider_index, not both"
@@ -97,12 +99,13 @@ class TPENWaveFunction(EquivariantMap):
             if isinstance(analytic_cusp_provider_index, bool) or not isinstance(analytic_cusp_provider_index, int):
                 raise TypeError("analytic_cusp_provider_index must be an integer")
             try:
-                analytic_cusp_provider = factors[analytic_cusp_provider_index]
+                selected_provider = factors[analytic_cusp_provider_index]
             except IndexError as exc:
                 raise ValueError("analytic_cusp_provider_index must select a factor") from exc
-        if analytic_cusp_provider is not None:
-            if not isinstance(analytic_cusp_provider, ElectronNucleusCusp):
+            if not isinstance(selected_provider, ElectronNucleusCusp):
                 raise TypeError("analytic_cusp_provider must be an ElectronNucleusCusp")
+            analytic_cusp_provider = selected_provider
+        if analytic_cusp_provider is not None:
             cusp_count = sum(isinstance(factor, ElectronNucleusCusp) for factor in factors)
             if cusp_count != 1:
                 raise ValueError(
