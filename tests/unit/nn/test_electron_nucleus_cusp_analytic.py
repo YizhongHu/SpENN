@@ -118,8 +118,46 @@ def test_ordinary_forward_does_not_request_analytic_capability(monkeypatch) -> N
 
 def test_origin_slope_is_independent_of_mutated_value_law(monkeypatch) -> None:
     law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.3, curvature_range=1.5)
-    original_value = law.value
-    monkeypatch.setattr(law, "value", lambda distance, charges: original_value(distance, charges) + 7.0)
-    evaluation = ElectronNucleusCusp(_atoms(), law).analytic_evaluation(_batch())
-    torch.testing.assert_close(evaluation.origin_radial_slope, -_atoms().charges)
-    assert not torch.allclose(evaluation.pair_value, original_value(evaluation.distance, _atoms().charges.view(1, 1, 2)))
+    charges = torch.tensor([2.0], dtype=torch.float64)
+    zero = torch.zeros(1, 1, 1, dtype=torch.float64)
+    small = torch.full((1, 1, 1), 1.0e-8, dtype=torch.float64)
+    origin = law.origin_radial_slope(charges)
+    first_at_zero = law.analytic_terms(zero, charges.view(1, 1, 1))[1]
+    first_at_small = law.analytic_terms(small, charges.view(1, 1, 1))[1]
+
+    torch.testing.assert_close(first_at_zero, origin.view(1, 1, 1), atol=1.0e-12, rtol=0.0)
+    torch.testing.assert_close(first_at_small, origin.view(1, 1, 1), atol=1.0e-7, rtol=0.0)
+
+    # `analytic_terms` owns the derivative provider, and its closed form does
+    # not differentiate `value`. Mutating only `value` therefore cannot move
+    # this derivative; mutate the provider's slope to model a value-law edit
+    # whose analytic derivative was left stale.
+    original_terms = law.analytic_terms
+
+    def mutated_terms(distance, supplied_charges):
+        value, first, second, residual = original_terms(distance, supplied_charges)
+        return 2.0 * value, 2.0 * first, second, residual
+
+    monkeypatch.setattr(law, "analytic_terms", mutated_terms)
+    mutated_first = law.analytic_terms(zero, charges.view(1, 1, 1))[1]
+    assert not torch.allclose(mutated_first, origin.view(1, 1, 1), atol=1.0e-7, rtol=0.0)
+
+
+def test_curvature_residual_is_pre_cancelled_at_float64_small_radii() -> None:
+    law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.3, curvature_range=1.5)
+    charges = torch.tensor([2.0], dtype=torch.float64)
+    radii = torch.tensor([1.0e-6, 1.0e-8, 1.0e-10], dtype=torch.float64).view(1, 1, 3)
+    broadcast_charges = charges.view(1, 1, 1)
+    _, first, _, residual = law.analytic_terms(radii, broadcast_charges)
+    c, d = law.curvature_coefficient, law.curvature_range
+    expected = c * (2.0 + d * radii) / (1.0 + d * radii).square()
+    naive = (first + broadcast_charges) / radii
+    cancelled_error = (residual - expected).abs()
+    naive_error = (naive - expected).abs()
+
+    torch.testing.assert_close(residual, expected, atol=1.0e-14, rtol=1.0e-14)
+    # The smallest radius is deliberately below the scale where subtracting
+    # the nearly equal slopes is harmless. This guards against regressing to
+    # `(first + Z) / r`, while the first assertion guards the provider form.
+    assert naive_error[..., -1] > 1.0e-7
+    assert naive_error[..., -1] > 10.0 * torch.clamp(cancelled_error[..., -1], min=1.0e-16)
