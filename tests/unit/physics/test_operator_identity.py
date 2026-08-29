@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import tpen.physics.operators as operators_module
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.operators import (
     ELECTRON_ELECTRON_COULOMB,
@@ -131,7 +132,31 @@ def test_str_renders_the_namespaced_identity() -> None:
     assert str(KINETIC_ENERGY) == "tpen.physics:kinetic_energy"
 
 
-def test_registration_rejects_duplicate_class() -> None:
+@pytest.fixture
+def isolated_registry():
+    """Restore the module-global registry after a test registers into it.
+
+    ``register_operator`` mutates process-wide state. Without this, a test
+    that registers a throwaway class leaves it in the registry for every
+    later test in the session, so ``registered_operators()`` no longer
+    describes what the package actually ships and the leak surfaces as an
+    unrelated failure elsewhere.
+    """
+    snapshot = dict(operators_module._OPERATOR_REGISTRY)
+    try:
+        yield
+    finally:
+        operators_module._OPERATOR_REGISTRY.clear()
+        operators_module._OPERATOR_REGISTRY.update(snapshot)
+
+
+def test_registration_rejects_duplicate_class(isolated_registry) -> None:
+    """One class cannot claim two identities.
+
+    Silently accepting the second registration would let the registry and the
+    class's own ``operator_id`` disagree about the same term.
+    """
+
     class NotAnOperator:
         pass
 
@@ -140,6 +165,54 @@ def test_registration_rejects_duplicate_class() -> None:
         register_operator(OperatorId("test", "two"))(NotAnOperator)  # type: ignore[arg-type]
 
 
+def test_registration_is_observable_through_the_registry(isolated_registry) -> None:
+    """A registered class becomes enumerable, which is the point of the decorator.
+
+    This does NOT prove the ``isolated_registry`` fixture restores state: the
+    fixture's teardown runs after this body, so nothing here can observe it.
+    Leakage is instead caught by
+    ``test_shipped_registry_holds_no_test_only_classes`` below.
+    """
+
+    before = set(registered_operators())
+
+    class Throwaway:
+        pass
+
+    register_operator(OperatorId("test", "throwaway"))(Throwaway)  # type: ignore[arg-type]
+
+    assert Throwaway in set(registered_operators())
+    assert before < set(registered_operators())
+
+
 def test_registration_rejects_malformed_identity() -> None:
+    """The explicit check, not typeguard, is what enforces the contract.
+
+    ``register_operator`` annotates its parameter ``object`` deliberately so
+    that this error comes from the module's own rule and stays identical
+    whether or not typeguard instruments the call.
+    """
     with pytest.raises(TypeError, match="must be an OperatorId"):
         register_operator("not-an-operator-id")  # type: ignore[arg-type]
+
+
+def test_shipped_registry_holds_no_test_only_classes() -> None:
+    """Detects registry leakage from the registration tests above.
+
+    ``register_operator`` mutates process-wide state, so a test that registers
+    a throwaway class without isolation would corrupt what
+    ``registered_operators()`` reports for the rest of the session. Every
+    identity minted by a test in this module uses the ``test`` namespace, so
+    finding one here means an isolation fixture was dropped.
+
+    This is order-sensitive by nature: it can only observe leaks from tests
+    that already ran. Within this module pytest runs top-to-bottom, and the
+    registering tests are above it.
+    """
+    leaked = [
+        cls.__name__
+        for cls in registered_operators()
+        if cls.operator_id.namespace == "test"
+    ]
+
+    assert leaked == [], f"test-only classes leaked into the shipped registry: {leaked}"

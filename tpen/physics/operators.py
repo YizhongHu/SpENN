@@ -98,7 +98,25 @@ _OPERATOR_REGISTRY: dict[type[LocalEnergyOperator], OperatorId] = {}
 
 
 def register_operator[T](operator_id: object) -> Callable[[type[T]], type[T]]:
-    """Declare and register a local-energy operator class in one act."""
+    """Declare and register a local-energy operator class in one act.
+
+    Declaring identity and being enumerable are deliberately a single act. If
+    a term set ``operator_id`` and separately registered itself, a reviewer
+    could update one and forget the other, and the registry would disagree
+    with the class it describes.
+
+    Notes
+    -----
+    ``operator_id`` is annotated :class:`object` rather than
+    :class:`OperatorId` on purpose, and the ``isinstance`` check below is the
+    real contract. This project runs ``typeguard``, which enforces annotations
+    at run time: with the precise annotation, passing a malformed identity
+    raised typeguard's own error before this function could raise its own, so
+    the failure surfaced as an instrumentation detail rather than as this
+    module's stated rule. Validating explicitly keeps the error identical
+    whether or not typeguard is installed. The ``isinstance`` here is a guard
+    that decides only *which error is raised*, never which physics runs.
+    """
 
     if not isinstance(operator_id, OperatorId):
         raise TypeError("operator_id must be an OperatorId")
