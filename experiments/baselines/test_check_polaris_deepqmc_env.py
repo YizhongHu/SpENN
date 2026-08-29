@@ -611,3 +611,72 @@ def test_bad_arguments_still_emit_json_not_an_empty_artefact(capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert "invalid arguments" in payload["error"]
+
+
+# --- Degenerate-input sweep -------------------------------------------------
+# Found by asking, systematically, what each verdict function returns for absent,
+# nan, inf, zero, negative and wrong-typed inputs -- not by mutation. No mutant
+# could reach these: mutants probe the code you wrote against the inputs you
+# thought of, and no test had ever supplied a negative uncertainty.
+
+
+def test_a_negative_polaris_stderr_is_broken_not_sane() -> None:
+    """A negative standard error is a corrupt input, not a small one.
+
+    It passes the finite check -- it IS a finite number -- and then sails through
+    every threshold, because the thresholds only look at |delta|.
+    """
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=-1.6e-05,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+    )
+    assert result["verdict"] == "broken"
+    assert any("negative" in r for r in result["reasons"])
+
+
+def test_a_negative_reference_stderr_does_not_yield_consistent() -> None:
+    """Combining SQUARES the stderr, so a sign error produces a plausible sigma.
+
+    Squaring is exactly the operation that hides the corruption: the resulting
+    combined sigma looks entirely ordinary and the verdict came back "consistent".
+    """
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        reference_stderr=-CANNON_STDERR,
+    )
+    assert result["cross_facility"]["verdict"] == "not_evaluated"
+    assert "unusable uncertainties" in result["cross_facility"]["reason"]
+
+
+def test_a_non_finite_reference_stderr_is_not_evaluated_with_a_reason() -> None:
+    result = compare_energy(
+        polaris_energy=CANNON_HE_DEFAULT_20K,
+        polaris_stderr=CANNON_STDERR,
+        reference_energy=CANNON_HE_DEFAULT_20K,
+        reference_stderr=float("nan"),
+    )
+    assert result["cross_facility"]["verdict"] == "not_evaluated"
+    assert "unusable uncertainties" in result["cross_facility"]["reason"]
+
+
+def test_degenerate_inputs_never_reach_the_permissive_branch() -> None:
+    """A verdict function falling through to its permissive branch on degenerate
+    input is worse than one that crashes, because the crash is legible.
+
+    This sweeps the whole degenerate space in one assertion so a future input
+    kind cannot be added without someone deciding what it should do.
+    """
+    nan, inf = float("nan"), float("inf")
+    degenerate = [
+        dict(polaris_energy=nan, polaris_stderr=CANNON_STDERR, reference_energy=CANNON_HE_DEFAULT_20K),
+        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=nan, reference_energy=CANNON_HE_DEFAULT_20K),
+        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=CANNON_STDERR, reference_energy=nan),
+        dict(polaris_energy=inf, polaris_stderr=CANNON_STDERR, reference_energy=CANNON_HE_DEFAULT_20K),
+        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=CANNON_STDERR, reference_energy=inf),
+        dict(polaris_energy=CANNON_HE_DEFAULT_20K, polaris_stderr=-CANNON_STDERR, reference_energy=CANNON_HE_DEFAULT_20K),
+    ]
+    for kwargs in degenerate:
+        assert compare_energy(**kwargs)["verdict"] == "broken", kwargs

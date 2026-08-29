@@ -523,6 +523,13 @@ def compare_energy(
             f"a required value is not finite: polaris_energy={polaris_energy!r}, "
             f"polaris_stderr={polaris_stderr!r}, reference_energy={reference_energy!r}"
         )
+    elif polaris_stderr < 0:
+        # A negative standard error is not a small one; it is a corrupt input.
+        # It passed the finite check (it IS a finite number) and then sailed
+        # through every threshold, because the thresholds only look at |delta|.
+        # Found by sweeping degenerate inputs rather than by mutation: no mutant
+        # could reach it, because no test ever supplied a negative stderr.
+        reasons.append(f"polaris_stderr is negative ({polaris_stderr!r}): not a valid uncertainty")
     if steps_expected is not None and (steps_observed or 0) < steps_expected:
         reasons.append(
             f"row is short: {steps_observed} of {steps_expected} steps recorded"
@@ -562,7 +569,23 @@ def compare_energy(
     # So the two runs diverge by construction, and the only meaningful yardstick
     # is the combined statistical error of the two estimates.
     cross: dict[str, Any] = {"verdict": "not_evaluated"}
-    if reference_stderr is not None and _finite(reference_stderr) and _finite(polaris_stderr):
+    # Both uncertainties must be finite AND non-negative. A negative reference
+    # stderr previously produced verdict "consistent": it is finite, and the
+    # combination SQUARES it, so a corrupt input yielded a plausible sigma and a
+    # confident agreement. Squaring is exactly what hides a sign error.
+    stderrs_usable = (
+        reference_stderr is not None
+        and _finite(reference_stderr)
+        and _finite(polaris_stderr)
+        and reference_stderr >= 0
+        and polaris_stderr >= 0
+    )
+    if reference_stderr is not None and not stderrs_usable:
+        cross["reason"] = (
+            f"unusable uncertainties: polaris_stderr={polaris_stderr!r}, "
+            f"reference_stderr={reference_stderr!r}"
+        )
+    if stderrs_usable:
         combined = math.sqrt(polaris_stderr**2 + reference_stderr**2)
         cross = {
             "combined_sigma_hartree": combined,
