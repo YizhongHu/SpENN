@@ -32,7 +32,8 @@ def test_linear_analytic_evaluation_has_exact_terms_and_origin_slope() -> None:
 
     assert evaluation.displacement.shape == (1, 2, 2, 2)
     assert evaluation.distance.shape == (1, 2, 2)
-    torch.testing.assert_close(evaluation.radial_first_derivative, -evaluation.nuclear_charges.view(1, 1, 2))
+    expected_first = -evaluation.nuclear_charges.view(1, 1, 2).expand_as(evaluation.distance)
+    torch.testing.assert_close(evaluation.radial_first_derivative, expected_first)
     assert torch.equal(evaluation.radial_second_derivative, torch.zeros_like(evaluation.distance))
     assert torch.equal(evaluation.slope_residual, torch.zeros_like(evaluation.distance))
     torch.testing.assert_close(evaluation.origin_radial_slope, -evaluation.nuclear_charges)
@@ -61,7 +62,9 @@ def test_curvature_analytic_evaluation_uses_cancelled_residual_at_origin() -> No
         nuclear_charges=torch.ones(1, dtype=torch.float64),
         origin_radial_slope=-torch.ones(1, dtype=torch.float64),
     )
-    torch.testing.assert_close(origin.local_energy_pair(), torch.full((1, 1, 1), -3 * c))
+    torch.testing.assert_close(
+        origin.local_energy_pair(), (-3 * c).expand(1, 1, 1)
+    )
 
 
 def test_curvature_analytic_request_reaches_both_trainable_parameters() -> None:
@@ -146,7 +149,7 @@ def test_origin_slope_is_independent_of_mutated_value_law(monkeypatch) -> None:
 def test_curvature_residual_is_pre_cancelled_at_float64_small_radii() -> None:
     law = CurvatureElectronNucleusCuspLaw(curvature_coefficient=0.3, curvature_range=1.5)
     charges = torch.tensor([2.0], dtype=torch.float64)
-    radii = torch.tensor([1.0e-6, 1.0e-8, 1.0e-10], dtype=torch.float64).view(1, 1, 3)
+    radii = torch.tensor([1.0e-6, 1.0e-8, 1.0e-10, 1.0e-12, 1.0e-14], dtype=torch.float64).view(1, 1, 5)
     broadcast_charges = charges.view(1, 1, 1)
     _, first, _, residual = law.analytic_terms(radii, broadcast_charges)
     c, d = law.curvature_coefficient, law.curvature_range
@@ -156,8 +159,12 @@ def test_curvature_residual_is_pre_cancelled_at_float64_small_radii() -> None:
     naive_error = (naive - expected).abs()
 
     torch.testing.assert_close(residual, expected, atol=1.0e-14, rtol=1.0e-14)
-    # The smallest radius is deliberately below the scale where subtracting
-    # the nearly equal slopes is harmless. This guards against regressing to
-    # `(first + Z) / r`, while the first assertion guards the provider form.
-    assert naive_error[..., -1] > 1.0e-7
-    assert naive_error[..., -1] > 10.0 * torch.clamp(cancelled_error[..., -1], min=1.0e-16)
+    # The shrinking-radius trend is the robust signature of cancellation. It
+    # guards against regressing to `(first + Z) / r`, while the first assertion
+    # guards the provider form itself. The cancelled error must not grow with
+    # the reciprocal radius.
+    naive_errors = naive_error.flatten()
+    cancelled_errors = cancelled_error.flatten()
+    assert torch.all(naive_errors[1:] > naive_errors[:-1])
+    assert torch.all(cancelled_errors[1:] <= cancelled_errors[:-1] + 1.0e-14)
+    assert naive_errors[-1] > 100.0 * torch.clamp(cancelled_errors[-1], min=1.0e-16)
