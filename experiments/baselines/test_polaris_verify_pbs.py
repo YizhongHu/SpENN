@@ -94,3 +94,70 @@ def test_the_guard_key_does_not_depend_on_mode_or_out_root() -> None:
     assert "$MODE" not in guard_line.group(0), guard_line.group(0)
     assert "$D" not in guard_line.group(0), guard_line.group(0)
     assert "$JOB" in guard_line.group(0)
+
+
+# --- Whole-script properties the extracted-block test cannot see -------------
+# An independent verifier's three mutants ALL survived here: flipping the row's
+# `set +e` to `set -e`, changing a requirements pin, and flipping
+# XLA_PYTHON_CLIENT_PREALLOCATE from false to true. Each is load-bearing and none
+# was executed by any test, because the block test runs ONE block in isolation
+# and nothing else reads the script at all.
+# These are static assertions over the shipped file. They are weaker than
+# execution -- they check that the text says the right thing, not that the
+# program behaves -- and that limit is the reason they are stated as such rather
+# than presented as coverage of the script.
+
+
+def _line_of(pattern: str) -> int:
+    text = PBS.read_text()
+    match = re.search(pattern, text, re.M)
+    assert match is not None, f"pattern not found in the shipped script: {pattern}"
+    return text[: match.start()].count("\n") + 1
+
+
+def test_traps_are_installed_before_the_guard_and_the_marker() -> None:
+    """Installation ORDER is a whole-program property.
+
+    The traps were previously installed ~70 lines below the guard and the marker
+    write. A TERM or INT in that window took the shell default and produced no
+    KILLED record -- the ambiguous absence the trap exists to prevent, in the
+    window where a scheduler is most likely to kill a job it has just started.
+    """
+    trap_line = _line_of(r"^trap 'on_signal TERM 15' TERM")
+    guard_line = _line_of(r'^if \[ -e "\$GUARD" \]')
+    marker_line = _line_of(r'^date -Iseconds > "\$GUARD"')
+    assert trap_line < guard_line, (trap_line, guard_line)
+    assert trap_line < marker_line, (trap_line, marker_line)
+
+
+def test_preallocation_is_disabled_before_any_python_runs() -> None:
+    """XLA_PYTHON_CLIENT_PREALLOCATE=false is load-bearing for E6.
+
+    With preallocation on, JAX takes ~75% of the card and every memory reading is
+    identical regardless of workload -- so flipping this to true would not fail
+    anything, it would silently make the measurement meaningless. A verifier's
+    mutant flipping it survived the entire suite.
+    """
+    text = PBS.read_text()
+    assert "export XLA_PYTHON_CLIENT_PREALLOCATE=false" in text
+    assert "XLA_PYTHON_CLIENT_PREALLOCATE=true" not in text
+    export_line = _line_of(r"^export XLA_PYTHON_CLIENT_PREALLOCATE=false")
+    first_python = _line_of(r'"\$VENV/bin/python"')
+    assert export_line < first_python, (export_line, first_python)
+
+
+def test_the_row_status_is_captured_without_errexit() -> None:
+    """The row's own exit code must survive a non-zero return.
+
+    Under `set -e` a failing row would abort the script before RC is captured,
+    so the guards keyed on RC could never run and the row's status would never
+    be reported. A verifier's mutant flipping this survived.
+    """
+    text = PBS.read_text()
+    row = text.index('"$VENV/bin/deepqmc" hydra.run.dir="$RD"')
+    before = text[:row]
+    assert before.rstrip().endswith("set +e"), (
+        "the training row must be preceded by `set +e` so RC can be captured"
+    )
+    after = text[row:]
+    assert after.index("RC=$?") < after.index("set -e")

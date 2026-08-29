@@ -58,6 +58,71 @@ else
 fi
 
 test -n "${PBS_JOBID:-}" || { echo "REFUSING: not running under PBS"; exit 2; }
+
+# TRAPS ARE INSTALLED HERE, BEFORE THE GUARD AND THE MARKER, AND DELIBERATELY SO.
+# They previously went in ~70 lines below, after the guard, the marker write and
+# the directory creation. A TERM or INT arriving in that window took the shell
+# default action and produced no KILLED record at all -- the exact ambiguous
+# absence the trap exists to prevent, in the window where a job is most likely to
+# be killed by a scheduler that has just started it. Found by an independent
+# verifier reading the whole script; the extracted-block test could not see it,
+# because installation ORDER is a whole-program property and the block test runs
+# one block in isolation.
+# $D and $GUARD may not exist yet when a signal lands, so on_signal must tolerate
+# unset variables -- hence the :- defaults inside it.
+# Record a teardown POSITIVELY rather than leaving it as an absence.
+# Measured on Polaris (PBS 7571815): when PALS mpiexec aborts a job because one
+# rank failed, surviving ranks are SIGTERMed mid-flight and never write their
+# result files. A torn-down row therefore leaves a start marker and nothing
+# else -- which is indistinguishable, to a reader arriving cold, from a row that
+# never got past setup. The same signature appears here on a wall expiry.
+# This trap converts that absence into a dated record naming the signal, so
+# "ran for 39 minutes and was killed" cannot be misread as "barely started".
+on_signal() {
+    trap - TERM INT
+    # DISABLE errexit AND pipefail INSIDE THE TRAP. With them on, the checkpoint
+    # lookup below is a pipeline whose first command (ls) exits non-zero when no
+    # checkpoint matches -- so pipefail failed the pipeline and errexit killed
+    # the trap MID-WRITE. Because the redirection truncates KILLED first, that
+    # left a ZERO-BYTE KILLED file: precisely the empty artefact this trap exists
+    # to prevent, in exactly the case it most matters (killed before the first
+    # checkpoint). Found by an independent verifier reading the script; it would
+    # have fired only on a teardown, which is the path never exercised in testing.
+    set +e +o pipefail
+    # These may be unset if the signal lands before setup completes, which is
+    # now a reachable state precisely because the trap is installed first.
+    local d="${D:-<before-run-dir-was-set>}"
+    local last=""
+    # A plain glob with nullglob semantics avoids the failing pipeline entirely.
+    for f in "$d"/*/training/chkpt-*.pt; do
+        [ -e "$f" ] || continue
+        n=${f##*/chkpt-}; n=${n%.pt}
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        if [ -z "$last" ] || [ "$n" -gt "$last" ]; then last="$n"; fi
+    done
+    {
+        echo "signal=$1"
+        echo "at=$(date -Iseconds)"
+        echo "started=$(cat "$d/STARTED" 2>/dev/null || echo unknown)"
+        if [ -n "$last" ]; then
+            echo "last_checkpoint_step=$last"
+        else
+            # Said explicitly. An absent line would be indistinguishable from a
+            # truncated write, which is the ambiguity this whole file fights.
+            echo "last_checkpoint_step=NONE_REACHED"
+        fi
+    } > "${d}/KILLED" 2>/dev/null || {
+        # If the run directory does not exist yet, the record still has to go
+        # somewhere rather than vanish.
+        mkdir -p "$OUT_ROOT" 2>/dev/null || true
+        echo "signal=$1 at=$(date -Iseconds) before_run_dir_existed" \
+            > "$OUT_ROOT/KILLED-early-${PBS_JOBID%%.*}" 2>/dev/null || true
+    }
+    echo "KILLED by SIG$1 -- see ${d}/KILLED"
+    exit $((128 + $2))
+}
+trap 'on_signal TERM 15' TERM
+trap 'on_signal INT 2' INT
 JOB="${PBS_JOBID%%.*}"
 D="$OUT_ROOT/deepqmc-polaris-verify-$MODE-$JOB"
 # The restart guard must key on the JOB IDENTITY ALONE. Keying it on $D made it
@@ -85,51 +150,6 @@ mkdir -p "$D" "$(dirname "$GUARD")"
 date -Iseconds > "$GUARD"
 cp "$GUARD" "$D/STARTED"
 # --- END RESTART GUARD
-
-# Record a teardown POSITIVELY rather than leaving it as an absence.
-# Measured on Polaris (PBS 7571815): when PALS mpiexec aborts a job because one
-# rank failed, surviving ranks are SIGTERMed mid-flight and never write their
-# result files. A torn-down row therefore leaves a start marker and nothing
-# else -- which is indistinguishable, to a reader arriving cold, from a row that
-# never got past setup. The same signature appears here on a wall expiry.
-# This trap converts that absence into a dated record naming the signal, so
-# "ran for 39 minutes and was killed" cannot be misread as "barely started".
-on_signal() {
-    trap - TERM INT
-    # DISABLE errexit AND pipefail INSIDE THE TRAP. With them on, the checkpoint
-    # lookup below is a pipeline whose first command (ls) exits non-zero when no
-    # checkpoint matches -- so pipefail failed the pipeline and errexit killed
-    # the trap MID-WRITE. Because the redirection truncates KILLED first, that
-    # left a ZERO-BYTE KILLED file: precisely the empty artefact this trap exists
-    # to prevent, in exactly the case it most matters (killed before the first
-    # checkpoint). Found by an independent verifier reading the script; it would
-    # have fired only on a teardown, which is the path never exercised in testing.
-    set +e +o pipefail
-    local last=""
-    # A plain glob with nullglob semantics avoids the failing pipeline entirely.
-    for f in "$D"/*/training/chkpt-*.pt; do
-        [ -e "$f" ] || continue
-        n=${f##*/chkpt-}; n=${n%.pt}
-        case "$n" in ''|*[!0-9]*) continue ;; esac
-        if [ -z "$last" ] || [ "$n" -gt "$last" ]; then last="$n"; fi
-    done
-    {
-        echo "signal=$1"
-        echo "at=$(date -Iseconds)"
-        echo "started=$(cat "$D/STARTED" 2>/dev/null || echo unknown)"
-        if [ -n "$last" ]; then
-            echo "last_checkpoint_step=$last"
-        else
-            # Said explicitly. An absent line would be indistinguishable from a
-            # truncated write, which is the ambiguity this whole file fights.
-            echo "last_checkpoint_step=NONE_REACHED"
-        fi
-    } > "$D/KILLED"
-    echo "KILLED by SIG$1 -- see $D/KILLED"
-    exit $((128 + $2))
-}
-trap 'on_signal TERM 15' TERM
-trap 'on_signal INT 2' INT
 
 exec > >(tee -a "$D/job.log") 2>&1
 echo "=== job=$PBS_JOBID host=$(hostname) mode=$MODE steps=$STEPS seed=$SEED start=$(date -Iseconds)"

@@ -190,6 +190,29 @@ def test_non_finite_energy_is_broken() -> None:
     assert result["verdict"] == "broken"
 
 
+def test_the_preregistered_thresholds_have_not_moved() -> None:
+    """The thresholds were fixed BEFORE any Polaris energy existed.
+
+    Their whole value is in not having moved, so a change is a finding rather
+    than a refactor. Spelled out as literals here, independently of the module's
+    own constants, so that editing the constants fails this test rather than
+    silently redefining what "sane" means. An independent verifier noted the
+    mapping test below could be defeated by a coordinated change; this is the
+    guard that makes such a change loud.
+    """
+    from experiments.baselines.check_polaris_deepqmc_env import (
+        BROKEN_HARTREE,
+        HE_EXACT_HARTREE,
+        SANE_HARTREE,
+    )
+
+    assert SANE_HARTREE == 1e-4
+    assert BROKEN_HARTREE == 1e-3
+    # Exact non-relativistic infinite-nuclear-mass He, from the cited reference
+    # in NNQMC-REFERENCE-ENERGIES.md. The variational check rests on it.
+    assert HE_EXACT_HARTREE == -2.903724377034119598
+
+
 def test_verdict_is_derived_from_the_numbers_it_reports() -> None:
     """Guard against a label drifting from the value printed beside it."""
     for offset in (0.0, 5e-5, 2e-4, 5e-3):
