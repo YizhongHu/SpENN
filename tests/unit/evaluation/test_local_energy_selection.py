@@ -44,6 +44,11 @@ class _Backend:
     def __init__(self, evaluator_id):
         self.evaluator_id = evaluator_id
 
+    def evaluate(self, terms, context, *, return_terms=False):
+        """Conform to the evaluator protocol; the gate runs before execution."""
+
+        raise AssertionError("mismatch fixture evaluator must not be executed")
+
 
 class _Trajectory:
     name = "trajectory_mcmc"

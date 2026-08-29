@@ -28,6 +28,9 @@ analytic_trajectory_generator:
 
 evaluation_tasks:
   mcmc_energy:
+    # Required by the repository-wide task hygiene contract. Keep this equal
+    # to the base task's run-rooted path; the composition test pins that sync.
+    output_dir: ${run.dir}/mcmc_energy
     generator: ${analytic_trajectory_generator}
     calculators:
       - ${analytic_local_energy_calculator}

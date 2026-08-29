@@ -97,6 +97,7 @@ def test_he_analytic_overlay_constructs_an_explicit_opt_in_row() -> None:
     merged = OmegaConf.merge(base, overlay)
     raw = OmegaConf.to_container(merged, resolve=False)
     task = raw["evaluation_tasks"]["mcmc_energy"]
+    assert task["output_dir"] == "${run.dir}/mcmc_energy"
     assert merged.local_energy_evaluator._target_ == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
     assert task.generator == "${analytic_trajectory_generator}"
     assert task.calculators[0] == "${analytic_local_energy_calculator}"
@@ -108,6 +109,7 @@ def test_he_analytic_overlay_constructs_an_explicit_opt_in_row() -> None:
     assert resolved_task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
     assert resolved_task["generator"]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
     assert resolved_task["calculators"][0]["evaluator"]["_target_"] == "tpen.physics.hamiltonian.AnalyticCuspEvaluator"
+    assert resolved_task["output_dir"] == str(merged.run.dir) + "/mcmc_energy"
     assert merged.hamiltonian_terms.electron_nucleus.eps == 0.0
     assert merged.model.factors[0]._target_ == "tpen.nn.ElectronElectronCusp"
     assert "electron-electron coalescence is NOT" in HEV1_ANALYTIC.read_text()
@@ -118,6 +120,7 @@ def test_h2_analytic_overlay_changes_the_real_runner_task_graph() -> None:
 
     merged = OmegaConf.merge(OmegaConf.load(H2V1_EVAL), OmegaConf.load(H2V1_ANALYTIC))
     task = OmegaConf.to_container(merged.runner.evaluator.tasks[0], resolve=True)
+    assert task["output_dir"] == str(merged.run.dir) + "/mcmc_energy"
     assert task["generator"]["_target_"] == "tpen.evaluation.generators.TrajectoryMCMCGenerator"
     # This is the runner task graph; naming the overlay nodes alone would leave
     # the base MCMCGenerator and would make this assertion fail.
