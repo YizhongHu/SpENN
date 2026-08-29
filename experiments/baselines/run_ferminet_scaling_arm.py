@@ -71,11 +71,18 @@ def run(config_path: str | Path, *, run_dir: str | Path, first_tail_step: int) -
     """
 
     try:
+        from absl import logging  # noqa: PLC0415
         from ferminet import base_config  # noqa: PLC0415
         from ferminet import train  # noqa: PLC0415
+        from ferminet.utils import writers  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - requires the external runtime
         raise FermiNetScalingError(f"FermiNet runtime is unavailable: {exc}") from exc
     module = _load_config(Path(config_path))
+    # The direct ``train.train`` path does not go through FermiNet's normal
+    # absl app entry point.  Enable INFO so FermiNet itself emits its
+    # "Starting QMC with N XLA devices" evidence, rather than substituting a
+    # wrapper-derived device count.
+    logging.set_verbosity(logging.INFO)
     cfg: Any = base_config.resolve(module.get_config())
     expected_run_dir = Path(run_dir).resolve()
     configured_run_dir = Path(str(cfg.log.save_path)).resolve()
@@ -86,6 +93,15 @@ def run(config_path: str | Path, *, run_dir: str | Path, first_tail_step: int) -
 
     original = train.mcmc.make_mcmc_step
 
+    class ScalingWriter(writers.Writer):
+        """Preserve FermiNet's CSV while emitting timestampable actual steps."""
+
+        def write(self, step: int, **data: Any) -> None:
+            super().write(step, **data)
+            # This runs inside FermiNet's actual logging branch, after an
+            # optimizer step, rather than estimating progress externally.
+            print(f"SCALING_PROBE Step {step}", flush=True)
+
     def recorded_make_mcmc_step(*args: Any, **kwargs: Any) -> Any:
         # ``train.train`` has already validated divisibility and calculated this
         # value.  Capturing its actual argument avoids reimplementing that
@@ -94,9 +110,16 @@ def run(config_path: str | Path, *, run_dir: str | Path, first_tail_step: int) -
         print(f"SCALING_PROBE device_batch_size={batch}", flush=True)
         return original(*args, **kwargs)
 
+    writer = ScalingWriter(
+        name="train_stats",
+        schema=["step", "energy", "ewmean", "ewvar", "pmove"],
+        directory=str(expected_run_dir),
+        iteration_key=None,
+        log=False,
+    )
     train.mcmc.make_mcmc_step = recorded_make_mcmc_step
     try:
-        train.train(cfg)
+        train.train(cfg, writer_manager=writer)
     finally:
         train.mcmc.make_mcmc_step = original
     energy, stderr = summarize_training_tail(expected_run_dir, first_step=first_tail_step)
