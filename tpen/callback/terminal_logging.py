@@ -51,11 +51,11 @@ def configure_terminal_logging(
     logger = logging.getLogger(logger_name)
     logger.setLevel(_logging_level(level))
     for handler in logger.handlers:
-        if getattr(handler, "_spenn_terminal_handler", False):
+        if getattr(handler, "_tpen_terminal_handler", False):
             handler.setLevel(_logging_level(level))
             return
     handler = logging.StreamHandler()
-    handler._spenn_terminal_handler = True
+    handler._tpen_terminal_handler = True
     handler.setLevel(_logging_level(level))
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)

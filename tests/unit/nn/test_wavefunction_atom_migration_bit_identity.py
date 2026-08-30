@@ -32,7 +32,7 @@ from omegaconf import OmegaConf
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch
 from tpen.nn.envelope import ElectronElectronCusp, ElectronNucleusCusp
-from tpen.nn.spenn_wave_function import TPENWaveFunction
+from tpen.nn.tpen_wave_function import TPENWaveFunction
 from tpen.physics.hamiltonian import local_energy
 from tpen.physics.kinetic import KineticEnergy
 from tpen.physics.potential import (

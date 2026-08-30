@@ -387,7 +387,7 @@ Exact testing strategy:
   `tpen.nn.TPENLayer`, with forced runtime
   checks in `tests/unit/nn/test_update_equivariance.py`,
   `tests/unit/nn/test_path_aggregation_equivariance.py`, and
-  `tests/unit/nn/test_spenn_layer_scaffold.py`.
+  `tests/unit/nn/test_tpen_layer_scaffold.py`.
 - Virtual-support combinatorics:
   `tpen.reps.paths.PathMetadata`, `generate_virtual_paths`, and
   `validate_virtual_path`, with coverage in

@@ -17,13 +17,13 @@ _ISOLATED_LOGGERS = ("tpen", "tpen.status", "tpen.bootstrap")
 
 def _drop_terminal_handlers(logger: logging.Logger) -> None:
     logger.handlers[:] = [
-        handler for handler in logger.handlers if not getattr(handler, "_spenn_terminal_handler", False)
+        handler for handler in logger.handlers if not getattr(handler, "_tpen_terminal_handler", False)
     ]
 
 
 def _drop_bootstrap_handlers(logger: logging.Logger) -> None:
     logger.handlers[:] = [
-        handler for handler in logger.handlers if not getattr(handler, "_spenn_bootstrap_handler", False)
+        handler for handler in logger.handlers if not getattr(handler, "_tpen_bootstrap_handler", False)
     ]
 
 

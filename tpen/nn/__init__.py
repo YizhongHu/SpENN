@@ -35,8 +35,8 @@ from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.mlp import MLP
 from tpen.nn.normalization import RMSNorm
 from tpen.nn.path_aggregation import PathAggregation
-from tpen.nn.spenn_layer import TPENLayer
-from tpen.nn.spenn_wave_function import TPENWaveFunction
+from tpen.nn.tpen_layer import TPENLayer
+from tpen.nn.tpen_wave_function import TPENWaveFunction
 from tpen.nn.tpen_stack import TPENStack
 from tpen.nn.update import ResidualUpdater, Updater
 
