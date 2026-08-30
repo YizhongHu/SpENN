@@ -169,43 +169,97 @@ def test_content_id_is_reproducible_and_device_dtype_independent() -> None:
     assert config.content_id() != different.content_id()
 
 
-def test_strict_geometry_comparison_is_symmetric_and_promotes_without_narrowing() -> None:
-    base_positions = torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32)
-    base_charges = torch.tensor([1.5], dtype=torch.float32)
-    cases = [
-        (
-            AtomicConfiguration(base_positions, base_charges),
-            AtomicConfiguration(
-                base_positions.to(torch.float64) + 2**-25,
-                base_charges.to(torch.float64),
-            ),
-        ),
-        (
-            AtomicConfiguration(base_positions, base_charges),
-            AtomicConfiguration(
-                base_positions.to(torch.float64),
-                base_charges.to(torch.float64) + 2**-25,
-            ),
-        ),
-        (
-            AtomicConfiguration(
-                torch.tensor([[0, 1, 2]], dtype=torch.int64),
-                torch.tensor([2], dtype=torch.int64),
-            ),
-            AtomicConfiguration(
-                torch.tensor([[0.25, 1.0, 2.0]], dtype=torch.float64),
-                torch.tensor([2.0], dtype=torch.float64),
-            ),
-        ),
+def test_strict_geometry_comparison_rejects_dtype_collisions_in_both_orientations() -> None:
+    collision_pairs = [
+        (torch.int16, 257, torch.bfloat16, 256),
+        (torch.int16, 2049, torch.float16, 2048),
+        (torch.int32, 16777217, torch.float32, 16777216),
+        (torch.int64, 16777217, torch.float32, 16777216),
+        (torch.int64, 9007199254740993, torch.float64, 9007199254740992),
+        (torch.uint16, 257, torch.bfloat16, 256),
+        (torch.uint16, 2049, torch.float16, 2048),
+        (torch.uint32, 16777217, torch.float32, 16777216),
+        (torch.uint64, 9007199254740993, torch.float64, 9007199254740992),
     ]
 
-    for left, right in cases:
-        assert not strict_equal_atomic_configurations(left, right)
-        assert not strict_equal_atomic_configurations(right, left)
+    def make_configuration(dtype: torch.dtype, value: int, *, field: str) -> AtomicConfiguration:
+        positions = torch.tensor(
+            [[value, 0, 0]] if field == "positions" else [[0.0, 0.0, 0.0]],
+            dtype=dtype if field == "positions" else torch.float64,
+        )
+        charges = torch.tensor(
+            [value] if field == "charges" else [1.0],
+            dtype=dtype if field == "charges" else torch.float64,
+        )
+        return AtomicConfiguration(positions, charges)
 
-    exact_left = AtomicConfiguration(base_positions, torch.tensor([1.0], dtype=torch.float32))
-    exact_right = AtomicConfiguration(
-        base_positions.to(torch.float64), torch.tensor([1.0], dtype=torch.float64)
+    for left_dtype, left_value, right_dtype, right_value in collision_pairs:
+        for field in ("positions", "charges"):
+            left = make_configuration(left_dtype, left_value, field=field)
+            right = make_configuration(right_dtype, right_value, field=field)
+            for first, second in ((left, right), (right, left)):
+                with pytest.raises(ValueError, match="dtype mismatch.*configuration error"):
+                    strict_equal_atomic_configurations(first, second)
+
+
+def test_strict_geometry_comparison_accepts_matching_dtype_and_values() -> None:
+    left = AtomicConfiguration(
+        torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float64),
+        torch.tensor([1.5], dtype=torch.float64),
     )
-    assert strict_equal_atomic_configurations(exact_left, exact_right)
-    assert strict_equal_atomic_configurations(exact_right, exact_left)
+    right = AtomicConfiguration(
+        torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float64),
+        torch.tensor([1.5], dtype=torch.float64),
+    )
+
+    assert strict_equal_atomic_configurations(left, right)
+    assert strict_equal_atomic_configurations(right, left)
+
+
+def test_strict_geometry_comparison_rejects_last_bit_and_distinguishes_dtype_errors() -> None:
+    value = torch.tensor(1.0, dtype=torch.float64)
+    next_value = torch.nextafter(value, torch.tensor(2.0, dtype=torch.float64))
+    same_dtype = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64),
+        torch.tensor([1.0], dtype=torch.float64),
+    )
+    last_bit_position = AtomicConfiguration(
+        torch.stack((next_value, torch.tensor(0.0), torch.tensor(0.0))).reshape(1, 3),
+        torch.tensor([1.0], dtype=torch.float64),
+    )
+    last_bit_charge = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float64),
+        next_value.reshape(1),
+    )
+
+    assert not strict_equal_atomic_configurations(same_dtype, last_bit_position)
+    assert not strict_equal_atomic_configurations(last_bit_position, same_dtype)
+    assert not strict_equal_atomic_configurations(same_dtype, last_bit_charge)
+    assert not strict_equal_atomic_configurations(last_bit_charge, same_dtype)
+
+    different_dtype = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=torch.float32),
+        torch.tensor([1.0], dtype=torch.float32),
+    )
+    with pytest.raises(ValueError, match="dtype mismatch.*positions"):
+        strict_equal_atomic_configurations(same_dtype, different_dtype)
+    with pytest.raises(ValueError, match="dtype mismatch.*positions"):
+        strict_equal_atomic_configurations(different_dtype, same_dtype)
+
+
+def test_strict_geometry_comparison_rejects_shapes_and_nucleus_order_changes() -> None:
+    one = _helium()
+    two = _hydrogen_molecule()
+    different_dimension = AtomicConfiguration(
+        torch.zeros(1, 2), torch.tensor([2.0])
+    )
+    reordered = AtomicConfiguration(
+        two.positions.flip(0), two.charges.flip(0)
+    )
+
+    assert not strict_equal_atomic_configurations(one, two)
+    assert not strict_equal_atomic_configurations(two, one)
+    assert not strict_equal_atomic_configurations(one, different_dimension)
+    assert not strict_equal_atomic_configurations(different_dimension, one)
+    assert not strict_equal_atomic_configurations(two, reordered)
+    assert not strict_equal_atomic_configurations(reordered, two)

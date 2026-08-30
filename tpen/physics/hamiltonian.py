@@ -365,7 +365,10 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
             raise ValueError("analytic cusp evaluation requires spatial dimension 3")
         declared_geometry = declared_operator_geometry(potential)
         if declared_geometry is not None and not strict_equal_atomic_configurations(
-            provider.atoms, declared_geometry
+            provider.atoms,
+            declared_geometry,
+            left_label="provider atoms",
+            right_label="declared geometry",
         ):
             raise ValueError(
                 "analytic cusp electron-nucleus term geometry must agree exactly "

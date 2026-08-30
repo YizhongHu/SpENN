@@ -236,7 +236,7 @@ def test_analytic_evaluator_rejects_canonical_geometry_mismatch() -> None:
         )
 
 
-def test_analytic_evaluator_rejects_narrowing_geometry_mismatches() -> None:
+def test_analytic_evaluator_rejects_cross_dtype_geometry_mismatches() -> None:
     base_positions = torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32)
     base_charges = torch.tensor([1.5], dtype=torch.float32)
     cases = [
@@ -302,13 +302,13 @@ def test_analytic_evaluator_rejects_narrowing_geometry_mismatches() -> None:
             "kinetic": KineticEnergy(),
             "electron_nucleus": ElectronNucleusPotential(declared_atoms, eps=0.0),
         }
-        with pytest.raises(ValueError, match="geometry.*agree exactly"):
+        with pytest.raises(ValueError, match="dtype mismatch.*configuration error"):
             AnalyticCuspEvaluator().evaluate(
                 terms, AnalyticCuspContext(wavefunction, batch)
             )
 
 
-def test_analytic_evaluator_accepts_exact_geometry_across_dtypes() -> None:
+def test_analytic_evaluator_rejects_exact_values_with_different_dtypes() -> None:
     provider_atoms = AtomicConfiguration(
         torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32),
         torch.tensor([1.0], dtype=torch.float32),
@@ -328,12 +328,10 @@ def test_analytic_evaluator_accepts_exact_geometry_across_dtypes() -> None:
         "electron_nucleus": ElectronNucleusPotential(declared_atoms, eps=0.0),
     }
 
-    result = AnalyticCuspEvaluator().evaluate(
-        terms, AnalyticCuspContext(_AnalyticWavefunction(provider), batch)
-    )
-
-    assert result.shape == (2,)
-    assert torch.isfinite(result).all()
+    with pytest.raises(ValueError, match="dtype mismatch.*positions"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(_AnalyticWavefunction(provider), batch)
+        )
 
 
 def test_analytic_evaluator_rejects_legacy_geometry_mismatch() -> None:

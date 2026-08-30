@@ -245,24 +245,39 @@ class AtomicConfiguration:
 def strict_equal_atomic_configurations(
     left: AtomicConfiguration,
     right: AtomicConfiguration,
+    *,
+    left_label: str = "left",
+    right_label: str = "right",
 ) -> bool:
-    """Return exact, symmetric equality after common dtype promotion.
+    """Return exact equality for configurations with matching dtypes.
 
     Unlike :meth:`AtomicConfiguration.__eq__`, this comparison is intended for
-    physics authority checks. Both operands are promoted to the same dtype and
-    moved to CPU before comparison, so neither operand is narrowed and device
-    placement cannot affect the result.
+    physics authority checks. Dtype is part of that contract: configurations
+    with different position or charge dtypes raise a configuration error rather
+    than being implicitly converted. Matching-dtype values are moved to CPU
+    before exact comparison, so device placement cannot affect the result.
     """
 
     if left.positions.shape != right.positions.shape or left.charges.shape != right.charges.shape:
         return False
 
-    positions_dtype = torch.promote_types(left.positions.dtype, right.positions.dtype)
-    charges_dtype = torch.promote_types(left.charges.dtype, right.charges.dtype)
-    left_positions = left.positions.to(device="cpu", dtype=positions_dtype)
-    right_positions = right.positions.to(device="cpu", dtype=positions_dtype)
-    left_charges = left.charges.to(device="cpu", dtype=charges_dtype)
-    right_charges = right.charges.to(device="cpu", dtype=charges_dtype)
+    if left.positions.dtype != right.positions.dtype:
+        raise ValueError(
+            "atomic configuration dtype mismatch (configuration error): "
+            f"positions {left_label}={left.positions.dtype}, "
+            f"{right_label}={right.positions.dtype}"
+        )
+    if left.charges.dtype != right.charges.dtype:
+        raise ValueError(
+            "atomic configuration dtype mismatch (configuration error): "
+            f"charges {left_label}={left.charges.dtype}, "
+            f"{right_label}={right.charges.dtype}"
+        )
+
+    left_positions = left.positions.to(device="cpu")
+    right_positions = right.positions.to(device="cpu")
+    left_charges = left.charges.to(device="cpu")
+    right_charges = right.charges.to(device="cpu")
     return bool(
         torch.equal(left_positions, right_positions)
         and torch.equal(left_charges, right_charges)
