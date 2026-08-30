@@ -236,6 +236,106 @@ def test_analytic_evaluator_rejects_canonical_geometry_mismatch() -> None:
         )
 
 
+def test_analytic_evaluator_rejects_narrowing_geometry_mismatches() -> None:
+    base_positions = torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32)
+    base_charges = torch.tensor([1.5], dtype=torch.float32)
+    cases = [
+        (
+            AtomicConfiguration(base_positions, base_charges),
+            AtomicConfiguration(
+                base_positions.to(torch.float64) + 2**-25,
+                base_charges.to(torch.float64),
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                base_positions.to(torch.float64) + 2**-25,
+                base_charges.to(torch.float64),
+            ),
+            AtomicConfiguration(base_positions, base_charges),
+        ),
+        (
+            AtomicConfiguration(base_positions, base_charges),
+            AtomicConfiguration(
+                base_positions.to(torch.float64),
+                base_charges.to(torch.float64) + 2**-25,
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                base_positions.to(torch.float64),
+                base_charges.to(torch.float64) + 2**-25,
+            ),
+            AtomicConfiguration(base_positions, base_charges),
+        ),
+        (
+            AtomicConfiguration(
+                torch.tensor([[0, 1, 2]], dtype=torch.int64),
+                torch.tensor([2], dtype=torch.int64),
+            ),
+            AtomicConfiguration(
+                torch.tensor([[0.25, 1.0, 2.0]], dtype=torch.float64),
+                torch.tensor([2.0], dtype=torch.float64),
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                torch.tensor([[0.25, 1.0, 2.0]], dtype=torch.float64),
+                torch.tensor([2.0], dtype=torch.float64),
+            ),
+            AtomicConfiguration(
+                torch.tensor([[0, 1, 2]], dtype=torch.int64),
+                torch.tensor([2], dtype=torch.int64),
+            ),
+        ),
+    ]
+
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.4, 0.5, 0.6]], [[0.5, 0.6, 0.7]]], dtype=torch.float64
+        )
+    )
+    for provider_atoms, declared_atoms in cases:
+        provider = ElectronNucleusCusp(provider_atoms)
+        wavefunction = _AnalyticWavefunction(provider)
+        terms = {
+            "kinetic": KineticEnergy(),
+            "electron_nucleus": ElectronNucleusPotential(declared_atoms, eps=0.0),
+        }
+        with pytest.raises(ValueError, match="geometry.*agree exactly"):
+            AnalyticCuspEvaluator().evaluate(
+                terms, AnalyticCuspContext(wavefunction, batch)
+            )
+
+
+def test_analytic_evaluator_accepts_exact_geometry_across_dtypes() -> None:
+    provider_atoms = AtomicConfiguration(
+        torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32),
+        torch.tensor([1.0], dtype=torch.float32),
+    )
+    declared_atoms = AtomicConfiguration(
+        provider_atoms.positions.to(torch.float64),
+        provider_atoms.charges.to(torch.float64),
+    )
+    provider = ElectronNucleusCusp(provider_atoms)
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.4, 0.5, 0.6]], [[0.5, 0.6, 0.7]]], dtype=torch.float64
+        )
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(declared_atoms, eps=0.0),
+    }
+
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(_AnalyticWavefunction(provider), batch)
+    )
+
+    assert result.shape == (2,)
+    assert torch.isfinite(result).all()
+
+
 def test_analytic_evaluator_rejects_legacy_geometry_mismatch() -> None:
     atoms, wavefunction, batch, _ = _analytic_setup()
     mismatched = AtomicConfiguration(

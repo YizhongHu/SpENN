@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from tpen.data import AtomicConfiguration
+from tpen.data.atomic_configuration import strict_equal_atomic_configurations
 
 
 def _helium() -> AtomicConfiguration:
@@ -166,3 +167,45 @@ def test_content_id_is_reproducible_and_device_dtype_independent() -> None:
 
     different = _hydrogen_molecule()
     assert config.content_id() != different.content_id()
+
+
+def test_strict_geometry_comparison_is_symmetric_and_promotes_without_narrowing() -> None:
+    base_positions = torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32)
+    base_charges = torch.tensor([1.5], dtype=torch.float32)
+    cases = [
+        (
+            AtomicConfiguration(base_positions, base_charges),
+            AtomicConfiguration(
+                base_positions.to(torch.float64) + 2**-25,
+                base_charges.to(torch.float64),
+            ),
+        ),
+        (
+            AtomicConfiguration(base_positions, base_charges),
+            AtomicConfiguration(
+                base_positions.to(torch.float64),
+                base_charges.to(torch.float64) + 2**-25,
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                torch.tensor([[0, 1, 2]], dtype=torch.int64),
+                torch.tensor([2], dtype=torch.int64),
+            ),
+            AtomicConfiguration(
+                torch.tensor([[0.25, 1.0, 2.0]], dtype=torch.float64),
+                torch.tensor([2.0], dtype=torch.float64),
+            ),
+        ),
+    ]
+
+    for left, right in cases:
+        assert not strict_equal_atomic_configurations(left, right)
+        assert not strict_equal_atomic_configurations(right, left)
+
+    exact_left = AtomicConfiguration(base_positions, torch.tensor([1.0], dtype=torch.float32))
+    exact_right = AtomicConfiguration(
+        base_positions.to(torch.float64), torch.tensor([1.0], dtype=torch.float64)
+    )
+    assert strict_equal_atomic_configurations(exact_left, exact_right)
+    assert strict_equal_atomic_configurations(exact_right, exact_left)

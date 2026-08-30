@@ -242,6 +242,33 @@ class AtomicConfiguration:
         return digest.hexdigest()
 
 
+def strict_equal_atomic_configurations(
+    left: AtomicConfiguration,
+    right: AtomicConfiguration,
+) -> bool:
+    """Return exact, symmetric equality after common dtype promotion.
+
+    Unlike :meth:`AtomicConfiguration.__eq__`, this comparison is intended for
+    physics authority checks. Both operands are promoted to the same dtype and
+    moved to CPU before comparison, so neither operand is narrowed and device
+    placement cannot affect the result.
+    """
+
+    if left.positions.shape != right.positions.shape or left.charges.shape != right.charges.shape:
+        return False
+
+    positions_dtype = torch.promote_types(left.positions.dtype, right.positions.dtype)
+    charges_dtype = torch.promote_types(left.charges.dtype, right.charges.dtype)
+    left_positions = left.positions.to(device="cpu", dtype=positions_dtype)
+    right_positions = right.positions.to(device="cpu", dtype=positions_dtype)
+    left_charges = left.charges.to(device="cpu", dtype=charges_dtype)
+    right_charges = right.charges.to(device="cpu", dtype=charges_dtype)
+    return bool(
+        torch.equal(left_positions, right_positions)
+        and torch.equal(left_charges, right_charges)
+    )
+
+
 def _as_owned_tensor(value: Any) -> torch.Tensor:
     tensor = value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
     return tensor.clone().detach().requires_grad_(False)

@@ -27,6 +27,7 @@ from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import torch
 
+from tpen.data.atomic_configuration import strict_equal_atomic_configurations
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.naming import camel_to_snake
 from tpen.physics.operators import (
@@ -363,7 +364,9 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         if provider.atoms.spatial_dim != 3:
             raise ValueError("analytic cusp evaluation requires spatial dimension 3")
         declared_geometry = declared_operator_geometry(potential)
-        if declared_geometry is not None and provider.atoms != declared_geometry:
+        if declared_geometry is not None and not strict_equal_atomic_configurations(
+            provider.atoms, declared_geometry
+        ):
             raise ValueError(
                 "analytic cusp electron-nucleus term geometry must agree exactly "
                 "with the ElectronNucleusCusp provider atoms"
