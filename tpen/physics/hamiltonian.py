@@ -29,6 +29,12 @@ import torch
 
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.naming import camel_to_snake
+from tpen.physics.operators import (
+    ELECTRON_NUCLEUS_COULOMB,
+    KINETIC_ENERGY,
+    OperatorId,
+    is_registered_operator,
+)
 
 
 @dataclass
@@ -116,6 +122,15 @@ def _validate_hamiltonian_term(name: str, term: object) -> None:
             f"hamiltonian term {name!r} ({type(term).__name__}) must expose a callable "
             "local_energy(wavefunction, batch)"
         )
+
+
+def _declared_operator_id(term: object) -> OperatorId | None:
+    """Return a registered term's declared operator identity, if present."""
+
+    term_type = type(term)
+    if not is_registered_operator(term_type):
+        return None
+    return term_type.operator_id
 
 
 @runtime_checkable
@@ -314,19 +329,27 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         """Validate configuration-only requirements and return participants."""
 
         from tpen.nn.cusp import ElectronNucleusCusp
-        from tpen.physics.kinetic import KineticEnergy
-        from tpen.physics.potential import ElectronNucleusPotential
 
         normalized = normalize_hamiltonian_terms(terms)
-        kinetic = [term for term in normalized.values() if isinstance(term, KineticEnergy)]
-        potentials = [term for term in normalized.values() if isinstance(term, ElectronNucleusPotential)]
+        kinetic = [term for term in normalized.values() if _declared_operator_id(term) == KINETIC_ENERGY]
+        potentials = [
+            term for term in normalized.values() if _declared_operator_id(term) == ELECTRON_NUCLEUS_COULOMB
+        ]
         if len(kinetic) != 1:
-            raise ValueError("analytic cusp evaluation requires exactly one KineticEnergy term")
+            raise ValueError(
+                "analytic cusp evaluation requires exactly one term declaring operator "
+                f"{KINETIC_ENERGY}"
+            )
         if len(potentials) != 1:
-            raise ValueError("analytic cusp evaluation requires exactly one ElectronNucleusPotential term")
+            raise ValueError(
+                "analytic cusp evaluation requires exactly one term declaring operator "
+                f"{ELECTRON_NUCLEUS_COULOMB}"
+            )
         potential = potentials[0]
         if potential.eps != 0:
-            raise ValueError("analytic cusp evaluation requires ElectronNucleusPotential.eps == 0")
+            raise ValueError(
+                "analytic cusp evaluation requires the electron-nucleus Coulomb term eps == 0"
+            )
 
         provider = wavefunction.analytic_cusp_provider
         if not isinstance(provider, ElectronNucleusCusp):
@@ -379,19 +402,16 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
                 f"got {type(context).__name__}"
             )
         from tpen.nn.cusp import ElectronNucleusCusp
-        from tpen.physics.potential import ElectronNucleusPotential, _validate_batch_atoms_context
+        from tpen.physics.potential import _validate_batch_atoms_context
 
         normalized, provider = self._validate_configuration(terms, context.wavefunction)
-        potential = next(
-            term for term in normalized.values() if isinstance(term, ElectronNucleusPotential)
-        )
         if not isinstance(provider, ElectronNucleusCusp):
             raise TypeError("analytic cusp provider validation returned an invalid provider")
 
         flat = context.batch.flatten_samples()
         if flat.spatial_dim != 3:
             raise ValueError("analytic cusp evaluation requires spatial dimension 3")
-        _validate_batch_atoms_context(potential.atoms, flat, term_name=type(potential).__name__)
+        _validate_batch_atoms_context(provider.atoms, flat, term_name="analytic cusp provider")
         positions = flat.positions.detach().clone().requires_grad_(True)
         probe = ElectronBatch(
             positions=positions,
@@ -540,16 +560,13 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         *,
         return_terms: bool,
     ) -> torch.Tensor | LocalEnergyResult:
-        from tpen.physics.kinetic import KineticEnergy
-        from tpen.physics.potential import ElectronNucleusPotential
-
         flat = batch.flatten_samples()
         decomposition: dict[str, torch.Tensor] = {}
         total: torch.Tensor | None = None
         inserted = False
         per_electron: torch.Tensor | None = None
         for name, term in normalized.items():
-            if isinstance(term, (KineticEnergy, ElectronNucleusPotential)):
+            if _declared_operator_id(term) in (KINETIC_ENERGY, ELECTRON_NUCLEUS_COULOMB):
                 if not inserted:
                     decomposition[self.fused_term_name] = fused
                     total = fused if total is None else total + fused

@@ -17,7 +17,7 @@ from tpen.data import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, FactorizedLocalEnergyInput, WavefunctionOutput
 from tpen.nn.cusp import CurvatureElectronNucleusCuspLaw, ElectronNucleusCusp
 from tpen.physics.kinetic import KineticEnergy
-from tpen.physics.potential import ElectronNucleusPotential
+from tpen.physics.potential import ElectronNucleusInteraction, ElectronNucleusPotential
 from tpen.physics.potential import HarmonicTrap
 from tpen.physics.hamiltonian import (
     AnalyticCuspContext,
@@ -172,6 +172,45 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
     )
     assert result.wavefunction_output.aux == {"source": "regular"}
     assert result.per_electron_kinetic is None
+
+
+def test_analytic_evaluator_fuses_legacy_electron_nucleus_interaction() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusInteraction(eps=0.0),
+    }
+
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, transported_batch), return_terms=True
+    )
+
+    torch.testing.assert_close(result.total, torch.full((2,), -0.5, dtype=_DTYPE))
+    assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
+
+
+def test_analytic_evaluator_rejects_duplicate_electron_nucleus_operator_identity() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+    terms = {
+        "canonical": ElectronNucleusPotential(atoms, eps=0.0),
+        "legacy": ElectronNucleusInteraction(eps=0.0),
+        "kinetic": KineticEnergy(),
+    }
+
+    with pytest.raises(ValueError, match="electron_nucleus_coulomb"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, transported_batch)
+        )
 
 
 def test_analytic_fast_kernel_matches_reference_in_values_and_parameter_gradients() -> None:
