@@ -200,6 +200,12 @@ def _rewrite_manifest_as_v1(checkpoint_dir: Path) -> None:
     manifest_path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def test_legacy_checkpoint_kind_is_pinned_to_historical_manifest_literal() -> None:
+    # Archived checkpoint manifests carry this exact kind; changing the
+    # spelling would orphan them from the legacy restore path.
+    assert LEGACY_CHECKPOINT_KIND == "spenn.checkpoint"
+
+
 def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) -> None:
     torch.manual_seed(0)
     trained = torch.nn.Linear(3, 2).double()
