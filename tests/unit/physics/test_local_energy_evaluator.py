@@ -200,6 +200,15 @@ def test_analytic_evaluator_fuses_legacy_electron_nucleus_interaction() -> None:
         terms, AnalyticCuspContext(wavefunction, transported_batch), return_terms=True
     )
 
+    evaluation = wavefunction.analytic_cusp_provider.analytic_evaluation(transported_batch)
+    cusp_gradient = (
+        evaluation.radial_first_derivative.unsqueeze(-1)
+        * evaluation.displacement
+        / evaluation.distance.unsqueeze(-1)
+    ).sum(dim=2)
+    expected = -0.5 * cusp_gradient.square().sum(dim=(1, 2))
+    expected = expected + evaluation.local_energy_pair().sum(dim=(1, 2))
+    torch.testing.assert_close(result.total, expected, rtol=0.0, atol=0.0)
     torch.testing.assert_close(result.total, canonical, rtol=0.0, atol=0.0)
     assert torch.any(result.total != torch.full_like(result.total, -0.5))
     assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
