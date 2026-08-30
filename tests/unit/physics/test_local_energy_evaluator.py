@@ -13,9 +13,15 @@ import pytest
 import torch
 from typeguard import TypeCheckError, suppress_type_checks
 
-from tpen.data.batch import ElectronBatch
+from tpen.data import AtomicConfiguration
+from tpen.data.batch import ElectronBatch, FactorizedLocalEnergyInput, WavefunctionOutput
+from tpen.nn.cusp import CurvatureElectronNucleusCuspLaw, ElectronNucleusCusp
+from tpen.physics.kinetic import KineticEnergy
+from tpen.physics.potential import ElectronNucleusInteraction, ElectronNucleusPotential
 from tpen.physics.potential import HarmonicTrap
 from tpen.physics.hamiltonian import (
+    AnalyticCuspContext,
+    AnalyticCuspEvaluator,
     LocalEnergyResult,
     NaiveLocalEnergyContext,
     NaiveLocalEnergyEvaluator,
@@ -108,3 +114,411 @@ def test_sequence_terms_keep_snake_case_naming_through_delegation() -> None:
     result = local_energy([ConstantTerm(2.0)], None, batch, return_terms=True)
     assert list(result.terms) == ["constant_term"]
     torch.testing.assert_close(result.terms["constant_term"], torch.full((3,), 2.0, dtype=_DTYPE))
+
+
+class _AnalyticWavefunction:
+    def __init__(self, provider, curvature: float | torch.Tensor = 0.0):
+        self.analytic_cusp_provider = provider
+        self.curvature = curvature
+
+    def factorized_local_energy_input(self, batch):
+        flat = batch.flatten_samples()
+        logabs = -self.curvature * flat.positions.square().sum(dim=(1, 2))
+        output = WavefunctionOutput(
+            logabs=logabs,
+            sign=torch.ones_like(logabs),
+            aux={"source": "regular"},
+        )
+        return FactorizedLocalEnergyInput(
+            output,
+            self.analytic_cusp_provider.analytic_evaluation(flat),
+        )
+
+
+def _analytic_setup(*, z=1.0, nuclear_position=None, eps=0.0, law=None):
+    position = (
+        torch.zeros((1, 3), dtype=_DTYPE)
+        if nuclear_position is None
+        else torch.tensor([nuclear_position], dtype=_DTYPE)
+    )
+    atoms = AtomicConfiguration(position, torch.tensor([z], dtype=_DTYPE))
+    provider = ElectronNucleusCusp(atoms, law=law)
+    wavefunction = _AnalyticWavefunction(provider)
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.4, 0.0, 0.0]], [[0.4, 0.0, 0.0]]],
+            dtype=_DTYPE,
+        )
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(atoms, eps=eps),
+    }
+    return atoms, wavefunction, batch, terms
+
+
+def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
+    _, wavefunction, batch, terms = _analytic_setup()
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+
+    torch.testing.assert_close(result.total, torch.full((2,), -0.5, dtype=_DTYPE))
+    assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
+    assert result.wavefunction_output is not None
+    torch.testing.assert_close(
+        result.wavefunction_output.logabs,
+        torch.full((2,), -0.4, dtype=_DTYPE),
+    )
+    assert result.wavefunction_output.aux == {"source": "regular"}
+    assert result.per_electron_kinetic is None
+
+
+def test_analytic_evaluator_fuses_legacy_electron_nucleus_interaction() -> None:
+    law = CurvatureElectronNucleusCuspLaw(
+        curvature_coefficient=0.23,
+        curvature_range=0.7,
+        trainable=False,
+        eps=0.0,
+    )
+    atoms, wavefunction, batch, canonical_terms = _analytic_setup(law=law)
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusInteraction(eps=0.0),
+    }
+
+    evaluator = AnalyticCuspEvaluator()
+    canonical = evaluator.evaluate(
+        canonical_terms, AnalyticCuspContext(wavefunction, batch)
+    )
+    result = evaluator.evaluate(
+        terms, AnalyticCuspContext(wavefunction, transported_batch), return_terms=True
+    )
+
+    evaluation = wavefunction.analytic_cusp_provider.analytic_evaluation(transported_batch)
+    cusp_gradient = (
+        evaluation.radial_first_derivative.unsqueeze(-1)
+        * evaluation.displacement
+        / evaluation.distance.unsqueeze(-1)
+    ).sum(dim=2)
+    expected = -0.5 * cusp_gradient.square().sum(dim=(1, 2))
+    expected = expected + evaluation.local_energy_pair().sum(dim=(1, 2))
+    torch.testing.assert_close(result.total, expected, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(result.total, canonical, rtol=0.0, atol=0.0)
+    assert torch.any(result.total != torch.full_like(result.total, -0.5))
+    assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
+
+
+def test_analytic_evaluator_rejects_canonical_geometry_mismatch() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    mismatched = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=_DTYPE),
+        torch.tensor([1.0], dtype=_DTYPE),
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(mismatched, eps=0.0),
+    }
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+
+    with pytest.raises(ValueError, match="geometry.*agree exactly"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, transported_batch)
+        )
+
+
+def test_analytic_evaluator_rejects_cross_dtype_geometry_mismatches() -> None:
+    base_positions = torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32)
+    base_charges = torch.tensor([1.5], dtype=torch.float32)
+    cases = [
+        (
+            AtomicConfiguration(base_positions, base_charges),
+            AtomicConfiguration(
+                base_positions.to(torch.float64) + 2**-25,
+                base_charges.to(torch.float64),
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                base_positions.to(torch.float64) + 2**-25,
+                base_charges.to(torch.float64),
+            ),
+            AtomicConfiguration(base_positions, base_charges),
+        ),
+        (
+            AtomicConfiguration(base_positions, base_charges),
+            AtomicConfiguration(
+                base_positions.to(torch.float64),
+                base_charges.to(torch.float64) + 2**-25,
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                base_positions.to(torch.float64),
+                base_charges.to(torch.float64) + 2**-25,
+            ),
+            AtomicConfiguration(base_positions, base_charges),
+        ),
+        (
+            AtomicConfiguration(
+                torch.tensor([[0, 1, 2]], dtype=torch.int64),
+                torch.tensor([2], dtype=torch.int64),
+            ),
+            AtomicConfiguration(
+                torch.tensor([[0.25, 1.0, 2.0]], dtype=torch.float64),
+                torch.tensor([2.0], dtype=torch.float64),
+            ),
+        ),
+        (
+            AtomicConfiguration(
+                torch.tensor([[0.25, 1.0, 2.0]], dtype=torch.float64),
+                torch.tensor([2.0], dtype=torch.float64),
+            ),
+            AtomicConfiguration(
+                torch.tensor([[0, 1, 2]], dtype=torch.int64),
+                torch.tensor([2], dtype=torch.int64),
+            ),
+        ),
+    ]
+
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.4, 0.5, 0.6]], [[0.5, 0.6, 0.7]]], dtype=torch.float64
+        )
+    )
+    for provider_atoms, declared_atoms in cases:
+        provider = ElectronNucleusCusp(provider_atoms)
+        wavefunction = _AnalyticWavefunction(provider)
+        terms = {
+            "kinetic": KineticEnergy(),
+            "electron_nucleus": ElectronNucleusPotential(declared_atoms, eps=0.0),
+        }
+        with pytest.raises(ValueError, match="dtype mismatch.*configuration error"):
+            AnalyticCuspEvaluator().evaluate(
+                terms, AnalyticCuspContext(wavefunction, batch)
+            )
+
+
+def test_analytic_evaluator_rejects_exact_values_with_different_dtypes() -> None:
+    provider_atoms = AtomicConfiguration(
+        torch.tensor([[0.25, 0.5, 0.75]], dtype=torch.float32),
+        torch.tensor([1.0], dtype=torch.float32),
+    )
+    declared_atoms = AtomicConfiguration(
+        provider_atoms.positions.to(torch.float64),
+        provider_atoms.charges.to(torch.float64),
+    )
+    provider = ElectronNucleusCusp(provider_atoms)
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.4, 0.5, 0.6]], [[0.5, 0.6, 0.7]]], dtype=torch.float64
+        )
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(declared_atoms, eps=0.0),
+    }
+
+    with pytest.raises(ValueError, match="dtype mismatch.*positions"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(_AnalyticWavefunction(provider), batch)
+        )
+
+
+def test_analytic_evaluator_rejects_legacy_geometry_mismatch() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    mismatched = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=_DTYPE),
+        torch.tensor([1.0], dtype=_DTYPE),
+    )
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusInteraction(
+            mismatched.positions, mismatched.charges, eps=0.0
+        ),
+    }
+
+    with pytest.raises(ValueError, match="geometry.*agree exactly"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, transported_batch)
+        )
+
+
+def test_analytic_evaluator_rejects_duplicate_electron_nucleus_operator_identity() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+    terms = {
+        "canonical": ElectronNucleusPotential(atoms, eps=0.0),
+        "legacy": ElectronNucleusInteraction(eps=0.0),
+        "kinetic": KineticEnergy(),
+    }
+
+    with pytest.raises(ValueError, match="electron_nucleus_coulomb"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, transported_batch)
+        )
+
+
+def test_analytic_fast_kernel_matches_reference_in_values_and_parameter_gradients() -> None:
+    law = CurvatureElectronNucleusCuspLaw(
+        curvature_coefficient=0.23,
+        curvature_range=0.7,
+        trainable=False,
+        eps=0.0,
+    )
+    _, wavefunction, _, terms = _analytic_setup(law=law)
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [
+                [[0.4, 0.0, 0.0], [0.0, 0.4, 0.0]],
+                [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]],
+                [[0.6, 0.0, 0.0], [0.0, 0.6, 0.0]],
+            ],
+            dtype=_DTYPE,
+        )
+    )
+    curvature = torch.nn.Parameter(torch.tensor(0.23, dtype=_DTYPE))
+    wavefunction.curvature = curvature
+    evaluator = AnalyticCuspEvaluator()
+    fast = evaluator.evaluate(terms, AnalyticCuspContext(wavefunction, batch), return_terms=True)
+    fast_gradient = torch.autograd.grad(fast.total.sum(), curvature, retain_graph=True)[0]
+    reference = evaluator.evaluate_reference(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+    reference_gradient = torch.autograd.grad(reference.total.sum(), curvature)[0]
+
+    torch.testing.assert_close(fast.total, reference.total, rtol=1.0e-12, atol=1.0e-12)
+    torch.testing.assert_close(fast_gradient, reference_gradient, rtol=1.0e-12, atol=1.0e-12)
+    assert tuple(fast.total.shape) == (3,)
+    assert tuple(reference.total.shape) == (3,)
+
+
+def test_analytic_evaluator_accumulates_terms_before_and_after_fused_group() -> None:
+    class CountingTerm:
+        def __init__(self, value):
+            self.value = value
+            self.calls = 0
+
+        def local_energy(self, wavefunction, batch):
+            self.calls += 1
+            size = batch.flatten_samples().batch_size
+            return LocalEnergyResult(
+                total=torch.full((size,), self.value, dtype=batch.positions.dtype)
+            )
+
+    before = CountingTerm(2.25)
+    after = CountingTerm(-0.75)
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    terms = {
+        "before": before,
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(atoms, eps=0.0),
+        "after": after,
+    }
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+
+    assert before.calls == after.calls == 1
+    assert list(result.terms) == ["before", "kinetic_plus_electron_nucleus", "after"]
+    torch.testing.assert_close(result.total, sum(result.terms.values()))
+
+
+def test_analytic_evaluator_uses_cancelled_slope_residual_at_tiny_radius() -> None:
+    law = CurvatureElectronNucleusCuspLaw(
+        curvature_coefficient=0.23,
+        curvature_range=0.7,
+        trainable=False,
+        eps=0.0,
+    )
+    _, wavefunction, _, terms = _analytic_setup(law=law)
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[1.0e-10, 0.0, 0.0]], [[1.0e-10, 0.0, 0.0]]],
+            dtype=_DTYPE,
+        )
+    )
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+    evaluation = wavefunction.analytic_cusp_provider.analytic_evaluation(batch)
+    grad_u = (
+        evaluation.radial_first_derivative.unsqueeze(-1)
+        * evaluation.displacement
+        / evaluation.distance.unsqueeze(-1)
+    ).sum(dim=2)
+    expected = -0.5 * evaluation.radial_second_derivative - evaluation.slope_residual
+    expected = expected.sum(dim=(1, 2)) - 0.5 * grad_u.square().sum(dim=(1, 2))
+    torch.testing.assert_close(result.total, expected, rtol=1.0e-12, atol=1.0e-12)
+
+
+def test_analytic_evaluator_retains_all_nuclear_centres_in_grad_u() -> None:
+    atoms = AtomicConfiguration(
+        torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=_DTYPE),
+        torch.tensor([1.0, 2.0], dtype=_DTYPE),
+    )
+    provider = ElectronNucleusCusp(atoms)
+    wavefunction = _AnalyticWavefunction(provider)
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.2, 0.3, 0.0]], [[0.2, 0.3, 0.0]]],
+            dtype=_DTYPE,
+        )
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(atoms, eps=0.0),
+    }
+    result = AnalyticCuspEvaluator().evaluate(
+        terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
+    )
+    evaluation = provider.analytic_evaluation(batch)
+    grad_u = (
+        evaluation.radial_first_derivative.unsqueeze(-1)
+        * evaluation.displacement
+        / evaluation.distance.unsqueeze(-1)
+    ).sum(dim=2)
+    expected = -0.5 * grad_u.square().sum(dim=(1, 2)) + evaluation.local_energy_pair().sum(dim=(1, 2))
+    torch.testing.assert_close(result.total, expected, rtol=1.0e-12, atol=1.0e-12)
+
+
+def test_hydrogenic_near_cusp_ladder_uses_derived_z_limit() -> None:
+    z = 1.7
+    _, wavefunction, _, terms = _analytic_setup(z=z)
+    radii = torch.tensor([10.0 ** -power for power in range(2, 11)], dtype=_DTYPE)
+    directions = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]],
+        dtype=_DTYPE,
+    )
+    directions = directions / directions.norm(dim=-1, keepdim=True)
+    positions = (radii[:, None, None] * directions[None, :, :]).reshape(-1, 1, 3)
+    batch = ElectronBatch(positions=positions)
+    result = AnalyticCuspEvaluator().evaluate(terms, AnalyticCuspContext(wavefunction, batch))
+    expected_limit = -(z**2) / 2.0
+    torch.testing.assert_close(
+        result,
+        torch.full_like(result, expected_limit),
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+    values = result.reshape(len(radii), len(directions))
+    spread = values.amax(dim=1) - values.amin(dim=1)
+    assert torch.isfinite(spread).all()

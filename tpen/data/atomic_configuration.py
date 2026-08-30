@@ -242,6 +242,52 @@ class AtomicConfiguration:
         return digest.hexdigest()
 
 
+def strict_equal_atomic_configurations(
+    left: AtomicConfiguration,
+    right: AtomicConfiguration,
+    *,
+    left_label: str = "left",
+    right_label: str = "right",
+) -> bool:
+    """Return exact equality for configurations with matching dtypes.
+
+    Unlike :meth:`AtomicConfiguration.__eq__`, this comparison is intended for
+    physics authority checks. Dtype is part of that contract: configurations
+    with different position or charge dtypes raise a configuration error rather
+    than being implicitly converted. Matching-dtype values are moved to CPU
+    before exact comparison, so device placement cannot affect the result.
+
+    The contract assumes real-valued geometry dtypes. PyTorch's backend raises
+    for ``chalf``, ``float8_e5m2``, and ``float8_e8m0fnu`` in ``torch.equal``;
+    those unsupported dtypes are intentionally not normalized here.
+    """
+
+    if left.positions.dtype != right.positions.dtype:
+        raise ValueError(
+            "atomic configuration dtype mismatch (configuration error): "
+            f"positions {left_label}={left.positions.dtype}, "
+            f"{right_label}={right.positions.dtype}"
+        )
+    if left.charges.dtype != right.charges.dtype:
+        raise ValueError(
+            "atomic configuration dtype mismatch (configuration error): "
+            f"charges {left_label}={left.charges.dtype}, "
+            f"{right_label}={right.charges.dtype}"
+        )
+
+    if left.positions.shape != right.positions.shape or left.charges.shape != right.charges.shape:
+        return False
+
+    left_positions = left.positions.to(device="cpu")
+    right_positions = right.positions.to(device="cpu")
+    left_charges = left.charges.to(device="cpu")
+    right_charges = right.charges.to(device="cpu")
+    return bool(
+        torch.equal(left_positions, right_positions)
+        and torch.equal(left_charges, right_charges)
+    )
+
+
 def _as_owned_tensor(value: Any) -> torch.Tensor:
     tensor = value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
     return tensor.clone().detach().requires_grad_(False)
