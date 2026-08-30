@@ -147,10 +147,15 @@ def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
         # The documented command is `uv run --project <checkout> --locked --extra cpu`,
         # which SYNCS a project environment. Unpinned, it syncs whichever environment
         # the caller is using -- inherited via os.environ above -- so this test would
-        # mutate the interpreter every other test runs under, silently repairing
-        # environment-gated skips and making suite results order-dependent. Point the
-        # sync at a disposable venv; the command itself stays byte-for-byte as
-        # documented, only its destination changes.
+        # mutate the interpreter every other test runs under, making suite results
+        # order-dependent. It cuts BOTH ways: the sync installs torch where it was
+        # absent, silently repairing environment-gated skips so a contaminated run
+        # looks more complete than a clean one; and because the command carries
+        # `--extra cpu` WITHOUT `--extra finite-difference`, it also PRUNES
+        # `numdifftools` from an environment that had it, breaking finite-difference
+        # instruments mid-run for a reason that looks like a real disagreement.
+        # Point the sync at a disposable venv; the command itself stays byte-for-byte
+        # as documented, only its destination changes.
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "venv"),
     }
     # UV_CACHE_DIR is deliberately INHERITED rather than pinned under tmp_path. The
@@ -161,6 +166,18 @@ def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
     env.pop("PYTHONPATH", None)
     command = _runbook_command("Cannon planning (login node):", "cutover_plan.py")
     subprocess.run(["bash", "-c", command], cwd=outside, env=env, check=True)
+    # Guard that the pin was HONOURED, not merely written. This defect fails silently:
+    # if a later edit drops or overrides UV_PROJECT_ENVIRONMENT, the command still
+    # succeeds and the test still passes while quietly mutating the caller's
+    # environment again. `pyvenv.cfg` is written by the interpreter that creates a
+    # venv, so its presence here is evidence the sync materialised at the pinned
+    # destination rather than somewhere else -- which a check on the env dict, or on
+    # the directory alone, would not establish.
+    assert (tmp_path / "venv" / "pyvenv.cfg").is_file(), (
+        "the documented command did not sync into the pinned disposable venv; "
+        "UV_PROJECT_ENVIRONMENT is no longer being honoured and this test is "
+        "mutating the caller's environment (installing torch, pruning numdifftools)"
+    )
     plan = results / "00_plan" / "subprocess-test"
     assert (plan / "rows.csv").is_file()
     assert (plan / "02_train" / "tasks.jsonl").is_file()
