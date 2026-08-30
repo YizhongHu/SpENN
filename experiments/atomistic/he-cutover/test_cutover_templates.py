@@ -163,6 +163,17 @@ def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
     # isolated sync hardlink torch instead of re-downloading it; pinning it here would
     # force a fresh download every run. Sharing the cache is safe in a way that sharing
     # the project environment is not.
+    #
+    # That safety is about RESOLUTION, DOWNLOAD and HARDLINKING -- not the whole cache.
+    # `uv` also BUILDS inside it, under `builds-v0`, and that subtree is ordinary
+    # scratch space with none of the content-addressed guarantees. Two failures seen
+    # there, both unrelated to this test: concurrent editable builds of the same
+    # project colliding (`Errno 39 Directory not empty`), and an NFS silly-rename
+    # artefact (`.nfs*`) when the inherited cache sits on NFS home. So the caller
+    # chooses where builds happen, and a caller running concurrent lanes or a
+    # networked home may need its own UV_CACHE_DIR. That belongs in the caller/harness,
+    # NOT here: pinning it in this test would trade a rare, loud build failure for a
+    # guaranteed multi-gigabyte download on every run.
     env.pop("PYTHONPATH", None)
     command = _runbook_command("Cannon planning (login node):", "cutover_plan.py")
     subprocess.run(["bash", "-c", command], cwd=outside, env=env, check=True)
