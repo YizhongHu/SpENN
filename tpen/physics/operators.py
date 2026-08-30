@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Protocol, final
 
+from tpen.data.atomic_configuration import AtomicConfiguration
+
 
 @final
 @dataclass(frozen=True)
@@ -94,6 +96,18 @@ class LocalEnergyOperator(Protocol):
     operator_id: OperatorId
 
 
+class ElectronNucleusGeometryDeclaration(Protocol):
+    """Typed contract for an electron-nucleus term's configured geometry."""
+
+    def declared_nuclear_geometry(self) -> AtomicConfiguration | None:
+        """Return configured geometry, or ``None`` when none was declared."""
+
+
+_OPERATOR_GEOMETRY_DECLARATIONS: dict[
+    type[object], Callable[..., AtomicConfiguration | None]
+] = {}
+
+
 _OPERATOR_REGISTRY: dict[type[LocalEnergyOperator], OperatorId] = {}
 
 
@@ -143,6 +157,34 @@ def is_registered_operator(operator_type: type[object]) -> bool:
     return operator_type in _OPERATOR_REGISTRY
 
 
+def register_operator_geometry(
+    operator_type: type[object],
+    declaration: Callable[..., AtomicConfiguration | None],
+) -> None:
+    """Register an explicit typed geometry declaration for an operator type.
+
+    The registry stores a method descriptor supplied by the implementation;
+    it never discovers attributes on a term. This keeps identity selection
+    and geometry authority explicit even when two classes share one operator
+    identity.
+    """
+
+    if not is_registered_operator(operator_type):
+        raise ValueError(f"{operator_type.__name__} must be registered before geometry declaration")
+    if operator_type in _OPERATOR_GEOMETRY_DECLARATIONS:
+        raise ValueError(f"{operator_type.__name__} already has a geometry declaration")
+    _OPERATOR_GEOMETRY_DECLARATIONS[operator_type] = declaration
+
+
+def declared_operator_geometry(term: object) -> AtomicConfiguration | None:
+    """Return the explicitly registered geometry declaration for ``term``."""
+
+    declaration = _OPERATOR_GEOMETRY_DECLARATIONS.get(type(term))
+    if declaration is None:
+        raise ValueError(f"{type(term).__name__} has no registered geometry declaration")
+    return declaration(term)
+
+
 _TPEN = "tpen.physics"
 
 #: Kinetic energy, :math:`-\\tfrac{1}{2}\\sum_i \\nabla_i^2`.
@@ -171,8 +213,11 @@ __all__ = [
     "KINETIC_ENERGY",
     "NUCLEUS_NUCLEUS_COULOMB",
     "LocalEnergyOperator",
+    "ElectronNucleusGeometryDeclaration",
     "OperatorId",
+    "declared_operator_geometry",
     "register_operator",
+    "register_operator_geometry",
     "registered_operators",
     "is_registered_operator",
 ]

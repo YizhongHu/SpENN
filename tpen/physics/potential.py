@@ -35,6 +35,7 @@ from tpen.physics.operators import (
     ELECTRON_NUCLEUS_COULOMB,
     HARMONIC_TRAP,
     NUCLEUS_NUCLEUS_COULOMB,
+    register_operator_geometry,
     register_operator,
 )
 
@@ -163,6 +164,14 @@ class ElectronNucleusInteraction:
             raise ValueError("nuclear_positions and nuclear_charges must agree on n_nuclei")
         self.eps = eps
 
+    def declared_nuclear_geometry(self) -> AtomicConfiguration | None:
+        """Return legacy constructor geometry, if the term declared one."""
+
+        if self.nuclear_positions is None:
+            return None
+        assert self.nuclear_charges is not None
+        return AtomicConfiguration(self.nuclear_positions, self.nuclear_charges)
+
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         flat = batch.flatten_samples()
         positions = flat.positions
@@ -286,6 +295,11 @@ class ElectronNucleusPotential:
         self.atoms = atoms
         self.eps = eps
 
+    def declared_nuclear_geometry(self) -> AtomicConfiguration:
+        """Return the construction-time geometry authority for this term."""
+
+        return self.atoms
+
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         flat = batch.flatten_samples()
         positions = flat.positions
@@ -299,6 +313,16 @@ class ElectronNucleusPotential:
         if value.shape != (positions.shape[0],):
             raise ValueError(f"electron-nucleus energy must have shape {(positions.shape[0],)}, got {tuple(value.shape)}")
         return LocalEnergyResult(total=value, terms={self.name: value})
+
+
+register_operator_geometry(
+    ElectronNucleusInteraction,
+    ElectronNucleusInteraction.declared_nuclear_geometry,
+)
+register_operator_geometry(
+    ElectronNucleusPotential,
+    ElectronNucleusPotential.declared_nuclear_geometry,
+)
 
 
 @register_operator(NUCLEUS_NUCLEUS_COULOMB)

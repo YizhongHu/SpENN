@@ -175,7 +175,13 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
 
 
 def test_analytic_evaluator_fuses_legacy_electron_nucleus_interaction() -> None:
-    atoms, wavefunction, batch, _ = _analytic_setup()
+    law = CurvatureElectronNucleusCuspLaw(
+        curvature_coefficient=0.23,
+        curvature_range=0.7,
+        trainable=False,
+        eps=0.0,
+    )
+    atoms, wavefunction, batch, canonical_terms = _analytic_setup(law=law)
     transported_batch = ElectronBatch(
         positions=batch.positions,
         nuclear_positions=atoms.positions,
@@ -186,12 +192,63 @@ def test_analytic_evaluator_fuses_legacy_electron_nucleus_interaction() -> None:
         "electron_nucleus": ElectronNucleusInteraction(eps=0.0),
     }
 
-    result = AnalyticCuspEvaluator().evaluate(
+    evaluator = AnalyticCuspEvaluator()
+    canonical = evaluator.evaluate(
+        canonical_terms, AnalyticCuspContext(wavefunction, batch)
+    )
+    result = evaluator.evaluate(
         terms, AnalyticCuspContext(wavefunction, transported_batch), return_terms=True
     )
 
-    torch.testing.assert_close(result.total, torch.full((2,), -0.5, dtype=_DTYPE))
+    torch.testing.assert_close(result.total, canonical, rtol=0.0, atol=0.0)
+    assert torch.any(result.total != torch.full_like(result.total, -0.5))
     assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
+
+
+def test_analytic_evaluator_rejects_canonical_geometry_mismatch() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    mismatched = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=_DTYPE),
+        torch.tensor([1.0], dtype=_DTYPE),
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusPotential(mismatched, eps=0.0),
+    }
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+
+    with pytest.raises(ValueError, match="geometry.*agree exactly"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, transported_batch)
+        )
+
+
+def test_analytic_evaluator_rejects_legacy_geometry_mismatch() -> None:
+    atoms, wavefunction, batch, _ = _analytic_setup()
+    mismatched = AtomicConfiguration(
+        torch.tensor([[1.0, 0.0, 0.0]], dtype=_DTYPE),
+        torch.tensor([1.0], dtype=_DTYPE),
+    )
+    transported_batch = ElectronBatch(
+        positions=batch.positions,
+        nuclear_positions=atoms.positions,
+        nuclear_charges=atoms.charges,
+    )
+    terms = {
+        "kinetic": KineticEnergy(),
+        "electron_nucleus": ElectronNucleusInteraction(
+            mismatched.positions, mismatched.charges, eps=0.0
+        ),
+    }
+
+    with pytest.raises(ValueError, match="geometry.*agree exactly"):
+        AnalyticCuspEvaluator().evaluate(
+            terms, AnalyticCuspContext(wavefunction, transported_batch)
+        )
 
 
 def test_analytic_evaluator_rejects_duplicate_electron_nucleus_operator_identity() -> None:

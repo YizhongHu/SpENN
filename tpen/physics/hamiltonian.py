@@ -33,6 +33,7 @@ from tpen.physics.operators import (
     ELECTRON_NUCLEUS_COULOMB,
     KINETIC_ENERGY,
     OperatorId,
+    declared_operator_geometry,
     is_registered_operator,
 )
 
@@ -361,6 +362,12 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
             raise ValueError("analytic cusp evaluation requires factorized_local_energy_input capability")
         if provider.atoms.spatial_dim != 3:
             raise ValueError("analytic cusp evaluation requires spatial dimension 3")
+        declared_geometry = declared_operator_geometry(potential)
+        if declared_geometry is not None and provider.atoms != declared_geometry:
+            raise ValueError(
+                "analytic cusp electron-nucleus term geometry must agree exactly "
+                "with the ElectronNucleusCusp provider atoms"
+            )
         return normalized, provider
 
     def evaluate(
