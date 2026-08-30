@@ -84,7 +84,10 @@ class OperatorLoweringRegistry:
         does not mutate any module-global state.
     """
 
-    def __init__(self, lowerings: object = ()) -> None:
+    def __init__(
+        self,
+        lowerings: Iterable[object] | Mapping[type[object], object] = (),
+    ) -> None:
         entries: dict[type[object], object] = {}
         if isinstance(lowerings, Mapping):
             candidates = tuple(lowerings.items())
@@ -200,6 +203,7 @@ class LocalEnergyPlanner:
         self._validate_operator_set(operator_list)
 
         lowered: list[object] = []
+        lowerings_by_operator: dict[OperatorId, object] = {}
         owners: dict[OperatorId, object] = {}
         manifest: dict[OperatorId, object] = {}
         for operator in operator_list:
@@ -213,6 +217,7 @@ class LocalEnergyPlanner:
                     "with frozenset claimed_operator_ids"
                 )
             expected_id = operator_type.operator_id
+            lowerings_by_operator[expected_id] = lowering
             if expected_id not in claims:
                 raise ValueError(
                     f"operator {operator_type.__name__} is not claimed by its lowering"
@@ -271,6 +276,7 @@ class LocalEnergyPlanner:
             lowered,
             ordered_providers,
             frozen_manifest,
+            lowerings_by_operator,
         )
         return LocalEnergyPlan(
             kernels=tuple(lowered),
@@ -423,8 +429,16 @@ def _plan_identity(
     kernels: Sequence[object],
     providers: Sequence[object],
     manifest: Mapping[OperatorId, object],
+    lowerings: Mapping[OperatorId, object],
 ) -> str:
-    """Hash only stable semantic descriptors, never object repr/address data."""
+    """Hash stable plan and lowering descriptors, never object addresses.
+
+    Lowering class identity is the backend identity available in the S3
+    protocol.  Parameterised instances of one class intentionally share an
+    identity until a future protocol gives lowerings an explicit, stable
+    semantic configuration token; hashing instance state here would require
+    forbidden structural probing and would not define a cross-process format.
+    """
 
     def kernel_position(kernel: object) -> int | None:
         for index, candidate in enumerate(kernels):
@@ -459,6 +473,10 @@ def _plan_identity(
         "manifest": [
             [str(operator_id), kernel_position(kernel)]
             for operator_id, kernel in sorted(manifest.items(), key=lambda item: str(item[0]))
+        ],
+        "lowerings": [
+            [str(operator_id), _type_sort_key(lowering)]
+            for operator_id, lowering in sorted(lowerings.items(), key=lambda item: str(item[0]))
         ],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

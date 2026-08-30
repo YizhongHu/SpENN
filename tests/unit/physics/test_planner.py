@@ -56,6 +56,11 @@ class Lowering:
 
 
 @dataclass(frozen=True)
+class AlternateLowering(Lowering):
+    """A distinct backend identity with the same lowering behaviour."""
+
+
+@dataclass(frozen=True)
 class Provider:
     key: ContextKey[object]
     dependencies: frozenset[ContextKey[object]] = frozenset()
@@ -189,6 +194,19 @@ def test_plan_identity_is_order_independent_and_changes_with_operator_set() -> N
 
     assert two.identity == reversed_two.identity
     assert one.identity != two.identity
+
+
+def test_plan_identity_changes_when_lowering_class_changes() -> None:
+    kernel = Kernel(frozenset({FIRST}), value=1)
+    ordinary = LocalEnergyPlanner(
+        OperatorLoweringRegistry([Lowering(FirstOperator, kernel)])
+    ).plan([FirstOperator()])
+    alternate = LocalEnergyPlanner(
+        OperatorLoweringRegistry([AlternateLowering(FirstOperator, kernel)])
+    ).plan([FirstOperator()])
+
+    assert ordinary.kernels == alternate.kernels
+    assert ordinary.identity != alternate.identity
 
 
 def test_registry_rejects_duplicate_lowering_types() -> None:
