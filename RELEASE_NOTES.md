@@ -45,6 +45,23 @@ and two compatibility changes.
   `ParslAttachExecutor`, DeepQMC environment ported to Polaris (#385), and a
   reusable multi-GPU scaling probe (#392).
 
+### Changed
+
+- **Vestigial `SpENN` module names retired from the core package** (#414).
+  `tpen/nn/spenn_layer.py` and `tpen/nn/spenn_wave_function.py` become
+  `tpen_layer.py` and `tpen_wave_function.py`; the classes they export were
+  renamed to `TPENLayer`/`TPENWaveFunction` long ago. Import paths change, so
+  this is breaking, and it is batched into this release rather than deferred
+  so consumers absorb one break instead of two.
+
+  Legacy compatibility identifiers are deliberately preserved:
+  `LEGACY_BASIS_FEATURE_DIM_RESOLVER` (`"spenn.basis_feature_dim"`) and
+  `LEGACY_CHECKPOINT_KIND` (`"spenn.checkpoint"`) still carry their historical
+  spellings, because checkpoints and configs on disk reference them. The v1
+  record-format documentation in `tpen/metrics_naming.md` is likewise
+  unchanged. A test now pins the checkpoint literal, which previously had no
+  effective coverage.
+
 ### Known limitations
 
 - Cross-device geometry comparison is untested; `CUDA_AVAILABLE` was false on
