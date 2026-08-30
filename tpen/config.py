@@ -14,7 +14,7 @@ Resolvers
     embedding ``in_features`` to whichever basis the architecture choice
     selected, e.g. ``in_features: ${tpen.basis_feature_dim:${model.basis}}``.
 
-    Also registered under the legacy name ``spenn.basis_feature_dim``; see
+    Also registered under the legacy resolver spelling; see
     :data:`LEGACY_BASIS_FEATURE_DIM_RESOLVER`.
 """
 
@@ -32,9 +32,9 @@ BASIS_FEATURE_DIM_RESOLVER = "tpen.basis_feature_dim"
 # MIG-TPEN-000 D9 freezes ``experiments/hooke/pair_stability_v3/configs/*`` as the
 # provenance record of a completed study, and its collected tests preserve exactly
 # one property: those configs still OmegaConf-RESOLVE (they fail later, at
-# instantiation, on their stale ``spenn.*`` ``_target_`` values). Both
-# ``pair_stability.yaml`` and ``pair_validation.yaml`` interpolate
-# ``${spenn.basis_feature_dim:${model.basis}}``, so dropping this registration would
+# instantiation, on their stale legacy ``_target_`` values). Both
+# ``pair_stability.yaml`` and ``pair_validation.yaml`` interpolate the legacy
+# resolver spelling, so dropping this registration would
 # move their failure from instantiate-time to resolve-time and break the one contract
 # D9 exists to protect. Same category as
 # ``tpen.checkpoint.manifest.LEGACY_CHECKPOINT_KIND``: a durable external identifier

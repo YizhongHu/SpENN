@@ -3,7 +3,7 @@
 `LogAmplitudeFactor` is the new-generation counterpart to
 `tpen.nn.envelope.Envelope`: a factor accepts an :class:`ElectronBatch` and
 returns one scalar contribution to ``log |psi|`` per flattened configuration.
-`TPENWaveFunction.factors` (see `tpen.nn.spenn_wave_function`) is the sole
+`TPENWaveFunction.factors` (see `tpen.nn.tpen_wave_function`) is the sole
 canonical composition seam for `LogAmplitudeFactor` terms; direct
 construction of a `factors` list of `LogAmplitudeFactor` instances is the
 target path for new systems.

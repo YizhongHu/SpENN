@@ -259,7 +259,7 @@ def test_configure_terminal_logging_adds_one_package_handler() -> None:
         configure_terminal_logging(enabled=True, level="debug", color="never", logger_name=logger_name)
         configure_terminal_logging(enabled=True, level="info", color="never", logger_name=logger_name)
 
-        handlers = [handler for handler in logger.handlers if getattr(handler, "_spenn_terminal_handler", False)]
+        handlers = [handler for handler in logger.handlers if getattr(handler, "_tpen_terminal_handler", False)]
         assert len(handlers) == 1
         assert handlers[0].level == logging.INFO
         assert logger.propagate is False

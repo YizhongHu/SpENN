@@ -230,9 +230,9 @@ def restore_checkpoint_with_events(
             sampler=sampler,
         )
     except Exception as exc:
-        setattr(exc, "_spenn_failure_phase", "load")
-        setattr(exc, "_spenn_load_path", path)
-        setattr(exc, "_spenn_load_mode", mode)
+        setattr(exc, "_tpen_failure_phase", "load")
+        setattr(exc, "_tpen_load_path", path)
+        setattr(exc, "_tpen_load_mode", mode)
         emit(LoadFailed(path=str(path), mode=mode, exception_type=type(exc).__name__, message=str(exc)))
         raise
 
