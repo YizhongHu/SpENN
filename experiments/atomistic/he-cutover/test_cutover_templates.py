@@ -144,7 +144,20 @@ def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
         "TPEN_UV": uv,
         "TPEN_RESULTS_ROOT": str(results),
         "TPEN_PLAN_ATTEMPT_ID": "subprocess-test",
+        # The documented command is `uv run --project <checkout> --locked --extra cpu`,
+        # which SYNCS a project environment. Unpinned, it syncs whichever environment
+        # the caller is using -- inherited via os.environ above -- so this test would
+        # mutate the interpreter every other test runs under, silently repairing
+        # environment-gated skips and making suite results order-dependent. Point the
+        # sync at a disposable venv; the command itself stays byte-for-byte as
+        # documented, only its destination changes.
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "venv"),
     }
+    # UV_CACHE_DIR is deliberately INHERITED rather than pinned under tmp_path. The
+    # cache is content-addressed and shared by design, so inheriting it lets the
+    # isolated sync hardlink torch instead of re-downloading it; pinning it here would
+    # force a fresh download every run. Sharing the cache is safe in a way that sharing
+    # the project environment is not.
     env.pop("PYTHONPATH", None)
     command = _runbook_command("Cannon planning (login node):", "cutover_plan.py")
     subprocess.run(["bash", "-c", command], cwd=outside, env=env, check=True)
