@@ -1,5 +1,75 @@
 # Release Notes
 
+## v0.4.0 - Analytic electron-nucleus cusp local energy
+
+16 commits since v0.3.4 (`ed09f85`). The headline is an analytic evaluator for
+the electron-nucleus cusp; the rest is the typed operator machinery it needed
+and two compatibility changes.
+
+### Breaking
+
+- **Minimum Python is now 3.12** (#404). The declaration was the only thing
+  lagging: `.python-version`, the docs workflow, and the `h5py` pin comment
+  were already 3.12. `uv.lock` loses its sub-3.12 resolution forks, which is
+  not a dependency upgrade - every dropped entry carried a
+  `python_full_version < '3.11'` or `== '3.11.*'` marker and was already
+  unselectable.
+- **The Coulomb distance floor now defaults to `0.0`** (#403). The `eps`
+  keyword is retained for backwards compatibility and documented as unproven.
+  A non-zero floor removes the potential divergence and introduces one into
+  the total; measurement found `E(r; eps) = Z/r - Z/eps - Z^2/2` inside the
+  floor. Runs that relied on a non-zero default will change.
+
+### Added
+
+- **Analytic electron-nucleus cusp local-energy evaluator** (#410). `T` and
+  `V_en` each diverge as `1/r` at coalescence and only their sum is finite, so
+  they are evaluated together as
+  `T + V_en = -1/2 sum_i [Lap_i f + |grad_i f + grad_i U|^2] + sum_iA g_A(r_iA)`.
+  `g_A` is taken from the cusp provider's pre-cancelled `slope_residual`;
+  nothing reconstructs `(u' + Z)/r` by subtraction, which would reintroduce
+  the genuine `0/0`. Selected by one explicit config override. A slow
+  reference implementation ships alongside as an independent executable
+  oracle, matching the vectorised kernel in values and parameter gradients at
+  `rtol = atol = 1e-12`.
+- Typed analytic electron-nucleus cusp capability (#389) and model-owned
+  regular/cusp factorization input (#391), which the evaluator consumes.
+- Operators declare which physics they compute via a typed `OperatorId`
+  (#405); typed context keys, providers, and a read-only context (#406); an
+  operator lowering registry and local-energy planner (#407). The planner
+  enforces exactly-once operator consumption structurally rather than by a
+  downstream check.
+- Physical-term and virial-residual metrics owned in `tpen/` (#386) and an
+  optional Numdifftools finite-difference kinetic oracle (#388).
+- Baseline matrix plan builder (#387), `StagePlanV2` dispatch via
+  `ParslAttachExecutor`, DeepQMC environment ported to Polaris (#385), and a
+  reusable multi-GPU scaling probe (#392).
+
+### Changed
+
+- **Vestigial `SpENN` module names retired from the core package** (#414).
+  `tpen/nn/spenn_layer.py` and `tpen/nn/spenn_wave_function.py` become
+  `tpen_layer.py` and `tpen_wave_function.py`; the classes they export were
+  renamed to `TPENLayer`/`TPENWaveFunction` long ago. Import paths change, so
+  this is breaking, and it is batched into this release rather than deferred
+  so consumers absorb one break instead of two.
+
+  Legacy compatibility identifiers are deliberately preserved:
+  `LEGACY_BASIS_FEATURE_DIM_RESOLVER` (`"spenn.basis_feature_dim"`) and
+  `LEGACY_CHECKPOINT_KIND` (`"spenn.checkpoint"`) still carry their historical
+  spellings, because checkpoints and configs on disk reference them. The v1
+  record-format documentation in `tpen/metrics_naming.md` is likewise
+  unchanged. A test now pins the checkpoint literal, which previously had no
+  effective coverage.
+
+### Known limitations
+
+- Cross-device geometry comparison is untested; `CUDA_AVAILABLE` was false on
+  every verification node.
+- `torch.equal` raises for `chalf`, `float8_e5m2` and `float8_e8m0fnu` even at
+  matching dtype, so the geometry comparator can raise from a path annotated
+  `-> bool`. These dtypes have no plausible use for nuclear geometry.
+
 ## v0.3.4
 
 ### Added
