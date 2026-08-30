@@ -170,7 +170,13 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
 
 
 def test_analytic_fast_kernel_matches_reference_in_values_and_parameter_gradients() -> None:
-    _, wavefunction, _, terms = _analytic_setup()
+    law = CurvatureElectronNucleusCuspLaw(
+        curvature_coefficient=0.23,
+        curvature_range=0.7,
+        trainable=False,
+        eps=0.0,
+    )
+    _, wavefunction, _, terms = _analytic_setup(law=law)
     batch = ElectronBatch(
         positions=torch.tensor(
             [
