@@ -137,6 +137,12 @@ def registered_operators() -> tuple[type[LocalEnergyOperator], ...]:
     return tuple(_OPERATOR_REGISTRY)
 
 
+def is_registered_operator(operator_type: type[object]) -> bool:
+    """Return whether an exact operator class used the registration decorator."""
+
+    return operator_type in _OPERATOR_REGISTRY
+
+
 _TPEN = "tpen.physics"
 
 #: Kinetic energy, :math:`-\\tfrac{1}{2}\\sum_i \\nabla_i^2`.
@@ -168,4 +174,5 @@ __all__ = [
     "OperatorId",
     "register_operator",
     "registered_operators",
+    "is_registered_operator",
 ]
