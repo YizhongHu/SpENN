@@ -359,10 +359,7 @@ class AnalyticCuspEvaluator(LocalEnergyEvaluator[AnalyticCuspContext]):
         factorized = wavefunction.factorized_local_energy_input
         if not callable(factorized):
             raise ValueError("analytic cusp evaluation requires factorized_local_energy_input capability")
-        same_geometry, _ = potential.atoms.compare(provider.atoms, atol=0.0, rtol=0.0)
-        if not same_geometry:
-            raise ValueError("ElectronNucleusPotential and analytic cusp provider must share matching atoms")
-        if potential.atoms.spatial_dim != 3 or provider.atoms.spatial_dim != 3:
+        if provider.atoms.spatial_dim != 3:
             raise ValueError("analytic cusp evaluation requires spatial dimension 3")
         return normalized, provider
 
