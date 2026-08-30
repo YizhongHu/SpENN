@@ -11,7 +11,15 @@ import torch
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.evaluation.bundle import EvaluationBundle, LocalEnergyValues
 from tpen.evaluation.protocols import EvaluationContext
-from tpen.physics.hamiltonian import HamiltonianTerm, LocalEnergyResult, local_energy, normalize_hamiltonian_terms
+from tpen.physics.hamiltonian import (
+    HamiltonianTerm,
+    LocalEnergyEvaluator,
+    LocalEnergyResult,
+    NaiveLocalEnergyEvaluator,
+    normalize_hamiltonian_terms,
+)
+
+_DEFAULT_EVALUATOR = NaiveLocalEnergyEvaluator()
 
 
 class LocalEnergyCalculator:
@@ -25,10 +33,17 @@ class LocalEnergyCalculator:
         hamiltonian_terms: Sequence[HamiltonianTerm] | Mapping[str, HamiltonianTerm],
         return_terms: bool = False,
         chunk_size: int | None = None,
+        evaluator: LocalEnergyEvaluator | None = None,
     ) -> None:
         self.hamiltonian_terms = normalize_hamiltonian_terms(hamiltonian_terms)
         self.return_terms = bool(return_terms)
         self.chunk_size = None if chunk_size is None else int(chunk_size)
+        self.evaluator = _DEFAULT_EVALUATOR if evaluator is None else evaluator
+
+    def validate(self, *, model: object, generator: object) -> None:
+        """Validate the explicitly selected evaluator before sampling."""
+
+        self.evaluator.validate_for_generator(self.hamiltonian_terms, model, generator)
 
     def calculate(
         self,
@@ -76,6 +91,7 @@ class LocalEnergyCalculator:
             bundle.generated.batch,
             return_terms=self.return_terms,
             chunk_size=self.chunk_size,
+            evaluator=self.evaluator,
         )
         total, term_energies = split_local_energy_result(result)
         total = total.detach()
@@ -105,6 +121,7 @@ def evaluate_local_energy_in_chunks(
     *,
     return_terms: bool = False,
     chunk_size: int | None = None,
+    evaluator: LocalEnergyEvaluator | None = None,
 ) -> torch.Tensor | LocalEnergyResult:
     """Evaluate local energy on bounded flattened batches."""
 
@@ -123,9 +140,14 @@ def evaluate_local_energy_in_chunks(
     term_order: tuple[str, ...] | None = None
     captured_wavefunction = False
     captured_per_electron_kinetic = False
+    selected_evaluator = _DEFAULT_EVALUATOR if evaluator is None else evaluator
     for start in range(0, batch_size, size):
         chunk = slice_flat_batch(flat, start, min(start + size, batch_size))
-        result = local_energy(terms, wavefunction, chunk, return_terms=return_terms)
+        result = selected_evaluator.evaluate(
+            terms,
+            selected_evaluator.make_context(wavefunction, chunk),
+            return_terms=return_terms,
+        )
         if return_terms:
             if not isinstance(result, LocalEnergyResult):
                 raise TypeError("local_energy(return_terms=True) must return LocalEnergyResult")
