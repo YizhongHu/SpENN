@@ -144,7 +144,12 @@ def _analytic_setup(*, z=1.0, nuclear_position=None, eps=0.0, law=None):
     atoms = AtomicConfiguration(position, torch.tensor([z], dtype=_DTYPE))
     provider = ElectronNucleusCusp(atoms, law=law)
     wavefunction = _AnalyticWavefunction(provider)
-    batch = ElectronBatch(positions=torch.tensor([[[0.4, 0.0, 0.0]]], dtype=_DTYPE))
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.4, 0.0, 0.0]], [[0.4, 0.0, 0.0]]],
+            dtype=_DTYPE,
+        )
+    )
     terms = {
         "kinetic": KineticEnergy(),
         "electron_nucleus": ElectronNucleusPotential(atoms, eps=eps),
@@ -158,12 +163,12 @@ def test_analytic_evaluator_fuses_hydrogen_and_returns_full_output() -> None:
         terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
     )
 
-    torch.testing.assert_close(result.total, torch.full((1,), -0.5, dtype=_DTYPE))
+    torch.testing.assert_close(result.total, torch.full((2,), -0.5, dtype=_DTYPE))
     assert list(result.terms) == ["kinetic_plus_electron_nucleus"]
     assert result.wavefunction_output is not None
     torch.testing.assert_close(
         result.wavefunction_output.logabs,
-        torch.tensor([-0.4], dtype=_DTYPE),
+        torch.full((2,), -0.4, dtype=_DTYPE),
     )
     assert result.wavefunction_output.aux == {"source": "regular"}
     assert result.per_electron_kinetic is None
@@ -242,7 +247,12 @@ def test_analytic_evaluator_uses_cancelled_slope_residual_at_tiny_radius() -> No
         eps=0.0,
     )
     _, wavefunction, _, terms = _analytic_setup(law=law)
-    batch = ElectronBatch(positions=torch.tensor([[[1.0e-10, 0.0, 0.0]]], dtype=_DTYPE))
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[1.0e-10, 0.0, 0.0]], [[1.0e-10, 0.0, 0.0]]],
+            dtype=_DTYPE,
+        )
+    )
     result = AnalyticCuspEvaluator().evaluate(
         terms, AnalyticCuspContext(wavefunction, batch), return_terms=True
     )
@@ -264,7 +274,12 @@ def test_analytic_evaluator_retains_all_nuclear_centres_in_grad_u() -> None:
     )
     provider = ElectronNucleusCusp(atoms)
     wavefunction = _AnalyticWavefunction(provider)
-    batch = ElectronBatch(positions=torch.tensor([[[0.2, 0.3, 0.0]]], dtype=_DTYPE))
+    batch = ElectronBatch(
+        positions=torch.tensor(
+            [[[0.2, 0.3, 0.0]], [[0.2, 0.3, 0.0]]],
+            dtype=_DTYPE,
+        )
+    )
     terms = {
         "kinetic": KineticEnergy(),
         "electron_nucleus": ElectronNucleusPotential(atoms, eps=0.0),
