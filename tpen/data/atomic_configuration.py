@@ -256,10 +256,11 @@ def strict_equal_atomic_configurations(
     with different position or charge dtypes raise a configuration error rather
     than being implicitly converted. Matching-dtype values are moved to CPU
     before exact comparison, so device placement cannot affect the result.
-    """
 
-    if left.positions.shape != right.positions.shape or left.charges.shape != right.charges.shape:
-        return False
+    The contract assumes real-valued geometry dtypes. PyTorch's backend raises
+    for ``chalf``, ``float8_e5m2``, and ``float8_e8m0fnu`` in ``torch.equal``;
+    those unsupported dtypes are intentionally not normalized here.
+    """
 
     if left.positions.dtype != right.positions.dtype:
         raise ValueError(
@@ -273,6 +274,9 @@ def strict_equal_atomic_configurations(
             f"charges {left_label}={left.charges.dtype}, "
             f"{right_label}={right.charges.dtype}"
         )
+
+    if left.positions.shape != right.positions.shape or left.charges.shape != right.charges.shape:
+        return False
 
     left_positions = left.positions.to(device="cpu")
     right_positions = right.positions.to(device="cpu")
