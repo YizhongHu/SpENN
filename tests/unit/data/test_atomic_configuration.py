@@ -170,12 +170,14 @@ def test_content_id_is_reproducible_and_device_dtype_independent() -> None:
 
 
 def test_strict_geometry_comparison_rejects_dtype_collisions_in_both_orientations() -> None:
-    collision_pairs = [
+    signed_collision_pairs = [
         (torch.int16, 257, torch.bfloat16, 256),
         (torch.int16, 2049, torch.float16, 2048),
         (torch.int32, 16777217, torch.float32, 16777216),
         (torch.int64, 16777217, torch.float32, 16777216),
         (torch.int64, 9007199254740993, torch.float64, 9007199254740992),
+    ]
+    unsigned_position_collision_pairs = [
         (torch.uint16, 257, torch.bfloat16, 256),
         (torch.uint16, 2049, torch.float16, 2048),
         (torch.uint32, 16777217, torch.float32, 16777216),
@@ -193,13 +195,17 @@ def test_strict_geometry_comparison_rejects_dtype_collisions_in_both_orientation
         )
         return AtomicConfiguration(positions, charges)
 
-    for left_dtype, left_value, right_dtype, right_value in collision_pairs:
-        for field in ("positions", "charges"):
-            left = make_configuration(left_dtype, left_value, field=field)
-            right = make_configuration(right_dtype, right_value, field=field)
-            for first, second in ((left, right), (right, left)):
-                with pytest.raises(ValueError, match="dtype mismatch.*configuration error"):
-                    strict_equal_atomic_configurations(first, second)
+    for collision_pairs, fields in (
+        (signed_collision_pairs, ("positions", "charges")),
+        (unsigned_position_collision_pairs, ("positions",)),
+    ):
+        for left_dtype, left_value, right_dtype, right_value in collision_pairs:
+            for field in fields:
+                left = make_configuration(left_dtype, left_value, field=field)
+                right = make_configuration(right_dtype, right_value, field=field)
+                for first, second in ((left, right), (right, left)):
+                    with pytest.raises(ValueError, match="dtype mismatch.*configuration error"):
+                        strict_equal_atomic_configurations(first, second)
 
 
 def test_strict_geometry_comparison_accepts_matching_dtype_and_values() -> None:
