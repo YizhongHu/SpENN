@@ -154,8 +154,12 @@ def test_catalog_republishing_same_identity_is_idempotent(tmp_path: Path) -> Non
     catalog = CheckpointCatalog(catalog_path)
 
     catalog.publish(ref)
-    record = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    original_line = catalog_path.read_text(encoding="utf-8")
+    record = json.loads(original_line)
+    formatted_line = json.dumps(record, separators=(", ", ": "), sort_keys=False) + "\n"
+    assert formatted_line != original_line
+    assert json.loads(formatted_line) == record
+    catalog_path.write_text(formatted_line, encoding="utf-8")
     before = catalog_path.read_bytes()
 
     # Parsed-equivalent JSON formatting is still the same publication.
@@ -199,6 +203,19 @@ def test_catalog_rejects_republication_from_relocated_path(tmp_path: Path) -> No
 
     assert catalog_path.read_bytes() == before
     assert catalog.records() == (original_ref,)
+
+
+def test_catalog_rejects_multiline_jsonl_record(tmp_path: Path) -> None:
+    checkpoint_dir = _write_checkpoint(tmp_path / "checkpoints")
+    ref = CheckpointRef.from_directory(checkpoint_dir)
+    catalog_path = tmp_path / "publications.jsonl"
+    catalog = CheckpointCatalog(catalog_path)
+    catalog.publish(ref)
+
+    record = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+    _expect_raises(ValueError, catalog.records)
 
 
 def test_catalog_rejects_content_id_tampering(tmp_path: Path) -> None:
