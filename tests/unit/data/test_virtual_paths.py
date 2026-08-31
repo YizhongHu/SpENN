@@ -21,6 +21,7 @@ from tpen.data.paths import (
     validate_linear_output_plus_input_cover_support,
     validate_tp_input_cover_support,
     validate_virtual_path,
+    enumerate_linear_support_paths,
 )
 
 
@@ -149,8 +150,8 @@ def test_virtual_path_validation_rejects_uncovered_support() -> None:
 
 def _layout() -> PathLayout:
     paths = (
-        SupportPath(1, 1, 1, (0,), (0,), "sum"),
-        SupportPath(2, 1, 1, (0,), (1,), "orbit_mean"),
+        SupportPath(1, 1, (0,), (0,), "sum"),
+        SupportPath(1, 1, (0,), (1,), "completion_mean"),
     )
     return PathLayout(
         outputs=(OutputPathLayout(1, tuple(PathEntry(1, 1, path) for path in reversed(paths))),),
@@ -194,7 +195,22 @@ def test_support_validators_remain_explicit() -> None:
     tp_path = VirtualPath(1, 1, 1, 1, 0, 0, (0,), (0,), (0,))
     validate_tp_input_cover_support(tp_path)
 
-    linear_path = SupportPath(2, 1, 1, (0,), (1,))
+    linear_path = SupportPath(1, 1, (0,), (0,))
     validate_linear_output_plus_input_cover_support(linear_path)
-    with pytest.raises(ValueError, match="common support"):
-        SupportPath(2, 1, 1, (0,), (0,))
+    with pytest.raises(ValueError, match="canonical"):
+        SupportPath(1, 1, (1,), (0,))
+
+
+def test_linear_paths_use_canonical_support_labels() -> None:
+    paths = enumerate_linear_support_paths(1, 1)
+    assert len(paths) == 2
+    assert {(path.tau_out, path.tau_in) for path in paths} == {((0,), (0,)), ((0,), (1,))}
+    with pytest.raises(ValueError, match="canonical"):
+        SupportPath(1, 1, (1,), (0,))
+    with pytest.raises(ValueError, match="canonical"):
+        SupportPath(1, 2, (0,), (2, 1))
+
+
+@pytest.mark.parametrize("output_order,input_order,expected", [(1, 1, 2), (1, 2, 3), (2, 1, 3), (2, 2, 7)])
+def test_complete_linear_path_counts(output_order: int, input_order: int, expected: int) -> None:
+    assert len(enumerate_linear_support_paths(output_order, input_order)) == expected

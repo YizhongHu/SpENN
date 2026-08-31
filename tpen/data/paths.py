@@ -11,6 +11,7 @@ import json
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from itertools import combinations, permutations
 from pathlib import Path
 from typing import Literal
 
@@ -77,17 +78,22 @@ class NormalizedChannels:
 class SupportPath:
     """Describe one unary path by its two injections into a common support."""
 
-    support_order: int
     output_order: int
     input_order: int
     tau_out: tuple[int, ...]
     tau_in: tuple[int, ...]
-    normalization: Literal["sum", "orbit_mean"] = "sum"
+    normalization: Literal["sum", "completion_mean"] = "completion_mean"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tau_out", tuple(self.tau_out))
         object.__setattr__(self, "tau_in", tuple(self.tau_in))
         validate_linear_output_plus_input_cover_support(self)
+
+    @property
+    def support_order(self) -> int:
+        """Return the inferred size of the canonical common support."""
+
+        return self.output_order + self.input_order - self.overlap
 
     @property
     def overlap(self) -> int:
@@ -98,7 +104,7 @@ class SupportPath:
     def as_tuple(self) -> tuple[object, ...]:
         """Return the canonical semantic representation."""
 
-        return (self.support_order, self.output_order, self.input_order,
+        return (self.output_order, self.input_order,
                 self.tau_out, self.tau_in, self.normalization)
 
 
@@ -554,24 +560,64 @@ def validate_tp_input_cover_support(path: VirtualPath) -> None:
 
 
 def validate_linear_output_plus_input_cover_support(path: SupportPath) -> None:
-    """Validate a unary path's output-plus-input common-support contract."""
+    """Validate a unary path's canonical common-support contract.
 
-    if path.support_order <= 0:
-        raise ValueError("support_order must be positive")
+    The canonical labels remove the arbitrary gauge of naming completion
+    variables. Noncanonical records are rejected rather than silently merged.
+    """
+
     if path.output_order <= 0 or path.input_order <= 0:
         raise ValueError("path orders must be positive")
-    if path.normalization not in {"sum", "orbit_mean"}:
+    if path.normalization not in {"sum", "completion_mean"}:
         raise ValueError(f"Unsupported path normalization {path.normalization!r}")
-    for name, order, injection in (("tau_out", path.output_order, path.tau_out),
-                                   ("tau_in", path.input_order, path.tau_in)):
-        if len(injection) != order:
-            raise ValueError(f"{name} length must match its order")
-        if len(set(injection)) != len(injection):
-            raise ValueError(f"{name} must be injective")
-        if any(label < 0 or label >= path.support_order for label in injection):
-            raise ValueError(f"{name} labels must land in the common support")
-    if set(path.tau_out) | set(path.tau_in) != set(range(path.support_order)):
-        raise ValueError("output and input injections must cover the common support")
+    if path.tau_out != tuple(range(path.output_order)):
+        raise ValueError("tau_out must use canonical output-slot labels")
+    if len(path.tau_in) != path.input_order or len(set(path.tau_in)) != path.input_order:
+        raise ValueError("tau_in must be an injective input-slot map")
+    overlap = sum(label < path.output_order for label in path.tau_in)
+    expected_free = iter(range(path.output_order, path.output_order + path.input_order - overlap))
+    expected = tuple(label if label < path.output_order else next(expected_free) for label in path.tau_in)
+    if path.tau_in != expected:
+        raise ValueError("tau_in must use canonical matched and unmatched labels")
+
+
+def enumerate_linear_support_paths(
+    output_order: int,
+    input_order: int,
+    *,
+    normalization: Literal["sum", "completion_mean"] = "completion_mean",
+) -> tuple[SupportPath, ...]:
+    """Enumerate canonical complete partial-matching paths.
+
+    Paths are ordered by input order, overlap, matched slot pairs, then
+    unmatched input-slot order, as fixed by the linear-mixing contract.
+    """
+
+    if output_order <= 0 or input_order <= 0:
+        raise ValueError("path orders must be positive")
+    records: list[tuple[tuple[object, ...], SupportPath]] = []
+    output_slots = tuple(range(output_order))
+    input_slots = tuple(range(input_order))
+    for overlap in range(min(output_order, input_order) + 1):
+        for matched_outputs in combinations(output_slots, overlap):
+            for matched_inputs in combinations(input_slots, overlap):
+                for output_assignment in permutations(matched_outputs):
+                    matching = tuple(sorted(zip(output_assignment, matched_inputs)))
+                    by_input = {input_slot: output_slot for output_slot, input_slot in matching}
+                    tau_in = tuple(
+                        by_input.get(
+                            input_slot,
+                            output_order
+                            + sum(prior not in by_input for prior in input_slots[: input_slot + 1])
+                            - 1,
+                        )
+                        for input_slot in input_slots
+                    )
+                    path = SupportPath(output_order, input_order, output_slots, tau_in, normalization)
+                    key = (input_order, overlap, matching,
+                           tuple(slot for slot in input_slots if slot not in by_input))
+                    records.append((key, path))
+    return tuple(path for _, path in sorted(records, key=lambda item: item[0]))
 
 
 def _serialize_paths(paths: PathFamily) -> list[object]:
@@ -604,6 +650,7 @@ __all__ = [
     "OutputPathLayout",
     "SupportPath",
     "VirtualPath",
+    "enumerate_linear_support_paths",
     "generate_virtual_paths",
     "iter_path_blocks",
     "load_default_path_metadata",
