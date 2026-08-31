@@ -151,6 +151,18 @@ class EquivariantMixing(EquivariantMap):
     def forward_impl(self, x1: Feature, x2: Feature | None = None) -> Interaction:
         """Mix one or two real feature states into path-resolved interactions."""
 
+        return self._forward_impl(x1, x2, apply_activation=True)
+
+    def forward_pre_activation(self, x1: Feature, x2: Feature | None = None) -> Interaction:
+        """Return raw paths for :class:`CompositeMixing` before common Gamma."""
+
+        return self._forward_impl(x1, x2, apply_activation=False)
+
+    def _forward_impl(
+        self, x1: Feature, x2: Feature | None, *, apply_activation: bool
+    ) -> Interaction:
+        """Run the TP contraction with an explicitly selected activation boundary."""
+
         x2 = x1 if x2 is None else x2
         x1.validate()
         x2.validate()
@@ -195,7 +207,7 @@ class EquivariantMixing(EquivariantMap):
             )
             # Owned pointwise Gamma on the full block (TPEN contract). Applied
             # after completion averaging so Gamma sees the final mixed values.
-            if self.activation is not None:
+            if apply_activation and self.activation is not None:
                 block = self.activation(block)
             output_blocks.append(block)
         return Interaction(output_blocks)

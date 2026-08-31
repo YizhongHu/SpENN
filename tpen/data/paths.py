@@ -187,6 +187,7 @@ class PathLayout:
     input_channels: NormalizedChannels
     output_channels: NormalizedChannels
     version: str = "path-layout-v1"
+    family_slices: tuple["PathFamilyLayout", ...] = ()
 
     def __post_init__(self) -> None:
         outputs = tuple(sorted(self.outputs, key=lambda layout: layout.output_order))
@@ -200,12 +201,32 @@ class PathLayout:
         if len(entries) != len(set(entries)):
             raise ValueError("duplicate semantic paths are not allowed")
         object.__setattr__(self, "outputs", outputs)
+        object.__setattr__(self, "family_slices", tuple(self.family_slices))
+        if self.family_slices:
+            if tuple(slice_.family for slice_ in self.family_slices) != tuple(
+                sorted(slice_.family for slice_ in self.family_slices)
+            ):
+                raise ValueError("family slices must use deterministic family order")
+            for slice_ in self.family_slices:
+                for output in slice_.outputs:
+                    if output.output_order not in self.output_orders.values:
+                        raise ValueError("family slice output order is not configured")
 
     @property
     def counts(self) -> tuple[tuple[int, int], ...]:
         """Return ``(output_order, path_count)`` pairs."""
 
-        return tuple((layout.output_order, layout.count) for layout in self.outputs)
+        return tuple((order, self.count_for_order(order)) for order in self.output_orders.values)
+
+    def count_for_order(self, order: int) -> int:
+        """Return the union path count for one output order."""
+
+        if self.family_slices:
+            return sum(slice_.count_for_order(order) for slice_ in self.family_slices)
+        for layout in self.outputs:
+            if layout.output_order == order:
+                return layout.count
+        raise KeyError(order)
 
     @property
     def output_layouts(self) -> tuple[OutputPathLayout, ...]:
@@ -220,10 +241,11 @@ class PathLayout:
         # Covers version, channel/order contracts, and declared path position.
         # It deliberately excludes Python class names, field names, and repr
         # formatting so implementation refactors do not change science identity.
+        family_values = tuple(slice_.as_tuple() for slice_ in self.family_slices)
         semantic_values = (self.version, self.input_orders.values, self.output_orders.values,
                            self.input_channels.values, self.output_channels.values,
                            tuple(tuple(entry.as_tuple() for entry in layout.entries)
-                                 for layout in self.outputs))
+                                 for layout in self.outputs), family_values)
         payload = json.dumps(semantic_values, separators=(",", ":"), ensure_ascii=True).encode()
         return hashlib.sha256(payload).hexdigest()
 
@@ -390,6 +412,124 @@ class VirtualPath:
         """Return the mathematical tuple ``(s, m, m1, m2, tau, tau1, tau2)``."""
 
         return (self.s, self.m, self.m1, self.m2, self.tau, self.tau1, self.tau2)
+
+
+@dataclass(frozen=True)
+class PathFamilyOutput:
+    """Immutable ordered paths for one family and output order."""
+
+    family: Literal["linear", "tensor_product"]
+    output_order: int
+    paths: tuple[SupportPath | VirtualPath, ...]
+
+    def __post_init__(self) -> None:
+        paths = tuple(self.paths)
+        expected = self.output_order
+        for path in paths:
+            actual = path.output_order if isinstance(path, SupportPath) else path.m
+            if actual != expected:
+                raise ValueError("family paths must match their output order")
+        if len({path.as_tuple() for path in paths}) != len(paths):
+            raise ValueError("duplicate family paths are not allowed")
+        object.__setattr__(self, "paths", paths)
+
+    @property
+    def count(self) -> int:
+        """Return the static number of paths in this family slice."""
+
+        return len(self.paths)
+
+    def as_tuple(self) -> tuple[object, ...]:
+        """Return the recursive fingerprint representation."""
+
+        return (self.family, self.output_order, tuple(path.as_tuple() for path in self.paths))
+
+
+@dataclass(frozen=True)
+class PathFamilyLayout:
+    """Immutable ordered output slices for one producer family."""
+
+    family: Literal["linear", "tensor_product"]
+    outputs: tuple[PathFamilyOutput, ...]
+
+    def __post_init__(self) -> None:
+        outputs = tuple(sorted(self.outputs, key=lambda output: output.output_order))
+        if any(output.family != self.family for output in outputs):
+            raise ValueError("family output labels must agree")
+        if len({output.output_order for output in outputs}) != len(outputs):
+            raise ValueError("family output orders must be unique")
+        object.__setattr__(self, "outputs", outputs)
+
+    def count_for_order(self, order: int) -> int:
+        """Return this family's count for an order, including zero slices."""
+
+        for output in self.outputs:
+            if output.output_order == order:
+                return output.count
+        return 0
+
+    def as_tuple(self) -> tuple[object, ...]:
+        """Return the recursive fingerprint representation."""
+
+        return (self.family, tuple(output.as_tuple() for output in self.outputs))
+
+
+def compose_path_layout(
+    *,
+    linear: LinearPathMetadata | None,
+    tensor_product: PathMetadata | None,
+    input_orders: NormalizedOrders,
+    output_orders: NormalizedOrders,
+    input_channels: NormalizedChannels,
+    output_channels: NormalizedChannels,
+    max_virtual_order: int | None = None,
+) -> PathLayout:
+    """Compose deterministic linear-then-TP family slices into one layout.
+
+    The function only combines already-materialized metadata. It never reads
+    runtime tensors or regenerates checked-in tensor-product JSON.
+    """
+
+    families: list[PathFamilyLayout] = []
+    outputs: list[PathFamilyOutput] = []
+    if linear is not None:
+        for order in output_orders.values:
+            outputs.append(PathFamilyOutput("linear", order, tuple(
+                path for path in linear.paths_for_output_order(order)
+                if path.input_order in input_orders.values
+            )))
+        families.append(PathFamilyLayout("linear", tuple(outputs)))
+    if tensor_product is not None:
+        limit = tensor_product.max_virtual_order if max_virtual_order is None else int(max_virtual_order)
+        tp_outputs = tuple(
+            PathFamilyOutput("tensor_product", order, tuple(
+                path for path in tensor_product.paths_for_output_order(order)
+                if path.s <= limit and path.m1 in input_orders.values and path.m2 in input_orders.values
+            ))
+            for order in output_orders.values
+        )
+        families.append(PathFamilyLayout("tensor_product", tp_outputs))
+    if not families:
+        raise ValueError("at least one producer family is required")
+    # ``outputs`` retains the legacy unary view; family_slices is authoritative
+    # for union counts and semantic identity.
+    unary_outputs = tuple(
+        OutputPathLayout(order, tuple(
+            PathEntry(order, path.input_order, path)
+            for family in families if family.family == "linear"
+            for family_output in family.outputs if family_output.output_order == order
+            for path in family_output.paths if isinstance(path, SupportPath)
+        ))
+        for order in output_orders.values
+    )
+    return PathLayout(
+        outputs=unary_outputs,
+        input_orders=input_orders,
+        output_orders=output_orders,
+        input_channels=input_channels,
+        output_channels=output_channels,
+        family_slices=tuple(families),
+    )
 
 
 PathFamily = dict[int, dict[int, dict[int, dict[int, list[VirtualPath]]]]]
@@ -787,6 +927,8 @@ __all__ = [
     "NormalizedChannels",
     "NormalizedOrders",
     "PathFamily",
+    "PathFamilyLayout",
+    "PathFamilyOutput",
     "PathEntry",
     "PathLayout",
     "PathMetadata",
@@ -794,6 +936,7 @@ __all__ = [
     "SupportPath",
     "VirtualPath",
     "enumerate_linear_support_paths",
+    "compose_path_layout",
     "generate_virtual_paths",
     "iter_path_blocks",
     "load_default_path_metadata",
