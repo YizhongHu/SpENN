@@ -20,6 +20,37 @@ from experiments.toolkit.dispatch import (
 from experiments.toolkit.parsl_attach import ParslAttachExecutor
 
 
+#: Accelerators a node exposes. A SETTING: our jobs are planned against a known
+#: node shape, so this is declared rather than discovered at runtime. Polaris is
+#: 4 GPUs per node; override for a differently shaped facility.
+ACCELERATORS_PER_NODE = 4
+
+
+def accelerator_bindings(
+    gpus_per_row: int, accelerators_per_node: int = ACCELERATORS_PER_NODE
+) -> tuple[str, ...]:
+    """Tile a node's accelerators into one visibility binding per row.
+
+    Admissible row widths are the divisors of the node's accelerator count;
+    anything else strands accelerators or straddles a node boundary. Stating that
+    as divisibility keeps it correct for a node size other than four.
+
+    ``1 -> ("0", "1", "2", "3")``, ``2 -> ("0,1", "2,3")``, ``4 -> ("0,1,2,3",)``.
+    """
+
+    if gpus_per_row < 1:
+        raise ValueError(f"gpus_per_row must be positive; got {gpus_per_row}")
+    if accelerators_per_node % gpus_per_row:
+        raise ValueError(
+            f"gpus_per_row {gpus_per_row} does not divide the node's "
+            f"{accelerators_per_node} accelerators, so rows cannot tile it"
+        )
+    return tuple(
+        ",".join(str(index) for index in range(start, start + gpus_per_row))
+        for start in range(0, accelerators_per_node, gpus_per_row)
+    )
+
+
 def allocation_context(
     *,
     facility: str,
@@ -42,12 +73,7 @@ def allocation_context(
         raise ValueError("TPEN_NODES_PER_BLOCK must be a positive integer")
     if facility == "cannon":
         raise ValueError("ParslAttachExecutor baselines dispatch is supported only on Polaris")
-    if gpus_per_row not in (1, 2, 4):
-        raise ValueError("Polaris baselines rows must request 1, 2, or 4 GPUs")
-    values = tuple(
-        ",".join(str(index) for index in range(start, start + gpus_per_row))
-        for start in range(0, 4, gpus_per_row)
-    )
+    values = accelerator_bindings(gpus_per_row)
     return AllocationContext(
         allocation_id=str(allocation_id),
         visibility_variable="CUDA_VISIBLE_DEVICES",
