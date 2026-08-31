@@ -161,6 +161,11 @@ class LinearEquivariantMixing(EquivariantMap):
             path_offset += len(paths)
         return Interaction(output_blocks)
 
+    def forward_pre_activation(self, x: Feature) -> Interaction:
+        """Return raw paths through the common producer interface."""
+
+        return self.forward_impl(x)
+
 
 def _normalize_channels(
     value: int | Mapping[int, int], orders: tuple[int, ...], name: str

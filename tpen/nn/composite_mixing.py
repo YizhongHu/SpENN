@@ -52,18 +52,16 @@ class CompositeMixing(EquivariantMap):
         """Return the statically laid out union interaction."""
 
         x.validate()
-        outputs: list[Interaction] = []
-        for producer in self.producers:
-            if isinstance(producer, LinearEquivariantMixing):
-                outputs.append(producer.forward_impl(x))
-            elif isinstance(producer, EquivariantMixing):
-                outputs.append(producer.forward_pre_activation(x))
-            else:  # pragma: no cover - constructor rejects this case
-                raise TypeError("CompositeMixing received an unsupported producer type")
+        outputs = [producer.forward_pre_activation(x) for producer in self.producers]
 
         batch_size = common_real_batch_size(*outputs)
         dtype = common_real_dtype(*outputs)
-        blocks = [outputs[0].blocks[0]]
+        reference_zero = outputs[0].blocks[0]
+        for output in outputs[1:]:
+            candidate_zero = output.blocks[0]
+            if not torch.equal(reference_zero, candidate_zero):
+                raise ValueError("Composite producer order-0 blocks must agree")
+        blocks = [reference_zero]
         for order in self.layout.output_orders.values:
             family_blocks = [result.blocks[order] for result in outputs]
             block = torch.cat(family_blocks, dim=2)
