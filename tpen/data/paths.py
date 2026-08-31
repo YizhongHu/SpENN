@@ -8,6 +8,7 @@ saved cache files instead of silently regenerating path orderings.
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,177 @@ DEFAULT_PATH_FILES = {
     "canonical": CACHE_DIR / "paths_canonical.json",
     "full": CACHE_DIR / "paths_full.json",
 }
+
+
+@dataclass(frozen=True)
+class NormalizedOrders:
+    """Immutable, canonical collection of positive tuple orders."""
+
+    values: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        values = tuple(int(value) for value in self.values)
+        if any(value <= 0 for value in values):
+            raise ValueError("orders must be positive")
+        object.__setattr__(self, "values", tuple(sorted(set(values))))
+
+    @classmethod
+    def from_tuple(cls, values: tuple[int, ...]) -> "NormalizedOrders":
+        """Normalize an order tuple without accepting semantic mappings."""
+
+        return cls(tuple(values))
+
+
+@dataclass(frozen=True)
+class NormalizedChannels:
+    """Immutable ``(order, channels)`` pairs in canonical order."""
+
+    values: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        values = tuple((int(order), int(channels)) for order, channels in self.values)
+        if any(order <= 0 or channels < 0 for order, channels in values):
+            raise ValueError("orders must be positive and channels must be non-negative")
+        if len({order for order, _ in values}) != len(values):
+            raise ValueError("channels must be unique by order")
+        object.__setattr__(self, "values", tuple(sorted(values)))
+
+    @classmethod
+    def from_tuple(cls, values: tuple[tuple[int, int], ...]) -> "NormalizedChannels":
+        """Normalize channel pairs supplied as tuples."""
+
+        return cls(tuple(values))
+
+    def for_order(self, order: int) -> int:
+        """Return the channel count for ``order`` or raise ``KeyError``."""
+
+        for candidate, channels in self.values:
+            if candidate == order:
+                return channels
+        raise KeyError(order)
+
+
+@dataclass(frozen=True)
+class SupportPath:
+    """Describe one unary path by its two injections into a common support."""
+
+    support_order: int
+    output_order: int
+    input_order: int
+    tau_out: tuple[int, ...]
+    tau_in: tuple[int, ...]
+    normalization: Literal["sum", "orbit_mean"] = "sum"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tau_out", tuple(self.tau_out))
+        object.__setattr__(self, "tau_in", tuple(self.tau_in))
+        validate_linear_output_plus_input_cover_support(self)
+
+    @property
+    def overlap(self) -> int:
+        """Return the number of shared support labels."""
+
+        return len(set(self.tau_out) & set(self.tau_in))
+
+    def as_tuple(self) -> tuple[object, ...]:
+        """Return the canonical semantic representation."""
+
+        return (self.support_order, self.output_order, self.input_order,
+                self.tau_out, self.tau_in, self.normalization)
+
+
+@dataclass(frozen=True)
+class PathEntry:
+    """Associate a typed support path with its output and input orders."""
+
+    output_order: int
+    input_order: int
+    path: SupportPath
+
+    def __post_init__(self) -> None:
+        if (self.output_order, self.input_order) != (self.path.output_order, self.path.input_order):
+            raise ValueError("PathEntry orders must match SupportPath")
+
+    def as_tuple(self) -> tuple[object, ...]:
+        """Return the canonical semantic representation."""
+
+        return (self.output_order, self.input_order, self.path.as_tuple())
+
+    @property
+    def support_path(self) -> SupportPath:
+        """Return the underlying unary support path."""
+
+        return self.path
+
+
+@dataclass(frozen=True)
+class OutputPathLayout:
+    """Immutable ordered path entries contributing to one output order."""
+
+    output_order: int
+    entries: tuple[PathEntry, ...]
+
+    def __post_init__(self) -> None:
+        entries = tuple(self.entries)
+        if any(entry.output_order != self.output_order for entry in entries):
+            raise ValueError("all entries must contribute to output_order")
+        entries = tuple(sorted(entries, key=lambda entry: entry.as_tuple()))
+        keys = [entry.as_tuple() for entry in entries]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate semantic paths are not allowed")
+        object.__setattr__(self, "entries", entries)
+
+    @property
+    def count(self) -> int:
+        """Return the number of paths for this output order."""
+
+        return len(self.entries)
+
+
+@dataclass(frozen=True)
+class PathLayout:
+    """Immutable common path layout shared by producers and aggregation."""
+
+    outputs: tuple[OutputPathLayout, ...]
+    input_orders: NormalizedOrders
+    output_orders: NormalizedOrders
+    input_channels: NormalizedChannels
+    output_channels: NormalizedChannels
+    version: str = "path-layout-v1"
+
+    def __post_init__(self) -> None:
+        outputs = tuple(sorted(self.outputs, key=lambda layout: layout.output_order))
+        if tuple(layout.output_order for layout in outputs) != self.output_orders.values:
+            raise ValueError("outputs must cover output_orders in canonical order")
+        for order in self.input_orders.values:
+            self.input_channels.for_order(order)
+        for order in self.output_orders.values:
+            self.output_channels.for_order(order)
+        entries = [entry.as_tuple() for layout in outputs for entry in layout.entries]
+        if len(entries) != len(set(entries)):
+            raise ValueError("duplicate semantic paths are not allowed")
+        object.__setattr__(self, "outputs", outputs)
+
+    @property
+    def counts(self) -> tuple[tuple[int, int], ...]:
+        """Return ``(output_order, path_count)`` pairs."""
+
+        return tuple((layout.output_order, layout.count) for layout in self.outputs)
+
+    @property
+    def output_layouts(self) -> tuple[OutputPathLayout, ...]:
+        """Return output layouts under the descriptive alias."""
+
+        return self.outputs
+
+    @property
+    def fingerprint(self) -> str:
+        """Return a stable SHA-256 fingerprint of semantic layout values."""
+
+        payload = repr((self.version, self.input_orders.values, self.output_orders.values,
+                        self.input_channels.values, self.output_channels.values,
+                        tuple(layout.entries for layout in self.outputs))).encode()
+        return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -365,8 +537,35 @@ def validate_virtual_path(path: VirtualPath, *, max_order: int | None = None, ma
             raise ValueError(f"{name} must be injective")
         if any(label < 0 or label >= path.s for label in injection):
             raise ValueError(f"{name} labels must land in the virtual support")
+    validate_tp_input_cover_support(path)
+
+
+def validate_tp_input_cover_support(path: VirtualPath) -> None:
+    """Validate the explicit TP input-cover-support contract."""
+
     if path.input_support != set(range(path.s)):
         raise ValueError("left and right injections must cover the virtual support")
+
+
+def validate_linear_output_plus_input_cover_support(path: SupportPath) -> None:
+    """Validate a unary path's output-plus-input common-support contract."""
+
+    if path.support_order <= 0:
+        raise ValueError("support_order must be positive")
+    if path.output_order <= 0 or path.input_order <= 0:
+        raise ValueError("path orders must be positive")
+    if path.normalization not in {"sum", "orbit_mean"}:
+        raise ValueError(f"Unsupported path normalization {path.normalization!r}")
+    for name, order, injection in (("tau_out", path.output_order, path.tau_out),
+                                   ("tau_in", path.input_order, path.tau_in)):
+        if len(injection) != order:
+            raise ValueError(f"{name} length must match its order")
+        if len(set(injection)) != len(injection):
+            raise ValueError(f"{name} must be injective")
+        if any(label < 0 or label >= path.support_order for label in injection):
+            raise ValueError(f"{name} labels must land in the common support")
+    if set(path.tau_out) | set(path.tau_in) != set(range(path.support_order)):
+        raise ValueError("output and input injections must cover the common support")
 
 
 def _serialize_paths(paths: PathFamily) -> list[object]:
@@ -390,11 +589,19 @@ def _ensure_list_index(items: list[object], index: int) -> list[object]:
 
 
 __all__ = [
+    "NormalizedChannels",
+    "NormalizedOrders",
     "PathFamily",
+    "PathEntry",
+    "PathLayout",
     "PathMetadata",
+    "OutputPathLayout",
+    "SupportPath",
     "VirtualPath",
     "generate_virtual_paths",
     "iter_path_blocks",
     "load_default_path_metadata",
     "validate_virtual_path",
+    "validate_linear_output_plus_input_cover_support",
+    "validate_tp_input_cover_support",
 ]
