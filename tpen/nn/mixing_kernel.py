@@ -159,6 +159,7 @@ def execute_unary(
     output_channels: int,
     aggregation: Aggregation,
     implementation: MixingImplementation,
+    index_plans: tuple[UnaryIndexPlan, ...] | None = None,
 ) -> torch.Tensor:
     """Execute a parameter-free unary support-path contraction.
 
@@ -176,6 +177,10 @@ def execute_unary(
         Sum or zero-safe completion mean.
     implementation : MixingImplementation
         Literal or vectorized execution strategy.
+    index_plans : tuple of UnaryIndexPlan, optional
+        Per-forward typed index cache. When supplied, it must contain one plan
+        per path; otherwise plans are built from the static paths for this
+        execution. The cache contains no parameters or mutable module state.
     """
 
     aggregation = normalize_aggregation(aggregation)
@@ -194,9 +199,16 @@ def execute_unary(
         if aggregation is Aggregation.COMPLETION_MEAN
         else None
     )
+    plans = (
+        tuple(build_unary_index_plan(path, n_particles, device=source.device) for path in paths)
+        if index_plans is None
+        else index_plans
+    )
+    if len(plans) != len(paths):
+        raise ValueError("unary paths and index plans must have matching lengths")
     block_flat = block.reshape(*block.shape[:3], -1)
     for path_index, (path, weight) in enumerate(zip(paths, weights)):
-        plan = build_unary_index_plan(path, n_particles, device=source.device)
+        plan = plans[path_index]
         if implementation is MixingImplementation.SLOW:
             for output_tuple, input_tuple in zip(
                 plan.output_indices.tolist(), plan.input_indices.tolist()

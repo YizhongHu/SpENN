@@ -8,7 +8,7 @@ import torch
 from tpen.data.paths import LinearPathMetadata, LinearPathPolicy, SupportPath
 from tpen.data.real import Feature, zero_block
 from tpen.nn import LinearEquivariantMixing
-from tpen.nn.mixing_kernel import Aggregation
+from tpen.nn.mixing_kernel import Aggregation, MixingImplementation, execute_unary
 
 
 def _feature(values: torch.Tensor, order: int = 1) -> Feature:
@@ -72,3 +72,47 @@ def test_linear_explicit_metadata_preserves_declared_order() -> None:
     )
     metadata = LinearPathMetadata.generate(max_order=1, policy="explicit", explicit=paths)
     assert metadata.all_paths() == paths
+
+
+@pytest.mark.parametrize("implementation", [MixingImplementation.SLOW, MixingImplementation.VECTORIZED])
+@pytest.mark.parametrize("aggregation", [Aggregation.SUM, Aggregation.COMPLETION_MEAN])
+def test_unary_hand_computed_one_body_values(
+    implementation: MixingImplementation, aggregation: Aggregation
+) -> None:
+    """Anchor execution to the defining equation, independently of references."""
+
+    paths = (
+        SupportPath(1, 1, (0,), (0,), "sum"),
+        SupportPath(1, 1, (0,), (1,), "completion_mean"),
+    )
+    weights = (
+        torch.tensor([[2.0]], dtype=torch.float64),
+        torch.tensor([[3.0]], dtype=torch.float64),
+    )
+    source = torch.tensor([[[1.0, 2.0, 4.0]]], dtype=torch.float64)
+    actual = execute_unary(
+        paths,
+        weights,
+        source,
+        n_particles=3,
+        output_order=1,
+        batch_size=1,
+        output_channels=1,
+        aggregation=aggregation,
+        implementation=implementation,
+    )
+    expected = torch.tensor(
+        [[[[2.0, 4.0, 8.0], [9.0, 7.5, 4.5]]]], dtype=torch.float64
+    )
+    if aggregation is Aggregation.SUM:
+        expected[:, :, 1] *= 2.0
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("implementation", ["slow", "vectorized"])
+def test_linear_implementation_is_static_and_selectable(implementation: str) -> None:
+    mixing = LinearEquivariantMixing(max_order=1, channels=1, implementation=implementation)
+    assert mixing.implementation is MixingImplementation(implementation)
+    before = tuple(mixing.state_dict())
+    mixing(_feature(torch.ones(1, 3)))
+    assert tuple(mixing.state_dict()) == before
