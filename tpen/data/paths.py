@@ -12,6 +12,7 @@ import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import combinations, permutations
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,25 @@ from tpen.data.indices import ordered_tuples
 
 
 OutputEmbedding = Literal["canonical", "full"]
+
+
+class LinearPathPolicy(str, Enum):
+    """Closed set of linear path-family selection policies."""
+
+    COORDINATE_NEIGHBOR = "coordinate_neighbor"
+    ORBIT_COMPLETE = "orbit_complete"
+    EXPLICIT = "explicit"
+
+
+def normalize_linear_path_policy(value: LinearPathPolicy | str) -> LinearPathPolicy:
+    """Normalize a closed configuration value to a typed policy."""
+
+    if isinstance(value, LinearPathPolicy):
+        return value
+    try:
+        return LinearPathPolicy(value)
+    except ValueError as error:
+        raise ValueError(f"Unsupported linear path policy {value!r}") from error
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 DEFAULT_PATH_FILES = {
     "canonical": CACHE_DIR / "paths_canonical.json",
@@ -206,6 +226,127 @@ class PathLayout:
                                  for layout in self.outputs))
         payload = json.dumps(semantic_values, separators=(",", ":"), ensure_ascii=True).encode()
         return hashlib.sha256(payload).hexdigest()
+
+
+@dataclass(frozen=True)
+class LinearPathMetadata:
+    """Immutable deterministic metadata for unary linear mixing paths.
+
+    Parameters
+    ----------
+    outputs : tuple of OutputPathLayout
+        Contractual path sequences grouped by output order.
+    input_orders, output_orders : NormalizedOrders
+        Orders represented by the metadata. Input orders are owned by this
+        value rather than discovered from runtime feature tensors.
+    policy : LinearPathPolicy
+        Selection policy used to construct the metadata.
+    """
+
+    outputs: tuple[OutputPathLayout, ...]
+    input_orders: NormalizedOrders
+    output_orders: NormalizedOrders
+    policy: LinearPathPolicy
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "policy", normalize_linear_path_policy(self.policy))
+        outputs = tuple(sorted(tuple(self.outputs), key=lambda layout: layout.output_order))
+        if tuple(layout.output_order for layout in outputs) != self.output_orders.values:
+            raise ValueError("linear outputs must cover output_orders in canonical order")
+        for layout in outputs:
+            for entry in layout.entries:
+                if entry.input_order not in self.input_orders.values:
+                    raise ValueError("linear path input order is not configured")
+        entries = [entry.as_tuple() for layout in outputs for entry in layout.entries]
+        if len(entries) != len(set(entries)):
+            raise ValueError("duplicate semantic linear paths are not allowed")
+        object.__setattr__(self, "outputs", outputs)
+
+    @classmethod
+    def generate(
+        cls,
+        *,
+        max_order: int,
+        policy: LinearPathPolicy | str = LinearPathPolicy.COORDINATE_NEIGHBOR,
+        input_orders: tuple[int, ...] | None = None,
+        output_orders: tuple[int, ...] | None = None,
+        normalization: Literal["sum", "completion_mean"] = "completion_mean",
+        explicit: tuple[SupportPath, ...] | None = None,
+    ) -> "LinearPathMetadata":
+        """Construct deterministic metadata without runtime or file access.
+
+        ``coordinate_neighbor`` emits same-order identity and one-coordinate
+        replacement paths. ``orbit_complete`` emits every canonical partial
+        matching for each configured order pair. ``explicit`` preserves the
+        supplied path order and rejects paths outside the configured orders.
+        """
+
+        policy = normalize_linear_path_policy(policy)
+        max_order = int(max_order)
+        if max_order <= 0:
+            raise ValueError("max_order must be positive")
+        inputs = NormalizedOrders(tuple(range(1, max_order + 1)) if input_orders is None else input_orders)
+        outputs = NormalizedOrders(tuple(range(1, max_order + 1)) if output_orders is None else output_orders)
+        if policy is LinearPathPolicy.COORDINATE_NEIGHBOR and inputs.values != outputs.values:
+            raise ValueError("coordinate_neighbor requires matching input and output orders")
+        by_output: list[OutputPathLayout] = []
+        explicit_paths = tuple(explicit or ())
+        for output_order in outputs.values:
+            selected: list[SupportPath] = []
+            if policy is LinearPathPolicy.COORDINATE_NEIGHBOR:
+                selected.append(
+                    SupportPath(output_order, output_order, tuple(range(output_order)), tuple(range(output_order)), normalization)
+                )
+                for slot in range(output_order):
+                    tau_in = tuple(
+                        output_order if input_slot == slot else input_slot
+                        for input_slot in range(output_order)
+                    )
+                    selected.append(SupportPath(output_order, output_order, tuple(range(output_order)), tau_in, normalization))
+            elif policy is LinearPathPolicy.ORBIT_COMPLETE:
+                for input_order in inputs.values:
+                    selected.extend(enumerate_linear_support_paths(output_order, input_order, normalization=normalization))
+            else:
+                selected.extend(path for path in explicit_paths if path.output_order == output_order)
+            entries = tuple(PathEntry(output_order, path.input_order, path) for path in selected)
+            by_output.append(OutputPathLayout(output_order, entries))
+        if policy is LinearPathPolicy.EXPLICIT:
+            configured = {(path.output_order, path.input_order, path.as_tuple()) for path in explicit_paths}
+            actual = {
+                (entry.output_order, entry.input_order, entry.path.as_tuple())
+                for layout in by_output
+                for entry in layout.entries
+            }
+            if actual != configured:
+                raise ValueError("explicit paths must use configured output orders")
+        return cls(tuple(by_output), inputs, outputs, policy)
+
+    def all_paths(self) -> tuple[SupportPath, ...]:
+        """Return paths in their contractual output/path-axis order."""
+
+        return tuple(entry.path for layout in self.outputs for entry in layout.entries)
+
+    @property
+    def fingerprint(self) -> str:
+        """Return a stable SHA-256 fingerprint of linear path semantics."""
+
+        semantic_values = (
+            "linear-path-metadata-v1",
+            self.policy.value,
+            self.input_orders.values,
+            self.output_orders.values,
+            tuple(tuple(entry.as_tuple() for entry in layout.entries) for layout in self.outputs),
+        )
+        payload = json.dumps(semantic_values, separators=(",", ":"), ensure_ascii=True).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    def paths_for_output_order(self, output_order: int) -> tuple[SupportPath, ...]:
+        """Return the static path sequence for one output order."""
+
+        for layout in self.outputs:
+            if layout.output_order == output_order:
+                return tuple(entry.path for entry in layout.entries)
+        raise KeyError(output_order)
 
 
 @dataclass(frozen=True)
@@ -641,6 +782,8 @@ def _ensure_list_index(items: list[object], index: int) -> list[object]:
 
 
 __all__ = [
+    "LinearPathMetadata",
+    "LinearPathPolicy",
     "NormalizedChannels",
     "NormalizedOrders",
     "PathFamily",
@@ -654,6 +797,7 @@ __all__ = [
     "generate_virtual_paths",
     "iter_path_blocks",
     "load_default_path_metadata",
+    "normalize_linear_path_policy",
     "validate_virtual_path",
     "validate_linear_output_plus_input_cover_support",
     "validate_tp_input_cover_support",
