@@ -50,7 +50,11 @@ def test_ref_json_round_trip_and_provenance_is_immutable(tmp_path: Path) -> None
 
     assert round_trip == ref
     assert round_trip.content_id == ref.content_id
-    _expect_raises(TypeError, ref.provenance.__setitem__, "run_id", "changed")
+
+    def mutate_provenance() -> None:
+        ref.provenance["run_id"] = "changed"  # type: ignore[index]
+
+    _expect_raises(TypeError, mutate_provenance)
     _expect_raises(AttributeError, setattr, ref, "next_iteration", 8)
 
 
