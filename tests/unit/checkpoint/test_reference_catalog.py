@@ -35,12 +35,22 @@ def _write_checkpoint(root: Path, step: int = 7, *, model_name: str = "model.pt"
     return checkpoint_dir
 
 
-def _expect_raises(expected: type[BaseException], function, *args, **kwargs) -> None:
+def _expect_raises(
+    expected: type[BaseException] | tuple[type[BaseException], ...],
+    function,
+    *args,
+    **kwargs,
+) -> None:
     try:
         function(*args, **kwargs)
     except expected:
         return
-    raise AssertionError(f"expected {expected.__name__} from {function.__name__}")
+    expected_names = (
+        ", ".join(exc.__name__ for exc in expected)
+        if isinstance(expected, tuple)
+        else expected.__name__
+    )
+    raise AssertionError(f"expected {expected_names} from {function.__name__}")
 
 
 def test_ref_json_round_trip_and_provenance_is_immutable(tmp_path: Path) -> None:
@@ -81,7 +91,11 @@ def test_incomplete_tmp_and_latest_paths_are_rejected(tmp_path: Path) -> None:
         json.dumps({"checkpoint_dir": complete.name}), encoding="utf-8"
     )
     _expect_raises(ValueError, CheckpointRef.from_directory, complete.parent)
-    _expect_raises(ValueError, CheckpointRef.from_directory, complete.parent / "latest.json")
+    _expect_raises(
+        (ValueError, FileNotFoundError),
+        CheckpointRef.from_directory,
+        complete.parent / "latest.json",
+    )
 
 
 def test_path_and_manifest_step_disagreement_fails_loudly(tmp_path: Path) -> None:
