@@ -147,6 +147,40 @@ def test_catalog_is_append_only_and_has_no_lifecycle_state(tmp_path: Path) -> No
         assert lifecycle_key not in serialized
 
 
+def test_catalog_republishing_same_identity_is_idempotent(tmp_path: Path) -> None:
+    checkpoint_dir = _write_checkpoint(tmp_path / "checkpoints")
+    ref = CheckpointRef.from_directory(checkpoint_dir)
+    catalog_path = tmp_path / "publications.jsonl"
+    catalog = CheckpointCatalog(catalog_path)
+
+    catalog.publish(ref)
+    record = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    before = catalog_path.read_bytes()
+
+    # Parsed-equivalent JSON formatting is still the same publication.
+    assert catalog.publish(ref) == ref
+    assert catalog_path.read_bytes() == before
+    assert catalog.records() == (ref,)
+
+
+def test_catalog_rejects_conflicting_duplicate_identity(tmp_path: Path) -> None:
+    first = CheckpointRef.from_directory(_write_checkpoint(tmp_path / "first"))
+    second = CheckpointRef.from_directory(_write_checkpoint(tmp_path / "second"))
+    assert second.content_id == first.content_id
+    assert second.to_dict() != first.to_dict()
+
+    catalog_path = tmp_path / "publications.jsonl"
+    catalog = CheckpointCatalog(catalog_path)
+    catalog.publish(first)
+    before = catalog_path.read_bytes()
+
+    _expect_raises(ValueError, catalog.publish, second)
+
+    assert catalog_path.read_bytes() == before
+    assert catalog.records() == (first,)
+
+
 def test_catalog_rejects_content_id_tampering(tmp_path: Path) -> None:
     checkpoint_dir = _write_checkpoint(tmp_path / "checkpoints")
     ref = CheckpointRef.from_directory(checkpoint_dir)

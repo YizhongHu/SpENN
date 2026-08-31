@@ -32,18 +32,30 @@ class CheckpointCatalog:
         self.path = Path(path)
 
     def publish(self, ref: CheckpointRef) -> CheckpointRef:
-        """Validate and append one publication record without rewriting prior rows."""
+        """Publish ``ref`` while preserving append-only history.
+
+        ``content_id`` is the publication identity.  A replay is idempotent
+        when the parsed, canonical full CheckpointRef mapping is equal to the
+        existing row; raw JSON formatting is intentionally irrelevant.  A
+        same-content-id row with different serialized content is a conflict.
+        The duplicate check scans the append-only JSONL catalog, so its read
+        cost is O(n) in the number of existing publications.
+        """
 
         if not isinstance(ref, CheckpointRef):
             raise TypeError(f"expected CheckpointRef, got {type(ref).__name__}")
         ref.validate()
-        append_jsonl(
-            self.path,
-            {
-                "schema": PUBLICATION_RECORD_SCHEMA,
-                "ref": serialize_checkpoint_ref(ref),
-            },
-        )
+        serialized_ref = serialize_checkpoint_ref(ref)
+        for existing in self.iter_publications():
+            if existing.content_id != ref.content_id:
+                continue
+            if existing.to_dict() == serialized_ref:
+                return ref
+            raise ValueError(
+                "conflicting checkpoint publication for content_id "
+                f"{ref.content_id}"
+            )
+        append_jsonl(self.path, {"schema": PUBLICATION_RECORD_SCHEMA, "ref": serialized_ref})
         return ref
 
     append = publish
