@@ -2,9 +2,29 @@
 
 ## v0.4.0 - Analytic electron-nucleus cusp local energy
 
-16 commits since v0.3.4 (`ed09f85`). The headline is an analytic evaluator for
+20 commits since v0.3.4 (`ed09f85`). The headline is an analytic evaluator for
 the electron-nucleus cusp; the rest is the typed operator machinery it needed
 and two compatibility changes.
+
+The census for `origin/main..HEAD` examined 21 commits: 20 are cited in this
+section (including the release bump, #411), and one is deliberately excluded.
+The count was measured with:
+
+```
+git log --format='%H' origin/main..HEAD | wc -l                    # 21
+git log --format='%H' origin/main..HEAD | tail -n +2 | wc -l      # 20
+git log --format='%H' origin/main..fe569dd | wc -l                # 19
+git log --format='%H' origin/main..fe569dd | tail -n +2 | wc -l  # 18
+```
+
+Commit census: `72be473` (#383), `e75243d` (#385), `8193d9c` (#392),
+`7faf370` (#386), `9c65cdb` (#388), `c54a916` (#389), `c2fb091` (#391),
+`287c96d` (#403), `4a33b6a` (#404), `84a0a52` (#405), `e6063b5` (#406),
+`25342b6` (#407), `c761a4c` (#387), `06e2d17`, `dedf761` (#410),
+`27af226` (#413), `a1f8938` (#414), `fe569dd` (#411), `7a8edf2` (#415),
+and `887988c` are represented below. `c585534` is deliberately excluded:
+it removes a stale documentation comment without changing user-facing
+behaviour, so it does not warrant a release-note headline.
 
 ### Breaking
 
@@ -19,6 +39,20 @@ and two compatibility changes.
   A non-zero floor removes the potential divergence and introduces one into
   the total; measurement found `E(r; eps) = Z/r - Z/eps - Z^2/2` inside the
   floor. Runs that relied on a non-zero default will change.
+- **Vestigial `SpENN` module names are retired from the core package** (#414).
+  `tpen/nn/spenn_layer.py` and `tpen/nn/spenn_wave_function.py` become
+  `tpen_layer.py` and `tpen_wave_function.py`; the classes they export were
+  renamed to `TPENLayer`/`TPENWaveFunction` long ago. Import paths change, so
+  this is breaking, and it is batched into this release rather than deferred
+  so consumers absorb one break instead of two.
+
+  Legacy compatibility identifiers are deliberately preserved:
+  `LEGACY_BASIS_FEATURE_DIM_RESOLVER` (`"spenn.basis_feature_dim"`) and
+  `LEGACY_CHECKPOINT_KIND` (`"spenn.checkpoint"`) still carry their historical
+  spellings, because checkpoints and configs on disk reference them. The v1
+  record-format documentation in `tpen/metrics_naming.md` is likewise
+  unchanged. A test now pins the checkpoint literal, which previously had no
+  effective coverage.
 
 ### Added
 
@@ -42,25 +76,24 @@ and two compatibility changes.
 - Physical-term and virial-residual metrics owned in `tpen/` (#386) and an
   optional Numdifftools finite-difference kinetic oracle (#388).
 - Baseline matrix plan builder (#387), `StagePlanV2` dispatch via
-  `ParslAttachExecutor`, DeepQMC environment ported to Polaris (#385), and a
-  reusable multi-GPU scaling probe (#392).
+  `ParslAttachExecutor` (`06e2d17`), DeepQMC environment ported to Polaris
+  (#385), and a reusable multi-GPU scaling probe (#392).
+- DeepQMC run seeds are recorded (#383).
 
 ### Changed
 
-- **Vestigial `SpENN` module names retired from the core package** (#414).
-  `tpen/nn/spenn_layer.py` and `tpen/nn/spenn_wave_function.py` become
-  `tpen_layer.py` and `tpen_wave_function.py`; the classes they export were
-  renamed to `TPENLayer`/`TPENWaveFunction` long ago. Import paths change, so
-  this is breaking, and it is batched into this release rather than deferred
-  so consumers absorb one break instead of two.
+- The documented `pytest` console-script invocation now collects the
+  `experiments/` namespace package (#413), and the He-cutover runbook test
+  isolates its environment sync under `tmp_path` (#415).
 
-  Legacy compatibility identifiers are deliberately preserved:
-  `LEGACY_BASIS_FEATURE_DIM_RESOLVER` (`"spenn.basis_feature_dim"`) and
-  `LEGACY_CHECKPOINT_KIND` (`"spenn.checkpoint"`) still carry their historical
-  spellings, because checkpoints and configs on disk reference them. The v1
-  record-format documentation in `tpen/metrics_naming.md` is likewise
-  unchanged. A test now pins the checkpoint literal, which previously had no
-  effective coverage.
+### Fixed
+
+- Parsl attach now accepts any row width that tiles a node, rather than only
+  1-GPU rows (`887988c`). Previously the only dispatchable multi-node shape was
+  1 GPU per row. For the H2 seed spread, that cost 118 node-hours on Polaris
+  job 7575420 arm B versus 39 node-hours for the same work, with 80 of 100
+  GPUs idle. The wrapper now admits 2- and 4-GPU row bindings when they cover
+  each node without overlap or gaps.
 
 ### Known limitations
 
