@@ -15,8 +15,10 @@ from omegaconf import OmegaConf
 from tpen import __version__ as tpen_version
 
 from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_latest
+from .catalog import CheckpointCatalog, publication_catalog_path
 from .hashing import checkpoint_hashes
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
+from .reference import CheckpointRef
 from .rng import rng_state_dict, runtime_device
 
 
@@ -35,6 +37,7 @@ def save_checkpoint(
     save_sampler: bool = True,
     save_rng: bool = True,
     keep_last: int | None = None,
+    publication_catalog: str | Path | CheckpointCatalog | None = None,
 ) -> Path:
     """Write one complete directory checkpoint and update ``latest.json``.
 
@@ -59,6 +62,11 @@ def save_checkpoint(
         Which train-resume components to include.
     keep_last : int or None, optional
         Prune to the newest ``keep_last`` complete checkpoints after writing.
+    publication_catalog : str, pathlib.Path, CheckpointCatalog, or None, optional
+        Append-only publication catalog.  When omitted, the catalog is
+        ``output_dir/publications.jsonl``.  The ref is constructed and
+        appended only after the temporary directory has been atomically
+        renamed to its final ``step_*`` directory.
 
     Returns
     -------
@@ -125,6 +133,19 @@ def save_checkpoint(
         manifest.write(tmp_dir / "manifest.json")
         (tmp_dir / "COMPLETE").write_text("complete\n", encoding="utf-8")
         tmp_dir.rename(final_dir)
+        # The rename is the checkpoint commit.  Publication is deliberately
+        # after it, so a catalog can never name a tmp or partially written
+        # directory as a CheckpointRef.
+        catalog = (
+            publication_catalog
+            if isinstance(publication_catalog, CheckpointCatalog)
+            else CheckpointCatalog(
+                publication_catalog_path(root)
+                if publication_catalog is None
+                else publication_catalog
+            )
+        )
+        catalog.publish(CheckpointRef.from_directory(final_dir))
         # `latest.json` stays minimal: a pointer plus the directory's own step
         # number. The manifest is the place that carries both counters.
         write_latest(root, final_dir, step=int(next_iteration), created_at_unix=created_at)
