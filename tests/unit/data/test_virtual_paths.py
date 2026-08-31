@@ -167,8 +167,21 @@ def test_path_layout_normalizes_order_count_and_fingerprint() -> None:
 
     assert first.counts == ((1, 2),)
     assert first.fingerprint == second.fingerprint
-    assert first.outputs[0].entries[0].path.tau_in == (0,)
+    assert first.outputs[0].entries[0].path.tau_in == (1,)
     assert len(first.fingerprint) == 64
+
+
+def test_path_position_is_meaningful_to_layout_identity() -> None:
+    first = _layout()
+    reordered = PathLayout(
+        outputs=(OutputPathLayout(1, tuple(reversed(first.outputs[0].entries))),),
+        input_orders=first.input_orders,
+        output_orders=first.output_orders,
+        input_channels=first.input_channels,
+        output_channels=first.output_channels,
+    )
+
+    assert first.fingerprint != reordered.fingerprint
 
 
 def test_path_layout_rejects_duplicate_semantic_paths() -> None:

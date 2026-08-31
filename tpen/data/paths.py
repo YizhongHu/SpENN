@@ -137,7 +137,8 @@ class OutputPathLayout:
         entries = tuple(self.entries)
         if any(entry.output_order != self.output_order for entry in entries):
             raise ValueError("all entries must contribute to output_order")
-        entries = tuple(sorted(entries, key=lambda entry: entry.as_tuple()))
+        # Path position is part of the contract: aggregation weights index this
+        # sequence, and composite producers contribute ordered path families.
         keys = [entry.as_tuple() for entry in entries]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate semantic paths are not allowed")
@@ -190,9 +191,14 @@ class PathLayout:
     def fingerprint(self) -> str:
         """Return a stable SHA-256 fingerprint of semantic layout values."""
 
-        payload = repr((self.version, self.input_orders.values, self.output_orders.values,
-                        self.input_channels.values, self.output_channels.values,
-                        tuple(layout.entries for layout in self.outputs))).encode()
+        # Covers version, channel/order contracts, and declared path position.
+        # It deliberately excludes Python class names, field names, and repr
+        # formatting so implementation refactors do not change science identity.
+        semantic_values = (self.version, self.input_orders.values, self.output_orders.values,
+                           self.input_channels.values, self.output_channels.values,
+                           tuple(tuple(entry.as_tuple() for entry in layout.entries)
+                                 for layout in self.outputs))
+        payload = json.dumps(semantic_values, separators=(",", ":"), ensure_ascii=True).encode()
         return hashlib.sha256(payload).hexdigest()
 
 
