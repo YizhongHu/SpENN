@@ -1,4 +1,4 @@
-"""Generic configured run launcher."""
+"""Command-line entrypoint for configured TPEN runs."""
 
 from __future__ import annotations
 
@@ -378,10 +378,10 @@ def _install_bootstrap_stderr_logger() -> None:
     logger = logging.getLogger(_BOOTSTRAP_LOGGER_NAME)
     logger.setLevel(logging.ERROR)
     for handler in logger.handlers:
-        if getattr(handler, "_spenn_bootstrap_handler", False):
+        if getattr(handler, "_tpen_bootstrap_handler", False):
             return
     handler = logging.StreamHandler(sys.stderr)
-    handler._spenn_bootstrap_handler = True
+    handler._tpen_bootstrap_handler = True
     handler.setLevel(logging.ERROR)
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
@@ -394,7 +394,7 @@ def _failure_phase(
     context: RunContext | None,
     runner: Runner | None,
 ) -> str:
-    phase = getattr(exc, "_spenn_failure_phase", None)
+    phase = getattr(exc, "_tpen_failure_phase", None)
     if phase is not None:
         return str(phase)
     if context is None or runner is None:
@@ -460,8 +460,8 @@ def _print_fatal(
     """Print a fatal diagnostic to stderr regardless of terminal settings."""
 
     parts = [f"FATAL {phase} error: {type(exc).__name__}: {exc}"]
-    load_path = getattr(exc, "_spenn_load_path", None)
-    load_mode = getattr(exc, "_spenn_load_mode", None)
+    load_path = getattr(exc, "_tpen_load_path", None)
+    load_mode = getattr(exc, "_tpen_load_mode", None)
     if load_path is not None:
         parts.append(f"load.path: {load_path}")
     if load_mode is not None:

@@ -28,6 +28,38 @@ _HOSTNAME_PATTERN = re.compile(
 )
 
 
+def validate_accelerator_tiling(visibility_values: Sequence[str]) -> None:
+    """Reject row bindings that do not partition a node's accelerators.
+
+    Bindings must be disjoint and cover ``0..N-1``: overlap would double-book an
+    accelerator, gaps would not describe a node. HOW MANY accelerators a node has
+    is a planning setting owned by the caller
+    (:data:`experiments.baselines.pipeline.ACCELERATORS_PER_NODE`), not something
+    discovered here -- this only checks that what arrived is well formed.
+
+    The replaced check required exactly four bindings, which conflated "four
+    accelerators per node" with "four rows per node" and so rejected every row
+    width above one.
+    """
+
+    if not visibility_values:
+        raise ValueError("at least one accelerator binding is required; got none")
+    flat: list[int] = []
+    for value in visibility_values:
+        tokens = [token.strip() for token in str(value).split(",") if token.strip()]
+        if not tokens:
+            raise ValueError(f"accelerator binding is empty: {value!r}")
+        try:
+            flat.extend(int(token) for token in tokens)
+        except ValueError as exc:
+            raise ValueError(f"accelerator binding must be integers: {value!r}") from exc
+    if sorted(flat) != list(range(len(flat))):
+        raise ValueError(
+            "accelerator bindings must partition a node's local indices 0..N-1 "
+            f"exactly once; got {sorted(flat)} from {tuple(visibility_values)}"
+        )
+
+
 def validate_pbs_nodefile(
     nodefile: str | os.PathLike[str] | None,
     *,
@@ -325,8 +357,7 @@ def _parsl_app_runner(context: AllocationContext, launch_attempt_dir: Path) -> A
     """Build and load the allocation-local Parsl application lazily."""
 
     if context.nodes_per_block is not None:
-        if len(context.visibility_values) != 4:
-            raise ValueError("multi-node Parsl attach requires exactly four accelerators per node")
+        validate_accelerator_tiling(context.visibility_values)
         validate_pbs_nodefile(
             os.environ.get("PBS_NODEFILE"), requested_node_count=context.nodes_per_block
         )

@@ -144,10 +144,51 @@ def test_documented_cannon_plan_runs_outside_checkout(tmp_path: Path) -> None:
         "TPEN_UV": uv,
         "TPEN_RESULTS_ROOT": str(results),
         "TPEN_PLAN_ATTEMPT_ID": "subprocess-test",
+        # The documented command is `uv run --project <checkout> --locked --extra cpu`,
+        # which SYNCS a project environment. Unpinned, it syncs whichever environment
+        # the caller is using -- inherited via os.environ above -- so this test would
+        # mutate the interpreter every other test runs under, making suite results
+        # order-dependent. It cuts BOTH ways: the sync installs torch where it was
+        # absent, silently repairing environment-gated skips so a contaminated run
+        # looks more complete than a clean one; and because the command carries
+        # `--extra cpu` WITHOUT `--extra finite-difference`, it also PRUNES
+        # `numdifftools` from an environment that had it, breaking finite-difference
+        # instruments mid-run for a reason that looks like a real disagreement.
+        # Point the sync at a disposable venv; the command itself stays byte-for-byte
+        # as documented, only its destination changes.
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "venv"),
     }
+    # UV_CACHE_DIR is deliberately INHERITED rather than pinned under tmp_path. The
+    # cache is content-addressed and shared by design, so inheriting it lets the
+    # isolated sync hardlink torch instead of re-downloading it; pinning it here would
+    # force a fresh download every run. Sharing the cache is safe in a way that sharing
+    # the project environment is not.
+    #
+    # That safety is about RESOLUTION, DOWNLOAD and HARDLINKING -- not the whole cache.
+    # `uv` also BUILDS inside it, under `builds-v0`, and that subtree is ordinary
+    # scratch space with none of the content-addressed guarantees. Two failures seen
+    # there, both unrelated to this test: concurrent editable builds of the same
+    # project colliding (`Errno 39 Directory not empty`), and an NFS silly-rename
+    # artefact (`.nfs*`) when the inherited cache sits on NFS home. So the caller
+    # chooses where builds happen, and a caller running concurrent lanes or a
+    # networked home may need its own UV_CACHE_DIR. That belongs in the caller/harness,
+    # NOT here: pinning it in this test would trade a rare, loud build failure for a
+    # guaranteed multi-gigabyte download on every run.
     env.pop("PYTHONPATH", None)
     command = _runbook_command("Cannon planning (login node):", "cutover_plan.py")
     subprocess.run(["bash", "-c", command], cwd=outside, env=env, check=True)
+    # Guard that the pin was HONOURED, not merely written. This defect fails silently:
+    # if a later edit drops or overrides UV_PROJECT_ENVIRONMENT, the command still
+    # succeeds and the test still passes while quietly mutating the caller's
+    # environment again. `pyvenv.cfg` is written by the interpreter that creates a
+    # venv, so its presence here is evidence the sync materialised at the pinned
+    # destination rather than somewhere else -- which a check on the env dict, or on
+    # the directory alone, would not establish.
+    assert (tmp_path / "venv" / "pyvenv.cfg").is_file(), (
+        "the documented command did not sync into the pinned disposable venv; "
+        "UV_PROJECT_ENVIRONMENT is no longer being honoured and this test is "
+        "mutating the caller's environment (installing torch, pruning numdifftools)"
+    )
     plan = results / "00_plan" / "subprocess-test"
     assert (plan / "rows.csv").is_file()
     assert (plan / "02_train" / "tasks.jsonl").is_file()

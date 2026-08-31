@@ -6,6 +6,7 @@ import torch
 
 from tpen.data.batch import ElectronBatch, WavefunctionOutput
 from tpen.physics.hamiltonian import LocalEnergyResult
+from tpen.physics.operators import KINETIC_ENERGY, register_operator
 
 
 def _extract_logabs(output: WavefunctionOutput) -> torch.Tensor:
@@ -233,11 +234,11 @@ def _kinetic_probe_batch(
     )
 
 
+@register_operator(KINETIC_ENERGY)
 class KineticEnergy:
     """Hamiltonian term for the quantum kinetic energy operator."""
 
     name = "kinetic"
-
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         value, output, per_electron = _kinetic_energy_output_and_per_electron(
             wavefunction,

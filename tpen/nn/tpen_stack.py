@@ -14,7 +14,7 @@ from tpen.data.real import Feature
 from tpen.dependencies import require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
-from tpen.nn.spenn_layer import TPENLayer
+from tpen.nn.tpen_layer import TPENLayer
 
 nn = require_torch_nn(feature="TPEN stack modules")
 

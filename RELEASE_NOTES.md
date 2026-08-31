@@ -1,5 +1,111 @@
 # Release Notes
 
+## v0.4.0 - Analytic electron-nucleus cusp local energy
+
+20 substantive commits since v0.3.4 (`ed09f85`), excluding the #411 release
+chore. The headline is an analytic evaluator for
+the electron-nucleus cusp; the rest is the typed operator machinery it needed
+and two compatibility changes.
+
+The census for the immutable `origin/main..887988c816ae19d306c7bd21f7116cc1174185b7`
+examined 21 commits: 20 are cited in this section (including the release bump,
+#411), and one is deliberately excluded. The heading's release count excludes
+that release chore; the census cites it so every commit in the range is
+accounted for. The count was measured with:
+
+```
+git log --format='%H' origin/main..887988c816ae19d306c7bd21f7116cc1174185b7 | wc -l       # 21, including #411
+git log --format='%H' origin/main..887988c816ae19d306c7bd21f7116cc1174185b7 | grep -v '^fe569dd' | wc -l  # 20 substantive
+git log --format='%H' origin/main..fe569dd | wc -l                                           # 19, including #411
+git log --format='%H' origin/main..fe569dd^ | wc -l                                          # 18 substantive
+```
+
+Commit census: `72be473` (#383), `e75243d` (#385), `8193d9c` (#392),
+`7faf370` (#386), `9c65cdb` (#388), `c54a916` (#389), `c2fb091` (#391),
+`287c96d` (#403), `4a33b6a` (#404), `84a0a52` (#405), `e6063b5` (#406),
+`25342b6` (#407), `c761a4c` (#387), `06e2d17`, `dedf761` (#410),
+`27af226` (#413), `a1f8938` (#414), `fe569dd` (#411), `7a8edf2` (#415),
+and `887988c` are represented below. `c585534` is deliberately excluded:
+it removes a stale documentation comment without changing user-facing
+behaviour, so it does not warrant a release-note headline.
+
+### Breaking
+
+- **Minimum Python is now 3.12** (#404). The declaration was the only thing
+  lagging: `.python-version`, the docs workflow, and the `h5py` pin comment
+  were already 3.12. `uv.lock` loses its sub-3.12 resolution forks, which is
+  not a dependency upgrade - every dropped entry carried a
+  `python_full_version < '3.11'` or `== '3.11.*'` marker and was already
+  unselectable.
+- **The Coulomb distance floor now defaults to `0.0`** (#403). The `eps`
+  keyword is retained for backwards compatibility and documented as unproven.
+  A non-zero floor removes the potential divergence and introduces one into
+  the total; measurement found `E(r; eps) = Z/r - Z/eps - Z^2/2` inside the
+  floor. Runs that relied on a non-zero default will change.
+- **Vestigial `SpENN` module names are retired from the core package** (#414).
+  `tpen/nn/spenn_layer.py` and `tpen/nn/spenn_wave_function.py` become
+  `tpen_layer.py` and `tpen_wave_function.py`; the classes they export were
+  renamed to `TPENLayer`/`TPENWaveFunction` long ago. Import paths change, so
+  this is breaking, and it is batched into this release rather than deferred
+  so consumers absorb one break instead of two.
+
+  Legacy compatibility identifiers are deliberately preserved:
+  `LEGACY_BASIS_FEATURE_DIM_RESOLVER` (`"spenn.basis_feature_dim"`) and
+  `LEGACY_CHECKPOINT_KIND` (`"spenn.checkpoint"`) still carry their historical
+  spellings, because checkpoints and configs on disk reference them. The v1
+  record-format documentation in `tpen/metrics_naming.md` is likewise
+  unchanged. A test now pins the checkpoint literal, which previously had no
+  effective coverage.
+
+### Added
+
+- **Analytic electron-nucleus cusp local-energy evaluator** (#410). `T` and
+  `V_en` each diverge as `1/r` at coalescence and only their sum is finite, so
+  they are evaluated together as
+  `T + V_en = -1/2 sum_i [Lap_i f + |grad_i f + grad_i U|^2] + sum_iA g_A(r_iA)`.
+  `g_A` is taken from the cusp provider's pre-cancelled `slope_residual`;
+  nothing reconstructs `(u' + Z)/r` by subtraction, which would reintroduce
+  the genuine `0/0`. Selected by one explicit config override. A slow
+  reference implementation ships alongside as an independent executable
+  oracle, matching the vectorised kernel in values and parameter gradients at
+  `rtol = atol = 1e-12`.
+- Typed analytic electron-nucleus cusp capability (#389) and model-owned
+  regular/cusp factorization input (#391), which the evaluator consumes.
+- Operators declare which physics they compute via a typed `OperatorId`
+  (#405); typed context keys, providers, and a read-only context (#406); an
+  operator lowering registry and local-energy planner (#407). The planner
+  enforces exactly-once operator consumption structurally rather than by a
+  downstream check.
+- Physical-term and virial-residual metrics owned in `tpen/` (#386) and an
+  optional Numdifftools finite-difference kinetic oracle (#388).
+- Baseline matrix plan builder (#387), `StagePlanV2` dispatch via
+  `ParslAttachExecutor` (`06e2d17`), DeepQMC environment ported to Polaris
+  (#385), and a reusable multi-GPU scaling probe (#392).
+- DeepQMC run seeds are recorded (#383).
+
+### Changed
+
+- The documented `pytest` console-script invocation now collects the
+  `experiments/` namespace package (#413), and the He-cutover runbook test
+  isolates its environment sync under `tmp_path` (#415).
+
+### Fixed
+
+- Parsl attach now accepts any row width that tiles a node, rather than only
+  1-GPU rows (`887988c`). Previously the only dispatchable multi-node shape was
+  1 GPU per row. For the H2 seed spread, that cost 118 node-hours on Polaris
+  job 7575420 arm B versus 39 node-hours for the same work, with 80 of 100
+  GPUs idle. The wrapper now admits 2- and 4-GPU row bindings when they cover
+  each node without overlap or gaps.
+
+### Known limitations
+
+- Cross-device geometry comparison is untested; `CUDA_AVAILABLE` was false on
+  every verification node.
+- `torch.equal` raises for `chalf`, `float8_e5m2` and `float8_e8m0fnu` even at
+  matching dtype, so the geometry comparator can raise from a path annotated
+  `-> bool`. These dtypes have no plausible use for nuclear geometry.
+
 ## v0.3.4
 
 ### Added

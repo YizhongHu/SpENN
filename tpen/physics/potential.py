@@ -30,8 +30,17 @@ import torch
 from tpen.data.atomic_configuration import AtomicConfiguration
 from tpen.data.batch import ElectronBatch, electron_nuclear_distances, pairwise_distances
 from tpen.physics.hamiltonian import LocalEnergyResult
+from tpen.physics.operators import (
+    ELECTRON_ELECTRON_COULOMB,
+    ELECTRON_NUCLEUS_COULOMB,
+    HARMONIC_TRAP,
+    NUCLEUS_NUCLEUS_COULOMB,
+    register_operator_geometry,
+    register_operator,
+)
 
 
+@register_operator(HARMONIC_TRAP)
 class HarmonicTrap:
     """Hamiltonian term for a harmonic confinement potential.
 
@@ -44,7 +53,6 @@ class HarmonicTrap:
     """
 
     name = "harmonic_trap"
-
     def __init__(self, omega: float = 1.0) -> None:
         self.omega = omega
 
@@ -58,6 +66,7 @@ class HarmonicTrap:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(ELECTRON_ELECTRON_COULOMB)
 class ElectronElectronInteraction:
     """Hamiltonian term for Coulomb electron-electron repulsion.
 
@@ -66,12 +75,27 @@ class ElectronElectronInteraction:
     Parameters
     ----------
     eps : float, optional
-        Minimum pair distance used for numerical safety.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+
+    Warning
+    -------
+    A positive floor removes the potential divergence and introduces a
+    divergence into the total; it is not numerical safety. The electron-nucleus
+    measurement found ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps``
+    across three eps scales and three directions (normalized error <=
+    ``1.11e-16``). The electron-electron finite-eps case is UNMEASURED; a
+    constant offset from identical clamps has not been tested and must not be
+    assumed benign.
     """
 
     name = "electron_electron"
-
-    def __init__(self, eps: float = 1e-12) -> None:
+    def __init__(self, eps: float = 0.0) -> None:
         self.eps = eps
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
@@ -89,6 +113,7 @@ class ElectronElectronInteraction:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(ELECTRON_NUCLEUS_COULOMB)
 class ElectronNucleusInteraction:
     """Hamiltonian term for Coulomb electron-nucleus attraction.
 
@@ -102,16 +127,30 @@ class ElectronNucleusInteraction:
     nuclear_charges : torch.Tensor or None, optional
         Deprecated compatibility metadata paired with ``nuclear_positions``.
     eps : float, optional
-        Minimum electron-nucleus distance used for numerical safety.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+
+    Warning
+    -------
+    A positive floor removes the potential divergence and introduces a
+    divergence into the total; it is not numerical safety. Measurement found
+    ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps`` across three eps
+    scales and three directions, with normalized error <= ``1.11e-16``. The
+    electron-electron finite-eps case is UNMEASURED; a constant offset from
+    identical clamps has not been tested and must not be assumed benign.
     """
 
     name = "electron_nucleus"
-
     def __init__(
         self,
         nuclear_positions: torch.Tensor | None = None,
         nuclear_charges: torch.Tensor | None = None,
-        eps: float = 1e-12,
+        eps: float = 0.0,
     ) -> None:
         if (nuclear_positions is None) != (nuclear_charges is None):
             raise ValueError("nuclear_positions and nuclear_charges must be provided together")
@@ -124,6 +163,14 @@ class ElectronNucleusInteraction:
         if self.nuclear_positions is not None and self.nuclear_positions.shape[0] != self.nuclear_charges.shape[0]:
             raise ValueError("nuclear_positions and nuclear_charges must agree on n_nuclei")
         self.eps = eps
+
+    def declared_nuclear_geometry(self) -> AtomicConfiguration | None:
+        """Return legacy constructor geometry, if the term declared one."""
+
+        if self.nuclear_positions is None:
+            return None
+        assert self.nuclear_charges is not None
+        return AtomicConfiguration(self.nuclear_positions, self.nuclear_charges)
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         flat = batch.flatten_samples()
@@ -154,6 +201,7 @@ class ElectronNucleusInteraction:
             raise ValueError("legacy ElectronNucleusInteraction nuclear metadata must agree exactly with batch context")
 
 
+@register_operator(NUCLEUS_NUCLEUS_COULOMB)
 class NucleusNucleusInteraction:
     r"""Hamiltonian term for Born--Oppenheimer nuclear repulsion.
 
@@ -166,7 +214,6 @@ class NucleusNucleusInteraction:
     """
 
     name = "nucleus_nucleus"
-
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         """Return the pairwise nuclear repulsion for each batch sample."""
 
@@ -203,6 +250,7 @@ class NucleusNucleusInteraction:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+@register_operator(ELECTRON_NUCLEUS_COULOMB)
 class ElectronNucleusPotential:
     """Hamiltonian term for Coulomb electron-nucleus attraction.
 
@@ -222,16 +270,35 @@ class ElectronNucleusPotential:
     atoms : AtomicConfiguration
         Fixed nuclear geometry authority for this term.
     eps : float, optional
-        Minimum electron-nucleus distance used for numerical safety.
+        Distance floor retained for backwards compatibility. A non-zero value
+        is unproven and may be inconsistent: the cusp factor and Coulomb
+        potential do not necessarily apply the same floor, yielding a hybrid
+        Hamiltonian: a clipped potential evaluated with the boundary condition
+        of an unclipped Coulomb potential. Inspect and validate before using a
+        non-zero value. The
+        finite-eps electron-electron case is UNMEASURED.
+
+    Warning
+    -------
+    A positive floor removes the potential divergence and introduces a
+    divergence into the total; it is not numerical safety. Measurement found
+    ``E(r; eps) = Z/r - Z/eps - Z^2/2`` for ``0 < r < eps`` across three eps
+    scales and three directions, with normalized error <= ``1.11e-16``. The
+    electron-electron finite-eps case is UNMEASURED; a constant offset from
+    identical clamps has not been tested and must not be assumed benign.
     """
 
     name = "electron_nucleus"
-
-    def __init__(self, atoms: object, eps: float = 1e-12) -> None:
+    def __init__(self, atoms: object, eps: float = 0.0) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")
         self.atoms = atoms
         self.eps = eps
+
+    def declared_nuclear_geometry(self) -> AtomicConfiguration:
+        """Return the construction-time geometry authority for this term."""
+
+        return self.atoms
 
     def local_energy(self, wavefunction, batch: ElectronBatch) -> LocalEnergyResult:
         flat = batch.flatten_samples()
@@ -248,6 +315,17 @@ class ElectronNucleusPotential:
         return LocalEnergyResult(total=value, terms={self.name: value})
 
 
+register_operator_geometry(
+    ElectronNucleusInteraction,
+    ElectronNucleusInteraction.declared_nuclear_geometry,
+)
+register_operator_geometry(
+    ElectronNucleusPotential,
+    ElectronNucleusPotential.declared_nuclear_geometry,
+)
+
+
+@register_operator(NUCLEUS_NUCLEUS_COULOMB)
 class NucleusNucleusPotential:
     r"""Hamiltonian term for Born--Oppenheimer nuclear repulsion.
 
@@ -266,7 +344,6 @@ class NucleusNucleusPotential:
     """
 
     name = "nucleus_nucleus"
-
     def __init__(self, atoms: object) -> None:
         if not isinstance(atoms, AtomicConfiguration):
             raise TypeError(f"{type(self).__name__} requires an AtomicConfiguration, got {type(atoms).__name__}")

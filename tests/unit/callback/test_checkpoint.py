@@ -134,7 +134,9 @@ def _replay_context() -> SimpleNamespace:
     OmegaConf.update(
         context.cfg,
         "hamiltonian_terms.electron_nucleus",
-        {"_target_": "tests.ElectronNucleus", "eps": 0.0},
+        # Pin the historical checkpoint semantics explicitly; this fixture is
+        # testing replay compatibility, not the production default.
+        {"_target_": "tests.ElectronNucleus", "eps": 1.0e-12},
         force_add=True,
     )
     return context
@@ -170,9 +172,10 @@ def _write_replay_checkpoint(
             electron_electron_distance_form="sqrt_squared_distance_plus_eps_squared",
             electron_electron_distance_eps=cusp.eps,
             electron_electron_range_offset_form="softplus_plus_eps",
-            electron_electron_range_offset_eps=cusp.eps,
+            electron_electron_range_offset_eps=cusp.range_eps,
             electron_nucleus_coulomb_distance_form="euclidean_norm_clamp_min_eps",
-            electron_nucleus_coulomb_distance_eps=0.0,
+            # Match the historical explicit value recorded by this fixture.
+            electron_nucleus_coulomb_distance_eps=1.0e-12,
         ),
     )
     return checkpoint_dir, trained, semantics, context
@@ -195,6 +198,12 @@ def _rewrite_manifest_as_v1(checkpoint_dir: Path) -> None:
     data.pop("completed_updates")
     data["provenance"]["spenn_version"] = data["provenance"].pop("tpen_version")
     manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_legacy_checkpoint_kind_is_pinned_to_historical_manifest_literal() -> None:
+    # Archived checkpoint manifests carry this exact kind; changing the
+    # spelling would orphan them from the legacy restore path.
+    assert LEGACY_CHECKPOINT_KIND == "spenn.checkpoint"
 
 
 def test_model_only_restore_loads_weights_into_configured_model(tmp_path: Path) -> None:
@@ -292,7 +301,7 @@ def test_replay_semantics_strict_restore_succeeds_and_is_reported(tmp_path: Path
                 value,
                 cusp_distance=replace(
                     value.cusp_distance,
-                    electron_nucleus_coulomb_distance_eps=1.0e-12,
+                    electron_nucleus_coulomb_distance_eps=0.0,
                 ),
             ),
         ),

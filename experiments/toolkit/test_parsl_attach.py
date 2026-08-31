@@ -19,6 +19,7 @@ from experiments.toolkit.parsl_attach import (
     ParslAttachExecutor,
     _parsl_app_runner,
     _run_dispatch_payload,
+    validate_accelerator_tiling,
     validate_pbs_nodefile,
 )
 from experiments.toolkit.specs import CompletionSpec
@@ -490,3 +491,47 @@ def test_real_parsl_reuses_one_dfk_across_sequential_dispatches(tmp_path: Path) 
             executor.dispatch((second,), context=_context(tmp_path, allocation_id="allocation-2"))
     finally:
         executor.close()
+
+
+def test_accelerator_tiling_accepts_every_width_that_partitions_the_node() -> None:
+    """Every row width that tiles a node is admissible, not just one-GPU rows.
+
+    The replaced check required exactly four bindings, which rejected `2` and `4`
+    GPU rows outright and confined multi-node dispatch to one GPU per row.
+    """
+
+    for bindings in (
+        ("0", "1", "2", "3"),
+        ("0,1", "2,3"),
+        ("0,1,2,3",),
+        # No facility number is baked in, so a wider node needs no edit here.
+        ("0,1,2,3", "4,5,6,7"),
+    ):
+        validate_accelerator_tiling(bindings)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "bindings, fragment",
+    [
+        (("0,1", "1,2"), "exactly once"),
+        (("0", "0"), "exactly once"),
+        (("0", "2"), "exactly once"),
+        (("1", "2"), "exactly once"),
+        (("0,0",), "exactly once"),
+        (("",), "empty"),
+        ((), "at least one"),
+        (("a",), "must be integers"),
+    ],
+)
+def test_accelerator_tiling_rejects_bindings_that_do_not_partition(
+    bindings: tuple[str, ...], fragment: str
+) -> None:
+    """A guard that accepts everything is not a fix.
+
+    Overlapping bindings would double-book an accelerator; gappy ones do not
+    describe a node. Both must still raise, or relaxing the old check would have
+    bought permissiveness rather than correctness.
+    """
+
+    with pytest.raises(ValueError, match=fragment):
+        validate_accelerator_tiling(bindings)

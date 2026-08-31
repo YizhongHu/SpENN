@@ -99,6 +99,84 @@ def result_path(run_dir: Path) -> Path:
     return run_dir / TRAINING_SUBDIR / RESULT_FILENAME
 
 
+def _seed_config_path(run_dir: Path) -> Path | None:
+    """Return the first run-local Hydra snapshot containing the seed source.
+
+    DeepQMC's Hydra working directory is normally ``training/`` below the run
+    root. The second candidate keeps this helper usable when a caller passes
+    that subdirectory directly, as :func:`result_path` permits.
+    """
+
+    candidates = (
+        run_dir / TRAINING_SUBDIR / ".hydra" / "config.yaml",
+        run_dir / ".hydra" / "config.yaml",
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def read_seed(run_dir: Path, *, supplied_seed: int | None = None) -> int:
+    """Read and validate the seed from a run's own resolved Hydra config.
+
+    Parameters
+    ----------
+    run_dir : pathlib.Path
+        Run root, or its ``training`` subdirectory.
+    supplied_seed : int or None, optional
+        An operator-provided value used only as a cross-check. It is never
+        preferred over the run artifact.
+
+    Returns
+    -------
+    int
+        The integer at ``task.seed`` in the run-local Hydra snapshot.
+
+    Raises
+    ------
+    AdapterError
+        If the Hydra snapshot is absent, unreadable, malformed, has no
+        ``task.seed``, or contains a non-integer seed. A supplied seed that
+        disagrees with the snapshot is also refused.
+    """
+
+    config_path = _seed_config_path(run_dir)
+    if config_path is None:
+        raise AdapterError(
+            f"no DeepQMC Hydra config under {run_dir}; expected "
+            "training/.hydra/config.yaml"
+        )
+
+    try:
+        import yaml
+    except ModuleNotFoundError as error:  # pragma: no cover - environment-dependent
+        raise AdapterError(
+            "reading DeepQMC config needs PyYAML, which is a TPEN dependency"
+        ) from error
+
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise AdapterError(f"cannot read DeepQMC Hydra config {config_path}: {error}") from error
+
+    if not isinstance(config, dict):
+        raise AdapterError(f"DeepQMC Hydra config {config_path} is not a mapping")
+    task = config.get("task")
+    if not isinstance(task, dict) or "seed" not in task:
+        raise AdapterError(
+            f"DeepQMC Hydra config {config_path} has no task.seed; refusing to guess"
+        )
+
+    seed = task["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise AdapterError(
+            f"DeepQMC Hydra config {config_path} has non-integer task.seed {seed!r}"
+        )
+    if supplied_seed is not None and supplied_seed != seed:
+        raise AdapterError(
+            f"supplied seed {supplied_seed} contradicts run config seed {seed}"
+        )
+    return seed
+
+
 def read_energies(run_dir: Path) -> list[float]:
     """Return the per-step mean local energy of a DeepQMC run.
 
@@ -433,6 +511,7 @@ def build_record(
     """
 
     energies = read_energies(run_dir)
+    seed = read_seed(run_dir, supplied_seed=seed)
 
     device_type, gpu_model, wall_clock = None, None, None
     if log_path is not None and log_path.is_file():

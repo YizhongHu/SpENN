@@ -84,7 +84,7 @@ class TraceEntry:
     semantic_type: str | None = None
 
 
-_active_trace: ContextVar["Trace | None"] = ContextVar("spenn_active_trace", default=None)
+_active_trace: ContextVar["Trace | None"] = ContextVar("tpen_active_trace", default=None)
 
 
 class Trace:

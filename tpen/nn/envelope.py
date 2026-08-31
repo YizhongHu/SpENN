@@ -14,7 +14,7 @@ own modules; this module re-exports them lazily (see `__getattr__` below) so
 every import path that previously resolved through `tpen.nn.envelope` keeps
 working unchanged. They compose independently and do not replace the legacy
 envelope stack above. `TPENWaveFunction` sums both generations in one
-post-readout factor pipeline (see `tpen/nn/spenn_wave_function.py`), and
+post-readout factor pipeline (see `tpen/nn/tpen_wave_function.py`), and
 `TPENWaveFunction.factors` is the canonical composition seam for
 `LogAmplitudeFactor` terms.
 

@@ -14,6 +14,15 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+
+# Guard BEFORE importing torch.  Four sibling test modules already do this
+# (test_production_grid.py, test_adapter_oneqmc.py, test_adapter_deepqmc.py,
+# test_parsl_attach.py); this one did not, so on a machine without torch it
+# failed at COLLECTION and aborted the entire experiments run rather than
+# skipping itself.  One unguarded module-scope import is enough to stop all
+# 1171 experiments tests from being run together.
+pytest.importorskip("torch", reason="torch-side evaluation canary cannot import without torch")
+
 import torch
 import yaml
 

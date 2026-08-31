@@ -387,7 +387,7 @@ Exact testing strategy:
   `tpen.nn.TPENLayer`, with forced runtime
   checks in `tests/unit/nn/test_update_equivariance.py`,
   `tests/unit/nn/test_path_aggregation_equivariance.py`, and
-  `tests/unit/nn/test_spenn_layer_scaffold.py`.
+  `tests/unit/nn/test_tpen_layer_scaffold.py`.
 - Virtual-support combinatorics:
   `tpen.reps.paths.PathMetadata`, `generate_virtual_paths`, and
   `validate_virtual_path`, with coverage in
@@ -431,7 +431,7 @@ uv run --extra cpu python -m http.server --directory docs/_build/html 8000
 
 ## Versioning
 
-The current Hooke integration release is `v0.3.4`; release notes live in
+The current Hooke integration release is `v0.4.0`; release notes live in
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 The backwards compatibility of this repository is only with respect to the behavior

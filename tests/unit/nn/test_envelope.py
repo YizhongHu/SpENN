@@ -142,7 +142,7 @@ def test_electron_electron_trainable_ranges_are_positive_and_differentiable() ->
     positions = torch.tensor([[[0.0], [1.0], [2.0]]], dtype=torch.float64)
     spins = torch.tensor([[1.0, 1.0, -1.0]], dtype=torch.float64)
     batch = ElectronBatch(positions=positions, spins=spins)
-    envelope = ElectronElectronCusp(range_parameter=0.5, trainable_range=True, eps=1.0e-12)
+    envelope = ElectronElectronCusp(range_parameter=0.5, trainable_range=True, eps=0.0)
 
     output = envelope(batch).sum()
     output.backward()
@@ -151,6 +151,43 @@ def test_electron_electron_trainable_ranges_are_positive_and_differentiable() ->
     assert torch.all(envelope.opposite_range_parameter > 0)
     assert envelope.raw_same_range.grad is not None
     assert envelope.raw_opposite_range.grad is not None
+
+
+def test_electron_electron_cusp_splits_distance_floor_from_range_offset() -> None:
+    cusp = ElectronElectronCusp(range_parameter=0.5, trainable_range=True)
+    explicit = ElectronElectronCusp(eps=3.0e-8)
+
+    # Changing the production distance-floor default must be reflected in the
+    # public compatibility attribute.
+    assert cusp.eps == 0.0
+    # The split must retain the independent positivity offset at the new
+    # distance-floor default.
+    assert cusp.range_eps == 1.0e-12
+    # Both trainable denominators must remain strictly positive at eps=0.0;
+    # removing range_eps or re-coupling it to eps would fail this assertion.
+    assert torch.all(cusp.same_range_parameter > 0.0)
+    assert torch.all(cusp.opposite_range_parameter > 0.0)
+    # An old-style explicit eps call must retain the caller's value in both
+    # historical roles; the new range_eps kwarg is the opt-out from coupling.
+    assert explicit.eps == 3.0e-8
+    assert explicit.range_eps == 3.0e-8
+
+
+@pytest.mark.parametrize("n_electrons", [1, 2])
+def test_electron_electron_cusp_eps_zero_has_finite_position_gradients(n_electrons: int) -> None:
+    # The one-electron case exercises only structural self-pairs; the
+    # two-electron case also exercises a genuine off-diagonal pair. Re-admitting
+    # the diagonal to sqrt's backward path makes these gradients non-finite.
+    positions = torch.arange(float(n_electrons), dtype=torch.float64).view(1, n_electrons, 1)
+    positions.requires_grad_()
+    batch = ElectronBatch(positions=positions)
+    cusp = ElectronElectronCusp(eps=0.0)
+
+    gradient = torch.autograd.grad(cusp(batch).sum(), positions)[0]
+
+    # The production diagonal exclusion is what makes the differentiated path
+    # finite; checking only cusp(batch) would miss the shipped NaN mechanism.
+    assert torch.isfinite(gradient).all()
 
 
 def test_disabled_envelope_returns_zero_batch_vector() -> None:

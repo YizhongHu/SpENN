@@ -16,6 +16,7 @@ from tpen.nn.coordinate_envelopes import (
 )
 from tpen.nn.cusp import (
     ElectronElectronCusp,
+    ElectronNucleusCuspEvaluation,
     ElectronNucleusCusp,
     ElectronNucleusCuspLaw,
     LinearElectronNucleusCuspLaw,
@@ -34,8 +35,8 @@ from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.mlp import MLP
 from tpen.nn.normalization import RMSNorm
 from tpen.nn.path_aggregation import PathAggregation
-from tpen.nn.spenn_layer import TPENLayer
-from tpen.nn.spenn_wave_function import TPENWaveFunction
+from tpen.nn.tpen_layer import TPENLayer
+from tpen.nn.tpen_wave_function import TPENWaveFunction
 from tpen.nn.tpen_stack import TPENStack
 from tpen.nn.update import ResidualUpdater, Updater
 
@@ -47,6 +48,7 @@ __all__ = [
     "ElectronBasisFeatures",
     "ElectronElectronCusp",
     "ElectronNucleusCusp",
+    "ElectronNucleusCuspEvaluation",
     "ElectronNucleusCuspLaw",
     "Embedding",
     "Envelope",
