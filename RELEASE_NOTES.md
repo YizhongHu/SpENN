@@ -2,19 +2,22 @@
 
 ## v0.4.0 - Analytic electron-nucleus cusp local energy
 
-20 commits since v0.3.4 (`ed09f85`). The headline is an analytic evaluator for
+20 substantive commits since v0.3.4 (`ed09f85`), excluding the #411 release
+chore. The headline is an analytic evaluator for
 the electron-nucleus cusp; the rest is the typed operator machinery it needed
 and two compatibility changes.
 
-The census for `origin/main..HEAD` examined 21 commits: 20 are cited in this
-section (including the release bump, #411), and one is deliberately excluded.
-The count was measured with:
+The census for the immutable `origin/main..887988c816ae19d306c7bd21f7116cc1174185b7`
+examined 21 commits: 20 are cited in this section (including the release bump,
+#411), and one is deliberately excluded. The heading's release count excludes
+that release chore; the census cites it so every commit in the range is
+accounted for. The count was measured with:
 
 ```
-git log --format='%H' origin/main..HEAD | wc -l                    # 21
-git log --format='%H' origin/main..HEAD | tail -n +2 | wc -l      # 20
-git log --format='%H' origin/main..fe569dd | wc -l                # 19
-git log --format='%H' origin/main..fe569dd | tail -n +2 | wc -l  # 18
+git log --format='%H' origin/main..887988c816ae19d306c7bd21f7116cc1174185b7 | wc -l       # 21, including #411
+git log --format='%H' origin/main..887988c816ae19d306c7bd21f7116cc1174185b7 | grep -v '^fe569dd' | wc -l  # 20 substantive
+git log --format='%H' origin/main..fe569dd | wc -l                                           # 19, including #411
+git log --format='%H' origin/main..fe569dd^ | wc -l                                          # 18 substantive
 ```
 
 Commit census: `72be473` (#383), `e75243d` (#385), `8193d9c` (#392),
