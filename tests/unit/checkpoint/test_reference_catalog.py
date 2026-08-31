@@ -156,7 +156,8 @@ def test_catalog_republishing_same_identity_is_idempotent(tmp_path: Path) -> Non
     catalog.publish(ref)
     original_line = catalog_path.read_text(encoding="utf-8")
     record = json.loads(original_line)
-    formatted_line = json.dumps(record, separators=(", ", ": "), sort_keys=False) + "\n"
+    reordered_record = {key: record[key] for key in reversed(tuple(record))}
+    formatted_line = json.dumps(reordered_record, separators=(", ", ": "), sort_keys=False) + "\n"
     assert formatted_line != original_line
     assert json.loads(formatted_line) == record
     catalog_path.write_text(formatted_line, encoding="utf-8")
