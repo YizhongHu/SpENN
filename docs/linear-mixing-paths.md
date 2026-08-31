@@ -56,7 +56,7 @@ h[I, q]^d = Reduce over J satisfying Eq(I, J) = q of
 
 Here:
 
-- `Reduce` is `sum` or `orbit_mean`;
+- `Reduce` is `sum` or `completion_mean`;
 - `W[q]` is a static parameter with shape `[D_l, C_m]`;
 - `C_m` is the number of input channels at order `m`;
 - `D_l` is the number of output channels at order `l`;
@@ -276,7 +276,7 @@ For a residual update, `D_l` must equal the persistent feature channel count
 An order-`m` dense block stores `N^m` tuple positions, but only
 
 ```text
-N! / (N - m)!
+(N)_m
 ```
 
 ordered-distinct positions are semantically active. Linear path enumeration
@@ -348,3 +348,74 @@ These are ordered producer values, not three model classes or a Python mode
 switch. All producer and aggregation parameters are registered eagerly before
 the optimizer or DDP. Runtime N may create typed index tensors and empty
 orbits, but cannot change path membership, parameter shapes, names, or keys.
+
+## Amendment: canonical representation and compatibility details
+
+The SupportPath representation is canonical and normative. Set tau_out(a)=a
+for every output slot. A matched input slot receives its matched output slot's
+label; unmatched input slots receive l, l+1, ... in increasing input-slot
+order. Thus s=l+m-r is inferred, not independently chosen. Mathematical
+notation is one-based; the serialized boundary representation is zero-based.
+Validation, including explicit metadata, rejects noncanonical records and
+duplicate canonical records. This prevents gauge-equivalent raw injections from
+becoming unequal frozen records, distinct fingerprints, and duplicate weights.
+
+Every producer returns pre-Gamma values. CompositeMixing concatenates the
+linear and TP family outputs, applies the common Gamma once, and passes that
+result to shared PathAggregation. The post-aggregation Gamma_c remains a
+separate activation. Legacy direct EquivariantMixing remains compatible by
+retaining its existing internal activation behavior at its direct public
+boundary; a composite adapter treats its checked-in TP output contract as the
+legacy boundary and must not apply Gamma a second time. New composite producers
+must use the pre-Gamma contract.
+
+Define the particle action by
+
+    (rho_m(sigma) x)_J = x_(sigma^(-1) J).
+
+The typed equivariance identity is
+
+    y_q(rho_m(sigma) x)_(sigma I) = y_q(x)_I,
+
+equivalently y_q(rho_m(sigma) x) = rho_l(sigma) y_q(x).
+
+The canonical comparator for generated linear paths is input order m, then
+overlap size r, then the lexicographically sorted matched output/input slot
+pairs, then unmatched input-slot order. This defines a stable linear path id.
+Path position in OutputPathLayout is contractual because U indexes that
+sequence. The explicit policy preserves declared metadata order and does not
+re-sort it; generated policies use the comparator.
+
+Checked-in TP JSON is loaded verbatim and never regenerated. TP global_ids and
+their relative path-axis order are preserved, while union-axis positions are
+distinct from TP-local ids. TP-only composition keeps the existing
+mixing.weights.g<global_id> state-dict namespace and o<order> aggregation keys;
+it does not insert a producers.0 level. In hybrid composition, existing TP
+columns follow the linear prefix. Hybrid U changes shape, so old TP-only
+checkpoints load only in TP-only mode; hybrid requires explicit migration or
+new aggregation initialization.
+
+The fingerprint version is path-layout-v1. It is SHA-256 over deterministic
+JSON serialization of recursive as_tuple() values, with stable ordering and no
+whitespace variation. It includes version, ordered paths, family, orders,
+channel contracts, normalization, and counts; it excludes Python class names
+and field names. Value-equivalent means equal recursive tuple values and hence
+equal fingerprints. Producer output carries this fingerprint as typed metadata;
+composition binds it to the same PathLayout before concatenation, so equal path
+counts cannot conceal different column meanings.
+
+The sole normalization vocabulary is completion_mean, the v1 default, scoped
+per path completion set; sum is an explicit alternative. Sum is zero on an
+empty set. completion_mean is zero on an empty set and otherwise divides by
+the positive cardinality, so zero times one-over-zero is never evaluated.
+Cross-order orbit_complete receives its constructor-owned immutable tuple of
+input orders and never discovers orders from runtime tensors. Explicit metadata
+contains canonical SupportPath records and declared order; duplicates and
+noncanonical records are rejected. Producers receive immutable family slices
+and validate common D_l. A zero-path family contributes an empty typed slice
+and no columns, while shared aggregation remains defined.
+
+The dense active-position count is the falling factorial (N)_m, with
+(N)_m=0 for m>N. At small N the static complete path family need not be a
+literal basis; the nonempty-orbit indicators are the basis. For m>=3,
+coordinate_neighbor also excludes swaps, crossings, and disjoint paths.

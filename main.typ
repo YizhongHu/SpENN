@@ -232,8 +232,8 @@ $bh^((t+1)c)_(I, p)$. A path is indexed by its family and its typed support
 metadata. This information may be passed on to features of equal or lower
 body-order than the interaction.
 
-Mixing has the general form:
-$ bh^c_(I, p) = Gamma(sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2) bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2) $
+Mixing has the general form (before the common activation):
+$ bh^c_(I, p) = sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2) bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2 $
 where the path index $p = (s, m, m_1, m_2, tau, tau_1, tau_2)$ describes the different equivariant paths indices
 through which $bx$ can interact and produce features on index $I$.
 - $s$: interaction order--total number of particles involved in this interaction.
@@ -250,7 +250,9 @@ and activation has the general form
   are positioned in the virtual interaction.
 - $sum_(J_([s]\\"im"(tau)))$ means summing over all the indices
   in the virtual interactions that is not already in the image of $tau$, i.e. the indices in $I$ that are corresponding to.
-- $Gamma$ is a point-wise activation function.
+- Every producer returns these pre-$Gamma$ path values. The common pointwise
+  $Gamma$ is owned by the composite path expansion and is applied exactly once
+  after all family outputs have been concatenated.
 
 === Unary support paths
 
@@ -272,21 +274,33 @@ $
   y^d_(I,q) = "Reduce"_(K in c(I,q))
     W_q^(d <- c) x^c_(K circle.small tau_i).
 $
-Here Reduce is either a sum or a configured orbit mean. Equivalently, this
+Here Reduce is either a sum or the configured completion_mean. Equivalently, this
 is a completion sum with normalization $a_(I,q)$:
 $ y^d_(I,q) = a_(I,q) sum_(K in c(I,q)) W_q^(d <- c) x^c_(K circle.small tau_i) $,
-where $a_(I,q)=1$ for sum and $a_(I,q)=1/|c(I,q)|$ for a nonempty mean.
+where $a_(I,q)=1$ for sum and $a_(I,q)=1/|c(I,q)|$ for a nonempty completion_mean.
 An empty completion has a zero-safe mean of zero before activation. The weight
 $W_q$ has static shape $[D_l, C_m]$.
 
+The support labeling is canonical and normative: $tau_o(a)=a$ for output
+slots; a matched input slot takes the label of its matched output slot; and
+unmatched input slots take labels $l, l+1, dots$ in increasing input-slot
+order. Thus $s=l+m-r$ is inferred from the canonical matching, rather than
+being an independent choice. Mathematical slots are one-based, while the
+serialized boundary representation is zero-based. Validation, including the
+explicit policy, rejects noncanonical records. Gauge copies are not new paths:
+if admitted, frozen-record equality and the layout fingerprint would allocate
+duplicate parameters for the same map.
+
 === Equivariance of completion paths
 
-For a relabeling $sigma in S_n$, apply $sigma$ entrywise to tuples. The map
+For a relabeling $sigma in S_n$, define the feature action by
+$ (rho_m(sigma)x)_J = x_(sigma^(-1) J) $. Apply $sigma$ entrywise to tuples. The map
 $K mapsto sigma circle.small K$ is a bijection
 $c(I,q) mapsto c(sigma circle.small I,q)$, because it preserves distinctness
 and all equalities recorded by the same SupportPath $q$. Therefore, changing
 variables in the completion sum gives
-$ y_(sigma circle.small I,q)(sigma circle.small x) = sigma circle.small y_(I,q)(x) $.
+$ y_q(rho_m(sigma)x)_(sigma circle.small I) = y_q(x)_I $,
+equivalently $y_q(rho_m(sigma)x) = rho_l(sigma)y_q(x)$.
 The same argument applies to a tensor-product path: its two input projections
 are evaluated on the same completion set. Thus unary and tensor-product paths
 are separately equivariant, and concatenating their path axes preserves
@@ -295,14 +309,15 @@ equivariance.
 === Path families and policies
 
 For output order $l$, the path axis is the disjoint union
-$ P_l = P_l^"linear" square.union P_l^"TP" $.
+$ P_l = P_l^"linear" union.sq P_l^"TP" $.
 The linear family uses unary SupportPaths; the TP family uses the existing
 bilinear support maps. A linear basis policy may be coordinate_neighbor,
 orbit_complete, or explicit:
 
 - coordinate_neighbor keeps the aligned identity and one replacement path
   for each aligned coordinate, so an order-$m$ same-order feature has $m+1$
-  paths.
+  paths. For $m >= 3$ it also excludes swaps, crossings, and disjoint paths;
+  it is intentionally incomplete.
 - orbit_complete keeps every exact partial matching, optionally across
   input orders.
 - explicit keeps a deterministic metadata-selected subset.
@@ -314,7 +329,8 @@ $
 The examples are $1 -> 1: 2$, $1 -> 2: 3$, $2 -> 1: 3$, and
 $2 -> 2: 7$ (and $3 -> 3: 34$). The $r!$ factor orders the matched slot
 pairs. For finite $n$, an orbit may be empty, but its path and parameter stay
-registered.
+registered. The static list is a complete path family, while at small $N$ the
+nonempty-orbit indicators are the literal basis.
 
 === Shared interaction layout and aggregation
 
@@ -323,8 +339,10 @@ $
   y^"linear"_l: [B, D_l, |P_l^"linear"|, N^l], quad
   y^"TP"_l: [B, D_l, |P_l^"TP"|, N^l].
 $
-They concatenate on the path axis in deterministic order, with linear paths
-followed by TP paths. A shared union aggregation contracts the full axis:
+Every producer returns pre-$Gamma$ values. They concatenate on the path axis in
+deterministic order, with linear paths followed by TP paths; the composite
+applies $Gamma$ exactly once, then shared union aggregation contracts the full
+axis:
 $
   u^d_I = sum_(p in P_l) U_l^(d,p) Gamma(y^d_(I,p)),
 $
@@ -348,6 +366,47 @@ unchanged when $N$ changes. Concrete producer modules are called directly;
 there is no reflective access (getattr, setattr, or string-based method or
 class lookup) and no string-keyed type registry. Hydra and JSON strings are
 boundary adapters only.
+
+Path ordering is contractual because aggregation weights index positions. For
+each output order, the stable linear path id is the lexicographic tuple
+$(m, r, M)$, where $m$ is input order, $r$ is overlap size, and $M$ is the
+lexicographically sorted list of matched output/input slot pairs, followed by
+the unmatched input-slot order. The comparator is input order, then increasing
+overlap, then matching pairs, then unmatched slots. The explicit policy
+preserves its declared metadata order and does not re-sort it; all other
+generated policies use the comparator. The TP JSON is loaded verbatim, never
+regenerated: its global ids and relative path-axis order are preserved.
+Union-axis positions are distinct from TP-local ids. TP-only composition keeps
+the existing mixing.weights.g<global_id> namespace and o<order> aggregation
+keys; it does not insert a producers.0 level. In hybrid composition, existing
+TP columns map after the linear prefix. Because hybrid aggregation changes $U$
+shape, old TP-only checkpoints load only in TP-only mode; hybrid requires an
+explicit migration or a newly initialized aggregation parameter.
+
+The fingerprint version is path-layout-v1. It is SHA-256 over deterministic
+JSON serialization of recursive as_tuple() values, with stable list ordering
+and no whitespace variation. It includes version, ordered paths, family,
+orders, channel contracts, normalization, and counts; it excludes Python class
+names and field names. Value-equivalent layouts have equal recursive tuple
+values and therefore equal fingerprints. Producer outputs carry the layout
+fingerprint as typed metadata; composition binds that metadata to the same
+PathLayout before concatenation, so equal path counts cannot hide different
+column meanings.
+
+Normalization is named completion_mean and is the v1 default, scoped per path
+completion set (sum remains an explicit alternative). Its reduction is
+piecewise: sum is zero for an empty set; completion_mean is zero for an empty
+set and otherwise is the sum divided by its positive cardinality, so no
+implementation evaluates zero times one over zero.
+
+The constructor owns the finite input-order tuple for cross-order
+orbit_complete; it is not discovered from runtime tensors. Explicit metadata
+contains canonical SupportPath records and declared order; duplicate canonical
+records are rejected, and noncanonical/gauge duplicates are rejected rather
+than deduplicated silently. Producers receive an immutable family slice of the
+PathLayout and validate the common output channel width $D_l$ before binding.
+A family may contribute zero paths at an output order; its empty slice remains
+typed, contributes no columns, and shared aggregation remains defined.
 
 === Hydra producer sequences
 
@@ -797,8 +856,10 @@ Implemented in `tpen.nn.TPENWaveFunction`.
 + TPEN Stack (`tpen.nn.TPENStack`)
   + TPEN layer 1 (`tpen.nn.TPENLayer`)
     + mixing in real space (`tpen.nn.EquivariantMixing`)
-      $ bh^c_(I, p) = Gamma(sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2)
-      bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2) $
+      $ bh^c_(I, p) = sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2)
+      bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2 $
+      followed by the common path activation $Gamma$ after all producer
+      families are concatenated.
     + Obtain update with `tpen.nn.PathAggregation`
       $ bu^(c)_(I) = Gamma_c (sum_p U^(1)_(p) bh^1_(I, p), dots, sum_p U^(C_"in")_(p) bh^(C_"in")_(I, p)) $
       followed by optional update normalization/envelope
