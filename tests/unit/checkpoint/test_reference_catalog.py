@@ -181,6 +181,26 @@ def test_catalog_rejects_conflicting_duplicate_identity(tmp_path: Path) -> None:
     assert catalog.records() == (first,)
 
 
+def test_catalog_rejects_republication_from_relocated_path(tmp_path: Path) -> None:
+    original_dir = _write_checkpoint(tmp_path / "original")
+    original_ref = CheckpointRef.from_directory(original_dir)
+    catalog_path = tmp_path / "publications.jsonl"
+    catalog = CheckpointCatalog(catalog_path)
+    catalog.publish(original_ref)
+    before = catalog_path.read_bytes()
+
+    relocated_dir = tmp_path / "relocated" / original_dir.name
+    relocated_dir.parent.mkdir()
+    original_dir.rename(relocated_dir)
+    relocated_ref = CheckpointRef.from_directory(relocated_dir)
+    assert relocated_ref.content_id == original_ref.content_id
+
+    _expect_raises(ValueError, catalog.publish, relocated_ref)
+
+    assert catalog_path.read_bytes() == before
+    assert catalog.records() == (original_ref,)
+
+
 def test_catalog_rejects_content_id_tampering(tmp_path: Path) -> None:
     checkpoint_dir = _write_checkpoint(tmp_path / "checkpoints")
     ref = CheckpointRef.from_directory(checkpoint_dir)

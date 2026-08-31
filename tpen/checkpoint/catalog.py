@@ -38,8 +38,13 @@ class CheckpointCatalog:
         when the parsed, canonical full CheckpointRef mapping is equal to the
         existing row; raw JSON formatting is intentionally irrelevant.  A
         same-content-id row with different serialized content is a conflict.
-        The duplicate check scans the append-only JSONL catalog, so its read
-        cost is O(n) in the number of existing publications.
+        Although ``content_id`` is path-independent, the compared mapping
+        includes ``checkpoint_dir``.  A relocation therefore conflicts rather
+        than silently creating two locations for one catalog identity: this
+        append-only catalog cannot rewrite the original location, and accepting
+        both would make the publication target ambiguous.  The duplicate check
+        scans the append-only JSONL catalog, so its read cost is O(n) in the
+        number of existing publications.
         """
 
         if not isinstance(ref, CheckpointRef):
