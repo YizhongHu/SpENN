@@ -211,11 +211,11 @@ where $c$ is the channel index.
 
 == TPEN Layers Overview <tpen-layers>
 #block(width: 100%)[
-There are two steps in a TPEN layer: mixing and aggregation.
+There are two steps in a TPEN layer: path production and aggregation.
   #set math.equation(numbering: none)
   $
-  bx^m_I stretch(->)^"mixing"_(W) by^m_(I, p)
-  stretch(->)^"activation"_Gamma bh^m_(I,p)
+  bx^m_I stretch(->)^"path producers"_(W) by^m_(I, p)
+  stretch(->)^"concatenate paths + activation"_Gamma bh^m_(I,p)
   stretch(->)^"aggregation"_U bw^m_I
   stretch(->)^"activation"_(Gamma_c) bu_I
   stretch(->)^("update") bx_I^m
@@ -227,9 +227,10 @@ There are two steps in a TPEN layer: mixing and aggregation.
 
 == Equivariant Mixing
 
-The mixing process takes features $x^(t c)_I$ does an equivariant tensor product
-and outputs hidden states $bh^((t+1)c)_(I, p)$. This information may be passed on to
-features of equal or lower body-order than the interaction
+The mixing process takes features $x^(t c)_I$ and produces equivariant paths
+$bh^((t+1)c)_(I, p)$. A path is indexed by its family and its typed support
+metadata. This information may be passed on to features of equal or lower
+body-order than the interaction.
 
 Mixing has the general form:
 $ bh^c_(I, p) = Gamma(sum_(J_([s]\\"im"(tau))) W_p^(c<-c_1c_2) bx_(J circle.small tau_1)^c_1 bx_(J circle.small tau_2)^c_2) $
@@ -250,6 +251,116 @@ and activation has the general form
 - $sum_(J_([s]\\"im"(tau)))$ means summing over all the indices
   in the virtual interactions that is not already in the image of $tau$, i.e. the indices in $I$ that are corresponding to.
 - $Gamma$ is a point-wise activation function.
+
+=== Unary support paths
+
+The tensor-product formula above is one path producer. A linear, unary producer
+uses the same ordered-distinct tuple semantics. Let $I$ have output order $l$
+and let $J$ have input order $m$. A *SupportPath* is the typed record
+$q = (l, m, tau_o, tau_i)$, where
+$tau_o: [l] arrow.hook [s]$ and $tau_i: [m] arrow.hook [s]$ are injective and
+$"im"(tau_o) union "im"(tau_i) = [s]$. It records exactly which output and
+input slots denote the same support particle; the overlap has size
+$r = |"im"(tau_o) intersection "im"(tau_i)|$.
+
+For an ordered-distinct output tuple $I$, define the completion set
+$
+  c(I,q) = { K in [n]^s_"distinct" : K circle.small tau_o = I }
+$
+and the unary path
+$
+  y^d_(I,q) = "Reduce"_(K in c(I,q))
+    W_q^(d <- c) x^c_(K circle.small tau_i).
+$
+Here Reduce is either a sum or a configured orbit mean. Equivalently, this
+is a completion sum with normalization $a_(I,q)$:
+$ y^d_(I,q) = a_(I,q) sum_(K in c(I,q)) W_q^(d <- c) x^c_(K circle.small tau_i) $,
+where $a_(I,q)=1$ for sum and $a_(I,q)=1/|c(I,q)|$ for a nonempty mean.
+An empty completion has a zero-safe mean of zero before activation. The weight
+$W_q$ has static shape $[D_l, C_m]$.
+
+=== Equivariance of completion paths
+
+For a relabeling $sigma in S_n$, apply $sigma$ entrywise to tuples. The map
+$K mapsto sigma circle.small K$ is a bijection
+$c(I,q) mapsto c(sigma circle.small I,q)$, because it preserves distinctness
+and all equalities recorded by the same SupportPath $q$. Therefore, changing
+variables in the completion sum gives
+$ y_(sigma circle.small I,q)(sigma circle.small x) = sigma circle.small y_(I,q)(x) $.
+The same argument applies to a tensor-product path: its two input projections
+are evaluated on the same completion set. Thus unary and tensor-product paths
+are separately equivariant, and concatenating their path axes preserves
+equivariance.
+
+=== Path families and policies
+
+For output order $l$, the path axis is the disjoint union
+$ P_l = P_l^"linear" square.union P_l^"TP" $.
+The linear family uses unary SupportPaths; the TP family uses the existing
+bilinear support maps. A linear basis policy may be coordinate_neighbor,
+orbit_complete, or explicit:
+
+- coordinate_neighbor keeps the aligned identity and one replacement path
+  for each aligned coordinate, so an order-$m$ same-order feature has $m+1$
+  paths.
+- orbit_complete keeps every exact partial matching, optionally across
+  input orders.
+- explicit keeps a deterministic metadata-selected subset.
+
+The complete number of paths from input order $m$ to output order $l$ is
+$
+  P(l,m) = sum_(r=0)^min(l,m) binom(l,r) binom(m,r) r! .
+$
+The examples are $1 -> 1: 2$, $1 -> 2: 3$, $2 -> 1: 3$, and
+$2 -> 2: 7$ (and $3 -> 3: 34$). The $r!$ factor orders the matched slot
+pairs. For finite $n$, an orbit may be empty, but its path and parameter stay
+registered.
+
+=== Shared interaction layout and aggregation
+
+The path producers return tensors with a common layout:
+$
+  y^"linear"_l: [B, D_l, |P_l^"linear"|, N^l], quad
+  y^"TP"_l: [B, D_l, |P_l^"TP"|, N^l].
+$
+They concatenate on the path axis in deterministic order, with linear paths
+followed by TP paths. A shared union aggregation contracts the full axis:
+$
+  u^d_I = sum_(p in P_l) U_l^(d,p) Gamma(y^d_(I,p)),
+$
+or, in the implementation order, applies the common pointwise $Gamma$ once
+after concatenation and then $U_l$. This is the v1 shared-union policy;
+family-wise and hierarchical aggregation are deferred.
+
+One immutable typed PathLayout value is passed directly to both
+CompositeMixing(layout=layout, producers=(...)) and
+PathAggregation(layout=layout, ...). There is no factory and no separate
+InteractionStage owner. The layout owns ordered path metadata, family,
+orders, channel contracts, normalization, version, counts, and a canonical
+layout fingerprint. Equal fingerprints are required for concatenation and
+aggregation; object identity is not required.
+
+The architecture rule is strict: semantic records are frozen dataclasses and
+tuples, and all producer and aggregation parameters are allocated eagerly in
+construction. Forward may materialize typed index tensors for the current
+$N$, but may not add paths or parameters. Named parameters and state keys are
+unchanged when $N$ changes. Concrete producer modules are called directly;
+there is no reflective access (getattr, setattr, or string-based method or
+class lookup) and no string-keyed type registry. Hydra and JSON strings are
+boundary adapters only.
+
+=== Hydra producer sequences
+
+Hydra selects an ordered producer sequence, not a Python mode switch or one of
+three model classes:
+
+- TP-only: producers: [tensor_product];
+- linear-only: producers: [linear];
+- hybrid: producers: [linear, tensor_product].
+
+The sequence determines the static path layout and is recorded in its
+fingerprint. All weights exist before optimizer or distributed-data-parallel
+construction, including weights for empty runtime orbits.
 
 === Decoherent Paths
 
