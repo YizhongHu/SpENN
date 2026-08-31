@@ -14,6 +14,7 @@ import torch
 from omegaconf import OmegaConf
 
 import tpen.checkpoint.restore as restore_module
+import tpen.checkpoint.save as save_module
 from tpen.accelerator import current_accelerator_type, device_module
 from tpen.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -111,6 +112,39 @@ def _write_checkpoint(tmp_path: Path, model: torch.nn.Module | None = None, **kw
         context=_context(),
         **kwargs,
     )
+
+
+def test_post_commit_latest_failure_keeps_publication(tmp_path: Path, monkeypatch) -> None:
+    """A committed checkpoint stays published when the pointer write fails."""
+
+    def fail_write_latest(*args, **kwargs) -> None:
+        raise OSError("latest pointer write failed")
+
+    monkeypatch.setattr(save_module, "write_latest", fail_write_latest)
+    root = tmp_path / "checkpoints"
+    model = torch.nn.Linear(3, 2).double()
+
+    with pytest.raises(OSError, match="latest pointer write failed"):
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=3,
+            completed_updates=3,
+            model=model,
+            optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+            trainer=_Trainer(),
+            sampler=_Sampler(),
+            context=_context(),
+        )
+
+    final_dir = root / "step_000003"
+    assert (final_dir / "COMPLETE").is_file()
+    publication_rows = [
+        json.loads(line)
+        for line in (root / "publications.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(publication_rows) == 1
+    assert publication_rows[0]["ref"]["checkpoint_dir"] == str(final_dir)
+    assert not (root / "latest.json").exists()
 
 
 class _ReplayModel(torch.nn.Module):
