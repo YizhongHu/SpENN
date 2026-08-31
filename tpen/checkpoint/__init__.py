@@ -40,6 +40,7 @@ from .reference import (
     serialize_checkpoint_ref,
 )
 from .save import save_checkpoint
+from .schedule import CheckpointSchedule, EveryNUpdates, ExplicitUpdates, TerminalOnly
 
 __all__ = [
     "CHECKPOINT_KIND",
@@ -56,6 +57,7 @@ __all__ = [
     "RESTORE_MODES",
     "CheckpointManifest",
     "CheckpointCatalog",
+    "CheckpointSchedule",
     "CheckpointRef",
     "CheckpointRestored",
     "LoadFailed",
@@ -63,6 +65,9 @@ __all__ = [
     "LoadSucceeded",
     "PublicationCatalog",
     "RestoreReport",
+    "EveryNUpdates",
+    "ExplicitUpdates",
+    "TerminalOnly",
     "checkpoint_hashes",
     "checkpoint_ref",
     "checkpoint_step_dir_name",

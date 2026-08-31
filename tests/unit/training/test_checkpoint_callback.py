@@ -13,7 +13,7 @@ from omegaconf import OmegaConf
 import tpen
 from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint
-from tpen.checkpoint import checkpoint_hashes
+from tpen.checkpoint import EveryNUpdates, ExplicitUpdates, checkpoint_hashes
 from tpen.events import Occurrence
 from tpen.training.events import (
     TrainingCompleted,
@@ -104,6 +104,17 @@ class _Trainer:
 class _SamplerWithMCMCState:
     def mcmc_state_dict(self) -> dict:
         return {"has_burned_in": True}
+
+
+class _RecordingSchedule:
+    """Capture callback decisions to pin the durable terminal coordinate."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, bool]] = []
+
+    def should_run(self, completed_updates: int, terminal: bool = False) -> bool:
+        self.calls.append((completed_updates, terminal))
+        return True
 
 
 def _iteration(
@@ -371,6 +382,30 @@ def test_terminal_checkpoint_written_when_the_loop_body_never_ran(tmp_path) -> N
     # `state.step` is -1 here, and `f"step_{-1:06d}"` renders `step_-00001`.
     # The coordinate comes from the trainer's resume cursor, never from state.
     assert sorted(path.name for path in tmp_path.glob("step_*")) == ["step_000005"]
+
+
+@pytest.mark.parametrize("schedule", [EveryNUpdates(2), ExplicitUpdates([2])])
+def test_terminal_checkpoint_ignores_periodic_schedule(
+    tmp_path, schedule
+) -> None:
+    """A terminal boundary is published even when its update count misses."""
+
+    callback = Checkpoint(output_dir=tmp_path, schedule=schedule)
+    state = _state(2, next_iteration=3, completed_updates=1)
+
+    _finish(callback, state, _context())
+
+    assert (tmp_path / "step_000003" / "COMPLETE").exists()
+
+
+def test_terminal_schedule_receives_durable_completed_updates(tmp_path) -> None:
+    schedule = _RecordingSchedule()
+    callback = Checkpoint(output_dir=tmp_path, schedule=schedule)
+    state = _state(2, next_iteration=3, completed_updates=1)
+
+    _finish(callback, state, _context())
+
+    assert schedule.calls == [(1, True)]
 
 
 def test_checkpoint_writes_terminal_checkpoint_without_step_cadence(tmp_path) -> None:

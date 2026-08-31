@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from tpen.artifacts import RunContext
-from tpen.checkpoint import checkpoint_step_dir_name, save_checkpoint
+from tpen.checkpoint import (
+    CheckpointSchedule,
+    checkpoint_step_dir_name,
+    save_checkpoint,
+)
 from tpen.checkpoint.artifact import is_complete_checkpoint_dir
 from tpen.events import DomainState
 from tpen.events import Event as TypedEvent
@@ -40,12 +44,16 @@ class Checkpoint(StatefulCallback[TrainerState]):
         Write a checkpoint for each cadence-eligible completed iteration.
     terminal : bool, optional
         Write one checkpoint when the training loop finishes.
+    schedule : CheckpointSchedule or None, optional
+        Semantic periodic schedule keyed on durable ``completed_updates``.
+        Every configured schedule also admits the terminal boundary; terminal
+        publication is never cadence-gated.
     keep_last : int or None, optional
         Keep only the latest ``keep_last`` complete checkpoint directories.
     save_optimizer, save_trainer, save_sampler, save_rng : bool, optional
         Whether to include train-resume state components.
     **kwargs
-        Forwarded to `StatefulCallback` (e.g. ``every_n_steps``).
+        Forwarded to `StatefulCallback` (e.g. legacy ``every_n_steps``).
 
     Notes
     -----
@@ -94,7 +102,7 @@ class Checkpoint(StatefulCallback[TrainerState]):
     restored run continues from exactly the iteration the name encodes. A run
     with ``max_steps=500`` writes its terminal checkpoint as ``step_000500``,
     while training metrics and other step callbacks keep their existing 0-based
-    loop step indices. It is also the terminal path's *cadence* coordinate.
+    loop step indices.
 
     ``completed_updates`` is the periodic path's *cadence* coordinate:
     ``every_n_steps`` counts applied optimizer updates, so periodic checkpoints
@@ -113,6 +121,7 @@ class Checkpoint(StatefulCallback[TrainerState]):
         self,
         output_dir: str | Path,
         *,
+        schedule: CheckpointSchedule | None = None,
         periodic: bool = True,
         terminal: bool = True,
         keep_last: int | None = None,
@@ -127,6 +136,11 @@ class Checkpoint(StatefulCallback[TrainerState]):
                 "Checkpoint writes nothing with periodic=False and terminal=False"
             )
         cadence = pop_step_cadence(kwargs)
+        if schedule is not None and not isinstance(schedule, CheckpointSchedule):
+            raise TypeError(
+                "schedule must implement CheckpointSchedule, got "
+                f"{type(schedule).__name__}"
+            )
         # Subscriptions are class-owned under ADR-E002 -- no config names an
         # event -- but WHICH of this class's two writes an instance performs is
         # a semantic option, which is the alternative that ADR names for a
@@ -151,6 +165,10 @@ class Checkpoint(StatefulCallback[TrainerState]):
             **kwargs,
         )
         self.output_dir = Path(output_dir)
+        # A supplied semantic schedule owns periodic boundary selection.  The
+        # legacy scalar gate remains for existing configs until the composed
+        # callback migration, but both paths use durable completed_updates.
+        self.schedule = schedule
         self.periodic = bool(periodic)
         self.terminal = bool(terminal)
         self.keep_last = keep_last
@@ -158,10 +176,8 @@ class Checkpoint(StatefulCallback[TrainerState]):
         self.save_trainer = bool(save_trainer)
         self.save_sampler = bool(save_sampler)
         self.save_rng = bool(save_rng)
-        # One gate shared by both writes, matching the single scheduling window
-        # the legacy scalar path applied across both triggers. It only becomes
-        # observable when ``max_calls`` or ``probability`` is configured, which
-        # no shipped config does.
+        # The legacy gate applies only to periodic writes. Terminal publication
+        # is an explicit semantic boundary and never consults this gate.
         self._steps = StepCadenceGate(cadence)
         # Trainer step of the most recent iteration that applied an optimizer
         # update. Matched against the step the completed-iteration event carries,
@@ -206,7 +222,11 @@ class Checkpoint(StatefulCallback[TrainerState]):
         """
 
         next_iteration, completed_updates = _trainer_progress(state)
-        if not self._steps.should_run(completed_updates):
+        if self.schedule is not None:
+            should_run = self.schedule.should_run(completed_updates)
+        else:
+            should_run = self._steps.should_run(completed_updates)
+        if not should_run:
             return
         if self._updated_iteration_step != step:
             return
@@ -216,8 +236,16 @@ class Checkpoint(StatefulCallback[TrainerState]):
         """Write the final checkpoint for the run's resume cursor."""
 
         next_iteration, completed_updates = _trainer_progress(state)
-        if not self._steps.should_run(next_iteration):
+        if self.schedule is not None and not self.schedule.should_run(
+            completed_updates, terminal=True
+        ):
+            # `CheckpointSchedule` requires every implementation to admit a
+            # terminal boundary. Keep this guard explicit so a violating
+            # schedule cannot silently suppress the terminal publication.
             return
+        # Terminal publication is its own semantic boundary. It must remain
+        # observable when periodic cadence misses. The durable completed-update
+        # count is passed as metadata, while the terminal decision is explicit.
         self._save(context, state, next_iteration, completed_updates)
 
     def _save(
