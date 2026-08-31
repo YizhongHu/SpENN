@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections import OrderedDict
 
 from tpen.data.batch import ElectronBatch, FactorizedLocalEnergyInput, WavefunctionOutput
+from tpen.data.paths import PathLayout
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
 from tpen.nn.cusp import ElectronNucleusCusp
+from tpen.nn.tpen_layer import TPENLayer
 from tpen.nn.tpen_stack import TPENStack
 
 torch = require_torch(feature="TPEN wavefunction modules")
@@ -59,6 +62,9 @@ class TPENWaveFunction(EquivariantMap):
     basis : torch.nn.Module or None, optional
         Optional :class:`tpen.nn.ElectronBasis` applied before the embedding.
         When ``None``, the embedding consumes the raw :class:`ElectronBatch`.
+    layout : PathLayout or None, optional
+        Model-owned immutable interaction layout. When present, its fingerprint
+        is serialized with the model and checked before any restore mutation.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -72,6 +78,7 @@ class TPENWaveFunction(EquivariantMap):
         envelope: nn.Module | None = None,
         factors: Iterable[nn.Module] = (),
         basis: nn.Module | None = None,
+        layout: PathLayout | None = None,
         analytic_cusp_provider: ElectronNucleusCusp | None = None,
         **kwargs,
     ) -> None:
@@ -79,6 +86,12 @@ class TPENWaveFunction(EquivariantMap):
         self.basis = basis
         self.embedding = embedding
         self.stack = layers if isinstance(layers, TPENStack) else TPENStack(layers)
+        self.layout = layout if layout is not None else _layout_from_stack(self.stack)
+        if self.layout is not None:
+            for layer in self.stack.layers:
+                if isinstance(layer, TPENLayer) and layer.layout is not None:
+                    if layer.layout.fingerprint != self.layout.fingerprint:
+                        raise ValueError("TPENWaveFunction layers do not share the model layout")
         self.readout = readout
         self.envelope = envelope
         factors = tuple(factors)
@@ -92,6 +105,75 @@ class TPENWaveFunction(EquivariantMap):
                     "analytic_cusp_provider must be the unique participating ElectronNucleusCusp factor"
                 )
         self.analytic_cusp_provider = analytic_cusp_provider
+
+    _LAYOUT_STATE_KEY = "_tpen_layout_fingerprint"
+
+    def state_dict(self, *args, **kwargs):
+        """Return model state with layout identity owned by the model.
+
+        TP-only composite layers retain the historical ``mixing.weights``
+        namespace. The compatibility rewrite is limited to that exact model
+        shape; hybrid and linear models keep their producer-qualified keys.
+        """
+
+        state = OrderedDict(super().state_dict(*args, **kwargs))
+        if self.layout is None:
+            return state
+        state = self._legacy_tp_state_keys(state, to_legacy=True)
+        state[self._LAYOUT_STATE_KEY] = torch.tensor(
+            list(self.layout.fingerprint.encode("ascii")), dtype=torch.uint8
+        )
+        return state
+
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        """Validate layout identity before PyTorch can mutate parameters.
+
+        A missing identity is accepted only for a TP-only model, where the
+        historical public state namespace is intentionally preserved. New
+        hybrid and linear checkpoints must carry identity metadata; an old
+        TP-only checkpoint cannot load into either of those changed shapes.
+        """
+
+        incoming = OrderedDict(state_dict)
+        if self.layout is not None:
+            encoded = incoming.get(self._LAYOUT_STATE_KEY)
+            if encoded is None:
+                if not self._is_tp_only_layout():
+                    raise ValueError(
+                        "checkpoint has no layout fingerprint; only legacy TP-only checkpoints are compatible"
+                    )
+            else:
+                actual = bytes(encoded.detach().cpu().tolist()).decode("ascii")
+                if actual != self.layout.fingerprint:
+                    raise ValueError(
+                        "checkpoint layout fingerprint does not match the model; refusing restore before mutation"
+                    )
+            incoming.pop(self._LAYOUT_STATE_KEY, None)
+            incoming = self._legacy_tp_state_keys(incoming, to_legacy=False)
+        return super().load_state_dict(incoming, *args, **kwargs)
+
+    def _is_tp_only_layout(self) -> bool:
+        """Return whether this model has exactly one tensor-product family."""
+
+        return (
+            self.layout is not None
+            and len(self.layout.family_slices) == 1
+            and self.layout.family_slices[0].family == "tensor_product"
+        )
+
+    def _legacy_tp_state_keys(self, state, *, to_legacy: bool):
+        """Adapt only the nested TP-only composite state namespace."""
+
+        if not self._is_tp_only_layout():
+            return state
+        rewritten = OrderedDict()
+        for key, value in state.items():
+            if to_legacy and ".mixing.producers.0.weights." in key:
+                key = key.replace(".mixing.producers.0.weights.", ".mixing.weights.", 1)
+            elif not to_legacy and ".mixing.weights." in key:
+                key = key.replace(".mixing.weights.", ".mixing.producers.0.weights.", 1)
+            rewritten[key] = value
+        return rewritten
 
     def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
         """Evaluate the signed-log wavefunction for an electron batch."""
@@ -142,6 +224,22 @@ def _log_factor(module: nn.Module, batch: ElectronBatch, shape: torch.Size, *, n
     if value.shape != shape:
         raise ValueError(f"{name} output must have shape {tuple(shape)}, got {tuple(value.shape)}")
     return value
+
+
+def _layout_from_stack(stack: TPENStack) -> PathLayout | None:
+    """Infer one model layout from already-constructed typed TPEN layers."""
+
+    layouts = tuple(
+        layer.layout
+        for layer in stack.layers
+        if isinstance(layer, TPENLayer) and layer.layout is not None
+    )
+    if not layouts:
+        return None
+    first = layouts[0]
+    if any(layout.fingerprint != first.fingerprint for layout in layouts[1:]):
+        raise ValueError("TPENWaveFunction layers do not share one layout fingerprint")
+    return first
 
 
 __all__ = ["TPENWaveFunction"]

@@ -35,6 +35,13 @@ from tpen.nn.linear_equivariant_mixing import LinearEquivariantMixing
 from tpen.nn.mixing_kernel import execute_binary, execute_unary
 from tpen.nn.factor import AdditiveCusp, LogAmplitudeFactor
 from tpen.nn.initialization import SeededLinear, TorchInitializer
+from tpen.nn.interaction_config import (
+    InteractionMode,
+    ProducerFamily,
+    ResolvedInteractionConfig,
+    normalize_interaction_mode,
+    normalize_producer_order,
+)
 from tpen.nn.mlp import MLP
 from tpen.nn.normalization import RMSNorm
 from tpen.nn.path_aggregation import PathAggregation
@@ -82,4 +89,9 @@ __all__ = [
     "TorchInitializer",
     "CurvatureElectronNucleusCuspLaw",
     "Updater",
+    "ProducerFamily",
+    "InteractionMode",
+    "ResolvedInteractionConfig",
+    "normalize_interaction_mode",
+    "normalize_producer_order",
 ]
