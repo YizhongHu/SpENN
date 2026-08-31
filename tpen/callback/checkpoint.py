@@ -239,10 +239,12 @@ class Checkpoint(StatefulCallback[TrainerState]):
         if self.schedule is not None and not self.schedule.should_run(
             completed_updates, terminal=True
         ):
-            # `CheckpointSchedule` requires every implementation to admit a
-            # terminal boundary. Keep this guard explicit so a violating
-            # schedule cannot silently suppress the terminal publication.
-            return
+            schedule_type = type(self.schedule).__name__
+            raise RuntimeError(
+                f"{schedule_type} violated CheckpointSchedule: terminal publication "
+                "must not be suppressed by cadence (should_run(..., terminal=True) "
+                "returned False)"
+            )
         # Terminal publication is its own semantic boundary. It must remain
         # observable when periodic cadence misses. The durable completed-update
         # count is passed as metadata, while the terminal decision is explicit.

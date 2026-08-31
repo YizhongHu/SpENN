@@ -117,6 +117,13 @@ class _RecordingSchedule:
         return True
 
 
+class _RejectingTerminalSchedule:
+    """Deliberately violate the terminal-admission schedule invariant."""
+
+    def should_run(self, completed_updates: int, terminal: bool = False) -> bool:
+        return not terminal
+
+
 def _iteration(
     callback: Checkpoint,
     state: TrainerState,
@@ -406,6 +413,24 @@ def test_terminal_schedule_receives_durable_completed_updates(tmp_path) -> None:
     _finish(callback, state, _context())
 
     assert schedule.calls == [(1, True)]
+
+
+def test_terminal_schedule_violation_fails_loudly(tmp_path) -> None:
+    callback = Checkpoint(
+        output_dir=tmp_path,
+        schedule=_RejectingTerminalSchedule(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"_RejectingTerminalSchedule violated CheckpointSchedule: terminal "
+            r"publication must not be suppressed"
+        ),
+    ):
+        _finish(callback, _state(2, next_iteration=3, completed_updates=1), _context())
+
+    assert not (tmp_path / "step_000003").exists()
 
 
 def test_checkpoint_writes_terminal_checkpoint_without_step_cadence(tmp_path) -> None:
