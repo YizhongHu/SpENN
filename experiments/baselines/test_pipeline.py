@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from experiments.baselines import pipeline
+from experiments.baselines.pipeline import accelerator_bindings, allocation_context
+from experiments.toolkit.parsl_attach import validate_accelerator_tiling
 from experiments.toolkit.dispatch import DispatchRecord, LogicalTaskSpec, StagePlanV2
 from experiments.toolkit.resources import ResourceSpec
 from experiments.toolkit.specs import CompletionSpec
@@ -118,3 +120,57 @@ def test_cannon_is_not_a_parsl_target(tmp_path: Path) -> None:
             run_root=tmp_path / "launch",
             environ={"SLURM_JOB_ID": "1"},
         )
+
+
+def test_accelerator_bindings_tile_the_node_for_every_admissible_width() -> None:
+    """Row widths are the divisors of the node, derived rather than enumerated."""
+
+    assert accelerator_bindings(1, 4) == ("0", "1", "2", "3")
+    assert accelerator_bindings(2, 4) == ("0,1", "2,3")
+    assert accelerator_bindings(4, 4) == ("0,1,2,3",)
+    # The rule is divisibility, not a hardcoded (1, 2, 4), so a differently sized
+    # node needs no change here.
+    assert accelerator_bindings(2, 8) == ("0,1", "2,3", "4,5", "6,7")
+    assert accelerator_bindings(8, 8) == ("0,1,2,3,4,5,6,7",)
+
+
+@pytest.mark.parametrize(
+    "gpus_per_row, fragment",
+    [
+        (3, "does not divide"),
+        (0, "must be positive"),
+        (-1, "must be positive"),
+    ],
+)
+def test_accelerator_bindings_reject_widths_that_cannot_tile(
+    gpus_per_row: int, fragment: str
+) -> None:
+    """A width that strands or straddles accelerators is rejected at plan time.
+
+    This is where node saturation is enforced; the executor-side tiling check
+    deliberately does not know the node's accelerator count.
+    """
+
+    with pytest.raises(ValueError, match=fragment):
+        accelerator_bindings(gpus_per_row, 4)
+
+
+def test_multi_node_context_admits_four_gpu_rows() -> None:
+    """The previously blocked case: 4-GPU rows across more than one node.
+
+    Before this change `_parsl_app_runner` raised
+    `multi-node Parsl attach requires exactly four accelerators per node`
+    for every `gpus_per_row` above 1, which confined multi-node dispatch to
+    one GPU per row and blocked the production geometry outright.
+    """
+
+    for gpus_per_row in (1, 2, 4):
+        context = allocation_context(
+            facility="polaris",
+            gpus_per_row=gpus_per_row,
+            run_root="/tmp/does-not-need-to-exist",
+            environ={"PBS_JOBID": "1.polaris", "TPEN_NODES_PER_BLOCK": "2"},
+        )
+        assert context.nodes_per_block == 2
+        # The executor-side check must accept exactly what the planner produced.
+        validate_accelerator_tiling(context.visibility_values)
