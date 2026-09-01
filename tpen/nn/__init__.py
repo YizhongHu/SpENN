@@ -34,6 +34,15 @@ from tpen.nn.composite_mixing import CompositeMixing
 from tpen.nn.linear_equivariant_mixing import LinearEquivariantMixing
 from tpen.nn.mixing_kernel import execute_binary, execute_unary
 from tpen.nn.factor import AdditiveCusp, LogAmplitudeFactor
+from tpen.nn.forward import (
+    CoordinateGradientRequest,
+    CoordinateGradientProvider,
+    MaterializedParameterScoreRequest,
+    ParameterScoreRequest,
+    ParameterScoreProvider,
+    WavefunctionForwardRequest,
+    WavefunctionRequestProvider,
+)
 from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.interaction_config import (
     InteractionMode,
@@ -54,6 +63,8 @@ __all__ = [
     "AdditiveCusp",
     "AdditiveEnvelope",
     "CoordinateEnvelope",
+    "CoordinateGradientRequest",
+    "CoordinateGradientProvider",
     "ElectronBasis",
     "ElectronBasisFeatures",
     "ElectronElectronCusp",
@@ -77,6 +88,9 @@ __all__ = [
     "LinearElectronNucleusCuspLaw",
     "LogAmplitudeFactor",
     "MLP",
+    "MaterializedParameterScoreRequest",
+    "ParameterScoreRequest",
+    "ParameterScoreProvider",
     "PathAggregation",
     "RawCoordinateBasis",
     "RMSNorm",
@@ -89,6 +103,8 @@ __all__ = [
     "TorchInitializer",
     "CurvatureElectronNucleusCuspLaw",
     "Updater",
+    "WavefunctionForwardRequest",
+    "WavefunctionRequestProvider",
     "ProducerFamily",
     "InteractionMode",
     "ResolvedInteractionConfig",
