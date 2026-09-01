@@ -178,7 +178,10 @@ def test_explicit_model_only_payload_owns_save_defaults_and_manifest(tmp_path: P
 
     manifest = json.loads((checkpoint_dir / "manifest.json").read_text())
     assert manifest["payload"] == ModelOnly().to_manifest()
-    assert manifest["files"] == {"model": "model.pt"}
+    assert manifest["files"] == {
+        "model": "model.pt",
+        "resolved_config": "resolved_config.yaml",
+    }
     assert sorted(path.name for path in checkpoint_dir.iterdir()) == [
         "COMPLETE",
         "manifest.json",
