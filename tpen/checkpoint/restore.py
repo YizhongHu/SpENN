@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 from tpen.accelerator import canonical_device
 
 from .artifact import resolve_checkpoint_dir
-from .hashing import checkpoint_hashes
+from .hashing import checkpoint_hashes, file_sha256
 from .replay import (
     CheckpointReplaySemantics,
     coerce_checkpoint_replay_semantics,
@@ -143,6 +143,12 @@ def restore_checkpoint(
             checkpoint_dir,
             allow_mismatch=allow_mismatch,
         )
+        _validate_component_files(
+            checkpoint_dir,
+            manifest.files,
+            manifest.hashes,
+            components=("model",),
+        )
         _load_model(checkpoint_dir, manifest.files, model, strict=strict_load, context=context)
         return RestoreReport(
             mode=mode,
@@ -168,6 +174,17 @@ def restore_checkpoint(
             checkpoint_dir,
             allow_mismatch=(hash_name == "hamiltonian_config" and allow_mismatch),
         )
+
+    # Validate every serialized component before the first mutable load.  New
+    # manifests carry namespaced content digests in the existing ``hashes``
+    # mapping; older v1/v2 artifacts may not, so their presence check remains
+    # the compatibility floor while current artifacts get byte validation.
+    _validate_component_files(
+        checkpoint_dir,
+        manifest.files,
+        manifest.hashes,
+        components=("model", "optimizer", "trainer", "sampler", "rng"),
+    )
 
     # The RNG payload is read and validated before anything is restored. A
     # refused resume must leave the process unmutated, and `_load_sampler` is
@@ -275,6 +292,31 @@ def _verify_hash(
             f"{checkpoint_dir}: {name} mismatch "
             f"(checkpoint {stored_hash}, current {current_hash})"
         )
+
+
+def _validate_component_files(
+    checkpoint_dir: Path,
+    files: dict[str, str],
+    hashes: dict[str, str | None],
+    *,
+    components: tuple[str, ...],
+) -> None:
+    """Validate required component bytes before any consumer is mutated."""
+
+    for component in components:
+        path = _required_file(checkpoint_dir, files, component)
+        expected = hashes.get(f"{component}_sha256")
+        if expected is None:
+            # Archived manifests predate component-content digests.  Keep their
+            # existing restore behavior while enforcing the stronger check on
+            # every manifest written by the current saver.
+            continue
+        actual = file_sha256(path)
+        if actual != expected:
+            raise ValueError(
+                f"{checkpoint_dir}: {component} checkpoint file digest mismatch "
+                f"(manifest {expected}, actual {actual})"
+            )
 
 
 def _load_model(
