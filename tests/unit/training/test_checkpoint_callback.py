@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,11 +16,15 @@ import tpen
 from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint
 from tpen.checkpoint import (
+    CheckpointCatalog,
+    CheckpointRef,
     EveryNUpdates,
     ExplicitUpdates,
     ModelOnly,
     TrainResume,
     checkpoint_hashes,
+    read_publications,
+    save_checkpoint,
 )
 from tpen.checkpoint.hashing import file_sha256
 from tpen.events import Occurrence
@@ -129,6 +135,48 @@ class _RejectingTerminalSchedule:
 
     def should_run(self, completed_updates: int, terminal: bool = False) -> bool:
         return not terminal
+
+
+@dataclass
+class _FailOncePublish:
+    """Wrap one directly imported catalog operation with one deterministic failure."""
+
+    delegate: Callable[[CheckpointCatalog, CheckpointRef], CheckpointRef]
+    failures_remaining: int = 1
+
+    def __call__(self, catalog: CheckpointCatalog, ref: CheckpointRef) -> CheckpointRef:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise OSError("catalog publication failed once")
+        return self.delegate(catalog, ref)
+
+
+class _FailOnceCatalog(CheckpointCatalog):
+    """Catalog that fails before its first append, without dynamic patching."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self._publish_once = _FailOncePublish(CheckpointCatalog.publish)
+
+    def publish(self, ref: CheckpointRef) -> CheckpointRef:
+        return self._publish_once(self, ref)
+
+
+@dataclass(frozen=True)
+class _CheckpointSnapshot:
+    """Byte snapshot used to prove a repair never rewrites its payload."""
+
+    files: tuple[tuple[str, bytes], ...]
+
+
+def _checkpoint_snapshot(checkpoint_dir: Path) -> _CheckpointSnapshot:
+    return _CheckpointSnapshot(
+        tuple(
+            (str(path.relative_to(checkpoint_dir)), path.read_bytes())
+            for path in sorted(checkpoint_dir.rglob("*"))
+            if path.is_file()
+        )
+    )
 
 
 def _iteration(
@@ -492,6 +540,61 @@ def test_checkpoint_identical_republication_is_idempotent(tmp_path) -> None:
 
     assert (tmp_path / "step_000002" / "manifest.json").read_bytes() == manifest_before
     assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_retry_repairs_catalog_after_rename_failure(tmp_path) -> None:
+    """A retry publishes a committed directory when its first append failed."""
+
+    root = tmp_path / "checkpoints"
+    state = _state(1, next_iteration=2, completed_updates=2)
+    failing_catalog = _FailOnceCatalog(root / "publications.jsonl")
+
+    with pytest.raises(OSError, match="catalog publication failed once"):
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=2,
+            completed_updates=2,
+            model=state.model,
+            optimizer=state.optimizer,
+            trainer=state.trainer,
+            sampler=state.sampler,
+            context=_context(),
+            publication_catalog=failing_catalog,
+        )
+
+    final_dir = root / "step_000002"
+    assert final_dir.is_dir()
+    assert not (root / "publications.jsonl").exists()
+    assert not (root / "latest.json").exists()
+    payload_before = _checkpoint_snapshot(final_dir)
+
+    _finish(Checkpoint(output_dir=root, periodic=False), state, _context())
+
+    assert len(read_publications(root / "publications.jsonl")) == 1
+    latest = json.loads((root / "latest.json").read_text())
+    assert latest["checkpoint_dir"] == final_dir.name
+    assert _checkpoint_snapshot(final_dir) == payload_before
+
+
+def test_checkpoint_retry_repairs_latest_without_duplicate_catalog_row(tmp_path) -> None:
+    """A retry repairs a stale pointer after the row was already appended."""
+
+    root = tmp_path / "checkpoints"
+    state = _state(1, next_iteration=2, completed_updates=2)
+    _finish(Checkpoint(output_dir=root, periodic=False), state, _context())
+
+    final_dir = root / "step_000002"
+    payload_before = _checkpoint_snapshot(final_dir)
+    assert len(read_publications(root / "publications.jsonl")) == 1
+    # This is the durable state after catalog append but before latest replace.
+    (root / "latest.json").unlink()
+
+    _finish(Checkpoint(output_dir=root, periodic=False), state, _context())
+
+    assert len(read_publications(root / "publications.jsonl")) == 1
+    latest = json.loads((root / "latest.json").read_text())
+    assert latest["checkpoint_dir"] == final_dir.name
+    assert _checkpoint_snapshot(final_dir) == payload_before
 
 
 def test_checkpoint_legacy_manifest_uses_component_set_for_republication(tmp_path) -> None:
