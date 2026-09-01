@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
 from dataclasses import FrozenInstanceError
 from io import BytesIO
@@ -45,6 +46,20 @@ def _output(batch: ElectronBatch, value: torch.Tensor | None = None) -> Wavefunc
     shape = (batch.batch_size,)
     logabs = torch.zeros(shape, dtype=batch.dtype) if value is None else value.reshape(shape)
     return WavefunctionOutput(logabs=logabs, sign=torch.ones(shape, dtype=batch.dtype))
+
+
+def _optimizer_update_input(parameter: torch.nn.Parameter, *, step: int) -> AutogradUpdateInput:
+    """Build the same differentiable update input at a given model state."""
+
+    objective = (parameter.square() * 3.0).sum()
+    batch = _batch()
+    return AutogradUpdateInput(
+        batch=batch,
+        wavefunction=_output(batch, objective.reshape(1)),
+        local_energy=torch.zeros(1, dtype=torch.float64),
+        step=step,
+        objective=objective,
+    )
 
 
 def _binding(parameter: torch.nn.Parameter) -> ParameterBinding:
@@ -190,6 +205,39 @@ def test_legacy_adapter_matches_current_zero_grad_backward_clip_step_sequence() 
     assert adapted.grad is not None
     assert torch.equal(adapted.grad, control_grad)
     _assert_nested_equal(adapted_optimizer.state_dict(), control_state)
+
+
+def test_legacy_adapter_loads_raw_checkpoint_and_preserves_next_update() -> None:
+    """Loading an on-disk optimizer payload must affect the next Adam update."""
+
+    control = torch.nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
+    control_optimizer = torch.optim.Adam([control], lr=0.1)
+    control_adapter = LegacyAutogradUpdate(control_optimizer, gradient_clip_norm=0.5)
+    control_adapter.update(_optimizer_update_input(control, step=0))
+
+    # This is the raw payload written by the legacy checkpoint callback.
+    raw_optimizer_checkpoint = copy.deepcopy(control_optimizer.state_dict())
+    assert raw_optimizer_checkpoint["state"]
+    first_state = next(iter(raw_optimizer_checkpoint["state"].values()))
+    assert first_state["step"].item() == 1.0
+    assert first_state["exp_avg"].abs().sum().item() > 0.0
+    _assert_nested_equal(control_adapter.state_dict(), raw_optimizer_checkpoint)
+
+    restored = torch.nn.Parameter(control.detach().clone())
+    restored_optimizer = torch.optim.Adam([restored], lr=0.1)
+    restored_adapter = LegacyAutogradUpdate(restored_optimizer, gradient_clip_norm=0.5)
+    restored_adapter.load_state_dict(raw_optimizer_checkpoint)
+    _assert_nested_equal(restored_adapter.state_dict(), raw_optimizer_checkpoint)
+
+    control_result = control_adapter.update(_optimizer_update_input(control, step=1))
+    restored_result = restored_adapter.update(_optimizer_update_input(restored, step=1))
+
+    assert restored_result == control_result
+    assert torch.equal(restored, control)
+    assert restored.grad is not None
+    assert control.grad is not None
+    assert torch.equal(restored.grad, control.grad)
+    _assert_nested_equal(restored_adapter.state_dict(), control_adapter.state_dict())
 
 
 def test_legacy_adapter_skips_vacuum_and_errors_for_disconnected_nonvacuum() -> None:
