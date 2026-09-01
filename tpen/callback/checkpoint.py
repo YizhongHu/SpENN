@@ -19,6 +19,7 @@ from tpen.checkpoint import (
     ModelOnly,
     TrainResume,
     checkpoint_step_dir_name,
+    reconcile_publication,
     save_checkpoint,
 )
 from tpen.checkpoint.artifact import is_complete_checkpoint_dir
@@ -267,6 +268,7 @@ class Checkpoint(StatefulCallback[TrainerState]):
         final_dir = self.output_dir / checkpoint_step_dir_name(next_iteration)
         if is_complete_checkpoint_dir(final_dir):
             self._validate_existing_publication(final_dir)
+            reconcile_publication(self.output_dir, final_dir)
             return
         model = state.model
         if model is None:

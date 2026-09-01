@@ -17,6 +17,7 @@ from .catalog import (
     PublicationCatalog,
     append_publication,
     publication_catalog_path,
+    reconcile_publication,
     read_publications,
 )
 from .events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
@@ -108,6 +109,7 @@ __all__ = [
     "stable_config_hash",
     "append_publication",
     "publication_catalog_path",
+    "reconcile_publication",
     "verify_checkpoint_replay_semantics",
     "write_checkpoint_replay_semantics",
 ]
