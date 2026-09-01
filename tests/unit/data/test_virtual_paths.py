@@ -186,7 +186,7 @@ def test_path_position_is_meaningful_to_layout_identity() -> None:
 
 
 def test_path_layout_rejects_duplicate_semantic_paths() -> None:
-    path = SupportPath(1, 1, 1, (0,), (0,))
+    path = SupportPath(1, 1, (0,), (0,))
     with pytest.raises(ValueError, match="duplicate"):
         OutputPathLayout(1, (PathEntry(1, 1, path), PathEntry(1, 1, path)))
 
