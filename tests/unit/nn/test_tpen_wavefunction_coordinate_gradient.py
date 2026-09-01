@@ -46,6 +46,17 @@ def test_coordinate_request_agrees_with_slow_autograd_oracle() -> None:
     torch.testing.assert_close(packet.coordinates.values, oracle_gradient)
 
 
+def test_coordinate_request_primal_is_value_only_after_vjp() -> None:
+    model = build_tiny_spenn()
+    batch = tiny_pair_batch(n_walkers=1)
+
+    packet = model(batch, request=CoordinateGradientRequest())
+
+    assert not packet.output.logabs.requires_grad
+    with pytest.raises(RuntimeError, match="does not require grad"):
+        packet.output.logabs.sum().backward()
+
+
 def test_coordinate_request_rejects_inference_mode() -> None:
     model = build_tiny_spenn()
     batch = tiny_pair_batch(n_walkers=1)

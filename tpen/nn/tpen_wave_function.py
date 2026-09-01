@@ -218,6 +218,12 @@ class TPENWaveFunction(EquivariantMap):
                 create_graph=False,
             )[0]
             values = values.reshape(*output.logabs.shape, batch.n_electrons, batch.spatial_dim)
+            output = WavefunctionOutput(
+                logabs=output.logabs.detach(),
+                sign=output.sign.detach(),
+                phase=None if output.phase is None else output.phase.detach(),
+                aux=dict(output.aux),
+            )
         return CoordinateForwardPacket(
             output=output,
             coordinates=CoordinateLogGradient(values=values),
