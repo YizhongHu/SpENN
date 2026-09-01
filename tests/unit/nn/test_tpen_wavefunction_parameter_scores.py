@@ -15,6 +15,7 @@ from tpen.data.paths import (
     PathMetadata,
     compose_path_layout,
 )
+from tpen.data.real import Feature
 from tpen.nn import (
     CompositeMixing,
     Embedding,
@@ -78,9 +79,9 @@ def _batch() -> ElectronBatch:
 class _EmptyShapeEmbedding(torch.nn.Module):
     """Pass typed input through while accepting TPEN's context argument."""
 
-    def forward(self, value: ElectronBatch, *, context: object) -> ElectronBatch:
-        del context
-        return value
+    def forward(self, value: ElectronBatch, *, context: object) -> Feature:
+        del value, context
+        return Feature()
 
 
 class _EmptyShapeReadout(torch.nn.Module):
@@ -90,7 +91,7 @@ class _EmptyShapeReadout(torch.nn.Module):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.tensor(1.0, dtype=torch.float64))
 
-    def forward(self, value: ElectronBatch, batch: ElectronBatch) -> WavefunctionOutput:
+    def forward(self, value: Feature, batch: ElectronBatch) -> WavefunctionOutput:
         del value
         logabs = self.weight.expand(batch.sample_shape)
         return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
