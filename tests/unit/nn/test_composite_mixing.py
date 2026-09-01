@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from types import SimpleNamespace
 
 from tpen.data.paths import (
     LinearPathMetadata,
@@ -72,11 +73,25 @@ def test_composite_rejects_tp_owned_activation() -> None:
 
 def test_composite_uses_one_pre_activation_interface() -> None:
     layout, linear_metadata, tp_metadata = _layout()
-    linear = LinearEquivariantMixing(max_order=1, channels=1, metadata=linear_metadata)
-    tensor_product = EquivariantMixing(max_order=1, channels=1, paths=tp_metadata, activation=None)
-    assert callable(linear.forward_pre_activation)
-    assert callable(tensor_product.forward_pre_activation)
-    CompositeMixing(layout=layout, producers=(linear, tensor_product), activation=torch.tanh)
+    class CountingLinear(LinearEquivariantMixing):
+        calls = 0
+
+        def forward_pre_activation(self, x: Feature) -> Interaction:
+            self.calls += 1
+            return super().forward_pre_activation(x)
+
+    class CountingTP(EquivariantMixing):
+        calls = 0
+
+        def forward_pre_activation(self, x: Feature) -> Interaction:
+            self.calls += 1
+            return super().forward_pre_activation(x)
+
+    linear = CountingLinear(max_order=1, channels=1, metadata=linear_metadata)
+    tensor_product = CountingTP(max_order=1, channels=1, paths=tp_metadata, activation=None)
+    CompositeMixing(layout=layout, producers=(linear, tensor_product), activation=torch.tanh)(_feature())
+    assert linear.calls == 1
+    assert tensor_product.calls == 1
 
 
 def test_composite_rejects_disagreeing_order_zero_blocks() -> None:
@@ -85,13 +100,38 @@ def test_composite_rejects_disagreeing_order_zero_blocks() -> None:
     class DivergentLinear(LinearEquivariantMixing):
         def forward_pre_activation(self, x: Feature) -> Interaction:
             result = super().forward_pre_activation(x)
-            blocks = [result.blocks[0].to(dtype=torch.float32), *result.blocks[1:]]
-            return Interaction(blocks)
+            # A valid Interaction's reserved order-0 block has zero elements;
+            # use a producer-returned block container to test value divergence
+            # without changing dtype, shape, or device.
+            blocks = [torch.zeros((1, 1), dtype=torch.float64), *result.blocks[1:]]
+            return SimpleNamespace(blocks=blocks)
+
+    class DivergentTP(EquivariantMixing):
+        def forward_pre_activation(self, x: Feature) -> Interaction:
+            result = super().forward_pre_activation(x)
+            blocks = [torch.ones((1, 1), dtype=torch.float64), *result.blocks[1:]]
+            return SimpleNamespace(blocks=blocks)
 
     linear = DivergentLinear(max_order=1, channels=1, metadata=linear_metadata)
-    tensor_product = EquivariantMixing(max_order=1, channels=1, paths=tp_metadata, activation=None)
+    tensor_product = DivergentTP(max_order=1, channels=1, paths=tp_metadata, activation=None)
     composite = CompositeMixing(layout=layout, producers=(linear, tensor_product))
     with pytest.raises(ValueError, match="order-0 blocks"):
+        composite(_feature())
+
+
+def test_composite_rejects_dtype_mismatch_independently() -> None:
+    layout, linear_metadata, tp_metadata = _layout()
+
+    class DtypeLinear(LinearEquivariantMixing):
+        def forward_pre_activation(self, x: Feature) -> Interaction:
+            result = super().forward_pre_activation(x)
+            blocks = [result.blocks[0].to(dtype=torch.float32), *result.blocks[1:]]
+            return SimpleNamespace(blocks=blocks)
+
+    linear = DtypeLinear(max_order=1, channels=1, metadata=linear_metadata)
+    tensor_product = EquivariantMixing(max_order=1, channels=1, paths=tp_metadata, activation=None)
+    composite = CompositeMixing(layout=layout, producers=(linear, tensor_product))
+    with pytest.raises(ValueError, match="dtypes disagree"):
         composite(_feature())
 
 
