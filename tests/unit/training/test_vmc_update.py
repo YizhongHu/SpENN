@@ -214,7 +214,7 @@ def test_legacy_adapter_matches_pre_f4_model_gradient_domain_for_subset_optimize
     clipped_selected = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float64))
     clipped_unselected = torch.nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
     clipped_optimizer = torch.optim.SGD([clipped_selected], lr=0.1)
-    clipped_objective = clipped_selected + 2.0 * clipped_unselected
+    clipped_objective = (clipped_selected + 2.0 * clipped_unselected).sum()
     clipped_batch = _batch()
     clipped_input = AutogradUpdateInput(
         batch=clipped_batch,
@@ -245,7 +245,7 @@ def test_legacy_adapter_matches_pre_f4_model_gradient_domain_for_subset_optimize
     unclipped_selected = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float64))
     unclipped_unselected = torch.nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
     unclipped_optimizer = torch.optim.SGD([unclipped_selected], lr=0.1)
-    unclipped_objective = unclipped_selected + 2.0 * unclipped_unselected
+    unclipped_objective = (unclipped_selected + 2.0 * unclipped_unselected).sum()
     unclipped_batch = _batch()
     unclipped_input = AutogradUpdateInput(
         batch=unclipped_batch,
