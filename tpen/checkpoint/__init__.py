@@ -5,6 +5,7 @@ from __future__ import annotations
 from .artifact import (
     COMPLETE_MARKER,
     LATEST_JSON,
+    CheckpointPruneError,
     checkpoint_step_dir_name,
     list_complete_checkpoints,
     read_latest,
@@ -79,6 +80,16 @@ from .retention import (
     RetentionRef,
     RetentionSnapshot,
 )
+from .pruning import (
+    PRUNE_RECEIPT_SCHEMA,
+    PRUNE_RECEIPTS_FILENAME,
+    PruneReport,
+    execute_retention_snapshot,
+    prune_receipts_path,
+    prune_snapshot,
+    sweep_published_checkpoints,
+    sweep_checkpoint_root,
+)
 from .save import save_checkpoint
 from .schedule import CheckpointSchedule, EveryNUpdates, ExplicitUpdates, TerminalOnly
 
@@ -86,6 +97,9 @@ __all__ = [
     "CHECKPOINT_KIND",
     "CHECKPOINT_REF_SCHEMA",
     "CHECKPOINT_SCHEMA_VERSION",
+    "CheckpointPruneError",
+    "PRUNE_RECEIPT_SCHEMA",
+    "PRUNE_RECEIPTS_FILENAME",
     "RETENTION_SNAPSHOT_SCHEMA",
     "CheckpointReplaySemantics",
     "COMPLETE_MARKER",
@@ -106,6 +120,7 @@ __all__ = [
     "RetentionPolicy",
     "RetentionRef",
     "RetentionSnapshot",
+    "PruneReport",
     "CheckpointRestored",
     "LoadFailed",
     "LoadStarted",
@@ -153,6 +168,11 @@ __all__ = [
     "restore_checkpoint",
     "restore_checkpoint_with_events",
     "save_checkpoint",
+    "execute_retention_snapshot",
+    "prune_receipts_path",
+    "prune_snapshot",
+    "sweep_published_checkpoints",
+    "sweep_checkpoint_root",
     "serialize_checkpoint_ref",
     "stable_config_hash",
     "append_publication",

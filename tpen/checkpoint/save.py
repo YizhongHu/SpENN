@@ -14,11 +14,12 @@ from omegaconf import OmegaConf
 
 from tpen import __version__ as tpen_version
 
-from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_latest
+from .artifact import checkpoint_step_dir_name, write_latest
 from .catalog import CheckpointCatalog, publication_catalog_path
 from .hashing import checkpoint_hashes, file_sha256
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
 from .payload import CheckpointPayload, ModelOnly, TrainResume
+from .pruning import sweep_published_checkpoints
 from .reference import CheckpointRef
 from .rng import rng_state_dict, runtime_device
 
@@ -186,7 +187,9 @@ def save_checkpoint(
         # `latest.json` stays minimal: a pointer plus the directory's own step
         # number. The manifest is the place that carries both counters.
         write_latest(root, final_dir, step=int(next_iteration), created_at_unix=created_at)
-        prune_old_checkpoints(root, keep_last=keep_last)
+        # Publication and latest-pointer commit precede the frozen snapshot
+        # sweep, so a receipt can never authorize an unpublished directory.
+        sweep_published_checkpoints(root, keep_last=keep_last)
     except Exception:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)

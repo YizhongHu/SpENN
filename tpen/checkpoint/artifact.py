@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,10 @@ from tpen.artifacts import write_json
 
 COMPLETE_MARKER = "COMPLETE"
 LATEST_JSON = "latest.json"
+
+
+class CheckpointPruneError(ValueError):
+    """Raised when checkpoint pruning cannot prove its safety preconditions."""
 
 
 def checkpoint_step_dir_name(step: int) -> str:
@@ -123,33 +126,58 @@ def prune_old_checkpoints(checkpoint_root: str | Path, *, keep_last: int | None)
 
     if keep_last is None:
         return
-    keep = int(keep_last)
+    if type(keep_last) is not int:
+        raise TypeError("keep_last must be an int or None")
+    keep = keep_last
     if keep < 1:
         raise ValueError(f"keep_last must be positive when set, got {keep_last}")
-    root = Path(checkpoint_root)
-    checkpoints = list_complete_checkpoints(root)
-    pointer_target = _latest_pointer_target(root)
-    for checkpoint_dir in checkpoints[:-keep]:
-        if checkpoint_dir == pointer_target:
-            continue
-        shutil.rmtree(checkpoint_dir)
+    from .pruning import sweep_published_checkpoints
+
+    sweep_published_checkpoints(checkpoint_root, keep_last=keep)
 
 
 def _latest_pointer_target(checkpoint_root: Path) -> Path | None:
-    """Return the directory `latest.json` points at, or ``None``.
+    """Return the valid target of a present latest pointer, or ``None`` absent.
 
-    Pruning runs at the tail of a checkpoint write that has already been
-    committed, so a missing or unreadable pointer must not raise here: it
-    returns ``None`` and pruning proceeds without a spared target. An
-    unreadable pointer already cannot resolve a resume, so nothing usable is
-    protected by refusing to prune.
+    Absence is a deliberate legacy/manual-prune policy.  Once a pointer file
+    exists, however, every failure to read or validate it is a safety error:
+    treating a damaged pointer as absent would remove the resume checkpoint's
+    protection.
     """
 
+    latest_path = checkpoint_root / LATEST_JSON
+    if latest_path.is_symlink():
+        raise CheckpointPruneError(
+            f"latest checkpoint pointer must not be a symlink: {latest_path}"
+        )
+    if not latest_path.exists():
+        return None
+    if not latest_path.is_file():
+        raise CheckpointPruneError(
+            f"latest checkpoint pointer is not a regular file: {latest_path}"
+        )
     try:
         pointer = read_latest(checkpoint_root)
-    except (FileNotFoundError, ValueError):
-        return None
-    return checkpoint_root / str(pointer["checkpoint_dir"])
+        pointer_name = pointer["checkpoint_dir"]
+        if type(pointer_name) is not str or not pointer_name.strip():
+            raise ValueError("checkpoint_dir must be a non-empty string")
+        pointer_path = Path(pointer_name)
+        if (
+            pointer_path.is_absolute()
+            or pointer_path.name != pointer_name
+            or pointer_name in {".", ".."}
+        ):
+            raise ValueError("checkpoint_dir must name one direct child")
+        target = checkpoint_root / pointer_name
+        if target.is_symlink():
+            raise ValueError("latest target must not be a symlink")
+        if target.resolve(strict=False).parent != checkpoint_root.resolve(strict=False):
+            raise ValueError("latest target must be inside its checkpoint root")
+        return require_complete_checkpoint_dir(target)
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        raise CheckpointPruneError(
+            f"invalid latest checkpoint pointer; refusing to prune: {latest_path}"
+        ) from exc
 
 
 def _checkpoint_sort_key(path: Path) -> tuple[int, str]:
