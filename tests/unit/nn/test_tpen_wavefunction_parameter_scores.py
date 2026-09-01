@@ -7,7 +7,7 @@ import io
 import pytest
 import torch
 
-from tpen.data.batch import ElectronBatch, ParameterScoreForwardPacket
+from tpen.data.batch import ElectronBatch, ParameterScoreForwardPacket, WavefunctionOutput
 from tpen.data.paths import (
     LinearPathMetadata,
     NormalizedChannels,
@@ -72,6 +72,45 @@ def _batch() -> ElectronBatch:
     return ElectronBatch(
         positions=torch.randn(2, 2, 3, 3, generator=generator, dtype=torch.float64),
         spins=torch.tensor([[[1.0, -1.0, 1.0]] * 2] * 2, dtype=torch.float64),
+    )
+
+
+class _EmptyShapeEmbedding(torch.nn.Module):
+    """Pass typed input through while accepting TPEN's context argument."""
+
+    def forward(self, value: ElectronBatch, *, context: object) -> ElectronBatch:
+        del context
+        return value
+
+
+class _EmptyShapeReadout(torch.nn.Module):
+    """Produce an explicitly multidimensional empty primal output."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(1.0, dtype=torch.float64))
+
+    def forward(self, value: ElectronBatch, batch: ElectronBatch) -> WavefunctionOutput:
+        del value
+        logabs = self.weight.expand(batch.sample_shape)
+        return WavefunctionOutput(logabs=logabs, sign=torch.ones_like(logabs))
+
+
+def _empty_multidimensional_batch() -> ElectronBatch:
+    """Return a valid empty batch with two distinct sample axes."""
+
+    return ElectronBatch(
+        positions=torch.empty(0, 2, 1, 1, dtype=torch.float64),
+        spins=torch.ones(0, 2, 1, dtype=torch.float64),
+    )
+
+
+def _empty_multidimensional_model() -> TPENWaveFunction:
+    """Build the smallest model whose readout preserves ``(0, 2)``."""
+
+    return TPENWaveFunction(
+        embedding=_EmptyShapeEmbedding(),
+        readout=_EmptyShapeReadout(),
     )
 
 
@@ -142,6 +181,21 @@ def test_flattened_j_and_jt_products_match_ordinary_autograd() -> None:
     torch.testing.assert_close(materialized_j @ direction, ordinary_j @ direction)
 
 
+@pytest.mark.parametrize("chunk_size", [None, 1])
+def test_empty_multidimensional_scores_keep_every_sample_axis(chunk_size: int | None) -> None:
+    model = _empty_multidimensional_model()
+    packet = model(
+        _empty_multidimensional_batch(),
+        request=MaterializedParameterScoreRequest(chunk_size=chunk_size),
+    )
+
+    assert isinstance(packet, ParameterScoreForwardPacket)
+    assert tuple(packet.output.logabs.shape) == (0, 2)
+    assert tuple(packet.parameter_scores.blocks[0].shape) == (0, 2)
+    assert packet.parameter_scores.sample_shape == (0, 2)
+    assert not packet.output.logabs.requires_grad
+
+
 class _UnusedPfaffianReadout(PfaffianReadout):
     """Add a registered parameter that the inherited readout never consumes."""
 
@@ -175,19 +229,24 @@ def test_parameter_reordering_is_rejected_before_building_or_updating() -> None:
         torch.testing.assert_close(parameter, prior, rtol=0.0, atol=0.0)
 
 
-def test_live_packets_reject_serialization_and_detached_packets_can_be_saved() -> None:
+def test_score_packets_are_value_only_and_graph_bearing_packets_reject_serialization() -> None:
     model = _build_model(InteractionMode.TENSOR_PRODUCT)
     packet = model(_batch(), request=MaterializedParameterScoreRequest(chunk_size=2))
     assert isinstance(packet, ParameterScoreForwardPacket)
-    assert packet.output.logabs.requires_grad
+    assert not packet.output.logabs.requires_grad
+    assert all(not block.requires_grad for block in packet.parameter_scores.blocks)
+    torch.save(packet, io.BytesIO())
 
+    graph_output = WavefunctionOutput(
+        logabs=torch.ones_like(packet.output.logabs, requires_grad=True),
+        sign=packet.output.sign,
+    )
+    graph_packet = ParameterScoreForwardPacket(
+        output=graph_output,
+        parameter_scores=packet.parameter_scores,
+    )
     with pytest.raises(RuntimeError, match="graph-bearing"):
-        torch.save(packet, io.BytesIO())
-
-    detached = packet.detach()
-    assert not detached.output.logabs.requires_grad
-    assert all(not block.requires_grad for block in detached.parameter_scores.blocks)
-    torch.save(detached, io.BytesIO())
+        torch.save(graph_packet, io.BytesIO())
 
 
 def test_parameter_binding_is_direct_and_refreshes_after_model_owned_cast() -> None:

@@ -326,7 +326,10 @@ class TPENWaveFunction(EquivariantMap):
                     chunk_size=request.chunk_size,
                 )
         scores = MaterializedParameterLogScores(layout=binding.layout, blocks=blocks)
-        return ParameterScoreForwardPacket(output=output, parameter_scores=scores)
+        return ParameterScoreForwardPacket(
+            output=_detach_wavefunction_output(output),
+            parameter_scores=scores,
+        )
 
 
     def factorized_local_energy_input(self, batch: ElectronBatch) -> FactorizedLocalEnergyInput:
@@ -374,6 +377,20 @@ def _log_factor(module: nn.Module, batch: ElectronBatch, shape: torch.Size, *, n
     return value
 
 
+def _detach_wavefunction_output(output: WavefunctionOutput) -> WavefunctionOutput:
+    """Return the value-only output paired with a materialized score packet."""
+
+    return WavefunctionOutput(
+        logabs=output.logabs.detach(),
+        sign=output.sign.detach(),
+        phase=None if output.phase is None else output.phase.detach(),
+        aux={
+            key: value.detach() if isinstance(value, torch.Tensor) else value
+            for key, value in output.aux.items()
+        },
+    )
+
+
 def _slow_parameter_score_blocks(
     logabs: torch.Tensor,
     parameters: tuple[nn.Parameter, ...],
@@ -384,7 +401,7 @@ def _slow_parameter_score_blocks(
     values = logabs.reshape(-1)
     if values.numel() == 0:
         return tuple(
-            logabs.new_empty((0, *tuple(parameter.shape))) for parameter in parameters
+            logabs.new_empty(sample_shape + tuple(parameter.shape)) for parameter in parameters
         )
     gradients = [[] for _ in parameters]
     for sample_index, value in enumerate(values):
@@ -420,7 +437,7 @@ def _chunked_parameter_score_blocks(
     values = logabs.reshape(-1)
     if values.numel() == 0:
         return tuple(
-            logabs.new_empty((0, *tuple(parameter.shape))) for parameter in parameters
+            logabs.new_empty(sample_shape + tuple(parameter.shape)) for parameter in parameters
         )
     gradients = [[] for _ in parameters]
     for start in range(0, values.numel(), chunk_size):
