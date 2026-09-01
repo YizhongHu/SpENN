@@ -206,6 +206,37 @@ def test_explicit_model_only_payload_rejects_train_state_flags(tmp_path: Path) -
     assert not (tmp_path / "checkpoints").exists()
 
 
+def test_legacy_save_defaults_write_the_full_train_resume_payload(tmp_path: Path) -> None:
+    model = torch.nn.Linear(2, 1).double()
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=2,
+        completed_updates=2,
+        model=model,
+        context=_context(),
+        optimizer=torch.optim.Adam(model.parameters(), lr=0.01),
+        trainer=SimpleNamespace(
+            state_dict=lambda: {"next_iteration": 2, "completed_updates": 2}
+        ),
+        sampler=SimpleNamespace(mcmc_state_dict=lambda: {"seed": 0}),
+    )
+
+    manifest = json.loads((checkpoint_dir / "manifest.json").read_text())
+    assert manifest["payload"] == TrainResume().to_manifest()
+    assert set(manifest["files"]) == {
+        "resolved_config",
+        "model",
+        "optimizer",
+        "trainer",
+        "sampler",
+        "rng",
+    }
+    assert json.loads((checkpoint_dir / "trainer.json").read_text()) == {
+        "next_iteration": 2,
+        "completed_updates": 2,
+    }
+
+
 def _context() -> SimpleNamespace:
     """Minimal direct-save context; no callback or scheduling object is used."""
 
