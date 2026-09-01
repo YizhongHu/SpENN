@@ -22,6 +22,18 @@ from .catalog import (
 from .events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
 from .hashing import checkpoint_hashes, component_config_hash, resolved_config_hash, stable_config_hash
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
+from .payload import (
+    MODEL_ONLY_PAYLOAD,
+    MODEL_ONLY_PROFILE,
+    PAYLOAD_MANIFEST_SCHEMA,
+    TRAIN_RESUME_PAYLOAD,
+    TRAIN_RESUME_PROFILE,
+    CheckpointPayload,
+    ModelOnly,
+    PayloadProfile,
+    RestoreIntent,
+    TrainResume,
+)
 from .replay import (
     INFINITE_MASS_NONRELATIVISTIC_REFERENCE,
     REPLAY_SEMANTICS_FILENAME,
@@ -56,6 +68,7 @@ __all__ = [
     "REPLAY_SEMANTICS_FILENAME",
     "RESTORE_MODES",
     "CheckpointManifest",
+    "CheckpointPayload",
     "CheckpointCatalog",
     "CheckpointSchedule",
     "CheckpointRef",
@@ -68,6 +81,15 @@ __all__ = [
     "EveryNUpdates",
     "ExplicitUpdates",
     "TerminalOnly",
+    "ModelOnly",
+    "TrainResume",
+    "MODEL_ONLY_PAYLOAD",
+    "MODEL_ONLY_PROFILE",
+    "PAYLOAD_MANIFEST_SCHEMA",
+    "PayloadProfile",
+    "RestoreIntent",
+    "TRAIN_RESUME_PAYLOAD",
+    "TRAIN_RESUME_PROFILE",
     "checkpoint_hashes",
     "checkpoint_ref",
     "checkpoint_step_dir_name",

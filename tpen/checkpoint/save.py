@@ -18,6 +18,7 @@ from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_lat
 from .catalog import CheckpointCatalog, publication_catalog_path
 from .hashing import checkpoint_hashes
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
+from .payload import CheckpointPayload, ModelOnly, TrainResume
 from .reference import CheckpointRef
 from .rng import rng_state_dict, runtime_device
 
@@ -32,10 +33,11 @@ def save_checkpoint(
     optimizer: Any | None = None,
     trainer: Any | None = None,
     sampler: Any | None = None,
-    save_optimizer: bool = True,
-    save_trainer: bool = True,
-    save_sampler: bool = True,
-    save_rng: bool = True,
+    payload: CheckpointPayload | None = None,
+    save_optimizer: bool | None = None,
+    save_trainer: bool | None = None,
+    save_sampler: bool | None = None,
+    save_rng: bool | None = None,
     keep_last: int | None = None,
     publication_catalog: str | Path | CheckpointCatalog | None = None,
 ) -> Path:
@@ -58,8 +60,13 @@ def save_checkpoint(
         Run context supplying ``cfg``, ``metadata``, and ``run_dir``.
     optimizer, trainer, sampler : Any or None, optional
         Train-resume components, required when their ``save_*`` flag is set.
-    save_optimizer, save_trainer, save_sampler, save_rng : bool, optional
-        Which train-resume components to include.
+    payload : CheckpointPayload or None, optional
+        Explicit payload profile.  When supplied, its required components own
+        the defaults and conflicting save flags are rejected.
+    save_optimizer, save_trainer, save_sampler, save_rng : bool or None, optional
+        Which train-resume components to include.  ``None`` lets ``payload``
+        choose; without an explicit payload the historical default is all
+        components enabled.
     keep_last : int or None, optional
         Prune to the newest ``keep_last`` complete checkpoints after writing.
     publication_catalog : str, pathlib.Path, CheckpointCatalog, or None, optional
@@ -77,6 +84,18 @@ def save_checkpoint(
     import torch
 
     cfg = _require_config(context)
+    save_flags = _resolve_save_flags(
+        payload,
+        save_optimizer=save_optimizer,
+        save_trainer=save_trainer,
+        save_sampler=save_sampler,
+        save_rng=save_rng,
+    )
+    save_optimizer = save_flags["optimizer"]
+    save_trainer = save_flags["trainer"]
+    save_sampler = save_flags["sampler"]
+    save_rng = save_flags["rng"]
+    effective_payload = payload or _infer_payload(save_flags)
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     created_at = time.time()
@@ -104,6 +123,8 @@ def save_checkpoint(
 
         if save_trainer:
             trainer_state = _state_dict_from(trainer, "trainer")
+            if effective_payload is not None:
+                effective_payload.validate_state(trainer_state)
             _write_json_mapping(tmp_dir / "trainer.json", trainer_state)
             files["trainer"] = "trainer.json"
 
@@ -129,6 +150,9 @@ def save_checkpoint(
             hashes=checkpoint_hashes(cfg),
             runtime=_runtime_metadata(context),
             provenance=_provenance_metadata(context),
+            payload=(
+                None if effective_payload is None else effective_payload.to_manifest()
+            ),
         )
         manifest.write(tmp_dir / "manifest.json")
         (tmp_dir / "COMPLETE").write_text("complete\n", encoding="utf-8")
@@ -163,6 +187,56 @@ def _require_config(context: Any) -> Any:
     if cfg is None:
         raise ValueError("checkpoint saving requires event.context.cfg")
     return cfg
+
+
+def _resolve_save_flags(
+    payload: CheckpointPayload | None,
+    *,
+    save_optimizer: bool | None,
+    save_trainer: bool | None,
+    save_sampler: bool | None,
+    save_rng: bool | None,
+) -> dict[str, bool]:
+    """Resolve component flags, letting an explicit payload own defaults."""
+
+    defaults = {
+        "optimizer": True,
+        "trainer": True,
+        "sampler": True,
+        "rng": True,
+    }
+    supplied = {
+        "optimizer": save_optimizer,
+        "trainer": save_trainer,
+        "sampler": save_sampler,
+        "rng": save_rng,
+    }
+    if payload is not None:
+        defaults = {
+            component: component in payload.required_files
+            for component in defaults
+        }
+    resolved = {
+        component: defaults[component] if value is None else value
+        for component, value in supplied.items()
+    }
+    if payload is not None:
+        payload.validate_save_flags(
+            {"model": True, **resolved}
+        )
+    return resolved
+
+
+def _infer_payload(flags: Mapping[str, bool]) -> CheckpointPayload | None:
+    """Annotate the two complete built-in flag sets without guessing partial ones."""
+
+    if all(flags[component] for component in ("optimizer", "trainer", "sampler", "rng")):
+        return TrainResume()
+    if not any(flags.values()):
+        return ModelOnly()
+    # A partial payload is retained for compatibility with callers that
+    # intentionally construct malformed artifacts to test restore failures.
+    return None
 
 
 def _write_resolved_config(path: Path, cfg: Any) -> None:

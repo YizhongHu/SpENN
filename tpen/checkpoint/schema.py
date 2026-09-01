@@ -12,6 +12,7 @@ from .manifest import (
     LEGACY_CHECKPOINT_SCHEMA_VERSION,
     CheckpointManifest,
 )
+from .payload import CheckpointPayload
 
 # Acceptance is mode-dependent, not global. ``model_only`` reads `model.pt` and
 # the config hashes, both of which a v1 manifest carries, so an archived
@@ -112,3 +113,7 @@ def validate_manifest_schema(
             f"{label}unsupported checkpoint kind {manifest.kind!r} for "
             f"schema_version {manifest.schema_version}; expected {expected_kind!r}"
         )
+    if manifest.payload is not None:
+        payload = CheckpointPayload.from_manifest(manifest.payload)
+        payload.validate_restore_intent(mode)
+        payload.validate_files(manifest.files)
