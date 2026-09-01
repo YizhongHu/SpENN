@@ -30,6 +30,7 @@ from tpen.nn.envelope import (
     HookeGaussianConfinement,
 )
 from tpen.nn.equivariant_mixing import EquivariantMixing
+from tpen.nn.mixing_kernel import execute_binary, execute_unary
 from tpen.nn.factor import AdditiveCusp, LogAmplitudeFactor
 from tpen.nn.initialization import SeededLinear, TorchInitializer
 from tpen.nn.mlp import MLP
@@ -53,6 +54,8 @@ __all__ = [
     "Embedding",
     "Envelope",
     "EquivariantMixing",
+    "execute_binary",
+    "execute_unary",
     "GaussianActivation",
     "GaussianCoordinateEnvelope",
     "GaussianDecayGate",
