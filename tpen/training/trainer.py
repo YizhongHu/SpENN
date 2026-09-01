@@ -26,6 +26,7 @@ from tpen.training.state import TrainerState
 from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
+    ModelParameterBinding,
     VMCUpdateMethod,
 )
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
@@ -183,6 +184,7 @@ class VMCTrainer:
             selected_update_method = LegacyAutogradUpdate(
                 optimizer=optimizer,
                 gradient_clip_norm=self.gradient_clip_norm,
+                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
             )
         # The hooks are owned by the adapter rather than by the live input
         # record. This keeps VMCStepData exact and ephemeral while preserving

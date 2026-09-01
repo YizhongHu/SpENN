@@ -24,6 +24,7 @@ from tpen.training.trainer import VMCTrainer
 from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
+    ModelParameterBinding,
     ScoreUpdateInput,
     VMCStepData,
     VMCUpdateMethod,
@@ -205,6 +206,64 @@ def test_legacy_adapter_matches_current_zero_grad_backward_clip_step_sequence() 
     assert adapted.grad is not None
     assert torch.equal(adapted.grad, control_grad)
     _assert_nested_equal(adapted_optimizer.state_dict(), control_state)
+
+
+def test_legacy_adapter_matches_pre_f4_model_gradient_domain_for_subset_optimizer() -> None:
+    """A subset optimizer must retain the predecessor model-wide gradient domain."""
+
+    clipped_selected = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float64))
+    clipped_unselected = torch.nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
+    clipped_optimizer = torch.optim.SGD([clipped_selected], lr=0.1)
+    clipped_objective = clipped_selected + 2.0 * clipped_unselected
+    clipped_batch = _batch()
+    clipped_input = AutogradUpdateInput(
+        batch=clipped_batch,
+        wavefunction=_output(clipped_batch, clipped_objective.reshape(1)),
+        local_energy=torch.zeros(1, dtype=torch.float64),
+        step=0,
+        objective=clipped_objective,
+    )
+    clipped_result = LegacyAutogradUpdate(
+        clipped_optimizer,
+        gradient_clip_norm=0.5,
+        model_parameters=ModelParameterBinding(
+            parameters=(clipped_selected, clipped_unselected)
+        ),
+    ).update(clipped_input)
+
+    # These values are the observed pre-F4 trainer result for this fixed
+    # objective at the F3 predecessor b2c01970: clip_grad_norm_ operated on
+    # both model parameters before the optimizer stepped only ``selected``.
+    assert clipped_result.grad_norm == pytest.approx(0.5)
+    assert clipped_selected.grad is not None
+    assert clipped_unselected.grad is not None
+    assert clipped_selected.grad.item() == pytest.approx(0.22360679774997896)
+    assert clipped_unselected.grad.item() == pytest.approx(0.4472135954999579)
+    assert clipped_selected.item() == pytest.approx(0.9776393202250021)
+    assert clipped_unselected.item() == pytest.approx(2.0)
+
+    unclipped_selected = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float64))
+    unclipped_unselected = torch.nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
+    unclipped_optimizer = torch.optim.SGD([unclipped_selected], lr=0.1)
+    unclipped_objective = unclipped_selected + 2.0 * unclipped_unselected
+    unclipped_batch = _batch()
+    unclipped_input = AutogradUpdateInput(
+        batch=unclipped_batch,
+        wavefunction=_output(unclipped_batch, unclipped_objective.reshape(1)),
+        local_energy=torch.zeros(1, dtype=torch.float64),
+        step=0,
+        objective=unclipped_objective,
+    )
+    unclipped_result = LegacyAutogradUpdate(
+        unclipped_optimizer,
+        model_parameters=ModelParameterBinding(
+            parameters=(unclipped_selected, unclipped_unselected)
+        ),
+    ).update(unclipped_input)
+
+    # The unclipped norm is also model-wide in the predecessor; a
+    # subset-only implementation reports 1.0 here instead of sqrt(5).
+    assert unclipped_result.grad_norm == pytest.approx(2.23606797749979)
 
 
 def test_legacy_adapter_loads_raw_checkpoint_and_preserves_next_update() -> None:

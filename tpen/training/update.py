@@ -190,6 +190,18 @@ class VMCUpdateResult:
         object.__setattr__(self, "grad_norm", float(self.grad_norm))
 
 
+@dataclass(frozen=True, kw_only=True)
+class ModelParameterBinding:
+    """Bind the legacy gradient domain to direct model parameters."""
+
+    parameters: tuple[torch.nn.Parameter, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", tuple(self.parameters))
+        if any(not isinstance(parameter, torch.nn.Parameter) for parameter in self.parameters):
+            raise TypeError("ModelParameterBinding.parameters must contain direct parameters")
+
+
 class VMCUpdateMethod(Generic[InputT], ABC):
     """Nominal typed contract for VMC update strategies.
 
@@ -236,11 +248,17 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
         self,
         optimizer: torch.optim.Optimizer,
         gradient_clip_norm: float | None = None,
+        model_parameters: ModelParameterBinding | None = None,
     ) -> None:
         if not isinstance(optimizer, torch.optim.Optimizer):
             raise TypeError("LegacyAutogradUpdate.optimizer must be a torch.optim.Optimizer")
         self.optimizer = optimizer
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
+        if model_parameters is not None and not isinstance(model_parameters, ModelParameterBinding):
+            raise TypeError(
+                "LegacyAutogradUpdate.model_parameters must be a ModelParameterBinding"
+            )
+        self.model_parameters = model_parameters
         self._backward_scope: ScopeFactory | None = None
         self._optimizer_scope: ScopeFactory | None = None
 
@@ -274,11 +292,12 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
             )
 
         self._run_backward(update_input)
+        gradient_parameters = self.gradient_params()
         if self.gradient_clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(
-                self.optimizer_params(), self.gradient_clip_norm
+                gradient_parameters, self.gradient_clip_norm
             )
-        grad_norm = _gradient_norm(self.optimizer_params())
+        grad_norm = _gradient_norm(gradient_parameters)
         self._run_optimizer_step(update_input)
         return VMCUpdateResult(applied=True, grad_norm=grad_norm)
 
@@ -289,6 +308,13 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
         for group in self.optimizer.param_groups:
             parameters.extend(group["params"])
         return tuple(parameters)
+
+    def gradient_params(self) -> tuple[torch.nn.Parameter, ...]:
+        """Return the exact model parameter domain used by legacy gradients."""
+
+        if self.model_parameters is not None:
+            return self.model_parameters.parameters
+        return self.optimizer_params()
 
     def state_dict(self) -> Mapping[str, Any]:
         """Return the raw PyTorch optimizer payload unchanged."""
@@ -345,6 +371,7 @@ def _gradient_norm(parameters: tuple[torch.nn.Parameter, ...]) -> float:
 __all__ = [
     "AutogradUpdateInput",
     "LegacyAutogradUpdate",
+    "ModelParameterBinding",
     "ScoreUpdateInput",
     "VMCStepData",
     "VMCUpdateMethod",

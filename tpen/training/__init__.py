@@ -6,6 +6,7 @@ from tpen.training.trainer import VMCTrainer
 from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
+    ModelParameterBinding,
     ScoreUpdateInput,
     VMCStepData,
     VMCUpdateMethod,
@@ -24,6 +25,7 @@ __all__ = [
     "TrainingTiming",
     "AutogradUpdateInput",
     "LegacyAutogradUpdate",
+    "ModelParameterBinding",
     "ScoreUpdateInput",
     "VMCStepData",
     "VMCUpdateMethod",
