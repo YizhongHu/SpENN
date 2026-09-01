@@ -186,6 +186,9 @@ class PinStore:
         """
 
         normalized_ref = _normalize_ref(ref)
+        # Validate before opening the ledger so an unknown checkpoint cannot
+        # create durable state while failing closed.
+        _validate_live_ref(normalized_ref)
         requested = PinRecord(token=token, ref=normalized_ref, owner=owner, reason=reason)
         with self._write_ledger() as handle:
             state, tail_offset = _scan_ledger(handle.read(), self.path, report_torn=False)
@@ -197,9 +200,8 @@ class PinStore:
                     )
                 if existing.to_dict() == requested.to_dict():
                     return existing
-                raise PinLedgerError(f"conflicting pin record for token {requested.token!r}")
+                raise PinLedgerError(f"conflicting pin records for token {requested.token!r}")
             _check_ref_conflict(state, requested)
-            _validate_live_ref(normalized_ref)
             _append_record(handle, requested.to_dict(), self.path, tail_offset)
             return requested
 
