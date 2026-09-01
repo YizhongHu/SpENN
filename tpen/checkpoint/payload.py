@@ -107,7 +107,7 @@ class CheckpointPayload:
             )
 
     def validate_state(self, state: Mapping[str, Any]) -> None:
-        """Ensure trainer state carries every field required by this profile."""
+        """Ensure trainer state carries valid fields required by this profile."""
 
         missing = [name for name in self.required_state if name not in state]
         if missing:
@@ -115,6 +115,21 @@ class CheckpointPayload:
                 f"checkpoint payload profile {self.profile!r} is missing required "
                 f"trainer state: {missing!r}"
             )
+        for name in self.required_state:
+            value = state[name]
+            # JSON booleans pass an ``int`` annotation because bool subclasses
+            # int.  Exact type comparison is intentional: progress counters
+            # must be integer values, not bools or silently coerced strings.
+            if type(value) is not int:
+                raise ValueError(
+                    f"checkpoint payload profile {self.profile!r} requires trainer "
+                    f"state {name!r} to be an int"
+                )
+            if value < 0:
+                raise ValueError(
+                    f"checkpoint payload profile {self.profile!r} requires trainer "
+                    f"state {name!r} to be non-negative"
+                )
 
     def validate_save_flags(self, flags: Mapping[str, bool]) -> None:
         """Ensure save options exactly produce this profile's components."""

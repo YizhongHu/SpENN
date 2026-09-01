@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from .replay import (
     verify_checkpoint_replay_semantics,
 )
 from .rng import apply_rng_state, require_restorable_rng_state, runtime_device
-from .schema import read_manifest
+from .schema import read_manifest, validate_manifest_state
 
 RESTORE_MODES = ("none", "model_only", "train_resume")
 
@@ -177,10 +178,15 @@ def restore_checkpoint(
     device = runtime_device(context)
     rng_state = _read_rng_state(checkpoint_dir, manifest.files)
     require_restorable_rng_state(rng_state, device, checkpoint_dir)
+    # Read and validate trainer progress before loading any mutable component.
+    # A permissive trainer must not turn a malformed payload into a partially
+    # restored live run.
+    trainer_state = _read_trainer_state(checkpoint_dir, manifest.files)
+    validate_manifest_state(manifest, trainer_state, mode=mode)
 
     _load_model(checkpoint_dir, manifest.files, model, strict=strict_load, context=context)
     _load_optimizer(checkpoint_dir, manifest.files, optimizer)
-    _load_trainer(checkpoint_dir, manifest.files, trainer)
+    _load_trainer(trainer, trainer_state)
     _load_sampler(checkpoint_dir, manifest.files, sampler, context)
     apply_rng_state(rng_state, device)
     return RestoreReport(
@@ -297,16 +303,22 @@ def _load_optimizer(checkpoint_dir: Path, files: dict[str, str], optimizer: Any)
     optimizer.load_state_dict(torch.load(path, map_location="cpu", weights_only=False))
 
 
-def _load_trainer(checkpoint_dir: Path, files: dict[str, str], trainer: Any) -> None:
+def _load_trainer(trainer: Any, state: Mapping[str, Any]) -> None:
     if trainer is None:
         raise ValueError("train_resume restore requires a trainer")
     load_state_dict = getattr(trainer, "load_state_dict", None)
     if not callable(load_state_dict):
         raise TypeError("trainer must expose load_state_dict() for train_resume restore")
+
+    load_state_dict(state)
+
+
+def _read_trainer_state(checkpoint_dir: Path, files: dict[str, str]) -> dict[str, Any]:
+    """Read trainer progress without applying it to the live trainer."""
+
     path = _required_file(checkpoint_dir, files, "trainer")
     with path.open("r", encoding="utf-8") as handle:
-        state = json.load(handle)
-    load_state_dict(state)
+        return json.load(handle)
 
 
 def _load_sampler(checkpoint_dir: Path, files: dict[str, str], sampler: Any, context: Any) -> None:
