@@ -201,3 +201,74 @@ def test_seeds_consumed_test_uses_a_trajectory_not_a_final_energy() -> None:
         "a short prefix reintroduces chance collisions; an unconsumed seed "
         "collides on every step, so there is no reason to test only a few"
     )
+
+
+# ---------------------------------------------------------------------------
+# Explicit seed selection, for re-running a row that was lost.
+# ---------------------------------------------------------------------------
+
+
+def _run_builder(tmp_path, *args):
+    """Invoke the builder as a subprocess; return (returncode, combined output)."""
+    import subprocess
+    import sys as _sys
+
+    repo = HERE.parents[2]
+    proc = subprocess.run(
+        [_sys.executable, str(HERE / "rung_makeplan.py"), *map(str, args)],
+        capture_output=True, text=True, cwd=str(repo),
+        env={"PYTHONPATH": str(repo), "PATH": "/usr/bin:/bin"},
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_seed_list_default_is_unchanged(tmp_path) -> None:
+    """Omitting the seed list must build exactly what it always did.
+
+    Asserting only "seeds are 0..N-1" would still pass if the default path had been
+    rewritten, so this compares the emitted plan BYTE FOR BYTE against one built
+    without the argument.
+    """
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    rc1, out1 = _run_builder(tmp_path, "he", "ferminet", a / "r", a / "p", 2, 4, 100, "p")
+    rc2, out2 = _run_builder(tmp_path, "he", "ferminet", a / "r", b / "p", 2, 4, 100, "p", "0,1,2,3")
+    assert rc1 == 0, out1
+    assert rc2 == 0, out2
+    assert (a / "p" / "tasks.jsonl").read_bytes() == (b / "p" / "tasks.jsonl").read_bytes()
+
+
+def test_seed_list_rejects_duplicates(tmp_path) -> None:
+    """Two rows with the same seed run identical trajectories.
+
+    That is exactly what the gate's seeds-consumed fingerprint detects, so building
+    such a plan would spend an allocation rediscovering something knowable up front.
+    """
+
+    rc, out = _run_builder(tmp_path, "he", "ferminet", tmp_path / "r", tmp_path / "p",
+                           2, 3, 100, "p", "1,1,2")
+    assert rc != 0
+    assert "duplicate seed" in out, out
+
+
+def test_seed_list_rejects_count_mismatch(tmp_path) -> None:
+    """nrows and the seed list must agree; neither may silently truncate the other."""
+
+    rc, out = _run_builder(tmp_path, "he", "ferminet", tmp_path / "r", tmp_path / "p",
+                           2, 20, 100, "p", "1,2,3")
+    assert rc != 0
+    assert "nrows=20 but 3 seed" in out, out
+
+
+def test_seed_list_accepts_a_single_non_zero_seed(tmp_path) -> None:
+    """The case this exists for: re-run seed 5 alone after losing that row."""
+
+    rc, out = _run_builder(tmp_path, "he", "ferminet", tmp_path / "r", tmp_path / "p",
+                           4, 1, 100, "p", "5")
+    assert rc == 0, out
+    assert "seeds=[5]" in out, out
+    import json
+    rows = [json.loads(l) for l in (tmp_path / "p" / "tasks.jsonl").read_text().splitlines()]
+    assert len(rows) == 1
+    argv = rows[0]["command"]
+    assert argv[argv.index("--config.debug.seed") + 1] == "5"

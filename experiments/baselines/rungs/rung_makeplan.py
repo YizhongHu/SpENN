@@ -74,8 +74,10 @@ ANSATZES = {
 FN = "/home/rhu/src/ferminet-psiformer-60c9fab3"
 PY = "/home/rhu/.venvs/ferminet-jax092-60c9fab3/bin/python"
 USAGE = ("usage: rung_makeplan.py <system> <ansatz> <results_root> <plan_dir> "
-         "<gpus_per_row> <nrows> <steps> <plan_id>")
-if len(sys.argv) != 9:
+         "<gpus_per_row> <nrows> <steps> <plan_id> [seeds]\n"
+         "  seeds: optional comma-separated list, e.g. 5 or 3,7,11. "
+         "Defaults to 0..nrows-1.")
+if len(sys.argv) not in (9, 10):
     raise SystemExit(f"{USAGE}\ngot {len(sys.argv) - 1} argument(s): {sys.argv[1:]}")
 # ANSATZ is REQUIRED and positional-second, deliberately. Giving it a default
 # would let an older 7-argument call succeed while silently building psiformer
@@ -94,8 +96,43 @@ NROWS = int(sys.argv[6])
 STEPS = int(sys.argv[7])
 PLAN_ID = sys.argv[8]
 
+# Explicit seed list, for RE-RUNNING a row that was lost.
+#
+# `range(NROWS)` alone cannot express "just seed 5". That mattered twice: job
+# 7579539 lost seed-18 to a node fault, and job 7580582 lost seed-5 to a silent
+# hang at pretrain iteration 11 which then consumed the whole allocation. In both
+# cases the other rows were perfectly good and the spread only needed topping up.
+#
+# Duplicates are rejected rather than tolerated: two rows with the same seed run
+# IDENTICAL trajectories, which is precisely what the gate's seeds-consumed
+# fingerprint exists to detect. Building that plan and letting the gate catch it
+# later would waste an allocation to rediscover something knowable at build time.
+if len(sys.argv) == 10:
+    raw = [tok for tok in sys.argv[9].split(",") if tok != ""]
+    SEEDS = []
+    for tok in raw:
+        try:
+            value = int(tok)
+        except ValueError:
+            raise SystemExit(f"seed {tok!r} is not an integer\n{USAGE}")
+        if value < 0:
+            raise SystemExit(f"seed {value} is negative\n{USAGE}")
+        SEEDS.append(value)
+    if len(set(SEEDS)) != len(SEEDS):
+        dupes = sorted({v for v in SEEDS if SEEDS.count(v) > 1})
+        raise SystemExit(
+            f"duplicate seed(s) {dupes}: identical seeds produce identical "
+            f"trajectories, which is never a valid plan\n{USAGE}")
+    if len(SEEDS) != NROWS:
+        raise SystemExit(
+            f"nrows={NROWS} but {len(SEEDS)} seed(s) given: {SEEDS}. "
+            f"State both and keep them consistent rather than having one "
+            f"silently truncate the other.\n{USAGE}")
+else:
+    SEEDS = list(range(NROWS))
+
 tasks = []
-for seed in range(NROWS):
+for seed in SEEDS:
     run_id = f"row-seed{seed}"
     result_dir = str(Path(ROOT) / f"seed-{seed}")
     # Completion must key on a file the RUNNER ACTUALLY WRITES. The first L0
@@ -138,7 +175,7 @@ plan.write(PLAN_DIR)
 cmds = {t.command for t in plan.tasks}
 assert len(cmds) == NROWS, f"EXPECTED {NROWS} DISTINCT COMMANDS, got {len(cmds)}"
 seeds = sorted(t.params["seed"] for t in plan.tasks)
-assert seeds == list(range(NROWS)), seeds
+assert seeds == sorted(SEEDS), (seeds, sorted(SEEDS))
 assert {t.resources.gpus for t in plan.tasks} == {GPUS}
 # Assert the ansatz reached the ARGV, not merely the params dict. A params-only
 # check would pass while every row still ran the other network, which is the
