@@ -11,6 +11,11 @@ from tpen.data.batch import (
     CoordinateLogGradient,
     ElectronBatch,
     FactorizedLocalEnergyInput,
+    MaterializedParameterLogScores,
+    ParameterBinding,
+    ParameterLayout,
+    ParameterScoreForwardPacket,
+    ParameterSlot,
     WavefunctionOutput,
 )
 from tpen.data.paths import PathLayout
@@ -18,7 +23,7 @@ from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
 from tpen.nn.cusp import ElectronNucleusCusp
-from tpen.nn.forward import CoordinateGradientRequest
+from tpen.nn.forward import CoordinateGradientRequest, MaterializedParameterScoreRequest
 from tpen.nn.tpen_layer import TPENLayer
 from tpen.nn.tpen_stack import TPENStack
 
@@ -113,8 +118,67 @@ class TPENWaveFunction(EquivariantMap):
                     "analytic_cusp_provider must be the unique participating ElectronNucleusCusp factor"
                 )
         self.analytic_cusp_provider = analytic_cusp_provider
+        # Bind direct parameter references only after every model component has
+        # been registered.  The tuple order is PyTorch's deterministic module
+        # traversal order, and the binding is refreshed by model-owned casts.
+        self._parameter_binding = self._make_parameter_binding()
 
     _LAYOUT_STATE_KEY = "_tpen_layout_fingerprint"
+
+    @property
+    def parameter_binding(self) -> ParameterBinding:
+        """Return the immutable direct binding captured after initialization."""
+
+        return self._parameter_binding
+
+    @property
+    def parameter_layout(self) -> ParameterLayout:
+        """Return the model-owned immutable trainable-parameter layout."""
+
+        return self._parameter_binding.layout
+
+    def _make_parameter_binding(self) -> ParameterBinding:
+        """Capture direct trainable references in module traversal order."""
+
+        parameters = tuple(parameter for parameter in self.parameters() if parameter.requires_grad)
+        slots = []
+        for ordinal, parameter in enumerate(parameters):
+            if isinstance(parameter, nn.parameter.UninitializedParameter):
+                raise ValueError("TPENWaveFunction cannot bind an uninitialized parameter")
+            slots.append(
+                ParameterSlot(
+                    ordinal=ordinal,
+                    shape=tuple(parameter.shape),
+                    numel=parameter.numel(),
+                    dtype=parameter.dtype,
+                )
+            )
+        return ParameterBinding(layout=ParameterLayout(slots=tuple(slots)), parameters=parameters)
+
+    def _apply(self, fn, recurse=True):
+        """Refresh direct references after a model-owned device or dtype cast."""
+
+        result = super()._apply(fn, recurse=recurse)
+        self._parameter_binding = self._make_parameter_binding()
+        return result
+
+    def _validate_parameter_binding(self) -> ParameterBinding:
+        """Reject parameter replacement, freezing, or reordering before a forward."""
+
+        binding = self._parameter_binding
+        try:
+            binding.validate()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("parameter binding/layout is no longer valid") from exc
+        current = tuple(parameter for parameter in self.parameters() if parameter.requires_grad)
+        if len(current) != len(binding.parameters) or not all(
+            current_parameter is bound_parameter
+            for current_parameter, bound_parameter in zip(current, binding.parameters)
+        ):
+            raise ValueError(
+                "parameter binding/layout mismatch or reordering; refusing forward before update"
+            )
+        return binding
 
     def state_dict(self, *args, **kwargs):
         """Return model state with layout identity owned by the model.
@@ -186,13 +250,13 @@ class TPENWaveFunction(EquivariantMap):
     def forward_impl(
         self,
         batch: ElectronBatch,
-        request: CoordinateGradientRequest | None = None,
-    ) -> WavefunctionOutput | CoordinateForwardPacket:
+        request: CoordinateGradientRequest | MaterializedParameterScoreRequest | None = None,
+    ) -> WavefunctionOutput | CoordinateForwardPacket | ParameterScoreForwardPacket:
         """Evaluate the value or an explicitly requested coordinate packet."""
 
         if request is None:
             return self._construct_output(batch, include_analytic_cusp=True)
-        if not isinstance(request, CoordinateGradientRequest):
+        if not isinstance(request, (CoordinateGradientRequest, MaterializedParameterScoreRequest)):
             raise TypeError(f"unsupported wavefunction forward request: {type(request)!r}")
         return request.evaluate(self, batch)
 
@@ -228,6 +292,42 @@ class TPENWaveFunction(EquivariantMap):
             output=output,
             coordinates=CoordinateLogGradient(values=values),
         )
+
+    def evaluate_materialized_parameter_score_request(
+        self,
+        *,
+        request: MaterializedParameterScoreRequest,
+        batch: ElectronBatch,
+    ) -> ParameterScoreForwardPacket:
+        """Return raw, uncentered per-sample real-logabs parameter scores.
+
+        Score block ``i`` has shape ``(*output.logabs.shape, *parameter_i.shape)``.
+        The leading shape is deliberately the model-owned primal output shape:
+        TPEN's readout may flatten multidimensional input sample axes before
+        producing ``logabs``, so score blocks follow that flattened shape just
+        like the value/derivative packet contracts.
+        """
+
+        if torch.is_inference_mode_enabled():
+            raise RuntimeError("MaterializedParameterScoreRequest is not supported in inference mode")
+        binding = self._validate_parameter_binding()
+        if not binding.parameters:
+            raise ValueError("materialized parameter scores require at least one trainable parameter")
+        with torch.enable_grad():
+            output = self._construct_output(batch, include_analytic_cusp=True)
+            if not output.logabs.requires_grad:
+                raise RuntimeError("parameter score request requires a differentiable logabs output")
+            if request.chunk_size is None:
+                blocks = _slow_parameter_score_blocks(output.logabs, binding.parameters)
+            else:
+                blocks = _chunked_parameter_score_blocks(
+                    output.logabs,
+                    binding.parameters,
+                    chunk_size=request.chunk_size,
+                )
+        scores = MaterializedParameterLogScores(layout=binding.layout, blocks=blocks)
+        return ParameterScoreForwardPacket(output=output, parameter_scores=scores)
+
 
     def factorized_local_energy_input(self, batch: ElectronBatch) -> FactorizedLocalEnergyInput:
         """Return the regular output and analytic data for local-energy evaluation.
@@ -272,6 +372,80 @@ def _log_factor(module: nn.Module, batch: ElectronBatch, shape: torch.Size, *, n
     if value.shape != shape:
         raise ValueError(f"{name} output must have shape {tuple(shape)}, got {tuple(value.shape)}")
     return value
+
+
+def _slow_parameter_score_blocks(
+    logabs: torch.Tensor,
+    parameters: tuple[nn.Parameter, ...],
+) -> tuple[torch.Tensor, ...]:
+    """Materialize one ordinary autograd gradient per flattened sample."""
+
+    sample_shape = tuple(logabs.shape)
+    values = logabs.reshape(-1)
+    if values.numel() == 0:
+        return tuple(
+            logabs.new_empty((0, *tuple(parameter.shape))) for parameter in parameters
+        )
+    gradients = [[] for _ in parameters]
+    for sample_index, value in enumerate(values):
+        try:
+            sample_gradients = torch.autograd.grad(
+                value,
+                parameters,
+                retain_graph=sample_index + 1 < values.numel(),
+                create_graph=False,
+                allow_unused=False,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "materialized parameter scores found an unused or disconnected parameter"
+            ) from exc
+        for parameter_gradients, sample_gradient in zip(gradients, sample_gradients):
+            parameter_gradients.append(sample_gradient)
+    return tuple(
+        torch.stack(parameter_gradients).reshape(sample_shape + tuple(parameter.shape))
+        for parameter_gradients, parameter in zip(gradients, parameters)
+    )
+
+
+def _chunked_parameter_score_blocks(
+    logabs: torch.Tensor,
+    parameters: tuple[nn.Parameter, ...],
+    *,
+    chunk_size: int,
+) -> tuple[torch.Tensor, ...]:
+    """Materialize score blocks using batched vector-Jacobian products."""
+
+    sample_shape = tuple(logabs.shape)
+    values = logabs.reshape(-1)
+    if values.numel() == 0:
+        return tuple(
+            logabs.new_empty((0, *tuple(parameter.shape))) for parameter in parameters
+        )
+    gradients = [[] for _ in parameters]
+    identity = torch.eye(values.numel(), device=values.device, dtype=values.dtype)
+    for start in range(0, values.numel(), chunk_size):
+        stop = min(start + chunk_size, values.numel())
+        try:
+            chunk_gradients = torch.autograd.grad(
+                values,
+                parameters,
+                grad_outputs=identity[start:stop],
+                retain_graph=stop < values.numel(),
+                create_graph=False,
+                allow_unused=False,
+                is_grads_batched=True,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "materialized parameter scores found an unused or disconnected parameter"
+            ) from exc
+        for parameter_gradients, chunk_gradient in zip(gradients, chunk_gradients):
+            parameter_gradients.append(chunk_gradient)
+    return tuple(
+        torch.cat(parameter_gradients, dim=0).reshape(sample_shape + tuple(parameter.shape))
+        for parameter_gradients, parameter in zip(gradients, parameters)
+    )
 
 
 def _layout_from_stack(stack: TPENStack) -> PathLayout | None:
