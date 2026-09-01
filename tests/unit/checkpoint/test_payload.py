@@ -15,8 +15,10 @@ from tpen.checkpoint import (
     PAYLOAD_MANIFEST_SCHEMA,
     TRAIN_RESUME_PAYLOAD,
     CheckpointPayload,
+    CheckpointCatalog,
     ModelOnly,
     TrainResume,
+    restore_checkpoint,
     save_checkpoint,
 )
 from tpen.checkpoint.manifest import (
@@ -25,6 +27,8 @@ from tpen.checkpoint.manifest import (
     CheckpointManifest,
 )
 from tpen.checkpoint.schema import read_manifest
+from tpen.sampling import MetropolisSampler
+from tpen.training import VMCTrainer
 
 
 def test_model_only_profile_has_a_stable_evaluation_manifest() -> None:
@@ -179,6 +183,9 @@ def test_explicit_model_only_payload_owns_save_defaults_and_manifest(tmp_path: P
 
     manifest = json.loads((checkpoint_dir / "manifest.json").read_text())
     assert manifest["payload"] == payload.to_manifest()
+    assert read_manifest(checkpoint_dir / "manifest.json", mode="model_only").payload == (
+        payload.to_manifest()
+    )
     assert payload.required_files == ("model",)
     assert payload.required_state == ()
     assert "model" in manifest["files"]
@@ -190,6 +197,124 @@ def test_explicit_model_only_payload_owns_save_defaults_and_manifest(tmp_path: P
     assert (checkpoint_dir / "COMPLETE").is_file()
     for train_state_file in ("optimizer.pt", "trainer.json", "sampler.pt", "rng.pt"):
         assert not (checkpoint_dir / train_state_file).exists()
+
+
+def test_save_rejects_noncanonical_payload_before_complete_publish(tmp_path: Path) -> None:
+    model = torch.nn.Linear(2, 1).double()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    payload = CheckpointPayload(
+        profile="train_resume",
+        required_files=("model", "optimizer", "trainer", "sampler", "rng"),
+        required_state=("completed_updates", "next_iteration"),
+        restore_intents=("model_only", "train_resume"),
+    )
+    output_dir = tmp_path / "checkpoints"
+
+    with pytest.raises(ValueError, match="not canonical"):
+        save_checkpoint(
+            output_dir=output_dir,
+            next_iteration=2,
+            completed_updates=2,
+            model=model,
+            context=_context(),
+            optimizer=optimizer,
+            trainer=VMCTrainer(max_steps=1),
+            sampler=MetropolisSampler(
+                n_walkers=2,
+                burn_in=0,
+                n_steps=1,
+                n_electrons=1,
+                spatial_dim=1,
+                seed=7,
+                dtype=torch.float64,
+            ),
+            payload=payload,
+        )
+
+    complete_dirs = tuple(
+        path
+        for path in output_dir.glob("step_*")
+        if (path / "COMPLETE").is_file()
+    ) if output_dir.exists() else ()
+    catalog_records = CheckpointCatalog(output_dir / "publications.jsonl").records()
+    assert not complete_dirs and not catalog_records, (
+        "rejected payload left a complete-but-unpublished artifact: "
+        f"complete_dirs={complete_dirs!r}, catalog_records={catalog_records!r}"
+    )
+
+
+@pytest.mark.parametrize("corruption", ["missing", "negative"])
+def test_real_restore_rejects_corrupt_progress_before_mutating_model(
+    tmp_path: Path, corruption: str
+) -> None:
+    source_model = torch.nn.Linear(2, 1).double()
+    with torch.no_grad():
+        source_model.weight.fill_(1.0)
+        source_model.bias.fill_(2.0)
+    source_optimizer = torch.optim.Adam(source_model.parameters(), lr=0.01)
+    source_trainer = VMCTrainer(max_steps=1)
+    source_trainer.next_iteration = 2
+    source_trainer.completed_updates = 2
+    source_sampler = MetropolisSampler(
+        n_walkers=2,
+        burn_in=0,
+        n_steps=1,
+        n_electrons=1,
+        spatial_dim=1,
+        seed=7,
+        dtype=torch.float64,
+    )
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=2,
+        completed_updates=2,
+        model=source_model,
+        context=_context(),
+        optimizer=source_optimizer,
+        trainer=source_trainer,
+        sampler=source_sampler,
+        payload=TrainResume(),
+    )
+
+    trainer_path = checkpoint_dir / "trainer.json"
+    trainer_state = json.loads(trainer_path.read_text())
+    if corruption == "missing":
+        del trainer_state["completed_updates"]
+    else:
+        trainer_state["completed_updates"] = -1
+    trainer_path.write_text(json.dumps(trainer_state), encoding="utf-8")
+
+    target_model = torch.nn.Linear(2, 1).double()
+    with torch.no_grad():
+        target_model.weight.zero_()
+        target_model.bias.zero_()
+    target_optimizer = torch.optim.Adam(target_model.parameters(), lr=0.01)
+    target_trainer = VMCTrainer(max_steps=1)
+    target_sampler = MetropolisSampler(
+        n_walkers=2,
+        burn_in=0,
+        n_steps=1,
+        n_electrons=1,
+        spatial_dim=1,
+        seed=11,
+        dtype=torch.float64,
+    )
+    before_model = {
+        name: value.detach().clone() for name, value in target_model.state_dict().items()
+    }
+
+    with pytest.raises(ValueError, match="completed_updates"):
+        restore_checkpoint(
+            load={"mode": "train_resume", "path": str(checkpoint_dir)},
+            model=target_model,
+            context=_context(),
+            optimizer=target_optimizer,
+            trainer=target_trainer,
+            sampler=target_sampler,
+        )
+
+    for name, value in before_model.items():
+        torch.testing.assert_close(target_model.state_dict()[name], value, rtol=0.0, atol=0.0)
 
 
 def test_explicit_model_only_payload_rejects_train_state_flags(tmp_path: Path) -> None:
