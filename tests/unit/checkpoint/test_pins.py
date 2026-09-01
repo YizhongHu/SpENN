@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import tpen.checkpoint.pins as pins_module
 from tpen.checkpoint import (
     PIN_RECORD_SCHEMA,
     PinLedgerError,
@@ -134,6 +135,40 @@ def test_unknown_release_fails_closed_without_creating_or_changing_ledger(tmp_pa
         ledger.release("never-seen")
 
     assert not path.exists()
+
+
+def test_missing_lock_support_fails_closed_without_appending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = _ref(tmp_path / "checkpoint")
+    path = tmp_path / "pins.jsonl"
+    path.write_bytes(b"")
+    before = path.read_bytes()
+    monkeypatch.setattr(pins_module, "_fcntl", None)
+
+    with pytest.raises(PinLedgerError, match="locking is unavailable"):
+        PinStore(path).pin(ref, "token", "owner", "reason")
+
+    assert path.read_bytes() == before
+
+
+def test_lock_acquisition_error_fails_closed_without_appending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = _ref(tmp_path / "checkpoint")
+    path = tmp_path / "pins.jsonl"
+    path.write_bytes(b"")
+    before = path.read_bytes()
+
+    def fail_flock(file_descriptor: int, operation: int) -> None:
+        raise OSError("Lustre advisory locks unavailable")
+
+    monkeypatch.setattr(pins_module._fcntl, "flock", fail_flock)
+
+    with pytest.raises(PinLedgerError, match="cannot acquire exclusive"):
+        PinStore(path).pin(ref, "token", "owner", "reason")
+
+    assert path.read_bytes() == before
 
 
 def test_unknown_checkpoint_ref_fails_closed_before_first_append(tmp_path: Path) -> None:
