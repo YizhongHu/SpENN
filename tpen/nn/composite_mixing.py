@@ -56,12 +56,14 @@ class CompositeMixing(EquivariantMap):
 
         batch_size = common_real_batch_size(*outputs)
         dtype = common_real_dtype(*outputs)
-        reference_zero = outputs[0].blocks[0]
-        for output in outputs[1:]:
-            candidate_zero = output.blocks[0]
-            if not torch.equal(reference_zero, candidate_zero):
-                raise ValueError("Composite producer order-0 blocks must agree")
-        blocks = [reference_zero]
+        for output in outputs:
+            zero = output.blocks[0]
+            if zero.numel() != 0 or int(zero.shape[1]) != 0:
+                raise ValueError("Composite producer order-0 blocks must be empty")
+        # Interaction validation reserves order 0 as an empty zero-channel
+        # block, so every valid producer agrees structurally. It carries no
+        # values and is safe to retain from the first producer.
+        blocks = [outputs[0].blocks[0]]
         for order in self.layout.output_orders.values:
             family_blocks = [result.blocks[order] for result in outputs]
             block = torch.cat(family_blocks, dim=2)

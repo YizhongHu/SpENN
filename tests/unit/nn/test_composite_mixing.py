@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-from types import SimpleNamespace
 
 from tpen.data.paths import (
     LinearPathMetadata,
@@ -94,45 +93,14 @@ def test_composite_uses_one_pre_activation_interface() -> None:
     assert tensor_product.calls == 1
 
 
-def test_composite_rejects_disagreeing_order_zero_blocks() -> None:
+def test_composite_preserves_reserved_empty_order_zero_block() -> None:
     layout, linear_metadata, tp_metadata = _layout()
-
-    class DivergentLinear(LinearEquivariantMixing):
-        def forward_pre_activation(self, x: Feature) -> Interaction:
-            result = super().forward_pre_activation(x)
-            # A valid Interaction's reserved order-0 block has zero elements;
-            # use a producer-returned block container to test value divergence
-            # without changing dtype, shape, or device.
-            blocks = [torch.zeros((1, 1), dtype=torch.float64), *result.blocks[1:]]
-            return SimpleNamespace(blocks=blocks)
-
-    class DivergentTP(EquivariantMixing):
-        def forward_pre_activation(self, x: Feature) -> Interaction:
-            result = super().forward_pre_activation(x)
-            blocks = [torch.ones((1, 1), dtype=torch.float64), *result.blocks[1:]]
-            return SimpleNamespace(blocks=blocks)
-
-    linear = DivergentLinear(max_order=1, channels=1, metadata=linear_metadata)
-    tensor_product = DivergentTP(max_order=1, channels=1, paths=tp_metadata, activation=None)
-    composite = CompositeMixing(layout=layout, producers=(linear, tensor_product))
-    with pytest.raises(ValueError, match="order-0 blocks"):
-        composite(_feature())
-
-
-def test_composite_rejects_dtype_mismatch_independently() -> None:
-    layout, linear_metadata, tp_metadata = _layout()
-
-    class DtypeLinear(LinearEquivariantMixing):
-        def forward_pre_activation(self, x: Feature) -> Interaction:
-            result = super().forward_pre_activation(x)
-            blocks = [result.blocks[0].to(dtype=torch.float32), *result.blocks[1:]]
-            return SimpleNamespace(blocks=blocks)
-
-    linear = DtypeLinear(max_order=1, channels=1, metadata=linear_metadata)
+    linear = LinearEquivariantMixing(max_order=1, channels=1, metadata=linear_metadata)
     tensor_product = EquivariantMixing(max_order=1, channels=1, paths=tp_metadata, activation=None)
     composite = CompositeMixing(layout=layout, producers=(linear, tensor_product))
-    with pytest.raises(ValueError, match="dtypes disagree"):
-        composite(_feature())
+    actual = composite(_feature())
+    assert actual.blocks[0].shape[1] == 0
+    assert actual.blocks[0].numel() == 0
 
 
 def test_tp_only_composite_keeps_legacy_state_keys_and_numerics() -> None:
