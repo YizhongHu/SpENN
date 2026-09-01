@@ -534,7 +534,8 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
 
     _iteration(callback, _state(1), context)
 
-    manifest = json.loads((tmp_path / "step_000002" / "manifest.json").read_text())
+    checkpoint_dir = tmp_path / "step_000002"
+    manifest = json.loads((checkpoint_dir / "manifest.json").read_text())
     assert manifest["schema_version"] == 2
     assert manifest["kind"] == "tpen.checkpoint"
     # v2 names both counters instead of one ambiguous `step`.
@@ -546,7 +547,7 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
     assert {key: manifest["hashes"][key] for key in config_hashes} == config_hashes
     for component, relative in manifest["files"].items():
         assert manifest["hashes"][f"{component}_sha256"] == file_sha256(
-            tmp_path / relative
+            checkpoint_dir / relative
         )
     assert manifest["runtime"]["device"] == "cpu"
     assert manifest["runtime"]["dtype"] == "float64"
