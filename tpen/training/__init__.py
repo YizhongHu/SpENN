@@ -3,6 +3,14 @@
 from tpen.training.optim import make_optimizer
 from tpen.training.state import TrainerState, TrainingTiming
 from tpen.training.trainer import VMCTrainer
+from tpen.training.update import (
+    AutogradUpdateInput,
+    LegacyAutogradUpdate,
+    ScoreUpdateInput,
+    VMCStepData,
+    VMCUpdateMethod,
+    VMCUpdateResult,
+)
 from tpen.training.vmc import (
     VMCObjectiveResult,
     compute_vmc_objective,
@@ -14,6 +22,12 @@ from tpen.training.vmc import (
 __all__ = [
     "TrainerState",
     "TrainingTiming",
+    "AutogradUpdateInput",
+    "LegacyAutogradUpdate",
+    "ScoreUpdateInput",
+    "VMCStepData",
+    "VMCUpdateMethod",
+    "VMCUpdateResult",
     "VMCObjectiveResult",
     "VMCTrainer",
     "compute_vmc_objective",
