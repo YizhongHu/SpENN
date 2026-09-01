@@ -95,7 +95,14 @@ def save_checkpoint(
     save_trainer = save_flags["trainer"]
     save_sampler = save_flags["sampler"]
     save_rng = save_flags["rng"]
-    effective_payload = payload or _infer_payload(save_flags)
+    effective_payload = payload if payload is not None else _infer_payload(save_flags)
+    if effective_payload is not None:
+        # A public base payload may be structurally valid but noncanonical.
+        # Canonicalize it before creating the output root, so a rejected
+        # manifest cannot leave a complete directory outside the catalog.
+        effective_payload = CheckpointPayload.from_manifest(
+            effective_payload.to_manifest()
+        )
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     created_at = time.time()
