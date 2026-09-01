@@ -285,6 +285,10 @@ def test_real_restore_rejects_corrupt_progress_before_mutating_model(
     else:
         trainer_state["completed_updates"] = -1
     trainer_path.write_text(json.dumps(trainer_state), encoding="utf-8")
+    manifest_path = checkpoint_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["hashes"]["trainer_sha256"] = file_sha256(trainer_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     target_model = torch.nn.Linear(2, 1).double()
     with torch.no_grad():
