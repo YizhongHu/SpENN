@@ -610,6 +610,15 @@ def test_checkpoint_legacy_manifest_uses_component_set_for_republication(tmp_pat
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     manifest_before = manifest_path.read_bytes()
 
+    # A real pre-payload checkpoint had these bytes when its catalog row was
+    # created. Re-seed the append-only row from that legacy artifact rather
+    # than treating a post-publication manifest rewrite as a valid retry.
+    (tmp_path / "publications.jsonl").unlink()
+    (tmp_path / "latest.json").unlink()
+    CheckpointCatalog(tmp_path / "publications.jsonl").publish(
+        CheckpointRef.from_directory(tmp_path / "step_000002")
+    )
+
     # Explicit legacy flags are the ordinary pre-composition configuration.
     second = Checkpoint(
         output_dir=tmp_path,
