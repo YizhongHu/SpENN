@@ -248,16 +248,17 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
         self,
         optimizer: torch.optim.Optimizer,
         gradient_clip_norm: float | None = None,
-        model_parameters: ModelParameterBinding | None = None,
+        *,
+        model_parameters: ModelParameterBinding,
     ) -> None:
         if not isinstance(optimizer, torch.optim.Optimizer):
             raise TypeError("LegacyAutogradUpdate.optimizer must be a torch.optim.Optimizer")
-        self.optimizer = optimizer
-        self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
-        if model_parameters is not None and not isinstance(model_parameters, ModelParameterBinding):
+        if not isinstance(model_parameters, ModelParameterBinding):
             raise TypeError(
                 "LegacyAutogradUpdate.model_parameters must be a ModelParameterBinding"
             )
+        self.optimizer = optimizer
+        self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
         self.model_parameters = model_parameters
         self._backward_scope: ScopeFactory | None = None
         self._optimizer_scope: ScopeFactory | None = None
@@ -312,9 +313,7 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
     def gradient_params(self) -> tuple[torch.nn.Parameter, ...]:
         """Return the exact model parameter domain used by legacy gradients."""
 
-        if self.model_parameters is not None:
-            return self.model_parameters.parameters
-        return self.optimizer_params()
+        return self.model_parameters.parameters
 
     def state_dict(self) -> Mapping[str, Any]:
         """Return the raw PyTorch optimizer payload unchanged."""

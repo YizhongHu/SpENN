@@ -199,7 +199,11 @@ def test_legacy_adapter_matches_current_zero_grad_backward_clip_step_sequence() 
         step=0,
         objective=adapted_objective,
     )
-    result = LegacyAutogradUpdate(adapted_optimizer, gradient_clip_norm=0.5).update(update_input)
+    result = LegacyAutogradUpdate(
+        adapted_optimizer,
+        gradient_clip_norm=0.5,
+        model_parameters=ModelParameterBinding(parameters=(adapted,)),
+    ).update(update_input)
 
     assert result == VMCUpdateResult(applied=True, grad_norm=float(control_grad.norm().item()))
     assert torch.equal(adapted, control)
@@ -271,7 +275,11 @@ def test_legacy_adapter_loads_raw_checkpoint_and_preserves_next_update() -> None
 
     control = torch.nn.Parameter(torch.tensor([2.0], dtype=torch.float64))
     control_optimizer = torch.optim.Adam([control], lr=0.1)
-    control_adapter = LegacyAutogradUpdate(control_optimizer, gradient_clip_norm=0.5)
+    control_adapter = LegacyAutogradUpdate(
+        control_optimizer,
+        gradient_clip_norm=0.5,
+        model_parameters=ModelParameterBinding(parameters=(control,)),
+    )
     control_adapter.update(_optimizer_update_input(control, step=0))
 
     # This is the raw payload written by the legacy checkpoint callback.
@@ -284,7 +292,11 @@ def test_legacy_adapter_loads_raw_checkpoint_and_preserves_next_update() -> None
 
     restored = torch.nn.Parameter(control.detach().clone())
     restored_optimizer = torch.optim.Adam([restored], lr=0.1)
-    restored_adapter = LegacyAutogradUpdate(restored_optimizer, gradient_clip_norm=0.5)
+    restored_adapter = LegacyAutogradUpdate(
+        restored_optimizer,
+        gradient_clip_norm=0.5,
+        model_parameters=ModelParameterBinding(parameters=(restored,)),
+    )
     restored_adapter.load_state_dict(raw_optimizer_checkpoint)
     _assert_nested_equal(restored_adapter.state_dict(), raw_optimizer_checkpoint)
 
@@ -302,7 +314,10 @@ def test_legacy_adapter_loads_raw_checkpoint_and_preserves_next_update() -> None
 def test_legacy_adapter_skips_vacuum_and_errors_for_disconnected_nonvacuum() -> None:
     parameter = torch.nn.Parameter(torch.ones(1, dtype=torch.float64))
     optimizer = torch.optim.SGD([parameter], lr=0.1)
-    adapter = LegacyAutogradUpdate(optimizer)
+    adapter = LegacyAutogradUpdate(
+        optimizer,
+        model_parameters=ModelParameterBinding(parameters=(parameter,)),
+    )
 
     vacuum = _batch(n_electrons=0)
     skipped = adapter.update(
@@ -329,6 +344,20 @@ def test_legacy_adapter_skips_vacuum_and_errors_for_disconnected_nonvacuum() -> 
             )
         )
     assert parameter.grad is None
+
+
+def test_legacy_adapter_requires_model_binding_before_mutation() -> None:
+    """An omitted model binding fails before the adapter can mutate anything."""
+
+    parameter = torch.nn.Parameter(torch.ones(1, dtype=torch.float64))
+    optimizer = torch.optim.Adam([parameter], lr=0.1)
+    optimizer_state_before = copy.deepcopy(optimizer.state_dict())
+
+    with pytest.raises(TypeError, match="model_parameters"):
+        LegacyAutogradUpdate(optimizer)
+
+    assert parameter.grad is None
+    _assert_nested_equal(optimizer.state_dict(), optimizer_state_before)
 
 
 def test_live_update_inputs_cannot_be_serialized() -> None:
