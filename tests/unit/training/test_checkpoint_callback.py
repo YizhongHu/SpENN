@@ -13,7 +13,13 @@ from omegaconf import OmegaConf
 import tpen
 from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint
-from tpen.checkpoint import EveryNUpdates, ExplicitUpdates, checkpoint_hashes
+from tpen.checkpoint import (
+    EveryNUpdates,
+    ExplicitUpdates,
+    ModelOnly,
+    TrainResume,
+    checkpoint_hashes,
+)
 from tpen.checkpoint.hashing import file_sha256
 from tpen.events import Occurrence
 from tpen.training.events import (
@@ -200,6 +206,26 @@ def test_checkpoint_writes_step_directory_and_latest_pointer(tmp_path) -> None:
     assert (step_dir / "COMPLETE").exists()
     assert (ckpt_dir / "latest.json").exists()
     assert not (ckpt_dir / "step_000003.tmp").exists()
+
+
+def test_checkpoint_composes_schedule_and_payload(tmp_path) -> None:
+    callback = Checkpoint(
+        output_dir=tmp_path,
+        schedule=EveryNUpdates(2),
+        payload=ModelOnly(),
+        terminal=False,
+    )
+
+    _iteration(callback, _state(1), _context())
+
+    step_dir = tmp_path / "step_000002"
+    manifest = json.loads((step_dir / "manifest.json").read_text())
+    assert manifest["payload"] == ModelOnly().to_manifest()
+    assert (step_dir / "model.pt").exists()
+    assert not (step_dir / "optimizer.pt").exists()
+    assert not (step_dir / "trainer.json").exists()
+    assert not (step_dir / "sampler.pt").exists()
+    assert not (step_dir / "rng.pt").exists()
 
 
 def test_no_checkpoint_is_written_at_the_update_boundary(tmp_path) -> None:
@@ -453,6 +479,88 @@ def test_checkpoint_terminal_skips_existing_complete_checkpoint(tmp_path) -> Non
     _finish(callback, state, context)
 
     assert sorted(path.name for path in tmp_path.glob("step_*")) == ["step_000002"]
+
+
+def test_checkpoint_identical_republication_is_idempotent(tmp_path) -> None:
+    state = _state(1, next_iteration=2, completed_updates=2)
+    first = Checkpoint(output_dir=tmp_path, payload=ModelOnly(), periodic=False)
+    second = Checkpoint(output_dir=tmp_path, payload=ModelOnly(), periodic=False)
+
+    _finish(first, state, _context())
+    manifest_before = (tmp_path / "step_000002" / "manifest.json").read_bytes()
+    _finish(second, state, _context())
+
+    assert (tmp_path / "step_000002" / "manifest.json").read_bytes() == manifest_before
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_legacy_manifest_uses_component_set_for_republication(tmp_path) -> None:
+    """A pre-payload manifest remains idempotent when its files are equivalent."""
+
+    state = _state(1, next_iteration=2, completed_updates=2)
+    first = Checkpoint(output_dir=tmp_path, periodic=False)
+
+    _finish(first, state, _context())
+    manifest_path = tmp_path / "step_000002" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.pop("payload") == TrainResume().to_manifest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    manifest_before = manifest_path.read_bytes()
+
+    # Explicit legacy flags are the ordinary pre-composition configuration.
+    second = Checkpoint(
+        output_dir=tmp_path,
+        periodic=False,
+        save_optimizer=True,
+        save_trainer=True,
+        save_sampler=True,
+        save_rng=True,
+    )
+    _finish(second, state, _context())
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_mixed_flags_compare_the_effective_component_set(tmp_path) -> None:
+    """Independent legacy flags remain valid stream identities."""
+
+    state = _state(1, next_iteration=2, completed_updates=2)
+    flags = {
+        "save_optimizer": False,
+        "save_trainer": True,
+        "save_sampler": False,
+        "save_rng": True,
+    }
+    first = Checkpoint(output_dir=tmp_path, periodic=False, **flags)
+    second = Checkpoint(output_dir=tmp_path, periodic=False, **flags)
+
+    _finish(first, state, _context())
+    _finish(second, state, _context())
+
+    step_dir = tmp_path / "step_000002"
+    assert (step_dir / "model.pt").exists()
+    assert (step_dir / "trainer.json").exists()
+    assert (step_dir / "rng.pt").exists()
+    assert not (step_dir / "optimizer.pt").exists()
+    assert not (step_dir / "sampler.pt").exists()
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_non_equivalent_payload_collision_fails_before_writing(tmp_path) -> None:
+    state = _state(1, next_iteration=2, completed_updates=2)
+    first = Checkpoint(output_dir=tmp_path, payload=ModelOnly(), periodic=False)
+    second = Checkpoint(output_dir=tmp_path, payload=TrainResume(), periodic=False)
+
+    _finish(first, state, _context())
+    manifest_before = (tmp_path / "step_000002" / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="checkpoint stream collision"):
+        _finish(second, state, _context())
+
+    assert (tmp_path / "step_000002" / "manifest.json").read_bytes() == manifest_before
+    assert not (tmp_path / "step_000002" / "optimizer.pt").exists()
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
 
 
 def test_terminal_updates_latest_when_cadence_misses_terminal_step(tmp_path) -> None:
