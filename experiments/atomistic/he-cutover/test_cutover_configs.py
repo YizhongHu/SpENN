@@ -33,7 +33,7 @@ def test_smoke_training_diff_is_exactly_three_scale_fields() -> None:
     before = OmegaConf.to_container(cfg, resolve=False)
     run_train_row.configure_smoke_training(cfg, {"max_steps": 25, "n_walkers": 16})
     after = OmegaConf.to_container(cfg, resolve=False)
-    assert _differences(before, after) == {"trainer.max_steps", "sampler.n_walkers", "callbacks.tpen.callback.Checkpoint.every_n_steps"}
+    assert _differences(before, after) == {"trainer.max_steps", "sampler.n_walkers", "callbacks.tpen.callback.Checkpoint.schedule.every_n"}
 
 
 def test_smoke_training_finds_checkpoint_by_target_when_not_last() -> None:
@@ -44,7 +44,7 @@ def test_smoke_training_finds_checkpoint_by_target_when_not_last() -> None:
 
     run_train_row.configure_smoke_training(cfg, {"max_steps": 25, "n_walkers": 16})
 
-    assert checkpoint.every_n_steps == 25
+    assert checkpoint.schedule.every_n == 25
     assert cfg.callbacks[-1].every_n_steps == 999
 
 
@@ -55,7 +55,7 @@ def test_production_training_preserves_frozen_checkpoint_cadence() -> None:
     run_train_row.configure_training(
         cfg, {"scale": "production", "max_steps": 300000, "n_walkers": 4096}
     )
-    assert checkpoint.every_n_steps == 25000
+    assert checkpoint.schedule.every_n == 25000
 
 
 def test_profiles_contain_policy_but_no_filesystem_roots() -> None:

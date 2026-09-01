@@ -202,7 +202,7 @@ def _equivalence_config(
 ) -> DictConfig:
     """Return the smoke config extended to a resumable ``max_steps=6`` run.
 
-    The fixture's periodic cadence (``every_n_steps: 2``) counts applied
+    The fixture's periodic cadence (``schedule.every_n: 2``) counts applied
     optimizer updates, so at ``max_steps=6`` it writes steps 2, 4 and 6 and
     never produces the mid-run checkpoint this test resumes from. Widening it to
     `RESUME_STEP` writes ``step_000003`` and ``step_000006`` instead. Nothing
@@ -215,7 +215,7 @@ def _equivalence_config(
         Restore config attached to the runner. ``None`` leaves the runner
         without one, which is ``mode: none``.
     save_rng : bool or None, optional
-        Override for both checkpoint callbacks. ``None`` keeps the default
+        Override for the checkpoint stream. ``None`` keeps the default
         ``True``. Checkpoint callbacks are not covered by any manifest hash, so
         toggling this does not itself perturb restore admissibility.
     """
@@ -225,10 +225,10 @@ def _equivalence_config(
     for callback in cfg.callbacks:
         if callback.get("_target_") != "tpen.callback.Checkpoint":
             continue
-        # The periodic writer is the one that produces the resume source; the
-        # terminal writer (`periodic: false`) keeps its own unwindowed cadence.
+        # The composed stream produces the resume source on its periodic path;
+        # its terminal path remains unwindowed by the schedule.
         if callback.get("periodic", True):
-            callback.every_n_steps = RESUME_STEP
+            callback.schedule.every_n = RESUME_STEP
         if save_rng is not None:
             callback.save_rng = save_rng
     if load is not None:
