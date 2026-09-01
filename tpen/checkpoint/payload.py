@@ -220,10 +220,6 @@ class TrainResume(CheckpointPayload):
         )
 
 
-MODEL_ONLY_PAYLOAD: Final[ModelOnly] = ModelOnly()
-TRAIN_RESUME_PAYLOAD: Final[TrainResume] = TrainResume()
-
-
 def _validate_unique_nonempty(
     values: tuple[str, ...], label: str, *, allow_empty: bool = False
 ) -> None:
@@ -235,6 +231,10 @@ def _validate_unique_nonempty(
         raise ValueError(f"{label} entries must be non-empty")
     if len(set(values)) != len(values):
         raise ValueError(f"{label} entries must be unique")
+
+
+MODEL_ONLY_PAYLOAD: Final[ModelOnly] = ModelOnly()
+TRAIN_RESUME_PAYLOAD: Final[TrainResume] = TrainResume()
 
 
 __all__ = [
