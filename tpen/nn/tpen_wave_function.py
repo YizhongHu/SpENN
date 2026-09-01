@@ -423,14 +423,17 @@ def _chunked_parameter_score_blocks(
             logabs.new_empty((0, *tuple(parameter.shape))) for parameter in parameters
         )
     gradients = [[] for _ in parameters]
-    identity = torch.eye(values.numel(), device=values.device, dtype=values.dtype)
     for start in range(0, values.numel(), chunk_size):
         stop = min(start + chunk_size, values.numel())
+        grad_outputs = values.new_zeros((stop - start, values.numel()))
+        row_indices = torch.arange(stop - start, device=values.device)
+        column_indices = torch.arange(start, stop, device=values.device)
+        grad_outputs[row_indices, column_indices] = 1
         try:
             chunk_gradients = torch.autograd.grad(
                 values,
                 parameters,
-                grad_outputs=identity[start:stop],
+                grad_outputs=grad_outputs,
                 retain_graph=stop < values.numel(),
                 create_graph=False,
                 allow_unused=False,
