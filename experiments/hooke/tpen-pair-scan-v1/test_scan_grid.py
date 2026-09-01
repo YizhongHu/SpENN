@@ -870,29 +870,21 @@ def test_the_selector_never_ranks_on_the_non_variational_mean_or_on_wall_time() 
 # ---------------------------------------------------------------------------
 # 7. The smoke's terminal checkpoint, at the config level
 # ---------------------------------------------------------------------------
-def test_the_smoke_declares_no_checkpoint_cadence_that_could_gate_the_terminal_write() -> None:
-    """``Checkpoint`` shares ONE gate between its periodic and terminal writes.
+def test_the_smoke_declares_a_terminal_only_checkpoint_stream() -> None:
+    """The scan's checkpoint selection policy is explicit and ungated.
 
-    ``_write_terminal`` consults the same ``StepCadenceGate`` with the final
-    iteration index (``callback/checkpoint.py:190,218``), so ``every_n_steps: N``
-    suppresses the terminal checkpoint unless ``max_steps`` is an exact multiple of
-    N -- silently: training completes, ``status.json`` says ``completed``, the
-    checkpoints directory is empty, and validation dies on the missing COMPLETE
-    marker. A 60-step run against ``every_n_steps: 100`` reproduced exactly that.
-
-    So the smoke must either declare no checkpoint cadence at all, or declare one
-    that divides its own ``max_steps``. The behavioural check that the write
-    actually happens is in ``tests/unit/experiments/test_scan_smoke_workload.py``;
-    this one exists so the arithmetic can never be reached by accident.
+    The scan's checkpoint stream is explicitly ``TerminalOnly`` in ``train.yaml``
+    and therefore has no checkpoint cadence to divide the smoke budget. The
+    behavioural check that the write actually happens is in
+    ``tests/unit/experiments/test_scan_smoke_workload.py``; this one keeps the
+    static override surface from creating a legacy cadence key.
     """
 
     static = _grid_data(SMOKE)["static_overrides"]
     for stage, overrides in static.items():
         max_steps = overrides.get("training.max_steps")
         assert isinstance(max_steps, int) and max_steps > 0, stage
-        cadence = overrides.get("checkpoint.every_n_steps")
-        if cadence is not None:
-            assert max_steps % int(cadence) == 0, (stage, max_steps, cadence)
+        assert "checkpoint.every_n_steps" not in overrides
         # Every other cadence in the stage must also divide the budget, or the
         # smoke silently exercises fewer windows than it claims.
         for path in ("checks.every_n_steps", "status.every_n_steps", "training.log_every_n_steps"):
