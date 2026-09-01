@@ -215,9 +215,10 @@ def _equivalence_config(
         Restore config attached to the runner. ``None`` leaves the runner
         without one, which is ``mode: none``.
     save_rng : bool or None, optional
-        Override for the checkpoint stream. ``None`` keeps the default
-        ``True``. Checkpoint callbacks are not covered by any manifest hash, so
-        toggling this does not itself perturb restore admissibility.
+        Override for the checkpoint stream. ``None`` keeps the explicit
+        ``TrainResume`` payload and its default ``True``. A supplied value
+        selects the flag-owned component set so the negative arm can create a
+        deliberately partial checkpoint without conflicting with that profile.
     """
 
     cfg = OmegaConf.load(FIXTURE)
@@ -230,6 +231,7 @@ def _equivalence_config(
         if callback.get("periodic", True):
             callback.schedule.every_n = RESUME_STEP
         if save_rng is not None:
+            callback.payload = None
             callback.save_rng = save_rng
     if load is not None:
         cfg.runner.load = load
