@@ -79,6 +79,7 @@ def test_zero_completed_updates_are_terminal_only() -> None:
     [
         (lambda: EveryNUpdates(0), "every_n"),
         (lambda: EveryNUpdates(), "every_n"),
+        (lambda: EveryNUpdates(True), "every_n"),
         (lambda: ExplicitUpdates([0]), "updates entry"),
         (lambda: ExplicitUpdates([1, True]), "updates entry"),
     ],
@@ -89,13 +90,10 @@ def test_invalid_schedule_boundaries_fail_loudly(factory, message: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("schedule", "message"),
-    [
-        (EveryNUpdates(2), "completed_updates"),
-        (ExplicitUpdates([2]), "completed_updates"),
-        (TerminalOnly(), "terminal"),
-    ],
+    "schedule", [EveryNUpdates(2), ExplicitUpdates([2]), TerminalOnly()]
 )
-def test_invalid_decision_inputs_fail_loudly(schedule, message: str) -> None:
-    with pytest.raises((TypeError, ValueError), match=message):
-        schedule.should_run(-1 if message == "completed_updates" else 1, terminal=1)
+def test_negative_decision_inputs_fail_loudly(schedule: CheckpointSchedule) -> None:
+    """Schedules reject invalid update values they own."""
+
+    with pytest.raises(ValueError, match="completed_updates"):
+        schedule.should_run(-1)

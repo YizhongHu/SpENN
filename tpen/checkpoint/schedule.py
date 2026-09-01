@@ -85,11 +85,14 @@ class ExplicitUpdates:
         if isinstance(updates, (str, bytes)):
             raise TypeError("updates must be an iterable of integers")
         try:
-            normalized = frozenset(updates)
+            entries = tuple(updates)
         except TypeError as exc:
             raise TypeError("updates must be an iterable of integers") from exc
-        for update in normalized:
+        # Validate before deduplication: bool is an int subclass, and
+        # frozenset({1, True}) would otherwise erase the invalid bool entry.
+        for update in entries:
             _validate_positive_int(update, "updates entry")
+        normalized = frozenset(entries)
         object.__setattr__(self, "updates", normalized)
 
     def should_run(self, completed_updates: int, terminal: bool = False) -> bool:
@@ -104,12 +107,8 @@ class ExplicitUpdates:
 def _validate_boundary(completed_updates: int, terminal: bool) -> None:
     """Validate the common schedule decision inputs."""
 
-    if not isinstance(completed_updates, int) or isinstance(completed_updates, bool):
-        raise TypeError("completed_updates must be an integer")
     if completed_updates < 0:
         raise ValueError("completed_updates must be non-negative")
-    if not isinstance(terminal, bool):
-        raise TypeError("terminal must be a bool")
 
 
 def _validate_positive_int(value: int, label: str) -> None:
