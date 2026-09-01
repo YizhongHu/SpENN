@@ -68,6 +68,17 @@ from .reference import (
     deserialize_checkpoint_ref,
     serialize_checkpoint_ref,
 )
+from .retention import (
+    RETENTION_SNAPSHOT_SCHEMA,
+    HoldUntilSelection,
+    KeepLast,
+    RetainAll,
+    RetentionDecision,
+    RetentionPinState,
+    RetentionPolicy,
+    RetentionRef,
+    RetentionSnapshot,
+)
 from .save import save_checkpoint
 from .schedule import CheckpointSchedule, EveryNUpdates, ExplicitUpdates, TerminalOnly
 
@@ -75,6 +86,7 @@ __all__ = [
     "CHECKPOINT_KIND",
     "CHECKPOINT_REF_SCHEMA",
     "CHECKPOINT_SCHEMA_VERSION",
+    "RETENTION_SNAPSHOT_SCHEMA",
     "CheckpointReplaySemantics",
     "COMPLETE_MARKER",
     "CuspDistanceSemantics",
@@ -89,6 +101,11 @@ __all__ = [
     "CheckpointCatalog",
     "CheckpointSchedule",
     "CheckpointRef",
+    "RetentionDecision",
+    "RetentionPinState",
+    "RetentionPolicy",
+    "RetentionRef",
+    "RetentionSnapshot",
     "CheckpointRestored",
     "LoadFailed",
     "LoadStarted",
@@ -98,6 +115,9 @@ __all__ = [
     "EveryNUpdates",
     "ExplicitUpdates",
     "TerminalOnly",
+    "RetainAll",
+    "KeepLast",
+    "HoldUntilSelection",
     "ModelOnly",
     "TrainResume",
     "MODEL_ONLY_PAYLOAD",
