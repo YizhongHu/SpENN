@@ -1,4 +1,4 @@
-"""Slow unary linear support-path mixing."""
+"""Unary linear support-path mixing."""
 
 from __future__ import annotations
 
@@ -14,7 +14,13 @@ from tpen.data.paths import (
 from tpen.data.real import Feature, Interaction, common_real_batch_size, common_real_dtype, common_real_particle_count, zero_block
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
-from tpen.nn.mixing_kernel import Aggregation, MixingImplementation, execute_unary
+from tpen.nn.mixing_kernel import (
+    Aggregation,
+    MixingImplementation,
+    build_unary_index_plan,
+    execute_unary,
+    normalize_implementation,
+)
 
 torch = require_torch(feature="TPEN linear equivariant mixing")
 nn = require_torch_nn(feature="TPEN linear equivariant mixing")
@@ -49,6 +55,9 @@ class LinearEquivariantMixing(EquivariantMap):
         Explicit ordered paths when ``policy="explicit"``.
     aggregation : {"sum", "completion_mean"}, optional
         Reduction over support completions.
+    implementation : {"slow", "vectorized"}, optional
+        Unary execution strategy. The vectorized strategy gathers source
+        tuples, contracts pathwise, and scatters into the output block.
     initial_weight : float, optional
         Initial value for every eagerly allocated ``W_q``.
     """
@@ -65,6 +74,7 @@ class LinearEquivariantMixing(EquivariantMap):
         metadata: LinearPathMetadata | None = None,
         explicit: tuple[SupportPath, ...] | None = None,
         aggregation: Aggregation | str = Aggregation.COMPLETION_MEAN,
+        implementation: MixingImplementation | str = MixingImplementation.SLOW,
         initial_weight: float = 1.0,
         **kwargs: object,
     ) -> None:
@@ -73,6 +83,7 @@ class LinearEquivariantMixing(EquivariantMap):
         if self.max_order <= 0:
             raise ValueError(f"max_order must be positive, got {self.max_order}")
         self.aggregation = Aggregation(aggregation)
+        self.implementation = normalize_implementation(implementation)
         self.metadata = metadata or LinearPathMetadata.generate(
             max_order=self.max_order,
             policy=policy,
@@ -113,24 +124,41 @@ class LinearEquivariantMixing(EquivariantMap):
             if not paths:
                 output_blocks.append(torch.zeros((batch_size, output_channel_count, 0, *((n_particles,) * output_order)), device=device, dtype=dtype))
                 continue
+            # Index tensors are execution caches: rebuilding them per forward
+            # permits runtime N/device changes without changing static paths or
+            # registered weights. The kernel still executes one path at a time.
             path_blocks = []
-            for path in paths:
-                source = x.blocks[path.input_order]
+            group_start = 0
+            while group_start < len(paths):
+                input_order = paths[group_start].input_order
+                group_end = group_start + 1
+                while group_end < len(paths) and paths[group_end].input_order == input_order:
+                    group_end += 1
+                group_paths = paths[group_start:group_end]
+                plans = tuple(
+                    build_unary_index_plan(path, n_particles, device=device) for path in group_paths
+                )
+                weights = tuple(
+                    self.weights[path_offset + index]
+                    for index in range(group_start, group_end)
+                )
                 path_blocks.append(
                     execute_unary(
-                        (path,),
-                        (self.weights[path_offset],),
-                        source,
+                        group_paths,
+                        weights,
+                        x.blocks[input_order],
                         n_particles=n_particles,
                         output_order=output_order,
                         batch_size=batch_size,
                         output_channels=output_channel_count,
                         aggregation=self.aggregation,
-                        implementation=MixingImplementation.SLOW,
+                        implementation=self.implementation,
+                        index_plans=plans,
                     )
                 )
-                path_offset += 1
+                group_start = group_end
             output_blocks.append(torch.cat(path_blocks, dim=2))
+            path_offset += len(paths)
         return Interaction(output_blocks)
 
 
