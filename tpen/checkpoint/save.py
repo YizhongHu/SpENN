@@ -16,7 +16,7 @@ from tpen import __version__ as tpen_version
 
 from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_latest
 from .catalog import CheckpointCatalog, publication_catalog_path
-from .hashing import checkpoint_hashes
+from .hashing import checkpoint_hashes, file_sha256
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
 from .payload import CheckpointPayload, ModelOnly, TrainResume
 from .reference import CheckpointRef
@@ -147,6 +147,12 @@ def save_checkpoint(
             torch.save(rng_state_dict(runtime_device(context)), tmp_dir / "rng.pt")
             files["rng"] = "rng.pt"
 
+        hashes = checkpoint_hashes(cfg)
+        # Keep the component content digests beside the existing config
+        # digests.  They are computed only after every payload file is
+        # written, so restore can reject changed bytes before any consumer is
+        # mutated.
+        hashes.update(_component_file_hashes(tmp_dir, files))
         manifest = CheckpointManifest(
             schema_version=CHECKPOINT_SCHEMA_VERSION,
             kind=CHECKPOINT_KIND,
@@ -154,7 +160,7 @@ def save_checkpoint(
             completed_updates=int(completed_updates),
             created_at_unix=created_at,
             files=files,
-            hashes=checkpoint_hashes(cfg),
+            hashes=hashes,
             runtime=_runtime_metadata(context),
             provenance=_provenance_metadata(context),
             payload=(
@@ -258,6 +264,23 @@ def _write_json_mapping(path: Path, data: Mapping[str, Any]) -> None:
     from tpen.artifacts import write_json
 
     write_json(path, data)
+
+
+def _component_file_hashes(
+    checkpoint_dir: Path, files: Mapping[str, str]
+) -> dict[str, str]:
+    """Return SHA-256 digests for the files named by a manifest.
+
+    The manifest already has a ``hashes`` mapping for config digests.  The
+    namespaced ``<component>_sha256`` entries bind each serialized file to the
+    manifest without adding a second schema field, while retaining the older
+    config-hash keys used by restore compatibility checks.
+    """
+
+    return {
+        f"{component}_sha256": file_sha256(checkpoint_dir / relative)
+        for component, relative in files.items()
+    }
 
 
 def _state_dict_from(value: Any, owner: str) -> Mapping[str, Any]:
