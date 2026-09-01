@@ -30,6 +30,7 @@ from tpen.nn.envelope import (
     HookeGaussianConfinement,
 )
 from tpen.nn.equivariant_mixing import EquivariantMixing
+from tpen.nn.composite_mixing import CompositeMixing
 from tpen.nn.linear_equivariant_mixing import LinearEquivariantMixing
 from tpen.nn.mixing_kernel import execute_binary, execute_unary
 from tpen.nn.factor import AdditiveCusp, LogAmplitudeFactor
@@ -55,6 +56,7 @@ __all__ = [
     "Embedding",
     "Envelope",
     "EquivariantMixing",
+    "CompositeMixing",
     "LinearEquivariantMixing",
     "execute_binary",
     "execute_unary",

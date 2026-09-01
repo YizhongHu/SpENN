@@ -9,7 +9,7 @@ from tpen.data.real import Interaction, Update, zero_block
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.initialization import TorchInitializer
-from tpen.data.paths import PathMetadata, VirtualPath, load_default_path_metadata
+from tpen.data.paths import PathLayout, PathMetadata, VirtualPath, load_default_path_metadata
 
 torch = require_torch(feature="TPEN path aggregation")
 nn = require_torch_nn(feature="TPEN path aggregation")
@@ -42,6 +42,10 @@ class PathAggregation(EquivariantMap):
         Maximum tuple order to aggregate.
     channels : int or mapping
         Input (= output) channels per tuple order.
+    layout : PathLayout or None, optional
+        Static union layout shared with CompositeMixing. When supplied, its
+        path counts are used directly and incoming Interaction fingerprints
+        must match.
     max_virtual_order : int or None, optional
         Maximum virtual support order used when deriving path counts from
         metadata. Defaults to `max_order`.
@@ -68,6 +72,7 @@ class PathAggregation(EquivariantMap):
         *,
         max_order: int,
         channels: int | Mapping[int, int],
+        layout: PathLayout | None = None,
         max_virtual_order: int | None = None,
         paths: PathMetadata | tuple[VirtualPath, ...] | None = None,
         output_embedding: str = "canonical",
@@ -84,7 +89,20 @@ class PathAggregation(EquivariantMap):
         if self.max_virtual_order <= 0:
             raise ValueError(f"max_virtual_order must be positive, got {self.max_virtual_order}")
         self.channels_by_order = _normalize_positive_channels(channels, max_order=self.max_order, name="channels")
-        if path_counts_by_order is None:
+        self.layout = layout
+        if layout is not None:
+            if layout.output_orders.values != tuple(range(1, self.max_order + 1)):
+                raise ValueError("PathAggregation layout must cover contiguous output orders")
+            for order in layout.output_orders.values:
+                if self.channels_by_order[order] != layout.output_channels.for_order(order):
+                    raise ValueError(f"channels disagree with layout at order {order}")
+        if layout is not None:
+            if path_counts_by_order is not None:
+                raise ValueError("pass either layout or path_counts_by_order, not both")
+            self.path_counts_by_order = {
+                order: layout.count_for_order(order) for order in range(1, self.max_order + 1)
+            }
+        elif path_counts_by_order is None:
             self.path_counts_by_order = _path_counts_by_order(
                 paths=paths,
                 output_embedding=output_embedding,
@@ -106,6 +124,8 @@ class PathAggregation(EquivariantMap):
         """Return the path-aggregated real-space feature update."""
 
         x.validate()
+        if self.layout is not None and x.fingerprint != self.layout.fingerprint:
+            raise ValueError("PathAggregation received an Interaction with the wrong layout fingerprint")
         if not x.blocks:
             # A valid empty interaction aggregates to a valid empty update.
             return Update([])
