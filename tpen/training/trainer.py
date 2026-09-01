@@ -26,7 +26,6 @@ from tpen.training.state import TrainerState
 from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
-    VMCStepData,
     VMCUpdateMethod,
 )
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
