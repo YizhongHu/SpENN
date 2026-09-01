@@ -26,6 +26,7 @@ from tpen.checkpoint.manifest import (
     CHECKPOINT_SCHEMA_VERSION,
     CheckpointManifest,
 )
+from tpen.checkpoint.hashing import file_sha256
 from tpen.checkpoint.schema import read_manifest
 from tpen.sampling import MetropolisSampler
 from tpen.training import VMCTrainer
@@ -189,6 +190,7 @@ def test_explicit_model_only_payload_owns_save_defaults_and_manifest(tmp_path: P
     assert payload.required_files == ("model",)
     assert payload.required_state == ()
     assert "model" in manifest["files"]
+    assert manifest["hashes"]["model_sha256"] == file_sha256(checkpoint_dir / "model.pt")
     assert set(manifest["files"]).isdisjoint(
         {"optimizer", "trainer", "sampler", "rng"}
     )
@@ -311,6 +313,72 @@ def test_real_restore_rejects_corrupt_progress_before_mutating_model(
             optimizer=target_optimizer,
             trainer=target_trainer,
             sampler=target_sampler,
+        )
+
+    for name, value in before_model.items():
+        torch.testing.assert_close(target_model.state_dict()[name], value, rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize("component", ["optimizer", "sampler", "rng"])
+def test_real_restore_rejects_corrupt_component_before_mutating_model(
+    tmp_path: Path, component: str
+) -> None:
+    """A late component digest failure cannot leave the model half-restored."""
+
+    source_model = torch.nn.Linear(2, 1).double()
+    with torch.no_grad():
+        source_model.weight.fill_(1.0)
+        source_model.bias.fill_(2.0)
+    checkpoint_dir = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=2,
+        completed_updates=2,
+        model=source_model,
+        context=_context(),
+        optimizer=torch.optim.Adam(source_model.parameters(), lr=0.01),
+        trainer=VMCTrainer(max_steps=1),
+        sampler=MetropolisSampler(
+            n_walkers=2,
+            burn_in=0,
+            n_steps=1,
+            n_electrons=1,
+            spatial_dim=1,
+            seed=7,
+            dtype=torch.float64,
+        ),
+        payload=TrainResume(),
+    )
+
+    manifest = json.loads((checkpoint_dir / "manifest.json").read_text())
+    (checkpoint_dir / manifest["files"][component]).write_bytes(b"corrupt checkpoint bytes")
+
+    target_model = torch.nn.Linear(2, 1).double()
+    with torch.no_grad():
+        target_model.weight.zero_()
+        target_model.bias.zero_()
+    before_model = {
+        name: value.detach().clone() for name, value in target_model.state_dict().items()
+    }
+
+    # The intact implementation raises its owned digest ValueError.  Keep the
+    # outer assertion broad so the mutation proof reaches the no-live-mutation
+    # oracle when the pre-pass is removed and torch.load fails late instead.
+    with pytest.raises(Exception):
+        restore_checkpoint(
+            load={"mode": "train_resume", "path": str(checkpoint_dir)},
+            model=target_model,
+            context=_context(),
+            optimizer=torch.optim.Adam(target_model.parameters(), lr=0.01),
+            trainer=VMCTrainer(max_steps=1),
+            sampler=MetropolisSampler(
+                n_walkers=2,
+                burn_in=0,
+                n_steps=1,
+                n_electrons=1,
+                spatial_dim=1,
+                seed=11,
+                dtype=torch.float64,
+            ),
         )
 
     for name, value in before_model.items():

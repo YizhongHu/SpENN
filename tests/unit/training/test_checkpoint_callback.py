@@ -14,6 +14,7 @@ import tpen
 from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint
 from tpen.checkpoint import EveryNUpdates, ExplicitUpdates, checkpoint_hashes
+from tpen.checkpoint.hashing import file_sha256
 from tpen.events import Occurrence
 from tpen.training.events import (
     TrainingCompleted,
@@ -541,7 +542,12 @@ def test_checkpoint_payload_uses_structured_schema(tmp_path) -> None:
     assert manifest["next_iteration"] == 2
     assert manifest["completed_updates"] == 2
     assert manifest["files"]["model"] == "model.pt"
-    assert manifest["hashes"] == checkpoint_hashes(context.cfg)
+    config_hashes = checkpoint_hashes(context.cfg)
+    assert {key: manifest["hashes"][key] for key in config_hashes} == config_hashes
+    for component, relative in manifest["files"].items():
+        assert manifest["hashes"][f"{component}_sha256"] == file_sha256(
+            tmp_path / relative
+        )
     assert manifest["runtime"]["device"] == "cpu"
     assert manifest["runtime"]["dtype"] == "float64"
     assert manifest["runtime"]["torch_version"] == torch.__version__
