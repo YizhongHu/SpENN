@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
 from tpen.data.batch import ElectronBatch
 from tpen.checkpoint import restore_checkpoint, save_checkpoint
@@ -106,7 +107,9 @@ def test_public_checkpoint_api_round_trips_model_only(mode: InteractionMode, tmp
     """Save/restore is tested through the public API as a black box."""
 
     model = _build_model(mode)
-    config = {"model": {"interaction_mode": mode.value}, "hamiltonian_terms": {}}
+    # The public checkpoint writer passes cfg to OmegaConf.select; keep this
+    # fixture unambiguously on the same DictConfig boundary as production.
+    config = OmegaConf.create({"model": {"interaction_mode": mode.value}, "hamiltonian_terms": {}})
     context = SimpleNamespace(
         cfg=config,
         run_dir=tmp_path,
@@ -132,6 +135,31 @@ def test_public_checkpoint_api_round_trips_model_only(mode: InteractionMode, tmp
     )
     assert report.loaded_model
     torch.testing.assert_close(restored.state_dict()["_tpen_layout_fingerprint"], model.state_dict()["_tpen_layout_fingerprint"])
+
+
+@pytest.mark.parametrize("mode", (InteractionMode.LINEAR, InteractionMode.HYBRID))
+def test_legacy_tp_state_is_rejected_by_non_tp_models(mode: InteractionMode) -> None:
+    """Legacy omission is not a migration path into changed layouts."""
+
+    legacy_source = _build_model(InteractionMode.TENSOR_PRODUCT).state_dict()
+    legacy_source.pop("_tpen_layout_fingerprint")
+    target = _build_model(mode)
+    before = OrderedDict((key, value.detach().clone()) for key, value in target.state_dict().items())
+    with pytest.raises(ValueError, match="no layout fingerprint"):
+        target.load_state_dict(legacy_source, strict=True)
+    for key, value in before.items():
+        torch.testing.assert_close(target.state_dict()[key], value, rtol=0.0, atol=0.0)
+
+
+def test_tp_only_model_round_trips_full_legacy_weight_namespace() -> None:
+    """The model-level public state surface preserves L6's TP compatibility."""
+
+    source = _build_model(InteractionMode.TENSOR_PRODUCT)
+    legacy_state = source.state_dict()
+    assert any(".mixing.weights.g" in key for key in legacy_state)
+    legacy_state.pop("_tpen_layout_fingerprint")
+    restored = _build_model(InteractionMode.TENSOR_PRODUCT)
+    restored.load_state_dict(legacy_state, strict=True)
 
 
 def test_wrong_layout_restore_is_rejected_before_model_mutation() -> None:
