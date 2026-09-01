@@ -1,4 +1,6 @@
-"""Build a StagePlanV2 of independent ferminet/psiformer rows, one per seed.
+"""Build a StagePlanV2 of independent ferminet-codebase rows, one per seed.
+
+SYSTEM AND ANSATZ ARE BOTH ARGUMENTS.
 
 SYSTEM IS AN ARGUMENT, NOT A COPY. An earlier design kept one builder per system
 (`rung_makeplan.py` for H2, `rung_makeplan_he.py` for He) differing in four
@@ -51,17 +53,46 @@ SYSTEMS = {
                                        "--config.system.atom", "N")},
 }
 
+#: Per-ansatz network flags. ANSATZ IS AN ARGUMENT for the same reason SYSTEM is.
+#: `determinants` is stated explicitly per ansatz rather than shared, so neither
+#: inherits the other's value by omission. Both happen to be 16; that is a
+#: coincidence of the published protocols, not a default, and a future ansatz
+#: with a different count must not silently pick up 16.
+#:
+#: Keeping these distinct matters beyond the builder: psiformer B (0.2129) was
+#: once compared against ferminet N (0.1282) because both lived under
+#: `psi-atoms-*` directories and only the recorded `network_type` distinguished
+#: them. The ansatz has to travel WITH the row, which is why it is also written
+#: into `params` below rather than hardcoded there.
+ANSATZES = {
+    "psiformer": {"network_flags": ("--config.network.network_type", "psiformer",
+                                    "--config.network.determinants", "16")},
+    "ferminet":  {"network_flags": ("--config.network.network_type", "ferminet",
+                                    "--config.network.determinants", "16")},
+}
+
 FN = "/home/rhu/src/ferminet-psiformer-60c9fab3"
 PY = "/home/rhu/.venvs/ferminet-jax092-60c9fab3/bin/python"
+USAGE = ("usage: rung_makeplan.py <system> <ansatz> <results_root> <plan_dir> "
+         "<gpus_per_row> <nrows> <steps> <plan_id>")
+if len(sys.argv) != 9:
+    raise SystemExit(f"{USAGE}\ngot {len(sys.argv) - 1} argument(s): {sys.argv[1:]}")
+# ANSATZ is REQUIRED and positional-second, deliberately. Giving it a default
+# would let an older 7-argument call succeed while silently building psiformer
+# rows -- the same silence that let job 7579539 run H2 under a He label. With no
+# default, a stale call lands a path in argv[1] or argv[2] and dies naming it.
 SYSTEM = sys.argv[1].lower()
 if SYSTEM not in SYSTEMS:
-    raise SystemExit(f"unknown system {SYSTEM!r}; known: {sorted(SYSTEMS)}")
-ROOT = sys.argv[2]
-PLAN_DIR = sys.argv[3]
-GPUS = int(sys.argv[4])
-NROWS = int(sys.argv[5])
-STEPS = int(sys.argv[6])
-PLAN_ID = sys.argv[7]
+    raise SystemExit(f"unknown system {SYSTEM!r}; known: {sorted(SYSTEMS)}\n{USAGE}")
+ANSATZ = sys.argv[2].lower()
+if ANSATZ not in ANSATZES:
+    raise SystemExit(f"unknown ansatz {ANSATZ!r}; known: {sorted(ANSATZES)}\n{USAGE}")
+ROOT = sys.argv[3]
+PLAN_DIR = sys.argv[4]
+GPUS = int(sys.argv[5])
+NROWS = int(sys.argv[6])
+STEPS = int(sys.argv[7])
+PLAN_ID = sys.argv[8]
 
 tasks = []
 for seed in range(NROWS):
@@ -78,8 +109,7 @@ for seed in range(NROWS):
         *SYSTEMS[SYSTEM]["config_flags"](FN),
         "--config.batch_size", "4096",
         "--config.optim.iterations", str(STEPS),
-        "--config.network.network_type", "psiformer",
-        "--config.network.determinants", "16",
+        *ANSATZES[ANSATZ]["network_flags"],
         "--config.debug.deterministic", "True",
         "--config.debug.seed", str(seed),
         "--config.log.save_path", f"{result_dir}/run",
@@ -92,11 +122,12 @@ for seed in range(NROWS):
         result_dir=result_dir,
         outputs=(done_path,),
         logs=(done_path,),
-        params={"code": "ferminet", "ansatz": "psiformer", "system": SYSTEM,
+        params={"code": "ferminet", "ansatz": ANSATZ, "system": SYSTEM,
                 "seed": seed, "steps": STEPS, "batch_size": 4096},
         resources=ResourceSpec(profile="cuda", device="cuda", gpus=GPUS),
         completion=CompletionSpec(policy="file_exists", output_paths=(done_path,)),
-        metadata={"runtime": "ferminet", "row_key": f"{SYSTEM}-seed-{seed}"},
+        metadata={"runtime": "ferminet",
+                  "row_key": f"{SYSTEM}-{ANSATZ}-seed-{seed}"},
     ))
 
 plan = StagePlanV2(study="baselines", stage="baselines", plan_id=PLAN_ID,
@@ -109,5 +140,15 @@ assert len(cmds) == NROWS, f"EXPECTED {NROWS} DISTINCT COMMANDS, got {len(cmds)}
 seeds = sorted(t.params["seed"] for t in plan.tasks)
 assert seeds == list(range(NROWS)), seeds
 assert {t.resources.gpus for t in plan.tasks} == {GPUS}
-print(f"PLAN_OK system={SYSTEM} tasks={len(plan.tasks)} distinct_commands={len(cmds)} gpus_per_row={GPUS} seeds={seeds}")
+# Assert the ansatz reached the ARGV, not merely the params dict. A params-only
+# check would pass while every row still ran the other network, which is the
+# failure mode that made a psiformer directory hold ferminet rows.
+want_net = ANSATZES[ANSATZ]["network_flags"][1]
+for t in plan.tasks:
+    argv = list(t.command)
+    got = argv[argv.index("--config.network.network_type") + 1]
+    assert got == want_net, f"row {t.run_id}: argv says {got!r}, wanted {want_net!r}"
+    assert t.params["ansatz"] == ANSATZ, f"row {t.run_id}: params say {t.params['ansatz']!r}"
+print(f"PLAN_OK system={SYSTEM} ansatz={ANSATZ} tasks={len(plan.tasks)} "
+      f"distinct_commands={len(cmds)} gpus_per_row={GPUS} seeds={seeds}")
 print(f"PLAN_DIR={PLAN_DIR}")

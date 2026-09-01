@@ -40,12 +40,37 @@ ENERGY_BAND = {
     "n":  (-54.65, -54.53),
 }
 
+#: The energy band can only judge a CONVERGED run. A 200- or 3000-step ramp rung
+#: sits far above its band and would fail for the right reason at the wrong time.
+#: So the band is gated on step count -- and the rungs below that threshold are
+#: exactly the ones that most need a system check, which is why the command-based
+#: check below exists and does not depend on convergence at all.
+BAND_MIN_STEPS = 50000
+
+#: Which flag names the system, per config style. Atoms carry an element symbol;
+#: H2 carries a molecule name. Reading either is enough to identify the system
+#: from argv alone.
+SYSTEM_FLAGS = ("--config.system.atom", "--config.system.molecule_name")
+
+def _flag(argv, name):
+    """Value following `name` in argv, or None. argv may be a list or a string."""
+    if isinstance(argv, str):
+        argv = argv.split()
+    try:
+        return argv[list(argv).index(name) + 1]
+    except (ValueError, IndexError):
+        return None
+
+
 root = Path(sys.argv[1])
 want_rows = int(sys.argv[2])
 want_gpus = int(sys.argv[3])
 want_hosts = int(sys.argv[4])
 want_system = sys.argv[5] if len(sys.argv) > 5 else None
+want_ansatz = sys.argv[6] if len(sys.argv) > 6 else None
 fails = []
+ran, skipped = [], []
+
 
 
 recs_path = root / "launch" / "dispatch_records.jsonl"
@@ -114,8 +139,81 @@ if len(energies) != want_rows:
 elif len(set(energies.values())) != want_rows:
     fails.append(f"NON-DISTINCT energies -> seeds not consumed: {energies}")
 
-# WRONG-SYSTEM CHECK. Structural gates cannot see this.
-if want_system:
+# COMMAND-BASED SYSTEM/ANSATZ CHECK.
+#
+# This reads what was SUBMITTED, and it is valid at any step count -- 200 steps
+# or 200000. It exists because the energy band, the only previous system check,
+# needs a converged run, so the short rungs had no system check at all.
+#
+# Preference order matters. `submitted_command` is what dispatch actually sent;
+# `plan/tasks.jsonl` is only what was intended. They can differ. But one failed
+# row makes dispatch raise and suppresses ALL records, so records may be absent
+# on a run whose rows were fine -- hence the fallback, which announces itself
+# rather than quietly weakening the check.
+cmd_source, cmds = None, []
+if recs:
+    cmds = [r.get("submitted_command") or [] for r in recs]
+    cmd_source = "dispatch_records.submitted_command"
+if not any(cmds):
+    plan_tasks = root / "plan" / "tasks.jsonl"
+    if plan_tasks.exists():
+        cmds = [json.loads(l).get("command") or []
+                for l in plan_tasks.read_text().splitlines() if l.strip()]
+        cmd_source = "plan/tasks.jsonl (FALLBACK: dispatch records absent or empty)"
+
+observed_steps = set()
+if not any(cmds):
+    # Never silently skip: with no command anywhere, this check cannot run, and
+    # saying nothing would read as a pass.
+    fails.append("no submitted_command and no plan/tasks.jsonl -- command-based "
+                 "system/ansatz check COULD NOT RUN")
+else:
+    print(f"GATE command source   {cmd_source} ({len([c for c in cmds if c])} row(s))")
+    got_sys, got_ans = set(), set()
+    for argv in cmds:
+        if not argv:
+            continue
+        for flag in SYSTEM_FLAGS:
+            v = _flag(argv, flag)
+            if v is not None:
+                got_sys.add(v.lower())
+        v = _flag(argv, "--config.network.network_type")
+        if v is not None:
+            got_ans.add(v.lower())
+        v = _flag(argv, "--config.optim.iterations")
+        if v is not None:
+            observed_steps.add(int(v))
+    print(f"GATE argv system      {sorted(got_sys)}")
+    print(f"GATE argv ansatz      {sorted(got_ans)}")
+    print(f"GATE argv steps       {sorted(observed_steps)}")
+    if len(got_sys) > 1:
+        fails.append(f"MIXED SYSTEMS in one rung: {sorted(got_sys)}")
+    if len(got_ans) > 1:
+        fails.append(f"MIXED ANSATZES in one rung: {sorted(got_ans)}")
+    if want_system:
+        ran.append("argv-system")
+        if got_sys and got_sys != {want_system.lower()}:
+            fails.append(f"WRONG SYSTEM IN ARGV: asked for {want_system!r}, "
+                         f"command says {sorted(got_sys)}")
+        elif not got_sys:
+            fails.append("command names no system flag; cannot confirm system from argv")
+    if want_ansatz:
+        ran.append("argv-ansatz")
+        if got_ans and got_ans != {want_ansatz.lower()}:
+            fails.append(f"WRONG ANSATZ IN ARGV: asked for {want_ansatz!r}, "
+                         f"command says {sorted(got_ans)}")
+        elif not got_ans:
+            fails.append("command names no network_type; cannot confirm ansatz from argv")
+
+# WRONG-SYSTEM CHECK BY ENERGY. Production only -- see BAND_MIN_STEPS.
+band_applicable = bool(observed_steps) and min(observed_steps) >= BAND_MIN_STEPS
+if want_system and not band_applicable:
+    skipped.append(
+        f"energy-band (steps {sorted(observed_steps) or 'unknown'} < {BAND_MIN_STEPS}; "
+        "a short rung is not converged, so the band cannot judge it)")
+if want_system and band_applicable:
+    ran.append("energy-band")
+if want_system and band_applicable:
     band = ENERGY_BAND.get(want_system.lower())
     if band is None:
         fails.append(f"no energy band known for system {want_system!r}; add one rather than skipping")
@@ -130,6 +228,13 @@ if want_system:
                 f"{dict(list(bad.items())[:3])}"
                 + (f" -- these look like {other}" if other else "")
             )
+
+# State what ran and what did not. A gate that skips a check silently is
+# indistinguishable from one that passed it.
+print(f"GATE checks ran       {ran or ['(none)']}")
+if skipped:
+    for sk in skipped:
+        print(f"GATE checks SKIPPED   {sk}")
 
 if fails:
     print("RUNG_GATES_FAILED")
