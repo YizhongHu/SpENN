@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,7 +35,6 @@ except ImportError:  # pragma: no cover - keeps read-only import portable.
 
 PIN_LEDGER_FILENAME = "pins.jsonl"
 PIN_RECORD_SCHEMA = "tpen.checkpoint-pin/v1"
-PinLedgerRecord: TypeAlias = "PinRecord | ReleaseRecord"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -148,6 +148,9 @@ class ReleaseRecord:
     from_dict = from_mapping
 
 
+PinLedgerRecord: TypeAlias = PinRecord | ReleaseRecord
+
+
 class PinStore:
     """Append-only durable store for checkpoint pin and release tokens.
 
@@ -186,8 +189,6 @@ class PinStore:
         """
 
         normalized_ref = _normalize_ref(ref)
-        # Validate before opening the ledger so an unknown checkpoint cannot
-        # create durable state while failing closed.
         _validate_live_ref(normalized_ref)
         requested = PinRecord(token=token, ref=normalized_ref, owner=owner, reason=reason)
         with self._write_ledger() as handle:
@@ -199,6 +200,7 @@ class PinStore:
                         f"pin token {requested.token!r} was already released and cannot be reused"
                     )
                 if existing.to_dict() == requested.to_dict():
+                    _fsync_ledger(handle, self.path)
                     return existing
                 raise PinLedgerError(f"conflicting pin records for token {requested.token!r}")
             _check_ref_conflict(state, requested)
@@ -223,10 +225,12 @@ class PinStore:
             state, tail_offset = _scan_ledger(handle.read(), self.path, report_torn=False)
             if token not in state.pin_history:
                 if token in state.release_history:
+                    _fsync_ledger(handle, self.path)
                     return state.release_history[token]
                 raise PinLedgerError(f"cannot release unknown pin token {token!r}")
             existing = state.release_history.get(token)
             if existing is not None:
+                _fsync_ledger(handle, self.path)
                 return existing
             requested = ReleaseRecord(token=token)
             _append_record(handle, requested.to_dict(), self.path, tail_offset)
@@ -287,7 +291,7 @@ class PinStore:
 
     def _read_state(self) -> _LedgerState:
         try:
-            with self.path.open("rb") as handle:
+            with _open_regular_ledger(self.path, writable=False) as handle:
                 _lock(handle, "shared")
                 try:
                     data = handle.read()
@@ -303,7 +307,7 @@ class PinStore:
     def _write_ledger(self) -> Iterator[BinaryIO]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            handle = self.path.open("a+b")
+            handle = _open_regular_ledger(self.path, writable=True)
         except OSError as exc:
             raise PinLedgerError(f"cannot open pin ledger {self.path}: {exc}") from exc
         try:
@@ -314,6 +318,7 @@ class PinStore:
         try:
             handle.seek(0)
             yield handle
+            _fsync_parent_directory(self.path)
         finally:
             try:
                 _unlock(handle)
@@ -429,8 +434,13 @@ def _scan_ledger(
 ) -> tuple[_LedgerState, int | None]:
     state = _LedgerState()
     offset = 0
-    for line_number, line in enumerate(data.splitlines(keepends=True), start=1):
-        terminated = line.endswith(b"\n")
+    line_number = 0
+    while offset < len(data):
+        line_number += 1
+        newline_offset = data.find(b"\n", offset)
+        terminated = newline_offset >= 0
+        line_end = newline_offset + 1 if terminated else len(data)
+        line = data[offset:line_end]
         payload = line[:-1] if terminated else line
         if not payload.strip():
             if not terminated:
@@ -561,6 +571,47 @@ def _append_record(
         os.fsync(handle.fileno())
     except OSError as exc:
         raise PinLedgerError(f"cannot durably append checkpoint pin record to {path}: {exc}") from exc
+
+
+def _open_regular_ledger(path: Path, *, writable: bool) -> BinaryIO:
+    flags = os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    if writable:
+        flags |= os.O_RDWR | os.O_APPEND | os.O_CREAT
+        mode = "a+b"
+    else:
+        flags |= os.O_RDONLY
+        mode = "rb"
+    fd = os.open(path, flags, 0o666)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise PinLedgerError(f"pin ledger path is not a regular file: {path}")
+        return os.fdopen(fd, mode)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _fsync_ledger(handle: BinaryIO, path: Path) -> None:
+    try:
+        os.fsync(handle.fileno())
+    except OSError as exc:
+        raise PinLedgerError(
+            f"cannot durably append checkpoint pin record to {path}: {exc}"
+        ) from exc
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path.parent, flags)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise PinLedgerError(
+            f"cannot durably commit checkpoint pin ledger directory {path.parent}: {exc}"
+        ) from exc
 
 
 def _report_torn(path: Path, byte_length: int, action: str | None) -> None:

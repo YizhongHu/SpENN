@@ -36,10 +36,6 @@ def _ref(root: Path, step: int = 7) -> CheckpointRef:
 
 
 @pytest.mark.parametrize("operation", ["pin", "release"])
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S1 9cfd4867-a96f-43de-87ff-6f3bcc06863f: retry must re-establish durability",
-)
 def test_write_then_barrier_failure_is_not_reported_as_durable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -62,19 +58,21 @@ def test_write_then_barrier_failure_is_not_reported_as_durable(
     if operation == "pin":
         with pytest.raises(PinLedgerError, match="durably append"):
             store.pin(ref, "token", "owner", "reason")
-        with pytest.raises(PinLedgerError, match="durably append"):
-            store.pin(ref, "token", "owner", "reason")
+        store.pin(ref, "token", "owner", "reason")
     else:
         calls = 0
         with pytest.raises(PinLedgerError, match="durably append"):
             store.release("token")
-        with pytest.raises(PinLedgerError, match="durably append"):
-            store.release("token")
+        store.release("token")
 
     assert calls >= 2
+    if operation == "pin":
+        assert [record.token for record in store.active_pins()] == ["token"]
+    else:
+        assert store.active_pins() == ()
 
 
-def test_first_ledger_creation_uses_the_promised_file_durability_barrier(
+def test_first_ledger_creation_fsyncs_file_and_parent_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ref = _ref(tmp_path / "checkpoint")
@@ -88,15 +86,10 @@ def test_first_ledger_creation_uses_the_promised_file_durability_barrier(
     monkeypatch.setattr(pins_module.os, "fsync", record_fsync)
     PinStore(tmp_path / "pins.jsonl").pin(ref, "token", "owner", "reason")
 
-    # The production contract promises the ledger-file barrier. It does not
-    # promise a parent-directory barrier, so no directory fsync is asserted.
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert calls[0] != calls[1]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S1 9cfd4867-a96f-43de-87ff-6f3bcc06863f: ledger path follows symlinks",
-)
 def test_symlink_ledger_fails_closed_without_mutating_external_target(tmp_path: Path) -> None:
     ref = _ref(tmp_path / "checkpoint")
     target = tmp_path / "external.jsonl"
@@ -128,5 +121,48 @@ def test_invalid_interior_records_are_distinct_from_a_torn_tail(
 
     with pytest.raises(PinLedgerError, match="invalid checkpoint pin ledger record"):
         store.records()
+
+    assert path.read_bytes() == before
+
+def test_crlf_boundary_keeps_following_records_visible_and_ledger_intact(
+    tmp_path: Path,
+) -> None:
+    first = _ref(tmp_path / "first", step=7)
+    second = _ref(tmp_path / "second", step=8)
+    path = tmp_path / "pins.jsonl"
+    store = PinStore(path)
+    store.pin(first, "first", "owner", "reason")
+    store.pin(second, "second", "owner", "reason")
+    first_row, separator, following_rows = path.read_bytes().partition(b"\n")
+    assert separator == b"\n"
+    path.write_bytes(first_row + b"\r\n" + following_rows)
+    before = path.read_bytes()
+
+    assert [record.token for record in store.records()] == ["first", "second"]
+
+    assert path.read_bytes() == before
+
+
+def test_raw_cr_inside_record_fails_closed_without_hiding_or_truncating_later_rows(
+    tmp_path: Path,
+) -> None:
+    first = _ref(tmp_path / "first", step=7)
+    second = _ref(tmp_path / "second", step=8)
+    third = _ref(tmp_path / "third", step=9)
+    fourth = _ref(tmp_path / "fourth", step=10)
+    path = tmp_path / "pins.jsonl"
+    store = PinStore(path)
+    store.pin(first, "first", "owner", "reason")
+    store.pin(second, "second", "owner", "reason")
+    store.pin(third, "third", "owner", "reason")
+    rows = path.read_bytes().split(b"\n")
+    rows[1] = rows[1].replace(b'"reason":"reason"', b'"reason":"raw\rcr"')
+    path.write_bytes(b"\n".join(rows))
+    before = path.read_bytes()
+
+    with pytest.raises(PinLedgerError, match="invalid checkpoint pin ledger record"):
+        store.records()
+    with pytest.raises(PinLedgerError, match="invalid checkpoint pin ledger record"):
+        store.pin(fourth, "fourth", "owner", "reason")
 
     assert path.read_bytes() == before
