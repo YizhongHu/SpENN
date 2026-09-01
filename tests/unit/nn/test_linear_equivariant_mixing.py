@@ -36,9 +36,9 @@ def test_linear_one_body_formula_and_parameter_static(aggregation: Aggregation) 
 
     assert output.blocks[1].shape == (1, 1, 2, 3)
     torch.testing.assert_close(output.blocks[1][0, 0, 0], values[0])
-    expected = values.sum() - values
+    expected = torch.tensor([6.0, 5.0, 3.0], dtype=values.dtype)
     if aggregation is Aggregation.COMPLETION_MEAN:
-        expected = expected / 2
+        expected = torch.tensor([3.0, 2.5, 1.5], dtype=values.dtype)
     torch.testing.assert_close(output.blocks[1][0, 0, 1], expected)
     assert tuple(mixing.state_dict()) == before
 
@@ -46,6 +46,12 @@ def test_linear_one_body_formula_and_parameter_static(aggregation: Aggregation) 
 def test_linear_empty_orbit_and_zero_particles_are_zero_safe() -> None:
     metadata = LinearPathMetadata.generate(max_order=1, policy=LinearPathPolicy.ORBIT_COMPLETE)
     mixing = LinearEquivariantMixing(max_order=1, channels=1, metadata=metadata, aggregation="completion_mean")
+    one_particle = mixing(Feature([zero_block(batch_size=1), torch.ones(1, 1, 1)]))
+    assert one_particle.blocks[1].shape == (1, 1, 2, 1)
+    assert torch.isfinite(one_particle.blocks[1]).all()
+    torch.testing.assert_close(one_particle.blocks[1][0, 0, 0], torch.ones(1))
+    torch.testing.assert_close(one_particle.blocks[1][0, 0, 1], torch.zeros(1))
+
     output = mixing(Feature([zero_block(batch_size=1), torch.empty(1, 1, 0)]))
 
     assert output.blocks[1].shape == (1, 1, 2, 0)
