@@ -45,6 +45,12 @@ ENERGY_BAND = {
 #: So the band is gated on step count -- and the rungs below that threshold are
 #: exactly the ones that most need a system check, which is why the command-based
 #: check below exists and does not depend on convergence at all.
+#: How many leading rows form a run's fingerprint for the seeds-consumed test.
+#: A row whose seed was ignored reproduces another row's trajectory EXACTLY, so it
+#: collides on all TRAJECTORY_PREFIX values at once. Independent rows colliding on
+#: that many values by chance is not a practical concern.
+TRAJECTORY_PREFIX = 10
+
 BAND_MIN_STEPS = 50000
 
 #: Which flag names the system, per config style. Atoms carry an element symbol;
@@ -128,16 +134,47 @@ else:
 if len([h for h in hosts if h]) != want_hosts:
     fails.append(f"host count {len([h for h in hosts if h])} != {want_hosts}")
 
-energies = {}
+energies, fingerprints = {}, {}
 for d in sorted(glob.glob(str(root / "results" / "*"))):
     csv = Path(d) / "run" / "train_stats.csv"
     if csv.exists():
-        energies[os.path.basename(d)] = csv.read_text().strip().splitlines()[-1].split(",")[1]
+        name = os.path.basename(d)
+        lines = csv.read_text().strip().splitlines()
+        energies[name] = lines[-1].split(",")[1]
+        # Skip the header, take the earliest steps: they are set by the seed's
+        # initial walkers and have not yet been pulled together by optimisation.
+        fingerprints[name] = tuple(l.split(",")[1] for l in lines[1:1 + TRAJECTORY_PREFIX])
 print(f"GATE energies         {energies}")
 if len(energies) != want_rows:
     fails.append(f"{len(energies)} of {want_rows} rows produced train_stats.csv")
-elif len(set(energies.values())) != want_rows:
-    fails.append(f"NON-DISTINCT energies -> seeds not consumed: {energies}")
+else:
+    # SEEDS-CONSUMED TEST, on the trajectory rather than on the final energy.
+    #
+    # Testing final energies for distinctness looks equivalent and is not. Final
+    # energies CONVERGE: as a run improves, all rows crowd toward the same value,
+    # so the probability that two of them round to the same printed number RISES
+    # with run quality. That check is therefore most likely to fire spuriously on
+    # the best runs -- an alarm whose rate is governed by convergence, not by
+    # correctness. R2 arm lo (job 7580172) tripped it at 2000 steps: seed-11 and
+    # seed-14 both printed -2.9036388, while differing from step 0 onward and
+    # agreeing on exactly 1 of 2000 rows. The n=20 production run 7579717 passed
+    # the same check by luck.
+    dupes = {}
+    for name, fp in fingerprints.items():
+        dupes.setdefault(fp, []).append(name)
+    collided = [names for names in dupes.values() if len(names) > 1]
+    if collided:
+        fails.append(
+            f"SEEDS NOT CONSUMED: rows share their first {TRAJECTORY_PREFIX} "
+            f"energies, i.e. identical trajectories: {collided}")
+    # Report final-energy coincidences, but do NOT fail on them: see above.
+    if len(set(energies.values())) != want_rows:
+        same = {}
+        for n_, v in energies.items():
+            same.setdefault(v, []).append(n_)
+        print("GATE note             final-energy coincidence (NOT a failure; "
+              f"trajectories verified distinct): "
+              f"{[g for g in same.values() if len(g) > 1]}")
 
 # COMMAND-BASED SYSTEM/ANSATZ CHECK.
 #

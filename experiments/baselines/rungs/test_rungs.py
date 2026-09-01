@@ -185,3 +185,19 @@ def test_system_flags_cover_both_config_styles() -> None:
     for sysname, spec in makeplan.SYSTEMS.items():
         flags = spec["config_flags"]("/fn")
         assert any(f in flags for f in mod.SYSTEM_FLAGS), sysname
+
+
+def test_seeds_consumed_test_uses_a_trajectory_not_a_final_energy() -> None:
+    """The seeds-consumed test must key on many early steps, not one final value.
+
+    Final energies converge, so testing them for distinctness gets MORE likely to
+    fire spuriously as a run improves -- an alarm governed by convergence rather
+    than correctness. R2 arm lo (job 7580172) tripped it: seed-11 and seed-14 both
+    printed -2.9036388 while differing from step 0 and agreeing on 1 of 2000 rows.
+    """
+
+    mod = _load("rung_gate.py")
+    assert mod.TRAJECTORY_PREFIX >= 5, (
+        "a short prefix reintroduces chance collisions; an unconsumed seed "
+        "collides on every step, so there is no reason to test only a few"
+    )
