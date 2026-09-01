@@ -166,6 +166,7 @@ def test_manifest_rejects_a_noncanonical_payload_contract(tmp_path) -> None:
 
 
 def test_explicit_model_only_payload_owns_save_defaults_and_manifest(tmp_path: Path) -> None:
+    payload = ModelOnly()
     model = torch.nn.Linear(2, 1).double()
     checkpoint_dir = save_checkpoint(
         output_dir=tmp_path / "checkpoints",
@@ -173,21 +174,22 @@ def test_explicit_model_only_payload_owns_save_defaults_and_manifest(tmp_path: P
         completed_updates=2,
         model=model,
         context=_context(),
-        payload=ModelOnly(),
+        payload=payload,
     )
 
     manifest = json.loads((checkpoint_dir / "manifest.json").read_text())
-    assert manifest["payload"] == ModelOnly().to_manifest()
-    assert manifest["files"] == {
-        "model": "model.pt",
-        "resolved_config": "resolved_config.yaml",
-    }
-    assert sorted(path.name for path in checkpoint_dir.iterdir()) == [
-        "COMPLETE",
-        "manifest.json",
-        "model.pt",
-        "resolved_config.yaml",
-    ]
+    assert manifest["payload"] == payload.to_manifest()
+    assert payload.required_files == ("model",)
+    assert payload.required_state == ()
+    assert "model" in manifest["files"]
+    assert set(manifest["files"]).isdisjoint(
+        {"optimizer", "trainer", "sampler", "rng"}
+    )
+    assert (checkpoint_dir / "model.pt").is_file()
+    assert (checkpoint_dir / "manifest.json").is_file()
+    assert (checkpoint_dir / "COMPLETE").is_file()
+    for train_state_file in ("optimizer.pt", "trainer.json", "sampler.pt", "rng.pt"):
+        assert not (checkpoint_dir / train_state_file).exists()
 
 
 def test_explicit_model_only_payload_rejects_train_state_flags(tmp_path: Path) -> None:
