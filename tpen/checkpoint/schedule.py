@@ -82,8 +82,6 @@ class ExplicitUpdates:
     updates: frozenset[int]
 
     def __init__(self, updates: Iterable[int]) -> None:
-        if isinstance(updates, (str, bytes)):
-            raise TypeError("updates must be an iterable of integers")
         try:
             entries = tuple(updates)
         except TypeError as exc:
@@ -114,8 +112,8 @@ def _validate_boundary(completed_updates: int, terminal: bool) -> None:
 def _validate_positive_int(value: int, label: str) -> None:
     """Validate a positive integer schedule value."""
 
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{label} must be an integer")
+    if type(value) is not int:
+        raise TypeError(f"{label} must be an int, got {type(value).__name__}")
     if value < 1:
         raise ValueError(f"{label} must be at least 1")
 

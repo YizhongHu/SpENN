@@ -136,11 +136,6 @@ class Checkpoint(StatefulCallback[TrainerState]):
                 "Checkpoint writes nothing with periodic=False and terminal=False"
             )
         cadence = pop_step_cadence(kwargs)
-        if schedule is not None and not isinstance(schedule, CheckpointSchedule):
-            raise TypeError(
-                "schedule must implement CheckpointSchedule, got "
-                f"{type(schedule).__name__}"
-            )
         # Subscriptions are class-owned under ADR-E002 -- no config names an
         # event -- but WHICH of this class's two writes an instance performs is
         # a semantic option, which is the alternative that ADR names for a
