@@ -530,9 +530,15 @@ def _latest_per_root(refs: tuple[RetentionRef, ...]) -> tuple[RetentionRef, ...]
 def _has_complete_latest_coverage(
     refs: tuple[RetentionRef, ...], latest_refs: tuple[RetentionRef, ...]
 ) -> bool:
-    expected = {_ref_key(ref) for ref in _latest_per_root(refs)}
-    observed = {_ref_key(ref) for ref in latest_refs}
-    return observed == expected
+    known_keys = {_ref_key(ref) for ref in refs}
+    latest_keys = {_ref_key(ref) for ref in latest_refs}
+    expected_roots = set(_group_by_root(refs))
+    observed_roots = [str(Path(ref.checkpoint_dir).parent) for ref in latest_refs]
+    return (
+        latest_keys.issubset(known_keys)
+        and len(observed_roots) == len(expected_roots)
+        and set(observed_roots) == expected_roots
+    )
 
 
 def _group_by_root(refs: tuple[RetentionRef, ...]) -> dict[str, tuple[RetentionRef, ...]]:
