@@ -9,12 +9,14 @@ from typing import Any
 
 from tpen.artifacts import append_jsonl
 
+from .artifact import read_latest, write_latest
 from .reference import (
     CHECKPOINT_REF_SCHEMA,
     CheckpointRef,
     deserialize_checkpoint_ref,
     serialize_checkpoint_ref,
 )
+from .schema import read_manifest
 
 PUBLICATION_CATALOG_FILENAME = "publications.jsonl"
 PUBLICATION_RECORD_SCHEMA = "tpen.checkpoint-publication/v1"
@@ -112,6 +114,48 @@ def read_publications(path: str | Path) -> tuple[CheckpointRef, ...]:
     return CheckpointCatalog(path).records()
 
 
+def reconcile_publication(
+    checkpoint_root: str | Path, checkpoint_dir: str | Path
+) -> CheckpointRef:
+    """Ensure one committed checkpoint has its catalog row and latest pointer.
+
+    The directory rename is the checkpoint commit, while catalog publication
+    and ``latest.json`` are separate durable operations.  A retry therefore
+    needs to reconcile both indexes instead of treating a complete directory
+    as proof that both operations succeeded.  ``CheckpointCatalog.publish``
+    supplies the append-idempotent row operation: an existing identical ref is
+    not appended again, while a conflicting row still fails closed.
+
+    This helper deliberately does not prune.  Retention remains the tail of a
+    successful new save and a repair must not rewrite the committed payload or
+    remove any checkpoint directories.
+    """
+
+    root = Path(checkpoint_root)
+    directory = Path(checkpoint_dir)
+    ref = CheckpointRef.from_directory(directory)
+    CheckpointCatalog(publication_catalog_path(root)).publish(ref)
+
+    manifest = read_manifest(directory / "manifest.json", mode="model_only")
+    expected_latest = {
+        "checkpoint_dir": directory.name,
+        "step": ref.next_iteration,
+        "created_at_unix": manifest.created_at_unix,
+    }
+    try:
+        latest = read_latest(root)
+    except (FileNotFoundError, ValueError):
+        latest = None
+    if latest != expected_latest:
+        write_latest(
+            root,
+            directory,
+            step=ref.next_iteration,
+            created_at_unix=manifest.created_at_unix,
+        )
+    return ref
+
+
 def _deserialize_record(record: Any, *, path: Path, line_number: int) -> CheckpointRef:
     if not isinstance(record, Mapping) or record.get("schema") != PUBLICATION_RECORD_SCHEMA:
         raise ValueError(
@@ -131,5 +175,6 @@ __all__ = [
     "PublicationCatalog",
     "append_publication",
     "publication_catalog_path",
+    "reconcile_publication",
     "read_publications",
 ]

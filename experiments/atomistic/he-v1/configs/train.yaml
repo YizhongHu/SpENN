@@ -396,7 +396,11 @@ callbacks:
   # only the second survives review.
   - _target_: tpen.callback.Checkpoint
     terminal: false
-    every_n_steps: 25000
+    schedule:
+      _target_: tpen.checkpoint.EveryNUpdates
+      every_n: 25000
+    payload:
+      _target_: tpen.checkpoint.TrainResume
     keep_last: null
     output_dir: ${run.dir}/checkpoints
 

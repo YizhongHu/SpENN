@@ -376,7 +376,7 @@ class TestArmIsTheMeasuredOne:
         checkpoint = next(
             entry for entry in callbacks if entry["_target_"] == "tpen.callback.Checkpoint"
         )
-        cadence = int(checkpoint["every_n_steps"])
+        cadence = int(checkpoint["schedule"]["every_n"])
         intermediate = [s for s in grid["checkpoint_steps"] if s != max(grid["checkpoint_steps"])]
         assert intermediate, "no non-terminal evaluated checkpoint; this test would be vacuous"
         for step in grid["checkpoint_steps"]:
@@ -406,7 +406,7 @@ class TestArmIsTheMeasuredOne:
         keep_last = checkpoint.get("keep_last")
         if keep_last is None:
             return
-        cadence = int(checkpoint["every_n_steps"])
+        cadence = int(checkpoint["schedule"]["every_n"])
         max_steps = max(grid["checkpoint_steps"])
         required = (max_steps - min(grid["checkpoint_steps"])) // cadence + 1
         assert int(keep_last) >= required, (
@@ -433,7 +433,7 @@ class TestArmIsTheMeasuredOne:
         checkpoint = next(
             entry for entry in callbacks if entry["_target_"] == "tpen.callback.Checkpoint"
         )
-        cadence = int(checkpoint["every_n_steps"])
+        cadence = int(checkpoint["schedule"]["every_n"])
         written = max(grid["checkpoint_steps"]) // cadence
         assert written > len(grid["checkpoint_steps"])
 

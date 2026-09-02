@@ -14,11 +14,16 @@ from typing import Any, ClassVar
 
 from tpen.artifacts import RunContext
 from tpen.checkpoint import (
+    CheckpointPayload,
     CheckpointSchedule,
+    ModelOnly,
+    TrainResume,
     checkpoint_step_dir_name,
+    reconcile_publication,
     save_checkpoint,
 )
 from tpen.checkpoint.artifact import is_complete_checkpoint_dir
+from tpen.checkpoint.schema import read_manifest
 from tpen.events import DomainState
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription
@@ -48,10 +53,16 @@ class Checkpoint(StatefulCallback[TrainerState]):
         Semantic periodic schedule keyed on durable ``completed_updates``.
         Every configured schedule also admits the terminal boundary; terminal
         publication is never cadence-gated.
+    payload : CheckpointPayload or None, optional
+        Immutable contract for the files and restore intents this stream
+        publishes.  When omitted, the historical all-components payload is
+        preserved unless the legacy save flags select another component set.
     keep_last : int or None, optional
         Keep only the latest ``keep_last`` complete checkpoint directories.
-    save_optimizer, save_trainer, save_sampler, save_rng : bool, optional
-        Whether to include train-resume state components.
+    save_optimizer, save_trainer, save_sampler, save_rng : bool or None, optional
+        Whether to include train-resume state components.  ``None`` lets an
+        explicit payload choose; with no payload, the historical all-component
+        default is preserved.
     **kwargs
         Forwarded to `StatefulCallback` (e.g. legacy ``every_n_steps``).
 
@@ -122,13 +133,14 @@ class Checkpoint(StatefulCallback[TrainerState]):
         output_dir: str | Path,
         *,
         schedule: CheckpointSchedule | None = None,
+        payload: CheckpointPayload | None = None,
         periodic: bool = True,
         terminal: bool = True,
         keep_last: int | None = None,
-        save_optimizer: bool = True,
-        save_trainer: bool = True,
-        save_sampler: bool = True,
-        save_rng: bool = True,
+        save_optimizer: bool | None = None,
+        save_trainer: bool | None = None,
+        save_sampler: bool | None = None,
+        save_rng: bool | None = None,
         **kwargs: Any,
     ) -> None:
         if not periodic and not terminal:
@@ -164,13 +176,14 @@ class Checkpoint(StatefulCallback[TrainerState]):
         # legacy scalar gate remains for existing configs until the composed
         # callback migration, but both paths use durable completed_updates.
         self.schedule = schedule
+        self.payload = payload
         self.periodic = bool(periodic)
         self.terminal = bool(terminal)
         self.keep_last = keep_last
-        self.save_optimizer = bool(save_optimizer)
-        self.save_trainer = bool(save_trainer)
-        self.save_sampler = bool(save_sampler)
-        self.save_rng = bool(save_rng)
+        self.save_optimizer = save_optimizer
+        self.save_trainer = save_trainer
+        self.save_sampler = save_sampler
+        self.save_rng = save_rng
         # The legacy gate applies only to periodic writes. Terminal publication
         # is an explicit semantic boundary and never consults this gate.
         self._steps = StepCadenceGate(cadence)
@@ -254,6 +267,8 @@ class Checkpoint(StatefulCallback[TrainerState]):
     ) -> None:
         final_dir = self.output_dir / checkpoint_step_dir_name(next_iteration)
         if is_complete_checkpoint_dir(final_dir):
+            self._validate_existing_publication(final_dir)
+            reconcile_publication(self.output_dir, final_dir)
             return
         model = state.model
         if model is None:
@@ -263,15 +278,45 @@ class Checkpoint(StatefulCallback[TrainerState]):
             next_iteration=next_iteration,
             completed_updates=completed_updates,
             model=model,
-            optimizer=state.optimizer if self.save_optimizer else None,
-            trainer=state.trainer if self.save_trainer else None,
-            sampler=state.sampler if self.save_sampler else None,
+            # The composed payload owns which components are written. Passing
+            # the available state through lets an explicit TrainResume payload
+            # use its defaults (the legacy flags are still honoured by the
+            # saver when they are explicitly set to False).
+            optimizer=state.optimizer,
+            trainer=state.trainer,
+            sampler=state.sampler,
             context=context,
+            payload=self.payload,
             save_optimizer=self.save_optimizer,
             save_trainer=self.save_trainer,
             save_sampler=self.save_sampler,
             save_rng=self.save_rng,
             keep_last=self.keep_last,
+        )
+
+    def _validate_existing_publication(self, final_dir: Path) -> None:
+        """Allow only an equivalent re-publication at this stream root.
+
+        A complete step directory is the collision boundary for one configured
+        stream (its canonical ``output_dir``).  Replaying the same payload is
+        idempotent, while a different payload must fail before ``save_checkpoint``
+        can write or publish anything for the second stream.
+        """
+
+        existing = _existing_components(final_dir)
+        configured = _configured_components(
+            self.payload,
+            save_optimizer=self.save_optimizer,
+            save_trainer=self.save_trainer,
+            save_sampler=self.save_sampler,
+            save_rng=self.save_rng,
+        )
+        if existing is not None and existing == configured:
+            return
+        raise ValueError(
+            f"checkpoint stream collision at {final_dir}: existing payload="
+            f"{_payload_label(existing)!r}, configured payload="
+            f"{_payload_label(configured)!r}"
         )
 
     def _reset_typed_state(self) -> None:
@@ -316,6 +361,67 @@ def _trainer_progress(state: TrainerState) -> tuple[int, int]:
     if not isinstance(progress, Mapping):
         raise TypeError("trainer.state_dict() must return a mapping")
     return int(progress["next_iteration"]), int(progress["completed_updates"])
+
+
+_PAYLOAD_COMPONENTS = frozenset(("model", "optimizer", "trainer", "sampler", "rng"))
+
+
+def _configured_components(
+    payload: CheckpointPayload | None,
+    *,
+    save_optimizer: bool | None,
+    save_trainer: bool | None,
+    save_sampler: bool | None,
+    save_rng: bool | None,
+) -> frozenset[str]:
+    """Return the effective component set this callback would publish."""
+
+    if payload is not None:
+        resolved = {
+            component: (component in payload.required_files if flag is None else flag)
+            for component, flag in (
+                ("optimizer", save_optimizer),
+                ("trainer", save_trainer),
+                ("sampler", save_sampler),
+                ("rng", save_rng),
+            )
+        }
+        payload.validate_save_flags({"model": True, **resolved})
+        return frozenset(payload.required_files)
+    return frozenset(
+        component
+        for component, flag in (
+            ("model", True),
+            ("optimizer", save_optimizer),
+            ("trainer", save_trainer),
+            ("sampler", save_sampler),
+            ("rng", save_rng),
+        )
+        if flag is not False
+    )
+
+
+def _existing_components(final_dir: Path) -> frozenset[str] | None:
+    """Read the effective component set of a complete existing checkpoint."""
+
+    manifest = read_manifest(final_dir / "manifest.json", mode="model_only")
+    if manifest.payload is not None:
+        # Validate payload metadata when present, but use the files map as the
+        # collision key so metadata cannot hide an unexpected extra component.
+        CheckpointPayload.from_manifest(manifest.payload)
+    return frozenset(name for name in manifest.files if name in _PAYLOAD_COMPONENTS)
+
+
+def _payload_label(components: frozenset[str] | None) -> str | None:
+    """Render a component set for a collision diagnostic."""
+
+    if components is None:
+        return None
+    if components == frozenset(("model",)):
+        return ModelOnly().name
+    if components == _PAYLOAD_COMPONENTS:
+        return TrainResume().name
+    return f"components={sorted(components)!r}"
 
 
 __all__ = [

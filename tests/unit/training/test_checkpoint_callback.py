@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +15,17 @@ from omegaconf import OmegaConf
 import tpen
 from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint
-from tpen.checkpoint import EveryNUpdates, ExplicitUpdates, checkpoint_hashes
+from tpen.checkpoint import (
+    CheckpointCatalog,
+    CheckpointRef,
+    EveryNUpdates,
+    ExplicitUpdates,
+    ModelOnly,
+    TrainResume,
+    checkpoint_hashes,
+    read_publications,
+    save_checkpoint,
+)
 from tpen.checkpoint.hashing import file_sha256
 from tpen.events import Occurrence
 from tpen.training.events import (
@@ -125,6 +137,48 @@ class _RejectingTerminalSchedule:
         return not terminal
 
 
+@dataclass
+class _FailOncePublish:
+    """Wrap one directly imported catalog operation with one deterministic failure."""
+
+    delegate: Callable[[CheckpointCatalog, CheckpointRef], CheckpointRef]
+    failures_remaining: int = 1
+
+    def __call__(self, catalog: CheckpointCatalog, ref: CheckpointRef) -> CheckpointRef:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise OSError("catalog publication failed once")
+        return self.delegate(catalog, ref)
+
+
+class _FailOnceCatalog(CheckpointCatalog):
+    """Catalog that fails before its first append, without dynamic patching."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self._publish_once = _FailOncePublish(CheckpointCatalog.publish)
+
+    def publish(self, ref: CheckpointRef) -> CheckpointRef:
+        return self._publish_once(self, ref)
+
+
+@dataclass(frozen=True)
+class _CheckpointSnapshot:
+    """Byte snapshot used to prove a repair never rewrites its payload."""
+
+    files: tuple[tuple[str, bytes], ...]
+
+
+def _checkpoint_snapshot(checkpoint_dir: Path) -> _CheckpointSnapshot:
+    return _CheckpointSnapshot(
+        tuple(
+            (str(path.relative_to(checkpoint_dir)), path.read_bytes())
+            for path in sorted(checkpoint_dir.rglob("*"))
+            if path.is_file()
+        )
+    )
+
+
 def _iteration(
     callback: Checkpoint,
     state: TrainerState,
@@ -200,6 +254,26 @@ def test_checkpoint_writes_step_directory_and_latest_pointer(tmp_path) -> None:
     assert (step_dir / "COMPLETE").exists()
     assert (ckpt_dir / "latest.json").exists()
     assert not (ckpt_dir / "step_000003.tmp").exists()
+
+
+def test_checkpoint_composes_schedule_and_payload(tmp_path) -> None:
+    callback = Checkpoint(
+        output_dir=tmp_path,
+        schedule=EveryNUpdates(2),
+        payload=ModelOnly(),
+        terminal=False,
+    )
+
+    _iteration(callback, _state(1), _context())
+
+    step_dir = tmp_path / "step_000002"
+    manifest = json.loads((step_dir / "manifest.json").read_text())
+    assert manifest["payload"] == ModelOnly().to_manifest()
+    assert (step_dir / "model.pt").exists()
+    assert not (step_dir / "optimizer.pt").exists()
+    assert not (step_dir / "trainer.json").exists()
+    assert not (step_dir / "sampler.pt").exists()
+    assert not (step_dir / "rng.pt").exists()
 
 
 def test_no_checkpoint_is_written_at_the_update_boundary(tmp_path) -> None:
@@ -453,6 +527,152 @@ def test_checkpoint_terminal_skips_existing_complete_checkpoint(tmp_path) -> Non
     _finish(callback, state, context)
 
     assert sorted(path.name for path in tmp_path.glob("step_*")) == ["step_000002"]
+
+
+def test_checkpoint_identical_republication_is_idempotent(tmp_path) -> None:
+    state = _state(1, next_iteration=2, completed_updates=2)
+    first = Checkpoint(output_dir=tmp_path, payload=ModelOnly(), periodic=False)
+    second = Checkpoint(output_dir=tmp_path, payload=ModelOnly(), periodic=False)
+
+    _finish(first, state, _context())
+    manifest_before = (tmp_path / "step_000002" / "manifest.json").read_bytes()
+    _finish(second, state, _context())
+
+    assert (tmp_path / "step_000002" / "manifest.json").read_bytes() == manifest_before
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_retry_repairs_catalog_after_rename_failure(tmp_path) -> None:
+    """A retry publishes a committed directory when its first append failed."""
+
+    root = tmp_path / "checkpoints"
+    state = _state(1, next_iteration=2, completed_updates=2)
+    failing_catalog = _FailOnceCatalog(root / "publications.jsonl")
+
+    with pytest.raises(OSError, match="catalog publication failed once"):
+        save_checkpoint(
+            output_dir=root,
+            next_iteration=2,
+            completed_updates=2,
+            model=state.model,
+            optimizer=state.optimizer,
+            trainer=state.trainer,
+            sampler=state.sampler,
+            context=_context(),
+            publication_catalog=failing_catalog,
+        )
+
+    final_dir = root / "step_000002"
+    assert final_dir.is_dir()
+    assert not (root / "publications.jsonl").exists()
+    assert not (root / "latest.json").exists()
+    payload_before = _checkpoint_snapshot(final_dir)
+
+    _finish(Checkpoint(output_dir=root, periodic=False), state, _context())
+
+    assert len(read_publications(root / "publications.jsonl")) == 1
+    latest = json.loads((root / "latest.json").read_text())
+    assert latest["checkpoint_dir"] == final_dir.name
+    assert _checkpoint_snapshot(final_dir) == payload_before
+
+
+def test_checkpoint_retry_repairs_latest_without_duplicate_catalog_row(tmp_path) -> None:
+    """A retry repairs a stale pointer after the row was already appended."""
+
+    root = tmp_path / "checkpoints"
+    state = _state(1, next_iteration=2, completed_updates=2)
+    _finish(Checkpoint(output_dir=root, periodic=False), state, _context())
+
+    final_dir = root / "step_000002"
+    payload_before = _checkpoint_snapshot(final_dir)
+    assert len(read_publications(root / "publications.jsonl")) == 1
+    # This is the durable state after catalog append but before latest replace.
+    (root / "latest.json").unlink()
+
+    _finish(Checkpoint(output_dir=root, periodic=False), state, _context())
+
+    assert len(read_publications(root / "publications.jsonl")) == 1
+    latest = json.loads((root / "latest.json").read_text())
+    assert latest["checkpoint_dir"] == final_dir.name
+    assert _checkpoint_snapshot(final_dir) == payload_before
+
+
+def test_checkpoint_legacy_manifest_uses_component_set_for_republication(tmp_path) -> None:
+    """A pre-payload manifest remains idempotent when its files are equivalent."""
+
+    state = _state(1, next_iteration=2, completed_updates=2)
+    first = Checkpoint(output_dir=tmp_path, periodic=False)
+
+    _finish(first, state, _context())
+    manifest_path = tmp_path / "step_000002" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.pop("payload") == TrainResume().to_manifest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    manifest_before = manifest_path.read_bytes()
+
+    # A real pre-payload checkpoint had these bytes when its catalog row was
+    # created. Re-seed the append-only row from that legacy artifact rather
+    # than treating a post-publication manifest rewrite as a valid retry.
+    (tmp_path / "publications.jsonl").unlink()
+    (tmp_path / "latest.json").unlink()
+    CheckpointCatalog(tmp_path / "publications.jsonl").publish(
+        CheckpointRef.from_directory(tmp_path / "step_000002")
+    )
+
+    # Explicit legacy flags are the ordinary pre-composition configuration.
+    second = Checkpoint(
+        output_dir=tmp_path,
+        periodic=False,
+        save_optimizer=True,
+        save_trainer=True,
+        save_sampler=True,
+        save_rng=True,
+    )
+    _finish(second, state, _context())
+
+    assert manifest_path.read_bytes() == manifest_before
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_mixed_flags_compare_the_effective_component_set(tmp_path) -> None:
+    """Independent legacy flags remain valid stream identities."""
+
+    state = _state(1, next_iteration=2, completed_updates=2)
+    flags = {
+        "save_optimizer": False,
+        "save_trainer": True,
+        "save_sampler": False,
+        "save_rng": True,
+    }
+    first = Checkpoint(output_dir=tmp_path, periodic=False, **flags)
+    second = Checkpoint(output_dir=tmp_path, periodic=False, **flags)
+
+    _finish(first, state, _context())
+    _finish(second, state, _context())
+
+    step_dir = tmp_path / "step_000002"
+    assert (step_dir / "model.pt").exists()
+    assert (step_dir / "trainer.json").exists()
+    assert (step_dir / "rng.pt").exists()
+    assert not (step_dir / "optimizer.pt").exists()
+    assert not (step_dir / "sampler.pt").exists()
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
+
+
+def test_checkpoint_non_equivalent_payload_collision_fails_before_writing(tmp_path) -> None:
+    state = _state(1, next_iteration=2, completed_updates=2)
+    first = Checkpoint(output_dir=tmp_path, payload=ModelOnly(), periodic=False)
+    second = Checkpoint(output_dir=tmp_path, payload=TrainResume(), periodic=False)
+
+    _finish(first, state, _context())
+    manifest_before = (tmp_path / "step_000002" / "manifest.json").read_bytes()
+
+    with pytest.raises(ValueError, match="checkpoint stream collision"):
+        _finish(second, state, _context())
+
+    assert (tmp_path / "step_000002" / "manifest.json").read_bytes() == manifest_before
+    assert not (tmp_path / "step_000002" / "optimizer.pt").exists()
+    assert len((tmp_path / "publications.jsonl").read_text().splitlines()) == 1
 
 
 def test_terminal_updates_latest_when_cadence_misses_terminal_step(tmp_path) -> None:
