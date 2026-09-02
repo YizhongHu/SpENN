@@ -850,6 +850,18 @@ def _rewrite_rng_as_foreign_device(checkpoint_dir: Path) -> None:
     state[DEVICES_KEY] = []
     state.pop(ACCELERATOR_STATE_KEY, None)
     torch.save(state, rng_path)
+    _refresh_component_digest(checkpoint_dir, "rng")
+
+
+def _refresh_component_digest(checkpoint_dir: Path, component: str) -> None:
+    """Keep a deliberate test mutation a valid artifact for semantic checks."""
+
+    manifest_path = checkpoint_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["hashes"][f"{component}_sha256"] = file_sha256(
+        checkpoint_dir / manifest["files"][component]
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def test_train_resume_refuses_a_checkpoint_written_on_another_device(tmp_path: Path) -> None:
@@ -912,6 +924,7 @@ def test_restore_strict_load_fails_on_unexpected_keys(tmp_path: Path) -> None:
     state = torch.load(checkpoint_dir / "model.pt", weights_only=False)
     state["ghost"] = torch.zeros(1)
     torch.save(state, checkpoint_dir / "model.pt")
+    _refresh_component_digest(checkpoint_dir, "model")
 
     with pytest.raises(RuntimeError, match="ghost"):
         restore_checkpoint(

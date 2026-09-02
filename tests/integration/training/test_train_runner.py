@@ -18,6 +18,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from tpen.checkpoint import resolve_checkpoint_dir
+from tpen.checkpoint.hashing import file_sha256
 from tpen.run import run_from_config
 
 FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_smoke.yaml"
@@ -421,6 +422,10 @@ def test_resume_diverges_when_the_restored_sampler_stream_is_perturbed(
     generator.manual_seed(20260811)
     sampler_state["generator_state"] = generator.get_state()
     torch.save(sampler_state, perturbed / "sampler.pt")
+    manifest_path = perturbed / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["hashes"]["sampler_sha256"] = file_sha256(perturbed / "sampler.pt")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     resumed_run = _run(
         tmp_path / "diverged",
