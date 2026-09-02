@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from tpen.checkpoint import HoldUntilSelection, KeepLast, RetentionSnapshot
+from tpen.checkpoint import (
+    HoldUntilSelection,
+    KeepLast,
+    PinRecord,
+    RetainAll,
+    RetentionSnapshot,
+)
 from tpen.checkpoint.reference import CheckpointRef
 
 
@@ -40,7 +44,7 @@ def _actions(snapshot: RetentionSnapshot) -> tuple[tuple[str, str], ...]:
     )
 
 
-def test_empty_selection_is_explicit_and_retains_latest_recovery_refs(tmp_path: Path) -> None:
+def test_empty_selection_fails_closed_and_retains_everything(tmp_path: Path) -> None:
     refs = (
         _ref(tmp_path / "first", 1, "first-1"),
         _ref(tmp_path / "first", 2, "first-2"),
@@ -50,15 +54,11 @@ def test_empty_selection_is_explicit_and_retains_latest_recovery_refs(tmp_path: 
         refs, pin_state=(), latest=refs[-1], selected=()
     )
 
-    assert snapshot.status == "ready"
-    assert snapshot.deletion_targets == (refs[0],)
-    assert snapshot.retained_refs == (refs[1],)
+    assert snapshot.status == "incomplete_selection"
+    assert snapshot.deletion_targets == ()
+    assert snapshot.retained_refs == refs
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S2 8671d0c5-89ff-4b20-9aa0-0778f7207126: incomplete latest coverage must fail closed",
-)
 def test_incomplete_explicit_latest_coverage_retains_everything(tmp_path: Path) -> None:
     first = _ref(tmp_path / "first", 1, "first-1")
     first_latest = _ref(tmp_path / "first", 2, "first-2")
@@ -85,3 +85,39 @@ def test_duplicate_immutable_ref_alias_is_deduplicated_deterministically(tmp_pat
     assert first.to_json() == second.to_json()
     assert first.decisions == (second.decisions[0],)
 
+
+def test_conflicting_identities_for_one_checkpoint_dir_fail_closed(tmp_path: Path) -> None:
+    original = _ref(tmp_path / "stream", 1, "original")
+    checkpoint_dir = original.checkpoint_dir
+    (checkpoint_dir / "model.pt").write_bytes(b"replacement")
+    manifest = json.loads((checkpoint_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["hashes"]["marker"] = "replacement"
+    manifest["provenance"]["run_id"] = "replacement"
+    (checkpoint_dir / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    replacement = CheckpointRef.from_directory(checkpoint_dir)
+    latest = _ref(tmp_path / "stream", 2, "latest")
+    pin = PinRecord(token="evaluation", ref=original, owner="worker", reason="evaluation")
+
+    snapshot = KeepLast(1).decide(
+        (original, replacement, latest), pin_state=(pin,), latest=latest
+    )
+
+    assert original.checkpoint_dir == replacement.checkpoint_dir
+    assert original.content_id != replacement.content_id
+    assert snapshot.status == "ambiguous_ref_state"
+    assert snapshot.deletion_targets == ()
+    assert snapshot.retained_refs == (original, replacement, latest)
+
+
+def test_retain_all_reports_selection_outside_planning_universe(tmp_path: Path) -> None:
+    ref = _ref(tmp_path / "planned", 1, "planned")
+    unknown = _ref(tmp_path / "unknown", 1, "unknown")
+
+    snapshot = RetainAll().decide((ref,), pin_state=(), selected=unknown)
+
+    assert snapshot.status == "missing_selection_ref"
+    assert snapshot.deletion_targets == ()
+    assert snapshot.retained_refs == (ref,)
+    assert snapshot.decisions[0].protected

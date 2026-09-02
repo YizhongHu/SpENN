@@ -13,7 +13,7 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias, runtime_checkable
 
 from .pins import PinRecord
 
@@ -21,6 +21,7 @@ from .pins import PinRecord
 RETENTION_SNAPSHOT_SCHEMA = "tpen.checkpoint-retention/v1"
 
 
+@runtime_checkable
 class RetentionRef(Protocol):
     """Immutable reference fields needed by retention planning."""
 
@@ -174,8 +175,10 @@ class RetainAll:
         result remains all-retain and is marked fail-closed.
         """
 
-        normalized_refs = _normalize_refs(refs)
-        status = _state_status(normalized_refs, pin_state, latest, selected)
+        normalized_refs, refs_status = _normalize_refs(refs)
+        status = _combine_status(
+            refs_status, _state_status(normalized_refs, pin_state, latest, selected)
+        )
         reason = "policy_retain_all" if status == "ready" else f"fail_closed_{status}"
         return _snapshot(
             "retain_all",
@@ -251,10 +254,10 @@ class KeepLast:
     ) -> RetentionSnapshot:
         """Plan per-root retention, fail-closed on incomplete safety state."""
 
-        normalized_refs = _normalize_refs(refs)
+        normalized_refs, refs_status = _normalize_refs(refs)
         pins, pin_status = _normalize_pin_state(pin_state)
         latest_refs, latest_status = _normalize_optional_refs(latest)
-        state = _combine_status(pin_status, latest_status)
+        state = _combine_status(refs_status, pin_status, latest_status)
         if state != "ready":
             return _retain_all_snapshot(
                 "keep_last", normalized_refs, state, {"limit": self.limit}
@@ -262,6 +265,13 @@ class KeepLast:
 
         if latest is None:
             latest_refs = _latest_per_root(normalized_refs)
+        elif not _has_complete_latest_coverage(normalized_refs, latest_refs):
+            return _retain_all_snapshot(
+                "keep_last",
+                normalized_refs,
+                "incomplete_latest_coverage",
+                {"limit": self.limit},
+            )
         protected_keys = {_ref_key(ref) for ref in latest_refs}
         protected_keys.update(_ref_key(pin.ref) for pin in pins)
         if not protected_keys.issubset({_ref_key(ref) for ref in normalized_refs}):
@@ -320,7 +330,7 @@ class HoldUntilSelection:
     ) -> RetentionSnapshot:
         """Plan post-selection cleanup, or retain all while selection is absent."""
 
-        normalized_refs = _normalize_refs(refs)
+        normalized_refs, refs_status = _normalize_refs(refs)
         pins, pin_status = _normalize_pin_state(pin_state)
         latest_refs, latest_status = _normalize_optional_refs(latest)
         if selected is None:
@@ -328,12 +338,18 @@ class HoldUntilSelection:
                 "hold_until_selection", normalized_refs, "selection_pending"
             )
         selected_refs, selected_status = _normalize_optional_refs(selected)
-        state = _combine_status(pin_status, latest_status, selected_status)
+        state = _combine_status(refs_status, pin_status, latest_status, selected_status)
+        if state == "ready" and not selected_refs:
+            state = "incomplete_selection"
         if state != "ready":
             return _retain_all_snapshot("hold_until_selection", normalized_refs, state)
 
         if latest is None:
             latest_refs = _latest_per_root(normalized_refs)
+        elif not _has_complete_latest_coverage(normalized_refs, latest_refs):
+            return _retain_all_snapshot(
+                "hold_until_selection", normalized_refs, "incomplete_latest_coverage"
+            )
         selected_keys = {_ref_key(ref) for ref in selected_refs}
         protected_keys = {_ref_key(ref) for ref in latest_refs}
         protected_keys.update(_ref_key(pin.ref) for pin in pins)
@@ -412,22 +428,28 @@ def _decision_for(
     return RetentionDecision(ref, "delete", reason, False)
 
 
-def _normalize_refs(refs: Iterable[RetentionRef]) -> tuple[RetentionRef, ...]:
-    """Deduplicate exact serialized refs and apply the total stable order."""
+def _normalize_refs(
+    refs: Iterable[RetentionRef],
+) -> tuple[tuple[RetentionRef, ...], str]:
+    """Deduplicate exact refs and reject conflicting identities for one path."""
 
     unique: dict[str, RetentionRef] = {}
+    identity_by_path: dict[Path, str] = {}
+    status = "ready"
     for ref in refs:
-        unique.setdefault(_ref_key(ref), ref)
-    return tuple(
+        ref_key = _ref_key(ref)
+        checkpoint_dir = Path(ref.checkpoint_dir)
+        known_identity = identity_by_path.setdefault(checkpoint_dir, ref_key)
+        if known_identity != ref_key:
+            status = "ambiguous_ref_state"
+        unique.setdefault(ref_key, ref)
+    normalized = tuple(
         sorted(
             unique.values(),
-            key=lambda ref: (
-                _counter(ref, "completed_updates"),
-                _counter(ref, "next_iteration"),
-                _ref_key(ref),
-            ),
+            key=_ref_order,
         )
     )
+    return normalized, status
 
 
 def _normalize_optional_refs(
@@ -435,10 +457,10 @@ def _normalize_optional_refs(
 ) -> tuple[tuple[RetentionRef, ...], str]:
     if refs is None:
         return (), "ready"
-    if callable(getattr(refs, "to_dict", None)):
-        return _normalize_refs((refs,)), "ready"
+    if isinstance(refs, RetentionRef):
+        return _normalize_refs((refs,))
     try:
-        return _normalize_refs(refs), "ready"
+        return _normalize_refs(refs)
     except (AttributeError, TypeError, ValueError):
         return (), "ambiguous_state"
 
@@ -482,10 +504,16 @@ def _state_status(
     latest: RetentionRef | Iterable[RetentionRef] | None,
     selected: RetentionRef | Iterable[RetentionRef] | None,
 ) -> str:
-    del refs, selected
     _, pin_status = _normalize_pin_state(pin_state)
     _, latest_status = _normalize_optional_refs(latest)
-    return _combine_status(pin_status, latest_status)
+    selected_refs, selected_status = _normalize_optional_refs(selected)
+    state = _combine_status(pin_status, latest_status, selected_status)
+    if state != "ready" or selected is None:
+        return state
+    known_keys = {_ref_key(ref) for ref in refs}
+    if not {_ref_key(ref) for ref in selected_refs}.issubset(known_keys):
+        return "missing_selection_ref"
+    return "ready"
 
 
 def _combine_status(*statuses: str) -> str:
@@ -499,6 +527,14 @@ def _latest_per_root(refs: tuple[RetentionRef, ...]) -> tuple[RetentionRef, ...]
     return tuple(group[-1] for group in _group_by_root(refs).values() if group)
 
 
+def _has_complete_latest_coverage(
+    refs: tuple[RetentionRef, ...], latest_refs: tuple[RetentionRef, ...]
+) -> bool:
+    expected = {_ref_key(ref) for ref in _latest_per_root(refs)}
+    observed = {_ref_key(ref) for ref in latest_refs}
+    return observed == expected
+
+
 def _group_by_root(refs: tuple[RetentionRef, ...]) -> dict[str, tuple[RetentionRef, ...]]:
     grouped: dict[str, list[RetentionRef]] = {}
     for ref in refs:
@@ -506,11 +542,14 @@ def _group_by_root(refs: tuple[RetentionRef, ...]) -> dict[str, tuple[RetentionR
     return {root: tuple(group) for root, group in grouped.items()}
 
 
-def _counter(ref: RetentionRef, field: str) -> int:
-    value = getattr(ref, field)
-    if type(value) is not int or value < 0:
-        raise ValueError(f"{field} must be a non-negative int")
-    return value
+def _ref_order(ref: RetentionRef) -> tuple[int, int, str]:
+    completed_updates = ref.completed_updates
+    if type(completed_updates) is not int or completed_updates < 0:
+        raise ValueError("completed_updates must be a non-negative int")
+    next_iteration = ref.next_iteration
+    if type(next_iteration) is not int or next_iteration < 0:
+        raise ValueError("next_iteration must be a non-negative int")
+    return completed_updates, next_iteration, _ref_key(ref)
 
 
 def _ref_key(ref: RetentionRef) -> str:
