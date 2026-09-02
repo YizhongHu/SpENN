@@ -60,6 +60,12 @@ def _snapshot(
     return KeepLast(1).decide(refs, pin_state=pin_state, latest=latest)
 
 
+def _empty_pin_store(root: Path) -> PinStore:
+    path = root / "pins.jsonl"
+    path.touch()
+    return PinStore(path)
+
+
 def test_absent_latest_on_empty_root_is_a_noop(tmp_path: Path) -> None:
     root = tmp_path / "checkpoints"
     root.mkdir()
@@ -144,6 +150,7 @@ def test_pinned_target_is_refused_and_retained(tmp_path: Path) -> None:
 def test_latest_target_is_refused_and_retained(tmp_path: Path) -> None:
     root = tmp_path / "checkpoints"
     ref = _ref(root, 1)
+    _empty_pin_store(root)
     write_latest(root, ref.checkpoint_dir, step=1, created_at_unix=0.0)
     snapshot = RetentionSnapshot(
         policy="test",
@@ -203,6 +210,7 @@ def test_successful_prune_receipts_bind_exact_ref_path_reason_digest_and_time(
     root = tmp_path / "checkpoints"
     first = _ref(root, 1)
     second = _ref(root, 2)
+    _empty_pin_store(root)
     write_latest(root, second.checkpoint_dir, step=2, created_at_unix=0.0)
     snapshot = _snapshot((first, second), latest=second)
 
@@ -235,6 +243,7 @@ def test_mid_deletion_failure_preserves_quarantine_and_failure_receipt(
     root = tmp_path / "checkpoints"
     first = _ref(root, 1)
     second = _ref(root, 2)
+    _empty_pin_store(root)
     write_latest(root, second.checkpoint_dir, step=2, created_at_unix=0.0)
     snapshot = _snapshot((first, second), latest=second)
 
@@ -276,6 +285,7 @@ def test_quarantine_is_not_a_complete_checkpoint_candidate(tmp_path: Path) -> No
 def test_incomplete_frozen_target_is_refused_and_retained(tmp_path: Path) -> None:
     root = tmp_path / "checkpoints"
     ref = _ref(root, 1)
+    _empty_pin_store(root)
     incomplete = root / "step_000002"
     incomplete.mkdir()
     forged = replace(ref, checkpoint_dir=incomplete)

@@ -1080,6 +1080,7 @@ def test_prune_never_deletes_the_latest_pointer_target(tmp_path: Path) -> None:
     # Point `latest.json` back at the oldest checkpoint, the state a run reaches
     # when its newest directories were written after the pointer it resumes from.
     write_latest(root, root / "step_000001", step=1, created_at_unix=0.0)
+    (root / "pins.jsonl").touch()
 
     prune_old_checkpoints(root, keep_last=1)
 
@@ -1109,6 +1110,7 @@ def test_prune_without_a_latest_pointer_still_trims(tmp_path: Path) -> None:
             save_rng=False,
         )
     (root / "latest.json").unlink()
+    (root / "pins.jsonl").touch()
 
     prune_old_checkpoints(root, keep_last=1)
 

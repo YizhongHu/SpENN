@@ -50,15 +50,18 @@ def _checkpoint(root: Path, step: int) -> CheckpointRef:
     return CheckpointRef.from_directory(checkpoint)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: sweep must consume only the published catalog snapshot",
-)
+def _empty_pin_store(root: Path) -> PinStore:
+    path = root / "pins.jsonl"
+    path.touch()
+    return PinStore(path)
+
+
 def test_sweep_consumes_only_published_catalog_snapshot(tmp_path: Path) -> None:
     root = tmp_path / "checkpoints"
     unpublished = _checkpoint(root, 1)
     published = _checkpoint(root, 2)
     CheckpointCatalog(root / "publications.jsonl").publish(published)
+    _empty_pin_store(root)
     (root / "latest.json").write_text(
         json.dumps(
             {
@@ -77,6 +80,36 @@ def test_sweep_consumes_only_published_catalog_snapshot(tmp_path: Path) -> None:
     assert published.checkpoint_dir.is_dir()
 
 
+def test_sweep_consumes_the_exact_custom_publication_catalog(tmp_path: Path) -> None:
+    root = tmp_path / "checkpoints"
+    first = _checkpoint(root, 1)
+    latest = _checkpoint(root, 2)
+    custom = CheckpointCatalog(tmp_path / "custom-publications.jsonl")
+    custom.publish(first)
+    custom.publish(latest)
+    _empty_pin_store(root)
+    (root / "latest.json").write_text(
+        json.dumps(
+            {
+                "checkpoint_dir": latest.checkpoint_dir.name,
+                "step": latest.next_iteration,
+                "created_at_unix": 2.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    sweep_published_checkpoints(
+        root,
+        keep_last=1,
+        publication_catalog=custom,
+    )
+
+    assert not first.checkpoint_dir.exists()
+    assert latest.checkpoint_dir.is_dir()
+
+
 def _delete_snapshot(ref: CheckpointRef) -> RetentionSnapshot:
     return RetentionSnapshot(
         policy="failure-protocol-test",
@@ -85,10 +118,6 @@ def _delete_snapshot(ref: CheckpointRef) -> RetentionSnapshot:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: canonical pins must not be bypassed by an omitted or unrelated store",
-)
 def test_canonical_pin_cannot_be_bypassed_by_missing_or_unrelated_store(
     tmp_path: Path,
 ) -> None:
@@ -108,15 +137,25 @@ def test_canonical_pin_cannot_be_bypassed_by_missing_or_unrelated_store(
         assert ref.checkpoint_dir.is_dir()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: contradictory snapshots must fail before receipt mutation",
-)
+def test_missing_canonical_pin_ledger_refuses_before_receipt_or_rename(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkpoints"
+    ref = _checkpoint(root, 1)
+
+    with pytest.raises(CheckpointPruneError, match="canonical pin ledger"):
+        execute_retention_snapshot(_delete_snapshot(ref), checkpoint_root=root)
+
+    assert ref.checkpoint_dir.is_dir()
+    assert not (root / "prune_receipts.jsonl").exists()
+
+
 def test_contradictory_typed_snapshot_fails_before_receipt_or_rename(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "checkpoints"
     ref = _checkpoint(root, 1)
+    _empty_pin_store(root)
     contradictory = replace(ref, model_sha256="0" * 64)
 
     with pytest.raises(CheckpointPruneError, match="unchanged complete"):
@@ -140,23 +179,55 @@ def test_aliased_typed_snapshot_fails_before_receipt_or_rename(tmp_path: Path) -
         ),
     )
 
-    with pytest.raises(CheckpointPruneError, match="duplicate frozen delete path"):
+    with pytest.raises(CheckpointPruneError, match="contradictory or duplicate"):
         execute_retention_snapshot(aliased, checkpoint_root=root)
 
     assert ref.checkpoint_dir.is_dir()
     assert not (root / "prune_receipts.jsonl").exists()
 
 
-@pytest.mark.parametrize("path_kind", ["symlink", "regular-file"])
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: nonregular targets must fail before receipt mutation",
+@pytest.mark.parametrize(
+    "contradiction",
+    ["retain-delete-ref", "retain-delete-path", "protected-delete"],
 )
+def test_whole_snapshot_contradiction_fails_before_receipt_or_rename(
+    tmp_path: Path, contradiction: str
+) -> None:
+    root = tmp_path / "checkpoints"
+    ref = _checkpoint(root, 1)
+    other = replace(ref, model_sha256="0" * 64)
+    if contradiction == "retain-delete-ref":
+        decisions = (
+            RetentionDecision(ref, "retain", "retain"),
+            RetentionDecision(ref, "delete", "delete"),
+        )
+    elif contradiction == "retain-delete-path":
+        decisions = (
+            RetentionDecision(ref, "retain", "retain"),
+            RetentionDecision(other, "delete", "delete"),
+        )
+    else:
+        decisions = (RetentionDecision(ref, "delete", "delete", protected=True),)
+    contradictory = RetentionSnapshot(
+        policy="failure-protocol-test",
+        status="ready",
+        decisions=decisions,
+    )
+
+    with pytest.raises(CheckpointPruneError, match="contradictory|protected"):
+        execute_retention_snapshot(contradictory, checkpoint_root=root)
+
+    assert ref.checkpoint_dir.is_dir()
+    assert not (root / "prune_receipts.jsonl").exists()
+
+
+@pytest.mark.parametrize("path_kind", ["symlink", "regular-file"])
 def test_nonregular_or_symlink_target_fails_closed(
     tmp_path: Path, path_kind: str
 ) -> None:
     root = tmp_path / "checkpoints"
     ref = _checkpoint(root, 1)
+    _empty_pin_store(root)
     original = ref.checkpoint_dir
     if path_kind == "symlink":
         external = tmp_path / "external"
@@ -175,8 +246,26 @@ def test_nonregular_or_symlink_target_fails_closed(
     assert not (root / "prune_receipts.jsonl").exists()
 
 
+def test_symlink_receipt_log_fails_closed_without_mutating_external_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkpoints"
+    ref = _checkpoint(root, 1)
+    _empty_pin_store(root)
+    external = tmp_path / "external-receipts.jsonl"
+    external.write_text("sentinel\n", encoding="utf-8")
+    (root / "prune_receipts.jsonl").symlink_to(external)
+
+    with pytest.raises(CheckpointPruneError, match="receipt|lock"):
+        execute_retention_snapshot(_delete_snapshot(ref), checkpoint_root=root)
+
+    assert ref.checkpoint_dir.is_dir()
+    assert external.read_text(encoding="utf-8") == "sentinel\n"
+
+
 def _single_prune_setup(root: Path) -> tuple[CheckpointRef, RetentionSnapshot]:
     ref = _checkpoint(root, 1)
+    _empty_pin_store(root)
     return ref, _delete_snapshot(ref)
 
 
@@ -229,10 +318,6 @@ def test_quarantine_rename_failure_recovers_once_on_retry(
     assert report.deleted == (ref.checkpoint_dir,)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: a receipt failure after quarantine must recover on retry",
-)
 def test_quarantine_receipt_failure_recovers_once_on_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -257,10 +342,6 @@ def test_quarantine_receipt_failure_recovers_once_on_retry(
     assert report.deleted == (ref.checkpoint_dir,)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: removal failure must converge exactly once on retry",
-)
 def test_removal_failure_recovers_once_on_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -285,22 +366,20 @@ def test_removal_failure_recovers_once_on_retry(
     assert report.deleted == (ref.checkpoint_dir,)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="F2-S3 13432597: final receipt fsync failure must converge exactly once on retry",
-)
 def test_final_receipt_fsync_failure_recovers_once_on_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "checkpoints"
     ref, snapshot = _single_prune_setup(root)
     original_fsync = pruning_module.os.fsync
-    calls = 0
+    receipt_fsyncs = 0
 
     def fail_final_receipt(fd: int) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 3:
+        nonlocal receipt_fsyncs
+        receipt_path = root / "prune_receipts.jsonl"
+        if receipt_path.exists() and os.fstat(fd).st_ino == receipt_path.stat().st_ino:
+            receipt_fsyncs += 1
+        if receipt_fsyncs == 3:
             raise OSError("injected final receipt fsync failure")
         original_fsync(fd)
 
@@ -313,6 +392,26 @@ def test_final_receipt_fsync_failure_recovers_once_on_retry(
     assert report.deleted == (ref.checkpoint_dir,)
 
 
+def test_namespace_mutations_fsync_the_checkpoint_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "checkpoints"
+    ref, snapshot = _single_prune_setup(root)
+    original_fsync_directory = pruning_module._fsync_directory
+    fsynced: list[Path] = []
+
+    def record_fsync(path: Path) -> None:
+        fsynced.append(path)
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(pruning_module, "_fsync_directory", record_fsync)
+
+    report = execute_retention_snapshot(snapshot, checkpoint_root=root)
+
+    assert report.deleted == (ref.checkpoint_dir,)
+    assert fsynced == [root, root, root]
+
+
 def _pin_in_process(
     path: str, checkpoint_path: str, start: object, barrier: object, done: object
 ) -> None:
@@ -323,7 +422,7 @@ def _pin_in_process(
     done.set()  # type: ignore[attr-defined]
 
 
-def test_posix_evaluator_pin_and_prune_are_linearizable(tmp_path: Path) -> None:
+def test_posix_prune_observes_preexisting_evaluator_pin(tmp_path: Path) -> None:
     if os.name != "posix":
         pytest.skip("requires POSIX advisory locks")
     root = tmp_path / "checkpoints"

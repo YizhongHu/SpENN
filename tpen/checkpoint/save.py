@@ -189,7 +189,11 @@ def save_checkpoint(
         write_latest(root, final_dir, step=int(next_iteration), created_at_unix=created_at)
         # Publication and latest-pointer commit precede the frozen snapshot
         # sweep, so a receipt can never authorize an unpublished directory.
-        sweep_published_checkpoints(root, keep_last=keep_last)
+        sweep_published_checkpoints(
+            root,
+            keep_last=keep_last,
+            publication_catalog=catalog,
+        )
     except Exception:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)

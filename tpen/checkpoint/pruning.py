@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,9 +28,9 @@ from .artifact import (
     CheckpointPruneError,
     LATEST_JSON,
     _latest_pointer_target,
-    list_complete_checkpoints,
     require_complete_checkpoint_dir,
 )
+from .catalog import CheckpointCatalog, publication_catalog_path
 from .pins import PinStore, checkpoint_pins_path
 from .reference import CheckpointRef
 from .retention import KeepLast, RetentionDecision, RetentionSnapshot
@@ -69,6 +70,7 @@ def sweep_published_checkpoints(
     checkpoint_root: str | Path,
     *,
     keep_last: int | None,
+    publication_catalog: str | Path | CheckpointCatalog | None = None,
 ) -> None:
     """Materialize one post-publication snapshot and execute it.
 
@@ -86,9 +88,27 @@ def sweep_published_checkpoints(
         raise ValueError(f"keep_last must be positive when set, got {keep_last}")
 
     root = Path(checkpoint_root)
-    checkpoints = list_complete_checkpoints(root)
+    catalog = (
+        publication_catalog
+        if isinstance(publication_catalog, CheckpointCatalog)
+        else CheckpointCatalog(
+            publication_catalog_path(root)
+            if publication_catalog is None
+            else publication_catalog
+        )
+    )
+    try:
+        published = catalog.records()
+    except (OSError, TypeError, ValueError) as exc:
+        raise CheckpointPruneError(
+            f"cannot read the closed checkpoint publication catalog: {catalog.path}"
+        ) from exc
     latest_path = root / LATEST_JSON
-    if not checkpoints:
+    # The catalog is append-only, so prior successfully pruned publications
+    # remain historical rows.  Restrict the live planning universe by testing
+    # only catalog-named paths; never discover a candidate from the directory.
+    refs = tuple(ref for ref in published if ref.checkpoint_dir.is_dir())
+    if not refs:
         # Absent latest on an empty root is a valid no-op.  A present pointer
         # is still validated so corruption never becomes an excuse to act.
         if latest_path.exists() or latest_path.is_symlink():
@@ -96,11 +116,9 @@ def sweep_published_checkpoints(
         return
 
     pointer_target = _latest_pointer_target(root)
-    refs = tuple(CheckpointRef.from_directory(path) for path in checkpoints)
     latest_ref = None if pointer_target is None else CheckpointRef.from_directory(pointer_target)
-    pin_path = checkpoint_pins_path(root)
-    pin_store = PinStore(pin_path) if pin_path.is_file() else None
-    pin_state = () if pin_store is None else pin_store.active_pins()
+    pin_store = PinStore(checkpoint_pins_path(root))
+    pin_state = pin_store.active_pins() if _is_regular_file(pin_store.path) else None
     snapshot = KeepLast(keep_last).decide(refs, pin_state=pin_state, latest=latest_ref)
     execute_retention_snapshot(snapshot, checkpoint_root=root, pin_store=pin_store)
 
@@ -129,9 +147,10 @@ def execute_retention_snapshot(
         One configured checkpoint stream root.  Every target must be a direct
         non-symlink child of this root.
     pin_store : PinStore, optional
-        When supplied, each target is checked against the current durable pin
-        ledger immediately before quarantine.  This is an extra safety guard;
-        it never changes the frozen target set.
+        Optional handle to the root's canonical durable pin ledger.  Omitting
+        it derives that canonical handle; supplying any other ledger is a
+        fail-closed refusal.  The canonical ledger must already exist as a
+        regular non-symlink file.
     target_paths : iterable of str or pathlib.Path, optional
         Exact literal paths to execute from the snapshot's delete decisions.
 
@@ -164,7 +183,7 @@ def execute_retention_snapshot(
         ) from exc
     policy_digest = hashlib.sha256(snapshot_bytes).hexdigest()
     root = _require_checkpoint_root(checkpoint_root)
-    deletion_decisions = _frozen_delete_decisions(snapshot)
+    deletion_decisions = _validate_snapshot(snapshot)
     selected = _select_targets(deletion_decisions, target_paths)
     retained = tuple(
         Path(decision.ref.checkpoint_dir)
@@ -176,13 +195,29 @@ def execute_retention_snapshot(
     # would otherwise happen to contain no deletion targets.  Genuine absence
     # remains the deliberate legacy policy and is represented by None.
     pointer_target = _latest_pointer_target(root)
+    pin_store = _canonical_pin_store(root, pin_store)
     receipt_path = prune_receipts_path(root)
     skipped: list[Path] = []
-    ready: list[_FrozenTarget] = []
+    frozen_targets = tuple(
+        _freeze_target(decision, root, policy_digest) for decision in selected
+    )
+
+    # Validate every ordinary live target before opening (and potentially
+    # creating) the receipt journal.  Missing originals or existing
+    # quarantines can be valid only when an existing journal proves recovery.
+    for frozen in frozen_targets:
+        if (
+            frozen.path.is_dir()
+            and not frozen.path.is_symlink()
+            and not _exists(frozen.quarantine)
+        ):
+            _preflight_target(frozen, root, pointer_target, pin_store)
+        elif not _is_regular_file(receipt_path):
+            _preflight_target(frozen, root, pointer_target, pin_store)
 
     with _ReceiptLog(receipt_path) as receipts:
-        for decision in selected:
-            frozen = _freeze_target(decision, root, policy_digest)
+        ready: list[tuple[_FrozenTarget, str]] = []
+        for frozen in frozen_targets:
             if receipts.is_completed(frozen, policy_digest):
                 if frozen.path.exists() or frozen.path.is_symlink() or _exists(frozen.quarantine):
                     raise CheckpointPruneError(
@@ -192,15 +227,35 @@ def execute_retention_snapshot(
                 skipped.append(frozen.path)
                 continue
             if _exists(frozen.quarantine):
-                raise CheckpointPruneError(
-                    "preserved prune quarantine already exists; refusing to remove or reuse it: "
-                    f"{frozen.quarantine}"
-                )
+                if _exists(frozen.path) or not receipts.has_event(
+                    frozen, policy_digest, "planned"
+                ):
+                    raise CheckpointPruneError(
+                        "unreconciled prune quarantine already exists; refusing to reuse it: "
+                        f"{frozen.quarantine}"
+                    )
+                try:
+                    _validate_quarantine_bytes(frozen)
+                except CheckpointPruneError as exc:
+                    raise CheckpointPruneError(
+                        "preserved prune quarantine already exists but cannot be recovered: "
+                        f"{frozen.quarantine}"
+                    ) from exc
+                ready.append((frozen, "quarantined"))
+                continue
+            if not _exists(frozen.path):
+                if not receipts.has_event(frozen, policy_digest, "quarantined"):
+                    raise CheckpointPruneError(
+                        "frozen prune target is missing without a recoverable journal: "
+                        f"{frozen.path}"
+                    )
+                ready.append((frozen, "removed"))
+                continue
             _preflight_target(frozen, root, pointer_target, pin_store)
-            ready.append(frozen)
+            ready.append((frozen, "live"))
 
         deleted: list[Path] = []
-        for frozen in ready:
+        for frozen, stage in ready:
             # Re-read both mutable safety ledgers immediately before the
             # atomic move.  A state change is a refusal, never a new decision.
             current_pointer = _latest_pointer_target(root)
@@ -209,27 +264,29 @@ def execute_retention_snapshot(
                     f"latest pointer protects frozen prune target: {frozen.path}"
                 )
             _check_pin(frozen, pin_store)
-            receipts.append(_receipt(frozen, policy_digest, "planned"))
-            try:
-                frozen.path.rename(frozen.quarantine)
-            except OSError as exc:
-                receipts.append(_receipt(frozen, policy_digest, "failed", error=str(exc)))
-                raise CheckpointPruneError(
-                    f"could not quarantine frozen prune target: {frozen.path}"
-                ) from exc
-            receipts.append(_receipt(frozen, policy_digest, "quarantined"))
-            try:
-                # The original path has an atomic-ish boundary now.  If this
-                # recursive removal fails, the quarantine remains visible and
-                # can be recovered by an explicitly authorized operator.
-                _validate_quarantine_bytes(frozen)
-                shutil.rmtree(frozen.quarantine)
-            except Exception as exc:
-                receipts.append(_receipt(frozen, policy_digest, "failed", error=str(exc)))
-                raise CheckpointPruneError(
-                    "frozen prune target removal failed; quarantine preserved for recovery: "
-                    f"{frozen.quarantine}"
-                ) from exc
+            if stage == "live":
+                receipts.append(_receipt(frozen, policy_digest, "planned"))
+                try:
+                    frozen.path.rename(frozen.quarantine)
+                    _fsync_directory(root)
+                except OSError as exc:
+                    receipts.append(_receipt(frozen, policy_digest, "failed", error=str(exc)))
+                    raise CheckpointPruneError(
+                        f"could not quarantine frozen prune target durably: {frozen.path}"
+                    ) from exc
+            if stage != "removed":
+                if not receipts.has_event(frozen, policy_digest, "quarantined"):
+                    receipts.append(_receipt(frozen, policy_digest, "quarantined"))
+                try:
+                    _validate_quarantine_bytes(frozen)
+                    shutil.rmtree(frozen.quarantine)
+                    _fsync_directory(root)
+                except Exception as exc:
+                    receipts.append(_receipt(frozen, policy_digest, "failed", error=str(exc)))
+                    raise CheckpointPruneError(
+                        "frozen prune target removal failed; quarantine preserved for recovery: "
+                        f"{frozen.quarantine}"
+                    ) from exc
             receipts.append(_receipt(frozen, policy_digest, "deleted"))
             deleted.append(frozen.path)
 
@@ -256,8 +313,25 @@ def _require_checkpoint_root(checkpoint_root: str | Path) -> Path:
     return root
 
 
-def _frozen_delete_decisions(snapshot: RetentionSnapshot) -> tuple[RetentionDecision, ...]:
+def _canonical_pin_store(root: Path, supplied: PinStore | None) -> PinStore:
+    canonical = PinStore(checkpoint_pins_path(root))
+    if supplied is not None and supplied.path.resolve(strict=False) != canonical.path.resolve(
+        strict=False
+    ):
+        raise CheckpointPruneError(
+            f"supplied pin store is not the checkpoint root's canonical ledger: {supplied.path}"
+        )
+    if not _is_regular_file(canonical.path):
+        raise CheckpointPruneError(
+            f"canonical pin ledger is unavailable or non-regular: {canonical.path}"
+        )
+    return canonical
+
+
+def _validate_snapshot(snapshot: RetentionSnapshot) -> tuple[RetentionDecision, ...]:
     decisions: list[RetentionDecision] = []
+    actions_by_ref: dict[str, str] = {}
+    actions_by_path: dict[str, str] = {}
     for decision in snapshot.decisions:
         if type(decision) is not RetentionDecision:
             raise CheckpointPruneError(
@@ -275,6 +349,22 @@ def _frozen_delete_decisions(snapshot: RetentionSnapshot) -> tuple[RetentionDeci
         if serialized.get("checkpoint_dir") != str(decision.ref.checkpoint_dir):
             raise CheckpointPruneError(
                 "checkpoint ref path is not its literal serialized path; refusing to prune"
+            )
+        ref_key = json.dumps(serialized, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        path_key = str(decision.ref.checkpoint_dir)
+        for key, action, label in (
+            (ref_key, actions_by_ref.get(ref_key), "ref"),
+            (path_key, actions_by_path.get(path_key), "path"),
+        ):
+            if action is not None:
+                raise CheckpointPruneError(
+                    f"retention snapshot contains contradictory or duplicate {label}: {key}"
+                )
+        actions_by_ref[ref_key] = decision.action
+        actions_by_path[path_key] = decision.action
+        if decision.action == "delete" and decision.protected:
+            raise CheckpointPruneError(
+                f"protected retention decision cannot delete: {path_key}"
             )
         if decision.action == "delete":
             decisions.append(decision)
@@ -312,7 +402,11 @@ def _select_targets(
         if literal in selected_literals:
             raise CheckpointPruneError(f"duplicate requested prune target: {literal}")
         selected_literals.add(literal)
-    return tuple(decision for decision in decisions if str(decision.ref.checkpoint_dir) in selected_literals)
+    return tuple(
+        decision
+        for decision in decisions
+        if str(decision.ref.checkpoint_dir) in selected_literals
+    )
 
 
 def _freeze_target(
@@ -375,11 +469,9 @@ def _preflight_target(
 
 
 def _check_pin(frozen: _FrozenTarget, pin_store: PinStore | None) -> None:
-    if pin_store is None:
-        return
-    if not pin_store.path.is_file():
+    if pin_store is None or not _is_regular_file(pin_store.path):
         raise CheckpointPruneError(
-            f"pin ledger is missing; cannot prove frozen target is unpinned: {pin_store.path}"
+            "canonical pin ledger is unavailable; cannot prove frozen target is unpinned"
         )
     try:
         pins = pin_store.pins_for(frozen.ref)
@@ -422,6 +514,46 @@ def _exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _open_regular_receipt(path: Path) -> tuple[BinaryIO, bool]:
+    flags = os.O_RDWR | os.O_APPEND | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    created = False
+    try:
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise CheckpointPruneError(
+                f"prune receipt path is not a regular file: {path}"
+            )
+        return os.fdopen(fd, "a+b"), created
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise CheckpointPruneError(
+            f"cannot durably commit checkpoint-root directory: {path}"
+        ) from exc
+
+
 def _receipt(
     frozen: _FrozenTarget,
     policy_digest: str,
@@ -460,7 +592,8 @@ class _ReceiptLog:
         handle: BinaryIO | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            handle = self.path.open("a+b")
+            handle, _ = _open_regular_receipt(self.path)
+            _fsync_directory(self.path.parent)
             _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
             handle.seek(0)
             self._records = _parse_receipts(handle.read(), self.path)
@@ -500,20 +633,36 @@ class _ReceiptLog:
             for record in self._records
         )
 
+    def has_event(self, frozen: _FrozenTarget, policy_digest: str, event: str) -> bool:
+        key = _receipt_key(_receipt(frozen, policy_digest, event))
+        return any(
+            record.get("event") == event and _receipt_key(record) == key
+            for record in self._records
+        )
+
     def append(self, record: dict[str, Any]) -> None:
         handle = self._handle
         if handle is None:
             raise CheckpointPruneError("prune receipt log is not open")
-        payload = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
-            "utf-8"
-        ) + b"\n"
+        payload = json.dumps(
+            record, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8") + b"\n"
         handle.seek(0, os.SEEK_END)
+        start_offset = handle.tell()
         try:
             written = os.write(handle.fileno(), payload)
             if written != len(payload):
                 raise OSError(f"short append {written}/{len(payload)} bytes")
             os.fsync(handle.fileno())
         except (OSError, TypeError, ValueError) as exc:
+            # A failed fsync cannot authorize the state transition.  Remove
+            # the possibly visible but uncommitted row so recovery replays
+            # from the preceding durable journal event.
+            try:
+                os.ftruncate(handle.fileno(), start_offset)
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
             raise CheckpointPruneError(
                 f"cannot durably append prune receipt: {self.path}"
             ) from exc
