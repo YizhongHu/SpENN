@@ -127,14 +127,21 @@ def test_canonical_pin_cannot_be_bypassed_by_missing_or_unrelated_store(
     canonical.pin(ref, "evaluation-token", "evaluator", "active evaluation")
     unrelated = PinStore(tmp_path / "other-pins.jsonl")
 
-    for supplied_store in (None, unrelated):
-        with pytest.raises(CheckpointPruneError, match="live pin"):
-            execute_retention_snapshot(
-                _delete_snapshot(ref),
-                checkpoint_root=root,
-                pin_store=supplied_store,
-            )
-        assert ref.checkpoint_dir.is_dir()
+    with pytest.raises(CheckpointPruneError, match="live pin"):
+        execute_retention_snapshot(
+            _delete_snapshot(ref),
+            checkpoint_root=root,
+            pin_store=None,
+        )
+    assert ref.checkpoint_dir.is_dir()
+
+    with pytest.raises(CheckpointPruneError, match="canonical ledger"):
+        execute_retention_snapshot(
+            _delete_snapshot(ref),
+            checkpoint_root=root,
+            pin_store=unrelated,
+        )
+    assert ref.checkpoint_dir.is_dir()
 
 
 def test_missing_canonical_pin_ledger_refuses_before_receipt_or_rename(
