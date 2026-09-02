@@ -24,6 +24,20 @@ from .catalog import (
 from .events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
 from .hashing import checkpoint_hashes, component_config_hash, resolved_config_hash, stable_config_hash
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
+from .lifecycle import (
+    CHECKPOINT_LIFECYCLE_LOCK_FILENAME,
+    CheckpointRoot,
+    DeletionCapability,
+    DistinctNodeFlockReceipt,
+    LifecycleError,
+    LifecycleLockMode,
+    LifecycleProtocol,
+    LockOrder,
+    checkpoint_lifecycle_lock,
+    lock_order,
+    open_regular_file,
+    require_deletion_capability,
+)
 from .payload import (
     MODEL_ONLY_PAYLOAD,
     MODEL_ONLY_PROFILE,
@@ -97,6 +111,14 @@ __all__ = [
     "CHECKPOINT_KIND",
     "CHECKPOINT_REF_SCHEMA",
     "CHECKPOINT_SCHEMA_VERSION",
+    "CHECKPOINT_LIFECYCLE_LOCK_FILENAME",
+    "CheckpointRoot",
+    "DeletionCapability",
+    "DistinctNodeFlockReceipt",
+    "LifecycleError",
+    "LifecycleLockMode",
+    "LifecycleProtocol",
+    "LockOrder",
     "CheckpointPruneError",
     "PRUNE_RECEIPT_SCHEMA",
     "PRUNE_RECEIPTS_FILENAME",
@@ -182,4 +204,8 @@ __all__ = [
     "reconcile_publication",
     "verify_checkpoint_replay_semantics",
     "write_checkpoint_replay_semantics",
+    "checkpoint_lifecycle_lock",
+    "lock_order",
+    "open_regular_file",
+    "require_deletion_capability",
 ]
