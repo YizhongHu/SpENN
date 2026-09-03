@@ -795,10 +795,25 @@ def test_trainable_law_breaks_strict_restore_in_both_directions() -> None:
         trainable.load_state_dict(linear.state_dict(), strict=True)
 
 
+def test_he_train_enables_canonical_host_wall_cost_callback_at_config_root() -> None:
+    """Compose the concrete resource callback in the training config."""
+
+    train_callbacks = _load(TRAIN)["callbacks"]
+    concrete_target = "tpen.callback.ResourceUsage"
+    assert sum(entry["_target_"] == concrete_target for entry in train_callbacks) == 1
+    resource_usage = next(entry for entry in train_callbacks if entry["_target_"] == concrete_target)
+    assert resource_usage["allocator_probe"] == {
+        "_target_": "tpen.accelerator.TorchAllocatorPeakProbe",
+        "device": "${runtime.device}",
+    }
+
+
 def test_he_eval_enables_canonical_host_wall_cost_callbacks_at_config_root() -> None:
     """Use typed evaluation boundaries without claiming broken device sync."""
 
     config = _load(EVAL)
+    concrete_target = "tpen.callback.ResourceUsage"
+    assert sum(entry["_target_"] == concrete_target for entry in config["callbacks"]) == 1
     callbacks = {
         entry["_target_"]: entry
         for entry in config["callbacks"]
@@ -809,5 +824,9 @@ def test_he_eval_enables_canonical_host_wall_cost_callbacks_at_config_root() -> 
         "tpen.callback.DiagnosticTiming",
     ):
         assert callbacks[target]["accelerator_synchronize"] is False
-    assert "tpen.callback.ResourceUsage" in callbacks
+    resource_usage = callbacks[concrete_target]
+    assert resource_usage["allocator_probe"] == {
+        "_target_": "tpen.accelerator.TorchAllocatorPeakProbe",
+        "device": "${runtime.device}",
+    }
     assert "callbacks" not in config["runner"]
