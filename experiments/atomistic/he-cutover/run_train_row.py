@@ -29,7 +29,7 @@ def configure_smoke_training(cfg: Any, row: Mapping[str, Any]) -> Any:
     checkpoints = [callback for callback in cfg.callbacks if str(callback.get("_target_")) == "tpen.callback.Checkpoint"]
     if len(checkpoints) != 1:
         raise RuntimeError("training config must declare exactly one Checkpoint callback")
-    checkpoints[0].every_n_steps = int(row["max_steps"])
+    checkpoints[0].schedule.every_n = int(row["max_steps"])
     return cfg
 
 

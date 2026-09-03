@@ -1,3 +1,18 @@
+"""Fit per-step rates from a legacy Polaris ``train.log`` probe.
+
+The parser reads ``R/<tag>/train.log`` lines shaped
+``<ISO timestamp>\t...Step N:...`` for the hardcoded arms ``a1``, ``a2``,
+``a4``, and ``a1r``. It does not apply to current ferminet-codebase runs:
+those runs write only ``train_stats.csv``, with no ``train.log`` and no time
+column, and short rungs write no checkpoints. Consequently there are no
+timestamps for this script to fit on those runs; an empty result means the
+input format is unsupported, not that the run produced nothing. Current-run
+rates come from per-row ``elapsed_sec`` in ``attempt_status.json`` compared
+across two step counts instead.
+
+``PRIOR`` is a hardcoded comparison constant from one specific prior Polaris
+measurement (RAMP-D arm n-g1), not a general reference rate.
+"""
 import re, os, sys
 from datetime import datetime
 R = sys.argv[1]

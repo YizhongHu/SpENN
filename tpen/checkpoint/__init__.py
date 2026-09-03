@@ -17,11 +17,24 @@ from .catalog import (
     PublicationCatalog,
     append_publication,
     publication_catalog_path,
+    reconcile_publication,
     read_publications,
 )
 from .events import CheckpointRestored, LoadFailed, LoadStarted, LoadSucceeded
 from .hashing import checkpoint_hashes, component_config_hash, resolved_config_hash, stable_config_hash
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
+from .payload import (
+    MODEL_ONLY_PAYLOAD,
+    MODEL_ONLY_PROFILE,
+    PAYLOAD_MANIFEST_SCHEMA,
+    TRAIN_RESUME_PAYLOAD,
+    TRAIN_RESUME_PROFILE,
+    CheckpointPayload,
+    ModelOnly,
+    PayloadProfile,
+    RestoreIntent,
+    TrainResume,
+)
 from .replay import (
     INFINITE_MASS_NONRELATIVISTIC_REFERENCE,
     REPLAY_SEMANTICS_FILENAME,
@@ -40,6 +53,7 @@ from .reference import (
     serialize_checkpoint_ref,
 )
 from .save import save_checkpoint
+from .schedule import CheckpointSchedule, EveryNUpdates, ExplicitUpdates, TerminalOnly
 
 __all__ = [
     "CHECKPOINT_KIND",
@@ -55,7 +69,9 @@ __all__ = [
     "REPLAY_SEMANTICS_FILENAME",
     "RESTORE_MODES",
     "CheckpointManifest",
+    "CheckpointPayload",
     "CheckpointCatalog",
+    "CheckpointSchedule",
     "CheckpointRef",
     "CheckpointRestored",
     "LoadFailed",
@@ -63,6 +79,18 @@ __all__ = [
     "LoadSucceeded",
     "PublicationCatalog",
     "RestoreReport",
+    "EveryNUpdates",
+    "ExplicitUpdates",
+    "TerminalOnly",
+    "ModelOnly",
+    "TrainResume",
+    "MODEL_ONLY_PAYLOAD",
+    "MODEL_ONLY_PROFILE",
+    "PAYLOAD_MANIFEST_SCHEMA",
+    "PayloadProfile",
+    "RestoreIntent",
+    "TRAIN_RESUME_PAYLOAD",
+    "TRAIN_RESUME_PROFILE",
     "checkpoint_hashes",
     "checkpoint_ref",
     "checkpoint_step_dir_name",
@@ -81,6 +109,7 @@ __all__ = [
     "stable_config_hash",
     "append_publication",
     "publication_catalog_path",
+    "reconcile_publication",
     "verify_checkpoint_replay_semantics",
     "write_checkpoint_replay_semantics",
 ]

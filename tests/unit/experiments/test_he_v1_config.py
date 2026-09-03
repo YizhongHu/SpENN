@@ -367,7 +367,7 @@ def test_positional_override_indices_hold_the_class_the_job_scripts_assume(
     and the override retunes sampler-health reporting instead, the run completes
     cleanly, and the pilot produces NO SCALAR TRACE AND NO ERROR -- on the exact
     measurement the zero-gradient-trap check depends on. The same shape applies
-    to ``summaries.4.max_samples`` and to the checkpoint cadence at 9.
+    to ``summaries.4.max_samples`` and to the checkpoint schedule at 9.
 
     Asserted against the imported CLASS rather than the dotted string, so
     renaming or relocating the class fails here too instead of leaving a string
