@@ -174,6 +174,9 @@ class ChannelPreservingMLPActivation(nn.Module):
     channel axis is moved to the final position for :class:`MLP`, then moved
     back. All MLPs are constructed during initialization in the same order as
     ``layout.specs`` and are registered in ``mlps`` before the first forward.
+    As with ordinary PyTorch modules, parameters are not automatically cast to
+    an input's dtype or device; call ``.to(dtype=..., device=...)`` on this
+    activation before passing matching tensors.
 
     Parameters
     ----------
@@ -230,10 +233,6 @@ class ChannelPreservingMLPActivation(nn.Module):
             raise ValueError(
                 "input rank must exceed tuple_axes_start to imply a positive order, "
                 f"got rank={inputs.ndim}, tuple_axes_start={axes.tuple_axes_start}"
-            )
-        if axes.channel_axis >= inputs.ndim:
-            raise ValueError(
-                f"channel_axis={axes.channel_axis} is outside input rank {inputs.ndim}"
             )
         order = inputs.ndim - axes.tuple_axes_start
         spec_index = next(

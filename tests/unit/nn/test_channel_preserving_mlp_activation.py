@@ -19,9 +19,11 @@ from tpen.nn import (
 )
 
 
-def _layout(*, tuple_axes_start: int = 2) -> OrderMLPLayout:
+def _layout(*, tuple_axes_start: int = 2, channel_axis: int = 1) -> OrderMLPLayout:
     return OrderMLPLayout(
-        axes=ChannelActivationAxes(tuple_axes_start=tuple_axes_start),
+        axes=ChannelActivationAxes(
+            channel_axis=channel_axis, tuple_axes_start=tuple_axes_start
+        ),
         specs=(
             OrderMLPSpec(
                 order=1,
@@ -47,28 +49,36 @@ def _oracle(activation: ChannelPreservingMLPActivation, inputs: torch.Tensor) ->
     axes = activation.layout.axes
     order = inputs.ndim - axes.tuple_axes_start
     index = next(index for index, spec in enumerate(activation.layout.specs) if spec.order == order)
-    moved = inputs.movedim(axes.channel_axis, -1)
-    output = torch.empty_like(moved)
-    inert_shape = tuple(int(size) for size in moved.shape[:-1])
+    output = torch.empty_like(inputs)
+    inert_axes = tuple(axis for axis in range(inputs.ndim) if axis != axes.channel_axis)
+    inert_shape = tuple(int(inputs.shape[axis]) for axis in inert_axes)
     for position in product(*(range(size) for size in inert_shape)):
-        output[position] = activation.mlps[index](moved[position])
-    return output.movedim(-1, axes.channel_axis)
+        tensor_index = [slice(None)] * inputs.ndim
+        for axis, value in zip(inert_axes, position, strict=True):
+            tensor_index[axis] = value
+        tensor_index_tuple = tuple(tensor_index)
+        output[tensor_index_tuple] = activation.mlps[index](inputs[tensor_index_tuple])
+    return output
 
 
 @pytest.mark.parametrize(
-    ("tuple_axes_start", "shape"),
+    ("tuple_axes_start", "channel_axis", "shape"),
     [
-        (2, (2, 3, 4)),
-        (2, (2, 3, 2, 2)),
-        (3, (2, 3, 5, 4)),
-        (3, (2, 3, 5, 2, 2)),
+        (2, 0, (3, 2, 4)),
+        (2, 0, (3, 2, 2, 2)),
+        (2, 1, (2, 3, 4)),
+        (2, 1, (2, 3, 2, 2)),
+        (3, 0, (3, 2, 5, 4)),
+        (3, 0, (3, 2, 5, 2, 2)),
+        (3, 2, (2, 5, 3, 4)),
+        (3, 2, (2, 5, 3, 2, 2)),
     ],
 )
 def test_movedim_fast_path_matches_inert_position_oracle(
-    tuple_axes_start: int, shape: tuple[int, ...]
+    tuple_axes_start: int, channel_axis: int, shape: tuple[int, ...]
 ) -> None:
     activation = ChannelPreservingMLPActivation(
-        _layout(tuple_axes_start=tuple_axes_start),
+        _layout(tuple_axes_start=tuple_axes_start, channel_axis=channel_axis),
         initializer=TorchInitializer(seed=123),
     ).to(dtype=torch.float64)
     inputs = torch.arange(torch.tensor(shape).prod().item(), dtype=torch.float64).reshape(shape) / 17
@@ -141,9 +151,59 @@ def test_dtype_device_and_gradients_are_preserved() -> None:
     assert all(parameter.grad is not None for parameter in activation.parameters())
 
 
+def test_float32_forward_preserves_dtype_under_standard_module_convention() -> None:
+    activation = ChannelPreservingMLPActivation(
+        _layout(), initializer=TorchInitializer(seed=78)
+    )
+    inputs = torch.randn(2, 3, 2, dtype=torch.float32)
+
+    outputs = activation(inputs)
+
+    assert outputs.shape == inputs.shape
+    assert outputs.dtype == torch.float32
+    assert outputs.device == inputs.device
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device not available")
+def test_cuda_forward_preserves_device_dtype_and_gradients() -> None:
+    activation = ChannelPreservingMLPActivation(
+        _layout(), initializer=TorchInitializer(seed=79)
+    ).to(device="cuda", dtype=torch.float64)
+    inputs = torch.randn(2, 3, 2, device="cuda", dtype=torch.float64, requires_grad=True)
+
+    outputs = activation(inputs)
+    outputs.square().sum().backward()
+
+    assert outputs.shape == inputs.shape
+    assert outputs.dtype == inputs.dtype
+    assert outputs.device == inputs.device
+    assert inputs.grad is not None
+    assert torch.isfinite(inputs.grad).all()
+
+
 def test_invalid_axes_fail_loudly() -> None:
     with pytest.raises(ValueError, match="tuple_axes_start"):
         ChannelActivationAxes(channel_axis=2, tuple_axes_start=2)
+
+
+def test_invalid_type_arguments_fail_loudly() -> None:
+    with pytest.raises(TypeError, match="channel_axis must be an integer"):
+        ChannelActivationAxes(channel_axis="1")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="tuple_axes_start must be an integer"):
+        ChannelActivationAxes(tuple_axes_start="2")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="activation must be"):
+        OrderMLPSpec(order=1, channels=3, activation=lambda value: value)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="bias must be a bool"):
+        OrderMLPSpec(order=1, channels=3, bias=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="ordered sequence"):
+        OrderMLPLayout(axes=ChannelActivationAxes(), specs={})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="only OrderMLPSpec"):
+        OrderMLPLayout(axes=ChannelActivationAxes(), specs=(object(),))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="layout must be"):
+        ChannelPreservingMLPActivation(object())  # type: ignore[arg-type]
+    activation = ChannelPreservingMLPActivation(_layout())
+    with pytest.raises(TypeError, match="inputs must be"):
+        activation([1, 2, 3])  # type: ignore[arg-type]
 
 
 def test_invalid_orders_fail_loudly() -> None:
