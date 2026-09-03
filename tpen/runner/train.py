@@ -91,6 +91,12 @@ class Train(Runner):
                 context=context,
                 emit=context.emit,
             )
+            rebuild_update_state = getattr(self.trainer, "rebuild_update_state", None)
+            if callable(rebuild_update_state):
+                # The model and optimizer have now been restored. Rebuild the
+                # direct updater binding against these live model parameters
+                # before exposing the successful restore or entering fit.
+                rebuild_update_state(model=self.model)
             context.emit(CheckpointRestored(report=report))
 
         context.emit(TrainingStarted())

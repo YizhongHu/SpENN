@@ -18,6 +18,8 @@ from tpen.training.update import (
     VMCUpdateMethod,
     VMCUpdateResult,
     VMCUpdateState,
+    deserialize_parameter_layout,
+    serialize_parameter_layout,
 )
 from tpen.training.vmc import (
     VMCObjectiveResult,
@@ -38,6 +40,8 @@ __all__ = [
     "VMCUpdateMethod",
     "VMCUpdateResult",
     "VMCUpdateState",
+    "deserialize_parameter_layout",
+    "serialize_parameter_layout",
     "IdentityStatisticsReducer",
     "StatisticsReducer",
     "StatisticsSums",

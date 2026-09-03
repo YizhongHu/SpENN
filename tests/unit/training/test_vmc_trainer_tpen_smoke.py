@@ -389,7 +389,9 @@ def test_skipped_update_advances_next_iteration_but_not_completed_updates() -> N
 
     assert trainer.next_iteration == 2
     assert trainer.completed_updates == 0
-    assert trainer.state_dict() == {"next_iteration": 2, "completed_updates": 0}
+    assert trainer.state_dict()["next_iteration"] == 2
+    assert trainer.state_dict()["completed_updates"] == 0
+    assert "parameter_layout" in trainer.state_dict()
 
 
 def test_skipped_update_emits_update_skipped_without_an_optimizer_scope() -> None:
