@@ -11,6 +11,7 @@ and are deliberately refused until that type exists.
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 from dataclasses import dataclass
@@ -129,8 +130,8 @@ class ProfileRecord:
     device: AllocatorUsage | None = None
 
     def __post_init__(self) -> None:
-        if self.monotonic_time < 0:
-            raise ValueError("monotonic_time must be nonnegative")
+        if not math.isfinite(self.monotonic_time) or self.monotonic_time < 0:
+            raise ValueError("monotonic_time must be finite and nonnegative")
         if self.scope is ProfileScope.PROCESS and self.process is None:
             raise ValueError("PROCESS profile requires process readings")
         if self.scope is ProfileScope.DEVICE and self.device is None:

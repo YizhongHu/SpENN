@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 
 import pytest
@@ -122,6 +123,12 @@ def test_writer_degrades_unserializable_field_to_parseable_error_record(tmp_path
     assert payload["scope"] == "process"
     assert payload["global_rank"] == 0
     assert payload["serialization_error"] == {"fields": ["host"]}
+
+
+@pytest.mark.parametrize("monotonic_time", [math.nan, math.inf, -math.inf])
+def test_profile_record_rejects_nonfinite_monotonic_time(monotonic_time: float) -> None:
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        ProfileRecord(ProfileScope.PROCESS, monotonic_time, _topology(0), process=_process())
 
 
 def test_projector_emits_deterministic_scalar_flags_without_reason_text() -> None:
