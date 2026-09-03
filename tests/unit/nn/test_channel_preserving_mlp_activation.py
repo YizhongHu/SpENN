@@ -199,8 +199,6 @@ def test_invalid_type_arguments_fail_loudly() -> None:
         OrderMLPLayout(axes=ChannelActivationAxes(), specs={})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="only OrderMLPSpec"):
         OrderMLPLayout(axes=ChannelActivationAxes(), specs=(object(),))  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="layout must be"):
-        ChannelPreservingMLPActivation(object())  # type: ignore[arg-type]
     activation = ChannelPreservingMLPActivation(_layout())
     with pytest.raises(TypeError, match="inputs must be"):
         activation([1, 2, 3])  # type: ignore[arg-type]

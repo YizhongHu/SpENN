@@ -200,8 +200,6 @@ class ChannelPreservingMLPActivation(nn.Module):
         initializer: TorchInitializer | None = None,
     ) -> None:
         super().__init__()
-        if not isinstance(layout, OrderMLPLayout):
-            raise TypeError("layout must be an OrderMLPLayout")
         self.layout = layout
         self.initializer = initializer
         self.mlps = nn.ModuleList(
