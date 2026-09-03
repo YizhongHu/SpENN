@@ -95,6 +95,10 @@ def test_hooke_models_initialize_and_train_for_small_electron_counts(
         # The resume cursor advances for every attempted iteration; only
         # applied updates increment completed_updates.
         trainer_state = json.loads((checkpoint_dir / "trainer.json").read_text())
+        assert set(trainer_state) == {
+            "next_iteration",
+            "completed_updates",
+            "parameter_layout",
+        }
         assert trainer_state["next_iteration"] == 1
         assert trainer_state["completed_updates"] == 1
-        assert "parameter_layout" in trainer_state
