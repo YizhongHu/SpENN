@@ -21,13 +21,14 @@ from tpen.checkpoint import (
     CheckpointReplaySemantics,
     CuspDistanceSemantics,
     checkpoint_hashes,
-    resolve_checkpoint_dir,
+    list_complete_checkpoints,
+    read_latest,
+    read_publications,
     restore_checkpoint,
     restore_checkpoint_with_events,
     save_checkpoint,
     stable_config_hash,
 )
-from tpen.checkpoint.artifact import prune_old_checkpoints, write_latest
 from tpen.checkpoint.events import LoadStarted, LoadSucceeded
 from tpen.checkpoint.hashing import file_sha256
 from tpen.checkpoint.manifest import LEGACY_CHECKPOINT_KIND, LEGACY_CHECKPOINT_SCHEMA_VERSION
@@ -1061,8 +1062,8 @@ def test_restore_report_counters_for_train_resume(tmp_path: Path) -> None:
     assert report.to_dict()["completed_updates"] == 3
 
 
-def test_prune_never_deletes_the_latest_pointer_target(tmp_path: Path) -> None:
-    """Pruning spares `latest.json`'s target even outside the keep window."""
+def test_keep_last_compatibility_retains_all_checkpoints_and_publications(tmp_path: Path) -> None:
+    """The compatibility input is a strict superset of the old keep window."""
 
     root = tmp_path / "checkpoints"
     for step in (1, 2, 3):
@@ -1076,23 +1077,19 @@ def test_prune_never_deletes_the_latest_pointer_target(tmp_path: Path) -> None:
             trainer=_Trainer(),
             sampler=_Sampler(),
             context=_context(),
+            keep_last=1,
         )
-    # Point `latest.json` back at the oldest checkpoint, the state a run reaches
-    # when its newest directories were written after the pointer it resumes from.
-    write_latest(root, root / "step_000001", step=1, created_at_unix=0.0)
-
-    prune_old_checkpoints(root, keep_last=1)
-
-    # The pointer target survives *in addition* to the newest `keep_last`.
-    assert sorted(path.name for path in root.glob("step_*")) == [
-        "step_000001",
-        "step_000003",
+    assert [path.name for path in list_complete_checkpoints(root)] == [
+        "step_000001", "step_000002", "step_000003"
     ]
-    assert resolve_checkpoint_dir(root) == root / "step_000001"
+    assert [ref.checkpoint_dir.name for ref in read_publications(root / "publications.jsonl")] == [
+        "step_000001", "step_000002", "step_000003"
+    ]
+    assert read_latest(root)["checkpoint_dir"] == "step_000003"
 
 
-def test_prune_without_a_latest_pointer_still_trims(tmp_path: Path) -> None:
-    """A missing pointer spares nothing extra and must not raise."""
+def test_save_repairs_missing_latest_without_deleting_committed_checkpoints(tmp_path: Path) -> None:
+    """A damaged pointer cannot cause committed checkpoints to be removed."""
 
     root = tmp_path / "checkpoints"
     for step in (1, 2):
@@ -1107,12 +1104,25 @@ def test_prune_without_a_latest_pointer_still_trims(tmp_path: Path) -> None:
             save_trainer=False,
             save_sampler=False,
             save_rng=False,
+            keep_last=1,
         )
     (root / "latest.json").unlink()
-
-    prune_old_checkpoints(root, keep_last=1)
-
-    assert sorted(path.name for path in root.glob("step_*")) == ["step_000002"]
+    save_checkpoint(
+        output_dir=root,
+        next_iteration=3,
+        completed_updates=3,
+        model=torch.nn.Linear(3, 2).double(),
+        context=_context(),
+        save_optimizer=False,
+        save_trainer=False,
+        save_sampler=False,
+        save_rng=False,
+        keep_last=1,
+    )
+    assert [path.name for path in list_complete_checkpoints(root)] == [
+        "step_000001", "step_000002", "step_000003"
+    ]
+    assert read_latest(root)["checkpoint_dir"] == "step_000003"
 
 
 def test_stable_config_hash_is_canonical_and_strict() -> None:

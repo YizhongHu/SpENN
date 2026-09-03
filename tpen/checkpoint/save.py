@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 
 from tpen import __version__ as tpen_version
 
-from .artifact import checkpoint_step_dir_name, prune_old_checkpoints, write_latest
+from .artifact import checkpoint_step_dir_name, write_latest
 from .catalog import CheckpointCatalog, publication_catalog_path
 from .hashing import checkpoint_hashes, file_sha256
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
@@ -68,7 +68,8 @@ def save_checkpoint(
         choose; without an explicit payload the historical default is all
         components enabled.
     keep_last : int or None, optional
-        Prune to the newest ``keep_last`` complete checkpoints after writing.
+        Compatibility input accepted and ignored. All committed checkpoints
+        are retained.
     publication_catalog : str, pathlib.Path, CheckpointCatalog, or None, optional
         Append-only publication catalog.  When omitted, the catalog is
         ``output_dir/publications.jsonl``.  The ref is constructed and
@@ -186,7 +187,6 @@ def save_checkpoint(
         # `latest.json` stays minimal: a pointer plus the directory's own step
         # number. The manifest is the place that carries both counters.
         write_latest(root, final_dir, step=int(next_iteration), created_at_unix=created_at)
-        prune_old_checkpoints(root, keep_last=keep_last)
     except Exception:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
