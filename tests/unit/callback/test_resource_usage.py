@@ -10,11 +10,20 @@ by the real dispatcher, and their emission by `tpen.run`, are covered in
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from tpen.callback import ResourceUsage
 from tpen.callback import resource_usage as resource_usage_module
 from tpen.events import Occurrence
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
+from tpen.process_resources import (
+    ProcessRUsageProbe,
+    ProcessResourceBaseline,
+    ProcessResourceResult,
+    ResourceScope,
+    ResourceUnavailable,
+)
+from tpen import process_resources as process_resources_module
 from tests.unit.callback.support import RecordingContext
 
 
@@ -113,3 +122,232 @@ def test_resource_usage_omits_metrics_from_failing_reader(monkeypatch: pytest.Mo
 
 def test_resource_usage_default_reader_returns_positive_mib() -> None:
     assert resource_usage_module._default_peak_rss_mb() > 0.0
+
+
+def test_process_probe_reports_counter_deltas_and_linux_rss(monkeypatch: pytest.MonkeyPatch) -> None:
+    readings = iter(
+        (
+            SimpleNamespace(
+                ru_utime=1.25,
+                ru_stime=0.5,
+                ru_inblock=4,
+                ru_oublock=6,
+                ru_nvcsw=8,
+                ru_nivcsw=10,
+                ru_maxrss=1024,
+            ),
+            SimpleNamespace(
+                ru_utime=2.0,
+                ru_stime=0.75,
+                ru_inblock=9,
+                ru_oublock=7,
+                ru_nvcsw=11,
+                ru_nivcsw=14,
+                ru_maxrss=2048,
+            ),
+        )
+    )
+    monkeypatch.setattr(process_resources_module.resource, "getrusage", lambda scope: next(readings))
+    monkeypatch.setattr(process_resources_module.sys, "platform", "linux")
+
+    probe = ProcessRUsageProbe(ResourceScope.PROCESS)
+    baseline = probe.read()
+    result = probe.result(baseline)
+
+    assert result.user_cpu_seconds == pytest.approx(0.75)
+    assert result.system_cpu_seconds == pytest.approx(0.25)
+    assert result.read_block_operations == 5
+    assert result.write_block_operations == 1
+    assert result.voluntary_context_switches == 3
+    assert result.involuntary_context_switches == 4
+    assert result.peak_rss_mb == pytest.approx(2.0)
+
+
+def test_process_probe_preserves_unavailable_counter_evidence_when_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(scope):
+        raise OSError("getrusage unavailable")
+
+    monkeypatch.setattr(process_resources_module.resource, "getrusage", fail)
+
+    result = ProcessRUsageProbe().read()
+
+    assert all(
+        isinstance(value, ResourceUnavailable)
+        for value in (
+            result.user_cpu_seconds,
+            result.system_cpu_seconds,
+            result.read_block_operations,
+            result.write_block_operations,
+            result.voluntary_context_switches,
+            result.involuntary_context_switches,
+            result.peak_rss_mb,
+        )
+    )
+
+
+def test_process_probe_normalizes_macos_peak_rss(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        process_resources_module.resource,
+        "getrusage",
+        lambda scope: SimpleNamespace(
+            ru_utime=0.0,
+            ru_stime=0.0,
+            ru_inblock=0,
+            ru_oublock=0,
+            ru_nvcsw=0,
+            ru_nivcsw=0,
+            ru_maxrss=2 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setattr(process_resources_module.sys, "platform", "darwin")
+
+    assert ProcessRUsageProbe().read().peak_rss_mb == pytest.approx(2.0)
+
+
+class _FixedProbe(ProcessRUsageProbe):
+    """Probe stand-in that makes callback boundary assertions deterministic."""
+
+    def __init__(self, result: ProcessResourceResult) -> None:
+        super().__init__()
+        self.result_value = result
+
+    def read(self) -> ProcessResourceBaseline:
+        return ProcessResourceBaseline(
+            user_cpu_seconds=0,
+            system_cpu_seconds=0,
+            read_block_operations=0,
+            write_block_operations=0,
+            voluntary_context_switches=0,
+            involuntary_context_switches=0,
+            peak_rss_mb=0,
+        )
+
+    def result(self, baseline: ProcessResourceBaseline) -> ProcessResourceResult:
+        return self.result_value
+
+
+def _fixed_result(*, unavailable: bool = False) -> ProcessResourceResult:
+    value = ResourceUnavailable("probe failed") if unavailable else 1
+    return ProcessResourceResult(
+        user_cpu_seconds=value,
+        system_cpu_seconds=value,
+        read_block_operations=value,
+        write_block_operations=value,
+        voluntary_context_switches=value,
+        involuntary_context_switches=value,
+        peak_rss_mb=value,
+    )
+
+
+def test_resource_usage_logs_process_metrics_at_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(_fixed_result()), peak_rss_mb_reader=lambda: 4.0)
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert context.latest("process") == {
+        "process_user_cpu_seconds": 1.0,
+        "process_system_cpu_seconds": 1.0,
+        "process_read_block_operations": 1.0,
+        "process_write_block_operations": 1.0,
+        "process_voluntary_context_switches": 1.0,
+        "process_involuntary_context_switches": 1.0,
+    }
+    assert context.latest("runtime")["peak_memory_mb"] == 4.0
+
+
+def test_resource_usage_prefers_process_peak_over_default_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProcessResourceResult(
+        user_cpu_seconds=1,
+        system_cpu_seconds=1,
+        read_block_operations=1,
+        write_block_operations=1,
+        voluntary_context_switches=1,
+        involuntary_context_switches=1,
+        peak_rss_mb=7.0,
+    )
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: 99.0)
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(result))
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert context.by_namespace("runtime") == [
+        {"metrics": {"peak_memory_mb": 7.0}, "step": 0, "namespace": "runtime"}
+    ]
+
+
+def test_resource_usage_does_not_fallback_when_process_peak_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProcessResourceResult(
+        user_cpu_seconds=1,
+        system_cpu_seconds=1,
+        read_block_operations=1,
+        write_block_operations=1,
+        voluntary_context_switches=1,
+        involuntary_context_switches=1,
+        peak_rss_mb=ResourceUnavailable("probe failed"),
+    )
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: 99.0)
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(result))
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert context.by_namespace("runtime") == []
+    assert context.latest("process")["process_peak_rss_unavailable"] is True
+
+
+def test_resource_usage_logs_process_receipt_at_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(_fixed_result()), peak_rss_mb_reader=lambda: 4.0)
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunFailed(exception_type="RuntimeError", exception_message="boom"))
+
+    assert context.latest("process") == {
+        "process_user_cpu_seconds": 1.0,
+        "process_system_cpu_seconds": 1.0,
+        "process_read_block_operations": 1.0,
+        "process_write_block_operations": 1.0,
+        "process_voluntary_context_switches": 1.0,
+        "process_involuntary_context_switches": 1.0,
+    }
+    assert context.latest("runtime")["peak_memory_mb"] == 4.0
+
+
+def test_resource_usage_projects_unavailable_process_readings_as_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(_fixed_result(unavailable=True)))
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    process = context.latest("process")
+    assert process["process_user_cpu_seconds_unavailable"] is True
+    assert process["process_peak_rss_unavailable"] is True
