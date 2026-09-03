@@ -250,9 +250,11 @@ and activation has the general form
   are positioned in the virtual interaction.
 - $sum_(J_([s]\\"im"(tau)))$ means summing over all the indices
   in the virtual interactions that is not already in the image of $tau$, i.e. the indices in $I$ that are corresponding to.
-- Every producer returns these pre-$Gamma$ path values. The common pointwise
-  $Gamma$ is owned by the composite path expansion and is applied exactly once
-  after all family outputs have been concatenated.
+- Every producer returns these pre-$Gamma$ path values. The common
+  shape-preserving $Gamma$ is owned by the composite path expansion and is
+  applied exactly once after all family outputs have been concatenated. It may
+  be pointwise or the opt-in channel-preserving MLP, which mixes channels only
+  at each fixed inert position.
 
 === Unary support paths
 
@@ -346,8 +348,8 @@ axis:
 $
   u^d_I = sum_(p in P_l) U_l^(d,p) Gamma(y^d_(I,p)),
 $
-or, in the implementation order, applies the common pointwise $Gamma$ once
-after concatenation and then $U_l$. This is the v1 shared-union policy;
+or, in the implementation order, applies the common shape-preserving $Gamma$
+once after concatenation and then $U_l$. This is the v1 shared-union policy;
 family-wise and hierarchical aggregation are deferred.
 
 One immutable typed PathLayout value is passed directly to both
