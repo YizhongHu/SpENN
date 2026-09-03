@@ -24,6 +24,7 @@ choices:
         _target_: tpen.nn.ChannelPreservingMLPActivation
         layout:
           _target_: tpen.nn.OrderMLPLayout
+          _recursive_: true
           axes:
             _target_: tpen.nn.ChannelActivationAxes
             channel_axis: 1
@@ -53,6 +54,7 @@ choices:
         _target_: tpen.nn.ChannelPreservingMLPActivation
         layout:
           _target_: tpen.nn.OrderMLPLayout
+          _recursive_: true
           axes:
             _target_: tpen.nn.ChannelActivationAxes
             channel_axis: 1
