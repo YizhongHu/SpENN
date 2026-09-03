@@ -781,3 +781,29 @@ def test_resource_usage_isolates_nonfinite_process_counter_at_terminal_boundary(
     runtime_lines = [line for line in terminal_lines if line["namespace"] == "runtime"]
     assert len(runtime_lines) == 1
     assert runtime_lines[0]["metrics"]["peak_memory_mb"] == 7.0
+
+
+def test_resource_usage_isolates_nonfinite_default_peak_rss_at_terminal_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Writer-authored: the third `peak_memory_mb` arm, `_default_peak_rss_mb`.
+
+    Neither adopted test above reaches this arm: it fires only when there is
+    no `peak_rss_mb_reader` override AND no process-probe baseline yet (`_log_
+    peaks` called without a preceding `RunStarted` for this callback
+    instance). Demonstrated red-before-fix since this test carries no
+    independent red arm of its own.
+    """
+
+    monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: math.nan)
+    context = _strict_json_terminal_context(tmp_path)
+    callback = ResourceUsage()
+
+    # No RunStarted: `_process_baseline` stays None, forcing the
+    # `_default_peak_rss_mb` fallback arm inside `_log_peaks`.
+    _deliver(callback, context, RunCompleted())
+
+    terminal_lines = _terminal_records(tmp_path)
+    runtime_lines = [line for line in terminal_lines if line["namespace"] == "runtime"]
+    for line in runtime_lines:
+        assert "peak_memory_mb" not in line["metrics"]
