@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -108,6 +109,19 @@ def test_writer_persists_exact_device_identity(tmp_path) -> None:
     writer.write(record)
     payload = json.loads(writer.path.read_text())
     assert payload["device_identity"] == {"kind": "cuda", "index": 3, "uuid": "GPU-3"}
+
+
+def test_writer_degrades_unserializable_field_to_parseable_error_record(tmp_path) -> None:
+    topology = replace(_topology(0), host=object())
+    record = ProfileRecord(ProfileScope.PROCESS, 1.0, topology, process=_process())
+    writer = RankLocalJSONLWriter(tmp_path, topology)
+
+    writer.write(record)
+
+    payload = json.loads(writer.path.read_text())
+    assert payload["scope"] == "process"
+    assert payload["global_rank"] == 0
+    assert payload["serialization_error"] == {"fields": ["host"]}
 
 
 def test_projector_emits_deterministic_scalar_flags_without_reason_text() -> None:

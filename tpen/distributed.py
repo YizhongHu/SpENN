@@ -213,10 +213,34 @@ class RankLocalJSONLWriter:
             },
             "metrics": {metric.key: metric.value for metric in project_scalars(record)},
         }
+        try:
+            serialized = json.dumps(payload, sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError):
+            payload = {
+                "scope": record.scope.value,
+                "time_monotonic": record.monotonic_time,
+                "global_rank": record.topology.global_rank,
+                "serialization_error": {
+                    "fields": _unserializable_fields(payload),
+                },
+            }
+            serialized = json.dumps(payload, sort_keys=True, allow_nan=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True, allow_nan=False))
+            handle.write(serialized)
             handle.write("\n")
+
+
+def _unserializable_fields(payload: dict[str, object]) -> tuple[str, ...]:
+    """Identify top-level fields that cannot cross the JSON boundary."""
+
+    failed: list[str] = []
+    for field, value in payload.items():
+        try:
+            json.dumps(value, sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError):
+            failed.append(field)
+    return tuple(failed)
 
 
 __all__ = [
