@@ -19,6 +19,11 @@ from .catalog import CheckpointCatalog, publication_catalog_path
 from .hashing import checkpoint_hashes, file_sha256
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
 from .payload import CheckpointPayload, ModelOnly, TrainResume
+from .receipt import (
+    build_publication_receipt,
+    append_publication_receipt,
+    publication_receipt_path,
+)
 from .reference import CheckpointRef
 from .rng import rng_state_dict, runtime_device
 
@@ -80,6 +85,24 @@ def save_checkpoint(
     -------
     pathlib.Path
         The completed checkpoint step directory.
+
+    Notes
+    -----
+    **Publication sequence.** In order: every component file is written into
+    ``<step>.tmp``; ``manifest.json`` and ``COMPLETE`` are written last, into
+    the same temporary directory; ``tmp_dir.rename(final_dir)`` commits the
+    checkpoint; a :class:`~tpen.checkpoint.reference.CheckpointRef` is built
+    from the committed directory and appended to the publication catalog;
+    ``output_dir/latest.json`` is atomically updated to point at the new
+    directory; finally, a :class:`~tpen.checkpoint.receipt.CheckpointPublicationReceipt`
+    is built from the committed directory and appended to
+    ``output_dir/publication_receipts.jsonl``. Each step after the rename is
+    additive: a later step never re-runs, undoes, or reorders an earlier one,
+    and an exception at any step after the rename leaves the checkpoint
+    published (see ``tpen.checkpoint.catalog.reconcile_publication`` for
+    repairing a catalog row or ``latest.json`` that failed to write). See
+    :mod:`tpen.checkpoint.receipt` for the receipt's field-by-field semantics,
+    including the exact instants its two durations bracket.
     """
 
     import torch
@@ -113,6 +136,10 @@ def save_checkpoint(
         raise FileExistsError(f"checkpoint already exists: {final_dir}")
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
+    # Wall-clock duration bracket for the publication receipt. perf_counter is
+    # used instead of `created_at`'s time.time() so a system clock adjustment
+    # mid-write cannot corrupt the measured duration.
+    write_start = time.perf_counter()
     tmp_dir.mkdir(parents=True)
 
     files: dict[str, str] = {}
@@ -171,9 +198,11 @@ def save_checkpoint(
         manifest.write(tmp_dir / "manifest.json")
         (tmp_dir / "COMPLETE").write_text("complete\n", encoding="utf-8")
         tmp_dir.rename(final_dir)
+        write_end = time.perf_counter()
         # The rename is the checkpoint commit.  Publication is deliberately
         # after it, so a catalog can never name a tmp or partially written
         # directory as a CheckpointRef.
+        ref = CheckpointRef.from_directory(final_dir)
         catalog = (
             publication_catalog
             if isinstance(publication_catalog, CheckpointCatalog)
@@ -183,10 +212,21 @@ def save_checkpoint(
                 else publication_catalog
             )
         )
-        catalog.publish(CheckpointRef.from_directory(final_dir))
+        catalog.publish(ref)
         # `latest.json` stays minimal: a pointer plus the directory's own step
         # number. The manifest is the place that carries both counters.
         write_latest(root, final_dir, step=int(next_iteration), created_at_unix=created_at)
+        publish_end = time.perf_counter()
+        # Additive last step: appends a new index entry after the existing
+        # rename -> publish -> write_latest sequence without altering it.
+        receipt = build_publication_receipt(
+            ref,
+            final_dir,
+            files,
+            write_duration_sec=write_end - write_start,
+            publish_duration_sec=publish_end - write_end,
+        )
+        append_publication_receipt(publication_receipt_path(root), receipt)
     except Exception:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)

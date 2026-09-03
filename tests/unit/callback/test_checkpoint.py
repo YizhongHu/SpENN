@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from dataclasses import replace
 from pathlib import Path
@@ -29,6 +30,8 @@ from tpen.checkpoint import (
     save_checkpoint,
     stable_config_hash,
 )
+from tpen.checkpoint.catalog import reconcile_publication
+from tpen.checkpoint.receipt import publication_receipt_path
 from tpen.checkpoint.events import LoadStarted, LoadSucceeded
 from tpen.checkpoint.hashing import file_sha256
 from tpen.checkpoint.manifest import LEGACY_CHECKPOINT_KIND, LEGACY_CHECKPOINT_SCHEMA_VERSION
@@ -1123,6 +1126,61 @@ def test_save_repairs_missing_latest_without_deleting_committed_checkpoints(tmp_
         "step_000001", "step_000002", "step_000003"
     ]
     assert read_latest(root)["checkpoint_dir"] == "step_000003"
+
+
+def test_save_checkpoint_appends_one_publication_receipt_with_positive_durations(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkpoints"
+    final_dir = _write_checkpoint(tmp_path)
+    receipt_path = publication_receipt_path(root)
+
+    rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["summary"]["checkpoint_dir"] == final_dir.name
+    assert row["summary"]["write_duration_sec"] > 0.0
+    assert row["summary"]["publish_duration_sec"] > 0.0
+    assert row["summary"]["total_bytes"] == sum(entry["size_bytes"] for entry in row["files"])
+    assert (
+        row["summary"]["total_bytes"]
+        == row["summary"]["payload_bytes"] + row["summary"]["metadata_bytes"]
+    )
+
+
+def test_publication_receipt_total_matches_an_independent_stat_oracle(tmp_path: Path) -> None:
+    """Cross-check the typed sum against a test-only, non-production full enumeration.
+
+    Production code never lists the directory (see ``measure_checkpoint_files``);
+    this oracle does, but only here, to prove the typed sum is complete rather
+    than merely self-consistent.
+    """
+
+    root = tmp_path / "checkpoints"
+    final_dir = _write_checkpoint(tmp_path)
+    receipt_path = publication_receipt_path(root)
+    row = json.loads(receipt_path.read_text(encoding="utf-8").splitlines()[0])
+
+    oracle_total = sum(
+        (final_dir / name).stat().st_size for name in os.listdir(final_dir)
+    )
+    assert row["summary"]["total_bytes"] == oracle_total
+
+
+def test_reconcile_publication_does_not_append_another_receipt(tmp_path: Path) -> None:
+    """Repairing the catalog/latest index for an existing checkpoint is not a new write."""
+
+    root = tmp_path / "checkpoints"
+    final_dir = _write_checkpoint(tmp_path)
+    receipt_path = publication_receipt_path(root)
+    rows_before = receipt_path.read_text(encoding="utf-8").splitlines()
+    assert len(rows_before) == 1
+
+    (root / "latest.json").unlink()
+    reconcile_publication(root, final_dir)
+
+    rows_after = receipt_path.read_text(encoding="utf-8").splitlines()
+    assert rows_after == rows_before
 
 
 def test_stable_config_hash_is_canonical_and_strict() -> None:
