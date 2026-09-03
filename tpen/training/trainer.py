@@ -23,6 +23,12 @@ from tpen.training.events import (
     UpdateSkipped,
 )
 from tpen.training.state import TrainerState
+from tpen.training.update import (
+    AutogradUpdateInput,
+    LegacyAutogradUpdate,
+    ModelParameterBinding,
+    VMCUpdateMethod,
+)
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
 
 torch = require_torch(feature="VMC training")
@@ -97,11 +103,13 @@ class VMCTrainer:
         log_every_n_steps: int = 1,
         return_terms: bool = False,
         gradient_clip_norm: float | None = None,
+        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
     ) -> None:
         self.max_steps = int(max_steps)
         self.log_every_n_steps = int(log_every_n_steps)
         self.return_terms = bool(return_terms)
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
+        self.update_method = update_method
         # Durable resume cursor: the next iteration this trainer will attempt.
         self.next_iteration = 0
         # Optimizer updates that actually returned; skipped updates never count.
@@ -166,10 +174,25 @@ class VMCTrainer:
         optimizer: torch.optim.Optimizer,
         context: RunContext,
         emit: Callable[..., None],
+        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
     ) -> TrainerState:
         """Run the training loop and return the final `TrainerState`."""
 
         state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
+        selected_update_method = update_method if update_method is not None else self.update_method
+        if selected_update_method is None:
+            selected_update_method = LegacyAutogradUpdate(
+                optimizer=optimizer,
+                gradient_clip_norm=self.gradient_clip_norm,
+                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+            )
+        # The hooks are owned by the adapter rather than by the live input
+        # record. This keeps VMCStepData exact and ephemeral while preserving
+        # the historical typed phase boundaries around backward and step.
+        selected_update_method.set_step_scopes(
+            backward_scope=lambda step: context.scope(Backward(step=step), state=state),
+            optimizer_scope=lambda step: context.scope(OptimizerUpdate(step=step), state=state),
+        )
         # One `TrainerState` instance is passed beside every typed occurrence
         # this loop emits, so a typed handler reads it at the moment it is
         # delivered. Its reference fields (`model`, `optimizer`, `trainer`,
@@ -218,30 +241,29 @@ class VMCTrainer:
                 # reports this same pre-update value.
                 param_norm = _parameter_norm(model)
 
-                optimizer.zero_grad(set_to_none=True)
+                update_input = AutogradUpdateInput(
+                    batch=batch,
+                    wavefunction=output,
+                    local_energy=total_local_energy,
+                    step=step,
+                    objective=loss,
+                )
+                update_result = selected_update_method.update(update_input)
                 optimizer_step = False
-                if loss.requires_grad:
-                    with context.scope(Backward(step=step), state=state):
-                        loss.backward()
-                    if self.gradient_clip_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), self.gradient_clip_norm
-                        )
-                    grad_norm = _gradient_norm(model)
-                    with context.scope(OptimizerUpdate(step=step), state=state):
-                        optimizer.step()
+                if update_result.applied:
                     # The update counts only once `optimizer.step()` has
                     # returned, so this always follows Ended[OptimizerUpdate].
                     self.completed_updates += 1
                     context.emit(UpdateCompleted(iteration=iteration), state=state)
                     optimizer_step = True
+                    grad_norm = update_result.grad_norm
                 elif batch.n_electrons == 0:
                     # The zero-electron vacuum has no sampled coordinate degrees
                     # of freedom, so the current Pfaffian readout yields a
                     # constant wavefunction and a no-op optimizer step is the
                     # correct loop behavior. No OptimizerUpdate scope opens on
                     # this path. Nonzero disconnected losses still fail below.
-                    grad_norm = 0.0
+                    grad_norm = update_result.grad_norm
                     context.emit(UpdateSkipped(iteration=iteration), state=state)
                 else:
                     raise RuntimeError(
