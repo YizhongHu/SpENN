@@ -96,7 +96,13 @@ def test_train_runner_writes_standard_artifacts(tmp_path) -> None:
 
     # Three attempted iterations, each of which applied its optimizer update.
     trainer_state = json.loads((run_dir / "checkpoints/step_000003/trainer.json").read_text())
-    assert trainer_state == {"next_iteration": 3, "completed_updates": 3}
+    assert set(trainer_state) == {
+        "next_iteration",
+        "completed_updates",
+        "parameter_layout",
+    }
+    assert trainer_state["next_iteration"] == 3
+    assert trainer_state["completed_updates"] == 3
 
     # The v2 manifest names both counters instead of one ambiguous `step`, and
     # the directory the run wrote is the one `next_iteration` names.
@@ -326,7 +332,11 @@ def test_resume_reproduces_the_uninterrupted_run_bitwise(uninterrupted_run, tmp_
     }
     trainer_a = json.loads((final_a / "trainer.json").read_text())
     trainer_b = json.loads((final_b / "trainer.json").read_text())
-    assert trainer_a == trainer_b == expected_progress
+    expected_keys = {*expected_progress, "parameter_layout"}
+    assert set(trainer_a) == expected_keys
+    assert set(trainer_b) == expected_keys
+    assert trainer_a == trainer_b
+    assert {key: trainer_a[key] for key in expected_progress} == expected_progress
 
     # The resumed arm logs only the steps it actually ran, and every one of them
     # is byte-identical to the same step in the run that never stopped.

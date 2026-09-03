@@ -12,6 +12,8 @@ from tpen.data.batch import (
     ElectronBatch,
     MaterializedParameterLogScores,
     ParameterBinding,
+    ParameterLayout,
+    ParameterSlot,
     WavefunctionOutput,
 )
 from tpen.dependencies import require_torch
@@ -192,14 +194,113 @@ class VMCUpdateResult:
 
 @dataclass(frozen=True, kw_only=True)
 class ModelParameterBinding:
-    """Bind the legacy gradient domain to direct model parameters."""
+    """Bind the legacy gradient domain to direct model parameters.
+
+    The static layout is retained separately from the live parameter
+    references.  Checkpoint restore can therefore compare the recorded layout
+    before rebuilding the binding against the model objects that are live
+    after ``load_state_dict``.
+    """
 
     parameters: tuple[torch.nn.Parameter, ...]
+    layout: ParameterLayout | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "parameters", tuple(self.parameters))
         if any(not isinstance(parameter, torch.nn.Parameter) for parameter in self.parameters):
             raise TypeError("ModelParameterBinding.parameters must contain direct parameters")
+        if self.layout is None:
+            object.__setattr__(self, "layout", _parameter_layout(self.parameters))
+        if not isinstance(self.layout, ParameterLayout):
+            raise TypeError("ModelParameterBinding.layout must be a ParameterLayout")
+        self.validate()
+
+    def validate(self) -> "ModelParameterBinding":
+        """Validate that the live references have the recorded layout."""
+
+        assert self.layout is not None
+        self.layout.validate()
+        if len(self.parameters) != len(self.layout.slots):
+            raise ValueError(
+                "ModelParameterBinding.parameters must have one reference per layout slot"
+            )
+        for slot, parameter in zip(self.layout.slots, self.parameters, strict=True):
+            if tuple(parameter.shape) != slot.shape:
+                raise ValueError(
+                    f"ModelParameterBinding slot {slot.ordinal} expected shape {slot.shape}, "
+                    f"got {tuple(parameter.shape)}"
+                )
+            if parameter.numel() != slot.numel:
+                raise ValueError(
+                    f"ModelParameterBinding slot {slot.ordinal} expected numel {slot.numel}, "
+                    f"got {parameter.numel()}"
+                )
+            if parameter.dtype != slot.dtype:
+                raise ValueError(
+                    f"ModelParameterBinding slot {slot.ordinal} expected dtype {slot.dtype}, "
+                    f"got {parameter.dtype}"
+                )
+        return self
+
+    def compare(
+        self,
+        other: "ModelParameterBinding",
+    ) -> tuple[bool, dict[str, float]]:
+        """Compare layout metadata and direct parameter-reference identity."""
+
+        if type(self) is not type(other) or not self.layout.compare(other.layout)[0]:
+            return False, {"max_abs_error": float("inf")}
+        close = len(self.parameters) == len(other.parameters) and all(
+            left is right for left, right in zip(self.parameters, other.parameters, strict=True)
+        )
+        return close, {"max_abs_error": 0.0 if close else float("inf")}
+
+    @classmethod
+    def from_parameters(
+        cls,
+        parameters: tuple[torch.nn.Parameter, ...],
+    ) -> "ModelParameterBinding":
+        """Build a binding whose layout is derived from live parameters."""
+
+        return cls(parameters=tuple(parameters))
+
+    def rebind(
+        self,
+        parameters: tuple[torch.nn.Parameter, ...],
+        *,
+        layout: ParameterLayout | None = None,
+    ) -> "ModelParameterBinding":
+        """Rebuild direct references after checking the expected layout.
+
+        Parameters
+        ----------
+        parameters : tuple of torch.nn.Parameter
+            The current model-owned parameter objects.
+        layout : ParameterLayout, optional
+            Recorded layout to enforce.  Defaults to this binding's layout.
+        """
+
+        parameters = tuple(parameters)
+        expected = self.layout if layout is None else layout
+        current = _parameter_layout(parameters)
+        if not expected.compare(current)[0]:
+            layout_mismatch_message = "checkpoint parameter layout does not match live model"
+            raise ValueError(layout_mismatch_message)
+        return type(self)(layout=current, parameters=parameters)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VMCUpdateState:
+    """The single optimizer and parameter binding owned by an update method."""
+
+    optimizer: torch.optim.Optimizer
+    model_parameters: ModelParameterBinding
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.optimizer, torch.optim.Optimizer):
+            raise TypeError("VMCUpdateState.optimizer must be a torch.optim.Optimizer")
+        if not isinstance(self.model_parameters, ModelParameterBinding):
+            raise TypeError("VMCUpdateState.model_parameters must be a ModelParameterBinding")
 
 
 class VMCUpdateMethod(Generic[InputT], ABC):
@@ -229,6 +330,28 @@ class VMCUpdateMethod(Generic[InputT], ABC):
             raise TypeError("VMCUpdateMethod state must be a mapping")
         if state:
             raise ValueError("stateless VMCUpdateMethod cannot load non-empty state")
+
+    def update_state(self) -> VMCUpdateState | None:
+        """Return owned optimizer state, or ``None`` for a stateless method.
+
+        Returning ``None`` delegates the authority to the optimizer supplied
+        to ``VMCTrainer.fit``.  A stateful method must return its one typed
+        authority so the trainer can reject an ambiguous legacy optimizer
+        before restore or update work begins.
+        """
+
+        return None
+
+    def rebind_model_parameters(self, model_parameters: ModelParameterBinding) -> None:
+        """Accept a rebuilt direct parameter binding after checkpoint restore.
+
+        Stateless methods do not retain a binding.  A stateful method that
+        keeps direct parameter references must override this hook so the
+        references used by its next update are the restored model's live
+        objects.
+        """
+
+        del model_parameters
 
     def set_step_scopes(
         self,
@@ -262,6 +385,21 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
         self.model_parameters = model_parameters
         self._backward_scope: ScopeFactory | None = None
         self._optimizer_scope: ScopeFactory | None = None
+
+    def update_state(self) -> VMCUpdateState:
+        """Return the optimizer and direct gradient binding owned by the adapter."""
+
+        return VMCUpdateState(
+            optimizer=self.optimizer,
+            model_parameters=self.model_parameters,
+        )
+
+    def rebind_model_parameters(self, model_parameters: ModelParameterBinding) -> None:
+        """Replace the legacy gradient domain with restored model references."""
+
+        if not isinstance(model_parameters, ModelParameterBinding):
+            raise TypeError("LegacyAutogradUpdate model_parameters must be a ModelParameterBinding")
+        self.model_parameters = model_parameters
 
     def set_step_scopes(
         self,
@@ -347,6 +485,75 @@ def _validate_step(step: int) -> None:
         raise ValueError("VMC update step must be a non-negative integer")
 
 
+def _parameter_layout(
+    parameters: tuple[torch.nn.Parameter, ...],
+) -> ParameterLayout:
+    """Derive static layout metadata from direct live parameters."""
+
+    return ParameterLayout(
+        slots=tuple(
+            ParameterSlot(
+                ordinal=ordinal,
+                shape=tuple(parameter.shape),
+                numel=parameter.numel(),
+                dtype=parameter.dtype,
+            )
+            for ordinal, parameter in enumerate(parameters)
+        )
+    )
+
+
+def serialize_parameter_layout(layout: ParameterLayout) -> dict[str, Any]:
+    """Return JSON-safe immutable metadata for a parameter layout."""
+
+    if not isinstance(layout, ParameterLayout):
+        raise TypeError("parameter layout must be a ParameterLayout")
+    layout.validate()
+    return {
+        "slots": [
+            {
+                "ordinal": slot.ordinal,
+                "shape": list(slot.shape),
+                "numel": slot.numel,
+                "dtype": str(slot.dtype),
+            }
+            for slot in layout.slots
+        ]
+    }
+
+
+def deserialize_parameter_layout(state: Mapping[str, Any]) -> ParameterLayout:
+    """Parse strict JSON-safe parameter-layout metadata."""
+
+    if not isinstance(state, Mapping):
+        raise TypeError("parameter layout state must be a mapping")
+    slots = state.get("slots")
+    if not isinstance(slots, list):
+        raise ValueError("parameter layout state must contain a slots list")
+    parsed: list[ParameterSlot] = []
+    for raw in slots:
+        if not isinstance(raw, Mapping):
+            raise TypeError("parameter layout slots must be mappings")
+        dtype_name = raw.get("dtype")
+        if not isinstance(dtype_name, str) or not dtype_name.startswith("torch."):
+            raise ValueError("parameter layout slot dtype must be a torch dtype name")
+        dtype = getattr(torch, dtype_name.removeprefix("torch."), None)
+        if not isinstance(dtype, torch.dtype) or not dtype.is_floating_point:
+            raise TypeError("parameter layout slot dtype must be a real floating torch.dtype")
+        shape = raw.get("shape")
+        if not isinstance(shape, list):
+            raise TypeError("parameter layout slot shape must be a list")
+        parsed.append(
+            ParameterSlot(
+                ordinal=raw.get("ordinal"),
+                shape=tuple(shape),
+                numel=raw.get("numel"),
+                dtype=dtype,
+            )
+        )
+    return ParameterLayout(slots=tuple(parsed))
+
+
 def _batch_requires_grad(batch: ElectronBatch) -> bool:
     tensors = (batch.positions, batch.nuclear_positions, batch.nuclear_charges, batch.spins)
     return any(tensor is not None and tensor.requires_grad for tensor in tensors)
@@ -375,4 +582,7 @@ __all__ = [
     "VMCStepData",
     "VMCUpdateMethod",
     "VMCUpdateResult",
+    "VMCUpdateState",
+    "deserialize_parameter_layout",
+    "serialize_parameter_layout",
 ]

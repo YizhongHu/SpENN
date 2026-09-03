@@ -46,6 +46,8 @@ from tpen.run import run_from_config
 from tpen.runner import Evaluate, Train
 from tpen.sampling import SamplerStats
 from tpen.training.state import TrainerState
+from tpen.training.trainer import VMCTrainer
+from tpen.training.update import LegacyAutogradUpdate, ModelParameterBinding
 from tests.helpers.hooke_models import build_tiny_sampler, build_tiny_spenn
 from tests.helpers.run_context import RecordingLogger, make_run_context
 
@@ -210,7 +212,11 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Pa
             mode="train_resume", checkpoint_dir="ckpt", next_iteration=4, completed_updates=4
         )
 
-    monkeypatch.setattr(train_runner_module, "restore_checkpoint_with_events", fake_restore_checkpoint_with_events)
+    monkeypatch.setattr(
+        train_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
     runner = Train(
         model=nn.Linear(1, 1).double(),
         sampler=object(),
@@ -228,6 +234,93 @@ def test_train_train_resume_calls_runner_owned_restore(monkeypatch, tmp_path: Pa
     assert calls[0]["trainer"] is runner.trainer
     assert calls[0]["sampler"] is runner.sampler
     assert calls[0]["emit"].__self__ is context
+
+
+def test_train_rebuilds_update_state_after_resume_restore(monkeypatch, tmp_path: Path) -> None:
+    """The updater is rebound only after the runner's restore returns."""
+
+    calls = []
+
+    class _RestoreAwareTrainer(_NoopTrainer):
+        def resolve_update_state(self, *, model, optimizer):
+            calls.append(("resolve", model, optimizer))
+
+        def rebuild_update_state(self, *, model):
+            calls.append(("rebuild", model))
+
+        def fit(self, *, model, sampler, hamiltonian_terms, optimizer, context, emit):
+            calls.append(("fit", model, optimizer))
+            return super().fit(
+                model=model,
+                sampler=sampler,
+                hamiltonian_terms=hamiltonian_terms,
+                optimizer=optimizer,
+                context=context,
+                emit=emit,
+            )
+
+    def fake_restore_checkpoint_with_events(**kwargs):
+        calls.append(("restore", kwargs["model"]))
+        return RestoreReport(mode="train_resume", checkpoint_dir="ckpt")
+
+    monkeypatch.setattr(
+        train_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
+    runner = Train(
+        model=nn.Linear(1, 1).double(),
+        sampler=object(),
+        hamiltonian_terms=[],
+        optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
+        trainer=_RestoreAwareTrainer(),
+        load={"mode": "train_resume", "path": "ckpt"},
+    )
+
+    runner.run(_recording_context(tmp_path, [])[0])
+
+    assert [entry[0] for entry in calls] == ["resolve", "restore", "rebuild", "fit"]
+
+
+def test_train_rejects_legacy_optimizer_mismatch_before_resume_restore(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Runner validation precedes restore, which would otherwise mutate state."""
+
+    model = nn.Linear(1, 1).double()
+    owned_optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+    trainer = VMCTrainer(
+        max_steps=0,
+        update_method=LegacyAutogradUpdate(
+            owned_optimizer,
+            model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+        ),
+    )
+    restore_calls = []
+
+    def fake_restore_checkpoint_with_events(**kwargs):
+        restore_calls.append(kwargs)
+        raise AssertionError("restore must not run before ownership validation")
+
+    monkeypatch.setattr(
+        train_runner_module,
+        "restore_checkpoint_with_events",
+        fake_restore_checkpoint_with_events,
+    )
+    runner = Train(
+        model=model,
+        sampler=object(),
+        hamiltonian_terms=[],
+        optimizer=lambda params: torch.optim.SGD(params, lr=0.1),
+        trainer=trainer,
+        load={"mode": "train_resume", "path": "unused"},
+    )
+
+    with pytest.raises(ValueError, match="ownership"):
+        runner.run(_recording_context(tmp_path, [])[0])
+
+    assert restore_calls == []
 
 
 def test_evaluate_model_only_calls_runner_owned_restore(monkeypatch, tmp_path: Path) -> None:

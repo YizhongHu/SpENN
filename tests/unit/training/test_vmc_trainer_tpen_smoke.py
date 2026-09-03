@@ -389,7 +389,9 @@ def test_skipped_update_advances_next_iteration_but_not_completed_updates() -> N
 
     assert trainer.next_iteration == 2
     assert trainer.completed_updates == 0
-    assert trainer.state_dict() == {"next_iteration": 2, "completed_updates": 0}
+    assert trainer.state_dict()["next_iteration"] == 2
+    assert trainer.state_dict()["completed_updates"] == 0
+    assert "parameter_layout" in trainer.state_dict()
 
 
 def test_skipped_update_emits_update_skipped_without_an_optimizer_scope() -> None:
@@ -511,7 +513,11 @@ def test_load_state_dict_round_trips_both_progress_counters() -> None:
 
     assert trainer.next_iteration == 4
     assert trainer.completed_updates == 3
-    assert trainer.state_dict() == {"next_iteration": 4, "completed_updates": 3}
+    state = trainer.state_dict()
+    # No model/update authority is resolved in this counter-only test, so no
+    # parameter layout is available; the exact key set still pins this schema.
+    assert set(state) == {"next_iteration", "completed_updates"}
+    assert state == {"next_iteration": 4, "completed_updates": 3}
 
 
 def test_load_state_dict_rejects_legacy_trainer_state() -> None:

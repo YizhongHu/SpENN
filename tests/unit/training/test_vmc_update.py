@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import copy
+import json
 import pickle
 from dataclasses import FrozenInstanceError
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 
+from tpen.checkpoint import TrainResume, restore_checkpoint, save_checkpoint
+from tpen.checkpoint.hashing import file_sha256
 from tpen.data.batch import (
     ElectronBatch,
     MaterializedParameterLogScores,
@@ -20,6 +25,7 @@ from tpen.data.batch import (
     WavefunctionOutput,
 )
 from tpen.physics.kinetic import KineticEnergy
+from tpen.sampling import MetropolisSampler
 from tpen.training.trainer import VMCTrainer
 from tpen.training.update import (
     AutogradUpdateInput,
@@ -360,6 +366,236 @@ def test_legacy_adapter_requires_model_binding_before_mutation() -> None:
     _assert_nested_equal(optimizer.state_dict(), optimizer_state_before)
 
 
+def test_trainer_rejects_mismatched_legacy_optimizer_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy ownership mismatch fails before the loop or optimizer can mutate."""
+
+    import tpen.training.trainer as trainer_module
+
+    monkeypatch.setattr(
+        trainer_module,
+        "local_energy",
+        lambda terms, model, batch, return_terms: torch.zeros(batch.batch_size, dtype=batch.dtype),
+    )
+    model = _OneParameterWavefunction()
+    trainer_optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    owned_optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+    update = LegacyAutogradUpdate(
+        owned_optimizer,
+        model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=1, update_method=update)
+    context = _StubContext()
+    parameter_before = model.weight.detach().clone()
+    trainer_optimizer_before = copy.deepcopy(trainer_optimizer.state_dict())
+    owned_optimizer_before = copy.deepcopy(owned_optimizer.state_dict())
+
+    with pytest.raises(ValueError, match="ownership"):
+        trainer.fit(
+            model=model,
+            sampler=_OneElectronSampler(),
+            hamiltonian_terms=[KineticEnergy()],
+            optimizer=trainer_optimizer,
+            context=context,
+            emit=lambda **_: None,
+        )
+
+    assert torch.equal(model.weight, parameter_before)
+    assert model.weight.grad is None
+    _assert_nested_equal(trainer_optimizer.state_dict(), trainer_optimizer_before)
+    _assert_nested_equal(owned_optimizer.state_dict(), owned_optimizer_before)
+    assert trainer.state_dict() == {"next_iteration": 0, "completed_updates": 0}
+    assert context.occurrences == []
+
+
+def test_trainer_state_publishes_the_same_update_state_optimizer() -> None:
+    model = _OneParameterWavefunction()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    update = LegacyAutogradUpdate(
+        optimizer,
+        model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=0, update_method=update)
+    context = _StubContext()
+
+    state = trainer.fit(
+        model=model,
+        sampler=_OneElectronSampler(),
+        hamiltonian_terms=[KineticEnergy()],
+        optimizer=optimizer,
+        context=context,
+        emit=lambda **_: None,
+    )
+
+    assert state.update_state is not None
+    assert state.update_state.optimizer is optimizer
+    assert state.optimizer is state.update_state.optimizer
+    assert all(
+        left is right
+        for left, right in zip(
+            state.update_state.model_parameters.parameters,
+            tuple(model.parameters()),
+            strict=True,
+        )
+    )
+
+
+def _checkpoint_context(tmp_path) -> SimpleNamespace:
+    """Build the same public context boundary used by checkpoint tests."""
+
+    return SimpleNamespace(
+        cfg=OmegaConf.create(
+            {
+                "model": {"name": "linear"},
+                "optimizer": {"name": "adam"},
+                "trainer": {"name": "vmc"},
+                "sampler": {"name": "metropolis"},
+                "hamiltonian_terms": {"constant": {}},
+            }
+        ),
+        metadata=SimpleNamespace(device="cpu", dtype="float64"),
+        run_dir=tmp_path,
+    )
+
+
+def _resume_checkpoint(tmp_path):
+    """Save a real public train-resume checkpoint with updater layout state."""
+
+    model = torch.nn.Linear(1, 1).double()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+    update = LegacyAutogradUpdate(
+        optimizer,
+        model_parameters=ModelParameterBinding.from_parameters(tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=2, update_method=update)
+    trainer.resolve_update_state(model=model, optimizer=optimizer)
+    trainer.next_iteration = 1
+    trainer.completed_updates = 1
+    sampler = MetropolisSampler(
+        n_walkers=2,
+        burn_in=0,
+        n_steps=1,
+        n_electrons=1,
+        spatial_dim=1,
+        seed=7,
+        dtype=torch.float64,
+    )
+    checkpoint = save_checkpoint(
+        output_dir=tmp_path / "checkpoints",
+        next_iteration=1,
+        completed_updates=1,
+        model=model,
+        context=_checkpoint_context(tmp_path),
+        optimizer=optimizer,
+        trainer=trainer,
+        sampler=sampler,
+        payload=TrainResume(),
+    )
+    return checkpoint
+
+
+def test_public_save_restore_rebuilds_direct_binding_after_model_restore(tmp_path) -> None:
+    """Public save/restore retains layout and rebinds the updater to live params."""
+
+    checkpoint = _resume_checkpoint(tmp_path)
+    model = torch.nn.Linear(1, 1).double()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+
+    class _RebindingLegacyUpdate(LegacyAutogradUpdate):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.rebind_calls = 0
+
+        def rebind_model_parameters(self, model_parameters):
+            self.rebind_calls += 1
+            super().rebind_model_parameters(model_parameters)
+
+    update = _RebindingLegacyUpdate(
+        optimizer,
+        model_parameters=ModelParameterBinding.from_parameters(tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=2, update_method=update)
+    trainer.resolve_update_state(model=model, optimizer=optimizer)
+    sampler = MetropolisSampler(
+        n_walkers=2,
+        burn_in=0,
+        n_steps=1,
+        n_electrons=1,
+        spatial_dim=1,
+        seed=11,
+        dtype=torch.float64,
+    )
+
+    report = restore_checkpoint(
+        load={"mode": "train_resume", "path": str(checkpoint)},
+        model=model,
+        context=_checkpoint_context(tmp_path),
+        optimizer=optimizer,
+        trainer=trainer,
+        sampler=sampler,
+    )
+
+    assert report.loaded_model and report.loaded_optimizer and report.loaded_trainer
+    assert update.rebind_calls == 1
+    assert all(
+        left is right
+        for left, right in zip(
+            update.model_parameters.parameters,
+            tuple(model.parameters()),
+            strict=True,
+        )
+    )
+    assert trainer.state_dict()["parameter_layout"] == json.loads(
+        (checkpoint / "trainer.json").read_text()
+    )["parameter_layout"]
+
+
+def test_restore_rejects_incompatible_parameter_layout(tmp_path) -> None:
+    """A recorded layout mismatch fails rather than silently resuming."""
+
+    checkpoint = _resume_checkpoint(tmp_path)
+    trainer_path = checkpoint / "trainer.json"
+    trainer_state = json.loads(trainer_path.read_text())
+    trainer_state["parameter_layout"]["slots"][0]["dtype"] = "torch.float32"
+    trainer_path.write_text(json.dumps(trainer_state), encoding="utf-8")
+    manifest_path = checkpoint / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["hashes"]["trainer_sha256"] = file_sha256(trainer_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    model = torch.nn.Linear(1, 1).double()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+    update = LegacyAutogradUpdate(
+        optimizer,
+        model_parameters=ModelParameterBinding.from_parameters(tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=2, update_method=update)
+    trainer.resolve_update_state(model=model, optimizer=optimizer)
+    sampler = MetropolisSampler(
+        n_walkers=2,
+        burn_in=0,
+        n_steps=1,
+        n_electrons=1,
+        spatial_dim=1,
+        seed=11,
+        dtype=torch.float64,
+    )
+
+    with pytest.raises(ValueError, match="parameter layout"):
+        restore_checkpoint(
+            load={"mode": "train_resume", "path": str(checkpoint)},
+            model=model,
+            context=_checkpoint_context(tmp_path),
+            optimizer=optimizer,
+            trainer=trainer,
+            sampler=sampler,
+        )
+
+    assert trainer.state_dict()["next_iteration"] == 0
+    assert trainer.state_dict()["completed_updates"] == 0
+
+
 def test_live_update_inputs_cannot_be_serialized() -> None:
     batch = _batch()
     parameter = torch.nn.Parameter(torch.ones(1, dtype=torch.float64))
@@ -434,6 +670,8 @@ def test_trainer_delegates_without_publishing_live_input(monkeypatch: pytest.Mon
     )
 
     assert update.received is not None
-    assert trainer.state_dict() == {"next_iteration": 1, "completed_updates": 1}
+    assert trainer.state_dict()["next_iteration"] == 1
+    assert trainer.state_dict()["completed_updates"] == 1
+    assert "parameter_layout" in trainer.state_dict()
     assert all(value is not update.received for value in vars(state).values())
     assert state.wavefunction_output is update.received.wavefunction

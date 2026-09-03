@@ -27,7 +27,10 @@ from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
     ModelParameterBinding,
+    deserialize_parameter_layout,
+    serialize_parameter_layout,
     VMCUpdateMethod,
+    VMCUpdateState,
 )
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
 
@@ -110,12 +113,19 @@ class VMCTrainer:
         self.return_terms = bool(return_terms)
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
         self.update_method = update_method
+        # These are populated at the invocation boundary.  Keeping the
+        # resolved method and model here gives checkpoint restore one owner for
+        # rebuilding direct parameter references after model weights load.
+        self._resolved_model = None
+        self._resolved_update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None
+        self._resolved_update_state: VMCUpdateState | None = None
+        self._checkpoint_parameter_layout = None
         # Durable resume cursor: the next iteration this trainer will attempt.
         self.next_iteration = 0
         # Optimizer updates that actually returned; skipped updates never count.
         self.completed_updates = 0
 
-    def state_dict(self) -> dict[str, int]:
+    def state_dict(self) -> dict[str, Any]:
         """Return checkpointable trainer progress state.
 
         Returns
@@ -126,10 +136,15 @@ class VMCTrainer:
             whenever a completed iteration skipped its optimizer update.
         """
 
-        return {
+        state: dict[str, Any] = {
             "next_iteration": int(self.next_iteration),
             "completed_updates": int(self.completed_updates),
         }
+        if self._resolved_update_state is not None:
+            state["parameter_layout"] = serialize_parameter_layout(
+                self._resolved_update_state.model_parameters.layout
+            )
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore trainer progress state for ``train_resume``.
@@ -162,8 +177,135 @@ class VMCTrainer:
         # cannot leave the trainer half-restored at a bogus resume cursor.
         next_iteration = int(state["next_iteration"])
         completed_updates = int(state["completed_updates"])
+
+        restored_layout = None
+        if "parameter_layout" in state:
+            restored_layout = deserialize_parameter_layout(state["parameter_layout"])
+            current_model = self._resolved_model
+            if current_model is None:
+                raise ValueError(
+                    "parameter layout restore requires update-state resolution before restore"
+                )
+
+        self._checkpoint_parameter_layout = restored_layout
+        if restored_layout is not None:
+            # `_load_trainer` runs after the checkpoint model and optimizer have
+            # loaded. Rebinding here also makes the public restore API correct
+            # when callers use `restore_checkpoint` directly rather than the
+            # config runner.
+            self.rebuild_update_state(model=self._resolved_model)
         self.next_iteration = next_iteration
         self.completed_updates = completed_updates
+
+    def resolve_update_state(
+        self,
+        *,
+        model,
+        optimizer: torch.optim.Optimizer,
+        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
+    ) -> VMCUpdateState:
+        """Resolve the one typed update-state authority before any mutation.
+
+        Stateful update methods expose their owned optimizer through
+        ``VMCUpdateState``.  The legacy optimizer argument is accepted only
+        when it is that same object; otherwise runner restore or the training
+        loop could mutate one optimizer while publishing another.
+        Stateless methods use the supplied optimizer as their authority.
+        """
+
+        selected_update_method = self._select_update_method(
+            model=model,
+            optimizer=optimizer,
+            update_method=update_method,
+        )
+        resolved_state = self._resolve_method_state(
+            model=model,
+            optimizer=optimizer,
+            update_method=selected_update_method,
+        )
+        self._resolved_model = model
+        self._resolved_update_method = selected_update_method
+        self._resolved_update_state = resolved_state
+        return resolved_state
+
+    def rebuild_update_state(
+        self,
+        *,
+        model,
+    ) -> VMCUpdateState:
+        """Rebuild the direct update binding against restored model objects.
+
+        The checkpoint's layout is compared with the model after its weights
+        have been loaded.  Only then are the update method's direct references
+        replaced, so a resumed update cannot retain references to a pre-load
+        model or silently accept a different parameter layout.
+        """
+
+        update_method = self._resolved_update_method
+        update_state = self._resolved_update_state
+        if update_method is None or update_state is None:
+            raise RuntimeError("update state must be resolved before it can be rebuilt")
+        expected_layout = self._checkpoint_parameter_layout or update_state.model_parameters.layout
+        rebuilt_binding = update_state.model_parameters.rebind(
+            tuple(model.parameters()),
+            layout=expected_layout,
+        )
+        update_method.rebind_model_parameters(rebuilt_binding)
+        rebuilt_state = update_method.update_state()
+        if rebuilt_state is None:
+            raise TypeError("stateful update method returned no update state after rebind")
+        if rebuilt_state.optimizer is not update_state.optimizer:
+            raise ValueError("mismatched legacy optimizer ownership")
+        if not rebuilt_state.model_parameters.compare(rebuilt_binding)[0]:
+            raise ValueError("update method did not retain the rebuilt model binding")
+        self._resolved_update_state = rebuilt_state
+        return rebuilt_state
+
+    def _select_update_method(
+        self,
+        *,
+        model,
+        optimizer: torch.optim.Optimizer,
+        update_method: VMCUpdateMethod[AutogradUpdateInput] | None,
+    ) -> VMCUpdateMethod[AutogradUpdateInput]:
+        """Select or construct the update method for one fit invocation."""
+
+        selected_update_method = update_method if update_method is not None else self.update_method
+        if selected_update_method is None:
+            return LegacyAutogradUpdate(
+                optimizer=optimizer,
+                gradient_clip_norm=self.gradient_clip_norm,
+                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+            )
+        if not isinstance(selected_update_method, VMCUpdateMethod):
+            raise TypeError("VMCTrainer update_method must be a VMCUpdateMethod")
+        return selected_update_method
+
+    def _resolve_method_state(
+        self,
+        *,
+        model,
+        optimizer: torch.optim.Optimizer,
+        update_method: VMCUpdateMethod[AutogradUpdateInput],
+    ) -> VMCUpdateState:
+        """Validate a selected method and return its single authority."""
+
+        owned_state = update_method.update_state()
+        if owned_state is None:
+            resolved_state = VMCUpdateState(
+                optimizer=optimizer,
+                model_parameters=ModelParameterBinding.from_parameters(tuple(model.parameters())),
+            )
+            return resolved_state
+        if not isinstance(owned_state, VMCUpdateState):
+            raise TypeError("VMCUpdateMethod.update_state must return VMCUpdateState or None")
+        if owned_state.optimizer is not optimizer:
+            ownership_mismatch_message = "mismatched legacy optimizer ownership"
+            raise ValueError(ownership_mismatch_message)
+        expected_binding = ModelParameterBinding.from_parameters(tuple(model.parameters()))
+        if not owned_state.model_parameters.compare(expected_binding)[0]:
+            raise ValueError("update method parameter binding does not match live model")
+        return owned_state
 
     def fit(
         self,
@@ -178,14 +320,26 @@ class VMCTrainer:
     ) -> TrainerState:
         """Run the training loop and return the final `TrainerState`."""
 
-        state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
-        selected_update_method = update_method if update_method is not None else self.update_method
-        if selected_update_method is None:
-            selected_update_method = LegacyAutogradUpdate(
-                optimizer=optimizer,
-                gradient_clip_norm=self.gradient_clip_norm,
-                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
-            )
+        selected_update_method = self._select_update_method(
+            model=model,
+            optimizer=optimizer,
+            update_method=update_method,
+        )
+        update_state = self._resolve_method_state(
+            model=model,
+            optimizer=optimizer,
+            update_method=selected_update_method,
+        )
+        self._resolved_model = model
+        self._resolved_update_method = selected_update_method
+        self._resolved_update_state = update_state
+        state = TrainerState(
+            model=model,
+            optimizer=update_state.optimizer,
+            update_state=update_state,
+            trainer=self,
+            sampler=sampler,
+        )
         # The hooks are owned by the adapter rather than by the live input
         # record. This keeps VMCStepData exact and ephemeral while preserving
         # the historical typed phase boundaries around backward and step.

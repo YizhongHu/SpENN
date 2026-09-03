@@ -2,6 +2,12 @@
 
 from tpen.training.optim import make_optimizer
 from tpen.training.state import TrainerState, TrainingTiming
+from tpen.training.statistics import (
+    IdentityStatisticsReducer,
+    StatisticsReducer,
+    StatisticsSums,
+    center_statistics,
+)
 from tpen.training.trainer import VMCTrainer
 from tpen.training.update import (
     AutogradUpdateInput,
@@ -11,6 +17,9 @@ from tpen.training.update import (
     VMCStepData,
     VMCUpdateMethod,
     VMCUpdateResult,
+    VMCUpdateState,
+    deserialize_parameter_layout,
+    serialize_parameter_layout,
 )
 from tpen.training.vmc import (
     VMCObjectiveResult,
@@ -30,6 +39,13 @@ __all__ = [
     "VMCStepData",
     "VMCUpdateMethod",
     "VMCUpdateResult",
+    "VMCUpdateState",
+    "deserialize_parameter_layout",
+    "serialize_parameter_layout",
+    "IdentityStatisticsReducer",
+    "StatisticsReducer",
+    "StatisticsSums",
+    "center_statistics",
     "VMCObjectiveResult",
     "VMCTrainer",
     "compute_vmc_objective",
