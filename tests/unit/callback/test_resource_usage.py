@@ -797,7 +797,18 @@ def test_resource_usage_isolates_nonfinite_default_peak_rss_at_terminal_boundary
 
     monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: math.nan)
     context = _strict_json_terminal_context(tmp_path)
-    callback = ResourceUsage()
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=AcceleratorIdentity(AcceleratorKind.CUDA, 1, "GPU-1"),
+            allocated_mb=3.0,
+            reserved_mb=8.0,
+            device_count=2,
+        )
+    )
+    # Passed directly rather than context-derived, so it is set regardless of
+    # RunStarted -- this is what forces a non-empty `runtime` record even
+    # though the `peak_memory_mb` arm below contributes nothing.
+    callback = ResourceUsage(allocator_probe=allocator)
 
     # No RunStarted: `_process_baseline` stays None, forcing the
     # `_default_peak_rss_mb` fallback arm inside `_log_peaks`.
@@ -805,5 +816,6 @@ def test_resource_usage_isolates_nonfinite_default_peak_rss_at_terminal_boundary
 
     terminal_lines = _terminal_records(tmp_path)
     runtime_lines = [line for line in terminal_lines if line["namespace"] == "runtime"]
-    for line in runtime_lines:
-        assert "peak_memory_mb" not in line["metrics"]
+    assert len(runtime_lines) == 1
+    assert "peak_memory_mb" not in runtime_lines[0]["metrics"]
+    assert runtime_lines[0]["metrics"]["accelerator_max_memory_allocated_mb"] == 3.0
