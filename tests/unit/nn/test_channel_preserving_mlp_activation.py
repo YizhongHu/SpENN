@@ -164,6 +164,32 @@ def test_float32_forward_preserves_dtype_under_standard_module_convention() -> N
     assert outputs.device == inputs.device
 
 
+def test_shape_changing_hidden_activation_is_rejected_or_shape_preserving() -> None:
+    activation = ChannelPreservingMLPActivation(
+        OrderMLPLayout(
+            axes=ChannelActivationAxes(channel_axis=1, tuple_axes_start=2),
+            specs=(
+                OrderMLPSpec(
+                    order=1,
+                    channels=3,
+                    hidden_channels=5,
+                    num_hidden_layers=1,
+                    activation=nn.Flatten(0, -2),
+                ),
+            ),
+        ),
+        initializer=TorchInitializer(seed=80),
+    )
+    inputs = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+
+    try:
+        outputs = activation(inputs)
+    except (RuntimeError, TypeError, ValueError):
+        return
+
+    assert outputs.shape == inputs.shape
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device not available")
 def test_cuda_forward_preserves_device_dtype_and_gradients() -> None:
     activation = ChannelPreservingMLPActivation(
