@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from collections import OrderedDict
+from dataclasses import replace
 
-from tpen.data.batch import ElectronBatch, FactorizedLocalEnergyInput, WavefunctionOutput
+from tpen.data.batch import (
+    CoordinateForwardPacket,
+    CoordinateLogGradient,
+    ElectronBatch,
+    FactorizedLocalEnergyInput,
+    WavefunctionOutput,
+)
 from tpen.data.paths import PathLayout
 from tpen.dependencies import require_torch, require_torch_nn
 from tpen.equivariance import EquivariantMap
 from tpen.nn.context import TPENForwardContext
 from tpen.nn.cusp import ElectronNucleusCusp
+from tpen.nn.forward import CoordinateGradientRequest
 from tpen.nn.tpen_layer import TPENLayer
 from tpen.nn.tpen_stack import TPENStack
 
@@ -175,11 +183,51 @@ class TPENWaveFunction(EquivariantMap):
             rewritten[key] = value
         return rewritten
 
-    def forward_impl(self, batch: ElectronBatch) -> WavefunctionOutput:
-        """Evaluate the signed-log wavefunction for an electron batch."""
+    def forward_impl(
+        self,
+        batch: ElectronBatch,
+        request: CoordinateGradientRequest | None = None,
+    ) -> WavefunctionOutput | CoordinateForwardPacket:
+        """Evaluate the value or an explicitly requested coordinate packet."""
 
-        output = self._construct_output(batch, include_analytic_cusp=True)
-        return output
+        if request is None:
+            return self._construct_output(batch, include_analytic_cusp=True)
+        if not isinstance(request, CoordinateGradientRequest):
+            raise TypeError(f"unsupported wavefunction forward request: {type(request)!r}")
+        return request.evaluate(self, batch)
+
+    def evaluate_coordinate_gradient_request(
+        self,
+        *,
+        request: CoordinateGradientRequest,
+        batch: ElectronBatch,
+    ) -> CoordinateForwardPacket:
+        """Return one value output and its real-logabs coordinate gradient."""
+
+        del request
+        if torch.is_inference_mode_enabled():
+            raise RuntimeError("CoordinateGradientRequest is not supported in inference mode")
+        with torch.enable_grad():
+            positions = batch.positions.detach().requires_grad_(True)
+            gradient_batch = replace(batch, positions=positions)
+            output = self._construct_output(gradient_batch, include_analytic_cusp=True)
+            values = torch.autograd.grad(
+                output.logabs,
+                positions,
+                grad_outputs=torch.ones_like(output.logabs),
+                create_graph=False,
+            )[0]
+            values = values.reshape(*output.logabs.shape, batch.n_electrons, batch.spatial_dim)
+            output = WavefunctionOutput(
+                logabs=output.logabs.detach(),
+                sign=output.sign.detach(),
+                phase=None if output.phase is None else output.phase.detach(),
+                aux=dict(output.aux),
+            )
+        return CoordinateForwardPacket(
+            output=output,
+            coordinates=CoordinateLogGradient(values=values),
+        )
 
     def factorized_local_energy_input(self, batch: ElectronBatch) -> FactorizedLocalEnergyInput:
         """Return the regular output and analytic data for local-energy evaluation.
