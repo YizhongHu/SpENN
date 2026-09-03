@@ -2139,21 +2139,22 @@ def test_train_config_writes_only_the_terminal_checkpoint() -> None:
     entries = _callback_entries("train.yaml")
     checkpoints = [entry for entry in entries if entry["_target_"] == "tpen.callback.Checkpoint"]
 
-    # One entry owns both writes, and it must carry no `every_n_steps`: the
-    # cadence gate is shared with the terminal write, so a cadence suppresses the
-    # terminal checkpoint whenever max_steps is not a multiple of it. Periodic
-    # writes are therefore off and the terminal write is unconditional -- the
-    # opposite of v3, which kept a periodic entry alongside the final one.
+    # One composed entry owns both writes. Its explicit TerminalOnly schedule
+    # leaves periodic writes off and always admits the terminal boundary.
     assert len(checkpoints) == 1
     checkpoint = checkpoints[0]
     assert checkpoint["periodic"] == "${checkpoint.periodic}"
     assert checkpoint["terminal"] == "${checkpoint.terminal}"
+    assert checkpoint["schedule"] == "${checkpoint.schedule}"
+    assert checkpoint["payload"] == "${checkpoint.payload}"
     assert checkpoint["keep_last"] == "${checkpoint.keep_last}"
     assert "every_n_steps" not in checkpoint
 
     config = OmegaConf.load(CONFIGS / "train.yaml")
     assert config.checkpoint.periodic is False
     assert config.checkpoint.terminal is True
+    assert config.checkpoint.schedule["_target_"] == "tpen.checkpoint.TerminalOnly"
+    assert config.checkpoint.payload["_target_"] == "tpen.checkpoint.TrainResume"
 
 
 def test_validation_config_wires_profiling_callbacks() -> None:
