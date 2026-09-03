@@ -283,25 +283,6 @@ class _CompletionCallbackThatFails(Callback):
             raise RuntimeError("completion callback exploded")
 
 
-class _RaisesOnCompleted(Callback):
-    """Callback that converts the completion boundary into a harness failure."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            typed_groups=(
-                SubscriptionGroup(selectors=(Subscription.of(RunStarted),)),
-                SubscriptionGroup(selectors=(Subscription.of(RunCompleted),)),
-            )
-        )
-
-    def handle_occurrence_impl(
-        self, occurrence: Occurrence[Any], context: RunContext
-    ) -> None:
-        del context
-        if isinstance(occurrence.event, RunCompleted):
-            raise RuntimeError("completion callback exploded")
-
-
 class _RaisingRunner(Runner):
     """Runner that fails inside ``run``, after the start boundary has fired."""
 
@@ -436,24 +417,42 @@ def test_resource_usage_reports_once_per_run_when_a_later_callback_fails_after_c
     assert len([record for record in metrics if record.get("namespace") == "process"]) == 1
 
 
-def test_resource_usage_reports_terminal_resources_once_when_completion_callback_fails(
+def test_resource_usage_writes_exactly_one_device_and_process_profile_line_once_when_completion_callback_fails(
     tmp_path: Path,
 ) -> None:
+    """Writer-authored for contract #9 (ruling `ruling-contract-9-test-disposed`).
+
+    The reviewer's own version of this cross-layer check (22b47d28) asserted
+    `profiles/rank-00000/resources.jsonl` through `_cfg()`'s DEFAULT callback
+    list, which also carries `RunTiming`. `RunTiming` logs to the same
+    `runtime` namespace as `ResourceUsage` on its own (see
+    `test_the_harness_emits_run_failed_once_and_records_the_failure` above),
+    so the reviewer's `runtime`-count-of-1 assertion is unsatisfiable under
+    that callback set regardless of any fix -- disposed rather than adopted.
+    This test isolates the callback list to `[ResourceUsage,
+    _CompletionCallbackThatFails]`, exactly as R1's sibling test above does,
+    and asserts the property the reviewer was reaching for at the layer
+    where the rank-local artifact actually exists: one logical run that
+    reaches `RunCompleted` and is then reported `RunFailed` by a later
+    subscriber still writes exactly one device profile record and one
+    process profile record, not two of each.
+    """
+
     cfg = _cfg(tmp_path, f"{__name__}._NoopRunner")
-    cfg.callbacks.insert(0, {"_target_": "tpen.callback.ResourceUsage"})
-    cfg.callbacks.append({"_target_": f"{__name__}._RaisesOnCompleted"})
+    cfg.callbacks = [
+        {"_target_": "tpen.callback.ResourceUsage"},
+        {"_target_": f"{__name__}._CompletionCallbackThatFails"},
+    ]
 
     assert run_from_config(cfg, config_path="x", command="pytest") == 1
 
     run_dir = _run_dir(tmp_path)
-    metrics = [
+    profile_lines = [
         json.loads(line)
-        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
+        for line in (run_dir / "profiles" / "rank-00000" / "resources.jsonl").read_text().splitlines()
         if line.strip()
     ]
-    assert len([record for record in metrics if record.get("namespace") == "runtime"]) == 1
-    assert len([record for record in metrics if record.get("namespace") == "process"]) == 1
-    assert len((run_dir / "profiles" / "rank-00000" / "resources.jsonl").read_text().splitlines()) == 2
+    assert [line["scope"] for line in profile_lines] == ["device", "process"]
 
 
 def test_the_harness_emits_run_failed_once_and_records_the_failure(tmp_path: Path) -> None:
