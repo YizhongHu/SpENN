@@ -214,7 +214,15 @@ class _FixedProbe(ProcessRUsageProbe):
         self.result_value = result
 
     def read(self) -> ProcessResourceBaseline:
-        return ProcessResourceBaseline(0, 0, 0, 0, 0, 0, 0)
+        return ProcessResourceBaseline(
+            user_cpu_seconds=0,
+            system_cpu_seconds=0,
+            read_block_operations=0,
+            write_block_operations=0,
+            voluntary_context_switches=0,
+            involuntary_context_switches=0,
+            peak_rss_mb=0,
+        )
 
     def result(self, baseline: ProcessResourceBaseline) -> ProcessResourceResult:
         return self.result_value
@@ -222,7 +230,15 @@ class _FixedProbe(ProcessRUsageProbe):
 
 def _fixed_result(*, unavailable: bool = False) -> ProcessResourceResult:
     value = ResourceUnavailable("probe failed") if unavailable else 1
-    return ProcessResourceResult(value, value, value, value, value, value, value)
+    return ProcessResourceResult(
+        user_cpu_seconds=value,
+        system_cpu_seconds=value,
+        read_block_operations=value,
+        write_block_operations=value,
+        voluntary_context_switches=value,
+        involuntary_context_switches=value,
+        peak_rss_mb=value,
+    )
 
 
 def test_resource_usage_logs_process_metrics_at_completion(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -309,8 +325,15 @@ def test_resource_usage_logs_process_receipt_at_failure(monkeypatch: pytest.Monk
     _deliver(callback, context, RunStarted())
     _deliver(callback, context, RunFailed(exception_type="RuntimeError", exception_message="boom"))
 
-    assert len(context.by_namespace("process")) == 1
-    assert len(context.by_namespace("runtime")) == 1
+    assert context.latest("process") == {
+        "process_user_cpu_seconds": 1.0,
+        "process_system_cpu_seconds": 1.0,
+        "process_read_block_operations": 1.0,
+        "process_write_block_operations": 1.0,
+        "process_voluntary_context_switches": 1.0,
+        "process_involuntary_context_switches": 1.0,
+    }
+    assert context.latest("runtime")["peak_memory_mb"] == 4.0
 
 
 def test_resource_usage_projects_unavailable_process_readings_as_flags(

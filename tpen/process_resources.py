@@ -98,7 +98,7 @@ class ProcessRUsageProbe:
         """Read the current process usage as a baseline-shaped record."""
 
         try:
-            usage: object = resource.getrusage(resource.RUSAGE_SELF)
+            usage = resource.getrusage(resource.RUSAGE_SELF)
         except OSError as exc:
             unavailable = ResourceUnavailable(f"{type(exc).__name__}: {exc}")
             return ProcessResourceBaseline(

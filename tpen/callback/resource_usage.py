@@ -81,11 +81,7 @@ class ResourceUsage(Callback):
             **kwargs,
         )
         self.process_probe = ProcessRUsageProbe() if process_probe is None else process_probe
-        self.peak_rss_mb_reader = (
-            _default_peak_rss_mb
-            if peak_rss_mb_reader is None
-            else peak_rss_mb_reader
-        )
+        self.peak_rss_mb_reader = peak_rss_mb_reader
         self._process_baseline = None
 
     def handle_occurrence_impl(
@@ -108,16 +104,23 @@ class ResourceUsage(Callback):
     def _log_peaks(self, context: RunContext) -> None:
         metrics: dict[str, Any] = {}
         process_metrics: dict[str, Any] = {}
+        result = None
         if self._process_baseline is not None:
             result = self.process_probe.result(self._process_baseline)
             process_metrics.update(_process_metrics(result))
             if isinstance(result.peak_rss_mb, ResourceUnavailable):
                 process_metrics["process_peak_rss_unavailable"] = True
-            else:
-                metrics["peak_memory_mb"] = float(result.peak_rss_mb)
         if self.peak_rss_mb_reader is not None:
             try:
                 metrics["peak_memory_mb"] = float(self.peak_rss_mb_reader())
+            except OSError:
+                pass
+        elif result is not None:
+            if not isinstance(result.peak_rss_mb, ResourceUnavailable):
+                metrics["peak_memory_mb"] = float(result.peak_rss_mb)
+        else:
+            try:
+                metrics["peak_memory_mb"] = float(_default_peak_rss_mb())
             except OSError:
                 pass
         cuda = _available_cuda()
