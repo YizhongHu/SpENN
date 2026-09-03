@@ -349,6 +349,23 @@ switch. All producer and aggregation parameters are registered eagerly before
 the optimizer or DDP. Runtime N may create typed index tensors and empty
 orbits, but cannot change path membership, parameter shapes, names, or keys.
 
+## Hydra activation and interaction choice library
+
+The opt-in choice fragment
+`experiments/hooke/choices/tpen_presets.yaml` follows the shared Hooke choice
+library convention. Merge it with a host config before calling `tpen.run`; it
+is not a new production config root. Its `choices.activation.channel_mlp`
+entry contains two explicit Hydra targets: `mixing` uses
+`ChannelActivationAxes(tuple_axes_start=3)` for `[B,C,P,N^m]`, and
+`aggregation` uses `tuple_axes_start=2` for `[B,C,N^m]`. Each interpolation is
+instantiated at its consumer, so the eager MLP parameters are independent.
+
+The three `choices.interaction` entries spell out concrete producer lists and
+their immutable `PathLayout`: `linear`, `hybrid`, and `tensor_product`. The
+`mode` value is boundary metadata only; no Python registry, factory, or string
+dispatch selects an operator. Existing atomistic and Hooke production configs
+remain unchanged, and the fragment does not alter the layout fingerprint.
+
 ## Amendment: canonical representation and compatibility details
 
 The SupportPath representation is canonical and normative. Set tau_out(a)=a
