@@ -75,8 +75,8 @@ def test_two_ranks_sharing_one_device_write_distinct_jsonl_files(tmp_path) -> No
     first_path = tmp_path / "profiles" / "rank-0" / "records.jsonl"
     second_path = tmp_path / "profiles" / "rank-1" / "records.jsonl"
     assert first_path != second_path
-    assert json.loads(first_path.read_text())['device'] == "cuda:3"
-    assert json.loads(second_path.read_text())['global_rank'] == 1
+    assert json.loads(first_path.read_text().splitlines()[0])["device"] == "cuda:3"
+    assert json.loads(second_path.read_text().splitlines()[0])["global_rank"] == 1
 
 
 def test_writer_persists_exact_device_identity(tmp_path) -> None:
