@@ -77,7 +77,10 @@ def test_movedim_fast_path_matches_inert_position_oracle(
     expected = _oracle(activation, inputs)
 
     assert actual.shape == inputs.shape
-    torch.testing.assert_close(actual, expected, atol=0.0, rtol=0.0)
+    # Scalar and batched linear kernels can round in different orders on
+    # float64; 1e-12 is tight relative to the values here and still catches
+    # an incorrect movedim axis by many orders of magnitude.
+    torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
 
 
 def test_layout_and_specs_are_frozen_and_mlps_are_eagerly_registered() -> None:
@@ -125,16 +128,16 @@ def test_dtype_device_and_gradients_are_preserved() -> None:
     activation = ChannelPreservingMLPActivation(
         _layout(), initializer=TorchInitializer(seed=77)
     ).to(dtype=torch.float64)
-    inputs = torch.randn(2, 3, 2, 2, dtype=torch.float64, requires_grad=True)
+    for shape in ((2, 3, 2), (2, 3, 2, 2)):
+        inputs = torch.randn(*shape, dtype=torch.float64, requires_grad=True)
+        outputs = activation(inputs)
+        outputs.square().sum().backward()
 
-    outputs = activation(inputs)
-    outputs.square().sum().backward()
-
-    assert outputs.shape == inputs.shape
-    assert outputs.dtype == inputs.dtype
-    assert outputs.device == inputs.device
-    assert inputs.grad is not None
-    assert torch.isfinite(inputs.grad).all()
+        assert outputs.shape == inputs.shape
+        assert outputs.dtype == inputs.dtype
+        assert outputs.device == inputs.device
+        assert inputs.grad is not None
+        assert torch.isfinite(inputs.grad).all()
     assert all(parameter.grad is not None for parameter in activation.parameters())
 
 
