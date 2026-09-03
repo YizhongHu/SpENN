@@ -319,6 +319,13 @@ def _make_zero_response(activation: ChannelPreservingMLPActivation, value: float
             mlp.layers[-1].bias.fill_(value)
 
 
+def _zero_channel_response(activation: ChannelPreservingMLPActivation, order: int) -> torch.Tensor:
+    """Evaluate one order MLP at its zero channel vector."""
+
+    spec_index = next(index for index, spec in enumerate(activation.layout.specs) if spec.order == order)
+    return activation.mlps[spec_index](torch.zeros(2, dtype=_DTYPE))
+
+
 def test_equivariant_mixing_bias_maps_unwritten_zero_tuples_to_invariant_constant() -> None:
     feature = _feature(n_particles=3, seed=149)
     raw_module = _mixing(None)
@@ -331,7 +338,7 @@ def test_equivariant_mixing_bias_maps_unwritten_zero_tuples_to_invariant_constan
     raw_diagonal = torch.diagonal(raw.blocks[2], dim1=-2, dim2=-1)
     output_diagonal = torch.diagonal(output.blocks[2], dim1=-2, dim2=-1)
     assert torch.equal(raw_diagonal, torch.zeros_like(raw_diagonal))
-    expected = _slow_channel_activation(activation, torch.zeros(2, dtype=_DTYPE))
+    expected = _zero_channel_response(activation, order=2)
     torch.testing.assert_close(output_diagonal, expected.reshape(1, 2, 1, 1).expand_as(output_diagonal))
     assert torch.all(output_diagonal != 0)
 
@@ -348,8 +355,7 @@ def test_path_aggregation_bias_maps_zero_contractions_to_nonzero_output() -> Non
     _make_zero_response(activation)
     output = _aggregation(activation)(interaction)
 
-    expected = _slow_channel_activation(activation, torch.zeros(2, dtype=_DTYPE))
-    for block in output.blocks[1:]:
+    for order, block in enumerate(output.blocks[1:], start=1):
+        expected = _zero_channel_response(activation, order=order)
         torch.testing.assert_close(block, expected.reshape(1, 2, *([1] * (block.ndim - 2))).expand_as(block))
         assert torch.all(block != 0)
-
