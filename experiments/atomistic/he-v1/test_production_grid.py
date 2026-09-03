@@ -386,14 +386,6 @@ class TestArmIsTheMeasuredOne:
             )
 
     def test_keep_all_is_explicitly_configured(self) -> None:
-        callbacks = _yaml(TRAIN)["callbacks"]
-        checkpoint = next(
-            entry for entry in callbacks if entry["_target_"] == "tpen.callback.Checkpoint"
-        )
-        assert "keep_last" in checkpoint
-        assert checkpoint["keep_last"] is None
-
-    def test_keep_last_compatibility_key_is_explicit(self) -> None:
         # Keep the compatibility key present even though TPEN ignores it.
         callbacks = _yaml(TRAIN)["callbacks"]
         checkpoint = next(

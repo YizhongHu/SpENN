@@ -263,10 +263,21 @@ def test_non_null_keep_last_warns_once_per_callback(tmp_path, caplog) -> None:
         callback = Checkpoint(output_dir=tmp_path, keep_last=1, terminal=False)
         _iteration(callback, _state(0), _context())
         _iteration(callback, _state(1), _context())
+        assert sorted(path.name for path in tmp_path.glob("step_*")) == [
+            "step_000001",
+            "step_000002",
+        ]
 
-    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert "keep_last=1 is ignored" in warnings[0].getMessage()
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "keep_last=1 is ignored" in message
+        assert "checkpoint storage grows without bound" in message
+        assert "tpen/metrics_naming.md" in message
+
+        Checkpoint(output_dir=tmp_path, keep_last=1, terminal=False)
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 2
     assert callback.keep_last == 1
 
 
