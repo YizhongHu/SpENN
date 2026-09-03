@@ -114,6 +114,18 @@ class TorchAllocatorPeakProbe:
         self.device = torch.device(device)
         self.module = device_module(self.device, feature="allocator peak metrics")
         self.kind = _accelerator_kind(torch, self.device.type)
+        if self.device.index is None and self.kind is not AcceleratorKind.CPU and self._available():
+            # An indexless device (e.g. "cuda") means "whatever torch calls
+            # current" at the moment of each call, which can differ between
+            # reset() and read(). Resolve it once here so every subsequent
+            # operation targets the same physical device for this probe's
+            # whole lifetime.
+            try:
+                index = self.module.current_device()
+            except (AttributeError, RuntimeError):
+                index = None
+            if index is not None:
+                self.device = torch.device(self.device.type, index)
 
     def _identity(self) -> AcceleratorIdentity:
         index = self.device.index
@@ -147,8 +159,10 @@ class TorchAllocatorPeakProbe:
         """Reset this device's peaks, returning typed unavailable evidence."""
 
         identity = self._identity()
-        if self.kind is AcceleratorKind.CPU or not self._available():
+        if self.kind is AcceleratorKind.CPU:
             return identity
+        if not self._available():
+            return AllocatorUnavailable("configured accelerator is unavailable")
         try:
             self.module.reset_peak_memory_stats(self.device)
         except (RuntimeError, AttributeError) as exc:
@@ -156,22 +170,33 @@ class TorchAllocatorPeakProbe:
         return identity
 
     def read(self) -> AllocatorUsage:
-        """Read peak allocated and reserved memory in MiB."""
+        """Read peak allocated and reserved memory in MiB, and device count.
+
+        Each counter is read independently so one failing counter does not
+        blank the others -- a real backend can answer some queries and not
+        others.
+        """
 
         identity = self._identity()
-        unavailable = None
         if self.kind is AcceleratorKind.CPU or not self._available():
             unavailable = AllocatorUnavailable("configured accelerator is unavailable")
-        if unavailable is not None:
             return AllocatorUsage(identity, unavailable, unavailable, unavailable)
-        try:
-            allocated = float(self.module.max_memory_allocated(self.device)) / _BYTES_PER_MIB
-            reserved = float(self.module.max_memory_reserved(self.device)) / _BYTES_PER_MIB
-            device_count = int(self.module.device_count())
-        except (RuntimeError, AttributeError) as exc:
-            unavailable = AllocatorUnavailable(f"{type(exc).__name__}: {exc}")
-            return AllocatorUsage(identity, unavailable, unavailable, unavailable)
+        allocated = self._read_mib(self.module.max_memory_allocated)
+        reserved = self._read_mib(self.module.max_memory_reserved)
+        device_count = self._read_device_count()
         return AllocatorUsage(identity, allocated, reserved, device_count)
+
+    def _read_mib(self, counter: Any) -> AllocatorReading:
+        try:
+            return float(counter(self.device)) / _BYTES_PER_MIB
+        except (RuntimeError, AttributeError) as exc:
+            return AllocatorUnavailable(f"{type(exc).__name__}: {exc}")
+
+    def _read_device_count(self) -> int | AllocatorUnavailable:
+        try:
+            return int(self.module.device_count())
+        except (RuntimeError, AttributeError) as exc:
+            return AllocatorUnavailable(f"{type(exc).__name__}: {exc}")
 
 
 def _torch(feature: str) -> Any:
