@@ -139,6 +139,30 @@ def test_resource_usage_does_not_emit_allocator_metrics_for_xpu() -> None:
     assert not any(key.startswith("cuda_") for key in runtime)
 
 
+def test_resource_usage_keeps_cuda_aliases_for_rocm() -> None:
+    context = RecordingContext()
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=AcceleratorIdentity(AcceleratorKind.ROCM, 1, "GPU-ROCM-1"),
+            allocated_mb=3.0,
+            reserved_mb=8.0,
+            device_count=2,
+        )
+    )
+    callback = ResourceUsage(allocator_probe=allocator)
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    runtime = context.latest("runtime")
+    assert runtime["accelerator_max_memory_allocated_mb"] == 3.0
+    assert runtime["accelerator_max_memory_reserved_mb"] == 8.0
+    assert runtime["accelerator_device_count"] == 2
+    assert runtime["cuda_max_memory_allocated_mb"] == 3.0
+    assert runtime["cuda_max_memory_reserved_mb"] == 8.0
+    assert runtime["cuda_device_count"] == 2
+
+
 def test_resource_usage_logs_at_the_failure_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     """One typed `RunFailed` replaces the ``run_failed``/``exception`` pair.
 
