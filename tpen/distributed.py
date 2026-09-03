@@ -59,6 +59,8 @@ class ExecutionTopology:
             ("local_size", self.local_size),
             ("node_size", self.node_size),
         ):
+            if type(size) is not int:
+                raise TypeError(f"{name} must be an int, got {type(size).__name__}")
             if size < 1:
                 raise ValueError(f"{name} must be positive, got {size}")
         for rank_name, rank, size in (
@@ -66,6 +68,8 @@ class ExecutionTopology:
             ("local_rank", self.local_rank, self.local_size),
             ("node_rank", self.node_rank, self.node_size),
         ):
+            if rank is not None and type(rank) is not int:
+                raise TypeError(f"{rank_name} must be an int or None, got {type(rank).__name__}")
             if rank is not None and not 0 <= rank < size:
                 raise ValueError(f"{rank_name} must be in [0, {size})")
         if not self.host:
@@ -130,12 +134,27 @@ class ProfileRecord:
     device: AllocatorUsage | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.scope, ProfileScope):
+            raise TypeError(f"scope must be a ProfileScope, got {type(self.scope).__name__}")
         if not math.isfinite(self.monotonic_time) or self.monotonic_time < 0:
             raise ValueError("monotonic_time must be finite and nonnegative")
-        if self.scope is ProfileScope.PROCESS and self.process is None:
-            raise ValueError("PROCESS profile requires process readings")
-        if self.scope is ProfileScope.DEVICE and self.device is None:
-            raise ValueError("DEVICE profile requires device readings")
+        if self.scope is ProfileScope.PROCESS:
+            if self.process is None:
+                raise ValueError("PROCESS profile requires process readings")
+            if self.device is not None:
+                raise ValueError("PROCESS profile must not carry device readings")
+        if self.scope is ProfileScope.DEVICE:
+            if self.device is None:
+                raise ValueError("DEVICE profile requires device readings")
+            if self.process is not None:
+                raise ValueError("DEVICE profile must not carry process readings")
+            if (
+                self.topology.device_identity is not None
+                and self.device.identity != self.topology.device_identity
+            ):
+                raise ValueError(
+                    "device identity mismatch between topology and allocator usage"
+                )
         if self.scope in (ProfileScope.NODE, ProfileScope.JOB):
             raise ValueError("NODE and JOB profiles require an explicit aggregate record")
 
@@ -173,7 +192,12 @@ def _project_readings(readings: tuple[tuple[str, object], ...]) -> tuple[ScalarM
             metrics.append(ScalarMetric(f"{key}_unavailable", True))
         elif value is None:
             metrics.append(ScalarMetric(f"{key}_unavailable", True))
-        elif value is not None:
+        elif isinstance(value, float) and not math.isfinite(value):
+            # A backend can report a non-finite scalar (e.g. a driver glitch);
+            # degrading only this field keeps the finite readings intact
+            # instead of losing the whole record at the strict-JSON boundary.
+            metrics.append(ScalarMetric(f"{key}_unavailable", True))
+        else:
             if not isinstance(value, (bool, float, int)):
                 raise TypeError(f"{key} is not a scalar: {type(value).__name__}")
             metrics.append(ScalarMetric(key, value))
