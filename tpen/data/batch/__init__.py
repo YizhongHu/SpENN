@@ -12,13 +12,33 @@ from tpen.data.batch.geometry import (
     two_electron_atomic_geometry_reference,
 )
 from tpen.data.batch.walkers import Walkers
+from tpen.data.batch.wavefunction_packet import (
+    CoordinateForwardPacket,
+    CoordinateLogGradient,
+    MaterializedParameterLogScores,
+    ParameterBinding,
+    ParameterLayout,
+    ParameterScore,
+    ParameterScoreForwardPacket,
+    ParameterSlot,
+    WavefunctionPacket,
+)
 from tpen.data.batch.wavefunction_output import FactorizedLocalEnergyInput, WavefunctionOutput
 
 __all__ = [
+    "CoordinateForwardPacket",
+    "CoordinateLogGradient",
     "ElectronBatch",
     "FactorizedLocalEnergyInput",
+    "MaterializedParameterLogScores",
+    "ParameterBinding",
+    "ParameterLayout",
+    "ParameterScore",
+    "ParameterScoreForwardPacket",
+    "ParameterSlot",
     "TwoElectronAtomicGeometry",
     "Walkers",
+    "WavefunctionPacket",
     "WavefunctionOutput",
     "electron_nuclear_displacements",
     "electron_nuclear_distances",
