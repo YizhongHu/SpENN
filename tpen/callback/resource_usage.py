@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import resource
-import sys
 from typing import Any, Callable
 
 from tpen.artifacts import RunContext
@@ -11,6 +9,11 @@ from tpen.dependencies import OptionalDependencyError, require_torch
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
+from tpen.process_resources import (
+    ProcessRUsageProbe,
+    ProcessResourceResult,
+    ResourceUnavailable,
+)
 
 from .base import Callback
 from .cadence import SubscriptionGroup
@@ -19,15 +22,12 @@ _BYTES_PER_MIB = 1024 * 1024
 
 
 def _default_peak_rss_mb() -> float:
-    """Return the process peak resident-set size in MiB.
+    """Return process peak RSS in MiB for compatibility callers."""
 
-    ``ru_maxrss`` is reported in kibibytes on Linux and in bytes on macOS.
-    """
-
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    if sys.platform == "darwin":
-        return float(peak) / _BYTES_PER_MIB
-    return float(peak) / 1024.0
+    value = ProcessRUsageProbe().read().peak_rss_mb
+    if isinstance(value, ResourceUnavailable):
+        raise OSError(value.reason)
+    return float(value)
 
 
 class ResourceUsage(Callback):
@@ -65,6 +65,7 @@ class ResourceUsage(Callback):
         self,
         *,
         peak_rss_mb_reader: Callable[[], float] | None = None,
+        process_probe: ProcessRUsageProbe | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -79,9 +80,13 @@ class ResourceUsage(Callback):
             ),
             **kwargs,
         )
+        self.process_probe = ProcessRUsageProbe() if process_probe is None else process_probe
         self.peak_rss_mb_reader = (
-            _default_peak_rss_mb if peak_rss_mb_reader is None else peak_rss_mb_reader
+            None
+            if peak_rss_mb_reader is None
+            else peak_rss_mb_reader
         )
+        self._process_baseline = None
 
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
@@ -90,6 +95,7 @@ class ResourceUsage(Callback):
 
         event = occurrence.event
         if isinstance(event, RunStarted):
+            self._process_baseline = self.process_probe.read()
             cuda = _available_cuda()
             if cuda is not None:
                 cuda.reset_peak_memory_stats()
@@ -100,11 +106,20 @@ class ResourceUsage(Callback):
             self._log_peaks(context)
 
     def _log_peaks(self, context: RunContext) -> None:
-        metrics: dict[str, float] = {}
-        try:
-            metrics["peak_memory_mb"] = float(self.peak_rss_mb_reader())
-        except OSError:
-            pass
+        metrics: dict[str, Any] = {}
+        process_metrics: dict[str, Any] = {}
+        if self._process_baseline is not None:
+            result = self.process_probe.result(self._process_baseline)
+            process_metrics.update(_process_metrics(result))
+            if isinstance(result.peak_rss_mb, ResourceUnavailable):
+                process_metrics["process_peak_rss_unavailable"] = result.peak_rss_mb.reason
+            else:
+                metrics["peak_memory_mb"] = float(result.peak_rss_mb)
+        if self.peak_rss_mb_reader is not None:
+            try:
+                metrics["peak_memory_mb"] = float(self.peak_rss_mb_reader())
+            except OSError:
+                pass
         cuda = _available_cuda()
         if cuda is not None:
             metrics["cuda_max_memory_allocated_mb"] = float(cuda.max_memory_allocated()) / _BYTES_PER_MIB
@@ -112,6 +127,8 @@ class ResourceUsage(Callback):
             metrics["cuda_device_count"] = int(cuda.device_count())
         if metrics:
             context.log(metrics, step=0, namespace="runtime")
+        if process_metrics:
+            context.log(process_metrics, step=0, namespace="process")
 
 
 def _available_cuda() -> Any | None:
@@ -122,6 +139,26 @@ def _available_cuda() -> Any | None:
     except OptionalDependencyError:
         return None
     return torch.cuda if torch.cuda.is_available() else None
+
+
+def _process_metrics(result: ProcessResourceResult) -> dict[str, Any]:
+    """Project typed process results onto the logger's mapping boundary."""
+
+    names = (
+        ("process_user_cpu_seconds", result.user_cpu_seconds),
+        ("process_system_cpu_seconds", result.system_cpu_seconds),
+        ("process_read_block_operations", result.read_block_operations),
+        ("process_write_block_operations", result.write_block_operations),
+        ("process_voluntary_context_switches", result.voluntary_context_switches),
+        ("process_involuntary_context_switches", result.involuntary_context_switches),
+    )
+    metrics: dict[str, Any] = {}
+    for name, value in names:
+        if isinstance(value, ResourceUnavailable):
+            metrics[f"{name}_unavailable"] = value.reason
+        else:
+            metrics[name] = float(value)
+    return metrics
 
 
 __all__ = ["ResourceUsage"]
