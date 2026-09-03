@@ -26,9 +26,9 @@ class PathAggregation(EquivariantMap):
     per output order ``m``: the path axis is contracted per input channel
     with a learned weight, then the owned activation ``Gamma_c`` is applied.
     Per decision D3 the first activation form is elementwise with
-    ``C_out = C_in``; channel mixing lives in the mixing weights until the
-    MLP-activation upgrade, which changes only ``Gamma_c`` behind this same
-    signature.
+    ``C_out = C_in``. The opt-in channel-preserving MLP activation also keeps
+    ``C_out = C_in`` while mixing channels at each fixed tuple position; this
+    changes only ``Gamma_c`` behind the same activation signature.
 
     The input contract is :class:`Interaction` with blocks of shape
     ``[batch, channels, paths, indices...]``. The output contract is
@@ -57,9 +57,11 @@ class PathAggregation(EquivariantMap):
     path_counts_by_order : mapping of int to int or None, optional
         Explicit path counts, mainly for tests or custom path families.
     activation : torch.nn.Module, callable, or None, optional
-        Owned activation ``Gamma_c`` applied elementwise after the path
-        contraction. ``None`` keeps the identity. It never mixes channels,
-        particles, or the contracted path axis.
+        Owned shape-preserving activation ``Gamma_c`` applied after the path
+        contraction. ``None`` keeps the identity. Pointwise choices transform
+        entries independently; the opt-in channel-preserving MLP may mix
+        channels at each fixed tuple position. Neither form mixes particles or
+        the contracted path axis.
     initializer : TorchInitializer or None, optional
         Explicit side-effect-free initializer for learned path weights. If
         ``None``, weights use the legacy PyTorch global-RNG Xavier initializer.

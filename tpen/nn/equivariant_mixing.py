@@ -77,13 +77,17 @@ class EquivariantMixing(EquivariantMap):
         ``"vectorized"`` batches virtual tuples path-by-path and should match
         the slow reference exactly.
     activation : torch.nn.Module, callable, or None, optional
-        Owned pointwise activation ``Gamma`` applied to every positive-order
-        output block after the bilinear contraction (TPEN layer contract,
-        MIG-TPEN-000 section 2.2). ``None`` keeps the identity and preserves
-        the pre-TPEN behavior exactly. The activation is applied to the full
-        block, including non-distinct tuple entries that mixing never writes,
-        so a ``Gamma(0) != 0`` choice writes an invariant constant onto those
-        entries; it never mixes channels, paths, or particle indices.
+        Owned shape-preserving activation ``Gamma`` applied to every
+        positive-order output block after the bilinear contraction (TPEN layer
+        contract, MIG-TPEN-000 section 2.2). ``None`` keeps the identity and
+        preserves the pre-TPEN behavior exactly. Pointwise choices transform
+        each entry independently; the opt-in
+        :class:`ChannelPreservingMLPActivation` may mix channels at each fixed
+        path and tuple position while preserving the channel width. The
+        activation is applied to the full block, including non-distinct tuple
+        entries that mixing never writes, so a ``Gamma(0) != 0`` choice writes
+        an invariant constant onto those entries. The activation never mixes
+        paths or particle indices.
     **kwargs : object
         Runtime-check options forwarded to :class:`EquivariantMap`.
     """
@@ -205,8 +209,9 @@ class EquivariantMixing(EquivariantMap):
                 aggregation=self.aggregation,
                 implementation=self.implementation,
             )
-            # Owned pointwise Gamma on the full block (TPEN contract). Applied
-            # after completion averaging so Gamma sees the final mixed values.
+            # Owned shape-preserving Gamma on the full block (TPEN contract).
+            # Applied after completion averaging so Gamma sees the final mixed
+            # values; a channel-preserving MLP may mix only the channel axis.
             if apply_activation and self.activation is not None:
                 block = self.activation(block)
             output_blocks.append(block)
