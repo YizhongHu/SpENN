@@ -25,6 +25,7 @@ choices:
         layout:
           _target_: tpen.nn.OrderMLPLayout
           _recursive_: true
+          _convert_: object
           axes:
             _target_: tpen.nn.ChannelActivationAxes
             channel_axis: 1
@@ -55,6 +56,7 @@ choices:
         layout:
           _target_: tpen.nn.OrderMLPLayout
           _recursive_: true
+          _convert_: object
           axes:
             _target_: tpen.nn.ChannelActivationAxes
             channel_axis: 1
