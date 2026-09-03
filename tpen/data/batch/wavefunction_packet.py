@@ -593,6 +593,14 @@ class CoordinateForwardPacket(WavefunctionPacket):
     def __post_init__(self) -> None:
         self.validate()
 
+    def __getstate__(self):
+        """Reject persistence while the value or derivative graph is live."""
+
+        _reject_graph_bearing_output(self.output)
+        if self.coordinates.values.requires_grad:
+            raise RuntimeError("graph-bearing CoordinateForwardPacket cannot be serialized")
+        return self.__dict__
+
     def validate(self) -> Self:
         """Validate value/coordinate sample, device, and dtype agreement."""
 
@@ -664,6 +672,14 @@ class ParameterScoreForwardPacket(WavefunctionPacket):
     def __post_init__(self) -> None:
         self.validate()
 
+    def __getstate__(self):
+        """Reject persistence while the value or score graph is live."""
+
+        _reject_graph_bearing_output(self.output)
+        if any(block.requires_grad for block in self.parameter_scores.blocks):
+            raise RuntimeError("graph-bearing ParameterScoreForwardPacket cannot be serialized")
+        return self.__dict__
+
     def validate(self) -> Self:
         """Validate value/score sample shape and device agreement."""
 
@@ -734,14 +750,25 @@ class ParameterScoreForwardPacket(WavefunctionPacket):
 
 
 def _detach_output(output: WavefunctionOutput) -> WavefunctionOutput:
-    """Detach explicit value fields while preserving compatibility ``aux``."""
+    """Detach explicit value fields and tensor-valued diagnostic ``aux`` entries."""
 
     return WavefunctionOutput(
         logabs=output.logabs.detach(),
         sign=output.sign.detach(),
         phase=None if output.phase is None else output.phase.detach(),
-        aux=dict(output.aux),
+        aux={
+            key: value.detach() if isinstance(value, torch.Tensor) else value
+            for key, value in output.aux.items()
+        },
     )
+
+
+def _reject_graph_bearing_output(output: WavefunctionOutput) -> None:
+    """Reject serializing any direct tensor in a live output graph."""
+
+    values = (output.logabs, output.sign, output.phase, *output.aux.values())
+    if any(isinstance(value, torch.Tensor) and value.requires_grad for value in values):
+        raise RuntimeError("graph-bearing wavefunction packet cannot be serialized")
 
 
 def _combine_comparisons(
