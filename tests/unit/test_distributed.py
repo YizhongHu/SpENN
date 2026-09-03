@@ -14,7 +14,6 @@ from tpen.distributed import (
     RankLocalJSONLWriter,
     ScalarMetric,
     project_scalars,
-    reject_aggregation,
 )
 from tpen.process_resources import ProcessResourceResult, ResourceUnavailable
 
@@ -54,7 +53,7 @@ def test_topology_preserves_explicit_ranks_and_device_without_environment(
     assert topology.global_rank == 1
     assert topology.local_rank == 1
     assert topology.device == "cuda:3"
-    assert topology.rank_path_component == "rank-1"
+    assert topology.rank_path_component == "rank-00001"
 
 
 def test_missing_global_rank_stays_explicit_and_cannot_make_path() -> None:
@@ -72,8 +71,8 @@ def test_two_ranks_sharing_one_device_write_distinct_jsonl_files(tmp_path) -> No
     RankLocalJSONLWriter(tmp_path, first).write(record(first))
     RankLocalJSONLWriter(tmp_path, second).write(record(second))
 
-    first_path = tmp_path / "profiles" / "rank-0" / "records.jsonl"
-    second_path = tmp_path / "profiles" / "rank-1" / "records.jsonl"
+    first_path = tmp_path / "profiles" / "rank-00000" / "resources.jsonl"
+    second_path = tmp_path / "profiles" / "rank-00001" / "resources.jsonl"
     assert first_path != second_path
     assert json.loads(first_path.read_text().splitlines()[0])["device"] == "cuda:3"
     assert json.loads(second_path.read_text().splitlines()[0])["global_rank"] == 1
@@ -147,7 +146,16 @@ def test_node_and_job_records_require_explicit_aggregate_data() -> None:
         ProfileRecord(ProfileScope.JOB, 1.0, _topology(0))
 
 
-def test_resource_aggregation_is_rejected() -> None:
-    record = ProfileRecord(ProfileScope.PROCESS, 1.0, _topology(0), process=_process())
-    with pytest.raises(ValueError, match="rank-local"):
-        reject_aggregation((record, record))
+def test_projector_marks_missing_device_count_explicitly() -> None:
+    usage = AllocatorUsage(
+        identity=AcceleratorIdentity(AcceleratorKind.CUDA, 3, "GPU-3"),
+        allocated_mb=2.0,
+        reserved_mb=4.0,
+        device_count=None,
+    )
+    record = ProfileRecord(ProfileScope.DEVICE, 3.0, _topology(0), device=usage)
+    assert [(item.key, item.value) for item in project_scalars(record)] == [
+        ("allocated_mb", 2.0),
+        ("reserved_mb", 4.0),
+        ("device_count_unavailable", True),
+    ]

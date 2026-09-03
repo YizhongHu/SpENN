@@ -9,6 +9,7 @@ by the real dispatcher, and their emission by `tpen.run`, are covered in
 
 from __future__ import annotations
 
+import json
 import pytest
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ from tpen.accelerator import (
     AllocatorUnavailable,
     AllocatorUsage,
 )
+from tpen.distributed import ExecutionTopology, RankLocalJSONLWriter
 from tpen import process_resources as process_resources_module
 from tests.unit.callback.support import RecordingContext
 
@@ -91,6 +93,41 @@ def test_resource_usage_resets_and_logs_cuda_peaks(monkeypatch: pytest.MonkeyPat
         "accelerator_max_memory_reserved_mb": 8.0,
         "accelerator_device_count": 2,
     }
+
+
+def test_resource_usage_writes_process_and_device_profiles_through_real_writer(tmp_path) -> None:
+    topology = ExecutionTopology(
+        global_rank=0,
+        global_size=1,
+        local_rank=0,
+        local_size=1,
+        node_rank=0,
+        node_size=1,
+        host="node-a",
+        pid=42,
+        device="cuda:1",
+        device_identity=AcceleratorIdentity(AcceleratorKind.CUDA, 1, "GPU-1"),
+    )
+    context = RecordingContext()
+    context.topology = topology
+    context.profile_writer = RankLocalJSONLWriter(tmp_path, topology)
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=topology.device_identity,
+            allocated_mb=3.0,
+            reserved_mb=8.0,
+            device_count=2,
+        )
+    )
+    callback = ResourceUsage(peak_rss_mb_reader=lambda: 512.0, allocator_probe=allocator)
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    lines = [json.loads(line) for line in context.profile_writer.path.read_text().splitlines()]
+    assert [line["scope"] for line in lines] == ["device", "process"]
+    assert lines[0]["metrics"]["allocated_mb"] == 3.0
+    assert "peak_rss_mb" in lines[1]["metrics"]
 
 
 def test_resource_usage_builds_probe_from_configured_context_device(

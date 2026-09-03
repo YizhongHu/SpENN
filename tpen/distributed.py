@@ -1,7 +1,11 @@
 """Explicit execution topology and rank-local resource profile artifacts.
 
 Topology is supplied by the launcher.  This module deliberately does not read
-launcher environment variables or infer a device from a rank.
+launcher environment variables or infer a device from a rank.  Resource
+records are rank-local by construction: this layer has no reduction path, and
+``project_scalars`` projects one typed record without summing readings.  The
+NODE and JOB labels are reserved for a future explicit aggregate record type
+and are deliberately refused until that type exists.
 """
 
 from __future__ import annotations
@@ -71,7 +75,13 @@ class ExecutionTopology:
             raise ValueError("device must be nonempty")
 
     @classmethod
-    def single_process(cls, *, device: str, job_id: str | None = None) -> "ExecutionTopology":
+    def single_process(
+        cls,
+        *,
+        device: str,
+        device_identity: AcceleratorIdentity | None = None,
+        job_id: str | None = None,
+    ) -> "ExecutionTopology":
         """Create an explicit one-process topology for the local launcher."""
 
         return cls(
@@ -85,6 +95,7 @@ class ExecutionTopology:
             pid=os.getpid(),
             device=device,
             job_id=job_id,
+            device_identity=device_identity,
         )
 
     @property
@@ -93,7 +104,7 @@ class ExecutionTopology:
 
         if self.global_rank is None:
             raise ValueError("global rank is unavailable; cannot create a rank-local path")
-        return f"rank-{self.global_rank}"
+        return f"rank-{self.global_rank:05d}"
 
 
 Scalar = Union[bool, float, int]
@@ -132,7 +143,8 @@ def project_scalars(record: ProfileRecord) -> tuple[ScalarMetric, ...]:
     """Project one typed record deterministically without aggregating readings."""
 
     if record.scope is ProfileScope.PROCESS:
-        assert record.process is not None
+        if record.process is None:
+            raise ValueError("PROCESS profile requires process readings")
         readings = (
             ("user_cpu_seconds", record.process.user_cpu_seconds),
             ("system_cpu_seconds", record.process.system_cpu_seconds),
@@ -143,7 +155,8 @@ def project_scalars(record: ProfileRecord) -> tuple[ScalarMetric, ...]:
             ("peak_rss_mb", record.process.peak_rss_mb),
         )
         return _project_readings(readings)
-    assert record.device is not None
+    if record.device is None:
+        raise ValueError("DEVICE profile requires device readings")
     readings = (
         ("allocated_mb", record.device.allocated_mb),
         ("reserved_mb", record.device.reserved_mb),
@@ -157,6 +170,8 @@ def _project_readings(readings: tuple[tuple[str, object], ...]) -> tuple[ScalarM
     for key, value in readings:
         if isinstance(value, (ResourceUnavailable, AllocatorUnavailable)):
             metrics.append(ScalarMetric(f"{key}_unavailable", True))
+        elif value is None:
+            metrics.append(ScalarMetric(f"{key}_unavailable", True))
         elif value is not None:
             if not isinstance(value, (bool, float, int)):
                 raise TypeError(f"{key} is not a scalar: {type(value).__name__}")
@@ -164,19 +179,12 @@ def _project_readings(readings: tuple[tuple[str, object], ...]) -> tuple[ScalarM
     return tuple(metrics)
 
 
-def reject_aggregation(records: tuple[ProfileRecord, ...]) -> None:
-    """Reject numeric reduction of resource readings with a clear error."""
-
-    if len(records) != 1:
-        raise ValueError("resource profiles are rank-local; numeric aggregation is unsupported")
-
-
 class RankLocalJSONLWriter:
-    """Append profile records to ``profiles/rank-N/records.jsonl``."""
+    """Append profile records to ``profiles/rank-00000/resources.jsonl``."""
 
     def __init__(self, run_dir: Path | str, topology: ExecutionTopology) -> None:
         self.topology = topology
-        self.path = Path(run_dir) / "profiles" / topology.rank_path_component / "records.jsonl"
+        self.path = Path(run_dir) / "profiles" / topology.rank_path_component / "resources.jsonl"
 
     def write(self, record: ProfileRecord) -> None:
         """Append one scalar-projected, topology-stamped JSON record."""
@@ -218,5 +226,4 @@ __all__ = [
     "RankLocalJSONLWriter",
     "ScalarMetric",
     "project_scalars",
-    "reject_aggregation",
 ]

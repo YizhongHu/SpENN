@@ -7,6 +7,7 @@ import json
 from omegaconf import OmegaConf
 
 from tpen.distributed import ExecutionTopology, ProfileRecord, ProfileScope
+from tpen.accelerator import AcceleratorKind
 from tpen.process_resources import ProcessResourceResult
 from tpen.run import prepare_run_context
 
@@ -51,8 +52,29 @@ def test_prepare_context_owns_passed_topology_and_writer(tmp_path) -> None:
             ),
         )
     )
-    path = tmp_path / "distributed" / "unit" / "fixed" / "profiles" / "rank-1" / "records.jsonl"
+    path = tmp_path / "distributed" / "unit" / "fixed" / "profiles" / "rank-00001" / "resources.jsonl"
     payload = json.loads(path.read_text())
     assert payload["global_rank"] == 1
     assert payload["device"] == "cuda:3"
     assert payload["metrics"]["peak_rss_mb"] == 7
+
+
+def test_prepare_context_populates_identity_for_default_single_process(tmp_path) -> None:
+    cfg = OmegaConf.create(
+        {
+            "experiment": {"name": "distributed", "sector": "unit"},
+            "run": {"root": str(tmp_path), "run_id": "fixed", "dir": None},
+            "runtime": {"device": "cpu", "dtype": "float64"},
+            "callbacks": [],
+            "loggers": [],
+        }
+    )
+
+    context = prepare_run_context(cfg)
+
+    assert context.topology is not None
+    assert context.topology.device_identity is not None
+    assert context.topology.device_identity.kind is AcceleratorKind.CPU
+    assert context.profile_writer is not None
+    assert context.profile_writer.path.name == "resources.jsonl"
+    assert context.profile_writer.path.parent.name == "rank-00000"

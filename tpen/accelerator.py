@@ -147,6 +147,11 @@ class TorchAllocatorPeakProbe:
                 uuid = None
         return AcceleratorIdentity(kind=self.kind, index=index, uuid=uuid)
 
+    def identity(self) -> AcceleratorIdentity:
+        """Return the exact identity for the configured device."""
+
+        return self._identity()
+
     def _available(self) -> bool:
         """Return backend availability without allowing telemetry to fail a run."""
 

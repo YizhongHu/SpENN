@@ -15,7 +15,7 @@ from hydra.utils import instantiate
 from hydra.errors import InstantiationException
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from tpen.accelerator import seed_all as accelerator_seed_all
+from tpen.accelerator import TorchAllocatorPeakProbe, seed_all as accelerator_seed_all
 from tpen.artifacts import (
     ArtifactManager,
     RunContext,
@@ -152,7 +152,11 @@ def prepare_run_context(
     _validate_callbacks(callbacks)
     _validate_loggers(loggers)
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
-    topology = topology or ExecutionTopology.single_process(device=metadata.device)
+    if topology is None:
+        device_identity = TorchAllocatorPeakProbe(metadata.device).identity()
+        topology = ExecutionTopology.single_process(
+            device=metadata.device, device_identity=device_identity
+        )
     context = RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
