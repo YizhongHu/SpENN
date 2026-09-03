@@ -284,8 +284,9 @@ class ModelParameterBinding:
         expected = self.layout if layout is None else layout
         current = _parameter_layout(parameters)
         if not expected.compare(current)[0]:
-            raise ValueError("checkpoint parameter layout does not match live model")
-        return type(self)(layout=expected, parameters=parameters)
+            layout_mismatch_message = "checkpoint parameter layout does not match live model"
+            raise ValueError(layout_mismatch_message)
+        return type(self)(layout=current, parameters=parameters)
 
 
 @dataclass(frozen=True, kw_only=True)

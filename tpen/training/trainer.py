@@ -186,15 +186,6 @@ class VMCTrainer:
                 raise ValueError(
                     "parameter layout restore requires update-state resolution before restore"
                 )
-            current_layout = ModelParameterBinding.from_parameters(
-                tuple(current_model.parameters())
-            ).layout
-            if not restored_layout.compare(current_layout)[0]:
-                # Keep this as one explicit rejection anchor: the Cannon
-                # mutation proof removes this branch and expects the layout
-                # regression to become a false success.
-                layout_mismatch_message = "checkpoint parameter layout does not match live model"
-                raise ValueError(layout_mismatch_message)
 
         self._checkpoint_parameter_layout = restored_layout
         if restored_layout is not None:
