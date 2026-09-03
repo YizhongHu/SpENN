@@ -115,6 +115,10 @@ def test_hydra_mode_layer_forward_backward_and_static_state(mode: InteractionMod
     selected = _mode_config(_config(), mode)
     layer = instantiate(selected.layer).to(dtype=torch.float64)
     assert isinstance(layer, TPENLayer)
+    assert layer.mixing.activation is not layer.path_aggregation.activation
+    assert {id(parameter) for parameter in layer.mixing.activation.parameters()}.isdisjoint(
+        {id(parameter) for parameter in layer.path_aggregation.activation.parameters()}
+    )
     before = tuple(layer.state_dict())
     output = layer(_feature())
     loss = sum(block.square().sum() for block in output.blocks[1:])
