@@ -142,7 +142,13 @@ def _apply_expected_activation(
 def _slow_aggregation(interaction: Interaction, module: PathAggregation, activation: object) -> Update:
     """Literal per-channel/path contraction independent of ``einsum``."""
 
-    blocks: list[torch.Tensor] = [interaction.blocks[0]]
+    blocks: list[torch.Tensor] = [
+        zero_block(
+            batch_size=interaction.batch_size,
+            device=interaction.blocks[0].device,
+            dtype=interaction.blocks[0].dtype,
+        )
+    ]
     for order in range(1, len(interaction.blocks)):
         tensor = interaction.blocks[order]
         weight = module.weights[module.key(order)].detach()
