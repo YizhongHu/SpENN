@@ -17,7 +17,7 @@ class RecordingContext(RunContext):
 
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
-        self.metadata = SimpleNamespace(timezone="UTC")
+        self.metadata = SimpleNamespace(timezone="UTC", device="cpu")
 
     def now_iso(self) -> str:
         """Return the deterministic timestamp required by callback contexts."""
