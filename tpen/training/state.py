@@ -10,6 +10,7 @@ import torch
 from tpen.data.batch import WavefunctionOutput
 from tpen.events import TrainingTiming, TrainingTimingState
 from tpen.sampling.stats import SamplerStats
+from tpen.training.update import VMCUpdateState
 
 
 @dataclass
@@ -44,7 +45,11 @@ class TrainerState(TrainingTimingState):
     model : Any, optional
         Wavefunction model being optimized.
     optimizer : Any, optional
-        Optimizer driving the model parameters.
+        Compatibility reference to the optimizer in ``update_state``.
+    update_state : VMCUpdateState or None, optional
+        The single typed update-state authority used by the trainer.  The
+        compatibility ``optimizer`` field is always the same object when this
+        field is populated.
     trainer : Any, optional
         Trainer object owning train-loop progress state.
     sampler : Any, optional
@@ -78,6 +83,7 @@ class TrainerState(TrainingTimingState):
     optimizer_step: bool = False
     model: Any = None
     optimizer: Any = None
+    update_state: VMCUpdateState | None = None
     trainer: Any = None
     sampler: Any = None
     samples: Any = None

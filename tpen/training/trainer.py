@@ -28,6 +28,7 @@ from tpen.training.update import (
     LegacyAutogradUpdate,
     ModelParameterBinding,
     VMCUpdateMethod,
+    VMCUpdateState,
 )
 from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
 
@@ -165,6 +166,74 @@ class VMCTrainer:
         self.next_iteration = next_iteration
         self.completed_updates = completed_updates
 
+    def resolve_update_state(
+        self,
+        *,
+        model,
+        optimizer: torch.optim.Optimizer,
+        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
+    ) -> VMCUpdateState:
+        """Resolve the one typed update-state authority before any mutation.
+
+        Stateful update methods expose their owned optimizer through
+        ``VMCUpdateState``.  The legacy optimizer argument is accepted only
+        when it is that same object; otherwise runner restore or the training
+        loop could mutate one optimizer while publishing another.
+        Stateless methods use the supplied optimizer as their authority.
+        """
+
+        selected_update_method = self._select_update_method(
+            model=model,
+            optimizer=optimizer,
+            update_method=update_method,
+        )
+        return self._resolve_method_state(
+            model=model,
+            optimizer=optimizer,
+            update_method=selected_update_method,
+        )
+
+    def _select_update_method(
+        self,
+        *,
+        model,
+        optimizer: torch.optim.Optimizer,
+        update_method: VMCUpdateMethod[AutogradUpdateInput] | None,
+    ) -> VMCUpdateMethod[AutogradUpdateInput]:
+        """Select or construct the update method for one fit invocation."""
+
+        selected_update_method = update_method if update_method is not None else self.update_method
+        if selected_update_method is None:
+            return LegacyAutogradUpdate(
+                optimizer=optimizer,
+                gradient_clip_norm=self.gradient_clip_norm,
+                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+            )
+        if not isinstance(selected_update_method, VMCUpdateMethod):
+            raise TypeError("VMCTrainer update_method must be a VMCUpdateMethod")
+        return selected_update_method
+
+    def _resolve_method_state(
+        self,
+        *,
+        model,
+        optimizer: torch.optim.Optimizer,
+        update_method: VMCUpdateMethod[AutogradUpdateInput],
+    ) -> VMCUpdateState:
+        """Validate a selected method and return its single authority."""
+
+        owned_state = update_method.update_state()
+        if owned_state is None:
+            return VMCUpdateState(
+                optimizer=optimizer,
+                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+            )
+        if not isinstance(owned_state, VMCUpdateState):
+            raise TypeError("VMCUpdateMethod.update_state must return VMCUpdateState or None")
+        if owned_state.optimizer is not optimizer:
+            raise ValueError("mismatched legacy optimizer ownership")
+        return owned_state
+
     def fit(
         self,
         *,
@@ -178,14 +247,23 @@ class VMCTrainer:
     ) -> TrainerState:
         """Run the training loop and return the final `TrainerState`."""
 
-        state = TrainerState(model=model, optimizer=optimizer, trainer=self, sampler=sampler)
-        selected_update_method = update_method if update_method is not None else self.update_method
-        if selected_update_method is None:
-            selected_update_method = LegacyAutogradUpdate(
-                optimizer=optimizer,
-                gradient_clip_norm=self.gradient_clip_norm,
-                model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
-            )
+        selected_update_method = self._select_update_method(
+            model=model,
+            optimizer=optimizer,
+            update_method=update_method,
+        )
+        update_state = self._resolve_method_state(
+            model=model,
+            optimizer=optimizer,
+            update_method=selected_update_method,
+        )
+        state = TrainerState(
+            model=model,
+            optimizer=update_state.optimizer,
+            update_state=update_state,
+            trainer=self,
+            sampler=sampler,
+        )
         # The hooks are owned by the adapter rather than by the live input
         # record. This keeps VMCStepData exact and ephemeral while preserving
         # the historical typed phase boundaries around backward and step.

@@ -360,6 +360,81 @@ def test_legacy_adapter_requires_model_binding_before_mutation() -> None:
     _assert_nested_equal(optimizer.state_dict(), optimizer_state_before)
 
 
+def test_trainer_rejects_mismatched_legacy_optimizer_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy ownership mismatch fails before the loop or optimizer can mutate."""
+
+    import tpen.training.trainer as trainer_module
+
+    monkeypatch.setattr(
+        trainer_module,
+        "local_energy",
+        lambda terms, model, batch, return_terms: torch.zeros(batch.batch_size, dtype=batch.dtype),
+    )
+    model = _OneParameterWavefunction()
+    trainer_optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    owned_optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+    update = LegacyAutogradUpdate(
+        owned_optimizer,
+        model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=1, update_method=update)
+    context = _StubContext()
+    parameter_before = model.weight.detach().clone()
+    trainer_optimizer_before = copy.deepcopy(trainer_optimizer.state_dict())
+    owned_optimizer_before = copy.deepcopy(owned_optimizer.state_dict())
+
+    with pytest.raises(ValueError, match="ownership"):
+        trainer.fit(
+            model=model,
+            sampler=_OneElectronSampler(),
+            hamiltonian_terms=[KineticEnergy()],
+            optimizer=trainer_optimizer,
+            context=context,
+            emit=lambda **_: None,
+        )
+
+    assert torch.equal(model.weight, parameter_before)
+    assert model.weight.grad is None
+    _assert_nested_equal(trainer_optimizer.state_dict(), trainer_optimizer_before)
+    _assert_nested_equal(owned_optimizer.state_dict(), owned_optimizer_before)
+    assert trainer.state_dict() == {"next_iteration": 0, "completed_updates": 0}
+    assert context.occurrences == []
+
+
+def test_trainer_state_publishes_the_same_update_state_optimizer() -> None:
+    model = _OneParameterWavefunction()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    update = LegacyAutogradUpdate(
+        optimizer,
+        model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+    )
+    trainer = VMCTrainer(max_steps=0, update_method=update)
+    context = _StubContext()
+
+    state = trainer.fit(
+        model=model,
+        sampler=_OneElectronSampler(),
+        hamiltonian_terms=[KineticEnergy()],
+        optimizer=optimizer,
+        context=context,
+        emit=lambda **_: None,
+    )
+
+    assert state.update_state is not None
+    assert state.update_state.optimizer is optimizer
+    assert state.optimizer is state.update_state.optimizer
+    assert all(
+        left is right
+        for left, right in zip(
+            state.update_state.model_parameters.parameters,
+            tuple(model.parameters()),
+            strict=True,
+        )
+    )
+
+
 def test_live_update_inputs_cannot_be_serialized() -> None:
     batch = _batch()
     parameter = torch.nn.Parameter(torch.ones(1, dtype=torch.float64))

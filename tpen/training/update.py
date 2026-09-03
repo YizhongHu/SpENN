@@ -202,6 +202,20 @@ class ModelParameterBinding:
             raise TypeError("ModelParameterBinding.parameters must contain direct parameters")
 
 
+@dataclass(frozen=True, kw_only=True)
+class VMCUpdateState:
+    """The single optimizer and parameter binding owned by an update method."""
+
+    optimizer: torch.optim.Optimizer
+    model_parameters: ModelParameterBinding
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.optimizer, torch.optim.Optimizer):
+            raise TypeError("VMCUpdateState.optimizer must be a torch.optim.Optimizer")
+        if not isinstance(self.model_parameters, ModelParameterBinding):
+            raise TypeError("VMCUpdateState.model_parameters must be a ModelParameterBinding")
+
+
 class VMCUpdateMethod(Generic[InputT], ABC):
     """Nominal typed contract for VMC update strategies.
 
@@ -229,6 +243,17 @@ class VMCUpdateMethod(Generic[InputT], ABC):
             raise TypeError("VMCUpdateMethod state must be a mapping")
         if state:
             raise ValueError("stateless VMCUpdateMethod cannot load non-empty state")
+
+    def update_state(self) -> VMCUpdateState | None:
+        """Return owned optimizer state, or ``None`` for a stateless method.
+
+        Returning ``None`` delegates the authority to the optimizer supplied
+        to ``VMCTrainer.fit``.  A stateful method must return its one typed
+        authority so the trainer can reject an ambiguous legacy optimizer
+        before restore or update work begins.
+        """
+
+        return None
 
     def set_step_scopes(
         self,
@@ -262,6 +287,14 @@ class LegacyAutogradUpdate(VMCUpdateMethod[AutogradUpdateInput]):
         self.model_parameters = model_parameters
         self._backward_scope: ScopeFactory | None = None
         self._optimizer_scope: ScopeFactory | None = None
+
+    def update_state(self) -> VMCUpdateState:
+        """Return the optimizer and direct gradient binding owned by the adapter."""
+
+        return VMCUpdateState(
+            optimizer=self.optimizer,
+            model_parameters=self.model_parameters,
+        )
 
     def set_step_scopes(
         self,
@@ -375,4 +408,5 @@ __all__ = [
     "VMCStepData",
     "VMCUpdateMethod",
     "VMCUpdateResult",
+    "VMCUpdateState",
 ]
