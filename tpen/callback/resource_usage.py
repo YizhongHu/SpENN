@@ -88,6 +88,7 @@ class ResourceUsage(Callback):
         self.process_probe = ProcessRUsageProbe() if process_probe is None else process_probe
         self.peak_rss_mb_reader = peak_rss_mb_reader
         self.allocator_probe = allocator_probe
+        self._injected_allocator_probe = allocator_probe is not None
         self._allocator_reset_failure: AllocatorUnavailable | None = None
         self._process_baseline = None
         self._reported = False
@@ -101,7 +102,10 @@ class ResourceUsage(Callback):
         if isinstance(event, RunStarted):
             self._process_baseline = self.process_probe.read()
             self._reported = False
-            if self.allocator_probe is None:
+            if not self._injected_allocator_probe:
+                # A context-derived probe is scoped to one run: recreate it on
+                # every RunStarted rather than reusing the first run's probe,
+                # which would stay bound to that run's context and device.
                 configured_device = context.metadata.device
                 try:
                     self.allocator_probe = TorchAllocatorPeakProbe(configured_device)

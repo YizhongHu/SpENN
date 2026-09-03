@@ -23,7 +23,12 @@ from tpen.process_resources import (
     ResourceScope,
     ResourceUnavailable,
 )
-from tpen.accelerator import AcceleratorIdentity, AcceleratorKind, AllocatorUsage
+from tpen.accelerator import (
+    AcceleratorIdentity,
+    AcceleratorKind,
+    AllocatorUnavailable,
+    AllocatorUsage,
+)
 from tpen import process_resources as process_resources_module
 from tests.unit.callback.support import RecordingContext
 
@@ -117,6 +122,42 @@ def test_resource_usage_builds_probe_from_configured_context_device(
     assert allocator.reset_calls == 1
 
 
+def test_resource_usage_recreates_auto_probe_for_each_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = (RecordingContext(), RecordingContext())
+    contexts[0].metadata.device = "cuda:0"
+    contexts[1].metadata.device = "xpu:1"
+    devices: list[str] = []
+    probes: list[_FakeAllocatorProbe] = []
+
+    def build_probe(device: str) -> _FakeAllocatorProbe:
+        devices.append(device)
+        kind = AcceleratorKind.CUDA if device == "cuda:0" else AcceleratorKind.OTHER
+        probe = _FakeAllocatorProbe(
+            usage=AllocatorUsage(
+                identity=AcceleratorIdentity(kind=kind, index=0, uuid=device),
+                allocated_mb=1.0 if device == "cuda:0" else 2.0,
+                reserved_mb=3.0 if device == "cuda:0" else 4.0,
+                device_count=1 if device == "cuda:0" else 2,
+            )
+        )
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(resource_usage_module, "TorchAllocatorPeakProbe", build_probe)
+    callback = ResourceUsage(peak_rss_mb_reader=lambda: 1.0)
+
+    for context in contexts:
+        _deliver(callback, context, RunStarted())
+        _deliver(callback, context, RunCompleted())
+
+    assert devices == ["cuda:0", "xpu:1"]
+    assert [probe.reset_calls for probe in probes] == [1, 1]
+    assert contexts[0].latest("runtime")["accelerator_max_memory_allocated_mb"] == 1.0
+    assert contexts[1].latest("runtime")["accelerator_max_memory_allocated_mb"] == 2.0
+
+
 def test_resource_usage_does_not_emit_allocator_metrics_for_xpu() -> None:
     context = RecordingContext()
     allocator = _FakeAllocatorProbe(
@@ -137,6 +178,54 @@ def test_resource_usage_does_not_emit_allocator_metrics_for_xpu() -> None:
     assert runtime["accelerator_max_memory_reserved_mb"] == 5.0
     assert runtime["accelerator_device_count"] == 4
     assert not any(key.startswith("cuda_") for key in runtime)
+
+
+def test_allocator_counter_failures_preserve_independent_readings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch = pytest.importorskip("torch")
+    import tpen.accelerator as accelerator
+
+    class Backend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_properties(index: int):
+            return SimpleNamespace(uuid="GPU-1")
+
+        @staticmethod
+        def max_memory_allocated(device: object) -> int:
+            return 3 * 1024 * 1024
+
+        @staticmethod
+        def max_memory_reserved(device: object) -> int:
+            raise AttributeError("reserved counter unavailable")
+
+        @staticmethod
+        def device_count() -> int:
+            return 4
+
+    class FakeTorch:
+        device = staticmethod(torch.device)
+        version = SimpleNamespace(hip=None)
+
+    monkeypatch.setattr(accelerator, "_torch", lambda feature: FakeTorch)
+    monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
+
+    usage = accelerator.TorchAllocatorPeakProbe("cuda:1").read()
+
+    assert usage == AllocatorUsage(
+        identity=AcceleratorIdentity(
+            kind=AcceleratorKind.CUDA,
+            index=1,
+            uuid="GPU-1",
+        ),
+        allocated_mb=3.0,
+        reserved_mb=AllocatorUnavailable(reason="AttributeError: reserved counter unavailable"),
+        device_count=4,
+    )
 
 
 def test_resource_usage_keeps_cuda_aliases_for_rocm() -> None:
