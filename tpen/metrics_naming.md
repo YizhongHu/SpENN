@@ -1029,10 +1029,10 @@ resumable, but `train_resume` refuses it anyway, for the reason above. Re-train,
 or restore it with `model_only`. There is deliberately no migration path.
 
 `latest.json` is deliberately minimal and unchanged: a `checkpoint_dir`
-pointer, its `step` number, and a timestamp. Pruning (`keep_last`) never
-deletes the directory `latest.json` points at — a defence-in-depth guarantee
-rather than a live one, since `write_latest` runs before `prune_old_checkpoints`
-and so the pointer always targets the newest directory in practice.
+pointer, its `step` number, and a timestamp. TPEN retains every committed
+checkpoint; `keep_last` remains accepted as an ignored compatibility input.
+The pointer is only a resume convenience, not a retention or storage
+disposition policy. Storage disposition lives outside TPEN.
 
 ### Checkpoint cadence counts completed updates
 

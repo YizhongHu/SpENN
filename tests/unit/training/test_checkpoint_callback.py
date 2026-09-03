@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from omegaconf import OmegaConf
 import tpen
 from tpen.artifacts import RunContext
 from tpen.callback import Checkpoint
+from tpen.callback.terminal_logging import configure_terminal_logging
 from tpen.checkpoint import (
     CheckpointCatalog,
     CheckpointRef,
@@ -254,6 +256,32 @@ def test_checkpoint_writes_step_directory_and_latest_pointer(tmp_path) -> None:
     assert (step_dir / "COMPLETE").exists()
     assert (ckpt_dir / "latest.json").exists()
     assert not (ckpt_dir / "step_000003.tmp").exists()
+
+
+def test_non_null_keep_last_warns_once_per_callback(tmp_path, caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="tpen"):
+        callback = Checkpoint(output_dir=tmp_path, keep_last=1, terminal=False)
+        _iteration(callback, _state(0), _context())
+        _iteration(callback, _state(1), _context())
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "keep_last=1 is ignored" in warnings[0].getMessage()
+    assert callback.keep_last == 1
+
+
+def test_none_keep_last_does_not_warn(tmp_path, caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="tpen"):
+        Checkpoint(output_dir=tmp_path, keep_last=None, terminal=False)
+
+    assert [record for record in caplog.records if record.levelno == logging.WARNING] == []
+
+
+def test_keep_last_warning_reaches_configured_terminal_stderr(tmp_path, capsys) -> None:
+    configure_terminal_logging(enabled=True, level="warning", color="never")
+    Checkpoint(output_dir=tmp_path, keep_last=3, terminal=False)
+
+    assert "keep_last=3 is ignored" in capsys.readouterr().err
 
 
 def test_checkpoint_composes_schedule_and_payload(tmp_path) -> None:

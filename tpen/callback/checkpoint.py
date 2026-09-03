@@ -8,6 +8,7 @@ directory checkpoint.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -37,6 +38,8 @@ from tpen.training.state import TrainerState
 from .base import StatefulCallback
 from .cadence import StepCadenceGate, SubscriptionGroup, pop_step_cadence
 
+_LOGGER = logging.getLogger("tpen")
+
 
 class Checkpoint(StatefulCallback[TrainerState]):
     """Write directory checkpoints from typed training state.
@@ -58,7 +61,8 @@ class Checkpoint(StatefulCallback[TrainerState]):
         publishes.  When omitted, the historical all-components payload is
         preserved unless the legacy save flags select another component set.
     keep_last : int or None, optional
-        Keep only the latest ``keep_last`` complete checkpoint directories.
+        Compatibility input accepted and ignored. TPEN retains all committed
+        checkpoints.
     save_optimizer, save_trainer, save_sampler, save_rng : bool or None, optional
         Whether to include train-resume state components.  ``None`` lets an
         explicit payload choose; with no payload, the historical all-component
@@ -123,6 +127,14 @@ class Checkpoint(StatefulCallback[TrainerState]):
     checkpoints at the same points an uninterrupted one does. Neither is the
     run-local `tpen.events.Occurrence.count`, which restarts at 1 after a
     restore and would silently shift a resumed run's checkpoint phase.
+
+    **Keep-all compatibility warning.** A non-``None`` ``keep_last`` emits one
+    warning when this callback is constructed. Multiple writes through that
+    callback emit no further warning; reconstructing the callback mid-run emits
+    another warning. This is a construction-scoped diagnostic, not a
+    process-global once-guard. The current launcher constructs one callback per
+    ``python -u run.py`` process, so it currently amounts to once per run and
+    once per scan cell; no current execution path reconstructs it mid-run.
     """
 
     # ClassVar: the runtime authority for typed state delivery.
@@ -180,6 +192,13 @@ class Checkpoint(StatefulCallback[TrainerState]):
         self.periodic = bool(periodic)
         self.terminal = bool(terminal)
         self.keep_last = keep_last
+        if keep_last is not None:
+            _LOGGER.warning(
+                "keep_last=%r is ignored; TPEN retains all checkpoints; "
+                "checkpoint storage grows without bound; see the keep-all "
+                "checkpoint policy in tpen/metrics_naming.md.",
+                keep_last,
+            )
         self.save_optimizer = save_optimizer
         self.save_trainer = save_trainer
         self.save_sampler = save_sampler
@@ -291,7 +310,6 @@ class Checkpoint(StatefulCallback[TrainerState]):
             save_trainer=self.save_trainer,
             save_sampler=self.save_sampler,
             save_rng=self.save_rng,
-            keep_last=self.keep_last,
         )
 
     def _validate_existing_publication(self, final_dir: Path) -> None:

@@ -126,9 +126,9 @@ def reconcile_publication(
     supplies the append-idempotent row operation: an existing identical ref is
     not appended again, while a conflicting row still fails closed.
 
-    This helper deliberately does not prune.  Retention remains the tail of a
-    successful new save and a repair must not rewrite the committed payload or
-    remove any checkpoint directories.
+    This helper only repairs non-destructive indexes. It must not rewrite the
+    committed payload or remove any checkpoint directories; storage disposition
+    is outside TPEN.
     """
 
     root = Path(checkpoint_root)
