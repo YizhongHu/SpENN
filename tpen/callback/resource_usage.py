@@ -68,7 +68,7 @@ class ResourceUsage(Callback):
         *,
         peak_rss_mb_reader: Callable[[], float] | None = None,
         process_probe: ProcessRUsageProbe | None = None,
-        allocator_probe: TorchAllocatorPeakProbe | None = None,
+        allocator_probe: Any | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
