@@ -184,6 +184,8 @@ def test_cuda_forward_preserves_device_dtype_and_gradients() -> None:
 def test_invalid_axes_fail_loudly() -> None:
     with pytest.raises(ValueError, match="tuple_axes_start"):
         ChannelActivationAxes(channel_axis=2, tuple_axes_start=2)
+    with pytest.raises(ValueError, match="nonnegative"):
+        ChannelActivationAxes(channel_axis=-1)
 
 
 def test_invalid_type_arguments_fail_loudly() -> None:
@@ -202,6 +204,8 @@ def test_invalid_type_arguments_fail_loudly() -> None:
 
 
 def test_invalid_orders_fail_loudly() -> None:
+    with pytest.raises(ValueError, match="order must be positive"):
+        OrderMLPSpec(order=0, channels=3)
     with pytest.raises(ValueError, match="strictly increasing"):
         OrderMLPLayout(
             axes=ChannelActivationAxes(),
