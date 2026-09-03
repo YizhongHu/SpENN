@@ -1,13 +1,13 @@
 # Polaris launch helpers
 
-## `multihost_launch.sh`
+## `multihost_launch.py`
 
 Makes DeepQMC multi-host DDP work on Polaris. Run it as the command under `mpiexec`,
 once per rank:
 
 ```sh
 mpiexec -n 2 --ppn 1 --cpu-bind none \
-  experiments/baselines/polaris/multihost_launch.sh \
+  python experiments/baselines/polaris/multihost_launch.py \
   "$VENV/bin/deepqmc" hydra.run.dir="$D" ansatz=deeperwin task.seed=0 \
   task.electron_batch_size=4096 hamil/mol=He task.steps=200000
 ```
@@ -60,12 +60,46 @@ DeepQMC is host-bound for sampling and dispatch, so one core starves it.
 Pass `--cpu-bind none` (or a real binding) **on the mpiexec command**. This wrapper runs
 *inside* mpiexec and cannot set it for you.
 
-The wrapper prints an `MHLAUNCH` line to stderr carrying rank, host, `taskset` affinity
-and visible devices, so the trap shows up in the job log rather than being inferred from
-a disappointing wall time.
+It prints an `MHLAUNCH` line to stderr carrying rank, host, CPU affinity and visible
+devices — and when it finds itself on a **single core** it says so explicitly, naming
+the flag that fixes it. The trap then appears in the log at the moment it happens,
+rather than being inferred later from a disappointing wall time.
+
+The env mapping is a pure function, `slurm_env_from_pbs`, so it is unit-tested
+directly rather than only through subprocess round-trips.
 
 ### Measurement caution
 
 Repeated identical arms on Polaris have differed by 9–33% within a single allocation.
 Any A/B comparison at this scale needs a repeated arm to bracket it, or drift will be
 read as effect.
+
+### Topology: GPU indices run REVERSE to NUMA ordering
+
+ALCF's own affinity example does this, and the comment is the whole point:
+
+```bash
+# need to assign GPUs in reverse order due to topology
+gpu=$(( num_gpus - 1 - PMI_LOCAL_RANK % num_gpus ))
+```
+
+Local rank 0 → GPU **3**, rank 1 → GPU 2, rank 2 → GPU 1, rank 3 → GPU 0. A naive
+`rank → GPU rank` mapping places every rank on the *wrong* NUMA domain and maximises
+cross-socket traffic. ALCF's recommended launch for one rank per GPU is
+`--depth=8 --cpu-bind depth`, i.e. one rank per NUMA domain with 8 threads each.
+
+**This wrapper is rank-per-NODE**, giving a single rank all four GPUs, so the reversed
+mapping does not currently apply — the rank owns every device and every NUMA domain.
+It becomes essential the moment anyone moves to rank-per-GPU, which the DeepQMC source
+does support (each process would hold one local device). Anyone making that change must
+apply the reversal, or they will silently get the worst possible placement while every
+device count and banner still looks correct.
+
+Note also that ALCF's `--cpu-bind depth` guidance is written for **one rank per GPU**.
+It does not directly describe the right binding for one rank driving four GPUs, which is
+what this wrapper does. `--cpu-bind none` is known to remove the 2.6× single-core
+penalty; whether a locality-aware binding beats it for the rank-per-node case is
+unmeasured, and should be measured rather than assumed.
+
+Sources: ALCF *Using GPUs on Polaris* and the `argonne-lcf/GettingStarted`
+`Examples/Polaris/affinity_gpu` example.
