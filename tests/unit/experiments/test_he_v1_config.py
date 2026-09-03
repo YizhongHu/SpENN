@@ -799,6 +799,10 @@ def test_he_eval_enables_canonical_host_wall_cost_callbacks_at_config_root() -> 
     """Use typed evaluation boundaries without claiming broken device sync."""
 
     config = _load(EVAL)
+    train_callbacks = _load(TRAIN)["callbacks"]
+    concrete_target = "tpen.callback.resource_usage.ResourceUsage"
+    assert sum(entry["_target_"] == concrete_target for entry in train_callbacks) == 1
+    assert sum(entry["_target_"] == concrete_target for entry in config["callbacks"]) == 1
     callbacks = {
         entry["_target_"]: entry
         for entry in config["callbacks"]
@@ -809,5 +813,9 @@ def test_he_eval_enables_canonical_host_wall_cost_callbacks_at_config_root() -> 
         "tpen.callback.DiagnosticTiming",
     ):
         assert callbacks[target]["accelerator_synchronize"] is False
-    assert "tpen.callback.ResourceUsage" in callbacks
+    resource_usage = callbacks[concrete_target]
+    assert resource_usage["allocator_probe"] == {
+        "_target_": "tpen.accelerator.TorchAllocatorPeakProbe",
+        "device": "${runtime.device}",
+    }
     assert "callbacks" not in config["runner"]

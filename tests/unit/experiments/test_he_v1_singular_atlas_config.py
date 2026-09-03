@@ -72,7 +72,7 @@ def test_p3_atlases_preserve_the_landed_records_task_and_root_owners() -> None:
         "tpen.callback.EvaluationTiming",
         "tpen.callback.EvaluationComponentTiming",
         "tpen.callback.DiagnosticTiming",
-        "tpen.callback.ResourceUsage",
+        "tpen.callback.resource_usage.ResourceUsage",
     } <= callback_targets
 
 

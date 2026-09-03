@@ -298,6 +298,12 @@ callbacks:
     output_path: ${run.dir}/metadata.json
   - _target_: tpen.callback.Status
     output_path: ${run.dir}/status.json
+  # Compose the concrete configured-device probe at the config boundary. The
+  # callback remains RunContext-owned; Hydra supplies its exact runtime device.
+  - _target_: tpen.callback.resource_usage.ResourceUsage
+    allocator_probe:
+      _target_: tpen.accelerator.TorchAllocatorPeakProbe
+      device: ${runtime.device}
   - _target_: tpen.callback.DataIntegrity
     every_n_steps: 1
     fail_fast: true
