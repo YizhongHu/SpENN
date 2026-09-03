@@ -60,6 +60,36 @@ def test_prepare_context_owns_passed_topology_and_writer(tmp_path) -> None:
     assert payload["metrics"]["peak_rss_mb"] == 7
 
 
+def test_prepare_context_keeps_missing_rank_explicit_without_fabricating_writer(tmp_path) -> None:
+    cfg = OmegaConf.create(
+        {
+            "experiment": {"name": "distributed", "sector": "unit", "run_name": "unknown-rank"},
+            "run": {"root": str(tmp_path), "run_id": "fixed", "dir": None},
+            "runtime": {"device": "cpu", "dtype": "float64"},
+            "callbacks": [],
+            "loggers": [],
+        }
+    )
+    topology = ExecutionTopology(
+        global_rank=None,
+        global_size=2,
+        local_rank=None,
+        local_size=2,
+        node_rank=None,
+        node_size=1,
+        host="node-a",
+        pid=42,
+        device="cpu",
+    )
+
+    context = prepare_run_context(cfg, topology=topology)
+
+    assert context.topology is topology
+    assert context.topology.global_rank is None
+    assert context.profile_writer is None
+    assert not (tmp_path / "distributed" / "unit" / "fixed" / "profiles" / "rank-00000").exists()
+
+
 def test_prepare_context_populates_identity_for_default_single_process(tmp_path) -> None:
     cfg = OmegaConf.create(
         {

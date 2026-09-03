@@ -283,6 +283,25 @@ class _CompletionCallbackThatFails(Callback):
             raise RuntimeError("completion callback exploded")
 
 
+class _RaisesOnCompleted(Callback):
+    """Callback that converts the completion boundary into a harness failure."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            typed_groups=(
+                SubscriptionGroup(selectors=(Subscription.of(RunStarted),)),
+                SubscriptionGroup(selectors=(Subscription.of(RunCompleted),)),
+            )
+        )
+
+    def handle_occurrence_impl(
+        self, occurrence: Occurrence[Any], context: RunContext
+    ) -> None:
+        del context
+        if isinstance(occurrence.event, RunCompleted):
+            raise RuntimeError("completion callback exploded")
+
+
 class _RaisingRunner(Runner):
     """Runner that fails inside ``run``, after the start boundary has fired."""
 
@@ -415,6 +434,26 @@ def test_resource_usage_reports_once_per_run_when_a_later_callback_fails_after_c
     ]
     assert len([record for record in metrics if record.get("namespace") == "runtime"]) == 1
     assert len([record for record in metrics if record.get("namespace") == "process"]) == 1
+
+
+def test_resource_usage_reports_terminal_resources_once_when_completion_callback_fails(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path, f"{__name__}._NoopRunner")
+    cfg.callbacks.insert(0, {"_target_": "tpen.callback.ResourceUsage"})
+    cfg.callbacks.append({"_target_": f"{__name__}._RaisesOnCompleted"})
+
+    assert run_from_config(cfg, config_path="x", command="pytest") == 1
+
+    run_dir = _run_dir(tmp_path)
+    metrics = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert len([record for record in metrics if record.get("namespace") == "runtime"]) == 1
+    assert len([record for record in metrics if record.get("namespace") == "process"]) == 1
+    assert len((run_dir / "profiles" / "rank-00000" / "resources.jsonl").read_text().splitlines()) == 2
 
 
 def test_the_harness_emits_run_failed_once_and_records_the_failure(tmp_path: Path) -> None:

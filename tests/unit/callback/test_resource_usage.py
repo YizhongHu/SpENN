@@ -10,6 +10,7 @@ by the real dispatcher, and their emission by `tpen.run`, are covered in
 from __future__ import annotations
 
 import json
+import math
 import pytest
 from types import SimpleNamespace
 
@@ -31,6 +32,8 @@ from tpen.accelerator import (
     AllocatorUsage,
 )
 from tpen.distributed import ExecutionTopology, RankLocalJSONLWriter
+from tpen.logging import JSONL
+from tpen.logging.base import LogRecord
 from tpen import process_resources as process_resources_module
 from tests.unit.callback.support import RecordingContext
 
@@ -128,6 +131,81 @@ def test_resource_usage_writes_process_and_device_profiles_through_real_writer(t
     assert [line["scope"] for line in lines] == ["device", "process"]
     assert lines[0]["metrics"]["allocated_mb"] == 3.0
     assert "peak_rss_mb" in lines[1]["metrics"]
+
+
+@pytest.mark.parametrize("invalid_allocated_mb", [math.nan, math.inf])
+def test_resource_usage_isolates_nonfinite_allocator_metric_at_terminal_boundary(
+    tmp_path, invalid_allocated_mb: float
+) -> None:
+    """One bad allocator counter cannot erase finite terminal resource evidence."""
+
+    class JSONLRecordingContext(RecordingContext):
+        """Capture callback records while routing them through strict JSONL."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.terminal_logger = JSONL(tmp_path / "metrics.jsonl")
+
+        def log(self, metrics, *, step=None, namespace="run") -> None:
+            super().log(metrics, step=step, namespace=namespace)
+            self.terminal_logger.log(
+                LogRecord(step=step, namespace=namespace, metrics=dict(metrics))
+            )
+
+    topology = ExecutionTopology(
+        global_rank=0,
+        global_size=1,
+        local_rank=0,
+        local_size=1,
+        node_rank=0,
+        node_size=1,
+        host="node-a",
+        pid=42,
+        device="cuda:1",
+        device_identity=AcceleratorIdentity(AcceleratorKind.CUDA, 1, "GPU-1"),
+    )
+    context = JSONLRecordingContext()
+    context.topology = topology
+    context.profile_writer = RankLocalJSONLWriter(tmp_path, topology)
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=topology.device_identity,
+            allocated_mb=invalid_allocated_mb,
+            reserved_mb=8.0,
+            device_count=2,
+        )
+    )
+    callback = ResourceUsage(
+        process_probe=_FixedProbe(_fixed_result()),
+        peak_rss_mb_reader=lambda: 512.0,
+        allocator_probe=allocator,
+    )
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    terminal_lines = [
+        json.loads(line)
+        for line in (tmp_path / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [line["namespace"] for line in terminal_lines] == ["runtime", "process"]
+    runtime = terminal_lines[0]["metrics"]
+    assert runtime["accelerator_max_memory_allocated_unavailable"] is True
+    assert runtime["accelerator_max_memory_reserved_mb"] == 8.0
+    assert runtime["accelerator_device_count"] == 2
+    assert "cuda_max_memory_allocated_mb" not in runtime
+
+    profile_lines = [
+        json.loads(line)
+        for line in context.profile_writer.path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [line["scope"] for line in profile_lines] == ["device", "process"]
+    assert profile_lines[0]["metrics"] == {
+        "allocated_mb_unavailable": True,
+        "device_count": 2,
+        "reserved_mb": 8.0,
+    }
+    assert "peak_rss_mb" in profile_lines[1]["metrics"]
 
 
 def test_resource_usage_builds_probe_from_configured_context_device(
@@ -456,6 +534,37 @@ def test_resource_usage_logs_process_metrics_at_completion(monkeypatch: pytest.M
         "process_involuntary_context_switches": 1.0,
     }
     assert context.latest("runtime")["peak_memory_mb"] == 4.0
+
+
+def test_resource_usage_keeps_terminal_logging_when_profile_write_fails() -> None:
+    context = RecordingContext()
+    context.topology = ExecutionTopology(
+        global_rank=0,
+        global_size=1,
+        local_rank=0,
+        local_size=1,
+        node_rank=0,
+        node_size=1,
+        host="node-a",
+        pid=42,
+        device="cpu",
+    )
+    context.profile_writer = object()
+
+    def fail_profile_write(record: object) -> None:
+        raise OSError("profile filesystem unavailable")
+
+    context.write_profile = fail_profile_write
+    callback = ResourceUsage(
+        process_probe=_FixedProbe(_fixed_result()),
+        peak_rss_mb_reader=lambda: 4.0,
+    )
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert context.latest("runtime")["peak_memory_mb"] == 4.0
+    assert context.latest("process")["process_user_cpu_seconds"] == 1.0
 
 
 def test_resource_usage_prefers_process_peak_over_default_reader(

@@ -65,6 +65,30 @@ def test_missing_global_rank_stays_explicit_and_cannot_make_path() -> None:
         _ = topology.rank_path_component
 
 
+@pytest.mark.parametrize(
+    ("rank_field", "rank_value"),
+    [("global_rank", False), ("global_rank", 0.5), ("global_size", True)],
+)
+def test_execution_topology_rejects_non_integer_rank_and_size_types(
+    rank_field: str, rank_value: object
+) -> None:
+    values = {
+        "global_rank": 0,
+        "global_size": 1,
+        "local_rank": 0,
+        "local_size": 1,
+        "node_rank": 0,
+        "node_size": 1,
+        "host": "node-a",
+        "pid": 1000,
+        "device": "cuda:3",
+    }
+    values[rank_field] = rank_value
+
+    with pytest.raises((TypeError, ValueError)):
+        ExecutionTopology(**values)
+
+
 def test_two_ranks_sharing_one_device_write_distinct_jsonl_files(tmp_path) -> None:
     first = _topology(0)
     second = _topology(1)
@@ -110,6 +134,22 @@ def test_writer_persists_exact_device_identity(tmp_path) -> None:
     writer.write(record)
     payload = json.loads(writer.path.read_text())
     assert payload["device_identity"] == {"kind": "cuda", "index": 3, "uuid": "GPU-3"}
+
+
+def test_profile_record_rejects_device_identity_mismatch_before_serialization() -> None:
+    topology = replace(
+        _topology(0),
+        device_identity=AcceleratorIdentity(AcceleratorKind.CUDA, 3, "GPU-3"),
+    )
+    usage = AllocatorUsage(
+        identity=AcceleratorIdentity(AcceleratorKind.CUDA, 1, "GPU-1"),
+        allocated_mb=1.0,
+        reserved_mb=2.0,
+        device_count=4,
+    )
+
+    with pytest.raises(ValueError, match="device identity"):
+        ProfileRecord(ProfileScope.DEVICE, 1.0, topology, device=usage)
 
 
 def test_writer_degrades_unserializable_field_to_parseable_error_record(tmp_path) -> None:
@@ -165,6 +205,35 @@ def test_node_and_job_records_require_explicit_aggregate_data() -> None:
         ProfileRecord(ProfileScope.NODE, 1.0, _topology(0))
     with pytest.raises(ValueError, match="explicit aggregate"):
         ProfileRecord(ProfileScope.JOB, 1.0, _topology(0))
+
+
+def test_profile_record_rejects_a_non_profile_scope() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ProfileRecord(
+            scope="process",
+            monotonic_time=1.0,
+            topology=_topology(0),
+            process=_process(),
+        )
+
+
+def test_profile_record_rejects_both_process_and_device_payloads() -> None:
+    topology = _topology(0)
+    device = AllocatorUsage(
+        identity=AcceleratorIdentity(AcceleratorKind.CUDA, 3, "GPU-3"),
+        allocated_mb=1.0,
+        reserved_mb=2.0,
+        device_count=1,
+    )
+
+    with pytest.raises((TypeError, ValueError)):
+        ProfileRecord(
+            scope=ProfileScope.PROCESS,
+            monotonic_time=1.0,
+            topology=topology,
+            process=_process(),
+            device=device,
+        )
 
 
 def test_projector_marks_missing_device_count_explicitly() -> None:
