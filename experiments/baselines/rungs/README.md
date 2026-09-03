@@ -6,17 +6,43 @@ are reviewable, testable and reusable.
 
 | file | purpose |
 |---|---|
-| `rung_makeplan.py` | build a `StagePlanV2` of independent psiformer rows, one per seed |
+| `rung_makeplan.py` | build a `StagePlanV2` of independent rows parameterized by system, ansatz, and seed |
 | `rung_gate.py` | gate a completed run on its **artefacts** |
 | `fit_rate.py` | fit a per-step rate from timestamped logs, with a cut sweep |
 
 ## Usage
 
 ```sh
-python rung_makeplan.py <system> <results_dir> <plan_dir> <gpus> <rows> <steps> <plan_id>
-python rung_gate.py     <run_root> <expected_rows> <gpus_per_row> <expected_hosts> [system]
-python fit_rate.py      <probe_root>
+# Run from the repository root.  The builder imports the `experiments` package,
+# so the repository must be on PYTHONPATH; the script directory alone is not
+# sufficient.
+PYTHONPATH=. python experiments/baselines/rungs/rung_makeplan.py \
+  <system> <ansatz> <results_dir> <plan_dir> <gpus> <rows> <steps> <plan_id> [seeds]
+PYTHONPATH=. python experiments/baselines/rungs/rung_gate.py \
+  <run_root> <expected_rows> <gpus_per_row> <expected_hosts> [system] [ansatz]
+PYTHONPATH=. python experiments/baselines/rungs/fit_rate.py <probe_root>
 ```
+
+`rung_makeplan.py` requires `ansatz` as its second positional argument. The
+optional final argument is a comma-separated seed list, such as `3,7,11`.
+Passing `system` and `ansatz` to `rung_gate.py` enables both submitted-command
+checks; omitting `ansatz` silently skips the argv-ansatz check.
+
+## `fit_rate.py` input and limits
+
+`fit_rate.py` is a legacy probe parser. It reads lines shaped like
+`<ISO timestamp>\t...Step N:...` from `R/<tag>/train.log`, and only examines the
+hardcoded arms `a1`, `a2`, `a4`, and `a1r`. It cannot analyze current
+ferminet-codebase runs: those runs write only `train_stats.csv`, with no
+`train.log` and no time column. Short rungs also write no checkpoints, so there
+are no timestamps for `fit_rate.py` to fit and it does not apply to those runs.
+Rates for current runs come instead from per-row `elapsed_sec` in
+`attempt_status.json`, compared across two step counts. On a current run,
+`fit_rate.py` therefore returns an empty result; that means the input format is
+unsupported, not that the run produced nothing.
+
+`PRIOR = 0.4012836` is a hardcoded comparison constant from one specific prior
+Polaris measurement (RAMP-D arm n-g1), not a general reference rate.
 
 ## Why these are shaped the way they are
 

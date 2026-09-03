@@ -7,7 +7,11 @@ rather than coverage.
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
+import runpy
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -160,6 +164,8 @@ def test_flag_reader_handles_absent_and_trailing_flags() -> None:
     assert mod._flag(argv, "--config.network.network_type") is None
     assert mod._flag(argv, "--absent") is None
     assert mod._flag(" ".join(argv), "--config.system.atom") == "He"
+    with pytest.raises(ValueError, match="repeated flag"):
+        mod._flag(argv + ["He", "--config.system.atom", "Li"], "--config.system.atom")
 
 
 def test_band_threshold_excludes_the_ramp_rungs_and_admits_production() -> None:
@@ -272,3 +278,166 @@ def test_seed_list_accepts_a_single_non_zero_seed(tmp_path) -> None:
     assert len(rows) == 1
     argv = rows[0]["command"]
     assert argv[argv.index("--config.debug.seed") + 1] == "5"
+
+
+# ---------------------------------------------------------------------------
+# Direct tests of the gate decision body. These artefacts are deliberately
+# short: command identity must be checked before the converged energy band.
+# ---------------------------------------------------------------------------
+
+
+def _gate_command(system="he", ansatz="ferminet", seed=0, steps=200):
+    return [
+        "python", "train.py",
+        "--config.system.atom", "He" if system == "he" else "Li",
+        "--config.network.network_type", ansatz,
+        "--config.optim.iterations", str(steps),
+        "--config.debug.seed", str(seed),
+    ]
+
+
+def _write_gate_fixture(tmp_path, commands, *, statuses=None, visibilities=None,
+                        hosts=None, fingerprint_keys=None, steps=200):
+    """Write the smallest complete set of artefacts accepted by the gate."""
+    launch = tmp_path / "launch"
+    launch.mkdir(parents=True)
+    results = tmp_path / "results"
+    records = []
+    statuses = statuses or ["success"] * len(commands)
+    visibilities = visibilities or [str(i) for i in range(len(commands))]
+    hosts = hosts or [f"host-{i}" for i in range(len(commands))]
+    fingerprint_keys = fingerprint_keys or list(range(len(commands)))
+    for index, command in enumerate(commands):
+        status_path = launch / f"status-{index}.json"
+        status_path.write_text(json.dumps({
+            "status": statuses[index],
+            "inherited_visibility_value": visibilities[index],
+            "placement": {"hostname": hosts[index]},
+        }))
+        records.append({
+            "run_id": f"row-{index}",
+            "status_path": str(status_path),
+            "submitted_command": command,
+        })
+        csv = results / f"row-{index}" / "run" / "train_stats.csv"
+        csv.parent.mkdir(parents=True)
+        key = fingerprint_keys[index]
+        lines = ["step,energy"]
+        lines.extend(f"{step},{-2.9 + key * 0.00001 + step * 0.00000001}"
+                     for step in range(steps))
+        csv.write_text("\n".join(lines) + "\n")
+    (launch / "dispatch_records.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n")
+
+
+def _run_gate(mod, root, *, system="he", ansatz="ferminet", want_seeds=None):
+    return mod.run_gate(root, len(list((root / "results").iterdir())), 1, 2,
+                        system, ansatz, want_seeds=want_seeds)
+
+
+def test_gate_decision_body_is_importable_and_reports_a_failed_status(tmp_path) -> None:
+    """A bad status reaches the callable body and becomes a gate failure."""
+    mod = _load("rung_gate.py")
+    _write_gate_fixture(tmp_path, [_gate_command(seed=0), _gate_command(seed=1)],
+                        statuses=["failed", "success"])
+    result = _run_gate(mod, tmp_path)
+    assert any("rows not success" in failure for failure in result.failures)
+
+
+def test_gate_seeds_fail_when_duplicate_and_pass_when_distinct(tmp_path) -> None:
+    mod = _load("rung_gate.py")
+    commands = [_gate_command(seed=1), _gate_command(seed=1)]
+    _write_gate_fixture(tmp_path, commands)
+    bad = _run_gate(mod, tmp_path, want_seeds=[1, 1])
+    assert any("DUPLICATE DEBUG SEEDS" in failure for failure in bad.failures)
+
+    good_root = tmp_path / "good"
+    _write_gate_fixture(good_root, [_gate_command(seed=1), _gate_command(seed=2)])
+    good = _run_gate(mod, good_root, want_seeds=[1, 2])
+    assert good.failures == ()
+    assert good.observed_seeds == ("1", "2")
+
+
+def test_gate_seeds_fail_when_expected_set_differs(tmp_path) -> None:
+    mod = _load("rung_gate.py")
+    _write_gate_fixture(tmp_path, [_gate_command(seed=1), _gate_command(seed=3)])
+    result = _run_gate(mod, tmp_path, want_seeds=[1, 2])
+    assert any("DEBUG SEEDS" in failure and "expected" in failure
+               for failure in result.failures)
+
+
+def test_gate_unrecorded_command_fails_and_recorded_commands_pass(tmp_path) -> None:
+    mod = _load("rung_gate.py")
+    _write_gate_fixture(tmp_path, [_gate_command(seed=0), []])
+    bad = _run_gate(mod, tmp_path)
+    assert any("no recorded command" in failure for failure in bad.failures)
+
+    good_root = tmp_path / "good"
+    _write_gate_fixture(good_root, [_gate_command(seed=0), _gate_command(seed=1)])
+    good = _run_gate(mod, good_root)
+    assert good.failures == ()
+
+
+def test_gate_rejects_duplicate_host_visibility_pairs(tmp_path) -> None:
+    mod = _load("rung_gate.py")
+    commands = [_gate_command(seed=0), _gate_command(seed=1), _gate_command(seed=2)]
+    _write_gate_fixture(tmp_path, commands,
+                        visibilities=["0", "0", "1"],
+                        hosts=["host-0", "host-0", "host-1"])
+    bad = _run_gate(mod, tmp_path)
+    assert any("DOUBLE-BOOKED" in failure for failure in bad.failures)
+
+    good_root = tmp_path / "good"
+    _write_gate_fixture(good_root, commands,
+                        visibilities=["0", "1", "0"],
+                        hosts=["host-0", "host-0", "host-1"])
+    good = _run_gate(mod, good_root)
+    assert good.failures == ()
+
+
+def test_gate_repeated_flag_fails_and_single_flag_passes(tmp_path) -> None:
+    mod = _load("rung_gate.py")
+    repeated = _gate_command(seed=0)
+    repeated.extend(["--config.network.network_type", "psiformer"])
+    _write_gate_fixture(tmp_path, [repeated, _gate_command(seed=1)])
+    bad = _run_gate(mod, tmp_path)
+    assert any("repeated flag '--config.network.network_type'" in failure
+               for failure in bad.failures)
+
+    good_root = tmp_path / "good"
+    _write_gate_fixture(good_root, [_gate_command(seed=0), _gate_command(seed=1)])
+    good = _run_gate(mod, good_root)
+    assert good.failures == ()
+
+
+def test_gate_cli_replays_the_three_production_arms(tmp_path) -> None:
+    """The positional CLI and its verdict tokens remain unchanged at 200 steps."""
+    cases = [
+        ("he", "ferminet", 0, "RUNG_GATES_PASSED"),
+        ("he", "psiformer", 1, "WRONG ANSATZ IN ARGV"),
+        ("h2", "ferminet", 2, "WRONG SYSTEM IN ARGV"),
+    ]
+    for index, (asked_system, asked_ansatz, expected_seed, token) in enumerate(cases):
+        root = tmp_path / f"case-{index}"
+        _write_gate_fixture(root, [_gate_command(seed=expected_seed),
+                                   _gate_command(seed=expected_seed + 10)])
+        old_argv = sys.argv
+        output = io.StringIO()
+        try:
+            sys.argv = ["rung_gate.py", str(root), "2", "1", "2",
+                        asked_system, asked_ansatz]
+            with redirect_stdout(output):
+                try:
+                    runpy.run_path(str(HERE / "rung_gate.py"), run_name="__main__")
+                except SystemExit as exc:
+                    returncode = exc.code
+                else:
+                    returncode = 0
+        finally:
+            sys.argv = old_argv
+        text = output.getvalue()
+        if token == "RUNG_GATES_PASSED":
+            assert returncode == 0, text
+        else:
+            assert returncode == 1, text
+        assert token in text
