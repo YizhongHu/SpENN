@@ -445,16 +445,25 @@ axis $p$, and $Gamma_c: RR^(C_"in") mapsto RR^(C_"out")$ acts identically on
 every tuple $I$. Since it touches only the inert path and channel axes, this
 operation is permutation-equivariant.
 
-The current implementation uses an elementwise $Gamma_c$ with
-$C_"out" = C_"in"$, so channel mixing lives entirely in the mixing weights $W$.
-An MLP-valued $Gamma_c$ (one MLP per tensor order, mixing $C_"in" -> C_"out"$
-with every non-channel axis folded into the batch dimension) is a documented
-future upgrade behind the same $Gamma_c$ signature; it is not yet shipped.
+The current implementation includes the elementwise $Gamma_c$ with
+$C_"out" = C_"in"$, so that form leaves channel mixing in the mixing weights
+$W$. It also includes the opt-in channel-preserving
+`ChannelPreservingMLPActivation`, which retains $C_"out" = C_"in"$ while
+mixing channels inside one eagerly constructed MLP per tensor order. The
+activation instance owns those MLP parameters, order selection, channel-axis
+movement, validation, initialization, and its immutable
+`ChannelActivationAxes`/`OrderMLPLayout`; every non-channel axis is inert to
+the MLP and is folded into its leading batch positions.
 
 == Activation and Updates
 
-Arbitrary point-wise activation on tensors preserve equivariance:
+Arbitrary point-wise activation on tensors preserves equivariance:
 $ bh_I = Gamma(by_I) $
+
+The channel-preserving MLP refinement is not pointwise in channels, but it is
+shared over every inert position. Therefore it preserves the same tuple-index
+permutation action while making channel ownership explicit at the activation
+boundary.
 
 For an update $bu^(t+1)$, we can directly apply the update:
 $ bx^(t+1) = bold("u")^(t+1) $

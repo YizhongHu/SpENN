@@ -1,6 +1,12 @@
 """Neural-network component namespace for TPEN."""
 
-from tpen.nn.activation import GaussianActivation
+from tpen.nn.activation import (
+    ChannelActivationAxes,
+    ChannelPreservingMLPActivation,
+    GaussianActivation,
+    OrderMLPLayout,
+    OrderMLPSpec,
+)
 from tpen.nn.basis import (
     ElectronBasis,
     ElectronBasisFeatures,
@@ -62,6 +68,8 @@ from tpen.nn.update import ResidualUpdater, Updater
 __all__ = [
     "AdditiveCusp",
     "AdditiveEnvelope",
+    "ChannelActivationAxes",
+    "ChannelPreservingMLPActivation",
     "CoordinateEnvelope",
     "CoordinateGradientRequest",
     "CoordinateGradientProvider",
@@ -89,6 +97,8 @@ __all__ = [
     "LogAmplitudeFactor",
     "MLP",
     "MaterializedParameterScoreRequest",
+    "OrderMLPLayout",
+    "OrderMLPSpec",
     "ParameterScoreRequest",
     "ParameterScoreProvider",
     "PathAggregation",
