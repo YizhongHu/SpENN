@@ -13,6 +13,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from tpen.accelerator import (  # noqa: E402
+    AcceleratorIdentity,
     AcceleratorKind,
     AllocatorUnavailable,
     TorchAllocatorPeakProbe,
