@@ -1,11 +1,16 @@
-"""Best-effort peak-memory resource callback."""
+"""Best-effort process and configured-accelerator resource callback."""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
 from tpen.artifacts import RunContext
-from tpen.dependencies import OptionalDependencyError, require_torch
+from tpen.accelerator import (
+    AllocatorUnavailable,
+    AllocatorUsage,
+    TorchAllocatorPeakProbe,
+)
+from tpen.dependencies import require_torch  # compatibility patch seam for existing callers
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
@@ -18,9 +23,6 @@ from tpen.process_resources import (
 from .base import Callback
 from .cadence import SubscriptionGroup
 
-_BYTES_PER_MIB = 1024 * 1024
-
-
 def _default_peak_rss_mb() -> float:
     """Return process peak RSS in MiB for compatibility callers."""
 
@@ -31,14 +33,14 @@ def _default_peak_rss_mb() -> float:
 
 
 class ResourceUsage(Callback):
-    """Log run-level peak process and CUDA memory under ``runtime``.
+    """Log run-level peak process and configured-device memory.
 
-    CUDA peak counters are reset when the run starts so the logged peaks cover
-    exactly this run. Readings are best-effort runtime metadata: a failing
-    reader omits its metrics instead of failing the run.
+    Allocator peak counters are reset when the run starts so the logged peaks
+    cover exactly this run. Readings are best-effort runtime metadata: a failing
+    reader emits typed-unavailable flags instead of failing the run.
 
-    Data-free, so a plain `tpen.callback.Callback`: it reads a process counter
-    and `torch.cuda`, never any domain state.
+    Data-free, so a plain `tpen.callback.Callback`: it reads process and
+    configured-device counters, never any domain state.
 
     Notes
     -----
@@ -66,6 +68,7 @@ class ResourceUsage(Callback):
         *,
         peak_rss_mb_reader: Callable[[], float] | None = None,
         process_probe: ProcessRUsageProbe | None = None,
+        allocator_probe: TorchAllocatorPeakProbe | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -82,6 +85,8 @@ class ResourceUsage(Callback):
         )
         self.process_probe = ProcessRUsageProbe() if process_probe is None else process_probe
         self.peak_rss_mb_reader = peak_rss_mb_reader
+        self.allocator_probe = allocator_probe
+        self._allocator_reset_failure: AllocatorUnavailable | None = None
         self._process_baseline = None
         self._reported = False
 
@@ -94,9 +99,18 @@ class ResourceUsage(Callback):
         if isinstance(event, RunStarted):
             self._process_baseline = self.process_probe.read()
             self._reported = False
-            cuda = _available_cuda()
-            if cuda is not None:
-                cuda.reset_peak_memory_stats()
+            if self.allocator_probe is None:
+                try:
+                    configured_device = context.metadata.device
+                except AttributeError:
+                    configured_device = None
+                if configured_device is not None:
+                    self.allocator_probe = TorchAllocatorPeakProbe(configured_device)
+            if self.allocator_probe is not None:
+                reset_result = self.allocator_probe.reset()
+                self._allocator_reset_failure = (
+                    reset_result if isinstance(reset_result, AllocatorUnavailable) else None
+                )
             return
         # Both terminal boundaries report the same peaks; a failed run has no
         # different memory story to tell, which is why they share one path.
@@ -131,25 +145,42 @@ class ResourceUsage(Callback):
                 metrics["peak_memory_mb"] = float(_default_peak_rss_mb())
             except OSError:
                 pass
-        cuda = _available_cuda()
-        if cuda is not None:
-            metrics["cuda_max_memory_allocated_mb"] = float(cuda.max_memory_allocated()) / _BYTES_PER_MIB
-            metrics["cuda_max_memory_reserved_mb"] = float(cuda.max_memory_reserved()) / _BYTES_PER_MIB
-            metrics["cuda_device_count"] = int(cuda.device_count())
+        if self.allocator_probe is not None:
+            allocator = self.allocator_probe.read()
+            if self._allocator_reset_failure is not None:
+                allocator = AllocatorUsage(
+                    identity=allocator.identity,
+                    allocated_mb=self._allocator_reset_failure,
+                    reserved_mb=self._allocator_reset_failure,
+                    device_count=allocator.device_count,
+                )
+            metrics.update(_allocator_metrics(allocator))
         if metrics:
             context.log(metrics, step=0, namespace="runtime")
         if process_metrics:
             context.log(process_metrics, step=0, namespace="process")
 
 
-def _available_cuda() -> Any | None:
-    """Return ``torch.cuda`` when torch is importable and CUDA is available."""
+def _allocator_metrics(usage: AllocatorUsage) -> dict[str, Any]:
+    """Project one allocator record to backend-neutral and legacy keys."""
 
-    try:
-        torch = require_torch(feature="CUDA memory metrics")
-    except OptionalDependencyError:
-        return None
-    return torch.cuda if torch.cuda.is_available() else None
+    metrics: dict[str, Any] = {}
+    if isinstance(usage.allocated_mb, AllocatorUnavailable):
+        metrics["accelerator_max_memory_allocated_unavailable"] = True
+    else:
+        metrics["accelerator_max_memory_allocated_mb"] = usage.allocated_mb
+        metrics["cuda_max_memory_allocated_mb"] = usage.allocated_mb
+    if isinstance(usage.reserved_mb, AllocatorUnavailable):
+        metrics["accelerator_max_memory_reserved_unavailable"] = True
+    else:
+        metrics["accelerator_max_memory_reserved_mb"] = usage.reserved_mb
+        metrics["cuda_max_memory_reserved_mb"] = usage.reserved_mb
+    if usage.device_count is None or isinstance(usage.device_count, AllocatorUnavailable):
+        metrics["accelerator_device_count_unavailable"] = True
+    else:
+        metrics["accelerator_device_count"] = usage.device_count
+        metrics["cuda_device_count"] = usage.device_count
+    return metrics
 
 
 def _process_metrics(result: ProcessResourceResult) -> dict[str, Any]:

@@ -23,6 +23,7 @@ from tpen.process_resources import (
     ResourceScope,
     ResourceUnavailable,
 )
+from tpen.accelerator import AcceleratorIdentity, AcceleratorKind, AllocatorUsage
 from tpen import process_resources as process_resources_module
 from tests.unit.callback.support import RecordingContext
 
@@ -49,6 +50,20 @@ def _fake_torch(*, available: bool, calls: list[str] | None = None):
     return type("FakeTorch", (), {"cuda": cuda})()
 
 
+class _FakeAllocatorProbe:
+    """Configured-device probe stand-in for callback projection tests."""
+
+    def __init__(self, usage: AllocatorUsage) -> None:
+        self.usage = usage
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+    def read(self) -> AllocatorUsage:
+        return self.usage
+
+
 def test_resource_usage_logs_peak_rss_at_run_completion(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
@@ -70,17 +85,29 @@ def test_resource_usage_resets_and_logs_cuda_peaks(monkeypatch: pytest.MonkeyPat
         resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=True, calls=calls)
     )
     context = RecordingContext()
-    callback = ResourceUsage(peak_rss_mb_reader=lambda: 512.0)
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=AcceleratorIdentity(AcceleratorKind.CUDA, 1, "GPU-1"),
+            allocated_mb=3.0,
+            reserved_mb=8.0,
+            device_count=2,
+        )
+    )
+    callback = ResourceUsage(peak_rss_mb_reader=lambda: 512.0, allocator_probe=allocator)
 
     _deliver(callback, context, RunStarted())
     _deliver(callback, context, RunCompleted())
 
-    assert calls == ["reset"]
+    assert calls == []
+    assert allocator.reset_calls == 1
     assert context.latest("runtime") == {
         "peak_memory_mb": 512.0,
         "cuda_max_memory_allocated_mb": 3.0,
         "cuda_max_memory_reserved_mb": 8.0,
         "cuda_device_count": 2,
+        "accelerator_max_memory_allocated_mb": 3.0,
+        "accelerator_max_memory_reserved_mb": 8.0,
+        "accelerator_device_count": 2,
     }
 
 

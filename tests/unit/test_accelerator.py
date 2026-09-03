@@ -13,12 +13,97 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from tpen.accelerator import (  # noqa: E402
+    AcceleratorKind,
+    AllocatorUnavailable,
+    TorchAllocatorPeakProbe,
     canonical_device,
     current_accelerator_type,
     device_module,
     seed_all,
     synchronize,
 )
+
+
+def test_allocator_probe_uses_the_configured_device_and_owns_one_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tpen.accelerator as accelerator
+
+    calls: list[tuple[str, object]] = []
+
+    class Backend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def current_device() -> int:
+            calls.append(("current_device", None))
+            return 0
+
+        @staticmethod
+        def get_device_properties(index: int):
+            calls.append(("properties", index))
+            return type("Properties", (), {"uuid": "GPU-1"})()
+
+        @staticmethod
+        def reset_peak_memory_stats(device: object) -> None:
+            calls.append(("reset", device))
+
+        @staticmethod
+        def max_memory_allocated(device: object) -> int:
+            calls.append(("allocated", device))
+            return 3 * 1024 * 1024
+
+        @staticmethod
+        def max_memory_reserved(device: object) -> int:
+            calls.append(("reserved", device))
+            return 8 * 1024 * 1024
+
+        @staticmethod
+        def device_count() -> int:
+            calls.append(("count", None))
+            return 4
+
+    monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
+    probe = TorchAllocatorPeakProbe(torch.device("cuda:1"))
+
+    identity = probe.reset()
+    usage = probe.read()
+
+    assert identity.kind is AcceleratorKind.CUDA
+    assert identity.index == 1
+    assert identity.uuid == "GPU-1"
+    assert usage.allocated_mb == 3.0
+    assert usage.reserved_mb == 8.0
+    assert usage.device_count == 4
+    assert calls.count(("reset", torch.device("cuda:1"))) == 1
+    assert calls.count(("allocated", torch.device("cuda:1"))) == 1
+    assert calls.count(("reserved", torch.device("cuda:1"))) == 1
+
+
+def test_allocator_probe_distinguishes_rocm_and_types_unavailable_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tpen.accelerator as accelerator
+
+    class FakeTorch:
+        device = staticmethod(torch.device)
+        version = type("Version", (), {"hip": "6.2"})()
+
+    class Backend:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    monkeypatch.setattr(accelerator, "_torch", lambda feature: FakeTorch)
+    monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
+    usage = TorchAllocatorPeakProbe("cuda:3").read()
+
+    assert usage.identity.kind is AcceleratorKind.ROCM
+    assert usage.identity.index == 3
+    assert isinstance(usage.allocated_mb, AllocatorUnavailable)
+    assert isinstance(usage.reserved_mb, AllocatorUnavailable)
 
 
 def test_device_module_resolves_backend_per_device_type() -> None:

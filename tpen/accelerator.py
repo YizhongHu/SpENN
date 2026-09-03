@@ -19,11 +19,118 @@ makes devices comparable so callers can detect a mismatch and fail loudly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from tpen.dependencies import require_torch
 
 _MIN_TORCH_HINT = "torch>=2.5 provides torch.get_device_module"
+_BYTES_PER_MIB = 1024 * 1024
+
+
+class AcceleratorKind(Enum):
+    """Accelerator identity kinds understood by resource profiling."""
+
+    CPU = "cpu"
+    CUDA = "cuda"
+    ROCM = "rocm"
+    OTHER = "other"
+
+
+@dataclass(frozen=True)
+class AcceleratorIdentity:
+    """The configured backend and physical device identity, when available."""
+
+    kind: AcceleratorKind
+    index: int | None
+    uuid: str | None
+
+
+@dataclass(frozen=True)
+class AllocatorUnavailable:
+    """Typed evidence that an allocator counter could not be read."""
+
+    reason: str
+
+
+AllocatorReading = float | AllocatorUnavailable
+
+
+@dataclass(frozen=True)
+class AllocatorUsage:
+    """Peak allocator readings for one configured device."""
+
+    identity: AcceleratorIdentity
+    allocated_mb: AllocatorReading
+    reserved_mb: AllocatorReading
+    device_count: int | AllocatorUnavailable | None = None
+
+
+def _accelerator_kind(torch: Any, device_type: str) -> AcceleratorKind:
+    """Classify a torch device without importing a vendor module."""
+
+    if device_type == "cpu":
+        return AcceleratorKind.CPU
+    if device_type == "cuda":
+        try:
+            hip = torch.version.hip
+        except AttributeError:
+            hip = None
+        return AcceleratorKind.ROCM if hip is not None else AcceleratorKind.CUDA
+    return AcceleratorKind.OTHER
+
+
+class TorchAllocatorPeakProbe:
+    """Read peak allocator counters for exactly one configured torch device."""
+
+    def __init__(self, device: Any) -> None:
+        torch = _torch("allocator peak metrics")
+        self.device = torch.device(device)
+        self.module = device_module(self.device, feature="allocator peak metrics")
+        self.kind = _accelerator_kind(torch, self.device.type)
+
+    def _identity(self) -> AcceleratorIdentity:
+        index = self.device.index
+        uuid = None
+        available = self.kind is not AcceleratorKind.CPU and self.module.is_available()
+        if available and index is None:
+            index = self.module.current_device()
+        if available and index is not None:
+            try:
+                uuid = self.module.get_device_properties(index).uuid
+            except AttributeError:
+                uuid = None
+        return AcceleratorIdentity(kind=self.kind, index=index, uuid=uuid)
+
+    def reset(self) -> AcceleratorIdentity | AllocatorUnavailable:
+        """Reset this device's peaks, returning typed unavailable evidence."""
+
+        identity = self._identity()
+        if self.kind is AcceleratorKind.CPU or not self.module.is_available():
+            return identity
+        try:
+            self.module.reset_peak_memory_stats(self.device)
+        except (RuntimeError, AttributeError) as exc:
+            return AllocatorUnavailable(f"{type(exc).__name__}: {exc}")
+        return identity
+
+    def read(self) -> AllocatorUsage:
+        """Read peak allocated and reserved memory in MiB."""
+
+        identity = self._identity()
+        unavailable = None
+        if self.kind is AcceleratorKind.CPU or not self.module.is_available():
+            unavailable = AllocatorUnavailable("configured accelerator is unavailable")
+        if unavailable is not None:
+            return AllocatorUsage(identity, unavailable, unavailable, unavailable)
+        try:
+            allocated = float(self.module.max_memory_allocated(self.device)) / _BYTES_PER_MIB
+            reserved = float(self.module.max_memory_reserved(self.device)) / _BYTES_PER_MIB
+            device_count = int(self.module.device_count())
+        except (RuntimeError, AttributeError) as exc:
+            unavailable = AllocatorUnavailable(f"{type(exc).__name__}: {exc}")
+            return AllocatorUsage(identity, unavailable, unavailable, unavailable)
+        return AllocatorUsage(identity, allocated, reserved, device_count)
 
 
 def _torch(feature: str) -> Any:
@@ -234,6 +341,10 @@ def seed_all(seed: int, *, feature: str = "seeded run") -> None:
 
 
 __all__ = [
+    "AcceleratorIdentity",
+    "AcceleratorKind",
+    "AllocatorUnavailable",
+    "AllocatorUsage",
     "DeviceEventTimer",
     "canonical_device",
     "current_accelerator_type",
@@ -241,4 +352,5 @@ __all__ = [
     "device_module",
     "seed_all",
     "synchronize",
+    "TorchAllocatorPeakProbe",
 ]
