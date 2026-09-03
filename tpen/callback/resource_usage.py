@@ -27,6 +27,7 @@ from tpen.distributed import ProfileRecord, ProfileScope
 from .base import Callback
 from .cadence import SubscriptionGroup
 
+
 def _default_peak_rss_mb() -> float:
     """Return process peak RSS in MiB for compatibility callers."""
 
@@ -141,15 +142,15 @@ class ResourceUsage(Callback):
                 process_metrics["process_peak_rss_unavailable"] = True
         if self.peak_rss_mb_reader is not None:
             try:
-                metrics["peak_memory_mb"] = float(self.peak_rss_mb_reader())
+                _set_peak_memory_mb(metrics, float(self.peak_rss_mb_reader()))
             except OSError:
                 pass
         elif result is not None:
             if not isinstance(result.peak_rss_mb, ResourceUnavailable):
-                metrics["peak_memory_mb"] = float(result.peak_rss_mb)
+                _set_peak_memory_mb(metrics, float(result.peak_rss_mb))
         else:
             try:
-                metrics["peak_memory_mb"] = float(_default_peak_rss_mb())
+                _set_peak_memory_mb(metrics, float(_default_peak_rss_mb()))
             except OSError:
                 pass
         if self.allocator_probe is not None:
@@ -203,9 +204,21 @@ def _is_unavailable_scalar(value: object) -> bool:
     boundary; degrading it here keeps the other, finite readings intact.
     """
 
-    if value is None or isinstance(value, AllocatorUnavailable):
+    if value is None or isinstance(value, (AllocatorUnavailable, ResourceUnavailable)):
         return True
     return isinstance(value, float) and not math.isfinite(value)
+
+
+def _set_peak_memory_mb(metrics: dict[str, Any], value: float) -> None:
+    """Set the peak-memory terminal metric unless the reading is non-finite.
+
+    Mirrors the OSError arms this is always called alongside: a bad reading
+    is dropped silently rather than reaching the strict JSON boundary and
+    aborting the rest of the terminal record.
+    """
+
+    if not _is_unavailable_scalar(value):
+        metrics["peak_memory_mb"] = value
 
 
 def _allocator_metrics(usage: AllocatorUsage) -> dict[str, Any]:
@@ -248,7 +261,7 @@ def _process_metrics(result: ProcessResourceResult) -> dict[str, Any]:
     )
     metrics: dict[str, Any] = {}
     for name, value in names:
-        if isinstance(value, ResourceUnavailable):
+        if _is_unavailable_scalar(value):
             metrics[f"{name}_unavailable"] = True
         else:
             metrics[name] = float(value)
