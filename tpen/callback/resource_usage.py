@@ -6,11 +6,13 @@ from typing import Any, Callable
 
 from tpen.artifacts import RunContext
 from tpen.accelerator import (
+    AcceleratorKind,
+    AllocatorPeakProbe,
     AllocatorUnavailable,
     AllocatorUsage,
     TorchAllocatorPeakProbe,
 )
-from tpen.dependencies import require_torch  # compatibility patch seam for existing callers
+from tpen.dependencies import OptionalDependencyError
 from tpen.events import Event as TypedEvent
 from tpen.events import Occurrence, Subscription
 from tpen.run_events import RunCompleted, RunFailed, RunStarted
@@ -68,7 +70,7 @@ class ResourceUsage(Callback):
         *,
         peak_rss_mb_reader: Callable[[], float] | None = None,
         process_probe: ProcessRUsageProbe | None = None,
-        allocator_probe: Any | None = None,
+        allocator_probe: AllocatorPeakProbe | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -93,19 +95,18 @@ class ResourceUsage(Callback):
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
     ) -> None:
-        """Reset the CUDA peaks at the start and report them once at either end."""
+        """Reset allocator peaks at the start and report them once at either end."""
 
         event = occurrence.event
         if isinstance(event, RunStarted):
             self._process_baseline = self.process_probe.read()
             self._reported = False
             if self.allocator_probe is None:
+                configured_device = context.metadata.device
                 try:
-                    configured_device = context.metadata.device
-                except AttributeError:
-                    configured_device = None
-                if configured_device is not None:
                     self.allocator_probe = TorchAllocatorPeakProbe(configured_device)
+                except OptionalDependencyError:
+                    self.allocator_probe = None
             if self.allocator_probe is not None:
                 reset_result = self.allocator_probe.reset()
                 self._allocator_reset_failure = (
@@ -154,7 +155,8 @@ class ResourceUsage(Callback):
                     reserved_mb=self._allocator_reset_failure,
                     device_count=allocator.device_count,
                 )
-            metrics.update(_allocator_metrics(allocator))
+            if allocator.identity.kind is not AcceleratorKind.CPU:
+                metrics.update(_allocator_metrics(allocator))
         if metrics:
             context.log(metrics, step=0, namespace="runtime")
         if process_metrics:
@@ -169,17 +171,22 @@ def _allocator_metrics(usage: AllocatorUsage) -> dict[str, Any]:
         metrics["accelerator_max_memory_allocated_unavailable"] = True
     else:
         metrics["accelerator_max_memory_allocated_mb"] = usage.allocated_mb
-        metrics["cuda_max_memory_allocated_mb"] = usage.allocated_mb
+        if usage.identity.kind in (AcceleratorKind.CUDA, AcceleratorKind.ROCM):
+            # ROCm exposes the torch.cuda-compatible allocator API, so these
+            # legacy aliases remain valid for ROCm while OTHER backends do not.
+            metrics["cuda_max_memory_allocated_mb"] = usage.allocated_mb
     if isinstance(usage.reserved_mb, AllocatorUnavailable):
         metrics["accelerator_max_memory_reserved_unavailable"] = True
     else:
         metrics["accelerator_max_memory_reserved_mb"] = usage.reserved_mb
-        metrics["cuda_max_memory_reserved_mb"] = usage.reserved_mb
+        if usage.identity.kind in (AcceleratorKind.CUDA, AcceleratorKind.ROCM):
+            metrics["cuda_max_memory_reserved_mb"] = usage.reserved_mb
     if usage.device_count is None or isinstance(usage.device_count, AllocatorUnavailable):
         metrics["accelerator_device_count_unavailable"] = True
     else:
         metrics["accelerator_device_count"] = usage.device_count
-        metrics["cuda_device_count"] = usage.device_count
+        if usage.identity.kind in (AcceleratorKind.CUDA, AcceleratorKind.ROCM):
+            metrics["cuda_device_count"] = usage.device_count
     return metrics
 
 

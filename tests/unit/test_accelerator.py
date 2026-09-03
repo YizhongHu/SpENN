@@ -65,6 +65,11 @@ def test_allocator_probe_uses_the_configured_device_and_owns_one_reset(
             calls.append(("count", None))
             return 4
 
+    class FakeTorch:
+        device = staticmethod(torch.device)
+        version = type("Version", (), {"hip": None})()
+
+    monkeypatch.setattr(accelerator, "_torch", lambda feature: FakeTorch)
     monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
     probe = TorchAllocatorPeakProbe(torch.device("cuda:1"))
 

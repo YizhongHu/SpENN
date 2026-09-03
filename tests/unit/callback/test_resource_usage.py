@@ -34,22 +34,6 @@ def _deliver(callback: ResourceUsage, context: RecordingContext, event: object) 
     callback.handle_occurrence(Occurrence(event=event, count=1), context)
 
 
-def _fake_torch(*, available: bool, calls: list[str] | None = None):
-    calls = [] if calls is None else calls
-    cuda = type(
-        "FakeCuda",
-        (),
-        {
-            "is_available": staticmethod(lambda: available),
-            "reset_peak_memory_stats": staticmethod(lambda: calls.append("reset")),
-            "max_memory_allocated": staticmethod(lambda: 3 * 1024 * 1024),
-            "max_memory_reserved": staticmethod(lambda: 8 * 1024 * 1024),
-            "device_count": staticmethod(lambda: 2),
-        },
-    )()
-    return type("FakeTorch", (), {"cuda": cuda})()
-
-
 class _FakeAllocatorProbe:
     """Configured-device probe stand-in for callback projection tests."""
 
@@ -57,17 +41,15 @@ class _FakeAllocatorProbe:
         self.usage = usage
         self.reset_calls = 0
 
-    def reset(self) -> None:
+    def reset(self) -> AcceleratorIdentity:
         self.reset_calls += 1
+        return self.usage.identity
 
     def read(self) -> AllocatorUsage:
         return self.usage
 
 
 def test_resource_usage_logs_peak_rss_at_run_completion(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     context = RecordingContext()
     callback = ResourceUsage(peak_rss_mb_reader=lambda: 512.0)
 
@@ -80,10 +62,6 @@ def test_resource_usage_logs_peak_rss_at_run_completion(monkeypatch: pytest.Monk
 
 
 def test_resource_usage_resets_and_logs_cuda_peaks(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=True, calls=calls)
-    )
     context = RecordingContext()
     allocator = _FakeAllocatorProbe(
         AllocatorUsage(
@@ -98,7 +76,6 @@ def test_resource_usage_resets_and_logs_cuda_peaks(monkeypatch: pytest.MonkeyPat
     _deliver(callback, context, RunStarted())
     _deliver(callback, context, RunCompleted())
 
-    assert calls == []
     assert allocator.reset_calls == 1
     assert context.latest("runtime") == {
         "peak_memory_mb": 512.0,
@@ -111,6 +88,57 @@ def test_resource_usage_resets_and_logs_cuda_peaks(monkeypatch: pytest.MonkeyPat
     }
 
 
+def test_resource_usage_builds_probe_from_configured_context_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = RecordingContext()
+    context.metadata.device = "cuda:3"
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=AcceleratorIdentity(AcceleratorKind.CUDA, 3, "GPU-3"),
+            allocated_mb=2.0,
+            reserved_mb=4.0,
+            device_count=4,
+        )
+    )
+    devices: list[str] = []
+
+    def build_probe(device: str) -> _FakeAllocatorProbe:
+        devices.append(device)
+        return allocator
+
+    monkeypatch.setattr(resource_usage_module, "TorchAllocatorPeakProbe", build_probe)
+    callback = ResourceUsage(peak_rss_mb_reader=lambda: 1.0)
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert devices == ["cuda:3"]
+    assert allocator.reset_calls == 1
+
+
+def test_resource_usage_does_not_emit_allocator_metrics_for_xpu() -> None:
+    context = RecordingContext()
+    allocator = _FakeAllocatorProbe(
+        AllocatorUsage(
+            identity=AcceleratorIdentity(AcceleratorKind.OTHER, 2, "XPU-2"),
+            allocated_mb=3.0,
+            reserved_mb=5.0,
+            device_count=4,
+        )
+    )
+    callback = ResourceUsage(allocator_probe=allocator)
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    runtime = context.latest("runtime")
+    assert runtime["accelerator_max_memory_allocated_mb"] == 3.0
+    assert runtime["accelerator_max_memory_reserved_mb"] == 5.0
+    assert runtime["accelerator_device_count"] == 4
+    assert not any(key.startswith("cuda_") for key in runtime)
+
+
 def test_resource_usage_logs_at_the_failure_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     """One typed `RunFailed` replaces the ``run_failed``/``exception`` pair.
 
@@ -119,9 +147,6 @@ def test_resource_usage_logs_at_the_failure_boundary(monkeypatch: pytest.MonkeyP
     difference.
     """
 
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     context = RecordingContext()
     callback = ResourceUsage(peak_rss_mb_reader=lambda: 100.5)
 
@@ -136,9 +161,6 @@ def test_resource_usage_omits_metrics_from_failing_reader(monkeypatch: pytest.Mo
     def broken_reader() -> float:
         raise OSError("getrusage unavailable")
 
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     context = RecordingContext()
     callback = ResourceUsage(peak_rss_mb_reader=broken_reader)
 
@@ -269,9 +291,6 @@ def _fixed_result(*, unavailable: bool = False) -> ProcessResourceResult:
 
 
 def test_resource_usage_logs_process_metrics_at_completion(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     context = RecordingContext()
     callback = ResourceUsage(process_probe=_FixedProbe(_fixed_result()), peak_rss_mb_reader=lambda: 4.0)
 
@@ -301,9 +320,6 @@ def test_resource_usage_prefers_process_peak_over_default_reader(
         involuntary_context_switches=1,
         peak_rss_mb=7.0,
     )
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: 99.0)
     context = RecordingContext()
     callback = ResourceUsage(process_probe=_FixedProbe(result))
@@ -328,9 +344,6 @@ def test_resource_usage_does_not_fallback_when_process_peak_is_unavailable(
         involuntary_context_switches=1,
         peak_rss_mb=ResourceUnavailable("probe failed"),
     )
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: 99.0)
     context = RecordingContext()
     callback = ResourceUsage(process_probe=_FixedProbe(result))
@@ -343,9 +356,6 @@ def test_resource_usage_does_not_fallback_when_process_peak_is_unavailable(
 
 
 def test_resource_usage_logs_process_receipt_at_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     context = RecordingContext()
     callback = ResourceUsage(process_probe=_FixedProbe(_fixed_result()), peak_rss_mb_reader=lambda: 4.0)
 
@@ -366,9 +376,6 @@ def test_resource_usage_logs_process_receipt_at_failure(monkeypatch: pytest.Monk
 def test_resource_usage_projects_unavailable_process_readings_as_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
-    )
     context = RecordingContext()
     callback = ResourceUsage(process_probe=_FixedProbe(_fixed_result(unavailable=True)))
 

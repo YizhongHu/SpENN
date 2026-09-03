@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from tpen.dependencies import require_torch
 
@@ -39,7 +39,11 @@ class AcceleratorKind(Enum):
 
 @dataclass(frozen=True)
 class AcceleratorIdentity:
-    """The configured backend and physical device identity, when available."""
+    """The configured backend and physical device identity, when available.
+
+    R3's resource artifacts consume this provenance record when persisting
+    run-level hardware identity.
+    """
 
     kind: AcceleratorKind
     index: int | None
@@ -64,6 +68,17 @@ class AllocatorUsage:
     allocated_mb: AllocatorReading
     reserved_mb: AllocatorReading
     device_count: int | AllocatorUnavailable | None = None
+
+
+@runtime_checkable
+class AllocatorPeakProbe(Protocol):
+    """Callback seam for a configured-device allocator probe."""
+
+    def reset(self) -> AcceleratorIdentity | AllocatorUnavailable:
+        """Reset peaks for the configured device."""
+
+    def read(self) -> AllocatorUsage:
+        """Read peaks for the configured device."""
 
 
 def _accelerator_kind(torch: Any, device_type: str) -> AcceleratorKind:
@@ -92,21 +107,35 @@ class TorchAllocatorPeakProbe:
     def _identity(self) -> AcceleratorIdentity:
         index = self.device.index
         uuid = None
-        available = self.kind is not AcceleratorKind.CPU and self.module.is_available()
+        try:
+            available = self.kind is not AcceleratorKind.CPU and self.module.is_available()
+        except (AttributeError, RuntimeError):
+            return AcceleratorIdentity(kind=self.kind, index=index, uuid=None)
         if available and index is None:
-            index = self.module.current_device()
+            try:
+                index = self.module.current_device()
+            except (AttributeError, RuntimeError):
+                return AcceleratorIdentity(kind=self.kind, index=None, uuid=None)
         if available and index is not None:
             try:
                 uuid = self.module.get_device_properties(index).uuid
-            except AttributeError:
+            except (AttributeError, RuntimeError):
                 uuid = None
         return AcceleratorIdentity(kind=self.kind, index=index, uuid=uuid)
+
+    def _available(self) -> bool:
+        """Return backend availability without allowing telemetry to fail a run."""
+
+        try:
+            return self.kind is not AcceleratorKind.CPU and self.module.is_available()
+        except (AttributeError, RuntimeError):
+            return False
 
     def reset(self) -> AcceleratorIdentity | AllocatorUnavailable:
         """Reset this device's peaks, returning typed unavailable evidence."""
 
         identity = self._identity()
-        if self.kind is AcceleratorKind.CPU or not self.module.is_available():
+        if self.kind is AcceleratorKind.CPU or not self._available():
             return identity
         try:
             self.module.reset_peak_memory_stats(self.device)
@@ -119,7 +148,7 @@ class TorchAllocatorPeakProbe:
 
         identity = self._identity()
         unavailable = None
-        if self.kind is AcceleratorKind.CPU or not self.module.is_available():
+        if self.kind is AcceleratorKind.CPU or not self._available():
             unavailable = AllocatorUnavailable("configured accelerator is unavailable")
         if unavailable is not None:
             return AllocatorUsage(identity, unavailable, unavailable, unavailable)
@@ -343,6 +372,7 @@ def seed_all(seed: int, *, feature: str = "seeded run") -> None:
 __all__ = [
     "AcceleratorIdentity",
     "AcceleratorKind",
+    "AllocatorPeakProbe",
     "AllocatorUnavailable",
     "AllocatorUsage",
     "DeviceEventTimer",
