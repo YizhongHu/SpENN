@@ -83,22 +83,30 @@ class ResourceUsage(Callback):
         self.process_probe = ProcessRUsageProbe() if process_probe is None else process_probe
         self.peak_rss_mb_reader = peak_rss_mb_reader
         self._process_baseline = None
+        self._reported = False
 
     def handle_occurrence_impl(
         self, occurrence: Occurrence[TypedEvent], context: RunContext
     ) -> None:
-        """Reset the CUDA peaks at the start and report them at either end."""
+        """Reset the CUDA peaks at the start and report them once at either end."""
 
         event = occurrence.event
         if isinstance(event, RunStarted):
             self._process_baseline = self.process_probe.read()
+            self._reported = False
             cuda = _available_cuda()
             if cuda is not None:
                 cuda.reset_peak_memory_stats()
             return
         # Both terminal boundaries report the same peaks; a failed run has no
         # different memory story to tell, which is why they share one path.
-        if isinstance(event, (RunCompleted, RunFailed)):
+        # A run reaches at most one of these boundaries -- except when a later
+        # callback raises while handling `RunCompleted`, which the harness
+        # then reports as a `RunFailed` on the same context. `_reported` makes
+        # that one logical run answer once regardless of how many terminal
+        # events it produces.
+        if isinstance(event, (RunCompleted, RunFailed)) and not self._reported:
+            self._reported = True
             self._log_peaks(context)
 
     def _log_peaks(self, context: RunContext) -> None:
