@@ -15,7 +15,7 @@ from hydra.utils import instantiate
 from hydra.errors import InstantiationException
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from tpen.accelerator import seed_all as accelerator_seed_all
+from tpen.accelerator import TorchAllocatorPeakProbe, seed_all as accelerator_seed_all
 from tpen.artifacts import (
     ArtifactManager,
     RunContext,
@@ -26,6 +26,7 @@ from tpen.artifacts import (
     write_error_artifact,
     write_run_start_artifact,
 )
+from tpen.distributed import ExecutionTopology, RankLocalJSONLWriter
 from tpen.callback import configure_terminal_logging
 from tpen.config import register_resolvers
 from tpen.dependencies import OptionalDependencyError, require_torch
@@ -107,6 +108,7 @@ def prepare_run_context(
     config_path: str | None = None,
     command: str | None = None,
     bootstrap: _BootstrapState | None = None,
+    topology: ExecutionTopology | None = None,
 ) -> RunContext:
     """Resolve run metadata, artifact paths, callbacks, and loggers.
 
@@ -150,6 +152,16 @@ def prepare_run_context(
     _validate_callbacks(callbacks)
     _validate_loggers(loggers)
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
+    if topology is None:
+        try:
+            device_identity = TorchAllocatorPeakProbe(metadata.device).identity()
+        except RuntimeError:
+            # Identity is optional telemetry: torch-free, malformed-device, and
+            # ancient-torch environments still need to prepare their context.
+            device_identity = None
+        topology = ExecutionTopology.single_process(
+            device=metadata.device, device_identity=device_identity
+        )
     context = RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
@@ -158,6 +170,12 @@ def prepare_run_context(
         clock=run_clock,
         callbacks=callbacks,
         loggers=loggers,
+        topology=topology,
+        profile_writer=(
+            None
+            if topology.global_rank is None
+            else RankLocalJSONLWriter(artifact_manager.run_dir, topology)
+        ),
     )
     write_run_start_artifact(context)
     return context
