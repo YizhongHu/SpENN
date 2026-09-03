@@ -193,7 +193,7 @@ def test_run_timing_reports_failed_exactly_once_per_failed_run(tmp_path: Path) -
     }
 
 
-def test_resource_usage_resets_at_the_start_and_reports_at_either_end(tmp_path: Path) -> None:
+def test_resource_usage_resets_at_the_start_and_reports_once_at_the_first_end(tmp_path: Path) -> None:
     logger = RecordingLogger()
     callback = ResourceUsage(peak_rss_mb_reader=lambda: 512.0)
     context = make_run_context(tmp_path, callbacks=[callback], loggers=[logger])
