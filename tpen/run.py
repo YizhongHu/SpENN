@@ -171,7 +171,11 @@ def prepare_run_context(
         callbacks=callbacks,
         loggers=loggers,
         topology=topology,
-        profile_writer=RankLocalJSONLWriter(artifact_manager.run_dir, topology),
+        profile_writer=(
+            None
+            if topology.global_rank is None
+            else RankLocalJSONLWriter(artifact_manager.run_dir, topology)
+        ),
     )
     write_run_start_artifact(context)
     return context

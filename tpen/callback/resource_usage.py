@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable
 
 from tpen.artifacts import RunContext
@@ -163,34 +164,55 @@ class ResourceUsage(Callback):
             if allocator.identity.kind is not AcceleratorKind.CPU:
                 metrics.update(_allocator_metrics(allocator))
             if context.profile_writer is not None and context.topology is not None:
+                try:
+                    context.write_profile(
+                        ProfileRecord(
+                            scope=ProfileScope.DEVICE,
+                            monotonic_time=context.monotonic_clock(),
+                            topology=context.topology,
+                            device=allocator,
+                        )
+                    )
+                except OSError:
+                    # Persistence is best-effort: a failed durable write must
+                    # not suppress the terminal logs below or fail an
+                    # otherwise-successful run.
+                    pass
+        if result is not None and context.profile_writer is not None and context.topology is not None:
+            try:
                 context.write_profile(
                     ProfileRecord(
-                        scope=ProfileScope.DEVICE,
+                        scope=ProfileScope.PROCESS,
                         monotonic_time=context.monotonic_clock(),
                         topology=context.topology,
-                        device=allocator,
+                        process=result,
                     )
                 )
-        if result is not None and context.profile_writer is not None and context.topology is not None:
-            context.write_profile(
-                ProfileRecord(
-                    scope=ProfileScope.PROCESS,
-                    monotonic_time=context.monotonic_clock(),
-                    topology=context.topology,
-                    process=result,
-                )
-            )
+            except OSError:
+                pass
         if metrics:
             context.log(metrics, step=0, namespace="runtime")
         if process_metrics:
             context.log(process_metrics, step=0, namespace="process")
 
 
+def _is_unavailable_scalar(value: object) -> bool:
+    """Return True for typed-unavailable evidence or a non-finite reading.
+
+    A non-finite float (e.g. a driver glitch) cannot cross the strict JSON
+    boundary; degrading it here keeps the other, finite readings intact.
+    """
+
+    if value is None or isinstance(value, AllocatorUnavailable):
+        return True
+    return isinstance(value, float) and not math.isfinite(value)
+
+
 def _allocator_metrics(usage: AllocatorUsage) -> dict[str, Any]:
     """Project one allocator record to backend-neutral and legacy keys."""
 
     metrics: dict[str, Any] = {}
-    if isinstance(usage.allocated_mb, AllocatorUnavailable):
+    if _is_unavailable_scalar(usage.allocated_mb):
         metrics["accelerator_max_memory_allocated_unavailable"] = True
     else:
         metrics["accelerator_max_memory_allocated_mb"] = usage.allocated_mb
@@ -198,13 +220,13 @@ def _allocator_metrics(usage: AllocatorUsage) -> dict[str, Any]:
             # ROCm exposes the torch.cuda-compatible allocator API, so these
             # legacy aliases remain valid for ROCm while OTHER backends do not.
             metrics["cuda_max_memory_allocated_mb"] = usage.allocated_mb
-    if isinstance(usage.reserved_mb, AllocatorUnavailable):
+    if _is_unavailable_scalar(usage.reserved_mb):
         metrics["accelerator_max_memory_reserved_unavailable"] = True
     else:
         metrics["accelerator_max_memory_reserved_mb"] = usage.reserved_mb
         if usage.identity.kind in (AcceleratorKind.CUDA, AcceleratorKind.ROCM):
             metrics["cuda_max_memory_reserved_mb"] = usage.reserved_mb
-    if usage.device_count is None or isinstance(usage.device_count, AllocatorUnavailable):
+    if _is_unavailable_scalar(usage.device_count):
         metrics["accelerator_device_count_unavailable"] = True
     else:
         metrics["accelerator_device_count"] = usage.device_count
