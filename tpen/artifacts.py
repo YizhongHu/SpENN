@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from omegaconf import DictConfig, OmegaConf
 
 from tpen.events import DomainState, Ended, Event as TypedEvent, Occurrence, Operation, Started
+from tpen.distributed import ExecutionTopology, ProfileRecord, RankLocalJSONLWriter
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
@@ -167,6 +168,8 @@ class RunContext:
     clock: RunClock
     callbacks: list[Any] = field(default_factory=list)
     loggers: list[Any] = field(default_factory=list)
+    topology: ExecutionTopology | None = None
+    profile_writer: RankLocalJSONLWriter | None = None
     _occurrence_counts: dict[type[TypedEvent] | type[Operation], int] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -179,6 +182,13 @@ class RunContext:
         """Return the active run directory."""
 
         return self.artifact_manager.run_dir
+
+    def write_profile(self, record: ProfileRecord) -> None:
+        """Write a typed rank-local resource profile when configured."""
+
+        if self.profile_writer is None:
+            raise RuntimeError("rank-local profile writer is not configured")
+        self.profile_writer.write(record)
 
     def path(self, *parts: str) -> Path:
         """Return a path under the active run directory."""

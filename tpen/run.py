@@ -26,6 +26,7 @@ from tpen.artifacts import (
     write_error_artifact,
     write_run_start_artifact,
 )
+from tpen.distributed import ExecutionTopology, RankLocalJSONLWriter
 from tpen.callback import configure_terminal_logging
 from tpen.config import register_resolvers
 from tpen.dependencies import OptionalDependencyError, require_torch
@@ -107,6 +108,7 @@ def prepare_run_context(
     config_path: str | None = None,
     command: str | None = None,
     bootstrap: _BootstrapState | None = None,
+    topology: ExecutionTopology | None = None,
 ) -> RunContext:
     """Resolve run metadata, artifact paths, callbacks, and loggers.
 
@@ -150,6 +152,7 @@ def prepare_run_context(
     _validate_callbacks(callbacks)
     _validate_loggers(loggers)
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
+    topology = topology or ExecutionTopology.single_process(device=metadata.device)
     context = RunContext(
         cfg=resolved_cfg,
         source_cfg=source_cfg,
@@ -158,6 +161,8 @@ def prepare_run_context(
         clock=run_clock,
         callbacks=callbacks,
         loggers=loggers,
+        topology=topology,
+        profile_writer=RankLocalJSONLWriter(artifact_manager.run_dir, topology),
     )
     write_run_start_artifact(context)
     return context

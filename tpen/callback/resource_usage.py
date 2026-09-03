@@ -21,6 +21,7 @@ from tpen.process_resources import (
     ProcessResourceResult,
     ResourceUnavailable,
 )
+from tpen.distributed import ProfileRecord, ProfileScope
 
 from .base import Callback
 from .cadence import SubscriptionGroup
@@ -161,6 +162,24 @@ class ResourceUsage(Callback):
                 )
             if allocator.identity.kind is not AcceleratorKind.CPU:
                 metrics.update(_allocator_metrics(allocator))
+            if context.profile_writer is not None and context.topology is not None:
+                context.write_profile(
+                    ProfileRecord(
+                        scope=ProfileScope.DEVICE,
+                        monotonic_time=context.monotonic_clock(),
+                        topology=context.topology,
+                        device=allocator,
+                    )
+                )
+        if result is not None and context.profile_writer is not None and context.topology is not None:
+            context.write_profile(
+                ProfileRecord(
+                    scope=ProfileScope.PROCESS,
+                    monotonic_time=context.monotonic_clock(),
+                    topology=context.topology,
+                    process=result,
+                )
+            )
         if metrics:
             context.log(metrics, step=0, namespace="runtime")
         if process_metrics:
