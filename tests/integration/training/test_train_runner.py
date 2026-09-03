@@ -18,6 +18,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from tpen.checkpoint import resolve_checkpoint_dir
+from tpen.checkpoint.hashing import file_sha256
 from tpen.run import run_from_config
 
 FIXTURE = Path(__file__).resolve().parents[1] / "artifacts" / "training" / "vmc_smoke.yaml"
@@ -201,7 +202,7 @@ def _equivalence_config(
 ) -> DictConfig:
     """Return the smoke config extended to a resumable ``max_steps=6`` run.
 
-    The fixture's periodic cadence (``every_n_steps: 2``) counts applied
+    The fixture's periodic cadence (``schedule.every_n: 2``) counts applied
     optimizer updates, so at ``max_steps=6`` it writes steps 2, 4 and 6 and
     never produces the mid-run checkpoint this test resumes from. Widening it to
     `RESUME_STEP` writes ``step_000003`` and ``step_000006`` instead. Nothing
@@ -214,9 +215,10 @@ def _equivalence_config(
         Restore config attached to the runner. ``None`` leaves the runner
         without one, which is ``mode: none``.
     save_rng : bool or None, optional
-        Override for both checkpoint callbacks. ``None`` keeps the default
-        ``True``. Checkpoint callbacks are not covered by any manifest hash, so
-        toggling this does not itself perturb restore admissibility.
+        Override for the checkpoint stream. ``None`` keeps the explicit
+        ``TrainResume`` payload and its default ``True``. A supplied value
+        selects the flag-owned component set so the negative arm can create a
+        deliberately partial checkpoint without conflicting with that profile.
     """
 
     cfg = OmegaConf.load(FIXTURE)
@@ -224,11 +226,12 @@ def _equivalence_config(
     for callback in cfg.callbacks:
         if callback.get("_target_") != "tpen.callback.Checkpoint":
             continue
-        # The periodic writer is the one that produces the resume source; the
-        # terminal writer (`periodic: false`) keeps its own unwindowed cadence.
+        # The composed stream produces the resume source on its periodic path;
+        # its terminal path remains unwindowed by the schedule.
         if callback.get("periodic", True):
-            callback.every_n_steps = RESUME_STEP
+            callback.schedule.every_n = RESUME_STEP
         if save_rng is not None:
+            callback.payload = None
             callback.save_rng = save_rng
     if load is not None:
         cfg.runner.load = load
@@ -421,6 +424,10 @@ def test_resume_diverges_when_the_restored_sampler_stream_is_perturbed(
     generator.manual_seed(20260811)
     sampler_state["generator_state"] = generator.get_state()
     torch.save(sampler_state, perturbed / "sampler.pt")
+    manifest_path = perturbed / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["hashes"]["sampler_sha256"] = file_sha256(perturbed / "sampler.pt")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     resumed_run = _run(
         tmp_path / "diverged",
