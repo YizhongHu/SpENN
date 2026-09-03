@@ -224,8 +224,6 @@ class ChannelPreservingMLPActivation(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Apply the MLP selected by the input rank, preserving input shape."""
 
-        if not isinstance(inputs, torch.Tensor):
-            raise TypeError("inputs must be a torch.Tensor")
         axes = self.layout.axes
         if inputs.ndim <= axes.tuple_axes_start:
             raise ValueError(
