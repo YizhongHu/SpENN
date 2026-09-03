@@ -246,6 +246,59 @@ def test_resource_usage_logs_process_metrics_at_completion(monkeypatch: pytest.M
     assert context.latest("runtime")["peak_memory_mb"] == 4.0
 
 
+def test_resource_usage_prefers_process_peak_over_default_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProcessResourceResult(
+        user_cpu_seconds=1,
+        system_cpu_seconds=1,
+        read_block_operations=1,
+        write_block_operations=1,
+        voluntary_context_switches=1,
+        involuntary_context_switches=1,
+        peak_rss_mb=7.0,
+    )
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: 99.0)
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(result))
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert context.by_namespace("runtime") == [
+        {"metrics": {"peak_memory_mb": 7.0}, "step": 0, "namespace": "runtime"}
+    ]
+
+
+def test_resource_usage_does_not_fallback_when_process_peak_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProcessResourceResult(
+        user_cpu_seconds=1,
+        system_cpu_seconds=1,
+        read_block_operations=1,
+        write_block_operations=1,
+        voluntary_context_switches=1,
+        involuntary_context_switches=1,
+        peak_rss_mb=ResourceUnavailable("probe failed"),
+    )
+    monkeypatch.setattr(
+        resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
+    )
+    monkeypatch.setattr(resource_usage_module, "_default_peak_rss_mb", lambda: 99.0)
+    context = RecordingContext()
+    callback = ResourceUsage(process_probe=_FixedProbe(result))
+
+    _deliver(callback, context, RunStarted())
+    _deliver(callback, context, RunCompleted())
+
+    assert context.by_namespace("runtime") == []
+    assert context.latest("process")["process_peak_rss_unavailable"] is True
+
+
 def test_resource_usage_logs_process_receipt_at_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         resource_usage_module, "require_torch", lambda *, feature: _fake_torch(available=False)
