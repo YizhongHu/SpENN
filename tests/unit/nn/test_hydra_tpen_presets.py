@@ -20,6 +20,7 @@ from tpen.nn import (
     PathAggregation,
     ResolvedInteractionConfig,
     TPENLayer,
+    normalize_interaction_mode,
 )
 
 
@@ -92,6 +93,7 @@ def test_hydra_mode_selects_concrete_producers_and_layout(mode: InteractionMode)
     assert isinstance(aggregation, PathAggregation)
     assert aggregation.layout.fingerprint == layout.fingerprint
     assert mixing.layout.fingerprint == layout.fingerprint
+    assert normalize_interaction_mode(selected.mode) is mode
     expected = {
         InteractionMode.LINEAR: ("linear",),
         InteractionMode.HYBRID: ("linear", "tensor_product"),
@@ -119,6 +121,8 @@ def test_hydra_mode_layer_forward_backward_and_static_state(mode: InteractionMod
     loss.backward()
     assert all(parameter.grad is not None for parameter in layer.parameters())
     assert tuple(layer.state_dict()) == before
+    assert sum(parameter.numel() for parameter in layer.mixing.activation.parameters()) == 44
+    assert sum(parameter.numel() for parameter in layer.path_aggregation.activation.parameters()) == 44
 
 
 @pytest.mark.parametrize("mode", MODES)
