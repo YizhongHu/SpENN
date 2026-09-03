@@ -10,6 +10,7 @@ from tpen.distributed import ExecutionTopology, ProfileRecord, ProfileScope
 from tpen.accelerator import AcceleratorKind
 from tpen.process_resources import ProcessResourceResult
 from tpen.run import prepare_run_context
+import tpen.run as run_module
 
 
 def test_prepare_context_owns_passed_topology_and_writer(tmp_path) -> None:
@@ -78,3 +79,27 @@ def test_prepare_context_populates_identity_for_default_single_process(tmp_path)
     assert context.profile_writer is not None
     assert context.profile_writer.path.name == "resources.jsonl"
     assert context.profile_writer.path.parent.name == "rank-00000"
+
+
+def test_prepare_context_survives_unavailable_identity_probe(
+    monkeypatch, tmp_path
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "experiment": {"name": "torch_free", "sector": "unit"},
+            "run": {"root": str(tmp_path), "run_id": "fixed", "dir": None},
+            "runtime": {"device": "not-a-device", "dtype": "float64"},
+            "callbacks": [],
+            "loggers": [],
+        }
+    )
+
+    def unavailable_probe(device):
+        raise RuntimeError(f"cannot inspect {device}")
+
+    monkeypatch.setattr(run_module, "TorchAllocatorPeakProbe", unavailable_probe)
+    context = prepare_run_context(cfg)
+
+    assert context.topology is not None
+    assert context.topology.device_identity is None
+    assert context.topology.device == "not-a-device"

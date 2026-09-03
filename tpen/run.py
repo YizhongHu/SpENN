@@ -153,7 +153,12 @@ def prepare_run_context(
     _validate_loggers(loggers)
     metadata = build_run_metadata(resolved_cfg, command=command, config_path=config_path, clock=run_clock)
     if topology is None:
-        device_identity = TorchAllocatorPeakProbe(metadata.device).identity()
+        try:
+            device_identity = TorchAllocatorPeakProbe(metadata.device).identity()
+        except RuntimeError:
+            # Identity is optional telemetry: torch-free, malformed-device, and
+            # ancient-torch environments still need to prepare their context.
+            device_identity = None
         topology = ExecutionTopology.single_process(
             device=metadata.device, device_identity=device_identity
         )
