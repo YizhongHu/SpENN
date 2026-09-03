@@ -395,7 +395,7 @@ callbacks:
     output_dir: ${run.dir}/checkpoints
   # Compose the concrete configured-device probe at the config boundary. The
   # callback remains RunContext-owned; Hydra supplies its exact runtime device.
-  - _target_: tpen.callback.resource_usage.ResourceUsage
+  - _target_: tpen.callback.ResourceUsage
     allocator_probe:
       _target_: tpen.accelerator.TorchAllocatorPeakProbe
       device: ${runtime.device}
