@@ -1,4 +1,11 @@
-"""Typed process resource readings and the stdlib ``resource`` probe."""
+"""Typed process resource readings and the stdlib ``resource`` probe.
+
+Linux and macOS expose the seven fields used here through ``getrusage``
+(``getrusage(2)`` on `man7.org <https://man7.org/linux/man-pages/man2/getrusage.2.html>`_
+and the Apple `getrusage(2) <https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getrusage.2.html>`_).
+Their values may legitimately be zero; this probe therefore treats only a
+failed process-level read as unavailable evidence.
+"""
 
 from __future__ import annotations
 
@@ -54,15 +61,6 @@ class ProcessResourceResult:
     peak_rss_mb: ResourceReading
 
 
-def _read(getusage: object, name: str) -> ResourceReading:
-    """Read a named usage field, preserving unavailable evidence."""
-
-    try:
-        return getattr(getusage, name)
-    except (AttributeError, OSError) as exc:
-        return ResourceUnavailable(f"{type(exc).__name__}: {exc}")
-
-
 def _peak_rss_mb(value: ResourceReading) -> ResourceReading:
     """Normalize ``ru_maxrss`` to MiB on both supported Unix conventions."""
 
@@ -103,15 +101,23 @@ class ProcessRUsageProbe:
             usage: object = resource.getrusage(resource.RUSAGE_SELF)
         except OSError as exc:
             unavailable = ResourceUnavailable(f"{type(exc).__name__}: {exc}")
-            return ProcessResourceBaseline(*(unavailable for _ in range(7)))
+            return ProcessResourceBaseline(
+                user_cpu_seconds=unavailable,
+                system_cpu_seconds=unavailable,
+                read_block_operations=unavailable,
+                write_block_operations=unavailable,
+                voluntary_context_switches=unavailable,
+                involuntary_context_switches=unavailable,
+                peak_rss_mb=unavailable,
+            )
         return ProcessResourceBaseline(
-            user_cpu_seconds=_read(usage, "ru_utime"),
-            system_cpu_seconds=_read(usage, "ru_stime"),
-            read_block_operations=_read(usage, "ru_inblock"),
-            write_block_operations=_read(usage, "ru_oublock"),
-            voluntary_context_switches=_read(usage, "ru_nvcsw"),
-            involuntary_context_switches=_read(usage, "ru_nivcsw"),
-            peak_rss_mb=_peak_rss_mb(_read(usage, "ru_maxrss")),
+            user_cpu_seconds=usage.ru_utime,
+            system_cpu_seconds=usage.ru_stime,
+            read_block_operations=usage.ru_inblock,
+            write_block_operations=usage.ru_oublock,
+            voluntary_context_switches=usage.ru_nvcsw,
+            involuntary_context_switches=usage.ru_nivcsw,
+            peak_rss_mb=_peak_rss_mb(usage.ru_maxrss),
         )
 
     def result(self, baseline: ProcessResourceBaseline) -> ProcessResourceResult:

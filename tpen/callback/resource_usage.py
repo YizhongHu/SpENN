@@ -82,7 +82,7 @@ class ResourceUsage(Callback):
         )
         self.process_probe = ProcessRUsageProbe() if process_probe is None else process_probe
         self.peak_rss_mb_reader = (
-            None
+            _default_peak_rss_mb
             if peak_rss_mb_reader is None
             else peak_rss_mb_reader
         )
@@ -112,7 +112,7 @@ class ResourceUsage(Callback):
             result = self.process_probe.result(self._process_baseline)
             process_metrics.update(_process_metrics(result))
             if isinstance(result.peak_rss_mb, ResourceUnavailable):
-                process_metrics["process_peak_rss_unavailable"] = result.peak_rss_mb.reason
+                process_metrics["process_peak_rss_unavailable"] = True
             else:
                 metrics["peak_memory_mb"] = float(result.peak_rss_mb)
         if self.peak_rss_mb_reader is not None:
@@ -155,7 +155,7 @@ def _process_metrics(result: ProcessResourceResult) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
     for name, value in names:
         if isinstance(value, ResourceUnavailable):
-            metrics[f"{name}_unavailable"] = value.reason
+            metrics[f"{name}_unavailable"] = True
         else:
             metrics[name] = float(value)
     return metrics
