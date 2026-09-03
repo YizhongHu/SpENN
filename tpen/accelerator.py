@@ -43,6 +43,17 @@ class AcceleratorIdentity:
 
     R3's resource artifacts consume this provenance record when persisting
     run-level hardware identity.
+
+    Attributes
+    ----------
+    kind : AcceleratorKind
+        Backend classification for the configured device.
+    index : int or None
+        Index of the configured device, when the backend reports one.
+    uuid : str or None
+        Physical device UUID, when the backend reports one. On MIG-partitioned
+        CUDA devices this identifies the physical GPU rather than the MIG
+        instance, so separate MIG slices of one GPU can share this value.
     """
 
     kind: AcceleratorKind
@@ -118,7 +129,8 @@ class TorchAllocatorPeakProbe:
                 return AcceleratorIdentity(kind=self.kind, index=None, uuid=None)
         if available and index is not None:
             try:
-                uuid = self.module.get_device_properties(index).uuid
+                raw_uuid = self.module.get_device_properties(index).uuid
+                uuid = str(raw_uuid) if raw_uuid is not None else None
             except (AttributeError, RuntimeError):
                 uuid = None
         return AcceleratorIdentity(kind=self.kind, index=index, uuid=uuid)

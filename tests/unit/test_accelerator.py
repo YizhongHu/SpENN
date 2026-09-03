@@ -87,6 +87,41 @@ def test_allocator_probe_uses_the_configured_device_and_owns_one_reset(
     assert calls.count(("reserved", torch.device("cuda:1"))) == 1
 
 
+def test_allocator_probe_coerces_torch_uuid_objects_to_strings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tpen.accelerator as accelerator
+
+    class FakeUUID:
+        def __str__(self) -> str:
+            return "97933565-57cb-fec7-c442-188c7b300fd3"
+
+        def __repr__(self) -> str:
+            return "<fake torch uuid object>"
+
+    class Backend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_properties(index: int):
+            assert index == 1
+            return type("Properties", (), {"uuid": FakeUUID()})()
+
+    class FakeTorch:
+        device = staticmethod(torch.device)
+        version = type("Version", (), {"hip": None})()
+
+    monkeypatch.setattr(accelerator, "_torch", lambda feature: FakeTorch)
+    monkeypatch.setattr(accelerator, "device_module", lambda *args, **kwargs: Backend)
+
+    identity = TorchAllocatorPeakProbe("cuda:1")._identity()
+
+    assert identity.uuid == "97933565-57cb-fec7-c442-188c7b300fd3"
+    assert isinstance(identity.uuid, str)
+
+
 def test_allocator_probe_distinguishes_rocm_and_types_unavailable_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
