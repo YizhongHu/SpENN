@@ -344,9 +344,46 @@ def publication_receipt_path(checkpoint_root: str | Path) -> Path:
 def append_publication_receipt(
     path: str | Path, receipt: CheckpointPublicationReceipt
 ) -> None:
-    """Append one publication receipt as a JSONL record."""
+    """Append one publication receipt as a JSONL record.
 
-    append_jsonl(Path(path), receipt.to_dict())
+    Guards against joining onto an unterminated last line before delegating
+    to ``tpen.artifacts.append_jsonl``, which is otherwise untouched -- see
+    :func:`_ensure_trailing_newline` for why this guard exists.
+    """
+
+    receipt_path = Path(path)
+    _ensure_trailing_newline(receipt_path)
+    append_jsonl(receipt_path, receipt.to_dict())
+
+
+def _ensure_trailing_newline(path: Path) -> None:
+    """Close out a possibly-unterminated last line before a new append.
+
+    ``tpen.artifacts.append_jsonl`` writes a row's JSON body and its trailing
+    newline as two separate writes and is out of scope to change in this
+    slice (a pre-existing, inherited exposure shared with
+    ``CheckpointCatalog.publish``; see :func:`iter_valid_publication_receipts`).
+    Without this guard, appending after a row left unterminated by a
+    mid-write ``OSError`` would land on the SAME physical line as that
+    corrupt row rather than its own -- corrupting the NEW row too, not merely
+    leaving the old one dead, which would defeat
+    :func:`backfill_publication_receipt`'s entire purpose. This function only
+    ever appends a single ``"\\n"`` when the file is non-empty and does not
+    already end with one; it never reads, rewrites, or removes existing
+    content, so it cannot itself lose data.
+    """
+
+    if not path.exists():
+        return
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            return
+        handle.seek(-1, 2)
+        last_byte = handle.read(1)
+    if last_byte != b"\n":
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n")
 
 
 def iter_valid_publication_receipts(path: str | Path) -> Iterator[Mapping[str, object]]:

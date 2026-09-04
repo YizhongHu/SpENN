@@ -328,19 +328,64 @@ def test_has_publication_receipt_true_only_for_a_matching_valid_row(tmp_path: Pa
     assert has_publication_receipt(path, "0" * 64) is False
 
 
-def test_iter_valid_publication_receipts_skips_a_malformed_row_without_raising(
-    tmp_path: Path,
+def test_iter_valid_publication_receipts_skips_a_malformed_row_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A truncated/partial line -- the shape an interrupted append leaves -- is
-    skipped, never raised. Deliberately asymmetric with
+    skipped, never raised, but is NOT silently discarded either: a WARNING
+    naming the file and line number is logged. Both halves are required --
+    a reader that silently drops corrupt data is the same defect as a writer
+    that silently swallows a failure. Deliberately asymmetric with
     ``CheckpointCatalog.iter_publications``, which raises on a malformed row.
     """
 
     path = tmp_path / "publication_receipts.jsonl"
     path.write_text('{"schema": "tpen.checkpoint-publication-receipt/v1", "summary": {"content', encoding="utf-8")
 
-    assert list(iter_valid_publication_receipts(path)) == []
+    with caplog.at_level("WARNING", logger="tpen"):
+        result = list(iter_valid_publication_receipts(path))
+
+    assert result == []
     assert has_publication_receipt(path, "anything") is False
+    assert any(
+        record.levelname == "WARNING" and str(path) in record.getMessage() and "1" in record.getMessage()
+        for record in caplog.records
+    ), f"expected a WARNING naming {path} and line 1; got {[r.getMessage() for r in caplog.records]}"
+
+
+def test_append_publication_receipt_does_not_join_onto_an_unterminated_last_line(
+    tmp_path: Path,
+) -> None:
+    """A new append must land on its own line even if the prior line is unterminated.
+
+    ``tpen.artifacts.append_jsonl`` opens the file in ``"a"`` mode and writes
+    exactly the JSON body plus one trailing newline at the current end of
+    file. If the file's last byte is not already a newline (the shape left by
+    a body written but its trailing newline lost to a mid-write failure), a
+    naive append would concatenate onto that line, corrupting the NEW row
+    along with the old one -- which would defeat
+    ``backfill_publication_receipt``'s entire purpose of recovering telemetry.
+    """
+
+    checkpoint_dir, files = _write_checkpoint(tmp_path)
+    ref = _ref_for(checkpoint_dir)
+    path = tmp_path / "publication_receipts.jsonl"
+    path.write_text('{"unterminated": "row", "no_newline": true}', encoding="utf-8")
+    assert not path.read_bytes().endswith(b"\n")
+
+    receipt = build_publication_receipt(
+        ref, checkpoint_dir, files, write_duration_sec=1.0, publish_duration_sec=0.5
+    )
+    append_publication_receipt(path, receipt)
+
+    rows = path.read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 2
+    # The first (originally unterminated) row is untouched and now parses on
+    # its own line -- it was not corrupted by the new append joining onto it.
+    assert json.loads(rows[0]) == {"unterminated": "row", "no_newline": True}
+    # The new row parses independently and is the one just appended.
+    appended = json.loads(rows[1])
+    assert appended["summary"]["content_id"] == ref.content_id
 
 
 def test_backfill_publication_receipt_treats_a_malformed_existing_row_as_absent(
@@ -355,13 +400,15 @@ def test_backfill_publication_receipt_treats_a_malformed_existing_row_as_absent(
     ref = _ref_for(checkpoint_dir)
     path = tmp_path / "publication_receipts.jsonl"
     # Simulate exactly the partial-write failure mode iter_valid_publication_receipts'
-    # docstring describes: a body written, the trailing newline lost.
-    path.write_text(
-        json.dumps({"schema": PUBLICATION_RECEIPT_SCHEMA, "summary": {"content_id": ref.content_id}}),
-        encoding="utf-8",
-    )
-    # No trailing newline: the malformed row and any real append would collide
-    # on one line, which is exactly why it must not be trusted as a receipt.
+    # docstring describes: an OSError mid-write leaves a TRUNCATED, invalid-JSON
+    # line -- not a complete, merely-unterminated one. A complete JSON body
+    # missing only its trailing newline is still valid JSON and must NOT be
+    # treated as malformed (json.loads does not require a trailing newline),
+    # so the cut has to land inside the JSON body itself to be a genuine test
+    # of the malformed-row path rather than an accidental valid row.
+    full_row = json.dumps({"schema": PUBLICATION_RECEIPT_SCHEMA, "summary": {"content_id": ref.content_id}})
+    path.write_text(full_row[: len(full_row) // 2], encoding="utf-8")
+    assert not full_row[: len(full_row) // 2].strip().endswith("}")
 
     appended = backfill_publication_receipt(ref, checkpoint_dir, files, path)
 
