@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -212,7 +213,7 @@ def test_world_size_two_raise_after_optimizer_step_respects_configured_phase(tmp
     # Discriminates AFTER_OPTIMIZER_STEP (this plan's phase) from
     # BEFORE_OPTIMIZER_STEP: the marker is written only if the fake
     # optimizer-style update ran before rank 1's raise fired.
-    assert (tmp_path / "state_1.json.optimizer_done").exists()
+    assert (Path(result.invocation_dir) / "state_1.json.optimizer_done").exists()
 
 
 def test_world_size_two_watchdog_reap_also_kills_worker_spawned_grandchild(tmp_path):
@@ -222,7 +223,7 @@ def test_world_size_two_watchdog_reap_also_kills_worker_spawned_grandchild(tmp_p
         2, plan, _default_bounds(), tmp_path, decoy_grandchild_rank=1
     )
     assert result.all_reaped is True
-    grandchild_pid_path = tmp_path / "grandchild_1.pid"
+    grandchild_pid_path = Path(result.invocation_dir) / "grandchild_1.pid"
     assert grandchild_pid_path.exists()
     grandchild_pid = int(grandchild_pid_path.read_text())
     with pytest.raises(ProcessLookupError):
@@ -247,6 +248,10 @@ def test_world_size_three_self_test_all_phases_succeed(tmp_path):
 
 
 def test_world_size_three_middle_rank_fault_identifies_correct_culprit(tmp_path):
+    # culprit_rank is DERIVED here from rank 1's own self-reported log entry
+    # (see ddp_worker_entrypoint._report_fault_applied), not copied from the
+    # plan below -- see test_fault_plan_target_rank_outside_world_size_
+    # derives_no_culprit for the case that discriminates the two.
     _require_gloo_capability()
     plan = FaultPlan(target_rank=1, kind=FaultKind.RAISE_BEFORE_BACKWARD, phase=FaultPhase.BEFORE_OPTIMIZER_STEP)
     result = run_gloo_subprocess_group(3, plan, _default_bounds(), tmp_path)
@@ -280,8 +285,13 @@ def test_malformed_receipt_degrades_to_none_instead_of_crashing_collection(tmp_p
     # Pre-seed rank 0's receipt path with a truncated write. The fault below
     # fires at BEFORE_STATE_WRITE -- after process-group init, but before the
     # worker's own receipt write -- so this garbage is never overwritten and
-    # is exactly what the harness's collection loop reads back.
-    receipt_path = tmp_path / "receipt_0.json"
+    # is exactly what the harness's collection loop reads back. Requires a
+    # caller-supplied, pre-known invocation_dir: the harness's own default
+    # (a fresh tempfile.mkdtemp per call) is generated only inside the call,
+    # too late to pre-seed anything into it.
+    invocation_dir = tmp_path / "invocation"
+    invocation_dir.mkdir()
+    receipt_path = invocation_dir / "receipt_0.json"
     receipt_path.write_text(_TRUNCATED_RECEIPT_JSON)
 
     plan = FaultPlan(
@@ -289,7 +299,9 @@ def test_malformed_receipt_degrades_to_none_instead_of_crashing_collection(tmp_p
         kind=FaultKind.CRASH_DURING_CHECKPOINT,
         phase=FaultPhase.BEFORE_STATE_WRITE,
     )
-    result = run_gloo_subprocess_group(1, plan, _default_bounds(), tmp_path)
+    result = run_gloo_subprocess_group(
+        1, plan, _default_bounds(), tmp_path, invocation_dir=invocation_dir
+    )
 
     # Premise guards: the crash fired where intended (os._exit(1)) and the
     # pre-seeded truncation survived, so a pass here cannot come from the
@@ -308,6 +320,89 @@ def test_malformed_receipt_degrades_to_none_instead_of_crashing_collection(tmp_p
     # by an exception raised earlier in collection.
     assert result.all_reaped is True
     assert result.publication_observed is False
+
+
+# --- Round-2 review tests (reviewer-designed; durable review
+# df-durable-reviewer-20260904, findings F1-F4 on item 37ab3d40) ----------
+
+
+def test_success_then_fault_in_same_tmp_path_does_not_reuse_success_artifacts(tmp_path):
+    _require_gloo_capability()
+    success = run_gloo_subprocess_group(1, None, _default_bounds(), tmp_path)
+    assert success.publication_observed is True
+    plan = FaultPlan(
+        target_rank=0,
+        kind=FaultKind.CRASH_DURING_CHECKPOINT,
+        phase=FaultPhase.BEFORE_STATE_WRITE,
+    )
+    failed = run_gloo_subprocess_group(1, plan, _default_bounds(), tmp_path)
+    assert failed.publication_observed is False
+    assert failed.all_reaped is True
+    assert failed.exit_codes == (1,)
+    assert failed.receipts == (None,)
+
+
+def test_rank_exception_preserves_attributable_diagnostic_artifact(tmp_path):
+    _require_gloo_capability()
+    plan = FaultPlan(
+        target_rank=0,
+        kind=FaultKind.RAISE_BEFORE_BACKWARD,
+        phase=FaultPhase.BEFORE_OPTIMIZER_STEP,
+    )
+    result = run_gloo_subprocess_group(1, plan, _default_bounds(), tmp_path)
+    assert result.publication_observed is False
+    assert result.all_reaped is True
+    invocation_dir = Path(result.invocation_dir)
+    diagnostics = [
+        path.read_bytes().decode("utf-8", errors="replace")
+        for path in invocation_dir.iterdir()
+        if path.is_file() and path.name != "fault_plan.json"
+    ]
+    assert any(
+        "ddp harness injected fault" in text
+        and "rank 0" in text
+        and "BEFORE_OPTIMIZER_STEP" in text
+        for text in diagnostics
+    )
+
+
+def test_fault_plan_target_rank_outside_world_size_derives_no_culprit(tmp_path):
+    # Discriminates a real derivation from a blind copy of the input plan:
+    # target_rank=5 never matches any rank in a world_size=2 group, so no
+    # rank's code path ever applies the fault and no rank's log ever
+    # carries the self-report. The old behavior (culprit_rank read directly
+    # from fault_plan.target_rank whenever kind != NONE) would report 5 --
+    # a rank that does not exist in this invocation -- instead of None.
+    _require_gloo_capability()
+    plan = FaultPlan(target_rank=5, kind=FaultKind.RAISE_BEFORE_BACKWARD, phase=FaultPhase.BEFORE_OPTIMIZER_STEP)
+    result = run_gloo_subprocess_group(2, plan, _default_bounds(), tmp_path)
+    assert result.culprit_rank is None
+    assert result.publication_observed is True
+    assert result.exit_codes == (0, 0)
+
+
+@pytest.mark.parametrize("fault_kind", [FaultKind.MISMATCH_COLLECTIVE, FaultKind.MISMATCH_SHAPE])
+def test_collective_mismatch_reports_nonzero_exit_evidence(tmp_path, fault_kind):
+    _require_gloo_capability()
+    plan = FaultPlan(target_rank=1, kind=fault_kind, phase=FaultPhase.BEFORE_COLLECTIVE)
+    result = run_gloo_subprocess_group(2, plan, _default_bounds(), tmp_path)
+    assert result.publication_observed is False
+    assert result.all_reaped is True
+    assert result.culprit_rank == 1
+    assert any(code is not None and code != 0 for code in result.exit_codes)
+
+
+def test_consecutive_successful_invocations_report_disjoint_worker_pids(tmp_path):
+    _require_gloo_capability()
+    first = run_gloo_subprocess_group(2, None, _default_bounds(), tmp_path)
+    second = run_gloo_subprocess_group(2, None, _default_bounds(), tmp_path)
+    assert first.publication_observed is True
+    assert second.publication_observed is True
+    first_pids = {receipt.pid for receipt in first.receipts if isinstance(receipt, RankReceipt)}
+    second_pids = {receipt.pid for receipt in second.receipts if isinstance(receipt, RankReceipt)}
+    assert len(first_pids) == 2
+    assert len(second_pids) == 2
+    assert first_pids.isdisjoint(second_pids)
 
 
 def test_missing_gloo_capability_produces_explicit_attributable_skip():
