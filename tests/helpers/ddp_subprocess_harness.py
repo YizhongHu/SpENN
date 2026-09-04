@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.helpers.ddp_fault_injection import FaultKind, FaultPlan, write_fault_plan
+from tests.helpers.ddp_fault_injection import FaultKind, FaultPlan, validate_fault_plan, write_fault_plan
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REAP_WAIT_SECONDS = 5.0
@@ -179,6 +179,8 @@ def run_gloo_subprocess_group(
     before the call -- at which point isolation across calls sharing that
     directory is the caller's own choice, not an accident.
     """
+
+    validate_fault_plan(fault_plan)
 
     if invocation_dir is None:
         invocation_dir = Path(tempfile.mkdtemp(dir=tmp_path, prefix="invocation-"))

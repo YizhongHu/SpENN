@@ -95,7 +95,12 @@ def _do_collective(rank: int, world_size: int, plan: FaultPlan | None) -> float 
         FaultKind.MISMATCH_COLLECTIVE,
         FaultKind.MISMATCH_SHAPE,
     ):
-        _report_fault_applied(rank, FaultPhase.BEFORE_COLLECTIVE.name, plan)
+        # plan.phase, never a hardcoded constant: validate_fault_plan (called
+        # by the harness before any worker launches) has already rejected
+        # any of these three kinds paired with a phase other than
+        # BEFORE_COLLECTIVE, so this reports the phase that actually
+        # matched rather than one a future collective kind might not.
+        _report_fault_applied(rank, plan.phase.name, plan)
 
     if targets_this_rank and plan.kind == FaultKind.SKIP_COLLECTIVE:
         return None

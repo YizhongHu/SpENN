@@ -127,6 +127,39 @@ def test_world_size_two_self_test_all_phases_succeed(tmp_path):
         assert receipt.collective_result == pytest.approx(2.0)
 
 
+@pytest.mark.parametrize(
+    "fault_kind", [FaultKind.SKIP_COLLECTIVE, FaultKind.MISMATCH_COLLECTIVE, FaultKind.MISMATCH_SHAPE]
+)
+def test_collective_fault_does_not_apply_before_configured_phase(tmp_path, fault_kind):
+    """A collective fault's effect and attribution must honor its phase.
+
+    Adopted from codex/review/df-round3-contract-evidence at
+    75834aa3f06961f34c37c04d937d847f28aa6066 (DF-R3-F2), widened here to all
+    three collective-fault kinds per acceptance-contract P1 rather than
+    SKIP_COLLECTIVE alone -- the underlying defect was never kind-specific.
+    """
+    _require_gloo_capability()
+    plan = FaultPlan(target_rank=1, kind=fault_kind, phase=FaultPhase.AFTER_COLLECTIVE)
+
+    # A helper may reject this unsupported combination before launching
+    # workers, but it must not silently reinterpret AFTER_COLLECTIVE as the
+    # BEFORE_COLLECTIVE injection point.
+    try:
+        result = run_gloo_subprocess_group(2, plan, _default_bounds(), tmp_path)
+    except ValueError as exc:
+        message = str(exc)
+        assert fault_kind.name in message
+        assert "AFTER_COLLECTIVE" in message
+    else:
+        assert result.publication_observed is True
+        assert result.exit_codes == (0, 0)
+        assert result.culprit_rank is None
+        assert len(result.receipts) == 2
+        for receipt in result.receipts:
+            assert receipt is not None
+            assert receipt.collective_result == pytest.approx(2.0)
+
+
 def test_world_size_two_skip_collective_triggers_process_group_timeout_and_group_reap(tmp_path):
     _require_gloo_capability()
     plan = FaultPlan(target_rank=1, kind=FaultKind.SKIP_COLLECTIVE, phase=FaultPhase.BEFORE_COLLECTIVE)
