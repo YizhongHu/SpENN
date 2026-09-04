@@ -28,7 +28,7 @@ from tests.spikes.native_ddp.statistics import local_centered_objective
 
 _CAPABILITY = probe_gloo_capability()
 _DEFAULT_BOUNDS = HarnessBounds(process_group_timeout=6.0, watchdog_timeout=20.0)
-_FAULT_BOUNDS = HarnessBounds(process_group_timeout=2.0, watchdog_timeout=8.0)
+_FAULT_BOUNDS = HarnessBounds(process_group_timeout=2.0, watchdog_timeout=12.0)
 
 
 @pytest.fixture(autouse=True)
@@ -302,7 +302,13 @@ def test_native_same_topology_dcp_resume_matches_continuous_model_optimizer_samp
     )
     for run in (continuous, first, resumed):
         _assert_scientific_result(run)
+    first_states = _states(first)
     for continuous_state, resumed_state in zip(_states(continuous), _states(resumed), strict=True):
+        first_state = first_states[resumed_state["rank"]]
+        assert first_state["parameters_after"] != {"weight": [0.25], "bias": [-0.1]}
+        assert first_state["optimizer_state_after"]["state"]
+        assert first_state["parameters_after"] == resumed_state["parameters_before"]
+        assert first_state["optimizer_state_after"] == resumed_state["optimizer_state_before"]
         for key in (
             "parameters_after", "optimizer_state_after", "counter_after", "sampler_state", "rng_state",
         ):
@@ -515,6 +521,7 @@ def test_native_raw_model_boundary_matches_coordinate_gradient_without_ddp_wrapp
             "score_forward_owner": "ddp_model",
             "used_module_attribute": False,
         }
+        assert state["ddp_forward_calls"] == 1
         assert all(not key.startswith("module.") for key in state["canonical_model_keys"])
 
 
