@@ -32,6 +32,30 @@ import torch.distributed as dist
 from tests.helpers.ddp_fault_injection import FaultKind, FaultPhase, FaultPlan, read_fault_plan
 
 
+def _report_fault_applied(rank: int, phase_name: str, plan: FaultPlan) -> None:
+    """Self-attribute this rank as the fault's true target, to stderr.
+
+    This is the ONLY evidence
+    :func:`tests.helpers.ddp_subprocess_harness.run_gloo_subprocess_group`
+    uses to derive ``HarnessResult.culprit_rank`` after collection. Called
+    the instant a rank's own code path matches the plan's target rank and
+    phase -- before the fault's effect (raise, exit, or stall) can take
+    hold -- so the report is durable (flushed to this rank's own captured
+    log) even on a path that crashes before reaching its own receipt write.
+    A peer that merely fails as a downstream consequence (e.g. blocked on a
+    collective the culprit skipped, until its own process-group timeout
+    fires) never emits this line about itself, so it is never mistaken for
+    the culprit even when its own exit code and traceback are otherwise
+    indistinguishable from a genuine fault.
+    """
+
+    print(
+        f"ddp harness injected fault: rank {rank} phase {phase_name} kind {plan.kind.name}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _maybe_apply_fault(phase: FaultPhase, rank: int, plan: FaultPlan | None) -> None:
     """Apply ``plan``'s fault if it targets this rank and this exact phase."""
 
@@ -41,6 +65,7 @@ def _maybe_apply_fault(phase: FaultPhase, rank: int, plan: FaultPlan | None) -> 
         return
     if phase != plan.phase:
         return
+    _report_fault_applied(rank, phase.name, plan)
     if plan.kind == FaultKind.RAISE_BEFORE_BACKWARD:
         raise RuntimeError(f"ddp harness injected fault: rank {rank} phase {phase.name}")
     if plan.kind in (FaultKind.CRASH_AFTER_PUBLISH, FaultKind.CRASH_DURING_CHECKPOINT):
@@ -64,6 +89,13 @@ def _do_collective(rank: int, world_size: int, plan: FaultPlan | None) -> float 
     """
 
     targets_this_rank = plan is not None and plan.target_rank == rank
+
+    if targets_this_rank and plan.kind in (
+        FaultKind.SKIP_COLLECTIVE,
+        FaultKind.MISMATCH_COLLECTIVE,
+        FaultKind.MISMATCH_SHAPE,
+    ):
+        _report_fault_applied(rank, FaultPhase.BEFORE_COLLECTIVE.name, plan)
 
     if targets_this_rank and plan.kind == FaultKind.SKIP_COLLECTIVE:
         return None
@@ -103,6 +135,7 @@ def run_worker(args: argparse.Namespace) -> int:
         and plan.kind == FaultKind.STALL_BEFORE_COLLECTIVE
         and plan.phase is None
     ):
+        _report_fault_applied(rank, "PRE_INIT", plan)
         time.sleep(plan.delay_seconds)
 
     dist.init_process_group(
