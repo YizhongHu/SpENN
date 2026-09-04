@@ -9,6 +9,7 @@ modify TPEN's production checkpoint path.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -175,6 +176,10 @@ class CheckpointPayloadStore:
             raise CheckpointCorrupt("; ".join(error for error in errors if error is not None))
 
         model_state, optimizer_state = get_state_dict(model, optimizer)
+        # Load into detached buffers so the explicit state_dict application
+        # below remains the tested restore boundary for this raw model.
+        model_state = copy.deepcopy(model_state)
+        optimizer_state = copy.deepcopy(optimizer_state)
         dcp.load(
             {"model": model_state, "optimizer": optimizer_state},
             storage_reader=dcp.FileSystemReader(checkpoint_dir / "dcp"),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from torch import nn
@@ -31,15 +31,21 @@ class ModelAccess:
 
     raw_model: SemanticWavefunction
     ddp_model: DistributedDataParallel
+    forward_counts: dict[str, int] = field(default_factory=lambda: {"ddp": 0})
 
     @classmethod
     def create(cls, raw_model: SemanticWavefunction) -> "ModelAccess":
         """Wrap exactly the raw model once for score-function backward."""
 
-        return cls(
+        access = cls(
             raw_model=raw_model,
             ddp_model=DistributedDataParallel(raw_model, device_ids=None, broadcast_buffers=False),
         )
+        access.ddp_model.register_forward_pre_hook(access._count_ddp_forward)
+        return access
+
+    def _count_ddp_forward(self, _module, _inputs) -> None:
+        self.forward_counts["ddp"] += 1
 
     def coordinate_forward(self, coordinates: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run coordinate autograd on the raw semantic module only."""

@@ -147,6 +147,7 @@ def _common_observability(
             "used_module_attribute": False,
         },
         "canonical_model_keys": list(access.raw_model.state_dict().keys()),
+        "ddp_forward_calls": access.forward_counts["ddp"],
         "optimizer_type": type(optimizer).__name__,
         "torch_version": torch.__version__,
         "api_inventory": {
