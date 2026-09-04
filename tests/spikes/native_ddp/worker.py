@@ -431,12 +431,12 @@ def _run(args: argparse.Namespace) -> int:
         }
     )
     state_path = Path(args.state_path)
-    state_path.write_text(json.dumps(state, sort_keys=True))
-
     if store is not None and args.checkpoint_generation is not None:
         state["status"] = "checkpoint_pending"
         state["checkpoint_status"] = "pending"
-        state_path.write_text(json.dumps(state, sort_keys=True))
+    state_path.write_text(json.dumps(state, sort_keys=True))
+
+    if store is not None and args.checkpoint_generation is not None:
         phase_sequence.append(FaultPhase.BEFORE_STATE_WRITE.name)
         phase_sequence.append(FaultPhase.AFTER_STATE_WRITE.name)
         phase_sequence.append(FaultPhase.BEFORE_PUBLICATION.name)
