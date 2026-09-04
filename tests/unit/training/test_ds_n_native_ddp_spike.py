@@ -8,8 +8,11 @@ real ``torchrun`` binary is deferred to production.
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -23,6 +26,9 @@ from tests.helpers.vmc_scientific_oracle import (
     oracle_global_clip,
     oracle_vmc_objective,
 )
+from tests.spikes.native_ddp import checkpoint as checkpoint_module
+from tests.spikes.native_ddp.checkpoint import CheckpointCorrupt, CheckpointPayloadStore, CheckpointTopologyMismatch
+from tests.spikes.native_ddp.model_access import SemanticWavefunction
 from tests.spikes.native_ddp.statistics import local_centered_objective
 
 
@@ -111,6 +117,29 @@ def _assert_nested_equal(left, right) -> None:
         assert left == right
 
 
+def _assert_nested_close(left, right, *, atol: float) -> None:
+    if isinstance(left, torch.Tensor):
+        assert isinstance(right, torch.Tensor)
+        if left.dtype.is_floating_point:
+            assert torch.allclose(left, right, atol=atol, rtol=0.0)
+        else:
+            assert torch.equal(left, right)
+    elif isinstance(left, dict):
+        assert isinstance(right, dict)
+        assert left.keys() == right.keys()
+        for key in left:
+            _assert_nested_close(left[key], right[key], atol=atol)
+    elif isinstance(left, (list, tuple)):
+        assert type(left) is type(right)
+        assert len(left) == len(right)
+        for left_value, right_value in zip(left, right, strict=True):
+            _assert_nested_close(left_value, right_value, atol=atol)
+    elif isinstance(left, float):
+        assert left == pytest.approx(right, abs=atol)
+    else:
+        assert left == right
+
+
 def _assert_close(actual: torch.Tensor, expected: torch.Tensor, terms: torch.Tensor) -> None:
     atol = loss_tolerance_envelope(terms)
     assert torch.allclose(actual, expected, atol=atol, rtol=0.0), (
@@ -162,6 +191,13 @@ def _assert_scientific_result(result, *, expected_raw_counts: tuple[int, ...] | 
         assert tuple(state["global_statistics"]["total_count"] for state in states) == expected_raw_counts
 
 
+def _assert_no_published_generation(root: Path, generation: int) -> None:
+    final = root / "generations" / f"gen-{generation:06d}"
+    assert not (final / "COMPLETE").exists()
+    assert not final.exists()
+    assert not (root / "latest.json").exists()
+
+
 def test_native_ddp_world_size_two_matches_concatenated_oracle_and_average(tmp_path: Path) -> None:
     result = _run_native(
         tmp_path,
@@ -200,6 +236,29 @@ def test_native_ddp_world_size_three_matches_m2_uneven_oracle_and_empty_shard(tm
     )
     _assert_scientific_result(result, expected_raw_counts=(15, 15, 15))
     states = _states(result)
+    expected_finite_masks = [
+        [True, False, True, True, False],
+        [False, False, False],
+        [True, True, False, True, True, True, False],
+    ]
+    expected_finite_values = [
+        [1.0, 2.0, -1.0],
+        [],
+        [3.0, -2.0, 1.0, 0.5, 2.5],
+    ]
+    for state, expected_mask, expected_values in zip(
+        states, expected_finite_masks, expected_finite_values, strict=True
+    ):
+        encoded_energy = state["energy"]["__tensor__"]
+        assert len(encoded_energy) == len(expected_mask)
+        observed_mask = [
+            math.isfinite(float(value)) for value in encoded_energy
+        ]
+        assert observed_mask == expected_mask
+        assert [
+            float(value) for value, is_finite in zip(encoded_energy, observed_mask, strict=True)
+            if is_finite
+        ] == expected_values
     assert [state["global_statistics"]["total_count"] for state in states] == [15, 15, 15]
     assert [state["global_statistics"]["finite_count"] for state in states] == [8, 8, 8]
     expected_gradients, oracle = _oracle_parameter_gradients(states)
@@ -263,12 +322,14 @@ def test_native_global_zero_valid_energy_refuses_before_backward_and_optimizer_m
     assert result.exit_codes == (0, 0)
     for state in _states(result):
         assert state["status"] == "refused"
-        assert state["backward_called"] is False
-        assert state["optimizer_step"] is False
+        assert state["ddp_forward_calls"] == 0
+        assert state["ddp_gradient_reductions"] == 0
         assert state["counter_before"] == state["counter_after"] == 0
+        assert state["parameters_before"] == state["parameters_after"]
         _assert_nested_equal(
             _decode(state["optimizer_state_before"]), _decode(state["optimizer_state_after"])
         )
+        assert "gradients" not in state
 
 
 def test_native_same_topology_dcp_resume_matches_continuous_model_optimizer_sampler_and_rng(
@@ -345,11 +406,42 @@ def test_native_topology_change_is_refused_before_any_resume_mutation(tmp_path: 
     assert changed.exit_codes == (0, 0, 0)
     for state in _states(changed):
         assert state["status"] == "topology_refused"
-        assert state["mutation_started"] is False
         assert state["counter_before"] == state["counter_after"] == 0
+        assert state["ddp_forward_calls"] == 0
+        assert state["parameters_before"] == state["parameters_after"]
         _assert_nested_equal(
             _decode(state["optimizer_state_before"]), _decode(state["optimizer_state_after"])
         )
+
+
+def test_native_topology_load_boundary_never_enters_dcp_or_mutates_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    model = SemanticWavefunction()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    model_before = {name: value.detach().clone() for name, value in model.state_dict().items()}
+    optimizer_before = copy.deepcopy(optimizer.state_dict())
+
+    runtime = Mock(rank=1, world_size=3)
+    runtime.broadcast_object.return_value = {
+        "world_size": 2,
+        "path": "generations/gen-000001",
+        "files": [],
+    }
+    store = CheckpointPayloadStore(root=tmp_path, runtime=runtime)
+    dcp_load = Mock(side_effect=AssertionError("dcp.load must not be entered"))
+    state_apply = Mock(side_effect=AssertionError("set_state_dict must not be entered"))
+    monkeypatch.setattr(checkpoint_module.dcp, "load", dcp_load)
+    monkeypatch.setattr(checkpoint_module, "set_state_dict", state_apply)
+
+    with pytest.raises(CheckpointTopologyMismatch):
+        store.load(model, optimizer, generation=1)
+
+    assert dcp_load.call_count == 0
+    assert state_apply.call_count == 0
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, model_before[name])
+    _assert_nested_equal(optimizer.state_dict(), optimizer_before)
 
 
 def test_native_perturbed_rank_sampler_sidecar_fails_resume(tmp_path: Path) -> None:
@@ -385,23 +477,39 @@ def test_native_perturbed_rank_sampler_sidecar_fails_resume(tmp_path: Path) -> N
 
 def test_native_raise_before_backward_preserves_culprit_and_nonpublication(tmp_path: Path) -> None:
     plan = FaultPlan(target_rank=1, kind=FaultKind.RAISE_BEFORE_BACKWARD, phase=FaultPhase.BEFORE_OPTIMIZER_STEP)
-    result = _run_native(tmp_path, world_size=2, fault_plan=plan, bounds=_FAULT_BOUNDS)
+    root = tmp_path / "raise-checkpoint"
+    result = _run_native(
+        tmp_path,
+        world_size=2,
+        fault_plan=plan,
+        bounds=_FAULT_BOUNDS,
+        extra_args=("--checkpoint-root", str(root), "--checkpoint-generation", "1"),
+    )
     assert result.watchdog_fired is False
     assert result.all_reaped is True
     assert result.culprit_rank == 1
     assert result.publication_observed is False
     assert Path(result.invocation_dir, "state_1.json").exists()
     assert Path(result.invocation_dir, "state_0.json").exists()
+    _assert_no_published_generation(root, 1)
 
 
 def test_native_skip_collective_preserves_culprit_and_nonpublication(tmp_path: Path) -> None:
     plan = FaultPlan(target_rank=1, kind=FaultKind.SKIP_COLLECTIVE, phase=FaultPhase.BEFORE_COLLECTIVE)
-    result = _run_native(tmp_path, world_size=2, fault_plan=plan, bounds=_FAULT_BOUNDS)
+    root = tmp_path / "skip-checkpoint"
+    result = _run_native(
+        tmp_path,
+        world_size=2,
+        fault_plan=plan,
+        bounds=_FAULT_BOUNDS,
+        extra_args=("--checkpoint-root", str(root), "--checkpoint-generation", "1"),
+    )
     assert result.watchdog_fired is False
     assert result.all_reaped is True
     assert result.culprit_rank == 1
     assert result.publication_observed is False
     assert Path(result.invocation_dir, "state_1.json").exists()
+    _assert_no_published_generation(root, 1)
 
 
 def test_native_stall_before_collective_is_bounded_and_nonpublishing(tmp_path: Path) -> None:
@@ -411,12 +519,20 @@ def test_native_stall_before_collective_is_bounded_and_nonpublishing(tmp_path: P
         phase=FaultPhase.BEFORE_COLLECTIVE,
         delay_seconds=6.0,
     )
-    result = _run_native(tmp_path, world_size=2, fault_plan=plan, bounds=_FAULT_BOUNDS)
+    root = tmp_path / "stall-checkpoint"
+    result = _run_native(
+        tmp_path,
+        world_size=2,
+        fault_plan=plan,
+        bounds=_FAULT_BOUNDS,
+        extra_args=("--checkpoint-root", str(root), "--checkpoint-generation", "1"),
+    )
     assert result.watchdog_fired is False
     assert result.all_reaped is True
     assert result.culprit_rank == 1
     assert result.publication_observed is False
     assert Path(result.invocation_dir, "state_1.json").exists()
+    _assert_no_published_generation(root, 1)
 
 
 def test_native_failed_shard_writer_keeps_previous_generation_selectable(tmp_path: Path) -> None:
@@ -442,12 +558,45 @@ def test_native_failed_shard_writer_keeps_previous_generation_selectable(tmp_pat
     )
     assert second.watchdog_fired is False
     assert second.all_reaped is True
+    assert all(state["status"] != "success" for state in _states(second))
     assert second.publication_observed is False
     assert json.loads((root / "latest.json").read_text()) == previous_latest
     assert not (root / "generations" / "gen-000002" / "COMPLETE").exists()
     assert (root / "generations" / "gen-000001" / "COMPLETE").exists()
     assert (root / "generations" / "gen-000001" / "sidecars" / "rank-00000.json").exists()
     assert (root / "generations" / "gen-000001" / "sidecars" / "rank-00001.json").exists()
+
+
+def test_native_save_digest_change_blocks_coordinator_publication(tmp_path: Path, monkeypatch) -> None:
+    runtime = Mock(rank=0, world_size=2)
+    runtime.barrier.return_value = None
+    model = SemanticWavefunction()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+    def gather_after_local_digest(local_digest):
+        stage = tmp_path / "staging" / "gen-000001"
+        rank_one = stage / "sidecars" / "rank-00001.json"
+        rank_one.parent.mkdir(parents=True, exist_ok=True)
+        rank_one.write_text(json.dumps({"rank": 1, "closed": True}, sort_keys=True))
+        expected_rank_one = checkpoint_module._digest(rank_one, root=stage).as_dict()
+        rank_one.write_text(json.dumps({"rank": 1, "closed": False}, sort_keys=True))
+        return [local_digest, expected_rank_one]
+
+    runtime.all_gather_objects.side_effect = gather_after_local_digest
+    monkeypatch.setattr(checkpoint_module, "get_state_dict", lambda *_args: ({}, {}))
+    monkeypatch.setattr(checkpoint_module.dcp, "save", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(CheckpointCorrupt, match="digest changed"):
+        CheckpointPayloadStore(root=tmp_path, runtime=runtime).save(
+            model,
+            optimizer,
+            generation=1,
+            sampler_state={},
+            rng_state={},
+            completed_updates=1,
+        )
+
+    _assert_no_published_generation(tmp_path, 1)
 
 
 def test_native_delayed_shard_writer_keeps_previous_generation_selectable(tmp_path: Path) -> None:
@@ -501,8 +650,14 @@ def test_native_ddp_gradient_reduction_count_is_constant_across_mcmc_and_kinetic
         assert short_state["ddp_gradient_reductions_per_update"] == 1
         assert long_state["ddp_gradient_reductions_per_update"] == 1
         assert short_state["sampling_gradient_reductions"] == long_state["sampling_gradient_reductions"] == 0
-        assert short_state["sampling_collectives"] == long_state["sampling_collectives"] == 0
-        assert long_state["coordinate_forward_count"] > short_state["coordinate_forward_count"]
+        assert short_state["sampling_gradient_reductions"] == 0
+        assert long_state["sampling_gradient_reductions"] == 0
+        assert short_state["sampling_raw_model_calls"] == 2
+        assert long_state["sampling_raw_model_calls"] == 6
+        assert short_state["kinetic_raw_model_calls"] == 1
+        assert long_state["kinetic_raw_model_calls"] == 5
+        assert short_state["coordinate_forward_count"] == 6
+        assert long_state["coordinate_forward_count"] == 14
 
 
 def test_native_raw_model_boundary_matches_coordinate_gradient_without_ddp_wrapper(tmp_path: Path) -> None:
@@ -558,7 +713,7 @@ def test_native_sgd_momentum_and_adam_optimizer_states_match_independent_gradien
             )
 
 
-def test_native_closure_optimizer_suppresses_inner_ddp_reductions_and_counts_final_gradient(tmp_path: Path) -> None:
+def test_native_closure_optimizer_matches_global_reference_across_ranks(tmp_path: Path) -> None:
     result = _run_native(
         tmp_path,
         world_size=2,
@@ -568,20 +723,76 @@ def test_native_closure_optimizer_suppresses_inner_ddp_reductions_and_counts_fin
         ),
     )
     _assert_scientific_result(result)
-    for state in _states(result):
-        assert state["closure_calls"] == 3
-        assert state["synchronized_closure_calls"] == 1
+    states = _states(result)
+    assert states[0]["parameters_after"] == states[1]["parameters_after"]
+    _assert_nested_equal(
+        _decode(states[0]["optimizer_state_after"]),
+        _decode(states[1]["optimizer_state_after"]),
+    )
+    for state in states:
+        assert state["synchronized_closure_calls"] == state["closure_calls"]
         assert state["final_gradient_call"] == state["closure_calls"]
-        assert state["ddp_gradient_reductions_per_update"] == 1
+        assert state["ddp_gradient_reductions_per_update"] == state["closure_calls"]
+
+    features = torch.tensor(
+        [
+            [0.2, 0.1], [-0.5, 0.3], [0.7, -0.2], [0.4, 0.9],
+            [-0.3, 0.8], [0.4, -0.1], [1.1, 0.2],
+        ],
+        dtype=torch.float64,
+    )
+    energy = torch.tensor(
+        [1.0, 2.0, 0.5, float("nan"), 3.0, -1.0, 2.0],
+        dtype=torch.float64,
+    )
+    reference_model = SemanticWavefunction()
+    reference_optimizer = torch.optim.LBFGS(
+        reference_model.parameters(),
+        lr=0.25,
+        max_iter=3,
+        history_size=5,
+        tolerance_grad=0.0,
+        tolerance_change=0.0,
+    )
+
+    def reference_closure() -> torch.Tensor:
+        reference_optimizer.zero_grad(set_to_none=True)
+        logabs = reference_model(features)
+        objective = oracle_vmc_objective([logabs], [energy])
+        objective.loss.backward()
+        return objective.loss
+
+    reference_optimizer.step(reference_closure)
+    optimizer_atol = 10.0 * loss_tolerance_envelope(energy[torch.isfinite(energy)].abs())
+    for state in states:
+        assert state["parameters_after"]["weight"] == pytest.approx(
+            reference_model.weight.detach().tolist(), abs=optimizer_atol
+        )
+        assert state["parameters_after"]["bias"] == pytest.approx(
+            reference_model.bias.detach().tolist(), abs=optimizer_atol
+        )
+        _assert_nested_close(
+            _decode(state["optimizer_state_after"]),
+            reference_optimizer.state_dict(),
+            atol=optimizer_atol,
+        )
 
 
-def test_native_api_inventory_records_torch_version_and_inspection_only_accelerator_path(tmp_path: Path) -> None:
+def test_native_api_inventory_separates_experimental_dcp_helpers(tmp_path: Path) -> None:
+    """Record inventory labels; documentation, not telemetry, establishes stability."""
+
     result = _run_native(tmp_path, world_size=2)
     _assert_scientific_result(result)
     state = _state(result, 0)
     assert isinstance(state["torch_version"], str)
     assert state["torch_version"]
-    assert "torch.distributed.checkpoint.state_dict.get_state_dict" in state["api_inventory"]["stable"]
+    assert "torch.nn.parallel.DistributedDataParallel" in state["api_inventory"]["stable"]
+    assert "torch.distributed.checkpoint.FileSystemReader" in state["api_inventory"]["stable"]
+    assert "torch.distributed.checkpoint.FileSystemWriter" in state["api_inventory"]["stable"]
+    experimental = set(state["api_inventory"]["experimental"])
+    assert "torch.distributed.checkpoint.state_dict.get_state_dict" in experimental
+    assert "torch.distributed.checkpoint.state_dict.set_state_dict" in experimental
+    assert set(state["api_inventory"]["stable"]).isdisjoint(experimental)
     assert "tests.spikes.native_ddp.CheckpointPayloadStore" in state["api_inventory"]["spike_prototype"]
     assert state["accelerator_execution"] is False
     assert state["accelerator_path_inspected"] == "CUDA -> NCCL; ROCm -> RCCL; XPU -> XCCL"

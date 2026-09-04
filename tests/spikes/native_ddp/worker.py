@@ -414,7 +414,6 @@ def _run(args: argparse.Namespace) -> int:
             "ddp_gradient_reductions": last_observation.gradient_reductions,
             "ddp_gradient_reductions_per_update": last_observation.gradient_reductions - reductions_before,
             "sampling_gradient_reductions": reductions_before - reductions_before_sampling,
-            "sampling_collectives": 0,
             "coordinate_forward_count": access.forward_counts["raw"],
             "sampling_raw_model_calls": sampler.coordinate_forward_count,
             "kinetic_raw_model_calls": kinetic_raw_model_calls,
