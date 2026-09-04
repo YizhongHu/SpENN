@@ -160,6 +160,32 @@ def test_collective_fault_does_not_apply_before_configured_phase(tmp_path, fault
             assert receipt.collective_result == pytest.approx(2.0)
 
 
+def test_do_collective_self_report_names_actual_phase_not_hardcoded(capsys):
+    # Own addition, not from the reviewer's branch. Targets P3 directly and
+    # independently of P1/P2: this calls the worker's internal
+    # _do_collective directly, bypassing run_gloo_subprocess_group's
+    # validate_fault_plan gate entirely, so it is the only test in this
+    # file that can observe what _do_collective would report if it were
+    # ever reached with a phase other than BEFORE_COLLECTIVE -- something
+    # the public harness API can no longer produce once P1/P2 are fixed. A
+    # regression to the hardcoded FaultPhase.BEFORE_COLLECTIVE.name would be
+    # invisible to every test that goes through the public API, because by
+    # the time validate_fault_plan lets a call through, plan.phase is
+    # already guaranteed to equal BEFORE_COLLECTIVE -- the hardcoded value
+    # and the real one would always agree there. Calling the private
+    # function directly is what makes the two divergent and the mutation
+    # observable at all. SKIP_COLLECTIVE needs no live process group: it
+    # reports and returns None before touching torch.distributed.
+    from tests.helpers.ddp_worker_entrypoint import _do_collective
+
+    plan = FaultPlan(target_rank=1, kind=FaultKind.SKIP_COLLECTIVE, phase=FaultPhase.AFTER_COLLECTIVE)
+    result = _do_collective(1, 2, plan)
+    assert result is None
+    captured = capsys.readouterr()
+    assert "phase AFTER_COLLECTIVE" in captured.err
+    assert "phase BEFORE_COLLECTIVE" not in captured.err
+
+
 def test_world_size_two_skip_collective_triggers_process_group_timeout_and_group_reap(tmp_path):
     _require_gloo_capability()
     plan = FaultPlan(target_rank=1, kind=FaultKind.SKIP_COLLECTIVE, phase=FaultPhase.BEFORE_COLLECTIVE)
