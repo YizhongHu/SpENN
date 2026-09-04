@@ -99,6 +99,41 @@ class FaultPlan:
     delay_seconds: float = 0.0
 
 
+COLLECTIVE_FAULT_KINDS = frozenset(
+    {FaultKind.SKIP_COLLECTIVE, FaultKind.MISMATCH_COLLECTIVE, FaultKind.MISMATCH_SHAPE}
+)
+"""Kinds whose entire effect lives inside the one synthetic collective call.
+
+Unlike ``RAISE_BEFORE_BACKWARD``/``CRASH_AFTER_PUBLISH``/``CRASH_DURING_CHECKPOINT``
+(dispatched generically at every named phase) or ``STALL_BEFORE_COLLECTIVE``
+(legitimate at ``BEFORE_COLLECTIVE`` or at the ``phase=None`` pre-init
+sentinel), these three kinds are applied by a single call site
+(:func:`tests.helpers.ddp_worker_entrypoint._do_collective`) that only ever
+runs at :attr:`FaultPhase.BEFORE_COLLECTIVE`. A plan pairing one of these
+kinds with any other phase can never have an effect.
+"""
+
+
+def validate_fault_plan(plan: FaultPlan | None) -> None:
+    """Reject a ``plan`` whose kind can never apply at its own named phase.
+
+    Called by the harness before any worker process launches (never inside
+    ``FaultPlan.__post_init__``, since a caller may legitimately construct a
+    plan before deciding whether to use it). ``kind=NONE`` and every kind
+    outside :data:`COLLECTIVE_FAULT_KINDS` are unrestricted here -- each is
+    validated, if at all, by where it is actually dispatched.
+    """
+
+    if plan is None or plan.kind not in COLLECTIVE_FAULT_KINDS:
+        return
+    if plan.phase != FaultPhase.BEFORE_COLLECTIVE:
+        phase_name = plan.phase.name if plan.phase is not None else "None"
+        raise ValueError(
+            f"{plan.kind.name} can only apply at {FaultPhase.BEFORE_COLLECTIVE.name}, "
+            f"got phase={phase_name}"
+        )
+
+
 def serialize_fault_plan(plan: FaultPlan) -> str:
     """Serialize ``plan`` to JSON (never pickle)."""
 
@@ -144,11 +179,13 @@ NO_FAULT = FaultPlan(target_rank=-1, kind=FaultKind.NONE, phase=None)
 
 __all__ = [
     "NO_FAULT",
+    "COLLECTIVE_FAULT_KINDS",
     "FaultKind",
     "FaultPhase",
     "FaultPlan",
     "deserialize_fault_plan",
     "read_fault_plan",
     "serialize_fault_plan",
+    "validate_fault_plan",
     "write_fault_plan",
 ]

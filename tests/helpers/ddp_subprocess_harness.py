@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.helpers.ddp_fault_injection import FaultKind, FaultPlan, write_fault_plan
+from tests.helpers.ddp_fault_injection import FaultKind, FaultPlan, validate_fault_plan, write_fault_plan
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REAP_WAIT_SECONDS = 5.0
@@ -116,10 +116,19 @@ class HarnessResult:
         Whether every child's process GROUP (not just its direct PID) is
         confirmed gone after this call returns.
     culprit_rank : int or None
-        The fault plan's target rank, or ``None`` if no fault was injected.
-        Read directly from the plan rather than inferred from exit codes,
-        since some faults (e.g. a skipped collective) leave their target
-        rank exiting cleanly while an innocent peer pays the cost.
+        The rank whose own child process self-reported applying the fault,
+        or ``None`` if no rank ever did. DERIVED from each rank's own
+        captured log (see ``invocation_dir``), never read directly from the
+        input fault plan: a plan whose ``target_rank`` never actually
+        matches a running rank (or whose match never fires, e.g. a phase
+        that is never reached) now correctly yields ``None`` instead of
+        echoing a target that was never applied. A rank's self-report is
+        written the instant it applies its fault, before the fault's
+        effect (raise, exit, or stall) can take hold, so it survives even
+        when that rank never reaches its own receipt write -- including the
+        case of a skipped collective, where the target rank exits cleanly
+        while an innocent peer pays the cost, and only the target's own log
+        carries the self-report.
     publication_observed : bool
         Whether the group-wide COMPLETE marker was written.
     rendezvous_path : str
@@ -130,6 +139,13 @@ class HarnessResult:
         outstanding when the watchdog window closed; the subsequent reap
         loop then back-fills ``-9`` for a killed rank once its exit is
         observed, so ``None`` survives only if the reap window also expires.
+    invocation_dir : str
+        The fresh, invocation-unique directory holding every artifact this
+        call produced: the rendezvous file, ``fault_plan.json``, each
+        rank's ``receipt_{rank}.json``, ``state_{rank}.json``, and
+        ``rank_{rank}.log``, and the ``COMPLETE`` marker. Never reused
+        across calls unless the caller explicitly passes the same
+        ``invocation_dir`` to two calls itself.
     """
 
     receipts: tuple[RankReceipt | MalformedReceipt | None, ...]
@@ -139,6 +155,7 @@ class HarnessResult:
     publication_observed: bool
     rendezvous_path: str
     exit_codes: tuple[int | None, ...]
+    invocation_dir: str
 
 
 def run_gloo_subprocess_group(
@@ -148,30 +165,46 @@ def run_gloo_subprocess_group(
     tmp_path: Path,
     *,
     decoy_grandchild_rank: int | None = None,
+    invocation_dir: Path | None = None,
 ) -> HarnessResult:
     """Launch ``world_size`` fresh CPU/Gloo worker subprocesses and collect results.
 
-    Every call is independent: a fresh rendezvous file, fresh subprocesses,
-    fresh receipt/state paths. Nothing from a prior call is reused.
+    Every call is independent: unless ``invocation_dir`` is supplied, a
+    fresh per-invocation subdirectory (``tempfile.mkdtemp``, so its name is
+    guaranteed unique) holds the rendezvous file, the fault plan, every
+    rank's receipt/state/log, and the completion marker. Nothing from a
+    prior call sharing the same ``tmp_path`` is reachable by this one.
+    ``invocation_dir`` is an escape hatch for a caller that needs a
+    deterministic, pre-known path -- e.g. to pre-seed a malformed receipt
+    before the call -- at which point isolation across calls sharing that
+    directory is the caller's own choice, not an accident.
     """
 
-    rendezvous_fd, rendezvous_path_str = tempfile.mkstemp(dir=tmp_path, prefix="rdzv-")
+    validate_fault_plan(fault_plan)
+
+    if invocation_dir is None:
+        invocation_dir = Path(tempfile.mkdtemp(dir=tmp_path, prefix="invocation-"))
+
+    rendezvous_fd, rendezvous_path_str = tempfile.mkstemp(dir=invocation_dir, prefix="rdzv-")
     os.close(rendezvous_fd)
     os.unlink(rendezvous_path_str)  # torch's FileStore requires a nonexistent path
 
-    complete_marker_path = tmp_path / "COMPLETE"
+    complete_marker_path = invocation_dir / "COMPLETE"
 
     fault_plan_path: Path | None = None
     if fault_plan is not None and fault_plan.kind != FaultKind.NONE:
-        fault_plan_path = tmp_path / "fault_plan.json"
+        fault_plan_path = invocation_dir / "fault_plan.json"
         write_fault_plan(fault_plan, fault_plan_path)
 
     procs: list[subprocess.Popen] = []
     receipt_paths: list[Path] = []
+    log_paths: list[Path] = []
     for rank in range(world_size):
-        receipt_path = tmp_path / f"receipt_{rank}.json"
-        state_path = tmp_path / f"state_{rank}.json"
+        receipt_path = invocation_dir / f"receipt_{rank}.json"
+        state_path = invocation_dir / f"state_{rank}.json"
         receipt_paths.append(receipt_path)
+        log_path = invocation_dir / f"rank_{rank}.log"
+        log_paths.append(log_path)
         argv = [
             sys.executable,
             "-m",
@@ -194,9 +227,24 @@ def run_gloo_subprocess_group(
         if fault_plan_path is not None:
             argv += ["--fault-plan-path", str(fault_plan_path)]
         if decoy_grandchild_rank == rank:
-            grandchild_pid_path = tmp_path / f"grandchild_{rank}.pid"
+            grandchild_pid_path = invocation_dir / f"grandchild_{rank}.pid"
             argv += ["--spawn-decoy-grandchild", "--grandchild-pid-path", str(grandchild_pid_path)]
-        procs.append(subprocess.Popen(argv, cwd=str(_REPO_ROOT), start_new_session=True))
+        # Captured per rank so an expected-failure test still has an
+        # attributable diagnostic on disk: Popen would otherwise inherit
+        # pytest's own stdout/stderr, whose fd-level capture discards child
+        # tracebacks for a PASSING negative test. Closing the parent's
+        # handle right after Popen is safe -- the child already holds its
+        # own dup'd descriptor from the fork/exec inside the constructor.
+        with open(log_path, "wb") as log_file:
+            procs.append(
+                subprocess.Popen(
+                    argv,
+                    cwd=str(_REPO_ROOT),
+                    start_new_session=True,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                )
+            )
 
     # A shared deadline, not a per-process timeout: waiting on N processes
     # sequentially with independent per-process timeouts would let the
@@ -286,9 +334,23 @@ def run_gloo_subprocess_group(
             # to surface.
             receipts.append(MalformedReceipt(error=f"{type(exc).__name__}: {exc}"))
 
-    culprit_rank = (
-        fault_plan.target_rank if fault_plan is not None and fault_plan.kind != FaultKind.NONE else None
-    )
+    # Derived from each rank's own captured log, never from the input plan:
+    # only the rank whose code path actually matched target_rank/phase ever
+    # writes the controlled self-report line (see
+    # tests.helpers.ddp_worker_entrypoint._report_fault_applied), and it
+    # writes it before the fault's effect (raise, exit, or stall) can take
+    # hold -- so the report survives even on a path that crashes before
+    # reaching its own receipt write. A plan naming a rank or phase that
+    # never actually fires (e.g. target_rank outside range(world_size))
+    # correctly yields None here instead of echoing an unapplied target.
+    culprit_rank: int | None = None
+    for rank, log_path in enumerate(log_paths):
+        if not log_path.exists():
+            continue
+        log_text = log_path.read_bytes().decode("utf-8", errors="replace")
+        if "ddp harness injected fault" in log_text:
+            culprit_rank = rank
+            break
 
     return HarnessResult(
         receipts=tuple(receipts),
@@ -298,6 +360,7 @@ def run_gloo_subprocess_group(
         publication_observed=complete_marker_path.exists(),
         rendezvous_path=rendezvous_path_str,
         exit_codes=tuple(exit_codes),
+        invocation_dir=str(invocation_dir),
     )
 
 
