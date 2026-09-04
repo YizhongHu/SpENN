@@ -10,6 +10,7 @@ from typing import Any
 from tpen.artifacts import append_jsonl
 
 from .artifact import read_latest, write_latest
+from .receipt import backfill_publication_receipt, publication_receipt_path
 from .reference import (
     CHECKPOINT_REF_SCHEMA,
     CheckpointRef,
@@ -117,18 +118,25 @@ def read_publications(path: str | Path) -> tuple[CheckpointRef, ...]:
 def reconcile_publication(
     checkpoint_root: str | Path, checkpoint_dir: str | Path
 ) -> CheckpointRef:
-    """Ensure one committed checkpoint has its catalog row and latest pointer.
+    """Ensure one committed checkpoint has its catalog row, latest pointer, and receipt.
 
-    The directory rename is the checkpoint commit, while catalog publication
-    and ``latest.json`` are separate durable operations.  A retry therefore
-    needs to reconcile both indexes instead of treating a complete directory
-    as proof that both operations succeeded.  ``CheckpointCatalog.publish``
-    supplies the append-idempotent row operation: an existing identical ref is
-    not appended again, while a conflicting row still fails closed.
+    The directory rename is the checkpoint commit, while catalog publication,
+    ``latest.json``, and the publication receipt are separate durable
+    operations.  A retry therefore needs to reconcile all three instead of
+    treating a complete directory as proof that all of them succeeded.
+    ``CheckpointCatalog.publish`` supplies the append-idempotent row
+    operation: an existing identical ref is not appended again, while a
+    conflicting row still fails closed.
 
     This helper only repairs non-destructive indexes. It must not rewrite the
     committed payload or remove any checkpoint directories; storage disposition
     is outside TPEN.
+
+    The receipt backfill is last and best-effort, matching
+    ``save_checkpoint``'s own ordering and failure handling: unlike the
+    catalog row and ``latest.json`` above, a missing or unrecoverable receipt
+    never fails this call. See
+    ``tpen.checkpoint.receipt.backfill_publication_receipt``.
     """
 
     root = Path(checkpoint_root)
@@ -153,6 +161,9 @@ def reconcile_publication(
             step=ref.next_iteration,
             created_at_unix=manifest.created_at_unix,
         )
+    backfill_publication_receipt(
+        ref, directory, manifest.files, publication_receipt_path(root)
+    )
     return ref
 
 

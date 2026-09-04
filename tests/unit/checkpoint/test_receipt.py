@@ -16,9 +16,13 @@ from tpen.checkpoint.receipt import (
     CheckpointFileSize,
     CheckpointPublished,
     append_publication_receipt,
+    backfill_publication_receipt,
     build_publication_receipt,
+    has_publication_receipt,
+    iter_valid_publication_receipts,
     measure_checkpoint_files,
     publication_receipt_path,
+    record_publication_receipt,
 )
 
 
@@ -260,3 +264,198 @@ def test_receipt_append_failure_does_not_fail_a_committed_save(tmp_path: Path) -
         f"{type(raised).__name__}: {raised}"
     )
     assert returned == step_dir
+
+
+def test_checkpoint_published_accepts_explicit_absent_durations(tmp_path: Path) -> None:
+    published = CheckpointPublished(
+        checkpoint_dir="step_000001",
+        content_id="0" * 64,
+        file_count=1,
+        payload_bytes=10,
+        metadata_bytes=5,
+        total_bytes=15,
+        write_duration_sec=None,
+        publish_duration_sec=None,
+    )
+    assert published.write_duration_sec is None
+    assert published.publish_duration_sec is None
+    # Explicit null in the serialized record, never a missing key and never 0.0.
+    data = published.to_dict()
+    assert "write_duration_sec" in data
+    assert data["write_duration_sec"] is None
+    assert "publish_duration_sec" in data
+    assert data["publish_duration_sec"] is None
+    assert json.loads(json.dumps(data))["write_duration_sec"] is None
+
+
+def test_checkpoint_published_still_rejects_negative_durations_when_present() -> None:
+    with pytest.raises(ValueError):
+        CheckpointPublished(
+            checkpoint_dir="step_000001",
+            content_id="0" * 64,
+            file_count=1,
+            payload_bytes=10,
+            metadata_bytes=5,
+            total_bytes=15,
+            write_duration_sec=-1.0,
+            publish_duration_sec=None,
+        )
+    with pytest.raises(ValueError):
+        CheckpointPublished(
+            checkpoint_dir="step_000001",
+            content_id="0" * 64,
+            file_count=1,
+            payload_bytes=10,
+            metadata_bytes=5,
+            total_bytes=15,
+            write_duration_sec=None,
+            publish_duration_sec=-1.0,
+        )
+
+
+def test_has_publication_receipt_true_only_for_a_matching_valid_row(tmp_path: Path) -> None:
+    checkpoint_dir, files = _write_checkpoint(tmp_path)
+    ref = _ref_for(checkpoint_dir)
+    path = tmp_path / "publication_receipts.jsonl"
+
+    assert has_publication_receipt(path, ref.content_id) is False
+
+    record_publication_receipt(
+        ref, checkpoint_dir, files, path, write_duration_sec=1.0, publish_duration_sec=0.5
+    )
+
+    assert has_publication_receipt(path, ref.content_id) is True
+    assert has_publication_receipt(path, "0" * 64) is False
+
+
+def test_iter_valid_publication_receipts_skips_a_malformed_row_without_raising(
+    tmp_path: Path,
+) -> None:
+    """A truncated/partial line -- the shape an interrupted append leaves -- is
+    skipped, never raised. Deliberately asymmetric with
+    ``CheckpointCatalog.iter_publications``, which raises on a malformed row.
+    """
+
+    path = tmp_path / "publication_receipts.jsonl"
+    path.write_text('{"schema": "tpen.checkpoint-publication-receipt/v1", "summary": {"content', encoding="utf-8")
+
+    assert list(iter_valid_publication_receipts(path)) == []
+    assert has_publication_receipt(path, "anything") is False
+
+
+def test_backfill_publication_receipt_treats_a_malformed_existing_row_as_absent(
+    tmp_path: Path,
+) -> None:
+    """The presence predicate is 'no VALID row', not file existence or 'any row'.
+
+    A checkpoint whose only receipt row is truncated must still be backfilled.
+    """
+
+    checkpoint_dir, files = _write_checkpoint(tmp_path)
+    ref = _ref_for(checkpoint_dir)
+    path = tmp_path / "publication_receipts.jsonl"
+    # Simulate exactly the partial-write failure mode iter_valid_publication_receipts'
+    # docstring describes: a body written, the trailing newline lost.
+    path.write_text(
+        json.dumps({"schema": PUBLICATION_RECEIPT_SCHEMA, "summary": {"content_id": ref.content_id}}),
+        encoding="utf-8",
+    )
+    # No trailing newline: the malformed row and any real append would collide
+    # on one line, which is exactly why it must not be trusted as a receipt.
+
+    appended = backfill_publication_receipt(ref, checkpoint_dir, files, path)
+
+    assert appended is True
+    assert has_publication_receipt(path, ref.content_id) is True
+    rows = path.read_text(encoding="utf-8").splitlines()
+    # The malformed line is untouched (append-only); a second, valid line was added.
+    assert len(rows) == 2
+    backfilled = json.loads(rows[1])
+    assert backfilled["summary"]["content_id"] == ref.content_id
+    assert backfilled["summary"]["write_duration_sec"] is None
+    assert backfilled["summary"]["publish_duration_sec"] is None
+
+
+def test_backfill_publication_receipt_is_a_noop_when_a_valid_row_already_exists(
+    tmp_path: Path,
+) -> None:
+    checkpoint_dir, files = _write_checkpoint(tmp_path)
+    ref = _ref_for(checkpoint_dir)
+    path = tmp_path / "publication_receipts.jsonl"
+    record_publication_receipt(
+        ref, checkpoint_dir, files, path, write_duration_sec=1.0, publish_duration_sec=0.5
+    )
+    before = path.read_bytes()
+
+    appended = backfill_publication_receipt(ref, checkpoint_dir, files, path)
+
+    assert appended is False
+    assert path.read_bytes() == before
+
+
+def test_record_publication_receipt_does_not_catch_a_non_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The catch is narrowly OSError; any other exception must still propagate."""
+
+    import tpen.checkpoint.receipt as receipt_module
+
+    checkpoint_dir, files = _write_checkpoint(tmp_path)
+    ref = _ref_for(checkpoint_dir)
+    path = tmp_path / "publication_receipts.jsonl"
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("not an OSError")
+
+    monkeypatch.setattr(receipt_module, "append_publication_receipt", _boom)
+
+    with pytest.raises(RuntimeError, match="not an OSError"):
+        record_publication_receipt(
+            ref, checkpoint_dir, files, path, write_duration_sec=1.0, publish_duration_sec=0.5
+        )
+
+
+def test_reconcile_publication_backfills_receipt_after_a_failed_append(tmp_path: Path) -> None:
+    from tests.unit.callback.test_checkpoint import _write_checkpoint as _save_real_checkpoint
+    from tpen.checkpoint.catalog import reconcile_publication
+
+    root = tmp_path / "checkpoints"
+    root.mkdir(parents=True)
+    receipt_path = publication_receipt_path(root)
+    receipt_path.mkdir()
+
+    final_dir = _save_real_checkpoint(tmp_path)
+
+    assert receipt_path.is_dir()
+    assert list(receipt_path.iterdir()) == []
+
+    receipt_path.rmdir()  # clear the induced failure so the backfill can write
+
+    reconcile_publication(root, final_dir)
+
+    assert receipt_path.is_file()
+    rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["summary"]["write_duration_sec"] is None
+    assert rows[0]["summary"]["publish_duration_sec"] is None
+    assert rows[0]["summary"]["total_bytes"] > 0
+
+
+def test_reconcile_publication_backfill_is_idempotent_across_repeated_calls(
+    tmp_path: Path,
+) -> None:
+    from tests.unit.callback.test_checkpoint import _write_checkpoint as _save_real_checkpoint
+    from tpen.checkpoint.catalog import reconcile_publication
+
+    root = tmp_path / "checkpoints"
+    final_dir = _save_real_checkpoint(tmp_path)
+    receipt_path = publication_receipt_path(root)
+    receipt_path.unlink()  # simulate a receipt that was never durably recorded
+
+    reconcile_publication(root, final_dir)
+    rows_after_first = receipt_path.read_text(encoding="utf-8").splitlines()
+    assert len(rows_after_first) == 1
+
+    reconcile_publication(root, final_dir)
+    rows_after_second = receipt_path.read_text(encoding="utf-8").splitlines()
+    assert rows_after_second == rows_after_first

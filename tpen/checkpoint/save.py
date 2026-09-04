@@ -19,11 +19,7 @@ from .catalog import CheckpointCatalog, publication_catalog_path
 from .hashing import checkpoint_hashes, file_sha256
 from .manifest import CHECKPOINT_KIND, CHECKPOINT_SCHEMA_VERSION, CheckpointManifest
 from .payload import CheckpointPayload, ModelOnly, TrainResume
-from .receipt import (
-    build_publication_receipt,
-    append_publication_receipt,
-    publication_receipt_path,
-)
+from .receipt import publication_receipt_path, record_publication_receipt
 from .reference import CheckpointRef
 from .rng import rng_state_dict, runtime_device
 
@@ -97,12 +93,23 @@ def save_checkpoint(
     directory; finally, a :class:`~tpen.checkpoint.receipt.CheckpointPublicationReceipt`
     is built from the committed directory and appended to
     ``output_dir/publication_receipts.jsonl``. Each step after the rename is
-    additive: a later step never re-runs, undoes, or reorders an earlier one,
-    and an exception at any step after the rename leaves the checkpoint
-    published (see ``tpen.checkpoint.catalog.reconcile_publication`` for
-    repairing a catalog row or ``latest.json`` that failed to write). See
-    :mod:`tpen.checkpoint.receipt` for the receipt's field-by-field semantics,
-    including the exact instants its two durations bracket.
+    additive: a later step never re-runs, undoes, or reorders an earlier one.
+
+    The catalog publish and the ``latest.json`` update are load-bearing and
+    fail loud: an exception there propagates out of this function, though the
+    checkpoint remains committed and published (see
+    ``tpen.checkpoint.catalog.reconcile_publication`` for repairing a catalog
+    row or ``latest.json`` that failed to write). The receipt append is
+    deliberately NOT load-bearing: it is best-effort, catching ``OSError``
+    and logging a WARNING instead of raising, so a receipts-log failure (for
+    example, a quota failure) can never turn an already-committed, published
+    checkpoint into a reported failure. See
+    :func:`tpen.checkpoint.receipt.record_publication_receipt`. A checkpoint
+    whose receipt append failed this way can have it backfilled later via
+    ``tpen.checkpoint.catalog.reconcile_publication``, which records sizes
+    only -- never fabricated durations. See :mod:`tpen.checkpoint.receipt`
+    for the receipt's field-by-field semantics, including the exact instants
+    its two durations bracket and when they are explicitly absent instead.
     """
 
     import torch
@@ -219,14 +226,18 @@ def save_checkpoint(
         publish_end = time.perf_counter()
         # Additive last step: appends a new index entry after the existing
         # rename -> publish -> write_latest sequence without altering it.
-        receipt = build_publication_receipt(
+        # Best-effort: the checkpoint is already committed and published, so
+        # an OSError here (e.g. a quota failure on the receipts log) is
+        # logged rather than allowed to report a failed save. See
+        # tpen.checkpoint.receipt.record_publication_receipt.
+        record_publication_receipt(
             ref,
             final_dir,
             files,
+            publication_receipt_path(root),
             write_duration_sec=write_end - write_start,
             publish_duration_sec=publish_end - write_end,
         )
-        append_publication_receipt(publication_receipt_path(root), receipt)
     except Exception:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
