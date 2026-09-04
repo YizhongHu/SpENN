@@ -197,17 +197,36 @@ def derive_breadth_columns(independent: Mapping[str, int]) -> dict[str, int]:
 
 
 def breadth_levels(signs: Mapping[str, int]) -> dict[str, Any]:
-    """Translate complete A--L signs to their exact factor levels."""
+    """Translate any complete A--L sign assignment to exact factor levels.
 
-    _require_exact_keys(signs, BREADTH_COLUMNS, "breadth signs")
+    Generator membership is a property of the 256-row design fraction, not a
+    validity condition on an assignment.  In particular, the named control is
+    deliberately outside that fraction and must still resolve here.
+    """
+
+    _require_key_set(signs, BREADTH_COLUMNS, "breadth signs")
     normalized = {column: _sign(signs[column], column) for column in BREADTH_COLUMNS}
-    if derive_breadth_columns({column: normalized[column] for column in INDEPENDENT_BREADTH_COLUMNS}) != normalized:
-        raise ValueError("derived breadth signs do not match A--H")
     columns = load_dictionary()["breadth"]["columns"]
     return {
         column: columns[column]["plus" if normalized[column] == 1 else "minus"]
         for column in BREADTH_COLUMNS
     }
+
+
+def is_fraction_row(signs: Mapping[str, int]) -> bool:
+    """Return whether complete A--L signs belong to the 256-row fraction.
+
+    This is a diagnostic predicate for callers that explicitly care about the
+    design subset.  It does not constrain :func:`breadth_levels` or the
+    complete-assignment resolver: the named control is deliberately outside
+    the fraction.
+    """
+
+    _require_key_set(signs, BREADTH_COLUMNS, "breadth signs")
+    normalized = {column: _sign(signs[column], column) for column in BREADTH_COLUMNS}
+    return derive_breadth_columns(
+        {column: normalized[column] for column in INDEPENDENT_BREADTH_COLUMNS}
+    ) == normalized
 
 
 def iter_breadth_signs() -> tuple[dict[str, int], ...]:
@@ -823,6 +842,7 @@ __all__ = [
     "cpmlp_initializer_streams",
     "derive_breadth_columns",
     "iter_breadth_signs",
+    "is_fraction_row",
     "load_dictionary",
     "resolve_assignment",
     "resolve_center_times_multiplier",

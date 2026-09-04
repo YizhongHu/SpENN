@@ -35,6 +35,12 @@ factor: feature/body `max_order` is fixed at `2` in every cell, while C selects
 only interaction/path `max_virtual_order` `1` or `2`. This departure is cited in
 the dictionary as **user decision 2026-09-04 (Q1)**.
 
+The I–L generator equations define membership in the 256-row design fraction;
+they are not validity constraints on complete A–L assignments. The named
+control is deliberately outside that fraction and resolves through the same
+surface. Use `is_fraction_row` only when a caller explicitly needs to classify
+design membership.
+
 ## Hooke choice surface and seeds
 
 `build_shared_hooke_choice_surface` emits a self-contained Hydra fragment for

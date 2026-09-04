@@ -85,8 +85,49 @@ def test_breadth_resolution_is_256_records_and_c_only_changes_virtual_order() ->
     assert low["C"] == 1
     assert high["C"] == 2
     assert low["A"] == high["A"] and low["B"] == high["B"]
-    with pytest.raises(ValueError, match="derived breadth signs"):
-        dictionary.breadth_levels({**records[0], "C": 1})
+
+
+def test_out_of_fraction_control_resolves_without_becoming_a_fraction_row() -> None:
+    control = dict(zip("ABCDEFGHIJKL", (1, -1, 1, -1, -1, 1, 1, 1, 1, -1, 1, 1)))
+    assert dictionary.is_fraction_row(control) is False
+    levels = dictionary.breadth_levels(control)
+    assert levels["J"] == "none"
+    assert levels["K"] == 0.5
+    assignment = {
+        "mixing": "tensor",
+        "activation": "pointwise",
+        "optimizer": "Adam",
+        "lr_multiplier": 1.0,
+        **control,
+    }
+    resolved = dictionary.resolve_assignment(
+        assignment,
+        absolute_lr=0.005,
+        runtime_seed=620001,
+        science_assignment_id="named-control",
+    )
+    assert resolved.config["model"]["gradient_clip"] == "none"
+    assert resolved.config["model"]["proposal_scale"] == 0.5
+
+
+def test_fraction_rows_still_satisfy_all_four_generator_relations() -> None:
+    rows = dictionary.iter_breadth_signs()
+    assert len(rows) == 256
+    assert all(dictionary.is_fraction_row(row) for row in rows)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda row: {key: value for key, value in row.items() if key != "L"},
+        lambda row: {**row, "M": 1},
+        lambda row: {**row, "A": 0},
+    ],
+)
+def test_malformed_complete_assignments_still_fail(mutation) -> None:
+    row = dictionary.iter_breadth_signs()[0]
+    with pytest.raises(ValueError):
+        dictionary.breadth_levels(mutation(row))
 
 
 def test_c_amendment_reaches_only_virtual_order_in_resolved_configs() -> None:
