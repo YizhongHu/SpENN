@@ -29,7 +29,13 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from tests.helpers.ddp_fault_injection import FaultKind, FaultPhase, FaultPlan, read_fault_plan
+from tests.helpers.ddp_fault_injection import (
+    COLLECTIVE_FAULT_KINDS,
+    FaultKind,
+    FaultPhase,
+    FaultPlan,
+    read_fault_plan,
+)
 
 
 def _report_fault_applied(rank: int, phase_name: str, plan: FaultPlan) -> None:
@@ -90,11 +96,7 @@ def _do_collective(rank: int, world_size: int, plan: FaultPlan | None) -> float 
 
     targets_this_rank = plan is not None and plan.target_rank == rank
 
-    if targets_this_rank and plan.kind in (
-        FaultKind.SKIP_COLLECTIVE,
-        FaultKind.MISMATCH_COLLECTIVE,
-        FaultKind.MISMATCH_SHAPE,
-    ):
+    if targets_this_rank and plan.kind in COLLECTIVE_FAULT_KINDS:
         # plan.phase, never a hardcoded constant: validate_fault_plan (called
         # by the harness before any worker launches) has already rejected
         # any of these three kinds paired with a phase other than
