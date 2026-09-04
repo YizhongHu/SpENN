@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable
 
@@ -160,7 +159,7 @@ def run_closure_step(
     *,
     maximum_inner_iterates: int,
 ) -> tuple[StepObservation, int, int, int]:
-    """Run a re-evaluating closure with all but its final backward suppressed."""
+    """Run a globally synchronized closure with rank-safe state mutation."""
 
     if maximum_inner_iterates < 2:
         raise ValueError("closure test requires at least two inner iterates")
@@ -172,18 +171,21 @@ def run_closure_step(
         nonlocal closure_calls, synchronized_calls, final_gradient_call
         closure_calls += 1
         optimizer.zero_grad(set_to_none=True)
-        synchronize = closure_calls == maximum_inner_iterates
-        context = nullcontext() if synchronize else access.ddp_model.no_sync()
-        with context:
-            logabs = access.score_forward(features)
-            local_surrogate, _ = make_local_surrogate(
-                logabs, energy, stats, world_size=runtime.world_size
-            )
-            local_surrogate.backward()
-        if synchronize:
-            synchronized_calls += 1
-            final_gradient_call = closure_calls
-        return local_surrogate
+        logabs = access.score_forward(features)
+        local_surrogate, _ = make_local_surrogate(
+            logabs, energy, stats, world_size=runtime.world_size
+        )
+        local_surrogate.backward()
+        local_term = float(centered_terms(logabs.detach(), energy, stats).sum().item())
+        global_term = sum(float(value) for value in runtime.all_gather_objects(local_term))
+        global_loss = 2.0 * global_term / stats.finite_count
+        # LBFGS mutates parameters and history after every closure return, so
+        # every state-mutating iterate must use the same globally reduced
+        # gradient and the same global objective value. Early stopping is safe
+        # because there is no special unsynchronized "final" call to miss.
+        synchronized_calls += 1
+        final_gradient_call = closure_calls
+        return torch.tensor(global_loss, dtype=local_surrogate.dtype)
 
     optimizer.step(closure)
     gradients = {

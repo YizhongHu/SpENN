@@ -153,10 +153,12 @@ def _common_observability(
         "api_inventory": {
             "stable": [
                 "torch.nn.parallel.DistributedDataParallel",
-                "torch.distributed.checkpoint.state_dict.get_state_dict",
-                "torch.distributed.checkpoint.state_dict.set_state_dict",
                 "torch.distributed.checkpoint.FileSystemReader",
                 "torch.distributed.checkpoint.FileSystemWriter",
+            ],
+            "experimental": [
+                "torch.distributed.checkpoint.state_dict.get_state_dict",
+                "torch.distributed.checkpoint.state_dict.set_state_dict",
             ],
             "spike_prototype": [
                 "tests.spikes.native_ddp.DistributedRuntime",
@@ -189,7 +191,7 @@ def _failure_state(args: argparse.Namespace, status: str, error: BaseException) 
             state = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             return
-        if state.get("status") != "success":
+        if state.get("status") not in {"success", "checkpoint_pending"}:
             return
         state.update(
             {
@@ -250,6 +252,8 @@ def _run(args: argparse.Namespace) -> int:
     if args.experiment == "resume" and args.resume_generation is not None:
         if store is None:
             raise ValueError("resume requires --checkpoint-root")
+        resume_parameters_before = _parameters(model)
+        resume_optimizer_before = _jsonable(optimizer.state_dict())
         try:
             loaded = store.load(model, optimizer, generation=args.resume_generation)
         except CheckpointTopologyMismatch as exc:
@@ -259,10 +263,11 @@ def _run(args: argparse.Namespace) -> int:
             state.update(
                 {
                     "status": "topology_refused",
-                    "mutation_started": False,
                     "counter_before": 0,
                     "counter_after": 0,
-                    "optimizer_state_before": _jsonable(optimizer.state_dict()),
+                    "parameters_before": resume_parameters_before,
+                    "parameters_after": _parameters(model),
+                    "optimizer_state_before": resume_optimizer_before,
                     "optimizer_state_after": _jsonable(optimizer.state_dict()),
                     "failure_exception": f"{type(exc).__name__}: {exc}",
                 }
@@ -290,15 +295,18 @@ def _run(args: argparse.Namespace) -> int:
     closure_calls = 0
     synchronized_closure_calls = 0
     final_gradient_call = 0
+    kinetic_raw_model_calls = 0
 
     for iteration in range(completed_updates, args.iterations):
         reductions_before_sampling = counter.count
         if args.experiment == "scientific":
+            kinetic_raw_model_calls = 0
             features, energy = scientific_fixture(args.world_size, args.rank, kind=args.fixture)
             sampler.advance(model, args.mcmc_steps)
             for _ in range(args.kinetic_forwards):
                 _, kinetic_gradient = access.coordinate_forward(features)
                 last_coordinate_gradient = kinetic_gradient.detach()
+                kinetic_raw_model_calls += 1
             last_coordinates = features
             last_energy = energy
         else:
@@ -322,8 +330,12 @@ def _run(args: argparse.Namespace) -> int:
                     "optimizer_step": False,
                     "counter_before": completed_updates,
                     "counter_after": completed_updates,
+                    "parameters_before": parameters_before,
+                    "parameters_after": _parameters(model),
                     "optimizer_state_before": optimizer_before,
                     "optimizer_state_after": _jsonable(optimizer.state_dict()),
+                    "ddp_gradient_reductions": counter.count,
+                    "ddp_gradient_reductions_per_update": 0,
                     "phase_sequence": phase_sequence,
                     "global_statistics": stats.as_dict(),
                 }
@@ -403,7 +415,9 @@ def _run(args: argparse.Namespace) -> int:
             "ddp_gradient_reductions_per_update": last_observation.gradient_reductions - reductions_before,
             "sampling_gradient_reductions": reductions_before - reductions_before_sampling,
             "sampling_collectives": 0,
-            "coordinate_forward_count": sampler.coordinate_forward_count + args.kinetic_forwards + 1,
+            "coordinate_forward_count": access.forward_counts["raw"],
+            "sampling_raw_model_calls": sampler.coordinate_forward_count,
+            "kinetic_raw_model_calls": kinetic_raw_model_calls,
             "closure_calls": closure_calls,
             "synchronized_closure_calls": synchronized_closure_calls,
             "final_gradient_call": final_gradient_call,
@@ -417,9 +431,13 @@ def _run(args: argparse.Namespace) -> int:
             "rng_state": _jsonable(capture_global_rng_state()),
         }
     )
-    Path(args.state_path).write_text(json.dumps(state, sort_keys=True))
+    state_path = Path(args.state_path)
+    state_path.write_text(json.dumps(state, sort_keys=True))
 
     if store is not None and args.checkpoint_generation is not None:
+        state["status"] = "checkpoint_pending"
+        state["checkpoint_status"] = "pending"
+        state_path.write_text(json.dumps(state, sort_keys=True))
         phase_sequence.append(FaultPhase.BEFORE_STATE_WRITE.name)
         phase_sequence.append(FaultPhase.AFTER_STATE_WRITE.name)
         phase_sequence.append(FaultPhase.BEFORE_PUBLICATION.name)
@@ -434,6 +452,9 @@ def _run(args: argparse.Namespace) -> int:
             delay_rank=args.checkpoint_delay_rank,
             delay_seconds=args.checkpoint_delay_seconds,
         )
+        state["status"] = "success"
+        state["checkpoint_status"] = "published"
+        state_path.write_text(json.dumps(state, sort_keys=True))
         phase_sequence.append(FaultPhase.AFTER_PUBLICATION.name)
 
     runtime.barrier()

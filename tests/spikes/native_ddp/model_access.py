@@ -31,7 +31,7 @@ class ModelAccess:
 
     raw_model: SemanticWavefunction
     ddp_model: DistributedDataParallel
-    forward_counts: dict[str, int] = field(default_factory=lambda: {"ddp": 0})
+    forward_counts: dict[str, int] = field(default_factory=lambda: {"ddp": 0, "raw": 0})
 
     @classmethod
     def create(cls, raw_model: SemanticWavefunction) -> "ModelAccess":
@@ -41,8 +41,12 @@ class ModelAccess:
             raw_model=raw_model,
             ddp_model=DistributedDataParallel(raw_model, device_ids=None, broadcast_buffers=False),
         )
+        access.raw_model.register_forward_pre_hook(access._count_raw_forward)
         access.ddp_model.register_forward_pre_hook(access._count_ddp_forward)
         return access
+
+    def _count_raw_forward(self, _module, _inputs) -> None:
+        self.forward_counts["raw"] += 1
 
     def _count_ddp_forward(self, _module, _inputs) -> None:
         self.forward_counts["ddp"] += 1
