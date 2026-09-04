@@ -184,6 +184,20 @@ def _write_receipt(args: argparse.Namespace, phase_sequence: list[str], fault_ki
 def _failure_state(args: argparse.Namespace, status: str, error: BaseException) -> None:
     path = Path(args.state_path)
     if path.exists():
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        if state.get("status") != "success":
+            return
+        state.update(
+            {
+                "status": status,
+                "failure_exception": f"{type(error).__name__}: {error}",
+                "failure_evidence": "native worker failed after provisional state emission",
+            }
+        )
+        path.write_text(json.dumps(state, sort_keys=True))
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
