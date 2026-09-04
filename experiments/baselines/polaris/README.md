@@ -97,9 +97,51 @@ device count and banner still looks correct.
 
 Note also that ALCF's `--cpu-bind depth` guidance is written for **one rank per GPU**.
 It does not directly describe the right binding for one rank driving four GPUs, which is
-what this wrapper does. `--cpu-bind none` is known to remove the 2.6× single-core
-penalty; whether a locality-aware binding beats it for the rank-per-node case is
-unmeasured, and should be measured rather than assumed.
+what this wrapper does.
+
+### Measured node topology (job 7589174)
+
+`nvidia-smi topo -m` and `numactl --hardware` on a Polaris compute node:
+
+| GPU | CPU affinity | NUMA |
+|---|---|---|
+| GPU0 | 24-31, 56-63 | 3 |
+| GPU1 | 16-23, 48-55 | 2 |
+| GPU2 | 8-15, 40-47 | 1 |
+| GPU3 | 0-7, 32-39 | 0 |
+
+So **GPU *N* pairs with NUMA *3−N***, confirming the documented reversal by measurement.
+Four NUMA domains, 8 physical cores each (0-31) plus their hyperthread siblings (32-63).
+
+Every GPU pair reports **NV4** — a full NVLink mesh, no PCIe hops between GPUs.
+**Consequence:** a poor DDP scaling result on this node is *not* an interconnect problem.
+For DeepQMC He the limit is too little work per device (4096/4 = 1024 walkers at W4, 512
+at W8), so launch and host overhead dominate a collective that is itself cheap. This is
+consistent with 4-way efficiency rising from 59.9% (He) to 87.4% (N).
+
+### What each binding mode actually delivers
+
+Measured with 4 ranks on one node:
+
+| flags | rank 0 | rank 1 | rank 2 | rank 3 |
+|---|---|---|---|---|
+| *(default)* | `0` | `1` | `2` | `3` |
+| `--cpu-bind none` | `0-63` | `0-63` | `0-63` | `0-63` |
+| `--cpu-bind depth -d 16` | `0-15` | `16-31` | `32-47` | `48-63` |
+
+Two things follow that the earlier text got wrong:
+
+- **`--cpu-bind none` gives every rank the *whole node*, overlapping.** That is correct for
+  this wrapper's rank-per-node layout, where a single rank should own all four GPUs and all
+  four NUMA domains. It is **wrong for multiple ranks per node**, where the masks overlap
+  and ranks contend for the same cores.
+- **`--depth 16` crosses NUMA boundaries.** Rank 0 gets `0-15`, spanning NUMA 0 (`0-7`) and
+  NUMA 1 (`8-15`). ALCF's `--depth=8` is the NUMA-aligned choice: `0-7`, `8-15`, `16-23`,
+  `24-31` each sit inside one domain. Do not substitute a larger depth expecting "more
+  cores, same locality".
+
+Still unmeasured: whether a NUMA-aligned binding *outperforms* `--cpu-bind none` for the
+rank-per-node case. The layouts above say what each flag delivers, not which is faster.
 
 Sources: ALCF *Using GPUs on Polaris* and the `argonne-lcf/GettingStarted`
 `Examples/Polaris/affinity_gpu` example.
