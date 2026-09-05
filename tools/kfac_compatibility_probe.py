@@ -27,8 +27,9 @@ def criterion_verdicts() -> dict:
     """Keep full compatibility distinct from this probe's narrower diagnostics.
 
     Even successful single-process controls cannot establish the required
-    whole-TPEN extension and multi-rank contracts. The durable reviewer supplies
-    those receipts; this diagnostic never converts pending evidence into a pass.
+    whole-TPEN extension and multi-rank contracts. Blocker metadata distinguishes
+    operator decisions and qualification work from reviewer execution; this
+    diagnostic never converts pending evidence into a pass.
     """
     obligations = {
         "C1": "Complete named TPEN Kronecker/exact-scalar coverage and trace extraction",
@@ -37,7 +38,15 @@ def criterion_verdicts() -> dict:
         "C4": "Every required TPEN registration, factor and state path qualified through public APIs",
         "C5": "Exact complete-state TPEN restart across factor and inverse refresh under real multi-rank execution",
     }
-    return {key: {"state": UNESTABLISHED, "missing_evidence": obligation}
+    blockers = {
+        "C1": ["pre_adapter_qualification", "reviewer_cluster_evidence"],
+        "C2": ["operator_decision", "pre_adapter_qualification", "reviewer_cluster_evidence"],
+        "C3": ["pre_adapter_qualification", "reviewer_cluster_evidence"],
+        "C4": ["pre_adapter_qualification", "reviewer_cluster_evidence"],
+        "C5": ["pre_adapter_qualification", "reviewer_cluster_evidence"],
+    }
+    return {key: {"state": UNESTABLISHED, "missing_evidence": obligation,
+                  "blocking_parties": blockers[key]}
             for key, obligation in obligations.items()}
 
 
