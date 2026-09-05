@@ -501,22 +501,47 @@ def _eigh_solve(
     threshold = float(rank_cutoff) * max_eigenvalue
     retained_mask = eigenvalues >= threshold if threshold > 0.0 else None
 
-    projected = eigenvectors.transpose(0, 1) @ right_hand_side
-    denominator = eigenvalues + shift
-    if float(denominator.min().item()) <= 0.0:
-        raise ValueError(
-            "QGT solve is singular: damping must be positive when the QGT has a "
-            "zero eigenvalue"
-        )
-    scaled = projected / denominator
     if retained_mask is not None:
-        scaled = torch.where(retained_mask, scaled, torch.zeros_like(scaled))
         retained_modes = int(retained_mask.sum().item())
         retained_values = eigenvalues[retained_mask]
         min_retained = float(retained_values.min().item()) if retained_values.numel() else 0.0
     else:
         retained_modes = int(eigenvalues.numel())
         min_retained = float(eigenvalues[0].item()) if eigenvalues.numel() else 0.0
+
+    # Numerical-rank guard, taken RELATIVE to the spectrum and applied to the
+    # smallest mode that survives truncation.
+    #
+    # An absolute test such as ``min(eigenvalues + shift) <= 0`` is not usable
+    # here, and was the original form of this check. Whether a numerically zero
+    # eigenvalue comes back from a symmetric eigensolver as ``+1e-17`` or
+    # ``-1e-17`` is a rounding accident that differs between backends: on the
+    # same rank-deficient matrix NumPy returned -1.7e-16 while torch returned a
+    # small positive value. An absolute test therefore fires or stays silent by
+    # coin flip, and when it stays silent it lets through a direction amplified
+    # by 1/epsilon -- confidently wrong rather than loudly refused.
+    #
+    # The tolerance is the standard numerical-rank threshold, matching the
+    # convention used by ``numpy.linalg.matrix_rank``: ``n * eps * largest``.
+    # Damping and rank truncation are both legitimate ways to make an otherwise
+    # singular problem well posed, so a positive shift or a cutoff that removes
+    # the offending modes correctly passes this guard.
+    rank_tolerance = (
+        eigenvalues.numel() * torch.finfo(matrix.dtype).eps * max_eigenvalue
+    )
+    if min_retained + shift <= rank_tolerance:
+        raise ValueError(
+            "QGT solve is singular: the smallest retained eigenvalue "
+            f"({min_retained:.3e}) plus damping ({shift:.3e}) is within the "
+            f"numerical-rank tolerance ({rank_tolerance:.3e}) of a spectrum whose "
+            f"largest eigenvalue is {max_eigenvalue:.3e}. Supply positive damping "
+            "or a rank cutoff."
+        )
+
+    projected = eigenvectors.transpose(0, 1) @ right_hand_side
+    scaled = projected / (eigenvalues + shift)
+    if retained_mask is not None:
+        scaled = torch.where(retained_mask, scaled, torch.zeros_like(scaled))
 
     solution = eigenvectors @ scaled
     return solution, retained_modes, max_eigenvalue, min_retained

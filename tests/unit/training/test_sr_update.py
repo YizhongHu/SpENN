@@ -236,16 +236,35 @@ def test_euclidean_limit_recovers_the_ordinary_vmc_gradient_direction() -> None:
     )
     result = method.update(_step_input(parameter, features, energies))
 
-    displacement = (before - parameter.detach()).numpy()
+    # Read the direction from `.grad` rather than by differencing parameters.
+    # Differencing is the wrong instrument at this damping: the displacement is
+    # ~3e-12 against O(1) parameters, so recovering it from a subtraction loses
+    # about five significant digits to cancellation and reports a ~1e-5
+    # direction error that is an artefact of the measurement, not of the step.
+    # `.grad` holds the preconditioned direction exactly, and plain SGD does not
+    # modify it. The separate claim that parameters move by exactly
+    # `-lr * direction` is covered at ordinary damping by
+    # ``test_applied_step_is_exactly_minus_lr_times_the_reference_direction``.
+    direction = parameter.grad.detach().numpy()
     reference_direction = reference.numpy() / np.linalg.norm(reference.numpy())
-    step_direction = displacement / np.linalg.norm(displacement)
+    step_direction = direction / np.linalg.norm(direction)
 
     np.testing.assert_allclose(
-        step_direction, reference_direction, rtol=1.0e-7, atol=1.0e-7
+        step_direction, reference_direction, rtol=1.0e-9, atol=1.0e-9
     )
     assert result.grad_norm == pytest.approx(
         float(np.linalg.norm(reference.numpy())), rel=1.0e-10
     )
+    # The step must still have moved the parameters in that direction.
+    assert not torch.equal(parameter.detach(), before)
+    assert float(
+        np.dot(
+            (before - parameter.detach()).numpy() / np.linalg.norm(
+                (before - parameter.detach()).numpy()
+            ),
+            reference_direction,
+        )
+    ) == pytest.approx(1.0, abs=1.0e-8)
 
 
 def test_nonfinite_energy_samples_are_excluded_exactly_as_the_objective_does() -> None:
