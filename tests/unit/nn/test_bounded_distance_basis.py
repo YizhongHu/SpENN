@@ -35,7 +35,12 @@ def _basis(spatial_dim: int = 3, include_spin: bool = True, length: float = LENG
 
 
 def _batch(positions, spins=None):
-    positions = torch.tensor(positions, dtype=torch.float64)
+    # as_tensor, NOT tensor(list): a caller passing torch.zeros(2, 0, 3) through
+    # .tolist() gets [[], []], which collapses to shape (2, 0) and loses the
+    # spatial axis. ElectronBatch then rejects it for ndim < 3 -- correctly, but
+    # the failure reads like "zero electrons are unsupported" when it is really
+    # "this helper destroyed the shape".
+    positions = torch.as_tensor(positions, dtype=torch.float64)
     if spins is None:
         spins = torch.ones(positions.shape[:-1], dtype=torch.float64)
         spins[..., 1::2] = -1.0
@@ -127,7 +132,7 @@ class TestNeutralSemanticsForZeroRows:
     """The contract's falsifier: no special caller branching, no changed result."""
 
     def test_a_zero_electron_batch_produces_well_formed_empty_features(self) -> None:
-        features = _basis()(_batch(torch.zeros(2, 0, 3).tolist()))
+        features = _basis()(_batch(torch.zeros(2, 0, 3)))
         assert features.one_body.shape == (2, 0, _basis().out_features)
         assert features.pair.shape == (2, 0, 0, 3)
 
@@ -137,7 +142,7 @@ class TestNeutralSemanticsForZeroRows:
         features = _basis()(_batch([[[1.0, 0.0, 0.0]]]))
         assert features.pair.shape == (1, 1, 1, 3)
         torch.testing.assert_close(
-            features.pair[0, 0, 2], torch.tensor(0.0, dtype=torch.float64)
+            features.pair[0, 0, 0, 2], torch.tensor(0.0, dtype=torch.float64)
         )
 
     def test_a_zero_row_batch_needs_no_branch_and_stays_finite(self) -> None:
@@ -149,7 +154,7 @@ class TestNeutralSemanticsForZeroRows:
 
         basis = _basis()
         for count in (0, 1, 2):
-            batch = _batch(torch.zeros(1, count, 3).tolist())
+            batch = _batch(torch.zeros(1, count, 3))
             features = basis(batch)
             assert features.pair.shape == (1, count, count, 3)
             assert torch.isfinite(features.one_body).all()
