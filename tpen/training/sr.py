@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Self
 
 from tpen.dependencies import require_torch
+from tpen.nn.forward import MaterializedParameterScoreRequest
 from tpen.training.qgt import (
     DampingPolicy,
     QGTOperator,
@@ -118,6 +119,11 @@ class SRPolicy:
         ``lr * delta``.  ``None`` disables the cap.  A cap is a scale limit,
         not a direction change: the direction is rescaled, never clipped
         per-coordinate.
+    score_chunk_size : int or None, optional
+        Sample chunk size passed to the score-bearing forward request.
+        ``None`` leaves the choice to the model.  This is a memory control:
+        materializing the ``[B, P]`` score block is the dominant allocation of
+        an SR step, and chunking trades a larger forward for a smaller peak.
 
     Notes
     -----
@@ -131,6 +137,7 @@ class SRPolicy:
     rank_cutoff: float = 0.0
     learning_rate: float = 1.0e-2
     max_update_norm: float | None = None
+    score_chunk_size: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rank_cutoff", float(self.rank_cutoff))
@@ -157,6 +164,9 @@ class SRPolicy:
         if self.max_update_norm is not None:
             if not self.max_update_norm > 0.0 or not _is_finite(self.max_update_norm):
                 raise ValueError("SRPolicy.max_update_norm must be finite and positive, or None")
+        if self.score_chunk_size is not None:
+            if type(self.score_chunk_size) is not int or self.score_chunk_size < 1:
+                raise ValueError("SRPolicy.score_chunk_size must be a positive integer, or None")
         return self
 
     def resolve_space(self, *, n_parameters: int, n_samples: int) -> str:
@@ -179,6 +189,7 @@ class SRPolicy:
             "rank_cutoff": self.rank_cutoff,
             "learning_rate": self.learning_rate,
             "max_update_norm": self.max_update_norm,
+            "score_chunk_size": self.score_chunk_size,
         }
 
 
@@ -296,6 +307,21 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
         self.completed_updates = 0
         self.last_telemetry: SRTelemetry | None = None
 
+    def forward_request(self) -> MaterializedParameterScoreRequest:
+        """Request raw per-sample parameter score blocks from the forward pass.
+
+        Returning the request rather than performing it keeps this method free
+        of the model: the trainer owns the single forward, and the score blocks
+        arrive in the same packet as the value output, so no second forward or
+        derivative recomputation is needed.
+
+        ``score_chunk_size`` is forwarded here because chunking is a memory
+        decision about materializing a ``[B, P]`` score block, which is a
+        property of this method's step, not of the model.
+        """
+
+        return MaterializedParameterScoreRequest(chunk_size=self.policy.score_chunk_size)
+
     def update_state(self) -> VMCUpdateState:
         """Return the single optimizer and parameter binding this method owns."""
 
@@ -315,11 +341,17 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
         """Return the versioned method-state envelope.
 
         The envelope carries the layout-plus-convention fingerprint alongside
-        the schedule counter and the optimizer payload, so a resume can reject
-        a checkpoint whose parameter layout or numerical conventions no longer
-        match instead of producing a plausible wrong step.  This slice has no
-        warm start to persist; when an iterative solver adds one, it belongs
-        in this envelope under the same fingerprint.
+        the schedule counter, so a resume can reject a checkpoint whose
+        parameter layout or numerical conventions no longer match instead of
+        producing a plausible wrong step.  This slice has no warm start to
+        persist; when an iterative solver adds one, it belongs in this envelope
+        under the same fingerprint.
+
+        The optimizer payload is deliberately NOT included.  The checkpoint
+        already persists the optimizer separately, and this method's
+        :meth:`update_state` names that same object as the single authority.
+        Carrying it here too would create two sources of truth for one payload
+        and restore it twice on every resume.
         """
 
         return {
@@ -330,7 +362,6 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
             ),
             "policy": self.policy.fingerprint(),
             "completed_updates": self.completed_updates,
-            "optimizer": self.optimizer.state_dict(),
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -352,10 +383,6 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
         completed = state.get("completed_updates", 0)
         if type(completed) is not int or completed < 0:
             raise ValueError("SR state completed_updates must be a non-negative integer")
-        optimizer_state = state.get("optimizer")
-        if not isinstance(optimizer_state, Mapping):
-            raise ValueError("SR state must contain an optimizer payload")
-        self.optimizer.load_state_dict(dict(optimizer_state))
         self.completed_updates = completed
 
     def update(self, update_input: ScoreUpdateInput) -> VMCUpdateResult:

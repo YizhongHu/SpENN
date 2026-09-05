@@ -353,6 +353,35 @@ class VMCUpdateMethod(Generic[InputT], ABC):
 
         del model_parameters
 
+    def forward_request(self) -> Any | None:
+        """Return the typed forward request this method's input requires.
+
+        Returns
+        -------
+        WavefunctionForwardRequest or None
+            ``None``, the default, means an ordinary value forward
+            (``model(batch)``) supplies everything the method needs.  A method
+            consuming derivative payloads returns the exact request describing
+            them, for example a
+            :class:`~tpen.nn.forward.MaterializedParameterScoreRequest`.
+
+        Notes
+        -----
+        This exists so the trainer can produce the score-bearing forward packet
+        **once**, in the single forward it already performs, rather than
+        running an ordinary forward and then recomputing derivatives.  A design
+        that did the latter would double the forward and derivative work of
+        every step.
+
+        The return type is deliberately the request object itself rather than a
+        capability flag or a name.  The trainer dispatches on the request's own
+        type, so adding a future derivative payload cannot be done by inventing
+        a string, and a method cannot claim a capability whose payload it does
+        not then receive.
+        """
+
+        return None
+
     def set_step_scopes(
         self,
         *,

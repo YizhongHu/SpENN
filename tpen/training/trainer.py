@@ -23,10 +23,13 @@ from tpen.training.events import (
     UpdateSkipped,
 )
 from tpen.training.state import TrainerState
+from tpen.nn.forward import ParameterScoreRequest
+from tpen.training.optim import make_update_method
 from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
     ModelParameterBinding,
+    ScoreUpdateInput,
     deserialize_parameter_layout,
     serialize_parameter_layout,
     VMCUpdateMethod,
@@ -144,6 +147,15 @@ class VMCTrainer:
             state["parameter_layout"] = serialize_parameter_layout(
                 self._resolved_update_state.model_parameters.layout
             )
+        # Method state is a first-class payload, not an optimizer detail. A
+        # method that owns a schedule counter, a convention fingerprint, or a
+        # warm-start vector must be able to round-trip it; the default
+        # `VMCUpdateMethod.state_dict()` is empty, so a stateless method adds
+        # no key and existing checkpoints are unchanged.
+        if self._resolved_update_method is not None:
+            method_state = self._resolved_update_method.state_dict()
+            if method_state:
+                state["update_method"] = dict(method_state)
         return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -186,6 +198,17 @@ class VMCTrainer:
                 raise ValueError(
                     "parameter layout restore requires update-state resolution before restore"
                 )
+
+        # Restore method state before the layout rebind below, so a method
+        # whose fingerprint disagrees with this checkpoint fails while the
+        # trainer's own counters are still unmutated.
+        if "update_method" in state:
+            if self._resolved_update_method is None:
+                raise ValueError(
+                    "update-method state restore requires update-state resolution "
+                    "before restore"
+                )
+            self._resolved_update_method.load_state_dict(state["update_method"])
 
         self._checkpoint_parameter_layout = restored_layout
         if restored_layout is not None:
@@ -270,6 +293,7 @@ class VMCTrainer:
     ) -> VMCUpdateMethod[AutogradUpdateInput]:
         """Select or construct the update method for one fit invocation."""
 
+        from_self = update_method is None
         selected_update_method = update_method if update_method is not None else self.update_method
         if selected_update_method is None:
             return LegacyAutogradUpdate(
@@ -277,8 +301,26 @@ class VMCTrainer:
                 gradient_clip_norm=self.gradient_clip_norm,
                 model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
             )
+        # A Hydra `_partial_` block resolves to a factory rather than a method,
+        # because a stateful method needs the optimizer and the live parameter
+        # binding, neither of which exists at config time. Completing it here
+        # keeps the one place that already resolves the method as the only
+        # place that knows how it is built.
+        selected_update_method = make_update_method(
+            selected_update_method,
+            optimizer=optimizer,
+            model_parameters=ModelParameterBinding(parameters=tuple(model.parameters())),
+        )
         if not isinstance(selected_update_method, VMCUpdateMethod):
             raise TypeError("VMCTrainer update_method must be a VMCUpdateMethod")
+        if from_self:
+            # Memoize the constructed method back onto the trainer. This
+            # selection runs twice in a resumed run -- once from
+            # `resolve_update_state` before restore, once from `fit` -- and a
+            # factory would otherwise yield two DIFFERENT instances, so the
+            # checkpoint would load into the one that is then discarded and the
+            # run would silently resume with a fresh method state.
+            self.update_method = selected_update_method
         return selected_update_method
 
     def _resolve_method_state(
@@ -380,8 +422,20 @@ class VMCTrainer:
                     total_local_energy = result
                     term_energies = None
 
+                # One forward, shaped by what the update method actually needs.
+                # A score method receives its raw per-sample score blocks in
+                # this same packet; running an ordinary forward and then
+                # recomputing derivatives would double the step's forward and
+                # derivative work.
+                forward_request = selected_update_method.forward_request()
                 with context.scope(Forward(step=step), state=state):
-                    output = model(batch)
+                    if forward_request is None:
+                        output = model(batch)
+                        parameter_scores = None
+                    else:
+                        packet = forward_request.evaluate(model, batch)
+                        output = packet.as_output()
+                        parameter_scores = packet.parameter_scores
                 with context.scope(Objective(step=step), state=state):
                     objective = compute_vmc_objective(output.logabs, total_local_energy)
                 loss = objective.loss
@@ -395,13 +449,28 @@ class VMCTrainer:
                 # reports this same pre-update value.
                 param_norm = _parameter_norm(model)
 
-                update_input = AutogradUpdateInput(
-                    batch=batch,
-                    wavefunction=output,
-                    local_energy=total_local_energy,
-                    step=step,
-                    objective=loss,
-                )
+                # Dispatch on the typed request the method already declared,
+                # never on a name or a capability flag: a method cannot receive
+                # a score input without having asked for the score payload.
+                update_input: AutogradUpdateInput | ScoreUpdateInput
+                if isinstance(forward_request, ParameterScoreRequest):
+                    assert parameter_scores is not None
+                    update_input = ScoreUpdateInput(
+                        batch=batch,
+                        wavefunction=output,
+                        local_energy=total_local_energy,
+                        step=step,
+                        parameter_scores=parameter_scores,
+                        parameter_binding=model.parameter_binding,
+                    )
+                else:
+                    update_input = AutogradUpdateInput(
+                        batch=batch,
+                        wavefunction=output,
+                        local_energy=total_local_energy,
+                        step=step,
+                        objective=loss,
+                    )
                 update_result = selected_update_method.update(update_input)
                 optimizer_step = False
                 if update_result.applied:
@@ -411,19 +480,21 @@ class VMCTrainer:
                     context.emit(UpdateCompleted(iteration=iteration), state=state)
                     optimizer_step = True
                     grad_norm = update_result.grad_norm
-                elif batch.n_electrons == 0:
-                    # The zero-electron vacuum has no sampled coordinate degrees
-                    # of freedom, so the current Pfaffian readout yields a
-                    # constant wavefunction and a no-op optimizer step is the
-                    # correct loop behavior. No OptimizerUpdate scope opens on
-                    # this path. Nonzero disconnected losses still fail below.
+                else:
+                    # A method that declines a step reports it; the trainer does
+                    # not second-guess the reason. The zero-electron vacuum has
+                    # no sampled coordinate degrees of freedom, so a no-op is
+                    # correct there; a score method may also decline a step it
+                    # cannot form, for example when too few samples survive the
+                    # finite guard. No OptimizerUpdate scope opens on this path.
+                    #
+                    # There is deliberately no disconnected-loss check here.
+                    # LegacyAutogradUpdate.update already raises for exactly
+                    # that case before it can return, so a second check in the
+                    # trainer added no protection while making every legitimate
+                    # decline by a score method look like a disconnected loss.
                     grad_norm = update_result.grad_norm
                     context.emit(UpdateSkipped(iteration=iteration), state=state)
-                else:
-                    raise RuntimeError(
-                        "VMC loss is disconnected from model parameters for a "
-                        "nonzero-electron batch"
-                    )
 
                 # Canonical VMC-native metrics come from the objective helper;
                 # the trainer only adds trainer-owned mechanics and optional
@@ -438,6 +509,13 @@ class VMCTrainer:
                     metrics["param_norm"] = param_norm
                     metrics["loss_has_grad"] = bool(loss.requires_grad)
                     metrics["optimizer_step"] = optimizer_step
+                    # Bounded, method-owned telemetry. The update method
+                    # composes its own metric names, so the trainer never
+                    # re-spells a solver key and a method that reports nothing
+                    # adds nothing.
+                    update_metrics = getattr(selected_update_method, "last_telemetry", None)
+                    if update_metrics is not None:
+                        metrics.update(update_metrics.as_metrics())
 
                 state.step = step
                 state.metrics = metrics
