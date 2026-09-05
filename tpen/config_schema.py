@@ -50,6 +50,8 @@ __all__ = [
     "SchemaPolicy",
     "iter_nodes",
     "sweep",
+    "sweep_raw",
+    "sweep_resolved",
     "tokens_of",
 ]
 
@@ -323,6 +325,66 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
     return rejections
 
 
+def sweep_raw(raw_tree: Any, policy: SchemaPolicy) -> tuple[Rejection, ...]:
+    """Collect the violations visible before interpolations are resolved.
+
+    Parameters
+    ----------
+    raw_tree : Any
+        The configuration as plain containers, interpolations unresolved.
+    policy : SchemaPolicy
+        The study policy to enforce.
+
+    Returns
+    -------
+    tuple of Rejection
+        Every raw-tree finding, in discovery order.
+
+    Notes
+    -----
+    Separated from :func:`sweep_resolved` because resolution can *fail*, and a
+    configuration that fails to resolve must still report what the raw tree
+    already showed. Folding both sweeps into one resolution-dependent step
+    would let a broken interpolation suppress an unrelated forbidden reference
+    -- the finding and the thing that hides it would share a failure domain.
+    """
+
+    rejections: list[Rejection] = []
+    rejections.extend(_sweep_unknown_sections(raw_tree, "raw", policy))
+    rejections.extend(_sweep_forbidden_surfaces(raw_tree, "raw", policy))
+    rejections.extend(_sweep_forbidden_resolvers(raw_tree, policy))
+    return tuple(rejections)
+
+
+def sweep_resolved(resolved_tree: Any, policy: SchemaPolicy) -> tuple[Rejection, ...]:
+    """Collect the violations visible only after interpolations are resolved.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        The configuration as plain containers, interpolations resolved.
+    policy : SchemaPolicy
+        The study policy to enforce.
+
+    Returns
+    -------
+    tuple of Rejection
+        Every resolved-tree finding, in discovery order.
+
+    Notes
+    -----
+    Sections and surfaces are re-checked here rather than trusted from the raw
+    sweep, because resolution can introduce a key the raw tree never spelled.
+    Forbidden resolvers are not re-checked: by this point the interpolation has
+    become the value it produced and is indistinguishable from a literal.
+    """
+
+    rejections: list[Rejection] = []
+    rejections.extend(_sweep_unknown_sections(resolved_tree, "resolved", policy))
+    rejections.extend(_sweep_forbidden_surfaces(resolved_tree, "resolved", policy))
+    return tuple(rejections)
+
+
 def sweep(raw_tree: Any, resolved_tree: Any, policy: SchemaPolicy) -> tuple[Rejection, ...]:
     """Collect every closed-schema violation in a configuration.
 
@@ -344,17 +406,8 @@ def sweep(raw_tree: Any, resolved_tree: Any, policy: SchemaPolicy) -> tuple[Reje
     -----
     This function only *reports*. Raising is the caller's decision, so a caller
     that wants to audit a legacy configuration can list its violations without
-    being stopped by the first one.
+    being stopped by the first one. A caller whose configuration might not
+    resolve should use :func:`sweep_raw` and :func:`sweep_resolved` directly.
     """
 
-    rejections: list[Rejection] = []
-    rejections.extend(_sweep_unknown_sections(raw_tree, "raw", policy))
-    rejections.extend(_sweep_forbidden_surfaces(raw_tree, "raw", policy))
-    rejections.extend(_sweep_forbidden_resolvers(raw_tree, policy))
-
-    # The resolved tree is swept for the same surfaces because resolution can
-    # introduce a key the raw tree never spelled. Unknown top-level sections are
-    # re-checked for the same reason.
-    rejections.extend(_sweep_unknown_sections(resolved_tree, "resolved", policy))
-    rejections.extend(_sweep_forbidden_surfaces(resolved_tree, "resolved", policy))
-    return tuple(rejections)
+    return sweep_raw(raw_tree, policy) + sweep_resolved(resolved_tree, policy)
