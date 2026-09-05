@@ -315,7 +315,27 @@ class VMCTrainer:
         optimizer: torch.optim.Optimizer,
         update_method: UpdateMethodSpec,
     ) -> VMCUpdateMethod[AutogradUpdateInput]:
-        """Select or construct the update method for one fit invocation."""
+        """Select or construct the update method for one fit invocation.
+
+        Notes
+        -----
+        The memo below is keyed on the SPEC's identity, not on the model or the
+        optimizer. Fitting the SAME trainer again with a DIFFERENT model or
+        optimizer under that same spec therefore returns the instance built for
+        the first one, rather than rebuilding against the second.
+
+        That is not silent today, and the reviewer judged disposal defensible:
+        a stateful method validates its parameter binding at its first update
+        (`_validate_binding` on the SR method) and raises when the scores no
+        longer reference the parameters it holds, so the mismatch surfaces
+        loudly rather than training the wrong tensors. It is recorded here
+        rather than guarded because a guard would add a branch to buy an error
+        message for a case that already fails loudly, and one trainer instance
+        driving two different models is not a shape this project uses.
+
+        If that ever becomes a real usage, key the memo on the resolved
+        `VMCUpdateState` identity instead of on the spec alone.
+        """
 
         spec = self.update_method if update_method is None else update_method
         # Reuse the instance already built from THIS spec. Selection runs twice
