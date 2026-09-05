@@ -97,10 +97,15 @@ class ScoreConventions:
         The default ``2.0`` matches
         :func:`~tpen.training.vmc.compute_vmc_objective`, so ``A^T epsilon``
         reproduces the ordinary VMC energy gradient exactly.
-    solve_dtype : torch.dtype or None, optional
+    solve_dtype : torch.dtype or str or None, optional
         Real floating dtype the design matrix and residual are promoted to
         before any linear algebra.  ``None`` keeps the incoming score dtype.
-        A dense reference is normally run in ``torch.float64``.
+        A dense reference is normally run in ``torch.float64``: the QGT is a
+        Gram matrix and therefore squares the condition number of the scores,
+        which is the one place in this engine where the extra precision is
+        load-bearing rather than defensive.  A bare dtype name such as
+        ``"float64"`` is accepted so a YAML config can spell it the same way
+        it spells ``runtime.dtype``.
 
     Notes
     -----
@@ -114,6 +119,17 @@ class ScoreConventions:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "energy_gradient_scale", float(self.energy_gradient_scale))
+        # A config supplies a dtype as the bare name "float64", matching how
+        # `runtime.dtype` is spelled everywhere else in this project's YAML.
+        # Coercing with getattr(torch, name) is the convention already used by
+        # the sampler, the evaluator, and checkpoint restore.
+        if isinstance(self.solve_dtype, str):
+            resolved = getattr(torch, self.solve_dtype, None)
+            if not isinstance(resolved, torch.dtype):
+                raise ValueError(
+                    f"ScoreConventions.solve_dtype {self.solve_dtype!r} is not a torch dtype name"
+                )
+            object.__setattr__(self, "solve_dtype", resolved)
         self.validate()
 
     def validate(self) -> Self:

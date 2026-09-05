@@ -452,19 +452,24 @@ def test_a_single_finite_sample_is_skipped_with_a_reason() -> None:
 
 
 def test_state_envelope_round_trips_and_rejects_layout_drift() -> None:
-    """Restore carries the step counter and refuses a mismatched fingerprint."""
+    """Restore carries the step counter and refuses a mismatched fingerprint.
+
+    The envelope lives on `method_state_dict`, not `state_dict`: the latter has
+    an established meaning for the legacy adapter, where it is the raw
+    optimizer payload the checkpoint already persists separately.
+    """
 
     parameter, features, energies = _problem(n_samples=8, n_parameters=4, seed=13)
     method = _method(parameter)
     method.update(_step_input(parameter, features, energies))
-    state = method.state_dict()
+    state = method.method_state_dict()
 
     assert state["version"] == SR_STATE_VERSION
     assert state["completed_updates"] == 1
 
     restored_parameter = torch.nn.Parameter(parameter.detach().clone())
     restored = _method(restored_parameter)
-    restored.load_state_dict(state)
+    restored.load_method_state_dict(state)
     assert restored.completed_updates == 1
 
     # A model with a different parameter layout must be refused, or a resumed
@@ -472,10 +477,10 @@ def test_state_envelope_round_trips_and_rejects_layout_drift() -> None:
     other_parameter = torch.nn.Parameter(torch.zeros(5, dtype=torch.float64))
     other = _method(other_parameter)
     with pytest.raises(ValueError, match="fingerprint does not match"):
-        other.load_state_dict(state)
+        other.load_method_state_dict(state)
 
     with pytest.raises(ValueError, match="unsupported SR state version"):
-        restored.load_state_dict({**state, "version": "sr-state-0"})
+        restored.load_method_state_dict({**state, "version": "sr-state-0"})
 
 
 def test_binding_drift_is_rejected_rather_than_updating_a_stale_reference() -> None:

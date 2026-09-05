@@ -27,6 +27,15 @@ reviewer's original, because a layer cannot import what it does not yet contain.
   exactly-zero score columns for structurally inactive parameters needs no
   change on the SR side. Reviewer finding F3. The claim HOLDS; landing the test
   keeps the future 2-electron unblock (item `68711cfd`) from regressing here.
+* T4 -- a checkpoint state carrying a stateful SR method's envelope is
+  `json.dumps`-serializable and round-trips exactly. Reviewer finding F6: the
+  checkpoint regression this lane self-caught (job 44572457, Adam optimizer
+  tensors leaking into `trainer.json`) had no direct JSON pin, so a future
+  warm-start tensor in the envelope would reintroduce it undetected.
+* T5 -- resuming a stateful method from state missing the `update_method` key
+  must RAISE rather than silently leave the method's counters unrestored.
+  Reviewer finding F4; this probe was RED on delivery and is green here against
+  the fix in `VMCTrainer.load_state_dict`.
 * T6 -- round 2. The reported solve dtype is OBSERVED from the factorized
   matrix, not an echo of the configured `ScoreConventions.solve_dtype`. The
   lane's own `test_qgt.py::test_diagnostics_report_the_dtype_the_solve_actually_ran_in`
@@ -45,12 +54,15 @@ numerical rank.
 """
 from __future__ import annotations
 
+import json
+
 
 import numpy as np
 import pytest
 import torch
 
 from tests.helpers.sr_dense_oracle import sr_direction
+from tests.unit.training.test_sr_trainer_integration import _fit, _sr_method
 from tpen.data.batch import (
     MaterializedParameterLogScores,
     ParameterLayout,
@@ -69,6 +81,7 @@ from tpen.training.score_geometry import (
     flatten_parameter_score_blocks,
 )
 from tpen.training.statistics import StatisticsReducer
+from tpen.training.trainer import VMCTrainer
 
 TIGHT_TOLERANCE = 1.0e-12
 SOLVE_TOLERANCE = 1.0e-9
@@ -437,6 +450,86 @@ def test_t3_dead_score_columns_solve_to_an_exact_zero_direction() -> None:
 
 
 # ---------------------------------------------------------------------------
+# T4
+# ---------------------------------------------------------------------------
+
+
+def test_t4_trainer_state_with_a_stateful_sr_method_is_json_serializable() -> None:
+    """T4: a checkpoint state carrying a stateful SR method must be JSON-safe.
+
+    Drives one real SR step through `VMCTrainer` exactly like
+    `test_method_state_round_trips_through_the_trainer_checkpoint_state` in
+    `test_sr_trainer_integration.py`, then asserts `json.dumps(trainer.state_dict())`
+    succeeds and round-trips through `json.loads` with the `update_method`
+    payload intact.
+
+    Rationale: the checkpoint regression Lane N self-caught (job 44572457,
+    Adam optimizer tensors leaking into `trainer.json`) has no direct JSON pin
+    today. A future warm-start tensor added to the SR method-state envelope
+    would reintroduce exactly that regression -- `json.dumps` raises on a
+    `torch.Tensor` -- and nothing in the existing suite would catch it before
+    it reached a checkpoint on disk. This test makes that assumption
+    load-bearing rather than implicit.
+
+    Expected to PASS against current code.
+    """
+
+    trainer, _, _, _ = _fit(solve_space="parameter", max_steps=1)
+
+    state = trainer.state_dict()
+    assert "update_method" in state, "a stateful method must contribute checkpoint state"
+
+    serialized = json.dumps(state)
+    round_tripped = json.loads(serialized)
+
+    assert round_tripped == state
+    assert round_tripped["update_method"] == state["update_method"]
+
+
+# ---------------------------------------------------------------------------
+# T5 -- RED DEMONSTRATION, expected to FAIL against current code
+# ---------------------------------------------------------------------------
+
+
+def test_t5_resume_without_update_method_key_should_raise_red_demonstration() -> None:
+    """T5: RED DEMONSTRATION of reviewer finding F4. EXPECTED TO FAIL.
+
+    Do not xfail this test. Let it fail, and invoke it separately from T1-T4 in
+    the Cannon run (`-k` deselecting/selecting on the literal substring `t5`)
+    so its failure does not pollute their pass/fail accounting.
+
+    Sets up: run 2 SR steps through a trainer, take `state = trainer.state_dict()`,
+    delete the `'update_method'` key, build a FRESH trainer and a fresh SR
+    method over the same model, `resolve_update_state`, then
+    `load_state_dict(state-without-key)`.
+
+    CURRENT behavior (verified by reading `VMCTrainer.load_state_dict`):
+    `"update_method" in state` is False, so `load_method_state_dict` is never
+    called -- the fresh method's own `completed_updates` counter silently
+    stays at its initial value while `trainer.completed_updates` and
+    `trainer.next_iteration` are restored from the (still-present) top-level
+    counters in `state`. Method state and trainer counters silently diverge:
+    resuming looks like a clean, successful restore even though the SR
+    method's internal state was NOT restored at all.
+
+    DESIRED behavior, asserted here: a method whose `method_state_dict()` is
+    non-empty, when asked to restore from a state that is missing the
+    `'update_method'` key, should raise rather than silently leaving its own
+    state unrestored. This is the reviewer's finding, not yet implemented.
+    """
+
+    trainer, model, _, _ = _fit(solve_space="parameter", max_steps=2)
+
+    state = trainer.state_dict()
+    assert "update_method" in state, "sanity: a stateful method must contribute state"
+    del state["update_method"]
+
+    resumed_method = _sr_method(model)
+    resumed = VMCTrainer(max_steps=2, update_method=resumed_method)
+    resumed.resolve_update_state(model=model, optimizer=resumed_method.optimizer)
+
+    with pytest.raises(ValueError, match="update_method"):
+        resumed.load_state_dict(state)
 # T6 -- round 2
 # ---------------------------------------------------------------------------
 
