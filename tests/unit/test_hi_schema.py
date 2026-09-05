@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 from tpen.config_schema import ClosedSchemaError
 from tpen.hi_schema import (
     ADMITTED_CALLBACK_TARGETS,
+    ADMITTED_METHOD_TARGETS,
     HI_EXPERIMENT_NAME,
     HI_METHOD_ROSTER,
     HI_TRAIN_SCHEMA,
@@ -322,6 +323,76 @@ class TestAdmittedMethods:
         for name in ("sr", "kfac", "spring", "linear_method"):
             assert not by_name[name].admitted
             assert by_name[name].requires
+
+    def test_a_landed_implementation_is_not_described_as_pending(self) -> None:
+        """SR's stated reason must track the repository, which moves under it.
+
+        THE TWO ARMS VARY INDEPENDENTLY, which is the point. One arm is
+        REPOSITORY state -- does ``tpen/training/sr.py`` exist -- and moves when
+        someone else merges to dev. The other is the roster TEXT and moves only
+        when this file is edited. A test that read the reason and checked it
+        said "excluded" would be driven from one source and could never fire.
+
+        The failure being guarded is specific and already happened once: this
+        entry said SR was waiting for Lane N, Lane N merged, and the entry kept
+        saying it. A reader would then satisfy an already-satisfied prerequisite
+        and conclude the refusal was a bug. A refusal that outlives its stated
+        reason misdirects harder than one with no reason at all.
+        """
+
+        from pathlib import Path
+
+        sr_implementation = Path("tpen/training/sr.py")
+        entry = next(e for e in HI_METHOD_ROSTER if e.method == "sr")
+
+        if sr_implementation.exists():
+            assert "exclud" in entry.requires.lower(), (
+                "tpen/training/sr.py exists, so SR is implemented; its roster reason must "
+                f"say it is EXCLUDED rather than pending. Got: {entry.requires!r}"
+            )
+
+    # A first draft of the check above also blacklisted phrases like
+    # "pending work". It was DELETED rather than fixed, and the reason is worth
+    # more than the check was: the corrected reason contains the sentence "This
+    # is NOT pending work", so a substring scan flagged it. A substring cannot
+    # distinguish a claim from its negation -- which is precisely the trap that
+    # made the firewall itself match on whole tokens rather than substrings, and
+    # it was walked straight back into here.
+    #
+    # The blacklist was also redundant: requiring an explicit "excluded" is the
+    # actual discriminator, and it is the half whose two arms vary
+    # independently. A second, cruder instrument pointed at the same question
+    # added no coverage and one false failure.
+
+    def test_the_sr_implementation_really_is_present(self) -> None:
+        """Positive control for the test above, which is conditional on it.
+
+        Without this the guard would silently no-op if the path were ever
+        renamed, and a conditional test that never enters its branch is
+        indistinguishable from one that passes.
+        """
+
+        from pathlib import Path
+
+        assert Path("tpen/training/sr.py").exists(), (
+            "tpen/training/sr.py is gone; the staleness guard above is now inert and "
+            "its path needs updating to wherever SR landed"
+        )
+
+    def test_sr_remains_unadmitted_whatever_its_reason_says(self) -> None:
+        """The refusal and its explanation are separate facts; pin both.
+
+        A correct reason attached to a broken refusal would be worse than the
+        stale reason this replaced.
+        """
+
+        entry = next(e for e in HI_METHOD_ROSTER if e.method == "sr")
+        assert not entry.admitted
+        assert entry.target is None
+        assert "torch.optim.Adam" in ADMITTED_METHOD_TARGETS
+        assert not any(
+            "sr" == e.method and e.admitted for e in HI_METHOD_ROSTER
+        )
 
     def test_an_unavailable_method_declares_no_target(self) -> None:
         """A module path for an unimplemented method would be a false claim."""
