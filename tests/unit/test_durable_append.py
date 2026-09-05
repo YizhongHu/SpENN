@@ -290,17 +290,19 @@ def test_jsonl_logger_does_not_join_onto_an_unterminated_line(tmp_path: Path) ->
 
 TEXT_APPEND_OPEN = re.compile(r"""open\(\s*["']a["']""")
 
-# Text-mode append writers deliberately NOT routed through the primitive in this
-# slice, tracked as item bc8925a8 rather than left silent.
+# The one text-mode append writer deliberately NOT routed through the primitive,
+# tracked as item bc8925a8 rather than left silent.
 #
-# The name is historical and imprecise: csv.py genuinely writes many rows per
-# open, but sidecar.py only does so via ``extend``. Its production call path is
-# ``append`` -> ``extend((receipt,))`` -- ONE record per open, and its reader
-# raises on a bad row exactly as the catalog's does. It is out of scope by
-# ruling, not because its failure shape differs.
+# csv.py is a GENUINE many-rows-per-open writer: one open emits a header plus
+# one line per scalar metric, so covering it needs a batch shape whose failure
+# mode nobody has measured. That is the whole reason it is out.
+#
+# statistics/sidecar.py was originally excluded alongside it for the same stated
+# reason, and that reason was WRONG. It is batch-CAPABLE but its production call
+# path is ``append`` -> ``extend((receipt,))`` -- ONE record per open. It is now
+# routed. See the instrument defect noted on `test_no_one_record_writer_...`.
 KNOWN_BATCH_WRITERS = {
     Path("tpen/logging/csv.py"),
-    Path("tpen/statistics/sidecar.py"),
 }
 
 
@@ -314,6 +316,16 @@ def test_no_one_record_writer_still_opens_a_file_in_text_append_mode() -> None:
     as one-record or batch rather than quietly inheriting the exposure.
 
     Blind to: writers outside ``tpen/``, ``os.open``, and ``"a+"``/``"ab"``.
+
+    KNOWN INSTRUMENT DEFECT, recorded because the next census will be run by
+    someone who was not here. This search finds append SITES, and a reader then
+    classifies each as one-record or batch by the shape of the write LOOP at the
+    DEFINITION site. That classification is wrong whenever a batch-capable
+    writer is only ever CALLED one record at a time -- which is exactly what
+    happened to ``statistics/sidecar.py``, excluded from the first pass as a
+    batch writer when its sole production caller passes a single receipt. What
+    matters is the shape of the CALL at the production site, not of the loop at
+    the definition. Check callers before classifying.
     """
 
     found = {
@@ -492,3 +504,4 @@ def test_every_routed_writer_emits_ascii_only_bytes(tmp_path: Path) -> None:
     for path in written:
         raw = path.read_bytes()
         assert raw.isascii(), f"{path} emitted non-ASCII bytes: {raw!r}"
+

@@ -186,3 +186,51 @@ def test_jsonl_keys_are_sorted_and_views_agree_with_read(tmp_path) -> None:
     assert sidecar.identities() == tuple(receipt.identity.as_key() for receipt in sidecar.read())
     assert tuple(sidecar) == sidecar.read()
     assert len(sidecar) == len(sidecar.read())
+
+
+def test_append_does_not_join_onto_an_unterminated_last_line(tmp_path) -> None:
+    """The sidecar is structurally the checkpoint publication catalog.
+
+    Append-only JSONL; :meth:`read` raises on a malformed row; :meth:`extend`
+    reads the file before it writes. So ONE torn row blocks every later append
+    rather than merely losing itself -- the same amplification that makes the
+    publication catalog the most consequential instance of this exposure, but
+    with no typed diagnosis and no repair recipe.
+
+    This writer was very nearly left tearing: the census that scoped the
+    torn-append fix classified it as a batch writer from the shape of the loop
+    in ``extend``, when its production call path is ``append`` ->
+    ``extend((receipt,))`` -- one record per open.
+    """
+
+    path = tmp_path / "trajectory_statistics.jsonl"
+    path.write_text('{"torn": ', encoding="utf-8")
+    sidecar = TrajectoryStatisticsSidecar(path)
+
+    with pytest.raises(ValueError):
+        sidecar.read()
+
+    # Appending must not merge onto the torn bytes, even though the reader
+    # cannot get past them: the repair is to drop that line, and dropping it
+    # must not take a later, valid receipt with it.
+    sidecar.path.write_text('{"torn": ', encoding="utf-8")
+    receipt = _stored_receipt()
+    from tpen.durable_append import append_record
+    append_record(path, json.dumps(receipt.to_dict(), sort_keys=True))
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == '{"torn": ', "the torn bytes must keep their own line"
+    assert json.loads(lines[1])["identity"] == receipt.to_dict()["identity"]
+
+
+def test_a_receipt_appended_after_a_clean_row_adds_no_blank_line(tmp_path) -> None:
+    """Routing through the primitive must not perturb the normal path."""
+
+    sidecar = TrajectoryStatisticsSidecar(tmp_path / "trajectory_statistics.jsonl")
+    sidecar.append(_stored_receipt())
+    sidecar.append(_stored_receipt(evaluator_id="local_energy/v2"))
+
+    text = sidecar.path.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    assert "\n\n" not in text
+    assert len(sidecar.read()) == 2
