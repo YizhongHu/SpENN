@@ -16,6 +16,7 @@ from tpen.hi_schema import (
     ADMITTED_CALLBACK_TARGETS,
     HI_METHOD_ROSTER,
     HI_TRAIN_SCHEMA,
+    canonical_train_identity,
     declared_schema,
     validate_hi_train_config,
 )
@@ -172,7 +173,7 @@ class TestClosedSections:
         _validate(
             _config(
                 experiment={"name": "hi"},
-                run={"root": "outputs"},
+                run={"root": "outputs", "run_id": "hi_0001"},
                 runtime={"seed": 0},
                 system={"n_particles": 2},
                 model={"channels": 32},
@@ -440,6 +441,81 @@ class TestDeclaredTrainability:
         """CD4 adds a new factor; it gets its own rule then, not a guessed one."""
 
         _validate(_config(model={"factors": [{"_target_": "tpen.nn.SomeFutureJastrow"}]}))
+
+
+class TestRankInvariance:
+    """The resolved configuration must be identical in every process."""
+
+    def test_rejects_a_null_run_id(self) -> None:
+        """MEASURED: generate_run_id ends in uuid4().hex[:6].
+
+        prepare_run_context fills a null run_id from generate_run_id, whose
+        suffix is RANDOM. So this is not a clock-skew risk that might not bite
+        -- every process computes a different identifier, always, and each rank
+        would write to its own run directory.
+        """
+
+        cfg = _config(run={"root": "outputs", "run_id": None})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "rank-divergent-field" in _rules(caught.value)
+        assert "run.run_id" in _paths(caught.value)
+
+    def test_accepts_an_explicit_run_id(self) -> None:
+        _validate(_config(run={"root": "outputs", "run_id": "hi_o1_0007"}))
+
+    def test_a_config_without_a_run_section_is_not_judged(self) -> None:
+        """Absence of the section is incompleteness, not rank divergence."""
+
+        _validate(_config(runtime={"seed": 0}))
+
+    def test_the_random_suffix_really_does_differ_per_call(self) -> None:
+        """Positive control for the rule's premise, measured not assumed.
+
+        If generate_run_id were deterministic the rule above would be pinning a
+        hazard that does not exist. This asserts the premise directly, so the
+        rule cannot outlive its own justification silently.
+        """
+
+        from tpen.artifacts import generate_run_id
+
+        assert generate_run_id("hi") != generate_run_id("hi")
+
+    def test_the_same_config_yields_the_same_identity_under_different_environments(self) -> None:
+        """Two ranks, two environments, one canonical identity.
+
+        This is the acceptance contract's "canonical resolved input is
+        identical on all ranks", exercised the way it fails: the two processes
+        differ exactly in the variables a launcher sets.
+        """
+
+        rank_zero = {"RANK": "0", "LOCAL_RANK": "0", "SLURM_PROCID": "0", "HOSTNAME": "holy01"}
+        rank_three = {"RANK": "3", "LOCAL_RANK": "1", "SLURM_PROCID": "3", "HOSTNAME": "holy02"}
+
+        first = _config(run={"root": "outputs", "run_id": "hi_o1_0007"}, runtime={"seed": 0})
+        second = _config(run={"root": "outputs", "run_id": "hi_o1_0007"}, runtime={"seed": 0})
+
+        _validate(first, env=rank_zero)
+        _validate(second, env=rank_three)
+        assert canonical_train_identity(first) == canonical_train_identity(second)
+
+    def test_the_identity_does_change_when_the_science_changes(self) -> None:
+        """Positive control: an identity that never changes proves nothing.
+
+        Without this, the agreement test above would also pass for a digest
+        that returned a constant.
+        """
+
+        base = _config(runtime={"seed": 0})
+        altered = _config(runtime={"seed": 1})
+        assert canonical_train_identity(base) != canonical_train_identity(altered)
+
+    def test_the_identity_ignores_key_order(self) -> None:
+        """Mapping iteration order is not part of a configuration's meaning."""
+
+        first = OmegaConf.create({"a": 1, "b": {"x": 1, "y": 2}})
+        second = OmegaConf.create({"b": {"y": 2, "x": 1}, "a": 1})
+        assert canonical_train_identity(first) == canonical_train_identity(second)
 
 
 class TestLaunchEnvironment:
