@@ -330,4 +330,102 @@ def _normalize_aux_feature_channels(value: Mapping[str, int]) -> dict[str, int]:
     return normalized
 
 
-__all__ = ["Embedding"]
+__all__ = [
+    "transplant_raw_input_columns","Embedding"]
+
+
+def transplant_raw_input_columns(source: "Embedding", target: "Embedding") -> None:
+    r"""Copy `source`'s weights into `target`, zeroing `target`'s added columns.
+
+    Implements the matched-B-seed rule: "copy shared raw-input weights exactly
+    and set added input columns to zero", so that a bounded-distance embedding
+    starts as the SAME FUNCTION as its raw counterpart. With the added columns
+    zeroed, the two cells differ only in what they can learn, not in where they
+    start -- which is what removes initial-function change as the first
+    explanation for any difference between them.
+
+    Parameters
+    ----------
+    source : Embedding
+        The narrower embedding, consuming raw features only.
+    target : Embedding
+        The wider embedding, consuming the same raw features plus appended
+        columns. Modified in place.
+
+    Raises
+    ------
+    ValueError
+        If the two do not differ only by appended input columns.
+
+    Notes
+    -----
+    **The added columns are NOT contiguous, and that is the whole difficulty.**
+    Order 2's input is ``[v_i, v_j, pair]``, so appending one column per
+    particle inserts a zero at the END OF EACH PARTICLE BLOCK, not at the end
+    of the row:
+
+    .. code-block:: text
+
+        source order 2 : [ v_i(w0) | v_j(w0) ]
+        target order 2 : [ v_i(w0) 0 | v_j(w0) 0 | pair(p) ]
+
+    A "zero the last k columns" implementation would therefore be wrong for
+    every order above 1, while looking right for order 1 and passing any test
+    that only checked widths. The mapping below is written per particle block,
+    and the accompanying test checks FUNCTION EQUALITY rather than column
+    positions, so an index error cannot pass by agreeing with the same
+    reasoning that produced it.
+
+    Parameters other than each order's first layer are copied verbatim: only
+    the first layer's input width differs, so every later layer already has
+    matching shapes.
+    """
+
+    added = target.particle_input_channels - source.particle_input_channels
+    if added < 0:
+        raise ValueError(
+            "transplant target must be at least as wide as the source: "
+            f"{target.particle_input_channels} < {source.particle_input_channels}"
+        )
+    if source.pair_input_channels:
+        raise ValueError(
+            "transplant source must consume no pair channel; it is the raw-feature "
+            f"cell, but it declares pair_input_channels={source.pair_input_channels}"
+        )
+    if source.max_order != target.max_order:
+        raise ValueError(
+            f"transplant needs equal max_order, got {source.max_order} and {target.max_order}"
+        )
+
+    source_width = source.particle_input_channels
+    target_width = target.particle_input_channels
+
+    with torch.no_grad():
+        for order_key, source_mlp in source.order_mlps.items():
+            target_mlp = target.order_mlps[order_key]
+            order = int(order_key)
+
+            source_params = dict(source_mlp.named_parameters())
+            for name, target_param in target_mlp.named_parameters():
+                source_param = source_params[name]
+                if source_param.shape == target_param.shape:
+                    target_param.copy_(source_param)
+                    continue
+
+                # The only legitimate shape difference is the first layer's
+                # input width. Anything else means these are not the same
+                # architecture and silently proceeding would produce a model
+                # that trains but is not the one anybody described.
+                if target_param.ndim != 2 or source_param.shape[0] != target_param.shape[0]:
+                    raise ValueError(
+                        f"cannot transplant parameter {name!r} of order {order}: "
+                        f"{tuple(source_param.shape)} vs {tuple(target_param.shape)}"
+                    )
+
+                target_param.zero_()
+                for particle in range(order):
+                    source_start = particle * source_width
+                    target_start = particle * target_width
+                    target_param[:, target_start : target_start + source_width].copy_(
+                        source_param[:, source_start : source_start + source_width]
+                    )
