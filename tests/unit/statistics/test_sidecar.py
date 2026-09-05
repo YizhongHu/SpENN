@@ -8,6 +8,8 @@ from tpen.statistics.receipt import (
     TrajectoryStatisticsIdentity,
     TrajectoryStatisticsReceipt,
 )
+from pathlib import Path
+
 from tpen.statistics.sidecar import DuplicateReceiptError, TrajectoryStatisticsSidecar
 
 from .test_receipt import _receipt
@@ -210,9 +212,14 @@ def test_append_does_not_join_onto_an_unterminated_last_line(tmp_path) -> None:
     with pytest.raises(ValueError):
         sidecar.read()
 
-    # Appending must not merge onto the torn bytes, even though the reader
-    # cannot get past them: the repair is to drop that line, and dropping it
-    # must not take a later, valid receipt with it.
+    # This exercises the PRIMITIVE directly, not ``sidecar.append``, and that
+    # is forced rather than chosen: ``extend`` calls ``identities()`` ->
+    # ``read()`` before writing, so on a torn file ``append`` raises and can
+    # never reach its write. That fail-loud behaviour is the point. The
+    # consequence is that this test alone cannot detect a sidecar that stopped
+    # routing through the primitive -- see
+    # ``test_append_routes_one_receipt_through_the_shared_primitive``, which
+    # pins the mechanism.
     sidecar.path.write_text('{"torn": ', encoding="utf-8")
     receipt = _stored_receipt()
     from tpen.durable_append import append_record
@@ -223,6 +230,32 @@ def test_append_does_not_join_onto_an_unterminated_last_line(tmp_path) -> None:
     # Exact round trip: the line was produced by json.dumps of this very
     # mapping, so comparing the whole dict depends on no key name.
     assert json.loads(lines[1]) == receipt.to_dict()
+
+
+def test_append_routes_one_receipt_through_the_shared_primitive(
+    monkeypatch, tmp_path
+) -> None:
+    """Mechanism pin: ``append`` must reach ``append_record`` exactly once.
+
+    Without this, a sidecar that went back to opening its own append handle
+    would keep every behavioural test in this file green, because on a clean
+    file a hand-rolled body-then-newline loop produces identical bytes. The
+    torn-tail test above cannot catch it either, since ``append`` raises on a
+    torn file before it writes. Measured: a mutant using ``open(mode="a")``
+    bypassed the primitive with the whole suite still green.
+    """
+
+    calls: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        "tpen.statistics.sidecar.append_record",
+        lambda path, record: calls.append((Path(path), record)),
+    )
+    receipt = _stored_receipt()
+    path = tmp_path / "trajectory_statistics.jsonl"
+
+    TrajectoryStatisticsSidecar(path).append(receipt)
+
+    assert calls == [(path, json.dumps(receipt.to_dict(), sort_keys=True))]
 
 
 def test_a_receipt_appended_after_a_clean_row_adds_no_blank_line(tmp_path) -> None:

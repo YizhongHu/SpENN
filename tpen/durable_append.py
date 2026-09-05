@@ -29,8 +29,13 @@ What it does provide
    ``write`` reaches the kernel.  This narrows the interruption window to a
    single kernel-visible operation; it does not make that operation atomic.
 2. **Detection instead of silence.**  A short write raises
-   :class:`PartialAppendError` rather than returning normally, so a caller can
-   never mistake a torn record for a stored one.
+   :class:`PartialAppendError` rather than returning normally, so *a reported
+   short write cannot be mistaken for success*.  That is the whole of the
+   claim.  It is NOT "a caller can never mistake a torn record for a stored
+   one": a full-count return means the bytes were handed to the kernel, not
+   that they are durable.  No ``fsync`` is issued, and on NFS a later client,
+   server, or system failure can still lose or tear a record this function
+   reported as written.
 3. **Bounded damage.**  If a record is nevertheless left unterminated, the next
    append terminates it *in the same single write* that stores the new record.
    The new record therefore lands on its own line instead of being concatenated
@@ -84,6 +89,12 @@ __all__ = ["PartialAppendError", "append_record", "ends_without_newline"]
 class PartialAppendError(OSError):
     """Raised when the underlying write stored fewer bytes than the record.
 
+    Means exactly one thing: **the requested record was not committed.**  It
+    does NOT describe the file's resulting final state, which depends on how
+    many bytes landed and whether a torn predecessor was being repaired -- the
+    file may end mid-record, or may end in a newline with none of the new
+    record present.  Callers that need the state must inspect it.
+
     Subclasses :class:`OSError` so that existing ``except OSError`` handlers
     around artifact appends keep catching it; a partial append is a storage
     failure and callers already treat storage failures that way.
@@ -128,22 +139,33 @@ def append_record(path: str | Path, record: str) -> None:
     path : str or pathlib.Path
         File to extend.  Parent directories are created if absent.
     record : str
-        One complete record, without its trailing newline.  Must not contain a
-        newline itself: this file format is one record per line, and an embedded
-        newline would silently split one record into two unrelated rows.
+        One complete record, without its trailing terminator.  Must contain no
+        physical line separator at all -- neither ``"\n"`` NOR ``"\r"``.
+
+        The enumeration is taken from what the READERS treat as a line ending,
+        not from what "newline" colloquially means.  Every reader of these files
+        iterates a text handle opened in universal-newline mode, which ends a
+        line on ``"\n"``, ``"\r"``, or ``"\r\n"`` alike.  So a record carrying a
+        bare ``"\r"`` is written as one record and read back as TWO, while this
+        function returns success -- the one-record-per-line invariant defeated
+        by a character that is not a newline in the usual sense.
 
     Raises
     ------
     ValueError
-        If `record` contains a newline.
+        If `record` contains ``"\n"`` or ``"\r"``.
     PartialAppendError
-        If the write stored fewer bytes than the encoded record.  The file is
-        left with an unterminated final line, which the next
-        :func:`append_record` closes out rather than joining onto.
+        If the write stored fewer bytes than the encoded record.  The requested
+        record was NOT committed; see that exception's note on what the file's
+        final state may be.
     """
 
-    if "\n" in record:
-        raise ValueError("record must not contain a newline; one record is one line")
+    if "\n" in record or "\r" in record:
+        raise ValueError(
+            "record must not contain a line separator; one record is one line. "
+            "Readers use universal-newline mode, so a bare carriage return "
+            "splits a record just as a line feed does."
+        )
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +183,10 @@ def append_record(path: str | Path, record: str) -> None:
 
     if written != len(encoded):
         raise PartialAppendError(
-            f"partial append to {target}: stored {written} of {len(encoded)} bytes; "
-            "the final line is unterminated and the record was not committed"
+            f"partial append to {target}: stored {written} of {len(encoded)} bytes. "
+            "The requested record was NOT committed. Inspect the file before "
+            "assuming its final state: this does NOT necessarily leave an "
+            "unterminated last line. If a torn predecessor was being repaired, "
+            "the only stored byte may be the repair newline, in which case the "
+            "file ends in a newline and contains nothing of the new record."
         )

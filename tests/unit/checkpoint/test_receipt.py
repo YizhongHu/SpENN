@@ -358,12 +358,14 @@ def test_append_publication_receipt_does_not_join_onto_an_unterminated_last_line
 ) -> None:
     """A new append must land on its own line even if the prior line is unterminated.
 
-    ``tpen.artifacts.append_jsonl`` opens the file in ``"a"`` mode and writes
-    exactly the JSON body plus one trailing newline at the current end of
-    file. If the file's last byte is not already a newline (the shape left by
-    a body written but its trailing newline lost to a mid-write failure), a
-    naive append would concatenate onto that line, corrupting the NEW row
-    along with the old one -- which would defeat
+    ``tpen.artifacts.append_jsonl`` now delegates to
+    ``tpen.durable_append.append_record``, which opens an UNBUFFERED BINARY
+    handle and issues one write carrying the record, its trailing newline, and
+    a leading repair newline when the file's last byte is not already one. If
+    the file's last byte is not a newline (the shape left by a body written but
+    its trailing newline lost to a mid-write failure), a naive append would
+    concatenate onto that line, corrupting the NEW row along with the old one
+    -- which would defeat
     ``backfill_publication_receipt``'s entire purpose of recovering telemetry.
     """
 

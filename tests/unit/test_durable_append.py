@@ -26,9 +26,9 @@ Two things make a test here easy to get wrong, so they are stated up front:
 
 from __future__ import annotations
 
+import ast
 import io
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -288,7 +288,7 @@ def test_jsonl_logger_does_not_join_onto_an_unterminated_line(tmp_path: Path) ->
 
 # --- census, re-run at this head as an anti-regression guard ------------------
 
-TEXT_APPEND_OPEN = re.compile(r"""open\(\s*["']a["']""")
+MODE_CHARS = set("rwxab+t")
 
 # The one text-mode append writer deliberately NOT routed through the primitive,
 # tracked as item bc8925a8 rather than left silent.
@@ -300,44 +300,102 @@ TEXT_APPEND_OPEN = re.compile(r"""open\(\s*["']a["']""")
 # statistics/sidecar.py was originally excluded alongside it for the same stated
 # reason, and that reason was WRONG. It is batch-CAPABLE but its production call
 # path is ``append`` -> ``extend((receipt,))`` -- ONE record per open. It is now
-# routed. See the instrument defect noted on `test_no_one_record_writer_...`.
+# routed. See the instrument defect noted below.
 KNOWN_BATCH_WRITERS = {
     Path("tpen/logging/csv.py"),
 }
 
+# Modules that legitimately open an append handle because they ARE the
+# primitive, rather than because they bypassed it.
+PRIMITIVE_MODULES = {
+    Path("tpen/durable_append.py"),
+}
 
-def test_no_one_record_writer_still_opens_a_file_in_text_append_mode() -> None:
+
+def _opens_append_handle(source: Path) -> bool:
+    """Report whether `source` opens a file in an append mode, via AST.
+
+    Deliberately NOT a regex. The previous instrument matched only a positional
+    string literal immediately inside ``open(``, so ``open(mode="a")``,
+    ``open ("a")`` and a mode passed by name all evaded it -- measured: an unsafe
+    sidecar mutant using ``open(mode="a")`` bypassed the primitive while the
+    census test stayed green. Parsing removes the whole class of spelling
+    evasions rather than adding another alternative to a pattern.
+
+    Still blind to: a mode built at runtime rather than written as a literal,
+    and to append handles obtained from a helper this function cannot see
+    through. Those would need a call-graph, not a parse.
+    """
+
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        # os.open(path, os.O_APPEND | ...) never mentions a mode string.
+        if isinstance(node, ast.Attribute) and node.attr == "O_APPEND":
+            return True
+        if isinstance(node, ast.Name) and node.id == "O_APPEND":
+            return True
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_open = (isinstance(func, ast.Name) and func.id == "open") or (
+            isinstance(func, ast.Attribute) and func.attr == "open"
+        )
+        if not is_open:
+            continue
+        # Covers builtin open(file, mode), Path.open(mode), and mode= by name.
+        candidates = [a for a in node.args if isinstance(a, ast.Constant)]
+        candidates += [
+            kw.value
+            for kw in node.keywords
+            if kw.arg == "mode" and isinstance(kw.value, ast.Constant)
+        ]
+        for const in candidates:
+            value = const.value
+            if (
+                isinstance(value, str)
+                and value
+                and set(value) <= MODE_CHARS
+                and "a" in value
+            ):
+                return True
+    return False
+
+
+def test_no_one_record_writer_opens_its_own_append_handle() -> None:
     """Behaviour-scoped census: the property is a write pattern, not a name.
 
     A name-scoped search for callers of ``append_jsonl`` reports three sites and
     misses the modules that reimplement the idiom -- which is how the original
-    census undercounted. This greps for the *pattern* instead, so a newly added
-    append writer anywhere in ``tpen/`` fails this test and must be classified
-    as one-record or batch rather than quietly inheriting the exposure.
+    census undercounted seven writers as three. This parses for the *pattern*
+    instead, so a newly added append writer anywhere in ``tpen/`` fails this
+    test and must be classified.
 
-    Blind to: writers outside ``tpen/``, ``os.open``, and ``"a+"``/``"ab"``.
+    KNOWN INSTRUMENT DEFECTS, recorded because the next census will be run by
+    someone who was not here, and this instrument has now been wrong twice:
 
-    KNOWN INSTRUMENT DEFECT, recorded because the next census will be run by
-    someone who was not here. This search finds append SITES, and a reader then
-    classifies each as one-record or batch by the shape of the write LOOP at the
-    DEFINITION site. That classification is wrong whenever a batch-capable
-    writer is only ever CALLED one record at a time -- which is exactly what
-    happened to ``statistics/sidecar.py``, excluded from the first pass as a
-    batch writer when its sole production caller passes a single receipt. What
-    matters is the shape of the CALL at the production site, not of the loop at
-    the definition. Check callers before classifying.
+    1. **Classify by the CALL, not the definition.** A reader who classifies a
+       site as one-record or batch from the shape of the write LOOP at the
+       DEFINITION site gets it wrong whenever a batch-capable writer is only
+       ever CALLED one record at a time. That is exactly what happened to
+       ``statistics/sidecar.py``, excluded as a batch writer when its sole
+       production caller passes a single receipt. Check callers first.
+    2. **A regex over source text encodes a spelling, not a property.** The
+       previous version of this test matched only positional ``open("a")``.
+       ``open(mode="a")`` evaded it, and an unsafe mutant using that spelling
+       kept this test green. Hence the AST.
     """
 
     found = {
         source.relative_to(REPO_ROOT)
         for source in (REPO_ROOT / "tpen").rglob("*.py")
-        if TEXT_APPEND_OPEN.search(source.read_text(encoding="utf-8"))
+        if _opens_append_handle(source)
     }
 
-    assert found == KNOWN_BATCH_WRITERS, (
-        "text-mode append writers changed; classify each as one-record "
-        f"(route through append_record) or batch. Unexpected: {found - KNOWN_BATCH_WRITERS}, "
-        f"missing: {KNOWN_BATCH_WRITERS - found}"
+    assert found == KNOWN_BATCH_WRITERS | PRIMITIVE_MODULES, (
+        "append-handle owners changed; classify each as one-record (route "
+        f"through append_record) or batch. Unexpected: "
+        f"{found - KNOWN_BATCH_WRITERS - PRIMITIVE_MODULES}, missing: "
+        f"{(KNOWN_BATCH_WRITERS | PRIMITIVE_MODULES) - found}"
     )
 
 
@@ -504,4 +562,49 @@ def test_every_routed_writer_emits_ascii_only_bytes(tmp_path: Path) -> None:
     for path in written:
         raw = path.read_bytes()
         assert raw.isascii(), f"{path} emitted non-ASCII bytes: {raw!r}"
+
+
+def test_a_successful_append_writes_exactly_the_expected_bytes(tmp_path: Path) -> None:
+    """Pin the byte delta, which "does not merge" and "stays readable" do not.
+
+    Measured before this existed: changing the written terminator from LF to a
+    bare CR left all 29 durability and catalog tests green, while every newly
+    written file ended in ``\r`` and ``ends_without_newline`` immediately
+    classified it as torn. A mutant may also append junk AFTER a correct record
+    and still satisfy a non-merge assertion. Both are excluded here.
+    """
+
+    path = tmp_path / "log.jsonl"
+    before = b'{"a": 1}\n{"torn": '
+    record = '{"b": 2}'
+    path.write_bytes(before)
+
+    append_record(path, record)
+
+    assert path.read_bytes() == before + b"\n" + record.encode() + b"\n"
+    assert ends_without_newline(path) is False
+
+
+def test_a_fresh_append_writes_exactly_the_record_and_one_lf(tmp_path: Path) -> None:
+    path = tmp_path / "log.jsonl"
+
+    append_record(path, '{"a": 1}')
+
+    assert path.read_bytes() == b'{"a": 1}\n'
+
+
+@pytest.mark.parametrize("separator", ("\n", "\r"), ids=("lf", "cr"))
+def test_a_record_containing_a_physical_line_separator_is_rejected(
+    tmp_path: Path, separator: str
+) -> None:
+    """Readers use universal-newline mode, so a bare CR splits a record too.
+
+    The enumeration comes from what the READER treats as a line ending, not
+    from what "newline" colloquially means. Before this, a record carrying a
+    bare carriage return was written as one record, read back as two, and the
+    call returned success.
+    """
+
+    with pytest.raises(ValueError, match="one record is one line"):
+        append_record(tmp_path / "log.jsonl", f'{{"a": 1}}{separator}{{"b": 2}}')
 
