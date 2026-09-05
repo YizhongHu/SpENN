@@ -282,6 +282,166 @@ class TestAdmittedMethods:
         _validate(_config(optimizer={"_target_": "torch.optim.Adam", "lr": 0.005}))
 
 
+class TestFrozenArchitecture:
+    """Coordinates no arm may move -- and, just as importantly, ones every arm may."""
+
+    @pytest.mark.parametrize(
+        ("section", "body"),
+        [
+            ("system", {"spatial_dim": 2}),
+            ("runtime", {"dtype": "float32"}),
+            ("hamiltonian_terms", {"electron_nucleus": {"eps": 1e-8}}),
+        ],
+    )
+    def test_rejects_a_moved_scalar(self, section: str, body: dict) -> None:
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(_config(**{section: body}))
+        assert "frozen-coordinate" in _rules(caught.value)
+
+    def test_accepts_the_frozen_scalar_values(self) -> None:
+        _validate(
+            _config(
+                system={"spatial_dim": 3},
+                runtime={"dtype": "float64"},
+                hamiltonian_terms={"electron_nucleus": {"eps": 0.0}},
+            )
+        )
+
+    @pytest.mark.parametrize(
+        ("key", "bad"),
+        [("max_order", 3), ("max_virtual_order", 1), ("implementation", "slow")],
+    )
+    def test_rejects_a_moved_model_coordinate_at_any_depth(self, key: str, bad: object) -> None:
+        """Nesting varies with the producer policy, so the rule is depth-free.
+
+        A1/A2 swap tensor, linear and hybrid producers, which changes where
+        these keys sit. A fixed path would stop matching on some arms and pass
+        them by default.
+        """
+
+        cfg = _config(model={"layers": [{"mixing": {key: bad}}]})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "frozen-coordinate" in _rules(caught.value)
+        assert f"model.layers[0].mixing.{key}" in _paths(caught.value)
+
+    def test_rejects_v1_virtual_support(self) -> None:
+        """A3 is fixed at 2; there is no V1 arm."""
+
+        cfg = _config(model={"layers": [{"mixing": {"max_virtual_order": 1}}]})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "frozen-coordinate" in _rules(caught.value)
+
+    def test_rejects_a_global_gradient_clip(self) -> None:
+        cfg = _config(trainer={"gradient_clip_norm": 1.0})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "trainer.gradient_clip_norm" in _paths(caught.value)
+
+    def test_a_null_gradient_clip_is_accepted(self) -> None:
+        """Null is how a config says "no clipping" explicitly."""
+
+        _validate(_config(trainer={"gradient_clip_norm": None, "max_steps": 10}))
+
+    @pytest.mark.parametrize(
+        ("section", "body"),
+        [
+            # A4/A5 channels, A6 activations, A7 embedding width/depth,
+            # A8 update rule, A9 producer init. None may be pinned.
+            ("model", {"layers": [{"mixing": {"channels": 48}}]}),
+            ("model", {"layers": [{"mixing": {"activation": {"_target_": "torch.nn.Tanh"}}}]}),
+            ("model", {"embedding": {"hidden_channels": 256, "num_hidden_layers": 2}}),
+            ("model", {"layers": [{"update": {"_target_": "tpen.nn.ReplacementUpdater"}}]}),
+            ("model", {"layers": [{"mixing": {"initial_weight": 1.0}}]}),
+        ],
+    )
+    def test_does_not_pin_a_scanned_coordinate(self, section: str, body: dict) -> None:
+        """Pinning any of these would make the study's own grid unrunnable.
+
+        This is the half of the check that a "reject more" instinct gets wrong.
+        The scan varies producer policy, channels, activations, embedding
+        width/depth, the feature update rule and five initializations; a schema
+        that froze them would reject the arms it exists to serve.
+        """
+
+        _validate(_config(**{section: body}))
+
+
+class TestDeclaredTrainability:
+    """Trainability must be declared, never inherited."""
+
+    def test_rejects_a_readout_that_omits_trainable(self) -> None:
+        """The exact he-v1 defect: silent, total, and 300,000 updates long.
+
+        PfaffianReadout defaults trainable=False, and under that default the
+        channel weights appear in neither named_parameters() nor state_dict().
+        Nothing logs them and no gradient touches them, so the only way to
+        notice is to require the declaration.
+        """
+
+        cfg = _config(model={"readout": {"_target_": "tpen.nn.readout.PfaffianReadout", "channels": 32}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-trainability" in _rules(caught.value)
+        assert "model.readout.trainable" in _paths(caught.value)
+
+    def test_rejects_a_readout_declared_untrainable(self) -> None:
+        cfg = _config(model={"readout": {"channels": 32, "trainable": False}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-trainability" in _rules(caught.value)
+
+    def test_accepts_a_readout_declared_trainable(self) -> None:
+        _validate(_config(model={"readout": {"channels": 32, "trainable": True}}))
+
+    def test_a_config_with_no_readout_is_not_a_trainability_violation(self) -> None:
+        """An incomplete config is a different defect from a frozen parameter."""
+
+        _validate(_config(model={"embedding": {"out_channels": 32}}))
+
+    def test_rejects_an_ee_cusp_that_omits_trainable_range(self) -> None:
+        cfg = _config(model={"factors": [{"_target_": "tpen.nn.ElectronElectronCusp"}]})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.factors[0].trainable_range" in _paths(caught.value)
+
+    def test_rejects_an_en_cusp_whose_law_omits_trainable(self) -> None:
+        cfg = _config(
+            model={
+                "factors": [
+                    {
+                        "_target_": "tpen.nn.ElectronNucleusCusp",
+                        "law": {"_target_": "tpen.nn.CurvatureElectronNucleusCuspLaw"},
+                    }
+                ]
+            }
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.factors[0].law.trainable" in _paths(caught.value)
+
+    def test_accepts_fully_declared_factors(self) -> None:
+        _validate(
+            _config(
+                model={
+                    "factors": [
+                        {"_target_": "tpen.nn.ElectronElectronCusp", "trainable_range": True},
+                        {
+                            "_target_": "tpen.nn.ElectronNucleusCusp",
+                            "law": {"_target_": "tpen.nn.CurvatureElectronNucleusCuspLaw", "trainable": True},
+                        },
+                    ]
+                }
+            )
+        )
+
+    def test_an_unknown_factor_is_not_given_a_trainability_rule(self) -> None:
+        """CD4 adds a new factor; it gets its own rule then, not a guessed one."""
+
+        _validate(_config(model={"factors": [{"_target_": "tpen.nn.SomeFutureJastrow"}]}))
+
+
 class TestLaunchEnvironment:
     """The firewall names five surfaces; the launch environment is one of them.
 

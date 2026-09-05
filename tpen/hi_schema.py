@@ -347,6 +347,210 @@ def _sweep_callbacks(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
+# ---------------------------------------------------------------------------
+# Frozen architectural coordinates
+# ---------------------------------------------------------------------------
+# Only coordinates the study does NOT vary appear here. The scan varies the
+# producer/path policy, channels, activations, embedding width/depth, the
+# feature update rule, and five initializations; pinning any of those would
+# make the study's own grid unrunnable. Every key name below was checked
+# against experiments/atomistic/he-v1/configs/train.yaml, a real production
+# config -- a constraint naming a key that no config spells would never fire
+# and would be a silent no-op rather than a check.
+
+# Value must equal the expected one wherever the key appears anywhere under
+# ``model``. Depth-independent because the producer/path policy varies the
+# nesting: A1/A2 swap tensor, linear and hybrid producers, so a fixed path
+# would stop matching on some arms.
+_FROZEN_MODEL_KEYS: dict[str, tuple[object, str]] = {
+    "max_order": (2, "body order 2 (literal control, stack/path metadata)"),
+    "max_virtual_order": (2, "virtual support fixed at 2, no V1 arm (A3)"),
+    "implementation": (
+        "vectorized",
+        "vectorized kernels; the slow implementation is an oracle, not a scientific arm",
+    ),
+}
+
+# Singular coordinates, given as dotted paths.
+_FROZEN_SCALARS: dict[str, tuple[object, str]] = {
+    "system.spatial_dim": (3, "spatial dimension 3 (literal control, system/numerics)"),
+    "runtime.dtype": ("float64", "float64 (literal control, system/numerics)"),
+    "hamiltonian_terms.electron_nucleus.eps": (
+        0.0,
+        "Coulomb distance floor 0.0; a floor would mask near-nucleus cancellation",
+    ),
+}
+
+# Trainability must be DECLARED, never inherited. Absence is a violation here,
+# unlike the frozen scalars above, because every one of these defaults to the
+# WRONG value. This is not hypothetical: he-v1's own config records that
+# PfaffianReadout defaults to trainable=False, so passing only `channels`
+# pinned the channel weights at a uniform 1/32 for all 300,000 updates with
+# nothing in named_parameters(), nothing in state_dict(), and no log line. The
+# silence was total. Requiring the declaration is what makes that failure
+# impossible to repeat by omission.
+_REQUIRED_TRAINABILITY: dict[str, str] = {
+    "model.readout.trainable": "trainable weighted Pfaffian readout (literal control)",
+}
+
+# Factor trainability, keyed by the trailing component of the factor _target_.
+_REQUIRED_FACTOR_TRAINABILITY: dict[str, tuple[str, str]] = {
+    "ElectronElectronCusp": (
+        "trainable_range",
+        "both e-e ranges remain trainable in every arm (A10)",
+    ),
+    "ElectronNucleusCusp": (
+        "law.trainable",
+        "the e-n curvature law is trainable (literal control, e-n factor)",
+    ),
+}
+
+# Absent or null means no clipping, which is what the study requires, so this
+# one is checked for absence rather than for a value.
+_GLOBAL_CLIP_PATH = "trainer.gradient_clip_norm"
+
+
+def _select(tree: Any, dotted: str) -> tuple[bool, Any]:
+    """Return ``(found, value)`` for a dotted path in a plain container tree."""
+
+    node: Any = tree
+    for part in dotted.split("."):
+        if not isinstance(node, Mapping) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _sweep_frozen_architecture(resolved_tree: Any) -> list[Rejection]:
+    """Reject a configuration that moves a coordinate no arm may move."""
+
+    if not isinstance(resolved_tree, Mapping):
+        return []
+    rejections: list[Rejection] = []
+
+    model = resolved_tree.get("model")
+    if isinstance(model, (Mapping, list)):
+        for path, key, value in iter_nodes({"model": model}):
+            if key not in _FROZEN_MODEL_KEYS:
+                continue
+            expected, authority = _FROZEN_MODEL_KEYS[key]
+            if value != expected:
+                rejections.append(
+                    Rejection(
+                        rule="frozen-coordinate",
+                        tree="resolved",
+                        path=path,
+                        detail=f"expected {expected!r}, got {value!r}: {authority}",
+                    )
+                )
+
+    for dotted, (expected, authority) in _FROZEN_SCALARS.items():
+        found, value = _select(resolved_tree, dotted)
+        if not found:
+            # Absent means the code's own default applies. These three have
+            # correct defaults, so absence is not a violation -- unlike the
+            # trainability declarations below.
+            continue
+        if isinstance(expected, float) or isinstance(value, (int, float)) and not isinstance(value, bool):
+            matches = isinstance(value, (int, float)) and float(value) == float(expected)
+        else:
+            matches = value == expected
+        if not matches:
+            rejections.append(
+                Rejection(
+                    rule="frozen-coordinate",
+                    tree="resolved",
+                    path=dotted,
+                    detail=f"expected {expected!r}, got {value!r}: {authority}",
+                )
+            )
+
+    found, clip = _select(resolved_tree, _GLOBAL_CLIP_PATH)
+    if found and clip is not None:
+        rejections.append(
+            Rejection(
+                rule="frozen-coordinate",
+                tree="resolved",
+                path=_GLOBAL_CLIP_PATH,
+                detail=(
+                    f"global gradient clipping is not part of the study's objective/protection "
+                    f"policy, got {clip!r}. The update-norm bounds of SR and SPRING are "
+                    "parameter-coordinate-dependent protections and are not this knob"
+                ),
+            )
+        )
+
+    rejections.extend(_sweep_trainability(resolved_tree))
+    return rejections
+
+
+def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
+    """Require every trainability flag to be declared true, never inherited."""
+
+    rejections: list[Rejection] = []
+
+    for dotted, authority in _REQUIRED_TRAINABILITY.items():
+        # Scoped to configurations that actually declare the component. A config
+        # with no readout at all is INCOMPLETE, which is a different defect from
+        # a readout whose trainability was silently inherited -- and it is the
+        # latter this rule exists to catch. Conflating them would make every
+        # partial config report a trainability violation it does not have.
+        parent, _, _leaf = dotted.rpartition(".")
+        if not _select(resolved_tree, parent)[0]:
+            continue
+        found, value = _select(resolved_tree, dotted)
+        if not found:
+            rejections.append(
+                Rejection(
+                    rule="undeclared-trainability",
+                    tree="resolved",
+                    path=dotted,
+                    detail=(
+                        f"{dotted} must be declared explicitly and true ({authority}). The "
+                        "default is the opposite, and an inherited false is invisible: the "
+                        "parameter appears in neither named_parameters() nor state_dict(), so "
+                        "nothing logs it and no gradient touches it"
+                    ),
+                )
+            )
+        elif value is not True:
+            rejections.append(
+                Rejection(
+                    rule="undeclared-trainability",
+                    tree="resolved",
+                    path=dotted,
+                    detail=f"expected true, got {value!r}: {authority}",
+                )
+            )
+
+    factors = _select(resolved_tree, "model.factors")[1]
+    if isinstance(factors, list):
+        for index, factor in enumerate(factors):
+            if not isinstance(factor, Mapping):
+                continue
+            target = factor.get("_target_")
+            if not isinstance(target, str):
+                continue
+            spec = _REQUIRED_FACTOR_TRAINABILITY.get(target.rsplit(".", 1)[-1])
+            if spec is None:
+                continue
+            relative, authority = spec
+            found, value = _select(factor, relative)
+            if not found or value is not True:
+                rejections.append(
+                    Rejection(
+                        rule="undeclared-trainability",
+                        tree="resolved",
+                        path=f"model.factors[{index}].{relative}",
+                        detail=(
+                            f"must be declared explicitly and true ({authority}); "
+                            f"{'absent' if not found else repr(value)}"
+                        ),
+                    )
+                )
+    return rejections
+
+
 def _roster_summary() -> str:
     """Render the roster so a refusal states every method's admission status."""
 
@@ -521,5 +725,6 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(sweep_resolved(resolved_tree, HI_TRAIN_POLICY))
     rejections.extend(_sweep_callbacks(resolved_tree))
     rejections.extend(_sweep_method(resolved_tree))
+    rejections.extend(_sweep_frozen_architecture(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)
