@@ -41,6 +41,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from tpen.config_schema import (
     ClosedSchemaError,
+    canonical_digest,
     ForbiddenSurface,
     Rejection,
     SchemaPolicy,
@@ -58,6 +59,7 @@ __all__ = [
     "HI_TRAIN_POLICY",
     "HI_TRAIN_SCHEMA",
     "SCHEMA_KEY",
+    "canonical_train_identity",
     "declared_schema",
     "validate_hi_train_config",
 ]
@@ -551,6 +553,80 @@ def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
     return rejections
 
 
+# ---------------------------------------------------------------------------
+# Rank-invariant preconstruction
+# ---------------------------------------------------------------------------
+def _sweep_rank_divergent_fields(resolved_tree: Any) -> list[Rejection]:
+    """Reject fields that would resolve to a different value in each process.
+
+    Notes
+    -----
+    MEASURED in ``tpen/artifacts.py``: ``generate_run_id`` returns
+    ``f"{timestamp}_{slug}_{uuid4().hex[:6]}"``, and ``prepare_run_context``
+    calls it whenever ``run.run_id`` resolves to ``None``. The suffix is
+    RANDOM, so a null ``run_id`` does not merely risk divergence under clock
+    skew -- it produces a different identifier in every process, always. Under
+    a distributed launch each rank would then write to its own run directory
+    and the run would have no single identity.
+
+    This is the acceptance contract's second falsifier, "rank inputs differ",
+    and it is a property of the existing code rather than of anything this
+    schema adds. The remedy is for the materializer to assign the run id, which
+    is L2's job; the schema's job is to refuse a config that leaves it to
+    chance.
+    """
+
+    if not isinstance(resolved_tree, Mapping):
+        return []
+    run = resolved_tree.get("run")
+    if not isinstance(run, Mapping):
+        return []
+    if run.get("run_id") is not None:
+        return []
+    return [
+        Rejection(
+            rule="rank-divergent-field",
+            tree="resolved",
+            path="run.run_id",
+            detail=(
+                "run.run_id must be assigned explicitly. A null run_id is filled in by "
+                "generate_run_id, whose value ends in uuid4().hex[:6] -- so every process "
+                "computes a DIFFERENT identifier and each rank would write to its own run "
+                "directory. The resolved configuration must be identical on all ranks"
+            ),
+        )
+    ]
+
+
+def canonical_train_identity(cfg: DictConfig) -> str:
+    """Return the digest every rank must agree on for one training run.
+
+    Parameters
+    ----------
+    cfg : DictConfig
+        A resolved training configuration.
+
+    Returns
+    -------
+    str
+        Hex SHA-256 of the canonical rendering of the resolved configuration.
+
+    Notes
+    -----
+    Two ranks launched from the same file and overrides must produce the same
+    value. What makes that true is not this function but the two checks beside
+    it: forbidden resolvers keep resolution a pure function of the file, and
+    the rank-divergent-field rule keeps ``run.run_id`` from being drawn per
+    process. Without those, this digest would faithfully report a difference
+    and say nothing about its cause.
+
+    The digest covers the whole resolved configuration deliberately. Excluding
+    fields to make ranks agree would be arranging for the answer.
+    """
+
+    return canonical_digest(OmegaConf.to_container(cfg, resolve=True))
+
+
 def _roster_summary() -> str:
     """Render the roster so a refusal states every method's admission status."""
 
@@ -726,5 +802,6 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(_sweep_callbacks(resolved_tree))
     rejections.extend(_sweep_method(resolved_tree))
     rejections.extend(_sweep_frozen_architecture(resolved_tree))
+    rejections.extend(_sweep_rank_divergent_fields(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)

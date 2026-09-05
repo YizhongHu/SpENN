@@ -51,7 +51,7 @@ def _config_with(tmp_path, **sections):
     base = {
         "schema": HI_TRAIN_SCHEMA,
         "experiment": {"name": "hi_firewall", "sector": "atomistic"},
-        "run": {"root": str(tmp_path / "outputs")},
+        "run": {"root": str(tmp_path / "outputs"), "run_id": "hi_firewall_0001"},
         "optimizer": {"_target_": "torch.optim.Adam", "lr": 0.005},
     }
     base.update(sections)
@@ -141,7 +141,7 @@ class TestTheSpyWouldCatchALateFirewall:
         cfg = OmegaConf.create(
             {
                 "experiment": {"name": "legacy"},
-                "run": {"root": str(tmp_path / "outputs")},
+                "run": {"root": str(tmp_path / "outputs"), "run_id": "hi_firewall_0001"},
                 "system": {"reference_energy": -2.9},
             }
         )

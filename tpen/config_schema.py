@@ -38,6 +38,8 @@ match, while ``bandwidth`` tokenizes to ``("bandwidth",)`` and does not.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -45,6 +47,7 @@ from typing import Any
 
 __all__ = [
     "ClosedSchemaError",
+    "canonical_digest",
     "ForbiddenSurface",
     "Rejection",
     "SchemaPolicy",
@@ -324,6 +327,38 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
                     )
                 )
     return rejections
+
+
+def canonical_digest(resolved_tree: Any) -> str:
+    """Return a stable content digest of a resolved configuration.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        The configuration as plain containers, interpolations resolved.
+
+    Returns
+    -------
+    str
+        A hex SHA-256 over a canonical JSON rendering: keys sorted, no
+        insignificant whitespace.
+
+    Notes
+    -----
+    This is the "canonical resolved input" two ranks compare. Key order is
+    normalized because a mapping's iteration order is not part of a
+    configuration's meaning, and leaving it in would make the digest report a
+    difference where there is none.
+
+    The digest is only as strong as the guarantee that resolution is
+    deterministic. That guarantee comes from the forbidden-resolver check: with
+    ``oc.env`` and ``now`` refused, resolution is a pure function of the file
+    and its overrides. Without that check this digest would faithfully report
+    two different values and prove nothing about why.
+    """
+
+    rendered = json.dumps(resolved_tree, sort_keys=True, separators=(",", ":"), default=repr)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def sweep_environment(env: Mapping[str, str], policy: SchemaPolicy) -> tuple[Rejection, ...]:
