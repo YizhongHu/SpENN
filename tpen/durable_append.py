@@ -41,6 +41,36 @@ The resulting guarantee is precise and deliberately modest: **damage from a torn
 write is bounded to the torn record itself and is detectable when the file is
 read.**  It is *not* "torn writes cannot occur", which is unachievable on the
 filesystem these files actually live on.
+
+Three things this module relies on that are easy to miss
+--------------------------------------------------------
+**A short write is NOT retried, and that is a behaviour change.**  The previous
+text-mode path wrapped a ``BufferedWriter``, which loops the raw handle until
+every byte is stored, so a partial store was completed transparently.  This
+module raises instead.  Under ``O_APPEND`` with a single writer a bounded retry
+would be safe -- the remainder lands at the new end of file -- so completion was
+available and was deliberately not taken: a caller that believes a record was
+stored when it was not is the failure this module exists to prevent, and under
+``ENOSPC``, the dominant case on a quota-bound filesystem, a retry fails anyway.
+The cost is real: a partial store followed by a signal now loses a record the
+old path would have completed.  Revisiting this is tracked separately.
+
+**Callers that swallow ``OSError`` now swallow this too.**  Subclassing
+``OSError`` keeps existing handlers working, which is the point -- but "callers
+already treat storage failures that way" is not uniformly true.  Of the sites
+reached from an append, ``tpen/checkpoint/receipt.py`` logs a warning, and
+``tpen/callback/resource_usage.py`` has one commented best-effort ``pass`` and
+one bare ``pass`` with no log at all.  At the latter a partial append is now
+silent AND leaves a torn line behind.  That is bounded to rank-local telemetry,
+whose reader skips bad rows, but it is not the same as being handled.
+
+**Records must encode to ASCII.**  The readers open these files as UTF-8 text.
+A torn write that split a multi-byte character raises ``UnicodeDecodeError``
+from the file iteration itself, before any per-row error handling -- so the
+torn-row diagnosis is bypassed and the operator gets no repair guidance.  This
+cannot happen today only because every routed writer uses ``json.dumps`` with
+its default ``ensure_ascii=True``.  That invariant is depended on here and is
+pinned by a test; do not weaken it without changing the readers.
 """
 
 from __future__ import annotations

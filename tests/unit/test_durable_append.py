@@ -1,9 +1,17 @@
 """Torch-free tests for the single-write, torn-tail-safe append primitive.
 
-The defect these pin: ``append_jsonl`` wrote a record's body and its newline as
-two separate writes, so an interruption between them left an unterminated line
-that the *next* append concatenated onto -- destroying a later, entirely valid
-record rather than merely losing the interrupted one.
+The defect these pin: ``append_jsonl`` could leave an unterminated line that the
+*next* append concatenated onto -- destroying a later, entirely valid record
+rather than merely losing the interrupted one.
+
+The CAUSE is size-dependent, and the original diagnosis was corrected by
+measurement. For a record above the 8 KiB text buffer the two writes really do
+flush separately (measured: 40,014 of 40,015 bytes on disk before the newline),
+which is the ``occurrences.jsonl`` case. For a smaller record -- a catalog row,
+a receipt row, most log lines -- both writes coalesce into a single flush, so
+the two-call structure was NOT the trigger there; the exposure is a short write
+or a failure at flush, with the same damage shape. Do not repeat the
+two-separate-writes story about small records: it is measurably wrong for them.
 
 Two things make a test here easy to get wrong, so they are stated up front:
 
@@ -18,6 +26,7 @@ Two things make a test here easy to get wrong, so they are stated up front:
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from pathlib import Path
@@ -25,9 +34,16 @@ from pathlib import Path
 import pytest
 
 from tpen.artifacts import append_jsonl
+from tpen.distributed import (
+    ExecutionTopology,
+    ProfileRecord,
+    ProfileScope,
+    RankLocalJSONLWriter,
+)
 from tpen.durable_append import PartialAppendError, append_record, ends_without_newline
 from tpen.logging.base import LogRecord
 from tpen.logging.jsonl import JSONL
+from tpen.process_resources import ProcessResourceResult
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -274,8 +290,14 @@ def test_jsonl_logger_does_not_join_onto_an_unterminated_line(tmp_path: Path) ->
 
 TEXT_APPEND_OPEN = re.compile(r"""open\(\s*["']a["']""")
 
-# Many rows per open: a different failure shape, deliberately not covered by a
-# one-record primitive, and tracked as its own item rather than left silent.
+# Text-mode append writers deliberately NOT routed through the primitive in this
+# slice, tracked as item bc8925a8 rather than left silent.
+#
+# The name is historical and imprecise: csv.py genuinely writes many rows per
+# open, but sidecar.py only does so via ``extend``. Its production call path is
+# ``append`` -> ``extend((receipt,))`` -- ONE record per open, and its reader
+# raises on a bad row exactly as the catalog's does. It is out of scope by
+# ruling, not because its failure shape differs.
 KNOWN_BATCH_WRITERS = {
     Path("tpen/logging/csv.py"),
     Path("tpen/statistics/sidecar.py"),
@@ -313,3 +335,160 @@ def test_the_removed_trailing_newline_helper_has_exactly_one_replacement() -> No
     receipt = (REPO_ROOT / "tpen" / "checkpoint" / "receipt.py").read_text(encoding="utf-8")
 
     assert "def _ensure_trailing_newline" not in receipt
+
+
+# --- buffering=0 is a load-bearing token, and nothing above pins it ----------
+
+
+class _DropsOneByteOnce(io.RawIOBase):
+    """A raw handle whose FIRST write stores one byte fewer than asked.
+
+    This is the shape POSIX permits for a regular file: a partial store with a
+    short count returned, and no error.  Every later write is honoured in full,
+    so a layer that RETRIES the remainder completes the record -- which is
+    precisely the behaviour these tests must be able to see.
+    """
+
+    def __init__(self, inner: io.FileIO) -> None:
+        self._inner = inner
+        self._shortened = False
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:
+        payload = bytes(data)
+        if not self._shortened and len(payload) > 1:
+            self._shortened = True
+            return self._inner.write(payload[:-1])
+        return self._inner.write(payload)
+
+    def close(self) -> None:
+        try:
+            self._inner.close()
+        finally:
+            super().close()
+
+
+@pytest.fixture
+def short_write_below_the_opened_layer(monkeypatch: pytest.MonkeyPatch):
+    """Inject the short write BELOW whatever layer ``append_record`` opens.
+
+    The ``write_calls`` fixture wraps the object ``Path.open`` returns, so it
+    sits ABOVE any buffering and cannot observe it.  This fixture instead
+    honours the ``buffering`` the production code asks for: with ``buffering=0``
+    the caller receives the raw shim and sees the short count; with any other
+    buffering it receives a ``BufferedWriter`` over the shim, which returns
+    ``len(data)`` unconditionally and loops the raw handle until every byte is
+    stored.  The outcome is therefore decided by the production open, not by
+    the test's own wrapper.
+    """
+
+    real_open = Path.open
+
+    def spy(self, mode="r", *args, **kwargs):
+        if "a" in mode and "b" in mode:
+            buffering = args[0] if args else kwargs.get("buffering", -1)
+            shim = _DropsOneByteOnce(io.FileIO(str(self), "a"))
+            return shim if buffering == 0 else io.BufferedWriter(shim)
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", spy)
+
+
+def test_the_append_handle_is_unbuffered_so_a_short_write_is_reported_not_retried(
+    short_write_below_the_opened_layer, tmp_path: Path
+) -> None:
+    """``buffering=0`` is the token that makes BOTH I1 and I3 true.
+
+    Deleting it leaves every other test in this file green: the recording
+    handle counts one ``write`` either way, and ``BufferedWriter.write`` returns
+    the full length, so ``written != len(encoded)`` can never fire and
+    ``PartialAppendError`` becomes unreachable.  Measured before this test
+    existed: removing ``buffering=0`` killed 0 of 25 tests.
+    """
+
+    path = tmp_path / "log.jsonl"
+
+    with pytest.raises(PartialAppendError):
+        append_record(path, '{"a": 1}')
+
+
+def test_the_production_append_opens_a_raw_unbuffered_handle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Pin the property directly: the handle must be raw, not buffered.
+
+    Stated as ``RawIOBase`` rather than ``buffering == 0`` so a refactor to a
+    different unbuffered spelling still passes, while any buffered handle --
+    which silently retries short writes and may split one record across several
+    syscalls -- fails.
+    """
+
+    real_open = Path.open
+    handles: list[object] = []
+
+    def spy(self, mode="r", *args, **kwargs):
+        handle = real_open(self, mode, *args, **kwargs)
+        if "a" in mode and "b" in mode:
+            handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", spy)
+
+    append_record(tmp_path / "log.jsonl", '{"a": 1}')
+
+    assert len(handles) == 1
+    assert isinstance(handles[0], io.RawIOBase), (
+        "append_record must open an unbuffered raw handle: a BufferedWriter "
+        "returns len(data) from write() unconditionally, which defeats the "
+        "short-write check, and loops the raw handle, which defeats one-write."
+    )
+
+
+# --- the unstated ASCII invariant the torn-row diagnosis depends on ----------
+
+
+def test_every_routed_writer_emits_ascii_only_bytes(tmp_path: Path) -> None:
+    """The torn-row DIAGNOSIS silently depends on records being pure ASCII.
+
+    ``iter_publications`` opens the catalog as UTF-8 text.  A torn write that
+    split a multi-byte character raises ``UnicodeDecodeError`` out of the file
+    iteration itself -- before the ``except json.JSONDecodeError`` that produces
+    ``IncompletePublicationRecordError`` -- so the operator would get no
+    diagnosis, no repair recipe and no line number.  That cannot happen today
+    only because every routed writer uses ``json.dumps``'s default
+    ``ensure_ascii=True``, an invariant stated nowhere and pinned by nothing.
+    This states it.
+    """
+
+    direct = tmp_path / "direct.jsonl"
+    append_jsonl(direct, {"text": "é中\U0001f600"})
+
+    metrics = tmp_path / "metrics.jsonl"
+    JSONL(metrics).log(LogRecord(step=1, namespace="é", metrics={"loss": 0.5}))
+
+    topology = ExecutionTopology(
+        global_rank=0, global_size=1, local_rank=0, local_size=1,
+        node_rank=0, node_size=1, host="éhost", pid=1, device="cpu", job_id=None,
+    )
+    profiles = tmp_path / "profiles"
+    RankLocalJSONLWriter(profiles, topology).write(
+        ProfileRecord(
+            ProfileScope.PROCESS,
+            0.0,
+            topology,
+            process=ProcessResourceResult(
+                user_cpu_seconds=1, system_cpu_seconds=1,
+                read_block_operations=1, write_block_operations=1,
+                voluntary_context_switches=1, involuntary_context_switches=1,
+                peak_rss_mb=1,
+            ),
+        )
+    )
+
+    written = [direct, metrics, *profiles.rglob("*.jsonl")]
+    assert len(written) >= 3
+    for path in written:
+        raw = path.read_bytes()
+        assert raw.isascii(), f"{path} emitted non-ASCII bytes: {raw!r}"

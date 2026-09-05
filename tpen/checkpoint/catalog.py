@@ -118,7 +118,12 @@ class CheckpointCatalog:
             return
         with self.path.open("r", encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
-                # Read the terminator before stripping it off the line.
+                # Read the terminator before stripping it off the line.  Note this
+                # is universal-newline text mode, so a bare CR counts as a line
+                # ending here while ``durable_append.ends_without_newline`` reads
+                # bytes and would call the same tail unterminated.  Unreachable
+                # from TPEN records -- ``json.dumps`` escapes CR as ``\\r`` -- so
+                # no record's bytes can end in a literal CR.
                 terminated = line.endswith("\n")
                 if not line.strip():
                     continue
@@ -133,11 +138,15 @@ class CheckpointCatalog:
                             "and never committed; every earlier row is intact. To repair: "
                             "drop this unterminated final line, which holds no committed "
                             "record, then re-run tpen.checkpoint.catalog.reconcile_publication "
-                            "on the affected checkpoint directory to rebuild the row from the "
-                            "committed checkpoint on disk. Dropping the line is an operator "
-                            "action by design -- reconcile_publication reads the catalog "
-                            "before it writes, so it cannot clear this itself, and TPEN does "
-                            "not truncate a load-bearing file on its own."
+                            "on the NEWEST complete step_* directory under the checkpoint root "
+                            "that now has no catalog row -- a tear is always on the last "
+                            "append, so it is never an older one. Do NOT reconcile older "
+                            "directories to be safe: reconcile_publication rewrites "
+                            "latest.json unconditionally and would point it at an older "
+                            "checkpoint. Dropping the line is an operator action by design -- "
+                            "reconcile_publication reads the catalog before it writes, so it "
+                            "cannot clear this itself, and TPEN does not truncate a "
+                            "load-bearing file on its own."
                         ) from exc
                     raise ValueError(
                         f"invalid checkpoint publication at {self.path}:{line_number}: {exc}"

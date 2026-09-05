@@ -6,11 +6,12 @@ identity row is worse than refusing to read the file. These tests pin the reader
 staying loud while gaining a *diagnosis* -- separating a row that was torn
 mid-write, and is therefore repairable, from a row that is corrupt, and is not.
 
-The distinction is drawn on the terminating newline, which is what commits a
-record, and not on parseability. That matters in both directions: a reader that
-skipped unparseable rows would lose a published checkpoint, and a reader that
-rejected every unterminated line would refuse to read a catalog that is entirely
-intact. Both directions are exercised below.
+Parseability alone decides raise-versus-yield. The terminating newline selects
+only WHICH exception is raised among rows that have already failed to parse, and
+never causes a parseable row to be rejected. That matters in both directions: a
+reader that skipped unparseable rows would lose a published checkpoint, and a
+reader that rejected every unterminated line would refuse to read a catalog that
+is entirely intact. Both directions are exercised below.
 """
 
 from __future__ import annotations
@@ -222,3 +223,29 @@ def test_reconcile_rebuilds_a_row_lost_entirely_to_a_torn_append(tmp_path: Path)
 
     refs = catalog.records()
     assert [ref.next_iteration for ref in refs] == [7]
+
+
+def test_publishing_still_works_when_the_final_row_lost_only_its_terminator(
+    tmp_path: Path,
+) -> None:
+    """Row 3 stated as its production consequence, not as a reader property.
+
+    ``test_an_unterminated_final_row_that_parses_is_yielded_not_rejected`` was
+    the ONLY assertion in the suite that died when the reader closed too far --
+    the mutation that rejects every unterminated tail killed exactly one test.
+    The most load-bearing judgement in the slice therefore had a single point of
+    failure.  This pins the same rule from the other end: a run must still be
+    able to PUBLISH, which is what an over-restrictive reader would actually
+    break, so an edit to either test alone cannot silently unpin the rule.
+    """
+
+    catalog = CheckpointCatalog(publication_catalog_path(tmp_path))
+    catalog.publish(CheckpointRef.from_directory(_write_checkpoint(tmp_path, 7)))
+
+    text = catalog.path.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    catalog.path.write_text(text[:-1], encoding="utf-8")
+
+    catalog.publish(CheckpointRef.from_directory(_write_checkpoint(tmp_path, 9)))
+
+    assert [ref.next_iteration for ref in catalog.records()] == [7, 9]
