@@ -349,14 +349,13 @@ class VMCTrainer:
         )
         if not isinstance(selected_update_method, VMCUpdateMethod):
             raise TypeError("VMCTrainer update_method must be a VMCUpdateMethod")
-        if from_self:
-            # Memoize the constructed method back onto the trainer. This
-            # selection runs twice in a resumed run -- once from
-            # `resolve_update_state` before restore, once from `fit` -- and a
-            # factory would otherwise yield two DIFFERENT instances, so the
-            # checkpoint would load into the one that is then discarded and the
-            # run would silently resume with a fresh method state.
-            self.update_method = selected_update_method
+        # Remember the spec alongside the instance it produced, so the guard at
+        # the top of this method can reuse it on the next selection from the
+        # same spec. The caller's constructor argument is deliberately left
+        # unmutated; an earlier version overwrote `self.update_method` with the
+        # constructed instance, which memoized the self path only.
+        self._update_method_spec = spec
+        self._resolved_update_method = selected_update_method
         return selected_update_method
 
     def _resolve_method_state(
