@@ -18,6 +18,9 @@ torch = require_torch(feature="TPEN embedding modules")
 nn = require_torch_nn(feature="TPEN embedding modules")
 
 
+_PAIR_ORDER = 2
+
+
 class Embedding(EquivariantMap):
     """Encode raw non-repeating particle-vector tuples with per-order MLPs.
 
@@ -86,6 +89,7 @@ class Embedding(EquivariantMap):
         include_spins: bool = True,
         aux_feature_channels: Mapping[str, int] | None = None,
         in_features: int | None = None,
+        pair_input_channels: int = 0,
         initializer: TorchInitializer | None = None,
         embedding_envelope: nn.Module | None = None,
         embedding_normalization: nn.Module | None = None,
@@ -116,6 +120,17 @@ class Embedding(EquivariantMap):
         else:
             self.particle_input_channels = derived_channels
         self.in_features = None if in_features is None else int(in_features)
+        # Ordered-pair ingress width. 0 (the default) means this embedding
+        # consumes no pair channel, which is every historical configuration.
+        self.pair_input_channels = int(pair_input_channels)
+        if self.pair_input_channels < 0:
+            raise ValueError(f"pair_input_channels must be non-negative, got {pair_input_channels}")
+        if self.pair_input_channels and self.max_order < _PAIR_ORDER:
+            raise ValueError(
+                f"pair_input_channels={self.pair_input_channels} requires max_order >= "
+                f"{_PAIR_ORDER}; an ordered pair has no tuple to enter at order "
+                f"{self.max_order}"
+            )
         self.embedding_envelope = embedding_envelope
         self.embedding_normalization = embedding_normalization
         self.order_mlps = nn.ModuleDict()
@@ -125,7 +140,7 @@ class Embedding(EquivariantMap):
             module = supplied.get(order)
             if module is None:
                 module = MLP(
-                    in_channels=order * self.particle_input_channels,
+                    in_channels=self._order_in_channels(order),
                     out_channels=order_out_channels,
                     hidden_channels=hidden_channels,
                     num_hidden_layers=num_hidden_layers,
@@ -175,6 +190,13 @@ class Embedding(EquivariantMap):
         blocks = [zero_block(batch_size=batch_size, device=device, dtype=dtype)]
         for order in range(1, self.max_order + 1):
             tuple_inputs = tuple_particle_inputs(particle_vectors, order)
+            tuple_inputs = self._pair_tuple_inputs(
+                tuple_inputs,
+                inputs,
+                order=order,
+                batch_size=batch_size,
+                n_electrons=n_electrons,
+            )
             block = self.order_mlps[str(order)](tuple_inputs).movedim(-1, 1)
             block = block * no_repeated_particle_mask(n_electrons, order, device=device).reshape(
                 1,
@@ -190,6 +212,64 @@ class Embedding(EquivariantMap):
                 raise ValueError("embedding_envelope requires a TPENForwardContext")
             features = self.embedding_envelope(features, context)
         return features
+
+    def _order_in_channels(self, order: int) -> int:
+        """Return the MLP input width for one tuple order.
+
+        Pair channels are added ONLY at order 2, because that is the only order
+        whose tuple IS an ordered pair. The authority defines pair features and
+        nothing wider, so orders above 2 receive no invented triple analogue.
+        """
+
+        width = order * self.particle_input_channels
+        if order == _PAIR_ORDER:
+            width += self.pair_input_channels
+        return width
+
+    def _pair_tuple_inputs(
+        self,
+        tuple_inputs: "torch.Tensor",
+        inputs: ElectronBatch | ElectronBasisFeatures,
+        *,
+        order: int,
+        batch_size: int,
+        n_electrons: int,
+    ) -> "torch.Tensor":
+        """Append the ordered-pair channel to order-2 tuple inputs.
+
+        Raises rather than silently proceeding in BOTH mismatch directions. A
+        configured pair width with no pair tensor would otherwise fail later as
+        a confusing shape error; an unconsumed pair tensor would silently drop
+        typed features that a caller went to the trouble of producing, which is
+        the same class of defect as broadcasting them in undocumented -- just
+        inverted.
+        """
+
+        pair = getattr(inputs, "pair", None)
+
+        if order != _PAIR_ORDER:
+            return tuple_inputs
+        if not self.pair_input_channels:
+            if pair is not None:
+                raise ValueError(
+                    "ElectronBasisFeatures carries a pair channel but this Embedding has "
+                    "pair_input_channels=0, so the pair features would be silently "
+                    "discarded. Set pair_input_channels to consume them"
+                )
+            return tuple_inputs
+        if pair is None:
+            raise ValueError(
+                f"Embedding has pair_input_channels={self.pair_input_channels} but the "
+                "inputs carry no pair channel; a basis producing ordered pairs is required"
+            )
+
+        flat = pair.reshape(batch_size, n_electrons, n_electrons, -1)
+        if flat.shape[-1] != self.pair_input_channels:
+            raise ValueError(
+                f"Embedding expected pair width {self.pair_input_channels}, "
+                f"got {flat.shape[-1]}"
+            )
+        return torch.cat([tuple_inputs, flat.to(dtype=tuple_inputs.dtype)], dim=-1)
 
     def _out_channels(self, order: int) -> int:
         if isinstance(self.out_channels, dict):
