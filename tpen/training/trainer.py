@@ -121,6 +121,9 @@ class VMCTrainer:
         # rebuilding direct parameter references after model weights load.
         self._resolved_model = None
         self._resolved_update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None
+        # The spec that produced `_resolved_update_method`, kept so a repeated
+        # selection from the same spec reuses one instance. See F5 above.
+        self._update_method_spec: UpdateMethodSpec = None
         self._resolved_update_state: VMCUpdateState | None = None
         self._checkpoint_parameter_layout = None
         # Durable resume cursor: the next iteration this trainer will attempt.
@@ -209,6 +212,27 @@ class VMCTrainer:
                     "before restore"
                 )
             self._resolved_update_method.load_method_state_dict(state["update_method"])
+        elif (
+            self._resolved_update_method is not None
+            and self._resolved_update_method.method_state_dict()
+        ):
+            # A method that OWNS persistent state is being resumed from a
+            # checkpoint that carries none of it. Skipping quietly would restore
+            # the trainer's counters while leaving the method's own counters,
+            # fingerprint and any warm start at their fresh values -- a resume
+            # that looks clean and is not, which is precisely what "strict
+            # updater/layout/damping/warm-start resume parity" forbids.
+            #
+            # This is loud in the reverse direction already: SR state handed to
+            # a stateless method raises. Making the missing direction loud too
+            # is what closes the asymmetry. It also catches the realistic
+            # mistake of resuming a legacy Adam checkpoint under an SR config,
+            # where silence would train from a half-restored state.
+            raise ValueError(
+                "checkpoint state has no 'update_method' payload, but the resolved "
+                f"update method {type(self._resolved_update_method).__name__} owns "
+                "persistent method state; refusing a partial resume"
+            )
 
         self._checkpoint_parameter_layout = restored_layout
         if restored_layout is not None:
@@ -293,8 +317,20 @@ class VMCTrainer:
     ) -> VMCUpdateMethod[AutogradUpdateInput]:
         """Select or construct the update method for one fit invocation."""
 
-        from_self = update_method is None
-        selected_update_method = update_method if update_method is not None else self.update_method
+        spec = self.update_method if update_method is None else update_method
+        # Reuse the instance already built from THIS spec. Selection runs twice
+        # in a resumed run -- once from `resolve_update_state` before restore,
+        # once from `fit` -- and a factory would otherwise yield two different
+        # instances, so the checkpoint would load into the one then discarded.
+        # Keying on the spec's identity covers a factory passed EXPLICITLY to
+        # both calls, which an earlier version keyed on `self` alone and missed.
+        if (
+            spec is not None
+            and self._resolved_update_method is not None
+            and spec is self._update_method_spec
+        ):
+            return self._resolved_update_method
+        selected_update_method = spec
         if selected_update_method is None:
             return LegacyAutogradUpdate(
                 optimizer=optimizer,
