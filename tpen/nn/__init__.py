@@ -64,7 +64,6 @@ from tpen.nn.tpen_layer import TPENLayer
 from tpen.nn.tpen_wave_function import TPENWaveFunction
 from tpen.nn.tpen_stack import TPENStack
 from tpen.nn.update import ReplaceUpdater, ResidualUpdater, Updater
-from tpen.nn.update_envelope import GaussianCoordinateGate, UpdateEnvelope
 
 __all__ = [
     "AdditiveCusp",
@@ -105,10 +104,8 @@ __all__ = [
     "PathAggregation",
     "RawCoordinateBasis",
     "RMSNorm",
-    "GaussianCoordinateGate",
     "ReplaceUpdater",
     "ResidualUpdater",
-    "UpdateEnvelope",
     "SeededLinear",
     "TPENForwardContext",
     "TPENLayer",
