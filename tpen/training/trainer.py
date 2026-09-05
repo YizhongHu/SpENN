@@ -24,7 +24,7 @@ from tpen.training.events import (
 )
 from tpen.training.state import TrainerState
 from tpen.nn.forward import ParameterScoreRequest
-from tpen.training.optim import make_update_method
+from tpen.training.optim import UpdateMethodSpec, make_update_method
 from tpen.training.update import (
     AutogradUpdateInput,
     LegacyAutogradUpdate,
@@ -109,7 +109,7 @@ class VMCTrainer:
         log_every_n_steps: int = 1,
         return_terms: bool = False,
         gradient_clip_norm: float | None = None,
-        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
+        update_method: UpdateMethodSpec = None,
     ) -> None:
         self.max_steps = int(max_steps)
         self.log_every_n_steps = int(log_every_n_steps)
@@ -153,7 +153,7 @@ class VMCTrainer:
         # `VMCUpdateMethod.state_dict()` is empty, so a stateless method adds
         # no key and existing checkpoints are unchanged.
         if self._resolved_update_method is not None:
-            method_state = self._resolved_update_method.state_dict()
+            method_state = self._resolved_update_method.method_state_dict()
             if method_state:
                 state["update_method"] = dict(method_state)
         return state
@@ -208,7 +208,7 @@ class VMCTrainer:
                     "update-method state restore requires update-state resolution "
                     "before restore"
                 )
-            self._resolved_update_method.load_state_dict(state["update_method"])
+            self._resolved_update_method.load_method_state_dict(state["update_method"])
 
         self._checkpoint_parameter_layout = restored_layout
         if restored_layout is not None:
@@ -225,7 +225,7 @@ class VMCTrainer:
         *,
         model,
         optimizer: torch.optim.Optimizer,
-        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
+        update_method: UpdateMethodSpec = None,
     ) -> VMCUpdateState:
         """Resolve the one typed update-state authority before any mutation.
 
@@ -289,7 +289,7 @@ class VMCTrainer:
         *,
         model,
         optimizer: torch.optim.Optimizer,
-        update_method: VMCUpdateMethod[AutogradUpdateInput] | None,
+        update_method: UpdateMethodSpec,
     ) -> VMCUpdateMethod[AutogradUpdateInput]:
         """Select or construct the update method for one fit invocation."""
 
@@ -358,7 +358,7 @@ class VMCTrainer:
         optimizer: torch.optim.Optimizer,
         context: RunContext,
         emit: Callable[..., None],
-        update_method: VMCUpdateMethod[AutogradUpdateInput] | None = None,
+        update_method: UpdateMethodSpec = None,
     ) -> TrainerState:
         """Run the training loop and return the final `TrainerState`."""
 

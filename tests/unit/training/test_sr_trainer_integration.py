@@ -6,9 +6,11 @@ model, that legacy behaviour is untouched, that method state survives a
 checkpoint round trip, and that a declined step no longer looks to the trainer
 like a disconnected loss.
 
-The model is the same tiny `TPENWaveFunction` the existing trainer smoke uses,
-so these exercise the actual score-request provider rather than a stub that
-could agree with a wrong contract.
+The model is a real `TPENWaveFunction` driven through the real score-request
+provider, not a stub that could agree with a wrong contract.  It is NOT the
+tiny Hooke model the existing trainer smoke uses, and the reason is a genuine
+blocker rather than a convenience: see
+`test_score_seam_blocks_sr_on_a_two_electron_tpen_model`, which pins it.
 """
 
 from __future__ import annotations
@@ -34,9 +36,55 @@ from tests.helpers.hooke_models import (
     build_tiny_sampler,
     build_tiny_spenn,
 )
+from tests.unit.nn.test_tpen_wavefunction_parameter_scores import _build_model
 from tests.unit.training.test_vmc_trainer_tpen_smoke import _StubContext
+from tpen.data.batch import ElectronBatch
+from tpen.nn import InteractionMode
 
 LEARNING_RATE = 1.0e-3
+
+
+def build_connected_model():
+    """Build a real TPENWaveFunction whose parameters are ALL score-connected.
+
+    `build_tiny_spenn()` is the obvious model to use here and cannot be: 16 of
+    its 39 parameters are structurally inactive at its 2-electron count, so the
+    score provider refuses the whole request. That is a real blocker, pinned by
+    `test_score_seam_blocks_sr_on_a_two_electron_tpen_model`, and it belongs to
+    the score seam rather than to this method. Using a model whose parameters
+    are all reachable keeps THIS file testing the SR integration rather than
+    re-testing that blocker.
+
+    It is still a genuine `TPENWaveFunction` driven through the genuine score
+    provider, not a stub that could agree with a wrong contract.
+    """
+
+    return _build_model(InteractionMode.TENSOR_PRODUCT)
+
+
+class _FixedWalkers:
+    """Walkers wrapping one fixed 3-electron batch."""
+
+    def __init__(self, batch: ElectronBatch) -> None:
+        self._batch = batch
+        self.n_walkers = int(batch.batch_size)
+
+    def make_batch(self) -> ElectronBatch:
+        return self._batch
+
+
+class _FixedSampler:
+    """Deterministic sampler: the loop under test is the updater, not the MCMC."""
+
+    def __init__(self, *, n_walkers: int = 6, seed: int = 5) -> None:
+        generator = torch.Generator().manual_seed(seed)
+        positions = torch.randn(n_walkers, 3, 3, generator=generator, dtype=torch.float64)
+        spins = torch.tensor([[1.0, -1.0, 1.0]] * n_walkers, dtype=torch.float64)
+        self._batch = ElectronBatch(positions=positions, spins=spins)
+
+    def collect_samples(self, model, *, device=None):
+        del model, device
+        return _FixedWalkers(self._batch), None
 
 
 def _sr_method(
@@ -71,8 +119,8 @@ def _fit(
     """Run the trainer for a few steps, seeded so two runs are comparable."""
 
     torch.manual_seed(seed)
-    model = build_tiny_spenn()
-    sampler = build_tiny_sampler()
+    model = build_connected_model()
+    sampler = _FixedSampler()
     context = _StubContext()
     method = None if solve_space is None else _sr_method(model, solve_space=solve_space)
     optimizer = (
@@ -114,7 +162,7 @@ def test_a_real_sr_update_runs_on_a_landed_tpen_model(solve_space: str) -> None:
     """
 
     torch.manual_seed(0)
-    reference = build_tiny_spenn()
+    reference = build_connected_model()
     before = [p.detach().clone() for p in reference.parameters()]
 
     trainer, model, context, method = _fit(solve_space=solve_space)
@@ -139,7 +187,7 @@ def test_the_score_forward_happens_once_per_step() -> None:
     """
 
     torch.manual_seed(0)
-    model = build_tiny_spenn()
+    model = build_connected_model()
     method = _sr_method(model)
     calls = {"score": 0}
     original = model.evaluate_materialized_parameter_score_request
@@ -152,7 +200,7 @@ def test_the_score_forward_happens_once_per_step() -> None:
 
     VMCTrainer(max_steps=3, log_every_n_steps=1, update_method=method).fit(
         model=model,
-        sampler=build_tiny_sampler(),
+        sampler=_FixedSampler(),
         hamiltonian_terms=build_tiny_hamiltonian_terms(),
         optimizer=method.optimizer,
         context=_StubContext(),
@@ -254,7 +302,7 @@ def test_a_factory_is_constructed_once_across_resolve_and_fit() -> None:
     """
 
     torch.manual_seed(0)
-    model = build_tiny_spenn()
+    model = build_connected_model()
     parameters = tuple(model.parameters())
     optimizer = torch.optim.SGD(parameters, lr=LEARNING_RATE)
 
@@ -303,7 +351,7 @@ def test_a_declined_score_update_is_reported_not_mistaken_for_a_broken_loss() ->
     """
 
     torch.manual_seed(0)
-    model = build_tiny_spenn()
+    model = build_connected_model()
     parameters = tuple(model.parameters())
     method = _AlwaysDecliningScoreMethod(
         torch.optim.SGD(parameters, lr=LEARNING_RATE),
@@ -315,7 +363,7 @@ def test_a_declined_score_update_is_reported_not_mistaken_for_a_broken_loss() ->
 
     trainer.fit(
         model=model,
-        sampler=build_tiny_sampler(),
+        sampler=_FixedSampler(),
         hamiltonian_terms=build_tiny_hamiltonian_terms(),
         optimizer=method.optimizer,
         context=_StubContext(),
@@ -363,11 +411,11 @@ def test_trust_cap_bounds_the_applied_step_through_the_trainer() -> None:
     """The trust cap is honoured on a real model, not only in isolation."""
 
     torch.manual_seed(11)
-    uncapped_model = build_tiny_spenn()
+    uncapped_model = build_connected_model()
     uncapped = _sr_method(uncapped_model, solve_space="parameter")
     VMCTrainer(max_steps=1, update_method=uncapped).fit(
         model=uncapped_model,
-        sampler=build_tiny_sampler(),
+        sampler=_FixedSampler(),
         hamiltonian_terms=build_tiny_hamiltonian_terms(),
         optimizer=uncapped.optimizer,
         context=_StubContext(),
@@ -378,11 +426,11 @@ def test_trust_cap_bounds_the_applied_step_through_the_trainer() -> None:
 
     cap = 0.25 * free_norm
     torch.manual_seed(11)
-    capped_model = build_tiny_spenn()
+    capped_model = build_connected_model()
     capped = _sr_method(capped_model, solve_space="parameter", max_update_norm=cap)
     VMCTrainer(max_steps=1, update_method=capped).fit(
         model=capped_model,
-        sampler=build_tiny_sampler(),
+        sampler=_FixedSampler(),
         hamiltonian_terms=build_tiny_hamiltonian_terms(),
         optimizer=capped.optimizer,
         context=_StubContext(),
@@ -397,7 +445,7 @@ def test_score_methods_declare_a_request_and_legacy_does_not() -> None:
     """The forward-request seam is what the trainer dispatches on."""
 
     torch.manual_seed(0)
-    model = build_tiny_spenn()
+    model = build_connected_model()
     parameters = tuple(model.parameters())
 
     assert VMCUpdateMethod.forward_request(object()) is None  # type: ignore[arg-type]
@@ -409,3 +457,90 @@ def test_score_methods_declare_a_request_and_legacy_does_not() -> None:
         is None
     )
     assert _sr_method(model).forward_request() is not None
+
+
+def test_score_seam_blocks_sr_on_a_two_electron_tpen_model() -> None:
+    """PINS A BLOCKER: the score seam refuses a 2-electron TPEN model outright.
+
+    Measured on Cannon job 44572987: of the 39 trainable parameters in
+    `build_tiny_spenn()`, 16 are structurally disconnected from ``logabs`` at
+    its 2-electron count -- `stack.layers.0.mixing.weights.g0` through `g14`
+    and `stack.layers.0.path_aggregation.weights.o1`. The equivariant mixing
+    allocates a weight per tensor path, and at two electrons most of those
+    paths carry nothing, so autograd never reaches them.
+
+    `_slow_parameter_score_blocks` and `_chunked_parameter_score_blocks` both
+    pass ``allow_unused=False`` and convert the resulting RuntimeError into
+    "materialized parameter scores found an unused or disconnected parameter".
+    That guard is right about the case it was built for -- a parameter no code
+    path consumes, as in `_UnusedPfaffianReadout` -- but it cannot tell that
+    case apart from a parameter whose path is simply empty at this particle
+    count. So the whole score request fails and SR cannot run.
+
+    This is NOT a defect in the SR method, and it is not fixed here: the fix
+    belongs to whoever owns the score seam, and flipping ``allow_unused`` would
+    destroy the guard's real purpose. It matters beyond a test fixture because
+    helium is a two-electron system, so the target programme hits it.
+
+    The mathematically correct score for a structurally inactive parameter is
+    exactly zero, so a seam that distinguished "inactive for this system" from
+    "never consumed" could return zero blocks and SR would work unchanged.
+
+    This test asserts the CURRENT behaviour, so it fails loudly the moment the
+    seam is fixed -- at which point `build_connected_model` above can be
+    replaced by `build_tiny_spenn` and the restriction disappears.
+    """
+
+    torch.manual_seed(0)
+    model = build_tiny_spenn()
+    method = _sr_method(model)
+
+    with pytest.raises(RuntimeError, match="unused or disconnected"):
+        VMCTrainer(max_steps=1, update_method=method).fit(
+            model=model,
+            sampler=build_tiny_sampler(),
+            hamiltonian_terms=build_tiny_hamiltonian_terms(),
+            optimizer=method.optimizer,
+            context=_StubContext(),
+            emit=lambda **_: None,
+        )
+
+
+def test_the_blocked_model_is_blocked_only_by_disconnected_parameters() -> None:
+    """The blocker is exactly disconnection, not something else about the model.
+
+    Without this, the test above would pass for any reason the model failed,
+    and would keep passing if the real cause changed. Counting the unreachable
+    parameters directly separates "structurally inactive at this particle
+    count" from a general breakage.
+    """
+
+    torch.manual_seed(0)
+    model = build_tiny_spenn()
+    walkers, _ = build_tiny_sampler().collect_samples(model, device=torch.device("cpu"))
+    batch = walkers.make_batch()
+    parameters = model.parameter_binding.parameters
+
+    with torch.enable_grad():
+        logabs = model(batch).logabs
+        grads = torch.autograd.grad(logabs.sum(), parameters, allow_unused=True)
+
+    unreachable = [
+        slot.ordinal
+        for slot, grad in zip(model.parameter_binding.layout.slots, grads, strict=True)
+        if grad is None
+    ]
+
+    assert unreachable, "the blocker is disconnection; if none is found it is fixed"
+    assert len(unreachable) < len(parameters), "some parameters must still be reachable"
+    # The connected model used by every other test in this file must NOT be
+    # subject to the same blocker, or those tests prove nothing.
+    connected = build_connected_model()
+    connected_batch = _FixedSampler().collect_samples(connected, device=None)[0].make_batch()
+    with torch.enable_grad():
+        connected_grads = torch.autograd.grad(
+            connected(connected_batch).logabs.sum(),
+            connected.parameter_binding.parameters,
+            allow_unused=True,
+        )
+    assert all(grad is not None for grad in connected_grads)

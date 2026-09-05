@@ -337,7 +337,7 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
             )
         self.model_parameters = model_parameters
 
-    def state_dict(self) -> Mapping[str, Any]:
+    def method_state_dict(self) -> Mapping[str, Any]:
         """Return the versioned method-state envelope.
 
         The envelope carries the layout-plus-convention fingerprint alongside
@@ -364,7 +364,7 @@ class StochasticReconfigurationUpdate(VMCUpdateMethod[ScoreUpdateInput]):
             "completed_updates": self.completed_updates,
         }
 
-    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+    def load_method_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore the envelope, rejecting a mismatched layout or convention."""
 
         if not isinstance(state, Mapping):

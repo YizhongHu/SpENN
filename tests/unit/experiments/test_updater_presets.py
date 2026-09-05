@@ -247,12 +247,32 @@ def test_preset_optimizer_block_is_partial_and_omits_params(path: Path) -> None:
     assert "params" not in optimizer_cfg
 
 
+def not_an_update_method(optimizer, *, model_parameters):
+    """A factory with the right signature that returns the wrong thing.
+
+    Module-level so Hydra can name it with `_target_`. It accepts the exact
+    arguments `make_update_method` passes, so the call SUCCEEDS and the type
+    check is what rejects it -- a target whose call merely raised would test
+    Hydra, not the guard.
+    """
+
+    del optimizer, model_parameters
+    return object()
+
+
 def test_make_update_method_rejects_a_factory_returning_the_wrong_type() -> None:
     """A `_target_` naming something that is not an update method fails loudly."""
 
     parameters = _parameters()
     optimizer = torch.optim.SGD(parameters, lr=0.01)
-    bogus = OmegaConf.create({"_target_": "builtins.dict", "_partial_": True})
+    bogus = OmegaConf.create(
+        {
+            "_target_": (
+                "tests.unit.experiments.test_updater_presets.not_an_update_method"
+            ),
+            "_partial_": True,
+        }
+    )
 
     with pytest.raises(TypeError, match="must return a VMCUpdateMethod"):
         make_update_method(

@@ -10,7 +10,8 @@ Hydra.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Callable, Mapping
+from typing import Any, Iterable, Union
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig
@@ -19,6 +20,14 @@ from tpen.dependencies import require_torch
 from tpen.training.update import ModelParameterBinding, VMCUpdateMethod
 
 torch = require_torch(feature="optimizer construction")
+
+
+# What a caller may supply as an update method. A configured method arrives as
+# a Hydra `_partial_` FACTORY rather than an instance, because a stateful
+# method needs the live optimizer and parameter binding. The annotation has to
+# admit that shape: typeguard enforces these signatures under test, so a
+# narrower one would reject every configured SR run at the trainer boundary.
+UpdateMethodSpec = Union[VMCUpdateMethod, Callable[..., VMCUpdateMethod], Mapping, None]
 
 
 def make_optimizer(factory_or_cfg: Any, params: Iterable[torch.nn.Parameter]) -> torch.optim.Optimizer:
@@ -150,4 +159,4 @@ def make_update_method(
     )
 
 
-__all__ = ["make_optimizer", "make_update_method"]
+__all__ = ["UpdateMethodSpec", "make_optimizer", "make_update_method"]
