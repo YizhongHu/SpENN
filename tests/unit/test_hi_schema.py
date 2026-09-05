@@ -28,6 +28,18 @@ def _config(**sections: object):
     return OmegaConf.create(base)
 
 
+def _validate(cfg, env: dict[str, str] | None = None) -> None:
+    """Validate against an EMPTY launch environment unless one is supplied.
+
+    The real ``os.environ`` is not deterministic across machines, and on a
+    cluster login node it carries hundreds of module-system variables. A test
+    that used it would pass here and could fail on Cannon for a reason that has
+    nothing to do with the case under test.
+    """
+
+    validate_hi_train_config(cfg, env={} if env is None else env)
+
+
 def _rules(error: ClosedSchemaError) -> set[str]:
     return {rejection.rule for rejection in error.rejections}
 
@@ -41,11 +53,11 @@ class TestOptIn:
 
     def test_a_config_declaring_no_schema_is_not_validated(self) -> None:
         cfg = OmegaConf.create({"system": {"reference_energy": -2.9}})
-        validate_hi_train_config(cfg)
+        _validate(cfg)
 
     def test_a_config_declaring_another_schema_is_not_validated(self) -> None:
         cfg = OmegaConf.create({"schema": "other.v1", "system": {"reference_energy": -2.9}})
-        validate_hi_train_config(cfg)
+        _validate(cfg)
 
     def test_declared_schema_reads_the_top_level_key(self) -> None:
         assert declared_schema(_config()) == HI_TRAIN_SCHEMA
@@ -63,12 +75,12 @@ class TestOptIn:
         """
 
         cfg = OmegaConf.load("experiments/atomistic/he-v1/configs/train.yaml")
-        validate_hi_train_config(cfg)
+        _validate(cfg)
 
         # Red arm: opting the same content in must reject it.
         opted_in = OmegaConf.merge(OmegaConf.create({"schema": HI_TRAIN_SCHEMA}), cfg)
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(opted_in)
+            _validate(opted_in)
         assert "system.reference_energy" in _paths(caught.value)
 
 
@@ -76,7 +88,7 @@ class TestForbiddenSurfaces:
     def test_rejects_a_nested_reference_energy(self) -> None:
         cfg = _config(system={"nuclei": {"reference_energy": -2.903724377034119598}})
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert "forbidden-surface:reference" in _rules(caught.value)
         assert "system.nuclei.reference_energy" in _paths(caught.value)
 
@@ -95,7 +107,7 @@ class TestForbiddenSurfaces:
             trainer={"baseline_energy": "${model.scalar}"},
         )
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         trees = {r.tree for r in caught.value.rejections if r.path == "trainer.baseline_energy"}
         assert trees == {"raw", "resolved"}
 
@@ -111,7 +123,7 @@ class TestForbiddenSurfaces:
     def test_rejects_each_forbidden_family(self, key: str, rule: str) -> None:
         cfg = _config(trainer={key: 1})
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert rule in _rules(caught.value)
 
     def test_checkpoint_resume_is_not_a_continuation_surface(self) -> None:
@@ -131,24 +143,24 @@ class TestForbiddenSurfaces:
                 }
             ]
         )
-        validate_hi_train_config(cfg)
+        _validate(cfg)
 
     def test_bandwidth_is_not_a_band_surface(self) -> None:
         """Substring matching would reject this ordinary key."""
 
-        validate_hi_train_config(_config(sampler={"bandwidth": 1.0}))
+        _validate(_config(sampler={"bandwidth": 1.0}))
 
 
 class TestClosedSections:
     def test_rejects_an_undeclared_top_level_section(self) -> None:
         cfg = _config(diagnostics={"kind": "energy"})
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert "unknown-field" in _rules(caught.value)
         assert "diagnostics" in _paths(caught.value)
 
     def test_accepts_the_declared_sections(self) -> None:
-        validate_hi_train_config(
+        _validate(
             _config(
                 experiment={"name": "hi"},
                 run={"root": "outputs"},
@@ -166,31 +178,85 @@ class TestForbiddenResolvers:
     def test_rejects_an_environment_interpolation(self) -> None:
         cfg = _config(runtime={"seed": "${oc.env:RANK,0}"})
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert "forbidden-resolver" in _rules(caught.value)
 
     def test_rejects_a_clock_interpolation(self) -> None:
         cfg = _config(run={"root": "outputs/${now:%Y-%m-%d}"})
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert "forbidden-resolver" in _rules(caught.value)
 
     def test_accepts_an_ordinary_node_reference(self) -> None:
-        validate_hi_train_config(
+        _validate(
             _config(system={"spatial_dim": 3}, model={"spatial_dim": "${system.spatial_dim}"})
         )
+
+
+class TestLaunchEnvironment:
+    """The firewall names five surfaces; the launch environment is one of them.
+
+    A config-only check would leave a reference reachable through the
+    environment of the training process, which the reference-energy firewall
+    forbids explicitly and by the same rule that forbids "apparently unused
+    fields" in the config.
+    """
+
+    def test_rejects_a_reference_bearing_variable(self) -> None:
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(_config(), env={"TPEN_REFERENCE_ENERGY": "-2.903724377034119598"})
+        assert "forbidden-environment:reference" in _rules(caught.value)
+        assert "TPEN_REFERENCE_ENERGY" in _paths(caught.value)
+
+    def test_rejects_a_variable_that_is_never_read_by_the_config(self) -> None:
+        """An unread variable is still a forbidden field.
+
+        This is the case a "does the config use it?" check would miss, and it
+        is the one the firewall's "apparently unused fields" clause is about.
+        """
+
+        cfg = _config(runtime={"seed": 0})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg, env={"HE_BASELINE_ENERGY": "-2.9"})
+        assert "HE_BASELINE_ENERGY" in _paths(caught.value)
+
+    def test_accepts_an_ordinary_environment(self) -> None:
+        _validate(
+            _config(),
+            env={"PATH": "/usr/bin", "SLURM_JOB_ID": "12345", "CUDA_VISIBLE_DEVICES": "0"},
+        )
+
+    def test_matches_variable_names_not_values(self) -> None:
+        """A value near the reference is not itself a violation.
+
+        Only a name says what a variable means. Matching values would reject
+        any variable that happened to hold a similar number -- including a
+        legitimate learning rate or tolerance.
+        """
+
+        _validate(_config(), env={"SOME_SCALE": "-2.903724377034119598"})
+
+    def test_a_rank_variable_is_not_forbidden(self) -> None:
+        """DDP launchers set these; the schema must not fight the launcher.
+
+        Rank facts are forbidden from entering the SCHEMA, which the
+        forbidden-resolver check enforces. Their mere presence in the
+        environment is normal and is how a launcher communicates topology.
+        """
+
+        _validate(_config(), env={"RANK": "0", "WORLD_SIZE": "4", "LOCAL_RANK": "0"})
 
 
 class TestAdmittedCallbacks:
     def test_rejects_a_callback_outside_the_admitted_set(self) -> None:
         cfg = _config(callbacks=[{"_target_": "tpen.diagnostics.energy.EnergyDiagnostic"}])
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert "unadmitted-callback" in _rules(caught.value)
 
     def test_accepts_every_admitted_callback(self) -> None:
         cfg = _config(callbacks=[{"_target_": name} for name in sorted(ADMITTED_CALLBACK_TARGETS)])
-        validate_hi_train_config(cfg)
+        _validate(cfg)
 
     def test_a_nested_target_is_not_judged_as_a_callback(self) -> None:
         """A schedule or payload is a constructor argument, not a callback.
@@ -208,7 +274,7 @@ class TestAdmittedCallbacks:
                 }
             ]
         )
-        validate_hi_train_config(cfg)
+        _validate(cfg)
 
     def test_no_admitted_callback_carries_a_reference_in_its_name(self) -> None:
         """A cheap standing guard on the allowlist itself.
@@ -231,7 +297,7 @@ class TestUnresolvableConfig:
 
         cfg = _config(model={"channels": "${missing.node}"})
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert "unresolvable" in _rules(caught.value)
 
     def test_a_broken_interpolation_does_not_suppress_the_raw_findings(self) -> None:
@@ -250,7 +316,7 @@ class TestUnresolvableConfig:
             model={"channels": "${missing.node}"},
         )
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert {"unresolvable", "forbidden-surface:reference"} <= _rules(caught.value)
         assert "system.reference_energy" in _paths(caught.value)
 
@@ -265,7 +331,7 @@ class TestEveryFindingIsReported:
             trainer={"accuracy_band": 1},
         )
         with pytest.raises(ClosedSchemaError) as caught:
-            validate_hi_train_config(cfg)
+            _validate(cfg)
         assert {
             "unknown-field",
             "forbidden-surface:reference",
