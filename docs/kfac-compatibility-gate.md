@@ -53,13 +53,28 @@ accurate credit. A later proposal would need a separately authorized compatibili
 proof before P3 could open; implementing an adapter in order to claim this gate
 passed would invert the required staging.
 
-| Criterion | Disposition | Evidence boundary |
+The table below evaluates the **full TPEN compatibility criteria**, including
+the proposed public extension, rather than only the stock implementation.
+Each criterion uses exactly one of `PASSED`, `FAILED`, or
+`UNESTABLISHED-pending-reviewer-cluster-evidence`. **None is PASSED.** The third
+state is non-passing and cannot authorize P3. Pending reviewer evidence also
+includes any missing convention decision or extension proof; it does not promise
+that merely executing this diagnostic can satisfy the criterion.
+
+| Criterion | State | Evidence available and what remains unestablished |
 | --- | --- | --- |
-| C1 | Reject stock; full extension unproved | Registry skips required TPEN families. Candidate block census is implemented in the probe; custom trace extractors and exact scalar blocks are absent. |
-| C2 | Unproved | No operator-frozen TPEN centered/uncentered choice or complete per-family score oracle. The toy convention counterexample below prevents accidental equivalence claims. |
-| C3 | Reject stock | Rank and microbatch means lose represented counts. The sum/count algebra below is a direct counterexample. Count-aware public extensions remain unqualified. |
-| C4 | Partially available, unproved as a whole | Public custom mappings, helpers and state properties exist. No evidence establishes that private APIs are necessary; no end-to-end public extension has been qualified. |
-| C5 | Reject stock | Checkpoint factors can be newer than the live inverse cache. Default load reconstructs from the newer factors, changing the next update. Exact custom-state restart remains unproved. |
+| C1: semantic coverage | UNESTABLISHED-pending-reviewer-cluster-evidence | Source refutes stock coverage: required TPEN families are skipped. The candidate census has not run, and complete custom Kronecker/exact-scalar coverage has not been established. |
+| C2: VMC convention | UNESTABLISHED-pending-reviewer-cluster-evidence | No operator-frozen TPEN centered/uncentered choice or complete per-family score oracle. The analytic toy example separates conventions; it establishes no TPEN factor compatibility. |
+| C3: counts | UNESTABLISHED-pending-reviewer-cluster-evidence | Algebra refutes stock rank/microbatch averaging. Sum-plus-count factors under unequal and empty shards remain unestablished under real multi-rank execution; no count-aware extension or global-empty behavior was exercised. |
+| C4: public APIs | UNESTABLISHED-pending-reviewer-cluster-evidence | Public mappings, helpers and state properties exist in source. Every required TPEN registration, factor and state path has not been qualified through those APIs. |
+| C5: restart | UNESTABLISHED-pending-reviewer-cluster-evidence | The source-derived cache-age example refutes stock reload semantics. Exact complete-state restart across factor and inverse refresh remains unestablished under real multi-rank execution; neither the toy diagnostic nor whole-TPEN restart was run. |
+
+The narrower claims about **stock** C1 coverage, C3 averaging and C5 reload are
+`FAILED` by the source counterexamples below. They do not refute every possible
+public extension, so they are not relabeled as failures of all possible
+adaptations. Source inspection and local structural/arithmetic controls, even if
+executed successfully later, cannot promote the full C3 or C5 criterion to
+`PASSED` without the required reviewer cluster evidence.
 
 ### Semantic ownership census
 
@@ -192,7 +207,10 @@ the receipt and stderr. Exit **1** with `probe_status=negative_witnesses_observe
 means the probe completed and found incompatibilities. Exit **2** / `blocked`
 or `inconclusive` is not a successful negative execution. There is no exit-0
 admission route: this bounded diagnostic cannot manufacture the missing C1–C5
-extension proofs. Inspect all criteria and controls, not only the exit code.
+extension proofs. Its `criterion_verdicts` always retain the full criteria as
+`UNESTABLISHED-pending-reviewer-cluster-evidence`; completed diagnostics are
+reported separately as `observed_stock_failures`. Inspect all criteria and
+controls, not only the exit code. A completed diagnostic is not a criterion pass.
 
 At implementation handoff, validation comprises source inspection at the exact
 upstream pin, the explicit algebra above, Python AST syntax validation and

@@ -20,6 +20,25 @@ from datetime import datetime, timezone
 
 UPSTREAM_SHA = "5987766a43739de7eb950f564da54559f2504579"
 REPO = Path(__file__).resolve().parents[1]
+UNESTABLISHED = "UNESTABLISHED-pending-reviewer-cluster-evidence"
+
+
+def criterion_verdicts() -> dict:
+    """Keep full compatibility distinct from this probe's narrower diagnostics.
+
+    Even successful single-process controls cannot establish the required
+    whole-TPEN extension and multi-rank contracts. The durable reviewer supplies
+    those receipts; this diagnostic never converts pending evidence into a pass.
+    """
+    obligations = {
+        "C1": "Complete named TPEN Kronecker/exact-scalar coverage and trace extraction",
+        "C2": "Operator-frozen VMC convention and all-family dense score/factor oracles",
+        "C3": "Sum-plus-count factors for unequal/empty shards and global-empty rejection under real multi-rank execution",
+        "C4": "Every required TPEN registration, factor and state path qualified through public APIs",
+        "C5": "Exact complete-state TPEN restart across factor and inverse refresh under real multi-rank execution",
+    }
+    return {key: {"state": UNESTABLISHED, "missing_evidence": obligation}
+            for key, obligation in obligations.items()}
 
 
 def git(path: Path, *args: str) -> str:
@@ -279,6 +298,13 @@ def main() -> int:
     sys.path.insert(0, str(REPO))
     receipt = {"timestamp_utc": datetime.now(timezone.utc).isoformat(),
                "verdict": "not_admitted", "upstream_sha": UPSTREAM_SHA,
+               "criterion_verdicts": criterion_verdicts(),
+               "not_exercised": [
+                   "Complete TPEN custom block/factor integration under a frozen VMC convention",
+                   "Real multi-rank unequal/empty-shard factor transport and global-empty rejection",
+                   "Complete-state whole-TPEN restart across factor and inverse refresh",
+                   "DG0 and DP1-DP3 process-group/failure/state integration",
+               ],
                "tpen_sha": git(REPO, "rev-parse", "HEAD")}
     try:
         receipt["upstream"] = check_upstream(args.kfac_source.resolve())
@@ -296,15 +322,7 @@ def main() -> int:
             failures.append("C3: normalized microbatch means discard represented counts")
         if any(not update["model_equal"] for result in receipt["restart"].values() for update in result["next_updates"]):
             failures.append("C5: stock reload changes next parameter updates")
-        receipt["observed_failures"] = failures
-        receipt["unproved"] = [
-            "C1: full custom Kronecker/exact-scalar registry and trace extraction",
-            "C2: operator-frozen TPEN geometry and all-family dense score oracles",
-            "C3: global-empty rejection and count-aware distributed factor transport",
-            "C4: end-to-end qualification of every needed public extension",
-            "C5: custom full-state codec and same-topology exact restart",
-            "DDP: DG0 and DP1-DP3 runtime receipts",
-        ]
+        receipt["observed_stock_failures"] = failures
         receipt["probe_status"] = "negative_witnesses_observed" if failures else "inconclusive"
         code = 1 if failures else 2
     except Exception as error:
@@ -318,6 +336,7 @@ def main() -> int:
     except ValueError as error:
         # Nonfinite diagnostic output is an incomplete probe, never exit 1.
         output = json.dumps({"verdict": "not_admitted", "probe_status": "blocked",
+                             "criterion_verdicts": criterion_verdicts(),
                              "error": str(error)})
         code = 2
     print(output)
