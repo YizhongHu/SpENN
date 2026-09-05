@@ -240,9 +240,19 @@ class MethodAvailability:
     admitted : bool
         Whether a training configuration may name this method today.
     target : str or None
-        The config ``_target_`` that selects it, when admitted. ``None`` for an
-        unavailable method: its implementation does not exist, and inventing a
-        module path here would make this table claim otherwise.
+        The config ``_target_`` that selects it, when admitted. ``None`` whenever
+        the method may not be selected, which covers two different situations
+        that must not be conflated:
+
+        - no implementation exists, and inventing a module path would make this
+          table claim otherwise;
+        - an implementation exists but is EXCLUDED from this study, so naming it
+          would invite someone to select it.
+
+        ``requires`` is what distinguishes them, so it has to stay accurate as
+        the repository moves underneath it. SR is the live example: its
+        implementation landed while this table said it was waiting for that
+        implementation.
     requires : str
         What admission is waiting on. Reported verbatim when a configuration
         names the method, so the refusal says what would change it.
@@ -270,7 +280,22 @@ HI_METHOD_ROSTER: tuple[MethodAvailability, ...] = (
         method="sr",
         admitted=False,
         target=None,
-        requires="SR lane N slices N1-N3 (shared score/QGT engine, solve/failure, VMCUpdateMethod integration)",
+        # EXCLUDED FROM THIS STUDY, not awaiting implementation. SR/minSR LANDED
+        # on dev (Lane N, PRs #472 and #476), so `tpen/training/sr.py` exists and
+        # works -- and it still cannot be a scan arm here, because it does not
+        # run on two-electron models and helium is two electrons.
+        #
+        # The distinction matters and is why this text is not "waiting for Lane
+        # N": that phrasing was true until Lane N merged, and would now send a
+        # reader to satisfy a prerequisite that is ALREADY satisfied, from which
+        # they would conclude the refusal is a bug. A refusal that survives its
+        # stated reason misdirects harder than one with no reason at all.
+        requires=(
+            "EXCLUDED from the helium-importance scan on scientific grounds: SR/minSR is "
+            "implemented and merged (Lane N), but does not run on two-electron models and "
+            "helium is two electrons. This is not pending work and no amount of optimizer "
+            "work will admit it; admitting it would need a different system"
+        ),
     ),
     MethodAvailability(
         method="kfac",
