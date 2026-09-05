@@ -79,7 +79,7 @@ class NormGatedUpdater(Updater):
     admits exactly three feature updates: ``x + u``
     (:class:`ResidualUpdater`), ``u`` (:class:`ReplaceUpdater`), and
     ``x + g(R) u`` (:class:`ResidualUpdater` plus
-    :class:`~tpen.nn.update_envelope.GaussianCoordinateGate`). The design
+    :class:`~tpen.nn.coordinate_envelopes.GaussianCoordinateEnvelope`). The design
     explicitly rules out an RMS or norm-gate substitute for the third.
 
     The confusion is easy to fall into and is why this paragraph exists: this
