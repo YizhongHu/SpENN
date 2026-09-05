@@ -14,10 +14,12 @@ from omegaconf import OmegaConf
 from tpen.config_schema import ClosedSchemaError
 from tpen.hi_schema import (
     ADMITTED_CALLBACK_TARGETS,
+    HI_EXPERIMENT_NAME,
     HI_METHOD_ROSTER,
     HI_TRAIN_SCHEMA,
     canonical_train_identity,
     declared_schema,
+    is_hi_family,
     validate_hi_train_config,
 )
 
@@ -58,14 +60,21 @@ def _paths(error: ClosedSchemaError) -> set[str]:
     return {rejection.path for rejection in error.rejections}
 
 
-class TestOptIn:
-    """The firewall applies to configurations that ask for it, and only those."""
+class TestScope:
+    """Who the firewall applies to.
 
-    def test_a_config_declaring_no_schema_is_not_validated(self) -> None:
+    Not "whoever asks for it": a helium-importance config is REQUIRED to ask,
+    and omission is refused in ``TestOmittingTheSchemaKeyIsLoud`` below. These
+    cases cover the other side -- a config outside the family passes through,
+    which is how the frozen historical fixtures survive without an exemption
+    list.
+    """
+
+    def test_a_non_family_config_with_no_schema_is_not_validated(self) -> None:
         cfg = OmegaConf.create({"system": {"reference_energy": -2.9}})
         _validate(cfg)
 
-    def test_a_config_declaring_another_schema_is_not_validated(self) -> None:
+    def test_a_non_family_config_declaring_another_schema_is_not_validated(self) -> None:
         cfg = OmegaConf.create({"schema": "other.v1", "system": {"reference_energy": -2.9}})
         _validate(cfg)
 
@@ -92,6 +101,85 @@ class TestOptIn:
         with pytest.raises(ClosedSchemaError) as caught:
             _validate(opted_in)
         assert "system.reference_energy" in _paths(caught.value)
+
+
+class TestOmittingTheSchemaKeyIsLoud:
+    """The marker is mandatory for this family, so its ABSENCE must fail.
+
+    An opt-in firewall with no detector for omission is fail-open: a new
+    helium-importance train config that forgets ``schema:`` would get zero
+    enforcement and nothing anywhere would go red. These tests are that
+    detector.
+    """
+
+    def test_an_hi_config_without_the_schema_key_is_refused(self) -> None:
+        cfg = OmegaConf.create(
+            {
+                "experiment": {"name": HI_EXPERIMENT_NAME},
+                "system": {"reference_energy": -2.9},
+            }
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-schema" in _rules(caught.value)
+
+    def test_a_clean_hi_config_without_the_key_is_still_refused(self) -> None:
+        """Refused for the OMISSION itself, not because it also has a reference.
+
+        Without this case the rule would look satisfied by a test that a
+        reference-bearing config gets rejected -- which it would be anyway once
+        the key is present. The omission has to be the sole cause.
+        """
+
+        cfg = OmegaConf.create({"experiment": {"name": HI_EXPERIMENT_NAME}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert _rules(caught.value) == {"undeclared-schema"}
+
+    def test_an_hi_config_declaring_the_wrong_schema_is_refused(self) -> None:
+        cfg = OmegaConf.create(
+            {"schema": "tpen.hi.evaluation.v1", "experiment": {"name": HI_EXPERIMENT_NAME}}
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-schema" in _rules(caught.value)
+
+    def test_a_broken_interpolation_does_not_exempt_an_hi_config(self) -> None:
+        """Family membership is read WITHOUT resolving, on purpose.
+
+        If it resolved, an unrelated typo elsewhere in the file would make the
+        config unrecognisable and silently downgrade it to unenforced -- the
+        finding and the thing that hides it sharing a failure domain again.
+        """
+
+        cfg = OmegaConf.create(
+            {"experiment": {"name": HI_EXPERIMENT_NAME}, "model": {"c": "${nope.missing}"}}
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-schema" in _rules(caught.value)
+
+    @pytest.mark.parametrize("name", ["tpen_he_v1", "tpen_h2_v1", "tpen_pair_v1"])
+    def test_another_experiment_is_untouched(self, name: str) -> None:
+        """The three other experiment families a default-ON rule would have broken."""
+
+        cfg = OmegaConf.create(
+            {"experiment": {"name": name}, "system": {"reference_energy": -2.9}}
+        )
+        _validate(cfg)
+
+    def test_the_frozen_he_v1_fixture_needs_no_exemption_entry(self) -> None:
+        """It survives by NOT being in the family, not by being listed."""
+
+        cfg = OmegaConf.load("experiments/atomistic/he-v1/configs/train.yaml")
+        assert not is_hi_family(cfg)
+        _validate(cfg)
+
+    def test_the_control_config_is_recognised_as_family(self) -> None:
+        """Positive control: if nothing were in the family, the rule is inert."""
+
+        cfg = OmegaConf.load("experiments/atomistic/he-importance/configs/train.yaml")
+        assert is_hi_family(cfg)
 
 
 class TestForbiddenSurfaces:
