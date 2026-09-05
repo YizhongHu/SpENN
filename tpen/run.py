@@ -116,7 +116,28 @@ def prepare_run_context(
     Callbacks and loggers are configured at the config root and owned by the
     `RunContext`; runners dispatch into ``context.callbacks`` and log through
     ``context.log``.
+
+    Raises
+    ------
+    tpen.config_schema.ClosedSchemaError
+        When `cfg` declares a closed schema and violates it. Raised before any
+        directory, logger or callback exists.
     """
+
+    # PRECONSTRUCTION FIREWALL, ENTRY-POINT-INDEPENDENT COPY. `run_from_config`
+    # runs the same check, but a check that lives ONLY there is a property of
+    # one entry point rather than of the construction path: a programmatic
+    # caller reaching `prepare_run_context` directly -- a script, a notebook, a
+    # test harness, another runner -- would walk straight past it and still get
+    # a run directory, every configured logger and callback, and a run-start
+    # artifact on disk. Everything this function constructs happens below this
+    # line, so a refusal here leaves nothing behind.
+    #
+    # The duplication is deliberate and cheap: `validate_hi_train_config` is a
+    # pure function of `cfg` with no side effects, so running it twice on the
+    # `run_from_config` path costs one extra sweep and removes the possibility
+    # that the two paths ever disagree about what is admissible.
+    validate_hi_train_config(cfg)
 
     run_clock = resolve_run_clock(cfg)
     source_cfg = _rerunnable_config(cfg)
@@ -229,6 +250,12 @@ def run_from_config(
         #
         # A configuration that declares no HI schema passes straight through --
         # see `tpen.hi_schema` on why the firewall is opt-in.
+        #
+        # `prepare_run_context` enforces the same rule for callers that bypass
+        # this entry point. Keeping the check here as well means a refusal is
+        # reported through this function's own failure path (status update,
+        # exception event, logger teardown, `return 1`) rather than escaping as
+        # a bare exception from a helper.
         validate_hi_train_config(cfg)
         context = prepare_run_context(cfg, config_path=config_path, command=command, bootstrap=bootstrap)
         _seed_runtime_rngs(context.cfg)

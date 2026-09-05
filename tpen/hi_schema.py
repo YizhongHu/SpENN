@@ -160,6 +160,32 @@ CONTINUATION_SURFACE = ForbiddenSurface(
         "interrupted run is recovery, whereas continuation is selection"
     ),
 )
+# DELIBERATELY BROADER THAN "target-triggered". The surface this closes is a
+# stop rule keyed to a target, but the tokens refuse ANY configurable stop rule,
+# because a rule cannot be inspected for what it is keyed to at schema time:
+# ``trainer.stop_at: -2.9037`` names no reference yet is target-triggered, while
+# ``trainer.stop_at_step: 50000`` is a budget. Refusing the family and requiring
+# a schema change to re-admit one is the narrow-token doctrine applied to a
+# surface whose hazard lives in the VALUE rather than the key.
+#
+# The over-restriction risk was measured, not assumed: no configuration under
+# ``experiments/atomistic/he-importance/configs/`` declares a key carrying any
+# of these tokens, and ``TestEveryHIConfigDeclaresTheSchema`` validates all of
+# them, so an over-wide token set here turns the existing suite red rather than
+# surfacing later as a run that cannot start.
+#
+# ``early_stopping`` and ``early_stop`` are both caught -- ``stopping`` and
+# ``stop`` are separate tokens, so neither spelling needs its own entry.
+STOP_RULE_SURFACE = ForbiddenSurface(
+    name="stop-rule",
+    tokens=frozenset({"stop", "stopping", "halt", "patience"}),
+    reason=(
+        "a training configuration may not declare a stop rule; a run that halts "
+        "when it reaches a target has read the target, and a stop rule is "
+        "arm-selection performed inside training rather than in the "
+        "confirmation lane. Every arm runs its declared budget"
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +367,7 @@ HI_TRAIN_POLICY = SchemaPolicy(
         GAP_SURFACE,
         BAND_SURFACE,
         CONTINUATION_SURFACE,
+        STOP_RULE_SURFACE,
     ),
     allowed_sections=HI_TRAIN_SECTIONS,
     # ``oc.env`` reads the process environment and ``now`` reads the clock.

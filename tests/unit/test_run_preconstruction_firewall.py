@@ -105,6 +105,14 @@ class TestNothingIsConstructed:
         tpen.run.prepare_run_context(cfg)
         assert (tmp_path / "outputs").exists()
 
+    # SECOND ROLE, added with the programmatic-caller firewall below. Because
+    # this config is CLEAN, it also controls that the firewall inside
+    # `prepare_run_context` is not OVER-restrictive: an admissible config must
+    # still construct. A rule that refused everything would satisfy every
+    # rejection test in this module and would fail only here -- and, later, on
+    # the cluster, where a study that cannot start is a far more expensive way
+    # to learn it.
+
     def test_a_forbidden_callback_never_reaches_construction(self, tmp_path, no_construction):
         cfg = _config_with(
             tmp_path,
@@ -119,6 +127,82 @@ class TestNothingIsConstructed:
         with pytest.raises(ClosedSchemaError):
             _run(cfg)
         assert no_construction == []
+
+
+class TestTheProgrammaticCallerIsFirewalledToo:
+    """The firewall is a property of the construction path, not of one entry point.
+
+    Everything above enters through ``run_from_config``. That leaves the more
+    dangerous caller untested: a script, notebook, harness or second runner
+    that calls ``prepare_run_context`` directly. ``prepare_run_context`` creates
+    the run directory, instantiates and validates every configured logger and
+    callback, builds the ``RunContext`` and writes the run-start artifact -- so
+    if the check lived only in ``run_from_config``, all of that would happen for
+    a configuration the schema refuses, and every test above would still pass.
+
+    These tests are the reason the check is duplicated rather than merely moved.
+    """
+
+    def test_a_direct_call_with_a_reference_is_refused(self, tmp_path):
+        cfg = _config_with(tmp_path, system={"nuclei": {"reference_energy": -2.9}})
+        with pytest.raises(ClosedSchemaError):
+            tpen.run.prepare_run_context(cfg)
+
+    def test_a_refused_direct_call_constructs_nothing(self, tmp_path):
+        """The refusal must precede construction, not merely accompany it.
+
+        Paired with ``test_a_late_firewall_would_leave_a_directory``, which
+        shows the same function DOES create a directory when the config is
+        admissible. Without that pairing this assertion would hold in a world
+        where ``prepare_run_context`` never created anything.
+        """
+
+        cfg = _config_with(tmp_path, system={"nuclei": {"reference_energy": -2.9}})
+        with pytest.raises(ClosedSchemaError):
+            tpen.run.prepare_run_context(cfg)
+        assert not (tmp_path / "outputs").exists()
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "sections",
+        [
+            {"callbacks": [{"_target_": "tpen.diagnostics.energy.EnergyDiagnostic"}]},
+            {"optimizer": {"_target_": "somewhere.SR"}},
+            {"trainer": {"stop_at_energy": -2.9}},
+        ],
+        ids=["forbidden-callback", "unadmitted-method", "target-triggered-stop"],
+    )
+    def test_every_refusal_family_holds_on_the_direct_path(self, tmp_path, sections):
+        """The direct path enforces the WHOLE schema, not just the reference rule.
+
+        A firewall re-checked at a second site is worth only as much as the
+        rule set it re-checks; copying one family across and leaving the rest
+        behind would look identical from ``run_from_config``.
+        """
+
+        cfg = _config_with(tmp_path, **sections)
+        with pytest.raises(ClosedSchemaError):
+            tpen.run.prepare_run_context(cfg)
+        assert not (tmp_path / "outputs").exists()
+
+    def test_a_non_hi_config_still_constructs_on_the_direct_path(self, tmp_path):
+        """Opt-out survives the new check; the firewall did not become mandatory.
+
+        The over-restriction control for the direct path. A configuration that
+        declares no HI schema is not firewalled, here exactly as in
+        ``run_from_config`` -- otherwise every non-HI caller in the repository
+        would have been broken by closing this hole.
+        """
+
+        cfg = OmegaConf.create(
+            {
+                "experiment": {"name": "legacy"},
+                "run": {"root": str(tmp_path / "outputs"), "run_id": "hi_firewall_0001"},
+                "system": {"reference_energy": -2.9},
+            }
+        )
+        tpen.run.prepare_run_context(cfg)
+        assert (tmp_path / "outputs").exists()
 
 
 class TestTheSpyWouldCatchALateFirewall:
