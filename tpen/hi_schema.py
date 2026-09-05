@@ -32,6 +32,7 @@ happen after the training configuration is frozen.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -43,6 +44,7 @@ from tpen.config_schema import (
     Rejection,
     SchemaPolicy,
     iter_nodes,
+    sweep_environment,
     sweep_raw,
     sweep_resolved,
 )
@@ -257,13 +259,15 @@ def _sweep_callbacks(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
-def validate_hi_train_config(cfg: DictConfig) -> None:
+def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None = None) -> None:
     """Refuse a helium-importance training configuration that violates its schema.
 
     Parameters
     ----------
     cfg : DictConfig
         The loaded training configuration, before any construction.
+    env : Mapping of str to str, optional
+        The launch environment to audit. Defaults to ``os.environ``.
 
     Raises
     ------
@@ -275,11 +279,17 @@ def validate_hi_train_config(cfg: DictConfig) -> None:
     -----
     A configuration that declares no schema, or a different one, is returned
     unvalidated -- see the module docstring on why the firewall is opt-in.
+
+    The launch environment is audited alongside the configuration because the
+    reference-energy firewall names it as one of the surfaces a reference must
+    not enter, next to training configs, runner inputs, checkpoint metadata and
+    decision logic. A config-only check would leave one of the five open.
     """
 
     if declared_schema(cfg) != HI_TRAIN_SCHEMA:
         return
 
+    environment = os.environ if env is None else env
     raw_tree = OmegaConf.to_container(cfg, resolve=False)
 
     # The raw sweep runs FIRST and unconditionally. Resolution can fail, and if
@@ -289,6 +299,7 @@ def validate_hi_train_config(cfg: DictConfig) -> None:
     # config that both fails to resolve and carries a reference must report the
     # reference, because that is the finding that stops a run from happening.
     rejections = list(sweep_raw(raw_tree, HI_TRAIN_POLICY))
+    rejections.extend(sweep_environment(environment, HI_TRAIN_POLICY))
 
     # Resolution failure is itself a rejection, which keeps every
     # preconstruction failure a single exception type for the caller.

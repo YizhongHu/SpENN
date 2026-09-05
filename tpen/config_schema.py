@@ -50,6 +50,7 @@ __all__ = [
     "SchemaPolicy",
     "iter_nodes",
     "sweep",
+    "sweep_environment",
     "sweep_raw",
     "sweep_resolved",
     "tokens_of",
@@ -323,6 +324,59 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
                     )
                 )
     return rejections
+
+
+def sweep_environment(env: Mapping[str, str], policy: SchemaPolicy) -> tuple[Rejection, ...]:
+    """Reject forbidden surfaces present in a process environment.
+
+    Parameters
+    ----------
+    env : Mapping of str to str
+        The launch environment, e.g. ``os.environ``. Passed in rather than read
+        here so a test can supply a deterministic environment; a check that
+        reads the ambient process state cannot be tested for the case it
+        exists to catch.
+    policy : SchemaPolicy
+        The study policy to enforce.
+
+    Returns
+    -------
+    tuple of Rejection
+        One finding per offending variable name, in sorted name order.
+
+    Notes
+    -----
+    Variable *names* are matched, not values. A name is the only part of an
+    environment variable that says what it means; matching values would reject
+    any variable that happened to hold a number near the reference.
+
+    The whole environment is scanned rather than a project-prefixed subset.
+    That is deliberate and follows the reference-energy firewall, which forbids
+    a reference in the training launch environment and extends the same rule to
+    "apparently unused fields" -- an unread variable is exactly such a field. A
+    false positive here is loud and is fixed by unsetting one variable; a false
+    negative is a silent science violation. Token matching is what keeps the
+    false-positive rate low enough for that trade to be the right one.
+    """
+
+    rejections: list[Rejection] = []
+    for name in sorted(env):
+        for surface in policy.forbidden_surfaces:
+            if surface.matches(name):
+                rejections.append(
+                    Rejection(
+                        rule=f"forbidden-environment:{surface.name}",
+                        tree="environment",
+                        path=name,
+                        detail=(
+                            f"environment variable {name!r} is a {surface.name} surface; "
+                            f"{surface.reason}. Unset it before launching training -- its "
+                            "value is not read here, and an unread variable is still a "
+                            "forbidden field"
+                        ),
+                    )
+                )
+    return tuple(rejections)
 
 
 def sweep_raw(raw_tree: Any, policy: SchemaPolicy) -> tuple[Rejection, ...]:
