@@ -5,21 +5,29 @@ configuration may declare, which key families it may never contain, and which
 callbacks it may install. The sweep mechanism that enforces it lives in
 :mod:`tpen.config_schema`.
 
-Opting in
----------
-The firewall is selected by the configuration, through a top-level ``schema``
-key holding :data:`HI_TRAIN_SCHEMA`::
+Declaring the schema
+--------------------
+The firewall is selected by a top-level ``schema`` key holding
+:data:`HI_TRAIN_SCHEMA`::
 
     schema: tpen.hi.train.v1
 
-It is deliberately NOT applied to every configuration. The repository retains
-frozen historical fixtures -- most directly
-``experiments/atomistic/he-v1/configs/train.yaml``, whose ``system`` block
-carries a ``reference_energy`` -- and the plan of record designates those
-records preserved rather than edited. A globally applied firewall would force a
-choice between breaking a completed study's provenance and weakening the rule.
-Opt-in keeps the helium-importance schema genuinely closed while leaving every
-historical record exactly as it was.
+For a helium-importance configuration that key is MANDATORY, not optional, and
+omitting it is a loud refusal rather than a quiet pass. A closed schema that
+applies only when a config remembers to ask for it is not closed -- it is
+closed-if-you-remember, and the omission is silent and permanent.
+
+Membership in the family is decided POSITIVELY, by ``experiment.name``, rather
+than by defaulting the firewall on for every configuration in the repository
+and exempting the rest. See the comment on :data:`HI_EXPERIMENT_NAME` for the
+measurement behind that choice, and for the residual hole it leaves.
+
+A configuration outside the family passes through untouched. That is how the
+frozen historical fixtures survive without an exemption list:
+``experiments/atomistic/he-v1/configs/train.yaml`` carries a
+``reference_energy`` in its ``system`` block and the plan of record designates
+it preserved rather than edited -- and it is ``tpen_he_v1``, so it is simply not
+this family.
 
 Why a training configuration may not hold a reference
 -----------------------------------------------------
@@ -57,10 +65,12 @@ __all__ = [
     "HI_METHOD_ROSTER",
     "MethodAvailability",
     "HI_TRAIN_POLICY",
+    "HI_EXPERIMENT_NAME",
     "HI_TRAIN_SCHEMA",
     "SCHEMA_KEY",
     "canonical_train_identity",
     "declared_schema",
+    "is_hi_family",
     "validate_hi_train_config",
 ]
 
@@ -71,6 +81,38 @@ HI_TRAIN_SCHEMA = "tpen.hi.train.v1"
 
 # Top-level key a configuration uses to select its schema.
 SCHEMA_KEY = "schema"
+
+# ---------------------------------------------------------------------------
+# Why declaring the schema is MANDATORY for this family, not optional
+# ---------------------------------------------------------------------------
+# A closed schema enforced only when a configuration remembers to ask for it is
+# not closed; it is closed-if-you-remember, and the failure is silent and
+# permanent. A new helium-importance train config that omits ``schema:`` would
+# get ZERO enforcement and nothing anywhere would go red.
+#
+# So the marker is required of every configuration that IDENTIFIES ITSELF as
+# helium-importance, and its absence is a loud refusal.
+#
+# The family is detected POSITIVELY, by experiment name, rather than by
+# defaulting the firewall on for everything and exempting the rest. MEASURED
+# across the repository's configs, the experiment names present are
+# tpen_he_importance, tpen_he_v1, tpen_h2_v1, tpen_pair_v1, and four hooke
+# configs whose name is the interpolation ``${study.name}``. Defaulting on
+# would therefore refuse three other lanes' experiments, and the "narrow
+# exemption list" needed to rescue them would be a register of everything that
+# is NOT helium-importance -- unbounded, and growing with every new experiment
+# anywhere in the repository. A positive detector grows with THIS study
+# instead, and needs no exemption entry for the frozen he-v1 fixture at all,
+# because that fixture is ``tpen_he_v1`` and simply is not in the family.
+#
+# RESIDUAL HOLE, stated rather than papered over: a configuration that omits
+# BOTH the schema key AND the helium-importance experiment name is not caught
+# here. That is evasion, not omission, and omission is the failure this rule
+# exists to close. The repo-level test in
+# ``tests/unit/test_hi_reference_separation.py`` is the second, independent net
+# for the static case; neither net alone covers the other's population, which
+# is why there are two.
+HI_EXPERIMENT_NAME = "tpen_he_importance"
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +349,41 @@ def declared_schema(cfg: Any) -> str | None:
     else:
         return None
     return None if value is None else str(value)
+
+
+def is_hi_family(cfg: Any) -> bool:
+    """Return whether a configuration identifies itself as helium-importance.
+
+    Parameters
+    ----------
+    cfg : Any
+        A ``DictConfig`` or plain mapping.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``experiment.name`` is :data:`HI_EXPERIMENT_NAME`.
+
+    Notes
+    -----
+    Read WITHOUT resolving, so a config whose interpolations are broken is
+    still recognised as belonging to the family and still refused for omitting
+    the schema key. Resolving here would make an unrelated typo silently
+    downgrade a helium-importance config to an unenforced one -- the finding
+    and the thing that hides it would share a failure domain.
+    """
+
+    if isinstance(cfg, DictConfig):
+        try:
+            name = OmegaConf.select(cfg, "experiment.name", default=None)
+        except Exception:  # noqa: BLE001 - a broken tree must not grant an exemption
+            return False
+    elif isinstance(cfg, Mapping):
+        experiment = cfg.get("experiment")
+        name = experiment.get("name") if isinstance(experiment, Mapping) else None
+    else:
+        return False
+    return name == HI_EXPERIMENT_NAME
 
 
 def _sweep_callbacks(resolved_tree: Any) -> list[Rejection]:
@@ -768,7 +845,29 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     decision logic. A config-only check would leave one of the five open.
     """
 
-    if declared_schema(cfg) != HI_TRAIN_SCHEMA:
+    declared = declared_schema(cfg)
+    if declared != HI_TRAIN_SCHEMA:
+        if is_hi_family(cfg):
+            # The config says it is helium-importance but did not declare the
+            # schema. Refusing loudly here is the whole point: silently
+            # returning would give a real HI run zero enforcement.
+            raise ClosedSchemaError(
+                [
+                    Rejection(
+                        rule="undeclared-schema",
+                        tree="raw",
+                        path=SCHEMA_KEY,
+                        detail=(
+                            f"experiment.name is {HI_EXPERIMENT_NAME!r}, so this is a "
+                            f"helium-importance configuration and must declare "
+                            f"{SCHEMA_KEY}: {HI_TRAIN_SCHEMA}. Declared: {declared!r}. "
+                            "The marker is not optional for this family -- a closed schema "
+                            "that applies only when a config remembers to ask for it is not "
+                            "closed, and the omission would otherwise be silent"
+                        ),
+                    )
+                ]
+            )
         return
 
     environment = os.environ if env is None else env

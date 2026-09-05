@@ -24,7 +24,7 @@ from tpen.hi_manifest import (
     load_evaluation_manifest,
     reference_energy,
 )
-from tpen.hi_schema import validate_hi_train_config
+from tpen.hi_schema import HI_TRAIN_SCHEMA, validate_hi_train_config
 
 CONTROL_CONFIG = Path("experiments/atomistic/he-importance/configs/train.yaml")
 EVALUATION_MANIFEST = Path("experiments/atomistic/he-importance/manifests/evaluation.yaml")
@@ -71,6 +71,44 @@ class TestImportSeparation:
         """
 
         assert REFERENCE_MODULE in _imported_modules(Path(__file__))
+
+
+class TestEveryHIConfigDeclaresTheSchema:
+    """Second, independent net against a config that forgets the marker.
+
+    The run-time family rule in ``tpen.hi_schema`` catches a config that says
+    it is helium-importance but omits ``schema:``. It is the net that covers
+    configs L2 will GENERATE, which never live in the repository and which no
+    directory scan can see.
+
+    This is the other net: a static scan of the HI config directory, which
+    catches a repo config that omitted the marker AND the experiment name and
+    would therefore slip past the run-time rule. Neither net covers the other's
+    population, which is why both exist.
+    """
+
+    HI_CONFIG_DIR = Path("experiments/atomistic/he-importance/configs")
+
+    def test_the_directory_is_not_empty(self) -> None:
+        """A scan over zero files passes vacuously and protects nothing."""
+
+        assert list(self.HI_CONFIG_DIR.glob("*.yaml"))
+
+    def test_every_config_declares_the_hi_train_schema(self) -> None:
+        for path in sorted(self.HI_CONFIG_DIR.glob("*.yaml")):
+            cfg = OmegaConf.load(path)
+            declared = OmegaConf.select(cfg, "schema", default=None)
+            assert declared == HI_TRAIN_SCHEMA, (
+                f"{path} declares schema {declared!r}; every config in the "
+                "helium-importance train family must declare "
+                f"{HI_TRAIN_SCHEMA!r}, or it silently receives no enforcement"
+            )
+
+    def test_every_config_actually_passes_the_firewall(self) -> None:
+        """Declaring the schema is not the same as satisfying it."""
+
+        for path in sorted(self.HI_CONFIG_DIR.glob("*.yaml")):
+            validate_hi_train_config(OmegaConf.load(path), env={})
 
 
 class TestTheTrainConfigHoldsNoReference:
