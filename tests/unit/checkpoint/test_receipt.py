@@ -445,6 +445,44 @@ def test_backfill_publication_receipt_treats_a_malformed_existing_row_as_absent(
     assert backfilled["summary"]["publish_duration_sec"] is None
 
 
+def test_reconcile_backfills_a_hollow_parsed_receipt_row(tmp_path: Path) -> None:
+    """A parsed row without measured sizes does not suppress backfill.
+
+    Normal receipt writes and prefix truncation cannot produce a closed JSON
+    row of this shape. This is a narrow guard for externally introduced rows,
+    not validation of arbitrary receipt content.
+    """
+
+    from tests.unit.callback.test_checkpoint import _write_checkpoint as _save_real_checkpoint
+    from tpen.checkpoint.catalog import reconcile_publication
+
+    final_dir = _save_real_checkpoint(tmp_path)
+    root = tmp_path / "checkpoints"
+    ref = _ref_for(final_dir)
+    receipt_path = publication_receipt_path(root)
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema": PUBLICATION_RECEIPT_SCHEMA,
+                "summary": {"content_id": ref.content_id},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    reconcile_publication(root, final_dir)
+
+    rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2, "a hollow row must not suppress measured backfill"
+    measured = rows[-1]
+    assert measured["summary"]["content_id"] == ref.content_id
+    assert measured["summary"]["total_bytes"] > 0
+    assert measured["summary"]["write_duration_sec"] is None
+    assert measured["summary"]["publish_duration_sec"] is None
+    assert measured["files"]
+
+
 def test_backfill_publication_receipt_is_a_noop_when_a_valid_row_already_exists(
     tmp_path: Path,
 ) -> None:
