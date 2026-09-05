@@ -353,6 +353,62 @@ class VMCUpdateMethod(Generic[InputT], ABC):
 
         del model_parameters
 
+    def method_state_dict(self) -> Mapping[str, Any]:
+        """Return JSON-safe PERSISTENT METHOD state, empty by default.
+
+        This is deliberately separate from :meth:`state_dict`. That one has an
+        established meaning for the legacy adapter, where it is the raw
+        PyTorch optimizer payload kept for checkpoint compatibility -- tensors,
+        not JSON, and already persisted independently as ``optimizer.pt``.
+        Reusing it for method state would put the optimizer's tensors into the
+        trainer's JSON record and duplicate a payload that already has an owner.
+
+        What belongs here is state the METHOD owns and the optimizer does not:
+        schedule counters, a layout/convention fingerprint, and any canonical
+        warm-start vector. Returning ``{}`` -- the default, and what the legacy
+        adapter does -- adds no key to the trainer's checkpoint state, so
+        existing checkpoints are unchanged.
+        """
+
+        return {}
+
+    def load_method_state_dict(self, state: Mapping[str, Any]) -> None:
+        """Restore persistent method state, empty by default."""
+
+        if not isinstance(state, Mapping):
+            raise TypeError("VMCUpdateMethod method state must be a mapping")
+        if state:
+            raise ValueError("stateless VMCUpdateMethod cannot load non-empty method state")
+
+    def forward_request(self) -> Any | None:
+        """Return the typed forward request this method's input requires.
+
+        Returns
+        -------
+        WavefunctionForwardRequest or None
+            ``None``, the default, means an ordinary value forward
+            (``model(batch)``) supplies everything the method needs.  A method
+            consuming derivative payloads returns the exact request describing
+            them, for example a
+            :class:`~tpen.nn.forward.MaterializedParameterScoreRequest`.
+
+        Notes
+        -----
+        This exists so the trainer can produce the score-bearing forward packet
+        **once**, in the single forward it already performs, rather than
+        running an ordinary forward and then recomputing derivatives.  A design
+        that did the latter would double the forward and derivative work of
+        every step.
+
+        The return type is deliberately the request object itself rather than a
+        capability flag or a name.  The trainer dispatches on the request's own
+        type, so adding a future derivative payload cannot be done by inventing
+        a string, and a method cannot claim a capability whose payload it does
+        not then receive.
+        """
+
+        return None
+
     def set_step_scopes(
         self,
         *,
