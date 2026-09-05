@@ -52,23 +52,48 @@ CONTROL_CONFIG = Path("experiments/atomistic/he-importance/configs/train.yaml")
 
 
 def _control_model():
-    """Instantiate the control config's model exactly as a run would."""
+    """Instantiate the control config's model exactly as a run would.
+
+    Two details that a first attempt got wrong, recorded because both are the
+    kind of thing that makes a live-path test report a false finding:
+
+    ``TPENWaveFunction`` does NOT expose ``.layers``. Constructed layers are
+    wrapped into a ``TPENStack`` and live at ``model.stack.layers`` -- see
+    ``tpen/nn/tpen_wave_function.py``, "the layers always live in
+    ``self.stack``". Reaching for ``model.layers`` raises ``AttributeError``
+    from ``nn.Module.__getattr__``, which looks exactly like "the seam is not
+    wired up" rather than "you used the wrong accessor".
+
+    ``instantiate(cfg.model)`` builds float32 parameters. The config's
+    ``runtime.dtype: float64`` is applied by the RUNNER, not by model
+    construction, so a float64 batch against a freshly instantiated model dies
+    with ``mat1 and mat2 must have the same dtype``. The dtype is read from the
+    config here rather than hardcoded, so the test follows the config if the
+    study ever changes precision.
+    """
 
     cfg = OmegaConf.load(CONTROL_CONFIG)
     OmegaConf.resolve(cfg)
-    return instantiate(cfg.model)
+    dtype = getattr(torch, str(cfg.runtime.dtype))
+    return instantiate(cfg.model).to(dtype), dtype
 
 
-def _helium_batch(n_walkers: int = 4):
+def _control_layer(model):
+    """Return the single TPEN layer, via the stack that actually owns it."""
+
+    return model.stack.layers[0]
+
+
+def _helium_batch(dtype, n_walkers: int = 4):
     """A real helium batch: two electrons, one nucleus of charge 2 at the origin."""
 
     generator = torch.Generator().manual_seed(0)
-    positions = torch.randn(n_walkers, 2, 3, generator=generator, dtype=torch.float64)
+    positions = torch.randn(n_walkers, 2, 3, generator=generator, dtype=dtype)
     return ElectronBatch(
         positions=positions,
-        nuclear_positions=torch.zeros(1, 3, dtype=torch.float64),
-        nuclear_charges=torch.tensor([2.0], dtype=torch.float64),
-        spins=torch.tensor([[1, -1]] * n_walkers, dtype=torch.float64),
+        nuclear_positions=torch.zeros(1, 3, dtype=dtype),
+        nuclear_charges=torch.tensor([2.0], dtype=dtype),
+        spins=torch.tensor([[1, -1]] * n_walkers, dtype=dtype),
     )
 
 
@@ -96,22 +121,22 @@ class TestTheControlModelBuildsAndRuns:
     def test_the_control_config_instantiates(self) -> None:
         """If this fails, nothing else in the module means anything."""
 
-        model = _control_model()
+        model, dtype = _control_model()
         assert model is not None
-        assert len(model.layers) == 1
+        assert len(model.stack.layers) == 1
 
     def test_a_real_forward_produces_finite_output(self) -> None:
-        model = _control_model()
-        output = model(_helium_batch())
+        model, dtype = _control_model()
+        output = model(_helium_batch(dtype))
         assert torch.isfinite(output.logabs).all()
 
 
 class TestTheSeamCarriesWhatItPromises:
     def test_the_envelope_is_reached_by_a_real_forward(self) -> None:
         records: list = []
-        model = _control_model()
-        batch = _helium_batch()
-        model.layers[0].update_envelope = _SpyEnvelope(records, sigma=1.0)
+        model, dtype = _control_model()
+        batch = _helium_batch(dtype)
+        _control_layer(model).update_envelope = _SpyEnvelope(records, sigma=1.0)
 
         model(batch)
 
@@ -121,9 +146,9 @@ class TestTheSeamCarriesWhatItPromises:
         """Not a Feature, not a bare tensor -- an Update with populated blocks."""
 
         records: list = []
-        model = _control_model()
-        model.layers[0].update_envelope = _SpyEnvelope(records, sigma=1.0)
-        model(_helium_batch())
+        model, dtype = _control_model()
+        _control_layer(model).update_envelope = _SpyEnvelope(records, sigma=1.0)
+        model(_helium_batch(dtype))
 
         record = records[0]
         assert record["is_update"], f"seam handed over {record['type']}, not an Update"
@@ -133,9 +158,9 @@ class TestTheSeamCarriesWhatItPromises:
         """The context must carry the batch that was passed to the model."""
 
         records: list = []
-        model = _control_model()
-        batch = _helium_batch()
-        model.layers[0].update_envelope = _SpyEnvelope(records, sigma=1.0)
+        model, dtype = _control_model()
+        batch = _helium_batch(dtype)
+        _control_layer(model).update_envelope = _SpyEnvelope(records, sigma=1.0)
         model(batch)
 
         seen = records[0]["batch_positions"]
@@ -155,11 +180,11 @@ class TestTheEnvelopeActuallyChangesTheOutput:
         random initialization and the comparison would prove nothing.
         """
 
-        model = _control_model()
-        batch = _helium_batch()
+        model, dtype = _control_model()
+        batch = _helium_batch(dtype)
 
         without = model(batch).logabs.detach().clone()
-        model.layers[0].update_envelope = GaussianCoordinateEnvelope(sigma=1.0)
+        _control_layer(model).update_envelope = GaussianCoordinateEnvelope(sigma=1.0)
         with_gate = model(batch).logabs.detach().clone()
 
         assert not torch.allclose(without, with_gate), (
@@ -175,14 +200,14 @@ class TestTheEnvelopeActuallyChangesTheOutput:
         update would satisfy the test above.
         """
 
-        model = _control_model()
-        batch = _helium_batch()
+        model, dtype = _control_model()
+        batch = _helium_batch(dtype)
         without = model(batch).logabs.detach().clone()
 
-        model.layers[0].update_envelope = GaussianCoordinateEnvelope(sigma=100.0)
+        _control_layer(model).update_envelope = GaussianCoordinateEnvelope(sigma=100.0)
         wide = (model(batch).logabs.detach() - without).abs().sum()
 
-        model.layers[0].update_envelope = GaussianCoordinateEnvelope(sigma=0.25)
+        _control_layer(model).update_envelope = GaussianCoordinateEnvelope(sigma=0.25)
         narrow = (model(batch).logabs.detach() - without).abs().sum()
 
         assert wide < narrow
@@ -190,9 +215,9 @@ class TestTheEnvelopeActuallyChangesTheOutput:
     def test_gradients_reach_the_model_through_the_gate(self) -> None:
         """The gate sits inside the wavefunction, so training must see through it."""
 
-        model = _control_model()
-        model.layers[0].update_envelope = GaussianCoordinateEnvelope(sigma=1.0)
-        model(_helium_batch()).logabs.sum().backward()
+        model, dtype = _control_model()
+        _control_layer(model).update_envelope = GaussianCoordinateEnvelope(sigma=1.0)
+        model(_helium_batch(dtype)).logabs.sum().backward()
 
         grads = [p.grad for p in model.parameters() if p.requires_grad and p.grad is not None]
         assert grads, "no parameter received a gradient through the gated layer"
