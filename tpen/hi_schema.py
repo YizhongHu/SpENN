@@ -33,7 +33,8 @@ happen after the training configuration is frozen.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
@@ -51,6 +52,9 @@ from tpen.config_schema import (
 
 __all__ = [
     "ADMITTED_CALLBACK_TARGETS",
+    "ADMITTED_METHOD_TARGETS",
+    "HI_METHOD_ROSTER",
+    "MethodAvailability",
     "HI_TRAIN_POLICY",
     "HI_TRAIN_SCHEMA",
     "SCHEMA_KEY",
@@ -177,6 +181,90 @@ ADMITTED_CALLBACK_TARGETS = frozenset(
 )
 
 
+# ---------------------------------------------------------------------------
+# Admitted method coverage
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MethodAvailability:
+    """One optimizer method in the study roster, and whether it may run yet.
+
+    Parameters
+    ----------
+    method : str
+        The study's name for the method, e.g. ``"sr"``. This is the vocabulary
+        the materializer uses when it marks a cell unavailable.
+    admitted : bool
+        Whether a training configuration may name this method today.
+    target : str or None
+        The config ``_target_`` that selects it, when admitted. ``None`` for an
+        unavailable method: its implementation does not exist, and inventing a
+        module path here would make this table claim otherwise.
+    requires : str
+        What admission is waiting on. Reported verbatim when a configuration
+        names the method, so the refusal says what would change it.
+    """
+
+    method: str
+    admitted: bool
+    target: str | None
+    requires: str
+
+
+# The roster is the five methods of the optimizer grid. Only Adam is admitted
+# today; the other four are UNAVAILABLE, which is a different thing from absent.
+# An unavailable cell must stay visibly unavailable rather than quietly become
+# Adam -- a silent substitution would make a run claim it compared a method it
+# never ran.
+HI_METHOD_ROSTER: tuple[MethodAvailability, ...] = (
+    MethodAvailability(
+        method="adam",
+        admitted=True,
+        target="torch.optim.Adam",
+        requires="admitted; the first scientific roster runs on Adam",
+    ),
+    MethodAvailability(
+        method="sr",
+        admitted=False,
+        target=None,
+        requires="SR lane N slices N1-N3 (shared score/QGT engine, solve/failure, VMCUpdateMethod integration)",
+    ),
+    MethodAvailability(
+        method="kfac",
+        admitted=False,
+        target=None,
+        requires="a passing fail-closed kfac-pytorch compatibility gate; a failing gate leaves KFAC unavailable",
+    ),
+    MethodAvailability(
+        method="spring",
+        admitted=False,
+        target=None,
+        requires="admitted minSR first, then the thin projected-history recurrence above it",
+    ),
+    MethodAvailability(
+        method="linear_method",
+        admitted=False,
+        target=None,
+        requires="a separately authorized Hamiltonian-tangent design gate and dense-memory admission",
+    ),
+)
+
+ADMITTED_METHOD_TARGETS = frozenset(
+    entry.target for entry in HI_METHOD_ROSTER if entry.admitted and entry.target
+)
+
+# Adam coordinates that §2.7 fixes for every cell. ``lr`` and ``beta2`` are
+# deliberately absent: those are the SCAN coordinates (four and two levels
+# respectively), and pinning them here would make the study's own grid
+# unrunnable. This table holds only what no arm may vary.
+_FIXED_ADAM_COORDINATES: dict[str, object] = {
+    "eps": 1e-8,
+    "weight_decay": 0,
+}
+
+# The first Adam moment is fixed at .9; only the second is scanned.
+_FIXED_ADAM_BETA1 = 0.9
+
+
 HI_TRAIN_POLICY = SchemaPolicy(
     name=HI_TRAIN_SCHEMA,
     forbidden_surfaces=(
@@ -259,6 +347,120 @@ def _sweep_callbacks(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
+def _roster_summary() -> str:
+    """Render the roster so a refusal states every method's admission status."""
+
+    return "; ".join(
+        f"{entry.method}={'admitted' if entry.admitted else 'unavailable'} ({entry.requires})"
+        for entry in HI_METHOD_ROSTER
+    )
+
+
+def _sweep_method(resolved_tree: Any) -> list[Rejection]:
+    """Reject a training configuration whose optimizer method is not admitted.
+
+    Notes
+    -----
+    An unadmitted method is refused rather than replaced. The plan of record
+    requires an unavailable cell to stay visibly unavailable; substituting Adam
+    would let a run report that it exercised a method it never ran, which is a
+    worse failure than not running at all.
+    """
+
+    if not isinstance(resolved_tree, Mapping):
+        return []
+    optimizer = resolved_tree.get("optimizer")
+    if optimizer is None:
+        return [
+            Rejection(
+                rule="missing-method",
+                tree="resolved",
+                path="optimizer",
+                detail=(
+                    "a training configuration must declare its optimizer method. "
+                    f"Roster: {_roster_summary()}"
+                ),
+            )
+        ]
+    if not isinstance(optimizer, Mapping):
+        return [
+            Rejection(
+                rule="missing-method",
+                tree="resolved",
+                path="optimizer",
+                detail=f"optimizer must be a config block, got {type(optimizer).__name__}",
+            )
+        ]
+
+    target = optimizer.get("_target_")
+    if not isinstance(target, str):
+        return [
+            Rejection(
+                rule="missing-method",
+                tree="resolved",
+                path="optimizer._target_",
+                detail=f"optimizer must declare a _target_. Roster: {_roster_summary()}",
+            )
+        ]
+
+    if target not in ADMITTED_METHOD_TARGETS:
+        return [
+            Rejection(
+                rule="unadmitted-method",
+                tree="resolved",
+                path="optimizer._target_",
+                detail=(
+                    f"method {target!r} is not admitted. It is refused rather than replaced: "
+                    "an unavailable method must stay visibly unavailable, never silently "
+                    f"become Adam. Roster: {_roster_summary()}"
+                ),
+            )
+        ]
+
+    return _sweep_adam_coordinates(optimizer)
+
+
+def _sweep_adam_coordinates(optimizer: Mapping[str, Any]) -> list[Rejection]:
+    """Reject an Adam block that varies a coordinate no arm may vary."""
+
+    rejections: list[Rejection] = []
+    for key, expected in _FIXED_ADAM_COORDINATES.items():
+        if key not in optimizer:
+            # Absent means the library default applies, and the fixed values
+            # here ARE the library defaults. Requiring them to be spelled out
+            # would reject every config that simply omits them.
+            continue
+        actual = optimizer[key]
+        if float(actual) != float(expected):
+            rejections.append(
+                Rejection(
+                    rule="frozen-coordinate",
+                    tree="resolved",
+                    path=f"optimizer.{key}",
+                    detail=(
+                        f"Adam {key} is fixed at {expected} for every cell in the optimizer "
+                        f"grid, got {actual!r}. Only lr and beta2 are scanned"
+                    ),
+                )
+            )
+
+    betas = optimizer.get("betas")
+    if isinstance(betas, Sequence) and not isinstance(betas, (str, bytes)) and betas:
+        if float(betas[0]) != _FIXED_ADAM_BETA1:
+            rejections.append(
+                Rejection(
+                    rule="frozen-coordinate",
+                    tree="resolved",
+                    path="optimizer.betas[0]",
+                    detail=(
+                        f"Adam beta1 is fixed at {_FIXED_ADAM_BETA1} for every cell, got "
+                        f"{betas[0]!r}. beta2 is the scanned moment, beta1 is not"
+                    ),
+                )
+            )
+    return rejections
+
+
 def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None = None) -> None:
     """Refuse a helium-importance training configuration that violates its schema.
 
@@ -318,5 +520,6 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
 
     rejections.extend(sweep_resolved(resolved_tree, HI_TRAIN_POLICY))
     rejections.extend(_sweep_callbacks(resolved_tree))
+    rejections.extend(_sweep_method(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)

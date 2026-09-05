@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 from tpen.config_schema import ClosedSchemaError
 from tpen.hi_schema import (
     ADMITTED_CALLBACK_TARGETS,
+    HI_METHOD_ROSTER,
     HI_TRAIN_SCHEMA,
     declared_schema,
     validate_hi_train_config,
@@ -21,9 +22,17 @@ from tpen.hi_schema import (
 
 
 def _config(**sections: object):
-    """Return a schema-declaring HI train config with ``sections`` merged in."""
+    """Return a schema-declaring HI train config with ``sections`` merged in.
 
-    base: dict[str, object] = {"schema": HI_TRAIN_SCHEMA}
+    Carries an admitted optimizer by default so that a test about references,
+    sections or callbacks is not also a test about method admission. A test
+    that means to exercise the method check passes its own ``optimizer``.
+    """
+
+    base: dict[str, object] = {
+        "schema": HI_TRAIN_SCHEMA,
+        "optimizer": {"_target_": "torch.optim.Adam", "_partial_": True, "lr": 0.005},
+    }
     base.update(sections)
     return OmegaConf.create(base)
 
@@ -191,6 +200,86 @@ class TestForbiddenResolvers:
         _validate(
             _config(system={"spatial_dim": 3}, model={"spatial_dim": "${system.spatial_dim}"})
         )
+
+
+class TestAdmittedMethods:
+    """An unavailable method must stay visibly unavailable, never become Adam."""
+
+    def test_accepts_adam(self) -> None:
+        _validate(_config(optimizer={"_target_": "torch.optim.Adam", "lr": 0.005}))
+
+    def test_rejects_a_method_that_is_not_admitted(self) -> None:
+        cfg = _config(optimizer={"_target_": "tpen.training.sr.StochasticReconfiguration"})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-method" in _rules(caught.value)
+
+    def test_the_refusal_states_what_admission_requires(self) -> None:
+        """A refusal that does not say what would change it is a dead end."""
+
+        cfg = _config(optimizer={"_target_": "somewhere.KFAC"})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        detail = " ".join(r.detail for r in caught.value.rejections)
+        assert "kfac=unavailable" in detail
+        assert "compatibility gate" in detail
+
+    def test_every_unavailable_method_appears_in_the_roster(self) -> None:
+        """The four deferred methods are tracked, not merely absent."""
+
+        by_name = {entry.method: entry for entry in HI_METHOD_ROSTER}
+        assert set(by_name) == {"adam", "sr", "kfac", "spring", "linear_method"}
+        assert by_name["adam"].admitted
+        for name in ("sr", "kfac", "spring", "linear_method"):
+            assert not by_name[name].admitted
+            assert by_name[name].requires
+
+    def test_an_unavailable_method_declares_no_target(self) -> None:
+        """A module path for an unimplemented method would be a false claim."""
+
+        for entry in HI_METHOD_ROSTER:
+            if not entry.admitted:
+                assert entry.target is None
+
+    def test_rejects_a_config_with_no_optimizer(self) -> None:
+        cfg = OmegaConf.create({"schema": HI_TRAIN_SCHEMA, "trainer": {"max_steps": 1}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "missing-method" in _rules(caught.value)
+
+    def test_rejects_a_changed_adam_beta1(self) -> None:
+        """beta2 is the scanned moment; beta1 is fixed for every cell."""
+
+        cfg = _config(optimizer={"_target_": "torch.optim.Adam", "betas": [0.5, 0.999]})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "frozen-coordinate" in _rules(caught.value)
+        assert "optimizer.betas[0]" in _paths(caught.value)
+
+    def test_accepts_both_scanned_beta2_levels(self) -> None:
+        for beta2 in (0.99, 0.999):
+            _validate(_config(optimizer={"_target_": "torch.optim.Adam", "betas": [0.9, beta2]}))
+
+    def test_accepts_every_scanned_learning_rate(self) -> None:
+        """lr is a scan coordinate with four levels and must not be pinned."""
+
+        for lr in (0.0005, 0.0015, 0.005, 0.015):
+            _validate(_config(optimizer={"_target_": "torch.optim.Adam", "lr": lr}))
+
+    def test_rejects_weight_decay(self) -> None:
+        cfg = _config(optimizer={"_target_": "torch.optim.Adam", "weight_decay": 0.01})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "optimizer.weight_decay" in _paths(caught.value)
+
+    def test_an_omitted_fixed_coordinate_is_not_a_violation(self) -> None:
+        """The fixed values ARE the library defaults; omitting them is normal.
+
+        Requiring them to be spelled out would reject every configuration that
+        simply does not mention eps -- including the compliant one.
+        """
+
+        _validate(_config(optimizer={"_target_": "torch.optim.Adam", "lr": 0.005}))
 
 
 class TestLaunchEnvironment:
