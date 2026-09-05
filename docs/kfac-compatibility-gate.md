@@ -350,11 +350,15 @@ provisioning, not authority for automatic future environment changes.
 | 44569422 | holy8a24101 | Initial precision witness. Gradient errors retained; eigenvalue pairing and unmeasured reference-error claims corrected below. |
 | 44571614 | holy8a24102 | All eight arms completed with public counted accumulators; corrected ascending eigenvalue pairing and measured independent float64 solve control. |
 
-Local originals, JSON, stdout and stderr are retained under
+Point-in-time evidence locations (not permanent dependencies): local originals,
+JSON, stdout and stderr under
 `/Users/yizhonghu/tpen-p2-review/`; Cannon copies under
 `/n/netscratch/kozinsky_lab/Lab/rhu/tpen-p2-kfac-review-f5659e0/`.
-Task Orchestrator receipt notes on P2 record transfer hashes, interpreter and
-scheduler terminal states. Historical `.sbatch` scripts are accepted as execution
+The canonical durable evidence record is P2's Task Orchestrator note
+`p2-durable-evidence`, which indexes complete, hash-verified JSON receipt copies
+for new-tip job 44572979 and the dated execution notes for earlier jobs. The
+filesystem paths above may expire or be unavailable on another machine.
+Historical `.sbatch` scripts are accepted as execution
 evidence, not committed as reusable launchers: their fixed facility paths,
 force checkout and one-off provisioning are not defaults for this gate.
 
