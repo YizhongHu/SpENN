@@ -220,7 +220,9 @@ def test_append_does_not_join_onto_an_unterminated_last_line(tmp_path) -> None:
 
     lines = path.read_text(encoding="utf-8").splitlines()
     assert lines[0] == '{"torn": ', "the torn bytes must keep their own line"
-    assert json.loads(lines[1])["identity"] == receipt.to_dict()["identity"]
+    # Exact round trip: the line was produced by json.dumps of this very
+    # mapping, so comparing the whole dict depends on no key name.
+    assert json.loads(lines[1]) == receipt.to_dict()
 
 
 def test_a_receipt_appended_after_a_clean_row_adds_no_blank_line(tmp_path) -> None:
