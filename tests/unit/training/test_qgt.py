@@ -379,18 +379,32 @@ def test_solves_reject_undamped_singular_systems_and_bad_inputs() -> None:
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
 def test_diagnostics_report_the_dtype_the_solve_actually_ran_in(dtype) -> None:
-    """The reported dtype tracks the MATRIX, not the configured convention.
+    """The reported dtype is populated on the CONFIGURED path, both routes.
 
-    Reviewer finding F7. The configured `solve_dtype` already reaches the
-    method-state fingerprint, but a configuration records an intention: it
-    cannot show that nothing downcast on the way to the factorization. A silent
-    precision reduction inside a preconditioner never raises -- it degrades the
-    optimization trajectory, which surfaces as bad physics or a suspect
-    hyperparameter and gets debugged far from its cause.
+    Covers the ordinary production configuration, in which `solve_dtype` IS
+    set -- the shipped presets set `float64` -- so the reported value is
+    exercised on the path real runs take.
 
-    Parametrizing over two dtypes is what makes this discriminating: an
-    implementation that echoed a hardcoded or configured string would pass for
-    one dtype and fail the other, so the test cannot be satisfied by a constant.
+    WHAT THIS TEST DOES NOT DO, corrected after reviewer round 2. An earlier
+    docstring here claimed that parametrizing over two dtypes meant "an
+    implementation echoing a hardcoded or configured string" could not satisfy
+    it. Only the first half was true. Both parametrizations set
+    `ScoreConventions(solve_dtype=dtype)` on rows cast to that SAME dtype, so
+    configured and observed are aliases in every arm and an implementation
+    returning `str(conventions.solve_dtype)` passes both. The reviewer proved
+    it with a mutant: this test stayed green under a configured-echo, while
+    `test_sr_review_probes.py::test_t6_reported_dtype_is_observed_not_an_echo_of_the_configuration`
+    went red.
+
+    That is not a bad choice of dtypes; it could not be fixed by choosing
+    different ones. `build_score_geometry_from_rows` casts the rows TO any
+    configured `solve_dtype`, so configured == observed BY CONSTRUCTION
+    whenever it is set. Leaving it unset is the only way at this seam to make
+    the two diverge, which is exactly what T6 does and why the discriminating
+    assertion lives there rather than here.
+
+    Keep both: T6 owns the discrimination, this test owns the configured path
+    that T6 by construction cannot cover.
     """
 
     rows, energies = _problem(n_samples=8, n_parameters=3, seed=21)

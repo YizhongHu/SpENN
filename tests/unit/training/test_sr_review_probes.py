@@ -5,9 +5,9 @@ lane on `claude/vmc-sr/review-n-r1` @ `fdc460f218d1082ea0dcd362e976ab1672e40ee5`
 accepted in full by the implementation lane and landed here.
 
 The reviewer's single file is SPLIT ACROSS THE TWO STACK LAYERS, by dependency
-rather than by preference: T1-T3 exercise only the score geometry and the QGT,
-which live in this layer (PR 472), so they land here. T4-T5 need the trainer and
-import helpers from `test_sr_trainer_integration`, which exist only in the N3
+rather than by preference: T1-T3 and T6 exercise only the score geometry and the
+QGT, which live in this layer (PR 472), so they land here. T4-T5 need the trainer
+and import helpers from `test_sr_trainer_integration`, which exist only in the N3
 layer, so they are appended to THIS SAME FILE there (PR 476). Test bodies are
 adopted unchanged; only the module docstring and the import list differ from the
 reviewer's original, because a layer cannot import what it does not yet contain.
@@ -27,6 +27,15 @@ reviewer's original, because a layer cannot import what it does not yet contain.
   exactly-zero score columns for structurally inactive parameters needs no
   change on the SR side. Reviewer finding F3. The claim HOLDS; landing the test
   keeps the future 2-electron unblock (item `68711cfd`) from regressing here.
+* T6 -- round 2. The reported solve dtype is OBSERVED from the factorized
+  matrix, not an echo of the configured `ScoreConventions.solve_dtype`. The
+  lane's own `test_qgt.py::test_diagnostics_report_the_dtype_the_solve_actually_ran_in`
+  parametrizes over float64/float32 but always sets `solve_dtype` equal to the
+  incoming dtype, so the configured value and the observed matrix dtype never
+  diverge across its parametrizations and a configured-echo implementation
+  passes both undetected. T6 leaves `solve_dtype` unset (`None`) so the two
+  can disagree: a configured-echo implementation reports the string `"None"`
+  and goes red.
 
 Tolerances mirror the sibling contract-test modules this file draws its helpers
 and conventions from: float64 problems, `1e-9`-`1e-12` for well-conditioned
@@ -425,3 +434,68 @@ def test_t3_dead_score_columns_solve_to_an_exact_zero_direction() -> None:
         rtol=SOLVE_TOLERANCE,
         atol=SOLVE_TOLERANCE,
     )
+
+
+# ---------------------------------------------------------------------------
+# T6 -- round 2
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_t6_reported_dtype_is_observed_not_an_echo_of_the_configuration(dtype) -> None:
+    """T6: the reported solve dtype must be OBSERVED from the matrix, not an
+    echo of the configured convention.
+
+    Round-2 finding on the lane's own dtype test,
+    `test_qgt.py::test_diagnostics_report_the_dtype_the_solve_actually_ran_in`.
+    That test parametrizes over float64/float32, but in EVERY parametrization
+    it sets `ScoreConventions(solve_dtype=dtype)` equal to the incoming dtype
+    of the rows it builds. The configured convention and the matrix's actual
+    dtype are therefore never allowed to diverge across that test's
+    parametrizations -- they are aliases of one another throughout -- so an
+    implementation that reports `dtype=str(operator.geometry.conventions.solve_dtype)`
+    instead of the correct `dtype=str(matrix.dtype)` agrees with both
+    parametrizations for the wrong reason and passes undetected.
+
+    This test breaks the alias. `ScoreConventions()` here is built with
+    `solve_dtype` LEFT AS `None`. Per `build_score_geometry_from_rows`, `None`
+    means "keep the incoming score dtype": the geometry's design matrix ends
+    up in `dtype` because the ROWS were constructed in `dtype`, while the
+    CONFIGURED convention itself carries no dtype at all. A configured-echo
+    implementation must therefore report the Python string `"None"` in both
+    parametrizations -- disagreeing with `str(dtype)` and going red -- while
+    an implementation that reads the dtype off the actually-factorized matrix
+    still agrees, because nothing about the matrix itself changed.
+
+    No numerical comparison is needed or performed here: this test
+    discriminates entirely on the reported dtype STRING, not on any solved
+    value, so no oracle is required.
+    """
+
+    n_samples, n_parameters = 8, 3
+    generator = torch.Generator().manual_seed(21)
+    rows = torch.randn((n_samples, n_parameters), generator=generator, dtype=dtype)
+    energies = torch.randn(n_samples, generator=generator, dtype=dtype)
+
+    layout = _layout(((n_parameters,),))
+    geometry = build_score_geometry_from_rows(
+        rows, layout=layout, conventions=ScoreConventions()
+    )
+    assert geometry.conventions.solve_dtype is None, (
+        "sanity: solve_dtype must be left unset for this test to discriminate"
+    )
+    assert geometry.design.dtype == dtype, (
+        "sanity: with solve_dtype=None the geometry must keep the incoming rows dtype"
+    )
+
+    operator = QGTOperator(geometry)
+    residual = build_energy_residual(energies, geometry=geometry)
+    policy = DampingPolicy(absolute=0.0, relative=1.0e-2)
+
+    _, parameter_diagnostics = solve_parameter_space(operator, residual, damping=policy)
+    _, sample_diagnostics = solve_sample_space(operator, residual, damping=policy)
+
+    assert parameter_diagnostics.dtype == str(dtype)
+    assert sample_diagnostics.dtype == str(dtype)
+    assert parameter_diagnostics.as_metrics()["qgt_dtype"] == str(dtype)
+    assert sample_diagnostics.as_metrics()["qgt_dtype"] == str(dtype)
