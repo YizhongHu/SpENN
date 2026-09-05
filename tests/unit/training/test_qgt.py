@@ -375,3 +375,40 @@ def test_solves_reject_undamped_singular_systems_and_bad_inputs() -> None:
         operator.jv(torch.zeros(4, dtype=torch.float64))
     with pytest.raises(ValueError, match="non-negative"):
         DampingPolicy(absolute=-1.0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_diagnostics_report_the_dtype_the_solve_actually_ran_in(dtype) -> None:
+    """The reported dtype tracks the MATRIX, not the configured convention.
+
+    Reviewer finding F7. The configured `solve_dtype` already reaches the
+    method-state fingerprint, but a configuration records an intention: it
+    cannot show that nothing downcast on the way to the factorization. A silent
+    precision reduction inside a preconditioner never raises -- it degrades the
+    optimization trajectory, which surfaces as bad physics or a suspect
+    hyperparameter and gets debugged far from its cause.
+
+    Parametrizing over two dtypes is what makes this discriminating: an
+    implementation that echoed a hardcoded or configured string would pass for
+    one dtype and fail the other, so the test cannot be satisfied by a constant.
+    """
+
+    rows, energies = _problem(n_samples=8, n_parameters=3, seed=21)
+    geometry = build_score_geometry_from_rows(
+        rows.to(dtype=dtype),
+        layout=_layout(3),
+        conventions=ScoreConventions(solve_dtype=dtype),
+    )
+    operator = QGTOperator(geometry)
+    residual = build_energy_residual(energies, geometry=geometry)
+    policy = DampingPolicy(absolute=0.0, relative=1.0e-2)
+
+    _, parameter_diagnostics = solve_parameter_space(operator, residual, damping=policy)
+    _, sample_diagnostics = solve_sample_space(operator, residual, damping=policy)
+
+    assert parameter_diagnostics.dtype == str(dtype)
+    assert sample_diagnostics.dtype == str(dtype)
+    assert parameter_diagnostics.as_metrics()["qgt_dtype"] == str(dtype)
+    # It must describe the matrix that was actually factorized, so it agrees
+    # with the design matrix rather than with the request that produced it.
+    assert parameter_diagnostics.dtype == str(geometry.design.dtype)

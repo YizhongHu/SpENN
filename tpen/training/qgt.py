@@ -162,6 +162,19 @@ class SolveDiagnostics:
     min_retained_eigenvalue : float
         Smallest retained eigenvalue of the undamped matrix, or ``0.0`` when
         nothing was retained.
+    dtype : str
+        The dtype the solve ACTUALLY ran in, read off the matrix rather than
+        taken from the configuration.
+
+        This is deliberately an observed value and not a restatement of
+        :attr:`~tpen.training.score_geometry.ScoreConventions.solve_dtype`.
+        The configured value already reaches the method-state fingerprint, but
+        a configuration records an intention: it cannot show that some future
+        edit did not quietly downcast on the way here. A silent precision
+        reduction inside a preconditioner does not raise -- it degrades the
+        optimization trajectory, which surfaces as bad physics or a suspect
+        hyperparameter and is debugged far from its cause. Reporting what ran
+        makes that observable per step.
     """
 
     space: str
@@ -171,6 +184,7 @@ class SolveDiagnostics:
     retained_modes: int
     max_eigenvalue: float
     min_retained_eigenvalue: float
+    dtype: str
 
     @property
     def truncated_modes(self) -> int:
@@ -190,6 +204,7 @@ class SolveDiagnostics:
             f"{prefix}_truncated_modes": int(self.truncated_modes),
             f"{prefix}_max_eigenvalue": float(self.max_eigenvalue),
             f"{prefix}_min_retained_eigenvalue": float(self.min_retained_eigenvalue),
+            f"{prefix}_dtype": str(self.dtype),
         }
 
 
@@ -392,6 +407,7 @@ def solve_parameter_space(
         rank_cutoff=rank_cutoff,
     )
     diagnostics = SolveDiagnostics(
+        dtype=str(matrix.dtype),
         space="parameter",
         shift=shift,
         trace=trace,
@@ -447,6 +463,7 @@ def solve_sample_space(
     )
     direction = operator.jt_u(sample_solution)
     diagnostics = SolveDiagnostics(
+        dtype=str(matrix.dtype),
         space="sample",
         shift=shift,
         trace=trace,
