@@ -148,11 +148,23 @@ def _common_observability(
         },
         "canonical_model_keys": list(access.raw_model.state_dict().keys()),
         "ddp_forward_calls": access.forward_counts["ddp"],
+        "parameter_gradient_events": access.gradient_counts["parameter"],
         "optimizer_type": type(optimizer).__name__,
         "torch_version": torch.__version__,
         "api_inventory": {
             "stable": [
                 "torch.nn.parallel.DistributedDataParallel",
+                "torch.nn.parallel.DistributedDataParallel.register_comm_hook",
+                "torch.distributed.init_process_group",
+                "torch.distributed.barrier",
+                "torch.distributed.all_gather_object",
+                "torch.distributed.broadcast_object_list",
+                "torch.distributed.all_reduce",
+                "torch.distributed.ReduceOp.SUM",
+                "torch.distributed.is_initialized",
+                "torch.distributed.destroy_process_group",
+                "torch.distributed.checkpoint.save",
+                "torch.distributed.checkpoint.load",
                 "torch.distributed.checkpoint.FileSystemReader",
                 "torch.distributed.checkpoint.FileSystemWriter",
             ],
@@ -166,8 +178,33 @@ def _common_observability(
                 "run_gloo_subprocess_group(worker_module=..., worker_extra_args=...)",
             ],
         },
+        "api_references": {
+            "dcp": "https://docs.pytorch.org/docs/2.12/distributed.checkpoint.html",
+            "c10d_and_ddp": "https://docs.pytorch.org/docs/2.12/distributed.html",
+            "backend_selection": "https://docs.pytorch.org/docs/2.12/distributed.html#which-backend-to-use",
+            "rocm_backends": "https://docs.pytorch.org/docs/2.12/notes/hip.html#torch-distributed-backends",
+        },
         "accelerator_execution": False,
-        "accelerator_path_inspected": "CUDA -> NCCL; ROCm -> RCCL; XPU -> XCCL",
+        "accelerator_inspection": {
+            "cuda": {
+                "backend": "nccl",
+                "communication_library": "NCCL",
+                "build_scope": "CUDA build only; not executed",
+                "reference": "https://docs.pytorch.org/docs/2.12/distributed.html#which-backend-to-use",
+            },
+            "rocm": {
+                "backend": "nccl",
+                "communication_library": "RCCL",
+                "build_scope": "ROCm build only; not executed",
+                "reference": "https://docs.pytorch.org/docs/2.12/notes/hip.html#torch-distributed-backends",
+            },
+            "xpu": {
+                "backend": "xccl",
+                "communication_library": "XCCL",
+                "build_scope": "XPU build only; not executed",
+                "reference": "https://docs.pytorch.org/docs/2.12/distributed.html#which-backend-to-use",
+            },
+        },
     }
 
 

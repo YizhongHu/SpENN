@@ -324,6 +324,7 @@ def test_native_global_zero_valid_energy_refuses_before_backward_and_optimizer_m
         assert state["status"] == "refused"
         assert state["ddp_forward_calls"] == 0
         assert state["ddp_gradient_reductions"] == 0
+        assert state["parameter_gradient_events"] == 0
         assert state["counter_before"] == state["counter_after"] == 0
         assert state["parameters_before"] == state["parameters_after"]
         _assert_nested_equal(
@@ -487,6 +488,8 @@ def test_native_raise_before_backward_preserves_culprit_and_nonpublication(tmp_p
     )
     assert result.watchdog_fired is False
     assert result.all_reaped is True
+    assert all(code is not None for code in result.exit_codes)
+    assert any(code != 0 for code in result.exit_codes)
     assert result.culprit_rank == 1
     assert result.publication_observed is False
     assert Path(result.invocation_dir, "state_1.json").exists()
@@ -506,6 +509,8 @@ def test_native_skip_collective_preserves_culprit_and_nonpublication(tmp_path: P
     )
     assert result.watchdog_fired is False
     assert result.all_reaped is True
+    assert all(code is not None for code in result.exit_codes)
+    assert any(code != 0 for code in result.exit_codes)
     assert result.culprit_rank == 1
     assert result.publication_observed is False
     assert Path(result.invocation_dir, "state_1.json").exists()
@@ -529,6 +534,8 @@ def test_native_stall_before_collective_is_bounded_and_nonpublishing(tmp_path: P
     )
     assert result.watchdog_fired is False
     assert result.all_reaped is True
+    assert all(code is not None for code in result.exit_codes)
+    assert any(code != 0 for code in result.exit_codes)
     assert result.culprit_rank == 1
     assert result.publication_observed is False
     assert Path(result.invocation_dir, "state_1.json").exists()
@@ -779,23 +786,69 @@ def test_native_closure_optimizer_matches_global_reference_across_ranks(tmp_path
 
 
 def test_native_api_inventory_separates_experimental_dcp_helpers(tmp_path: Path) -> None:
-    """Record inventory labels; documentation, not telemetry, establishes stability."""
+    """Record consumed API buckets and version-bound reach references."""
 
     result = _run_native(tmp_path, world_size=2)
     _assert_scientific_result(result)
     state = _state(result, 0)
     assert isinstance(state["torch_version"], str)
     assert state["torch_version"]
-    assert "torch.nn.parallel.DistributedDataParallel" in state["api_inventory"]["stable"]
-    assert "torch.distributed.checkpoint.FileSystemReader" in state["api_inventory"]["stable"]
-    assert "torch.distributed.checkpoint.FileSystemWriter" in state["api_inventory"]["stable"]
+    inventory = state["api_inventory"]
+    stable = set(inventory["stable"])
     experimental = set(state["api_inventory"]["experimental"])
+    prototype = set(state["api_inventory"]["spike_prototype"])
+    assert stable & experimental == set()
+    assert stable & prototype == set()
+    assert experimental & prototype == set()
+    consumed_stable = {
+        "torch.nn.parallel.DistributedDataParallel",
+        "torch.nn.parallel.DistributedDataParallel.register_comm_hook",
+        "torch.distributed.init_process_group",
+        "torch.distributed.barrier",
+        "torch.distributed.all_gather_object",
+        "torch.distributed.broadcast_object_list",
+        "torch.distributed.all_reduce",
+        "torch.distributed.ReduceOp.SUM",
+        "torch.distributed.is_initialized",
+        "torch.distributed.destroy_process_group",
+        "torch.distributed.checkpoint.save",
+        "torch.distributed.checkpoint.load",
+        "torch.distributed.checkpoint.FileSystemReader",
+        "torch.distributed.checkpoint.FileSystemWriter",
+    }
+    for api in consumed_stable:
+        buckets = [name for name, entries in inventory.items() if api in entries]
+        assert buckets == ["stable"], f"{api} must be in exactly one stable bucket; observed={buckets}"
     assert "torch.distributed.checkpoint.state_dict.get_state_dict" in experimental
     assert "torch.distributed.checkpoint.state_dict.set_state_dict" in experimental
-    assert set(state["api_inventory"]["stable"]).isdisjoint(experimental)
-    assert "tests.spikes.native_ddp.CheckpointPayloadStore" in state["api_inventory"]["spike_prototype"]
+    assert "tests.spikes.native_ddp.CheckpointPayloadStore" in prototype
     assert state["accelerator_execution"] is False
-    assert state["accelerator_path_inspected"] == "CUDA -> NCCL; ROCm -> RCCL; XPU -> XCCL"
+    assert state["api_references"] == {
+        "dcp": "https://docs.pytorch.org/docs/2.12/distributed.checkpoint.html",
+        "c10d_and_ddp": "https://docs.pytorch.org/docs/2.12/distributed.html",
+        "backend_selection": "https://docs.pytorch.org/docs/2.12/distributed.html#which-backend-to-use",
+        "rocm_backends": "https://docs.pytorch.org/docs/2.12/notes/hip.html#torch-distributed-backends",
+    }
+    assert state["accelerator_inspection"] == {
+        "cuda": {
+            "backend": "nccl",
+            "communication_library": "NCCL",
+            "build_scope": "CUDA build only; not executed",
+            "reference": "https://docs.pytorch.org/docs/2.12/distributed.html#which-backend-to-use",
+        },
+        "rocm": {
+            "backend": "nccl",
+            "communication_library": "RCCL",
+            "build_scope": "ROCm build only; not executed",
+            "reference": "https://docs.pytorch.org/docs/2.12/notes/hip.html#torch-distributed-backends",
+        },
+        "xpu": {
+            "backend": "xccl",
+            "communication_library": "XCCL",
+            "build_scope": "XPU build only; not executed",
+            "reference": "https://docs.pytorch.org/docs/2.12/distributed.html#which-backend-to-use",
+        },
+    }
 
 
 def test_native_rank_state_artifact_complements_shared_receipt_observability(tmp_path: Path) -> None:
