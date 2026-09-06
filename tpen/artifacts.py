@@ -40,6 +40,33 @@ RUN_START_ENV_ALLOWLIST = (
     "CUDA_VISIBLE_DEVICES",
 )
 
+#: Environment variables consulted, and RECORDED, as launcher announcements of
+#: process multiplicity. Fixed allowlist, so no secret-bearing variable can be
+#: captured by widening: every name here is a launcher-set count or index.
+#:
+#: The list is deliberately broader than any one launcher's vocabulary, because
+#: its purpose is to record which vocabulary was in use -- including none.
+MULTIPLICITY_ANNOUNCEMENT_KEYS = (
+    "SLURM_NTASKS",
+    "SLURM_NPROCS",
+    "SLURM_PROCID",
+    "SLURM_LOCALID",
+    "SLURM_STEP_NUM_TASKS",
+    "SLURM_STEP_TASKS_PER_NODE",
+    "SLURM_JOB_NUM_NODES",
+    "PMI_SIZE",
+    "PMI_RANK",
+    "PMIX_RANK",
+    "OMPI_COMM_WORLD_SIZE",
+    "OMPI_COMM_WORLD_RANK",
+    "MPI_LOCALRANKID",
+    "WORLD_SIZE",
+    "RANK",
+    "LOCAL_RANK",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+)
+
 _EventT = TypeVar("_EventT", bound=TypedEvent)
 _OperationT = TypeVar("_OperationT", bound=Operation)
 
@@ -874,6 +901,9 @@ def write_run_start_artifact(context: RunContext) -> None:
         },
         "slurm": _collect_slurm_metadata(),
         "environment": _collect_allowed_environment(),
+        # Recorded, never read. See the collector's docstring for what this
+        # deliberately does not establish.
+        "launcher_multiplicity": collect_launcher_multiplicity_announcements(),
         "start_time_unix": context.now().timestamp(),
     }
     write_json(context.path("run_start.json"), data)
@@ -1087,6 +1117,47 @@ def _available_cpu_count() -> int | None:
         return None
 
 
+def collect_launcher_multiplicity_announcements() -> dict[str, Any]:
+    """Record what this process's environment announces about multiplicity.
+
+    OBSERVATION ONLY. This function records; it does not decide. No control flow
+    anywhere reads its result -- run identity is resolved from the supplied
+    topology and the initialized process group, never from this.
+
+    WHAT IT DOES NOT DO, stated because the temptation to read more into it is
+    the reason it exists. It does NOT detect, prevent, bound, or warn about an
+    undeclared multi-rank launch. A launch in which four processes each announce
+    ``SLURM_NTASKS=4`` and each derive their own run id will be RECORDED here
+    accurately and will not be stopped. Closing that gap needs a launcher-to-
+    topology bootstrap, which is the typed distributed runtime's slice, not this
+    function; this exists so that when it happens the artifact says so instead
+    of the scattering being invisible.
+
+    Why absence is recorded alongside presence: the launch shapes are told apart
+    by which vocabulary is MISSING as much as by which is set. Measured on FASRC
+    Cannon, 2026-09-06 -- ``SLURM_NTASKS`` is allocation-scoped and reads 4 for a
+    genuinely single process inside a 4-task allocation, while
+    ``SLURM_STEP_NUM_TASKS`` appears only inside an ``srun`` step. A record of
+    just the counts would therefore be actively misleading; a record of which
+    names were consulted, which answered, and which did not is evidence.
+
+    Returns
+    -------
+    dict
+        ``consulted`` lists every name asked about, in a fixed order.
+        ``present`` maps the names that were set to their raw values.
+        ``absent`` lists the names that were not set.
+    """
+
+    return {
+        "consulted": list(MULTIPLICITY_ANNOUNCEMENT_KEYS),
+        "present": {
+            key: os.environ[key] for key in MULTIPLICITY_ANNOUNCEMENT_KEYS if key in os.environ
+        },
+        "absent": [key for key in MULTIPLICITY_ANNOUNCEMENT_KEYS if key not in os.environ],
+    }
+
+
 def _collect_slurm_metadata() -> dict[str, str]:
     keys = {
         "job_id": "SLURM_JOB_ID",
@@ -1107,6 +1178,7 @@ def _collect_allowed_environment() -> dict[str, str]:
 __all__ = [
     "ArtifactManager",
     "DEFAULT_RUN_TIMEZONE",
+    "MULTIPLICITY_ANNOUNCEMENT_KEYS",
     "REQUIRED_RUN_DIRS",
     "RunClock",
     "RunContext",
@@ -1116,6 +1188,7 @@ __all__ = [
     "build_run_metadata",
     "collect_hardware_metadata",
     "collect_git_metadata",
+    "collect_launcher_multiplicity_announcements",
     "generate_run_id",
     "resolve_run_clock",
     "resolve_run_id",

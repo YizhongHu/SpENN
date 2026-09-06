@@ -9,6 +9,7 @@ launch which never initialized a process group at all.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 
@@ -16,7 +17,13 @@ import pytest
 from omegaconf import OmegaConf
 
 import tpen.artifacts as artifacts
-from tpen.artifacts import RunIdentityError, generate_run_id, resolve_run_id
+from tpen.artifacts import (
+    MULTIPLICITY_ANNOUNCEMENT_KEYS,
+    RunIdentityError,
+    collect_launcher_multiplicity_announcements,
+    generate_run_id,
+    resolve_run_id,
+)
 from tpen.distributed import ExecutionTopology
 from tpen.run import prepare_run_context
 
@@ -205,3 +212,88 @@ def test_generate_run_id_remains_process_local() -> None:
     """
 
     assert generate_run_id("hi") != generate_run_id("hi")
+
+
+# ---------------------------------------------------------------------------
+# Launcher multiplicity DISCLOSURE. Recorded, never read.
+#
+# The bound these tests exist to enforce is bound 1: no control flow may consult
+# the recorded value. That is not checkable by reading the code once -- it is a
+# property a future edit can quietly break -- so it is pinned by behaviour: the
+# resolved run id must be INDIFFERENT to every announcement.
+# ---------------------------------------------------------------------------
+
+
+def test_multiplicity_disclosure_records_presence_absence_and_what_was_consulted(
+    monkeypatch,
+) -> None:
+    """Absence is data: it is what tells the launch shapes apart.
+
+    Measured on Cannon 2026-09-06 -- ``SLURM_NTASKS`` is allocation-scoped and
+    reads 4 for a genuinely single process inside a 4-task allocation, while
+    ``SLURM_STEP_NUM_TASKS`` appears only inside an ``srun`` step. A record of
+    the counts alone would be actively misleading, so the record names what was
+    consulted, what answered, and what did not.
+    """
+
+    for key in MULTIPLICITY_ANNOUNCEMENT_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SLURM_NTASKS", "4")
+    monkeypatch.setenv("SLURM_PROCID", "0")
+
+    record = collect_launcher_multiplicity_announcements()
+
+    assert record["present"] == {"SLURM_NTASKS": "4", "SLURM_PROCID": "0"}
+    assert "SLURM_STEP_NUM_TASKS" in record["absent"]
+    assert "OMPI_COMM_WORLD_SIZE" in record["absent"]
+    assert record["consulted"] == list(MULTIPLICITY_ANNOUNCEMENT_KEYS)
+    # Every consulted name is accounted for exactly once, so the record cannot
+    # silently omit a name it looked at.
+    assert sorted([*record["absent"], *record["present"]]) == sorted(record["consulted"])
+
+
+def test_multiplicity_disclosure_never_decides_anything(monkeypatch) -> None:
+    """BOUND 1, enforced by behaviour rather than by inspection.
+
+    An environment loudly announcing four ranks must not change the resolved run
+    id by one character. If a future edit routes this observation into control
+    flow -- a refusal, a warning that alters a path, a different derivation --
+    this test goes red, which is the whole point of writing it as an
+    indifference assertion instead of a comment saying "do not read this".
+    """
+
+    for key in MULTIPLICITY_ANNOUNCEMENT_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    quiet = resolve_run_id("explicit-id", "serial run")
+    quiet_derived_shape = _RUN_ID_PATTERN.match(resolve_run_id(None, "serial run")) is not None
+
+    monkeypatch.setenv("SLURM_NTASKS", "4")
+    monkeypatch.setenv("SLURM_NPROCS", "4")
+    monkeypatch.setenv("SLURM_PROCID", "2")
+    monkeypatch.setenv("SLURM_STEP_NUM_TASKS", "4")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+    monkeypatch.setenv("WORLD_SIZE", "4")
+
+    assert resolve_run_id("explicit-id", "serial run") == quiet
+    assert (_RUN_ID_PATTERN.match(resolve_run_id(None, "serial run")) is not None) == (
+        quiet_derived_shape
+    )
+    # And the multi-rank refusal still keys on the DECLARED topology only: a
+    # four-rank announcement with a one-rank topology is not a refusal.
+    assert _RUN_ID_PATTERN.match(
+        resolve_run_id(None, "serial run", topology=ExecutionTopology.single_process(device="cpu"))
+    )
+
+
+def test_run_start_artifact_carries_the_disclosure(tmp_path, monkeypatch) -> None:
+    """The record reaches the artifact a human actually reads."""
+
+    monkeypatch.setenv("SLURM_NTASKS", "4")
+    monkeypatch.delenv("SLURM_STEP_NUM_TASKS", raising=False)
+
+    context = prepare_run_context(_cfg(tmp_path, None), config_path="test.yaml", command="pytest")
+
+    run_start = json.loads((context.run_dir / "run_start.json").read_text())
+    disclosure = run_start["launcher_multiplicity"]
+    assert disclosure["present"]["SLURM_NTASKS"] == "4"
+    assert "SLURM_STEP_NUM_TASKS" in disclosure["absent"]
