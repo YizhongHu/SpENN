@@ -217,6 +217,14 @@ class TestForbiddenSurfaces:
             ("accuracy_band", "forbidden-surface:band"),
             ("continuation_from", "forbidden-surface:continuation"),
             ("ground_truth", "forbidden-surface:reference"),
+            # A stop rule keyed to a target names no reference and would pass
+            # every other family; ``stop`` is what makes it visible.
+            ("stop_at_energy", "forbidden-surface:stop-rule"),
+            # Both spellings, because they tokenize differently: ``stop`` and
+            # ``stopping`` are separate tokens under whole-token matching.
+            ("early_stop", "forbidden-surface:stop-rule"),
+            ("early_stopping", "forbidden-surface:stop-rule"),
+            ("patience", "forbidden-surface:stop-rule"),
         ],
     )
     def test_rejects_each_forbidden_family(self, key: str, rule: str) -> None:
@@ -248,6 +256,40 @@ class TestForbiddenSurfaces:
         """Substring matching would reject this ordinary key."""
 
         _validate(_config(sampler={"bandwidth": 1.0}))
+
+    def test_backstop_is_not_a_stop_rule_surface(self) -> None:
+        """Substring matching would reject this ordinary key."""
+
+        _validate(_config(trainer={"backstop": 1}))
+
+    def test_the_stop_rule_surface_can_fire_on_a_surface_that_does_not_exist_yet(self) -> None:
+        """The forward guard trips on a NEW key, not only on ones written today.
+
+        No module under ``tpen/`` implements a stop rule, so every rejection
+        above is a rule aimed at a surface nobody has built. That makes one
+        failure mode specific to this family: a guard that only recognises the
+        exact key names its author imagined is decoration, because whoever adds
+        stopping tomorrow will name it something else and the guard will stay
+        green while the hazard lands.
+
+        These key names were chosen to be ones NOT enumerated in the
+        parametrized list above, and they are placed in three different
+        sections, so the family is shown to be keyed on the token rather than
+        on a remembered spelling or a remembered location.
+        """
+
+        for section, key in (
+            ("trainer", "halt_when_converged"),
+            ("runner", "stopping_criterion"),
+            ("sampler", "patience_steps"),
+        ):
+            cfg = _config(**{section: {key: 1}})
+            with pytest.raises(ClosedSchemaError) as caught:
+                _validate(cfg)
+            assert "forbidden-surface:stop-rule" in _rules(caught.value), (
+                f"{section}.{key} did not trip the stop-rule family; the guard "
+                "recognises only spellings someone thought of in advance"
+            )
 
 
 class TestClosedSections:

@@ -6,9 +6,17 @@ value, and names "import tests" as one of the mechanisms that must enforce it.
 This module is that import test, plus the two ends it separates.
 
 A separation that is only documented is a comment. What makes it real is that
-``tpen.hi_schema`` and ``tpen.run`` cannot reach ``tpen.hi_manifest`` -- so a
-reference is not merely unused by a training process, it is unreachable from
-one.
+no module on the training path can reach ``tpen.hi_manifest`` -- so a reference
+is not merely unused by a training process, it is unreachable from one.
+
+The corpus is a SWEEP, not a list. It began as three named entry points, which
+answered "do the modules we thought of import the reference"; the question that
+matters is "can any module on the training path reach it", and those differ by
+exactly the module nobody remembered to add. Every module under
+``tpen/training/`` and ``tpen/callback/`` is therefore included, and
+``TestTheSweptCorpusIsReal`` guards the sweep itself -- an empty or shrunken
+glob would otherwise make this file weaker than the hardcoded list it replaced
+while still reporting green.
 """
 
 from __future__ import annotations
@@ -26,11 +34,40 @@ from tpen.hi_manifest import (
 )
 from tpen.hi_schema import HI_TRAIN_SCHEMA, validate_hi_train_config
 
-CONTROL_CONFIG = Path("experiments/atomistic/he-importance/configs/train.yaml")
-EVALUATION_MANIFEST = Path("experiments/atomistic/he-importance/manifests/evaluation.yaml")
+# Anchored to this file rather than to the process working directory. A bare
+# relative path silently pins the whole module to being run from the repository
+# root: from anywhere else it reads a DIFFERENT tree, or no tree at all, and a
+# sweep that finds nothing passes. That matters most where it is least visible
+# -- a cluster job whose working directory is the submission directory rather
+# than the checkout.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+CONTROL_CONFIG = _REPO_ROOT / "experiments/atomistic/he-importance/configs/train.yaml"
+EVALUATION_MANIFEST = _REPO_ROOT / "experiments/atomistic/he-importance/manifests/evaluation.yaml"
+
+# Individually named modules on the training path. These predate the package
+# sweep below and are kept explicit: they are the entry points the reference
+# would most plausibly be reached through, and naming them means the guard
+# still covers them if a package is ever renamed out from under the sweep.
+NAMED_TRAIN_PATH_MODULES = ("tpen/hi_schema.py", "tpen/run.py", "tpen/config_schema.py")
+
+# Whole packages on the training path. Every module under these is swept,
+# because the hazard is a module nobody thought to list -- the same reasoning
+# that makes the admitted-callback set in ``tpen.hi_schema`` an allowlist.
+TRAIN_PATH_PACKAGES = ("tpen/training", "tpen/callback")
+
+
+def _swept_modules() -> tuple[str, ...]:
+    """Return every repo-relative training-path module, named plus swept."""
+
+    paths = {_REPO_ROOT / relative for relative in NAMED_TRAIN_PATH_MODULES}
+    for package in TRAIN_PATH_PACKAGES:
+        paths.update((_REPO_ROOT / package).rglob("*.py"))
+    return tuple(sorted(str(path.relative_to(_REPO_ROOT)) for path in paths))
+
 
 # Modules that are on the training path and must not reach the reference.
-TRAIN_PATH_MODULES = ("tpen/hi_schema.py", "tpen/run.py", "tpen/config_schema.py")
+TRAIN_PATH_MODULES = _swept_modules()
 
 REFERENCE_MODULE = "tpen.hi_manifest"
 
@@ -53,10 +90,63 @@ def _imported_modules(path: Path) -> set[str]:
     return names
 
 
+class TestTheSweptCorpusIsReal:
+    """A sweep that matched nothing would pass every test below it.
+
+    This is the failure the three hardcoded module names could not have: a
+    glob is only as strong as what it finds, and ``rglob`` over a mistyped,
+    moved or renamed package returns an empty set silently. Replacing an
+    explicit list with a sweep is a REGRESSION unless the sweep is shown to
+    have found more than the list did.
+
+    Reported as a census rather than a bare assertion: the counts are printed
+    into the failure message so a shrinking corpus is diagnosable without
+    re-running under a debugger.
+    """
+
+    def test_every_named_module_survived_the_sweep(self) -> None:
+        missing = sorted(set(NAMED_TRAIN_PATH_MODULES) - set(TRAIN_PATH_MODULES))
+        assert not missing, f"named modules dropped out of the corpus: {missing}"
+
+    @pytest.mark.parametrize("package", TRAIN_PATH_PACKAGES)
+    def test_each_package_contributed_modules(self, package: str) -> None:
+        """Per-package, so one empty package cannot hide behind a full one."""
+
+        assert (_REPO_ROOT / package).is_dir(), f"{package} is not a directory under {_REPO_ROOT}"
+        contributed = [path for path in TRAIN_PATH_MODULES if path.startswith(f"{package}/")]
+        assert contributed, (
+            f"{package} contributed no modules to the sweep; the corpus is "
+            f"{len(TRAIN_PATH_MODULES)} modules and the guard is weaker than "
+            "the hardcoded list it replaced"
+        )
+
+    def test_the_sweep_is_strictly_larger_than_the_named_list(self) -> None:
+        assert len(TRAIN_PATH_MODULES) > len(NAMED_TRAIN_PATH_MODULES), (
+            f"sweep found {len(TRAIN_PATH_MODULES)} modules against "
+            f"{len(NAMED_TRAIN_PATH_MODULES)} named ones; the package sweep "
+            "added nothing"
+        )
+
+    def test_known_members_are_present(self) -> None:
+        """Anchor on files that exist today, so a silent relocation is caught.
+
+        Named individually rather than counted: a count floor is satisfied by
+        any collection of the right size, including one assembled from the
+        wrong directory.
+        """
+
+        for expected in ("tpen/training/trainer.py", "tpen/callback/base.py"):
+            assert expected in TRAIN_PATH_MODULES, (
+                f"{expected} is missing from the swept corpus; either it moved "
+                "and TRAIN_PATH_PACKAGES is now wrong, or the sweep is reading "
+                "the wrong tree"
+            )
+
+
 class TestImportSeparation:
     @pytest.mark.parametrize("module_path", TRAIN_PATH_MODULES)
     def test_no_training_module_imports_the_reference_holder(self, module_path: str) -> None:
-        imported = _imported_modules(Path(module_path))
+        imported = _imported_modules(_REPO_ROOT / module_path)
         assert REFERENCE_MODULE not in imported, (
             f"{module_path} imports {REFERENCE_MODULE}; the reference must be unreachable "
             "from the training path, not merely unused by it"
@@ -87,7 +177,7 @@ class TestEveryHIConfigDeclaresTheSchema:
     population, which is why both exist.
     """
 
-    HI_CONFIG_DIR = Path("experiments/atomistic/he-importance/configs")
+    HI_CONFIG_DIR = _REPO_ROOT / "experiments/atomistic/he-importance/configs"
 
     def test_the_directory_is_not_empty(self) -> None:
         """A scan over zero files passes vacuously and protects nothing."""
