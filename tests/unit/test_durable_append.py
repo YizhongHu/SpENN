@@ -315,25 +315,38 @@ PRIMITIVE_MODULES = {
 def _opens_append_handle(source: Path) -> bool:
     """Report whether `source` opens a file in an append mode, via AST.
 
-    Deliberately NOT a regex. The previous instrument matched only a positional
-    string literal immediately inside ``open(``, so ``open(mode="a")``,
-    ``open ("a")`` and a mode passed by name all evaded it -- measured: an unsafe
-    sidecar mutant using ``open(mode="a")`` bypassed the primitive while the
-    census test stayed green. Parsing removes the whole class of spelling
-    evasions rather than adding another alternative to a pattern.
+    Deliberately NOT a regex. The original instrument matched only a positional
+    string literal immediately inside ``open(``, so ``open(mode="a")`` evaded it
+    -- measured: an unsafe sidecar mutant using that spelling bypassed the
+    primitive while this test stayed green.
 
-    Still blind to: a mode built at runtime rather than written as a literal,
-    and to append handles obtained from a helper this function cannot see
-    through. Those would need a call-graph, not a parse.
+    Two further evasions were then found against the AST version and are closed
+    here: a starred literal argument (``Path.open(*("a",), ...)``) arrives as
+    ``ast.Starred`` rather than ``ast.Constant``, and ``from os import O_APPEND
+    as APPEND`` defeats a name-only check. Any ``open`` call whose mode cannot
+    be resolved statically is now treated as an append handle rather than as
+    clean, which is the conservative direction: a false positive is a test
+    failure someone reads, a false negative is an unsafe writer certified safe.
+
+    KNOWN LIMIT, stated rather than iterated on. **A static census is a guard
+    against ACCIDENT, not against a determined bypass.** A mode assembled at
+    runtime, an append handle obtained from a helper this function cannot see
+    through, or a writer outside ``tpen/`` all defeat it, and closing each new
+    spelling as it is found is an infinite regress. It exists so that someone
+    reintroducing the idiom by habit is stopped, and it should not be mistaken
+    for proof that no bypass exists.
     """
 
     tree = ast.parse(source.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
-        # os.open(path, os.O_APPEND | ...) never mentions a mode string.
+        # os.O_APPEND, a bare O_APPEND, or any aliased import of it.
         if isinstance(node, ast.Attribute) and node.attr == "O_APPEND":
             return True
         if isinstance(node, ast.Name) and node.id == "O_APPEND":
             return True
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            if any(alias.name == "O_APPEND" for alias in node.names):
+                return True
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -342,7 +355,11 @@ def _opens_append_handle(source: Path) -> bool:
         )
         if not is_open:
             continue
-        # Covers builtin open(file, mode), Path.open(mode), and mode= by name.
+        # Unresolvable argument shapes are treated as append, not as clean.
+        if any(isinstance(a, ast.Starred) for a in node.args):
+            return True
+        if any(kw.arg is None for kw in node.keywords):
+            return True
         candidates = [a for a in node.args if isinstance(a, ast.Constant)]
         candidates += [
             kw.value
@@ -593,18 +610,103 @@ def test_a_fresh_append_writes_exactly_the_record_and_one_lf(tmp_path: Path) -> 
     assert path.read_bytes() == b'{"a": 1}\n'
 
 
-@pytest.mark.parametrize("separator", ("\n", "\r"), ids=("lf", "cr"))
+@pytest.mark.parametrize(
+    "separator",
+    ("\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"),
+    ids=("lf", "cr", "vt", "ff", "fs", "gs", "rs", "nel", "ls", "ps"),
+)
 def test_a_record_containing_a_physical_line_separator_is_rejected(
     tmp_path: Path, separator: str
 ) -> None:
-    """Readers use universal-newline mode, so a bare CR splits a record too.
+    """The accepted alphabet is the union over what production readers do.
 
-    The enumeration comes from what the READER treats as a line ending, not
-    from what "newline" colloquially means. Before this, a record carrying a
-    bare carriage return was written as one record, read back as two, and the
-    call returned success.
+    Not one mechanism: the tpen readers iterate a text handle (LF, CR, CRLF)
+    while the science collectors under experiments/ use splitlines, which also
+    splits on VT, FF, FS, GS, RS, NEL, U+2028 and U+2029. Measured: eight of
+    these ten split under splitlines and NOT under file iteration, so a record
+    carrying one was written as one record, read as one by the sidecar, and
+    read as TWO by the collector, with the call returning success.
     """
 
     with pytest.raises(ValueError, match="one record is one line"):
         append_record(tmp_path / "log.jsonl", f'{{"a": 1}}{separator}{{"b": 2}}')
+
+
+def test_a_record_ending_in_a_separator_is_rejected(tmp_path: Path) -> None:
+    """A trailing separator is also a split, and the LF/CR check missed it."""
+
+    with pytest.raises(ValueError, match="one record is one line"):
+        append_record(tmp_path / "log.jsonl", '{"a": 1}\n')
+
+
+def test_an_empty_record_is_still_accepted(tmp_path: Path) -> None:
+    """`"".splitlines()` is `[]`, not `[""]`, so the guard needs its `if record`.
+
+    Without that guard the check would reject an empty record, changing
+    behaviour for a case the previous LF/CR check accepted.
+    """
+
+    path = tmp_path / "log.jsonl"
+
+    append_record(path, "")
+
+    assert path.read_bytes() == b"\n"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    (
+        'open("a")',
+        'p.open("a")',
+        'p.open(mode="a")',
+        'open(path, "ab")',
+        'p.open(*("a",), encoding="utf-8")',
+        'p.open(**kwargs)',
+        'import os\nos.open(p, os.O_APPEND)',
+        'from os import O_APPEND\nos_open(p, O_APPEND)',
+        'from os import O_APPEND as APPEND\nos_open(p, APPEND)',
+    ),
+    ids=(
+        "positional", "path-positional", "mode-keyword", "two-char",
+        "starred-literal", "double-star-kwargs",
+        "os-attribute", "imported-name", "aliased-import",
+    ),
+)
+def test_the_census_detects_every_known_append_spelling(
+    snippet: str, tmp_path: Path
+) -> None:
+    """The census instrument itself, pinned against the spellings it has missed.
+
+    Two of these are regressions it actually had: a starred literal argument
+    arrives as ``ast.Starred`` rather than ``ast.Constant``, and an aliased
+    ``from os import O_APPEND as APPEND`` defeats a name-only check. Both were
+    found by review AFTER the AST version replaced a regex that had itself
+    missed ``mode=``. Testing the instrument directly is cheaper than
+    discovering the next gap through a mutant that slipped past the census.
+    """
+
+    source = tmp_path / "candidate.py"
+    source.write_text(snippet + "\n", encoding="utf-8")
+
+    assert _opens_append_handle(source) is True
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    ('open("r")', 'p.open("rb")', 'p.open(mode="w")', 'json.dumps(x)', 'p.read_text()'),
+    ids=("read", "read-binary", "write-keyword", "unrelated-call", "read-text"),
+)
+def test_the_census_does_not_flag_non_append_opens(
+    snippet: str, tmp_path: Path
+) -> None:
+    """The over-restrictive direction: flagging every open would be useless.
+
+    A census that fires on reads would be permanently red and would be silenced
+    rather than fixed, which is worse than one gap.
+    """
+
+    source = tmp_path / "candidate.py"
+    source.write_text(snippet + "\n", encoding="utf-8")
+
+    assert _opens_append_handle(source) is False
 

@@ -87,9 +87,17 @@ __all__ = ["PartialAppendError", "append_record", "ends_without_newline"]
 
 
 class PartialAppendError(OSError):
-    """Raised when the underlying write stored fewer bytes than the record.
+    """The sole raw write reported fewer bytes than the complete append payload.
 
-    Means exactly one thing: **the requested record was not committed.**  It
+    Note "payload", not "record": the payload is the record PLUS its terminator
+    and any repair newline.  A one-byte-short write can store every byte of the
+    record and omit only the terminator -- measured: ``stored 8 of 9`` with all
+    eight record bytes on disk and parseable.  Saying "fewer bytes than the
+    record" would be false in exactly that case.
+
+    Means exactly one thing: **the requested record was not committed**, where
+    committed is defined by this module and its readers as terminated by a
+    newline.  It does NOT mean the record's bytes are absent.  It
     does NOT describe the file's resulting final state, which depends on how
     many bytes landed and whether a torn predecessor was being repaired -- the
     file may end mid-record, or may end in a newline with none of the new
@@ -140,31 +148,50 @@ def append_record(path: str | Path, record: str) -> None:
         File to extend.  Parent directories are created if absent.
     record : str
         One complete record, without its trailing terminator.  Must contain no
-        physical line separator at all -- neither ``"\n"`` NOR ``"\r"``.
+        separator that ANY production reader of these files treats as a line
+        ending.
 
-        The enumeration is taken from what the READERS treat as a line ending,
-        not from what "newline" colloquially means.  Every reader of these files
-        iterates a text handle opened in universal-newline mode, which ends a
-        line on ``"\n"``, ``"\r"``, or ``"\r\n"`` alike.  So a record carrying a
-        bare ``"\r"`` is written as one record and read back as TWO, while this
-        function returns success -- the one-record-per-line invariant defeated
-        by a character that is not a newline in the usual sense.
+        The check is derived from the WIDEST reader rather than from a list of
+        characters, because the readers do not share a mechanism.  Some iterate
+        a text handle (universal newlines: ``\n``, ``\r``, ``\r\n``); others --
+        the science collectors under ``experiments/`` -- use
+        ``Path.read_text(...).splitlines()``, which ALSO splits on VT, FF, FS,
+        GS, RS, NEL, U+2028 and U+2029.  The union is therefore the
+        ``str.splitlines`` set, and ``record.splitlines() != [record]`` IS that
+        union, so it cannot drift out of sync with either mechanism the way a
+        hard-coded character list would.
+
+        An earlier version of this guard enumerated ``\n`` and ``\r`` from ONE
+        reader mechanism and was under-restrictive: a record carrying, say,
+        U+2028 was written as one record, read as one by the sidecar, and read
+        as TWO by the science collector, with this function returning success.
+
+        The readers disagreeing with EACH OTHER is a separate live defect that
+        this guard does not fix -- it only stops this module contributing new
+        instances.  Tracked as its own item.
 
     Raises
     ------
     ValueError
-        If `record` contains ``"\n"`` or ``"\r"``.
+        If `record` contains any separator recognised by ``str.splitlines``,
+        including a trailing one.
     PartialAppendError
         If the write stored fewer bytes than the encoded record.  The requested
         record was NOT committed; see that exception's note on what the file's
         final state may be.
     """
 
-    if "\n" in record or "\r" in record:
+    # Derived from the widest production reader, not from a character list:
+    # str.splitlines is a superset of universal-newline file iteration, and the
+    # science collectors use it. An empty record has no separator to find --
+    # "".splitlines() is [] rather than [""] -- so it is excluded explicitly.
+    if record and record.splitlines() != [record]:
         raise ValueError(
             "record must not contain a line separator; one record is one line. "
-            "Readers use universal-newline mode, so a bare carriage return "
-            "splits a record just as a line feed does."
+            "The accepted set is derived from str.splitlines, the widest "
+            "mechanism any production reader of these files uses, so this "
+            "rejects VT, FF, FS, GS, RS, NEL, U+2028 and U+2029 as well as "
+            "line feed and carriage return -- and a trailing separator too."
         )
 
     target = Path(path)
