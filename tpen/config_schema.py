@@ -69,10 +69,18 @@ _NON_TOKEN = re.compile(r"[^0-9a-z]+")
 # tokenizes the same way ``reference_energy`` does. Applied before lowercasing.
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-# An OmegaConf interpolation expression, e.g. ``${oc.env:RANK}`` or
-# ``${system.spatial_dim}``. Only the raw tree contains these; the resolved tree
-# has had them replaced by values.
-_INTERPOLATION = re.compile(r"\$\{([^}]*)\}")
+# The opening delimiter of an OmegaConf interpolation, e.g. ``${oc.env:RANK}``
+# or ``${system.spatial_dim}``. Only the raw tree contains these; the resolved
+# tree has had them replaced by values.
+#
+# A REGEX CANNOT DO THIS JOB, which is why only the opener is one. The obvious
+# pattern ``\$\{([^}]*)\}`` stops at the FIRST closing brace, so on
+# ``${oc.select:missing,${oc.env:X}}`` it captures
+# ``oc.select:missing,${oc.env`` and reports the resolver as ``oc.select`` --
+# the nested ``oc.env`` is consumed into the argument text of the outer
+# expression and never examined. Brace nesting is not a regular language, so
+# :func:`iter_interpolations` walks the braces instead.
+_INTERPOLATION_OPEN = "${"
 
 
 def tokens_of(name: object) -> tuple[str, ...]:
@@ -288,6 +296,86 @@ def _sweep_unknown_sections(tree: Any, label: str, policy: SchemaPolicy) -> list
     ]
 
 
+def iter_interpolations(text: str) -> Iterator[str]:
+    """Yield every interpolation expression in ``text``, at every nesting depth.
+
+    Parameters
+    ----------
+    text : str
+        A raw configuration value, which may contain zero or more
+        ``${...}`` expressions, each of which may itself contain more.
+
+    Yields
+    ------
+    str
+        The body of one interpolation, without its ``${`` and ``}``. Outer
+        expressions are yielded before the expressions nested inside them, and
+        siblings in source order.
+
+    Notes
+    -----
+    NESTING IS THE WHOLE POINT. ``${oc.select:missing,${oc.env:X}}`` is two
+    expressions, not one: the outer selects, and the inner reads the process
+    environment. A caller that sees only the outer one sees a resolver nobody
+    forbids while the forbidden resolver runs inside it.
+
+    An UNTERMINATED expression yields the remainder of the string AND is
+    scanned in turn. That is deliberate: a value ending in ``${oc.env:X`` is
+    malformed and OmegaConf will refuse it, but refusing it HERE, by name, beats
+    letting a malformed expression be the one shape a firewall does not look at.
+    The recursion is not decoration -- ``${oc.select:a,${oc.env:X}`` is
+    malformed on the OUTSIDE and carries a well-formed forbidden resolver
+    inside, and an earlier version of this function reported only the outer
+    text.
+
+    Examples
+    --------
+    >>> list(iter_interpolations("${system.spatial_dim}"))
+    ['system.spatial_dim']
+    >>> list(iter_interpolations("${oc.select:missing,${oc.env:X}}"))
+    ['oc.select:missing,${oc.env:X}', 'oc.env:X']
+    """
+
+    index = 0
+    length = len(text)
+    while True:
+        start = text.find(_INTERPOLATION_OPEN, index)
+        if start < 0:
+            return
+        # Walk forward counting braces so the expression ends at ITS OWN closing
+        # brace rather than at the first one belonging to something nested.
+        depth = 0
+        cursor = start
+        end = -1
+        while cursor < length:
+            if text.startswith(_INTERPOLATION_OPEN, cursor):
+                depth += 1
+                cursor += len(_INTERPOLATION_OPEN)
+                continue
+            if text[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = cursor
+                    break
+            cursor += 1
+        if end < 0:
+            # Unterminated. Yield the remainder AND recurse into it: an
+            # expression can be malformed on the OUTSIDE while carrying a
+            # well-formed forbidden resolver inside, as in
+            # ``${oc.select:a,${oc.env:X}``. Returning after the single yield
+            # reported only the outer text and let the inner resolver through.
+            remainder = text[start + len(_INTERPOLATION_OPEN) :]
+            yield remainder
+            yield from iter_interpolations(remainder)
+            return
+        expression = text[start + len(_INTERPOLATION_OPEN) : end]
+        yield expression
+        # Recurse into the body, which is where a nested resolver hides. The
+        # scan then resumes AFTER this expression so siblings are found too.
+        yield from iter_interpolations(expression)
+        index = end + 1
+
+
 def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Rejection]:
     """Reject interpolations that read process-local state, in the raw tree only.
 
@@ -296,6 +384,14 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
     was always there. This is precisely the check that makes a resolved
     configuration a pure function of the file and its overrides, and therefore
     identical on every rank.
+
+    NESTED expressions are swept, not only outermost ones. A forbidden resolver
+    nested inside a permitted one runs exactly as it would on its own:
+    ``${oc.select:missing,${oc.env:X}}`` resolves to the environment value
+    whenever the selected key is absent, so two ranks with different
+    environments resolve one file differently -- which is the property this
+    check exists to protect. See :func:`iter_interpolations` for why the sweep
+    walks braces instead of matching a pattern.
     """
 
     if not policy.forbidden_resolvers:
@@ -305,7 +401,7 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
     for path, _key, value in iter_nodes(raw_tree):
         if not isinstance(value, str):
             continue
-        for expression in _INTERPOLATION.findall(value):
+        for expression in iter_interpolations(value):
             # ``oc.env:RANK`` -> resolver ``oc.env``; a plain node reference such
             # as ``system.spatial_dim`` has no colon and no resolver name.
             resolver, separator, _argument = expression.partition(":")

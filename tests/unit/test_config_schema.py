@@ -16,6 +16,7 @@ from tpen.config_schema import (
     ForbiddenSurface,
     Rejection,
     SchemaPolicy,
+    iter_interpolations,
     iter_nodes,
     sweep,
     tokens_of,
@@ -178,6 +179,114 @@ class TestForbiddenResolvers:
         policy = SchemaPolicy(name="p", forbidden_resolvers=frozenset({"oc.env"}))
         raw = {"model": {"dim": "${tpen.basis_feature_dim:${model.basis}}"}}
         assert sweep(raw, raw, policy) == ()
+
+
+class TestIterInterpolations:
+    """The brace walker, tested apart from the policy that consumes it.
+
+    WHY THIS EXISTS AS A SEPARATE CLASS: the sweep can only report resolvers it
+    is shown, so a sweep test that passes says the sweep is fine about the forms
+    the enumerator happens to hand it. Measuring the enumerator directly is what
+    makes the coverage claim about FORMS rather than about one form.
+    """
+
+    def test_a_plain_expression_yields_itself(self) -> None:
+        assert list(iter_interpolations("${system.spatial_dim}")) == ["system.spatial_dim"]
+
+    def test_text_without_an_interpolation_yields_nothing(self) -> None:
+        assert list(iter_interpolations("outputs/run")) == []
+
+    def test_a_nested_expression_yields_outer_then_inner(self) -> None:
+        assert list(iter_interpolations("${oc.select:missing,${oc.env:X}}")) == [
+            "oc.select:missing,${oc.env:X}",
+            "oc.env:X",
+        ]
+
+    def test_siblings_are_yielded_in_source_order(self) -> None:
+        assert list(iter_interpolations("a ${x:1} b ${y:2} c")) == ["x:1", "y:2"]
+
+    def test_a_sibling_after_a_nested_expression_is_still_found(self) -> None:
+        """Pins the resume point: the scan must continue past the OUTER brace.
+
+        A walker that resumed after the inner expression's closing brace would
+        re-enter the outer one; a walker that resumed at the inner one's start
+        would loop. Neither shows up on a string with only one interpolation.
+        """
+
+        assert list(iter_interpolations("${oc.select:a,${oc.env:X}} then ${now:%S}")) == [
+            "oc.select:a,${oc.env:X}",
+            "oc.env:X",
+            "now:%S",
+        ]
+
+    def test_an_unterminated_expression_yields_its_remainder(self) -> None:
+        """Malformed must not be the one shape the firewall does not look at."""
+
+        assert list(iter_interpolations("${oc.env:X")) == ["oc.env:X"]
+
+
+class TestNestedForbiddenResolvers:
+    """A forbidden resolver nested inside a permitted one still runs.
+
+    EVERY FORM BELOW EXCEPT THE FIRST IS DRAWN FROM THE SPACE THE OLD
+    INSTRUMENT MISSED, not from the space it handled. The rule was written
+    against ``${oc.select:missing,${oc.env:X}}`` alone; the rest of the matrix
+    was applied to it afterwards and is what makes this a coverage measurement
+    rather than a restatement of the exhibit.
+
+    MEASURED against the superseded pattern ``\\$\\{([^}]*)\\}``, which stops at
+    the first closing brace: it captured the outer expression's text up to that
+    brace, read the resolver as ``oc.select`` (or as nothing at all, for the
+    unterminated form) and reported no finding. **All five nested arms
+    discriminate.** The sibling arm in :class:`TestIterInterpolations` does NOT
+    -- the old pattern found those already -- and it is kept as a non-regression
+    control rather than counted as coverage.
+    """
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            # The exhibit the rule was written from.
+            "${oc.select:missing,${oc.env:X}}",
+            # Depth three: a walker that only looked one level in would miss it.
+            "${oc.select:a,${oc.select:b,${oc.env:X}}}",
+            # The OUTER expression is not a resolver at all -- it is a node
+            # reference whose PATH is interpolated.
+            "${${oc.env:X}}",
+            # Nested inside a quoted argument.
+            "${oc.select:'${oc.env:X}'}",
+            # Nested, then unterminated. Malformed on the outside, forbidden on
+            # the inside.
+            "${oc.select:a,${oc.env:X}",
+        ],
+    )
+    def test_rejects_a_forbidden_resolver_at_any_nesting_depth(self, expression: str) -> None:
+        raw = {"model": {"seed": expression}}
+        rejections = sweep(raw, {"model": {"seed": 0}}, POLICY)
+        assert any(r.rule == "forbidden-resolver" for r in rejections), expression
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            # Nested, but the inner expression is a plain node reference.
+            "${oc.select:missing,${system.dim}}",
+            # Nested node references only, two deep.
+            "${oc.select:${system.dim},${model.dim}}",
+            # A permitted resolver with no nesting at all.
+            "${oc.select:missing,fallback}",
+        ],
+    )
+    def test_accepts_nesting_that_reaches_no_forbidden_resolver(self, expression: str) -> None:
+        """The over-restriction control: brace walking must not refuse by shape.
+
+        A rule that refused every nested expression would pass every test in the
+        class above while making legitimate configuration unwritable, and the
+        failure would first appear as a run that cannot start.
+        """
+
+        raw = {"system": {"dim": 3}, "model": {"dim": expression}}
+        rejections = sweep(raw, {"system": {"dim": 3}, "model": {"dim": 3}}, POLICY)
+        assert [r for r in rejections if r.rule == "forbidden-resolver"] == []
 
 
 class TestUnknownSections:

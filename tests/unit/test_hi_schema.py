@@ -333,6 +333,48 @@ class TestForbiddenResolvers:
             _config(system={"spatial_dim": 3}, model={"spatial_dim": "${system.spatial_dim}"})
         )
 
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "${oc.select:missing,${oc.env:HI_LANE_NUMBER}}",
+            "${oc.select:a,${oc.select:b,${oc.env:HI_LANE_NUMBER}}}",
+            "${${oc.env:HI_LANE_NUMBER}}",
+            "${oc.select:missing,${now:%S}}",
+        ],
+    )
+    def test_rejects_a_forbidden_resolver_nested_inside_a_permitted_one(
+        self, expression: str
+    ) -> None:
+        """The policy-level half of the nested-resolver rule.
+
+        ``oc.select`` is not forbidden and never should be. What is forbidden is
+        the ``oc.env`` INSIDE it, which resolves to whatever the launching
+        process happens to carry -- so the same file resolves to different
+        values on two ranks and produces two canonical train identities. The
+        mechanism is exercised in ``tests/unit/test_config_schema.py``; this
+        asserts the HI policy actually consumes it.
+        """
+
+        cfg = _config(runtime={"seed": expression})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "forbidden-resolver" in _rules(caught.value)
+
+    def test_accepts_a_nested_reference_that_reaches_no_forbidden_resolver(self) -> None:
+        """The over-restriction control for the rule above.
+
+        Refusing every nested expression would satisfy the four arms above while
+        making ordinary layered defaults unwritable. Over-restriction here would
+        not fail a test; it would fail a run.
+        """
+
+        _validate(
+            _config(
+                system={"spatial_dim": 3},
+                model={"spatial_dim": "${oc.select:model.missing,${system.spatial_dim}}"},
+            )
+        )
+
 
 class TestAdmittedMethods:
     """An unavailable method must stay visibly unavailable, never become Adam."""
