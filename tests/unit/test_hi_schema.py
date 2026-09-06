@@ -260,7 +260,7 @@ class TestForbiddenSurfaces:
     def test_backstop_is_not_a_stop_rule_surface(self) -> None:
         """Substring matching would reject this ordinary key."""
 
-        _validate(_config(trainer={"backstop": 1}))
+        _validate(_config(trainer={"backstop": 1, "nonfinite_local_energy_policy": "fail"}))
 
     def test_the_stop_rule_surface_can_fire_on_a_surface_that_does_not_exist_yet(self) -> None:
         """The forward guard trips on a NEW key, not only on ones written today.
@@ -308,7 +308,7 @@ class TestClosedSections:
                 runtime={"seed": 0},
                 system={"n_particles": 2},
                 model={"channels": 32},
-                trainer={"max_steps": 10},
+                trainer={"max_steps": 10, "nonfinite_local_energy_policy": "fail"},
             )
         )
 
@@ -544,7 +544,15 @@ class TestFrozenArchitecture:
     def test_a_null_gradient_clip_is_accepted(self) -> None:
         """Null is how a config says "no clipping" explicitly."""
 
-        _validate(_config(trainer={"gradient_clip_norm": None, "max_steps": 10}))
+        _validate(
+            _config(
+                trainer={
+                    "gradient_clip_norm": None,
+                    "max_steps": 10,
+                    "nonfinite_local_energy_policy": "fail",
+                }
+            )
+        )
 
     @pytest.mark.parametrize(
         ("section", "body"),
@@ -744,6 +752,39 @@ class TestTheElectronNucleusLawIsAdmitted:
             _validate(cfg)
         assert "model.factors[0].law.trainable" in _paths(caught.value)
         assert "unadmitted-cusp-law" not in _rules(caught.value)
+
+    def test_the_nonfinite_policy_must_be_declared(self) -> None:
+        """Absence is a refusal, because the inherited value is a biased estimator.
+
+        Masking non-finite local-energy rows drops a systematically selected
+        subsample -- those rows occur where the local energy is pathological --
+        so a run that inherits it is reporting under a known-biased estimator
+        without saying so. There is deliberately no default here.
+        """
+
+        cfg = _config(trainer={"max_steps": 10})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-nonfinite-policy" in _rules(caught.value)
+        assert "trainer.nonfinite_local_energy_policy" in _paths(caught.value)
+
+    @pytest.mark.parametrize("policy", ["fail", "mask"])
+    def test_both_admitted_policies_are_accepted(self, policy: str) -> None:
+        """Over-restriction control, and it carries the design intent.
+
+        ``mask`` stays REACHABLE. The point of the rule is not to forbid the
+        biased estimator, it is to stop anyone reaching it by omission -- so a
+        config that declares it must validate.
+        """
+
+        _validate(_config(trainer={"nonfinite_local_energy_policy": policy}))
+
+    @pytest.mark.parametrize("policy", ["FAIL", "drop", "true", 1])
+    def test_an_unrecognised_policy_is_refused(self, policy) -> None:
+        cfg = _config(trainer={"nonfinite_local_energy_policy": policy})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-nonfinite-policy" in _rules(caught.value)
 
     def test_a_factor_that_is_not_the_en_cusp_is_left_alone(self) -> None:
         """The rule is scoped to the electron-nucleus cusp, not to any 'law' key."""

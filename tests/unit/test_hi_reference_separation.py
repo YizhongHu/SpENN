@@ -5,9 +5,15 @@ manifests/processes, with only the evaluation side resolving the literature
 value, and names "import tests" as one of the mechanisms that must enforce it.
 This module is that import test, plus the two ends it separates.
 
-A separation that is only documented is a comment. What makes it real is that
-no module on the training path can reach ``tpen.hi_manifest`` -- so a reference
-is not merely unused by a training process, it is unreachable from one.
+A separation that is only documented is a comment. What makes it real is a
+mechanical check that no swept module NAMES ``tpen.hi_manifest`` in a direct
+import.
+
+Note the narrowing, which round-2 review forced and which the earlier wording
+got wrong: this is a DIRECT-IMPORT CENSUS, not reachability. Star re-export,
+a transitive chain through an unswept helper, and an unswept package
+``__init__`` all reach the holder without appearing here. See
+`_imported_modules` for the enumerated gaps.
 
 The corpus is a SWEEP, not a list. It began as three named entry points, which
 answered "do the modules we thought of import the reference"; the question that
@@ -72,21 +78,111 @@ TRAIN_PATH_MODULES = _swept_modules()
 REFERENCE_MODULE = "tpen.hi_manifest"
 
 
+def _package_of(path: Path) -> str:
+    """Return the dotted package a source file lives in, for relative imports.
+
+    ``tpen/training/trainer.py`` and ``tpen/training/__init__.py`` both resolve
+    to ``tpen.training``: a level-1 relative import means the containing
+    package in both cases.
+    """
+
+    relative = path.resolve().relative_to(_REPO_ROOT)
+    return ".".join(relative.parts[:-1])
+
+
+def _resolve_import_from(node: ast.ImportFrom, package: str) -> str | None:
+    """Return the absolute module a ``from ... import`` names, or None.
+
+    ``node.level`` is the number of leading dots. Level 1 is the containing
+    package, level 2 its parent, and so on.
+    """
+
+    if node.level == 0:
+        return node.module
+    parts = package.split(".") if package else []
+    # A relative import may not climb past the top-level package. At least one
+    # component must remain, or the import is invalid Python and any name
+    # derived from it is fabricated. The previous bound allowed equality, so
+    # `from ..hi_manifest import x` inside `tpen` produced the bare name
+    # "hi_manifest" for an import that cannot execute -- a false positive
+    # against a module whose leaf happens to match.
+    remaining = len(parts) - (node.level - 1)
+    if remaining < 1:
+        return None
+    base = ".".join(parts[:remaining])
+    if node.module:
+        return f"{base}.{node.module}" if base else node.module
+    return base or None
+
+
 def _imported_modules(path: Path) -> set[str]:
     """Return every module name a source file imports, statically.
 
     Parsed with ``ast`` rather than by importing, so the answer describes the
     file rather than whatever happens to be in ``sys.modules`` from an earlier
-    test. Covers both ``import x`` and ``from x import y``.
+    test.
+
+    **This helper previously recognised two import forms out of seven**, and
+    the sweep built on it therefore certified a reachability claim it could not
+    support. It matched ``import a.b`` and ``from a.b import c``, and MISSED
+    ``from a import b``, its aliased spelling, and every relative form.
+
+    Two measurements, kept separate because they used different matrices and
+    conflating them would misreport both: the ORCHESTRATOR measured 2/7 on
+    isolated per-form fixtures, and the ROUND-1 REVIEWER measured 4/10 on its
+    own wider matrix. Neither denominator is the other's.
+
+    Two things are handled now that were not:
+
+    - ``from PKG import NAME`` may import a MODULE rather than an attribute, so
+      ``PKG.NAME`` is recorded alongside ``PKG``. Recording only ``node.module``
+      is what lost ``from tpen import hi_manifest``.
+    - RELATIVE imports are resolved against the file's own package, so
+      ``from . import x`` and ``from ..y import z`` produce absolute names.
+      Previously they produced ``None`` or a bare leaf and vanished.
+
+    Recording ``PKG.NAME`` for an attribute import adds names that are not
+    modules, e.g. ``tpen.hi_manifest.reference_energy``.
+
+    That makes this helper deliberately CONSERVATIVE -- it may over-report --
+    and an earlier version of this docstring claimed it could not produce a
+    false positive for `REFERENCE_MODULE` at all. **That claim was wrong.** If
+    a package exposed an ATTRIBUTE named ``hi_manifest``, ``from tpen import
+    hi_manifest`` would be recorded as an import of the module when it is not.
+    Static analysis cannot distinguish the two without resolving the package.
+
+    Over-reporting is the SAFE direction for this guard -- it fails closed, and
+    a false positive costs an investigation while a false negative costs the
+    property. But it is a real limitation and it is stated rather than denied.
+
+    WHAT THIS HELPER DOES NOT DO, so the sweep's guarantee is not overread. It
+    is a DIRECT-IMPORT CENSUS of the files it is given. It does NOT compute
+    reachability. Round-2 review demonstrated three static shapes that reach
+    the holder and are invisible here, each verified by actually loading a fake
+    holder in a subprocess:
+
+    - ``from tpen import *`` where the package's ``__all__`` names the holder.
+    - A transitive chain through a helper module OUTSIDE the swept roots.
+    - A package ``__init__.py`` outside the swept roots that imports it.
+
+    None is dynamic loading; the dynamic exclusion is separate and additional.
+    Closing these needs a transitive graph over package initialisation, which
+    this helper is not. The honest claim is: **no swept module names the
+    reference in a direct import.**
     """
 
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    package = _package_of(path)
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            base = _resolve_import_from(node, package)
+            if base is None:
+                continue
+            names.add(base)
+            names.update(f"{base}.{alias.name}" for alias in node.names)
     return names
 
 
@@ -158,9 +254,164 @@ class TestImportSeparation:
         Without this, "no training module imports it" would pass equally well
         for a parser that returned an empty set -- which is exactly what a
         typo in the module name would produce.
+
+        NOT SUFFICIENT ON ITS OWN, and the reason is the lesson of this file.
+        This control uses the ONE spelling this test module happens to use, and
+        that spelling was one the parser already handled. So it passed for
+        years while certifying an instrument blind to five of seven forms.
+        `TestTheParserSeesEveryImportForm` is the control that can actually
+        fail; this one is kept because it exercises the real file rather than a
+        synthetic fixture.
         """
 
         assert REFERENCE_MODULE in _imported_modules(Path(__file__))
+
+
+# Every syntactic way to import `tpen.hi_manifest`, each with the package the
+# importing file would live in. Relative forms are meaningless without that
+# context, which is why the fixture carries it rather than assuming a default.
+#
+# THE SET IS DRAWN FROM WHAT THE INSTRUMENT MIGHT MISS, NOT FROM WHAT IT
+# HANDLES. That distinction is the whole finding: the previous control used a
+# spelling the parser already understood, so it could not have failed. A
+# control drawn from the handled set cannot detect an unhandled set.
+_IMPORT_FORMS: tuple[tuple[str, str, str], ...] = (
+    ("absolute-module", "tpen/training", "import tpen.hi_manifest\n"),
+    ("absolute-from", "tpen/training", "from tpen.hi_manifest import reference_energy\n"),
+    ("absolute-module-alias", "tpen/training", "import tpen.hi_manifest as manifest\n"),
+    ("package-from", "tpen/training", "from tpen import hi_manifest\n"),
+    ("package-from-alias", "tpen/training", "from tpen import hi_manifest as manifest\n"),
+    ("relative-parent-package", "tpen/training", "from .. import hi_manifest\n"),
+    ("relative-parent-module", "tpen/training", "from ..hi_manifest import reference_energy\n"),
+    ("relative-same-package", "tpen", "from . import hi_manifest\n"),
+    ("relative-same-module", "tpen", "from .hi_manifest import reference_energy\n"),
+    ("package-init-relative", "tpen/callback", "from ..hi_manifest import reference_energy\n"),
+)
+
+
+class TestTheParserSeesEveryImportForm:
+    """The control that can fail, drawn from the space the instrument may miss.
+
+    Measured on the previous parser: 2 of 7 forms detected. `import a.b` and
+    `from a.b import c` were caught; `from a import b`, its aliased spelling,
+    and every relative spelling were missed -- a relative import produced no
+    usable name at all. The sweep over 38 modules was therefore reporting on a
+    fraction of the ways a module can be reached.
+
+    That is worth stating as a general shape rather than as one bug: L1f
+    widened the CORPUS from 3 modules to 38 and added a guard for the widening,
+    while the parser's FORM coverage went unguarded and unmeasured. A
+    completeness claim with two dimensions needs a control on each.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "package", "source"),
+        _IMPORT_FORMS,
+        ids=[form[0] for form in _IMPORT_FORMS],
+    )
+    def test_each_form_is_detected(
+        self, label: str, package: str, source: str, tmp_path
+    ) -> None:
+        """Each form in isolation, so a failure names one spelling.
+
+        One fixture per form on purpose. Putting several forms in one file and
+        reading the union cannot attribute which spelling produced which name,
+        so a parser handling only one of them would still look complete.
+        """
+
+        module_dir = _REPO_ROOT / package
+        assert module_dir.is_dir(), f"fixture package {package} does not exist"
+        target = module_dir / f"_import_form_fixture_{label.replace('-', '_')}.py"
+        target.write_text(source, encoding="utf-8")
+        try:
+            detected = _imported_modules(target)
+        finally:
+            target.unlink()
+        assert REFERENCE_MODULE in detected, (
+            f"{label}: {source.strip()!r} in package {package} was not detected; "
+            f"parser saw {sorted(detected)}"
+        )
+
+    @pytest.mark.parametrize(
+        ("package", "source"),
+        [
+            ("tpen", "from ..hi_manifest import reference_energy\n"),
+            ("tpen", "from .. import hi_manifest\n"),
+            ("tpen", "from ...anything import thing\n"),
+        ],
+        ids=["over-level-module", "over-level-package", "way-over-level"],
+    )
+    def test_a_relative_import_past_the_top_level_resolves_to_nothing(
+        self, package: str, source: str
+    ) -> None:
+        """A relative import cannot climb above the top-level package.
+
+        Such a statement is invalid Python and cannot execute, so ANY name
+        derived from it is fabricated. The resolver previously allowed the
+        boundary case and returned the bare module leaf -- for
+        ``from ..hi_manifest import x`` inside ``tpen`` it produced
+        ``"hi_manifest"``.
+
+        ASSERTED ON THE RESOLVER, NOT ON `REFERENCE_MODULE` ABSENCE, and the
+        distinction is the point. The fabricated name was ``hi_manifest`` while
+        `REFERENCE_MODULE` is ``tpen.hi_manifest``, so a test phrased as "the
+        reference is not detected" would have PASSED against the broken
+        resolver and guarded nothing. The defect was real but latent for this
+        particular reference module -- it would have fired for any top-level
+        one. Testing the mechanism catches it; testing the symptom does not.
+
+        WHICH ARM ACTUALLY DISCRIMINATES, measured rather than assumed: only
+        ``over-level-module`` fails against the old resolver. The other two
+        returned ``None`` under both, because the old code's ``base or None``
+        already collapsed an empty base when ``node.module`` was absent. They
+        are retained as boundary coverage for a DIFFERENT regression -- a
+        resolver that started returning the empty base -- and not as evidence
+        against the bug just fixed. Three arms that look equivalent while one
+        does the work is exactly the shape that makes a suite feel stronger
+        than it is.
+        """
+
+        node = next(
+            child
+            for child in ast.walk(ast.parse(source))
+            if isinstance(child, ast.ImportFrom)
+        )
+        assert _resolve_import_from(node, package) is None, (
+            f"{source.strip()!r} in package {package!r} is not a valid import; "
+            "resolving it to a name invents a module that cannot exist"
+        )
+
+    def test_a_legal_relative_import_at_the_boundary_still_resolves(self) -> None:
+        """Over-restriction control for the bound above.
+
+        A resolver that returned None for every relative import would satisfy
+        every case above. Level 1 inside a top-level package is legal and must
+        still produce a name.
+        """
+
+        node = next(
+            child
+            for child in ast.walk(ast.parse("from . import hi_manifest\n"))
+            if isinstance(child, ast.ImportFrom)
+        )
+        assert _resolve_import_from(node, "tpen") == "tpen"
+
+    def test_an_unrelated_import_is_not_detected(self, tmp_path) -> None:
+        """Negative control, so 'detected' is not simply 'always true'.
+
+        A sibling module with a similar name must NOT satisfy the membership
+        test. Without this, a parser that returned the reference for every file
+        would pass every case above.
+        """
+
+        target = _REPO_ROOT / "tpen/training/_import_form_fixture_negative.py"
+        target.write_text("from tpen import hi_schema\nfrom . import optim\n", encoding="utf-8")
+        try:
+            detected = _imported_modules(target)
+        finally:
+            target.unlink()
+        assert REFERENCE_MODULE not in detected
+        assert "tpen.hi_schema" in detected, "the parser should still see the real import"
 
 
 class TestEveryHIConfigDeclaresTheSchema:
