@@ -30,11 +30,11 @@ every module that reaches a sibling.
 Why not relative imports in real packages
 -----------------------------------------
 One blocker, and it is sufficient on its own: these modules are **entrypoints
-executed directly** (``python plan.py``).  At this revision 33 of the rewritten
+executed directly** (``python plan.py``).  At this revision 32 of the rewritten
 files carry an ``if __name__ == "__main__"`` block; re-derive rather than trust
-the number.  A directly executed file runs as ``__main__`` with no parent
-package, so a relative import raises ``ImportError: attempted relative import
-with no known parent package``.
+the number -- it moves with the diff.  A directly executed file runs as
+``__main__`` with no parent package, so a relative import raises
+``ImportError: attempted relative import with no known parent package``.
 
 A CORRECTION, recorded because the superseded reason is the one a future reader
 would try to work around.  An earlier version of this docstring gave a second
@@ -46,6 +46,9 @@ reviewer loaded a synthetic hyphenated package containing a relative import via
 he-v1`` *statement*, not package-hood, and relative imports inside such a
 package resolve normally.  (There were also four such directories, not three.)
 So renaming is NOT required, and only the direct-execution concern survives.
+That superseded rationale was reviewed and explicitly endorsed by the lane
+manager before it was checked, and it was still wrong -- an endorsement is not
+a verification, and a rationale arriving with one still needs testing.
 
 Loading by path under a study-unique key keeps every filename and every
 documented ``python <stage>.py`` invocation working unchanged.

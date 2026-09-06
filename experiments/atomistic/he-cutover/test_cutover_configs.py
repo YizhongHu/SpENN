@@ -6,17 +6,27 @@ from pathlib import Path
 import yaml
 from omegaconf import OmegaConf
 
-# Siblings are loaded study-scoped, not by bare import: experiments/ has
-# several same-named modules and the first study loaded would otherwise own
-# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+# Siblings are loaded study-scoped, not by bare import: experiments/ has several
+# same-named modules and the first study loaded would otherwise own the bare name
+# for every study after it. See experiments/toolkit/study_imports.py.
+#
+# The loader is reached BY PATH rather than by putting the repository root on
+# sys.path. A study directory that mutates sys.path is the mechanism behind the
+# very defect this import exists to fix, and he-cutover's gateway test forbids it
+# outright -- so the fix must not reintroduce it in order to install itself.
+import importlib.util as _tpen_importlib  # noqa: E402
 import sys as _tpen_sys  # noqa: E402
 from pathlib import Path as _TpenPath  # noqa: E402
 
-_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
-if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
-    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
-
-from experiments.toolkit.study_imports import sibling  # noqa: E402
+if "_tpen_study_imports" not in _tpen_sys.modules:
+    _tpen_spec = _tpen_importlib.spec_from_file_location(
+        "_tpen_study_imports",
+        _TpenPath(__file__).resolve().parents[3] / "experiments" / "toolkit" / "study_imports.py",
+    )
+    _tpen_module = _tpen_importlib.module_from_spec(_tpen_spec)
+    _tpen_sys.modules["_tpen_study_imports"] = _tpen_module
+    _tpen_spec.loader.exec_module(_tpen_module)
+sibling = _tpen_sys.modules["_tpen_study_imports"].sibling
 
 run_train_row = sibling(__file__, 'run_train_row')
 
@@ -89,12 +99,32 @@ def test_profiles_contain_policy_but_no_filesystem_roots() -> None:
                 assert not value.startswith("/")
 
 
+def _sys_aliases(tree: ast.AST) -> set[str]:
+    """Return the names bound to the ``sys`` module in one parsed file.
+
+    The sys.path rule below used to match ``owner.value.id == "sys"``, which
+    matches a SPELLING rather than resolving a BINDING: ``import sys as _s``
+    then ``_s.path.insert(...)`` sailed through. That is not hypothetical --
+    the study-scoped sibling bootstrap imports ``sys`` under an alias, so
+    ordinary code in this repository already evades the literal match.
+    """
+
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    aliases.add(alias.asname or "sys")
+    return aliases
+
+
 def _cross_study_violations(study: Path) -> set[str]:
     violations = set()
     for path in study.glob("*.py"):
         if path.name == "hev1.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        sys_aliases = _sys_aliases(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(alias.name.split(".", 1)[0] in HEV1_BARE_MODULES for alias in node.names):
                 violations.add(f"{path.name}:bare-import")
@@ -110,7 +140,7 @@ def _cross_study_violations(study: Path) -> set[str]:
                 and isinstance(owner, ast.Attribute)
                 and owner.attr == "path"
                 and isinstance(owner.value, ast.Name)
-                and owner.value.id == "sys"
+                and owner.value.id in sys_aliases
             ):
                 violations.add(f"{path.name}:sys-path-{node.func.attr}")
     return violations
@@ -121,3 +151,32 @@ def test_hev1_is_the_only_cross_study_accessor_and_import_gateway() -> None:
     assert _cross_study_violations(study) == set()
     assert not (study / "configs").exists()
     assert not ({path.stem for path in study.glob("*.py")} & HEV1_BARE_MODULES)
+
+
+def test_sys_path_rule_resolves_aliases_not_spellings(tmp_path: Path) -> None:
+    """An aliased ``sys`` must not evade the sys.path rule.
+
+    Matching ``owner.value.id == "sys"`` matched a spelling. Ordinary code in
+    this repository imports ``sys`` under an alias, so the literal match was
+    already evadable by practice rather than only in principle -- the study
+    bootstrap is the existence proof.
+    """
+
+    (tmp_path / "aliased.py").write_text(
+        "import sys as _s\nfrom pathlib import Path\n_s.path.insert(0, str(Path('/tmp')))\n",
+        encoding="utf-8",
+    )
+
+    assert _cross_study_violations(tmp_path) == {"aliased.py:sys-path-insert"}
+
+
+def test_sys_path_rule_ignores_an_unrelated_path_attribute(tmp_path: Path) -> None:
+    """``.path.insert`` on something that is not the sys module is not a violation."""
+
+    (tmp_path / "unrelated.py").write_text(
+        "class Cfg:\n    def __init__(self):\n        self.path = []\n"
+        "cfg = Cfg()\ncfg.path.insert(0, 'x')\n",
+        encoding="utf-8",
+    )
+
+    assert _cross_study_violations(tmp_path) == set()

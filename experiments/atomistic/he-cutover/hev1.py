@@ -17,17 +17,25 @@ either directory can change what this boundary resolves to.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
 
 HEV1_DIR = Path(__file__).resolve().parent.parent / "he-v1"
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from experiments.toolkit.study_imports import load_study_module  # noqa: E402
+# The loader is reached BY PATH. This module must not put anything on sys.path:
+# doing so is the mechanism behind the defect it exists to avoid, and the gateway
+# test in test_cutover_configs.py forbids sys.path mutation in this directory.
+if "_tpen_study_imports" not in sys.modules:
+    _spec = importlib.util.spec_from_file_location(
+        "_tpen_study_imports",
+        Path(__file__).resolve().parents[3] / "experiments" / "toolkit" / "study_imports.py",
+    )
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules["_tpen_study_imports"] = _module
+    _spec.loader.exec_module(_module)
+load_study_module = sys.modules["_tpen_study_imports"].load_study_module
 
 
 def module(name: str) -> ModuleType:
