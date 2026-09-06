@@ -64,9 +64,12 @@ class BoundedTwoCoefficientJastrow(LogAmplitudeFactor):
     Notes
     -----
     **What this factor deliberately does NOT contain.** No learned length
-    scale, no MLP, no angular term, and no amplitude clipping. The length is
-    fixed and shared with the basis so ``q`` means one thing throughout the
-    model.
+    scale, no MLP, no angular term, and no amplitude clipping. The length is a
+    fixed constructor value rather than a trained one.
+
+    It is NOT shared with the basis, and an earlier version of this sentence
+    said it was. Each stores its own; see the ``length`` parameter for the
+    unenforced matching obligation that creates.
 
     **Why it cannot spoil the Kato cusp.** Both summands carry a factor of
     ``q_{ij}``, and ``q(r) = r^2 / (l^2 + r^2)`` has ``q(0) = 0`` and
