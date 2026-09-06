@@ -681,10 +681,34 @@ _FROZEN_MODEL_KEYS: dict[str, tuple[object, str]] = {
     ),
 }
 
-# Singular coordinates, given as dotted paths.
-_FROZEN_SCALARS: dict[str, tuple[object, str]] = {
-    "system.spatial_dim": (3, "spatial dimension 3 (literal control, system/numerics)"),
-    "runtime.dtype": ("float64", "float64 (literal control, system/numerics)"),
+# Singular coordinates, checked BY KEY AT ANY DEPTH rather than at a dotted
+# path, and value-sensitively.
+#
+# THE DOTTED VERSION CHECKED WHERE THE VALUE IS DECLARED, NOT WHERE IT IS
+# CONSUMED. `system.spatial_dim` and `runtime.dtype` are the study's canonical
+# declarations, but the components are built from `model.embedding.spatial_dim`,
+# `sampler.spatial_dim` and `sampler.dtype`. The shipped config wires those with
+# interpolations -- and nothing required it to. MEASURED: with
+# `system.spatial_dim: 3` left compliant, `model.embedding.spatial_dim: 2`,
+# `sampler.spatial_dim: 2` and `sampler.dtype: float32` ALL VALIDATED, and the
+# model would be built in two dimensions.
+#
+# That is F5's own shape -- the schema validating ROOT fields while what is
+# actually constructed carries its own copy -- applied to a scalar instead of a
+# component. It is the finding this slice exists for, one more time.
+#
+# ABSENT IS FINE, matching the previous behaviour: absence means the code's own
+# default applies, and these three defaults are correct. Only a divergent VALUE
+# is refused, wherever it appears.
+#
+# OVER-RESTRICTION MEASURED, not assumed: in the shipped configuration every
+# `spatial_dim` node resolves to 3 and every `dtype` node to 'float64', so this
+# refuses nothing that exists. A future component using `dtype` to mean
+# something else would be refused LOUDLY, and the remedy would be to name the
+# coordinate rather than to re-anchor the rule.
+_FROZEN_SCALAR_KEYS: dict[str, tuple[object, str]] = {
+    "spatial_dim": (3, "spatial dimension 3 (literal control, system/numerics)"),
+    "dtype": ("float64", "float64 (literal control, system/numerics)"),
 }
 
 # Hamiltonian-term coordinates the study does NOT vary, keyed by the trailing
@@ -874,13 +898,47 @@ def _sweep_frozen_architecture(resolved_tree: Any) -> list[Rejection]:
                     )
                 )
 
-    for dotted, (expected, authority) in _FROZEN_SCALARS.items():
-        found, value = _select(resolved_tree, dotted)
-        if not found:
-            # Absent means the code's own default applies. These three have
-            # correct defaults, so absence is not a violation -- unlike the
-            # trainability declarations below.
+    rejections.extend(_sweep_trainability(resolved_tree))
+    return rejections
+
+
+def _sweep_frozen_scalars(resolved_tree: Any) -> list[Rejection]:
+    """Reject a frozen scalar coordinate wherever it is declared or consumed.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection per divergent value, at any depth in any section.
+
+    Notes
+    -----
+    See :data:`_FROZEN_SCALAR_KEYS` for the measurement. Short version: the
+    dotted rule checked where the value is DECLARED and the components are built
+    from where it is CONSUMED, so `model.embedding.spatial_dim: 2` validated
+    beside a compliant `system.spatial_dim: 3`.
+
+    RUN ONCE over the whole tree, NOT per component view, and here that is a
+    genuine de-duplication rather than a simplification. A per-view traversal
+    would reach `runner.sampler.dtype` from the root view AND from the runner
+    view, and both would report it at the IDENTICAL path -- one field, two
+    indistinguishable findings. The clip rule differs only because it was never
+    inside the view loop.
+    """
+
+    rejections: list[Rejection] = []
+    # BY KEY AT ANY DEPTH. Absence is still fine -- a node that does not declare
+    # the coordinate inherits a correct default -- so only a divergent value is
+    # refused, wherever in the tree it is declared or consumed.
+    for path, key, value in iter_nodes(resolved_tree):
+        spec = _FROZEN_SCALAR_KEYS.get(key) if isinstance(key, str) else None
+        if spec is None:
             continue
+        expected, authority = spec
         if isinstance(expected, float) or isinstance(value, (int, float)) and not isinstance(value, bool):
             matches = isinstance(value, (int, float)) and float(value) == float(expected)
         else:
@@ -890,12 +948,11 @@ def _sweep_frozen_architecture(resolved_tree: Any) -> list[Rejection]:
                 Rejection(
                     rule="frozen-coordinate",
                     tree="resolved",
-                    path=dotted,
+                    path=path,
                     detail=f"expected {expected!r}, got {value!r}: {authority}",
                 )
             )
 
-    rejections.extend(_sweep_trainability(resolved_tree))
     return rejections
 
 
@@ -1290,6 +1347,7 @@ def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
 # by writing it down where this schema can see it.
 _ADMITTED_NONFINITE_POLICIES: frozenset[str] = frozenset({"fail", "mask"})
 _NONFINITE_POLICY_PATH = "trainer.nonfinite_local_energy_policy"
+_NONFINITE_POLICY_KEY = "nonfinite_local_energy_policy"
 
 
 def _sweep_nonfinite_local_energy_policy(resolved_tree: Any) -> list[Rejection]:
@@ -1316,8 +1374,32 @@ def _sweep_nonfinite_local_energy_policy(resolved_tree: Any) -> list[Rejection]:
     if not trainer_found or not isinstance(trainer_section, Mapping):
         return []
 
-    found, value = _select(resolved_tree, _NONFINITE_POLICY_PATH)
-    if not found or value is None:
+    # Every declared policy is checked for admissibility BY KEY AT ANY DEPTH,
+    # for the same reason the update-method rule is: a factory wrapper relocates
+    # the real trainer one level down, and a rule anchored to
+    # ``trainer.nonfinite_local_energy_policy`` would read the wrapper's copy
+    # while the constructed trainer used the inner one.
+    rejections: list[Rejection] = []
+    declared_anywhere = False
+    for policy_path, key, value in iter_nodes(resolved_tree):
+        if key != _NONFINITE_POLICY_KEY or value is None:
+            continue
+        declared_anywhere = True
+        if value not in _ADMITTED_NONFINITE_POLICIES:
+            rejections.append(
+                Rejection(
+                    rule="undeclared-nonfinite-policy",
+                    tree="resolved",
+                    path=policy_path,
+                    detail=(
+                        f"{value!r} is not admissible; expected one of "
+                        f"{sorted(_ADMITTED_NONFINITE_POLICIES)}"
+                    ),
+                )
+            )
+    if rejections:
+        return rejections
+    if not declared_anywhere:
         return [
             Rejection(
                 rule="undeclared-nonfinite-policy",
@@ -1330,18 +1412,6 @@ def _sweep_nonfinite_local_energy_policy(resolved_tree: Any) -> list[Rejection]:
                     "rows, which drops a systematically selected subsample and biases the "
                     "energy estimator by an uncharacterised amount. A run must say which "
                     "estimator it is using"
-                ),
-            )
-        ]
-    if value not in _ADMITTED_NONFINITE_POLICIES:
-        return [
-            Rejection(
-                rule="undeclared-nonfinite-policy",
-                tree="resolved",
-                path=_NONFINITE_POLICY_PATH,
-                detail=(
-                    f"{value!r} is not admissible; expected one of "
-                    f"{sorted(_ADMITTED_NONFINITE_POLICIES)}"
                 ),
             )
         ]
@@ -1437,24 +1507,42 @@ def _sweep_update_method(resolved_tree: Any) -> list[Rejection]:
     ``update_method`` resolves to ``LegacyAutogradUpdate`` -- the plain
     optimizer step, which is the admitted method -- and is what every shipped
     configuration does, so requiring the declaration would refuse them all.
+
+    BY KEY AT ANY DEPTH, not at ``trainer.update_method``. The anchored version
+    was escapable through a Hydra factory wrapper: with the trainer written as
+    ``{_target_: hydra.utils.instantiate, config: <the real trainer>}`` the rule
+    found no ``update_method`` on the wrapper and returned, while the real spec
+    sat one level down. MEASURED: an unadmitted
+    ``StochasticReconfigurationUpdate`` VALIDATED that way.
+
+    It first appeared to be refused, which is the trap worth recording: the
+    wrapper also hid ``nonfinite_local_energy_policy``, so a DIFFERENT rule
+    fired and the configuration was rejected for an unrelated reason. Restating
+    the policy on the wrapper removed that accident and the escape was live.
+    **A refusal is only evidence for the rule that produced it** -- assert the
+    rule name, not that something was refused.
     """
 
-    trainer_found, trainer = _select(resolved_tree, "trainer")
-    if not trainer_found or not isinstance(trainer, Mapping):
-        return []
-    if "update_method" not in trainer:
-        return []
-    spec = trainer["update_method"]
-    if spec is None:
-        return []
-
     admitted = sorted(ADMITTED_UPDATE_METHOD_TARGETS)
+    rejections: list[Rejection] = []
+    for spec_path, key, spec in iter_nodes(resolved_tree):
+        if key != "update_method" or spec is None:
+            continue
+        rejections.extend(_qualify_update_method(spec_path, spec, admitted))
+    return rejections
+
+
+def _qualify_update_method(
+    path: str, spec: Any, admitted: list[str]
+) -> list[Rejection]:
+    """Qualify one declared update-method spec against the admitted set."""
+
     if not isinstance(spec, Mapping):
         return [
             Rejection(
                 rule="unadmitted-update-method",
                 tree="resolved",
-                path="trainer.update_method",
+                path=path,
                 detail=(
                     f"update_method must be a config block declaring a _target_, got "
                     f"{type(spec).__name__}. Admitted: {admitted}. "
@@ -1469,7 +1557,7 @@ def _sweep_update_method(resolved_tree: Any) -> list[Rejection]:
             Rejection(
                 rule="unadmitted-update-method",
                 tree="resolved",
-                path="trainer.update_method._target_",
+                path=f"{path}._target_",
                 detail=(
                     "a declared update_method must name a _target_; there is nothing to "
                     f"qualify otherwise. Admitted: {admitted}. Roster: {_roster_summary()}"
@@ -1482,7 +1570,7 @@ def _sweep_update_method(resolved_tree: Any) -> list[Rejection]:
             Rejection(
                 rule="unadmitted-update-method",
                 tree="resolved",
-                path="trainer.update_method._target_",
+                path=f"{path}._target_",
                 detail=(
                     f"update rule {target!r} is not admitted. The optimizer roster qualifies "
                     "optimizer._target_ only, so an unadmitted update rule reached "
@@ -1885,6 +1973,7 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(_sweep_callbacks(resolved_tree))
     rejections.extend(_sweep_target_values(resolved_tree))
     rejections.extend(_sweep_constructed_components(resolved_tree))
+    rejections.extend(_sweep_frozen_scalars(resolved_tree))
     rejections.extend(_sweep_gradient_clip(resolved_tree))
     rejections.extend(_sweep_positional_construction(resolved_tree))
     rejections.extend(_sweep_rank_divergent_fields(resolved_tree))

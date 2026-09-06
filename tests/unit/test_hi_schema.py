@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from omegaconf import OmegaConf
 
-from tpen.config_schema import ClosedSchemaError
+from tpen.config_schema import ClosedSchemaError, iter_nodes
 from tpen.hi_schema import (
     ADMITTED_CALLBACK_TARGETS,
     ADMITTED_METHOD_TARGETS,
@@ -325,6 +325,149 @@ class TestForbiddenSurfaces:
                 f"{section}.{key} did not trip the stop-rule family; the guard "
                 "recognises only spellings someone thought of in advance"
             )
+
+
+class TestFrozenScalarsAreCheckedWhereTheyAreCONSUMED:
+    """A dotted rule checked where the value is DECLARED, not where it is used.
+
+    ``system.spatial_dim`` and ``runtime.dtype`` are the study's canonical
+    declarations, but components are built from ``model.embedding.spatial_dim``,
+    ``sampler.spatial_dim`` and ``sampler.dtype``. The shipped config wires
+    those with interpolations, and nothing required it to.
+
+    MEASURED: with ``system.spatial_dim: 3`` left compliant, each of those three
+    consumption sites accepted a divergent value, and the model would have been
+    built in TWO dimensions. That is F5's own shape -- the schema validating
+    ROOT fields while what is actually constructed carries its own copy --
+    applied to a scalar instead of a component, which is the finding this slice
+    exists for.
+
+    FOUND BY THE AUTHOR while auditing what remained anchored after the reviewer
+    showed the class was still open twice over.
+    """
+
+    @pytest.mark.parametrize(
+        ("dotted", "value"),
+        [
+            ("model.embedding.spatial_dim", 2),
+            ("sampler.spatial_dim", 2),
+            ("sampler.dtype", "float32"),
+        ],
+    )
+    def test_a_divergent_value_at_a_consumption_site_is_refused(
+        self, dotted: str, value: object
+    ) -> None:
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        OmegaConf.update(cfg, dotted, value)
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert dotted in _paths(caught.value)
+
+    def test_the_canonical_declaration_is_still_checked(self) -> None:
+        """Non-regression: widening must not lose the case the rule had."""
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.system.spatial_dim = 2
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "system.spatial_dim" in _paths(caught.value)
+
+    def test_an_absent_coordinate_is_not_a_violation(self) -> None:
+        """Absence inherits a correct default; only a VALUE is refused.
+
+        A rule that refused the KEY rather than a value would refuse every
+        component that simply does not mention the coordinate.
+        """
+
+        _validate(_config(run={"run_id": "x"}, model={"embedding": {"out_channels": 32}}))
+
+    def test_the_shipped_config_declares_these_consistently(self) -> None:
+        """The over-restriction measurement, asserted rather than remembered.
+
+        This rule refuses a divergent ``spatial_dim`` or ``dtype`` ANYWHERE. It
+        is only defensible while every such node in a shipped config resolves to
+        the study value, so that is a test rather than a comment.
+        """
+
+        resolved = OmegaConf.to_container(OmegaConf.load(_CONTROL_CONFIG), resolve=True)
+        seen = {
+            path: value
+            for path, key, value in iter_nodes(resolved)
+            if key in ("spatial_dim", "dtype")
+        }
+        assert seen, "no frozen-scalar nodes found; this test would pass vacuously"
+        for path, value in seen.items():
+            assert value in (3, "float64"), (path, value)
+
+
+class TestTheTrainerRulesSurviveAFactoryWrapper:
+    """`trainer.update_method` and the policy were anchored to ``trainer``.
+
+    With the trainer written as a Hydra factory wrapper, the rules found nothing
+    on the wrapper and returned while the real spec sat one level down.
+
+    THE TRAP WORTH RECORDING is that this first LOOKED closed. The wrapper also
+    hid ``nonfinite_local_energy_policy``, so a DIFFERENT rule fired and the
+    config was refused for an unrelated reason. Restating the policy on the
+    wrapper removed that accident and an unadmitted
+    ``StochasticReconfigurationUpdate`` validated. **A refusal is only evidence
+    for the rule that produced it.**
+    """
+
+    SR = {"_target_": "tpen.training.sr.StochasticReconfigurationUpdate", "_partial_": True}
+    LEGACY = {"_target_": "tpen.training.update.LegacyAutogradUpdate", "_partial_": True}
+
+    def _wrapped_trainer(self, mutate, wrapper_extra=None):
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        trainer = OmegaConf.to_container(cfg.trainer, resolve=True)
+        mutate(trainer)
+        body = {"_target_": "hydra.utils.instantiate", "_recursive_": False, "config": trainer}
+        if wrapper_extra:
+            body.update(wrapper_extra)
+        cfg.trainer = OmegaConf.create(body)
+        return cfg
+
+    def test_an_unadmitted_update_rule_behind_the_wrapper_is_refused(self) -> None:
+        cfg = self._wrapped_trainer(
+            lambda tr: tr.__setitem__("update_method", self.SR),
+            {"nonfinite_local_energy_policy": "fail"},
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-update-method" in _rules(caught.value), (
+            "must be refused BY THE UPDATE-METHOD RULE; a refusal from any other "
+            "rule is the accident this test exists to rule out"
+        )
+
+    def test_an_admitted_update_rule_behind_the_wrapper_validates(self) -> None:
+        """The over-restriction control: the wrapper itself is admissible."""
+
+        _validate(
+            self._wrapped_trainer(
+                lambda tr: tr.__setitem__("update_method", self.LEGACY),
+                {"nonfinite_local_energy_policy": "fail"},
+            )
+        )
+
+    def test_an_inadmissible_policy_behind_the_wrapper_is_refused(self) -> None:
+        """The inner policy is what the constructed trainer uses."""
+
+        cfg = self._wrapped_trainer(
+            lambda tr: tr.__setitem__("nonfinite_local_energy_policy", "drop"),
+            {"nonfinite_local_energy_policy": "fail"},
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-nonfinite-policy" in _rules(caught.value)
+
+    def test_an_omitted_policy_is_still_refused(self) -> None:
+        """Non-regression on the required-declaration half of that rule."""
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        del cfg.trainer.nonfinite_local_energy_policy
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-nonfinite-policy" in _rules(caught.value)
 
 
 class TestTheReadoutRuleHasTwoNets:
