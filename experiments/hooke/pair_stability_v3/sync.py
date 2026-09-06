@@ -26,23 +26,40 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
-from utils.ancestry import Ancestry, trace_final_report_ancestry
-from utils.io import path_from_record, read_json_object, read_json_object_list, write_json
-from utils.layout import (
-    STAGE_COLLECT,
-    STAGE_FINAL_COLLECT,
-    STAGE_FINAL_EVAL,
-    STAGE_FINAL_GRID,
-    STAGE_FINAL_REPORT,
-    STAGE_FINAL_TRAIN,
-    STAGE_GRID,
-    STAGE_SELECT,
-    STAGE_TRAIN,
-    STAGE_VALIDATION,
-    latest_attempt_id,
-    stage_dir,
-    write_latest,
-)
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+_tpen_utils_ancestry = sibling(__file__, 'utils.ancestry')
+Ancestry = _tpen_utils_ancestry.Ancestry
+trace_final_report_ancestry = _tpen_utils_ancestry.trace_final_report_ancestry
+_tpen_utils_io = sibling(__file__, 'utils.io')
+path_from_record = _tpen_utils_io.path_from_record
+read_json_object = _tpen_utils_io.read_json_object
+read_json_object_list = _tpen_utils_io.read_json_object_list
+write_json = _tpen_utils_io.write_json
+_tpen_utils_layout = sibling(__file__, 'utils.layout')
+STAGE_COLLECT = _tpen_utils_layout.STAGE_COLLECT
+STAGE_FINAL_COLLECT = _tpen_utils_layout.STAGE_FINAL_COLLECT
+STAGE_FINAL_EVAL = _tpen_utils_layout.STAGE_FINAL_EVAL
+STAGE_FINAL_GRID = _tpen_utils_layout.STAGE_FINAL_GRID
+STAGE_FINAL_REPORT = _tpen_utils_layout.STAGE_FINAL_REPORT
+STAGE_FINAL_TRAIN = _tpen_utils_layout.STAGE_FINAL_TRAIN
+STAGE_GRID = _tpen_utils_layout.STAGE_GRID
+STAGE_SELECT = _tpen_utils_layout.STAGE_SELECT
+STAGE_TRAIN = _tpen_utils_layout.STAGE_TRAIN
+STAGE_VALIDATION = _tpen_utils_layout.STAGE_VALIDATION
+latest_attempt_id = _tpen_utils_layout.latest_attempt_id
+stage_dir = _tpen_utils_layout.stage_dir
+write_latest = _tpen_utils_layout.write_latest
 
 STUDY_RELATIVE = Path("experiments/hooke/pair_stability_v3")
 STAGE_SYNC = "10_sync"

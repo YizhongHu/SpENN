@@ -13,19 +13,30 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-import launch
-from utils.io import write_json
-from utils.layout import (
-    STAGE_TRAIN,
-    grid_attempt_dir,
-    stage_dir,
-    write_latest,
-)
-from utils.naming import (
-    log_prefix,
-    stage_job_name,
-    study_name_from_manifest,
-)
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+launch = sibling(__file__, 'launch')
+_tpen_utils_io = sibling(__file__, 'utils.io')
+write_json = _tpen_utils_io.write_json
+_tpen_utils_layout = sibling(__file__, 'utils.layout')
+STAGE_TRAIN = _tpen_utils_layout.STAGE_TRAIN
+grid_attempt_dir = _tpen_utils_layout.grid_attempt_dir
+stage_dir = _tpen_utils_layout.stage_dir
+write_latest = _tpen_utils_layout.write_latest
+_tpen_utils_naming = sibling(__file__, 'utils.naming')
+log_prefix = _tpen_utils_naming.log_prefix
+stage_job_name = _tpen_utils_naming.stage_job_name
+study_name_from_manifest = _tpen_utils_naming.study_name_from_manifest
 
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]

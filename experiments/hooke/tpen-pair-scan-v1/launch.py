@@ -16,17 +16,32 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence, TypeVar
 
-from utils.io import read_json
-from utils.layout import (
-    STAGE_GRID,
-    attempt_ids,
-    grid_attempt_dir,
-    latest_attempt_id,
-    stage_dir,
-)
-from utils.naming import log_prefix
-from utils.overrides import rewrite_cli_overrides
-from utils.time import DEFAULT_STUDY_TIMEZONE
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+_tpen_utils_io = sibling(__file__, 'utils.io')
+read_json = _tpen_utils_io.read_json
+_tpen_utils_layout = sibling(__file__, 'utils.layout')
+STAGE_GRID = _tpen_utils_layout.STAGE_GRID
+attempt_ids = _tpen_utils_layout.attempt_ids
+grid_attempt_dir = _tpen_utils_layout.grid_attempt_dir
+latest_attempt_id = _tpen_utils_layout.latest_attempt_id
+stage_dir = _tpen_utils_layout.stage_dir
+_tpen_utils_naming = sibling(__file__, 'utils.naming')
+log_prefix = _tpen_utils_naming.log_prefix
+_tpen_utils_overrides = sibling(__file__, 'utils.overrides')
+rewrite_cli_overrides = _tpen_utils_overrides.rewrite_cli_overrides
+_tpen_utils_time = sibling(__file__, 'utils.time')
+DEFAULT_STUDY_TIMEZONE = _tpen_utils_time.DEFAULT_STUDY_TIMEZONE
 
 DEFAULT_CPU_UV_ENVIRONMENT = ".venv"
 DEFAULT_CUDA_UV_ENVIRONMENT = ".venv-gpu"

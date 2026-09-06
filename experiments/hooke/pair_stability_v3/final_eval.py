@@ -13,30 +13,47 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-import launch
-from final_train import (
-    final_axis_override_paths,
-    final_scalar_axes,
-    axis_value_overrides_for_job,
-    load_final_grid_manifest,
-    load_final_jobs,
-)
-from utils.io import write_json
-from utils.layout import (
-    STAGE_FINAL_EVAL,
-    STAGE_FINAL_GRID,
-    attempt_ids,
-    final_eval_attempt_dir,
-    final_grid_attempt_dir,
-    final_train_attempt_dir,
-    final_train_run_dir,
-    latest_attempt_id,
-    stage_dir,
-    write_latest,
-)
-from utils.naming import experiment_run_name, log_prefix, stage_job_name, study_name_from_manifest
-from utils.overrides import AxisOverrideSpec
-from utils.seeds import seed_override_values
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+launch = sibling(__file__, 'launch')
+_tpen_final_train = sibling(__file__, 'final_train')
+final_axis_override_paths = _tpen_final_train.final_axis_override_paths
+final_scalar_axes = _tpen_final_train.final_scalar_axes
+axis_value_overrides_for_job = _tpen_final_train.axis_value_overrides_for_job
+load_final_grid_manifest = _tpen_final_train.load_final_grid_manifest
+load_final_jobs = _tpen_final_train.load_final_jobs
+_tpen_utils_io = sibling(__file__, 'utils.io')
+write_json = _tpen_utils_io.write_json
+_tpen_utils_layout = sibling(__file__, 'utils.layout')
+STAGE_FINAL_EVAL = _tpen_utils_layout.STAGE_FINAL_EVAL
+STAGE_FINAL_GRID = _tpen_utils_layout.STAGE_FINAL_GRID
+attempt_ids = _tpen_utils_layout.attempt_ids
+final_eval_attempt_dir = _tpen_utils_layout.final_eval_attempt_dir
+final_grid_attempt_dir = _tpen_utils_layout.final_grid_attempt_dir
+final_train_attempt_dir = _tpen_utils_layout.final_train_attempt_dir
+final_train_run_dir = _tpen_utils_layout.final_train_run_dir
+latest_attempt_id = _tpen_utils_layout.latest_attempt_id
+stage_dir = _tpen_utils_layout.stage_dir
+write_latest = _tpen_utils_layout.write_latest
+_tpen_utils_naming = sibling(__file__, 'utils.naming')
+experiment_run_name = _tpen_utils_naming.experiment_run_name
+log_prefix = _tpen_utils_naming.log_prefix
+stage_job_name = _tpen_utils_naming.stage_job_name
+study_name_from_manifest = _tpen_utils_naming.study_name_from_manifest
+_tpen_utils_overrides = sibling(__file__, 'utils.overrides')
+AxisOverrideSpec = _tpen_utils_overrides.AxisOverrideSpec
+_tpen_utils_seeds = sibling(__file__, 'utils.seeds')
+seed_override_values = _tpen_utils_seeds.seed_override_values
 
 STUDY_DIR = Path(__file__).resolve().parent
 DEFAULT_RESULTS_ROOT = STUDY_DIR / "results"

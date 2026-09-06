@@ -138,8 +138,20 @@ def _load_script(name: str, *, bind_direct: bool = False) -> ModuleType:
     return module
 
 
-from utils import io as json_io  # noqa: E402
-from utils import layout  # noqa: E402
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+json_io = sibling(__file__, 'utils.io')
+layout = sibling(__file__, 'utils.layout')
 launch = _load_script("launch", bind_direct=True)
 plan = _load_script("plan")
 train = _load_script("train")

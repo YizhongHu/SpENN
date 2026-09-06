@@ -23,26 +23,42 @@ from typing import Any, Sequence
 
 from omegaconf import OmegaConf
 
-from utils.ancestry import SourceGrid, source_grid_from_attempt, source_grid_from_id
-from utils.io import read_json, write_json
-from utils.layout import (
-    STAGE_COLLECT,
-    STAGE_GRID,
-    STAGE_TRAIN,
-    STAGE_VALIDATION,
-    latest_attempt_id,
-    stage_dir,
-    validation_run_dir,
-    write_latest,
-)
-from utils.naming import (
-    axis_id_labels_from_manifest,
-    grid_axes_from_manifest,
-    id_for_axes,
-    log_prefix,
-    study_name_from_manifest,
-)
-from utils.time import new_attempt_id
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+_tpen_utils_ancestry = sibling(__file__, 'utils.ancestry')
+SourceGrid = _tpen_utils_ancestry.SourceGrid
+source_grid_from_attempt = _tpen_utils_ancestry.source_grid_from_attempt
+source_grid_from_id = _tpen_utils_ancestry.source_grid_from_id
+_tpen_utils_io = sibling(__file__, 'utils.io')
+read_json = _tpen_utils_io.read_json
+write_json = _tpen_utils_io.write_json
+_tpen_utils_layout = sibling(__file__, 'utils.layout')
+STAGE_COLLECT = _tpen_utils_layout.STAGE_COLLECT
+STAGE_GRID = _tpen_utils_layout.STAGE_GRID
+STAGE_TRAIN = _tpen_utils_layout.STAGE_TRAIN
+STAGE_VALIDATION = _tpen_utils_layout.STAGE_VALIDATION
+latest_attempt_id = _tpen_utils_layout.latest_attempt_id
+stage_dir = _tpen_utils_layout.stage_dir
+validation_run_dir = _tpen_utils_layout.validation_run_dir
+write_latest = _tpen_utils_layout.write_latest
+_tpen_utils_naming = sibling(__file__, 'utils.naming')
+axis_id_labels_from_manifest = _tpen_utils_naming.axis_id_labels_from_manifest
+grid_axes_from_manifest = _tpen_utils_naming.grid_axes_from_manifest
+id_for_axes = _tpen_utils_naming.id_for_axes
+log_prefix = _tpen_utils_naming.log_prefix
+study_name_from_manifest = _tpen_utils_naming.study_name_from_manifest
+_tpen_utils_time = sibling(__file__, 'utils.time')
+new_attempt_id = _tpen_utils_time.new_attempt_id
 
 STUDY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = STUDY_DIR.parents[2]

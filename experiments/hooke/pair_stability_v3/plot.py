@@ -12,7 +12,21 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from stats import as_float as _as_float, mean as _mean
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+_tpen_stats = sibling(__file__, 'stats')
+_as_float = _tpen_stats.as_float
+_mean = _tpen_stats.mean
 
 POSITIVE_HEATMAP_CMAP = "Reds"
 MAJOR_AXIS_LABEL_PAD_POINTS = 6.0

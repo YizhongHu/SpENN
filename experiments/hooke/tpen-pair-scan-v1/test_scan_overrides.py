@@ -17,8 +17,23 @@ for module_name in list(sys.modules):
     if module_name.split(".", maxsplit=1)[0] == "utils":
         del sys.modules[module_name]
 
-from utils import overrides as _overrides_module  # noqa: E402
-from utils.overrides import axis_value_overrides, format_override_value, rewrite_cli_overrides  # noqa: E402
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+_overrides_module = sibling(__file__, 'utils.overrides')
+_tpen_utils_overrides = sibling(__file__, 'utils.overrides')
+axis_value_overrides = _tpen_utils_overrides.axis_value_overrides
+format_override_value = _tpen_utils_overrides.format_override_value
+rewrite_cli_overrides = _tpen_utils_overrides.rewrite_cli_overrides
 
 
 def test_this_module_tests_this_study_not_the_sibling_v3_copy():
