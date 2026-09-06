@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Union
 
 from tpen.accelerator import AcceleratorIdentity, AllocatorUnavailable, AllocatorUsage
+from tpen.durable_append import append_record
 from tpen.process_resources import ProcessResourceResult, ResourceUnavailable
 
 
@@ -250,10 +251,7 @@ class RankLocalJSONLWriter:
                 },
             }
             serialized = json.dumps(payload, sort_keys=True, allow_nan=False)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(serialized)
-            handle.write("\n")
+        append_record(self.path, serialized)
 
 
 def _unserializable_fields(payload: dict[str, object]) -> tuple[str, ...]:

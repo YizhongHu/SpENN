@@ -361,44 +361,16 @@ def append_publication_receipt(
 ) -> None:
     """Append one publication receipt as a JSONL record.
 
-    Guards against joining onto an unterminated last line before delegating
-    to ``tpen.artifacts.append_jsonl``, which is otherwise untouched -- see
-    :func:`_ensure_trailing_newline` for why this guard exists.
+    The guard against joining onto an unterminated last line used to live here,
+    as a local ``_ensure_trailing_newline`` helper, because ``append_jsonl`` was
+    out of scope for the slice that introduced it.  That is no longer true:
+    ``tpen.durable_append.append_record`` now closes out an unterminated
+    predecessor line as part of the same single write that stores the new
+    record, for every one-record writer in the tree.  Reproducing the guard here
+    would leave two mechanisms for one invariant, free to drift apart.
     """
 
-    receipt_path = Path(path)
-    _ensure_trailing_newline(receipt_path)
-    append_jsonl(receipt_path, receipt.to_dict())
-
-
-def _ensure_trailing_newline(path: Path) -> None:
-    """Close out a possibly-unterminated last line before a new append.
-
-    ``tpen.artifacts.append_jsonl`` writes a row's JSON body and its trailing
-    newline as two separate writes and is out of scope to change in this
-    slice (a pre-existing, inherited exposure shared with
-    ``CheckpointCatalog.publish``; see :func:`iter_valid_publication_receipts`).
-    Without this guard, appending after a row left unterminated by a
-    mid-write ``OSError`` would land on the SAME physical line as that
-    corrupt row rather than its own -- corrupting the NEW row too, not merely
-    leaving the old one dead, which would defeat
-    :func:`backfill_publication_receipt`'s entire purpose. This function only
-    ever appends a single ``"\\n"`` when the file is non-empty and does not
-    already end with one; it never reads, rewrites, or removes existing
-    content, so it cannot itself lose data.
-    """
-
-    if not path.exists():
-        return
-    with path.open("rb") as handle:
-        handle.seek(0, 2)
-        if handle.tell() == 0:
-            return
-        handle.seek(-1, 2)
-        last_byte = handle.read(1)
-    if last_byte != b"\n":
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write("\n")
+    append_jsonl(Path(path), receipt.to_dict())
 
 
 def iter_valid_publication_receipts(path: str | Path) -> Iterator[Mapping[str, object]]:
@@ -415,19 +387,16 @@ def iter_valid_publication_receipts(path: str | Path) -> Iterator[Mapping[str, o
     here must never become a new way to break a run, including at read time,
     so it is skipped (with a logged warning) rather than raised.
 
-    The most likely source of a malformed row is a partially written line
-    left behind by an append that failed mid-write. ``tpen.artifacts.append_jsonl``
-    writes the JSON body and the trailing newline as two separate writes, and
-    on an NFS-mounted root (e.g. Netscratch) ``O_APPEND`` atomicity cannot be
-    assumed even for a single write; a failure between the two writes leaves
-    an unterminated line that the *next* append joins onto, corrupting one
-    line where two records belonged. This exposure is pre-existing in
-    ``append_jsonl`` and is inherited here, not introduced by this module --
-    ``CheckpointCatalog.publish`` uses the identical primitive for
-    ``publications.jsonl``, where it is strictly worse, since one such event
-    makes ``iter_publications`` raise for the whole catalog file rather than
-    for one row. Fixing ``append_jsonl`` itself, or moving to per-checkpoint
-    receipt files, is out of scope for this slice and is tracked separately.
+    The most likely source of a malformed row is a partially written line left
+    behind by an append that failed mid-write. ``append_jsonl`` now routes
+    through ``tpen.durable_append.append_record``, which issues one write per
+    record and closes out an unterminated predecessor line inside that same
+    write, so an interrupted append can no longer corrupt the *next* row. That
+    narrows this case; it does not retire it. A single write to a regular file
+    may still store fewer bytes than requested, and on an NFS-mounted root
+    (e.g. Netscratch) ``O_APPEND`` gives no cross-client atomicity at all, so a
+    torn *final* row remains possible. The guarantee is that damage is bounded
+    to the torn record and is detectable -- not that tearing cannot happen.
     Treating a malformed row as "no valid receipt for this checkpoint" is what
     lets :func:`backfill_publication_receipt` repair exactly this failure
     mode, bounding the damage to one recoverable telemetry row.
