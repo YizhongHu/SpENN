@@ -92,8 +92,19 @@ class BoundedTwoCoefficientJastrow(LogAmplitudeFactor):
     difference_coefficient : float, optional
         ``theta_t``, multiplying ``q_ij (q_i - q_j)^2``. Defaults to ``0.0``.
     length : float, optional
-        The bounded-distance length ``l`` in bohr. The study fixes ``1.0``, and
-        it must match the basis for ``q`` to mean one thing across the model.
+        The bounded-distance length ``l`` in bohr. The study fixes ``1.0``.
+
+        **It must match the basis, and NOTHING ENFORCES THAT.** This factor and
+        `tpen.nn.basis.BoundedDistanceBasis` each store their own ``length``
+        and compute the same ``q`` formula from it; there is no shared owner
+        and no schema rule comparing them. A model composed with ``1.0`` here
+        and ``2.0`` there is admitted, and ``q`` would silently mean two
+        different things in one wavefunction.
+
+        Not a live defect: no shipped configuration composes this factor at
+        all. It is an obligation on whoever composes it, tracked as item
+        ``7bae63d8-f3a1-4d63-b240-1bd12d823e04``, and stated here because that
+        is where someone setting the value will be looking.
     trainable : bool, optional
         Whether the two coefficients are optimized. When ``False`` they are
         fixed non-persistent buffers at the constructor values, so the module
