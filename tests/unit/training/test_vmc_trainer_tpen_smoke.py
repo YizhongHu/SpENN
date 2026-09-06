@@ -516,7 +516,11 @@ def test_load_state_dict_round_trips_both_progress_counters() -> None:
     state = trainer.state_dict()
     # No model/update authority is resolved in this counter-only test, so no
     # parameter layout is available; the exact key set still pins this schema.
-    assert set(state) == {"next_iteration", "completed_updates"}
+    assert set(state) == {
+        "next_iteration",
+        "completed_updates",
+        "nonfinite_local_energy_policy",
+    }
     # `nonfinite_local_energy_policy` records the ACTIVE estimator beside the
     # progress counters. Exact equality is kept rather than loosened to a
     # subset check: an unexpected new key in trainer state is precisely what
