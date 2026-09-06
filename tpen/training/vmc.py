@@ -59,6 +59,23 @@ class VMCObjectiveResult:
 #: on purpose. That is why it is reachable only by explicit declaration, and
 #: why the helium-importance closed schema requires the declaration to be
 #: present rather than inherited.
+#:
+#: THIS POLICY DOES NOT COVER EVERY ROW-DROPPING PATH. It governs rows whose
+#: LOCAL ENERGY is non-finite. `tpen.training.sr.StochasticReconfigurationUpdate`
+#: has a SECOND, unconditional drop -- rows whose parameter SCORES are
+#: non-finite -- in the same expression that consults this policy. That drop
+#: carries the same selection-bias character and is NOT governed here.
+#:
+#: It is not simply an oversight, which is why it is an open decision rather
+#: than a gap: a non-finite score row would poison the ENTIRE QGT through the
+#: outer product, so the cost of NOT dropping it is categorically different
+#: from the local-energy case -- one bad local energy biases a mean, one bad
+#: score can destroy the solve. "Refuse the step" versus "protect the solve" is
+#: therefore a real question with a different answer available.
+#:
+#: Tracked as item ``02859027-7dbf-492d-8538-2ef7e28d1cee``. Named here because
+#: a reader of this policy would otherwise reasonably conclude it covers
+#: "non-finite rows" in general, and it does not.
 NONFINITE_LOCAL_ENERGY_POLICIES = ("fail", "mask")
 
 #: Historical default, kept so existing non-HI callers are unchanged by the
