@@ -107,6 +107,26 @@ def _sys_aliases(tree: ast.AST) -> set[str]:
     then ``_s.path.insert(...)`` sailed through. That is not hypothetical --
     the study-scoped sibling bootstrap imports ``sys`` under an alias, so
     ordinary code in this repository already evades the literal match.
+
+    WHAT THIS RULE CATCHES, stated exactly rather than implied: ``import sys``
+    or ``import sys as X`` at any scope, followed by attribute access on that
+    name, where the name is never rebound in the file.
+
+    KNOWN-UNCAUGHT, each MEASURED to change ``sys.path`` while this rule stays
+    green (independent review of PR #484, round 2):
+
+    ==========================  ================================================
+    ``from sys import path``    the module is never named
+    ``from sys import path as p``  same, aliased
+    ``importlib.import_module("sys")``  the binding is created at runtime
+    ``s = sys``                 assignment alias; also disables the name here
+    ``p = sys.path``            the list is aliased, not the module
+    ``sys.path[:0] = [...]``    slice assignment, not an ``insert`` call
+    ==========================  ================================================
+
+    Closing these needs scope-aware binding analysis, which is a static-analysis
+    project rather than a guard. Deliberately NOT attempted: a guard that claims
+    more than it delivers is worse than an honest narrow one. Tracked separately.
     """
 
     aliases: set[str] = set()
@@ -115,7 +135,35 @@ def _sys_aliases(tree: ast.AST) -> set[str]:
             for alias in node.names:
                 if alias.name == "sys":
                     aliases.add(alias.asname or "sys")
-    return aliases
+
+    # Drop any name that is REBOUND anywhere in the file. Once `s = Registry()`
+    # appears, a later `s.path.insert(...)` cannot be attributed to the sys
+    # module by parsing alone, and guessing produces a FALSE POSITIVE -- which
+    # is the failure that only surfaces when it refuses somebody's legitimate
+    # code. Conservative in the safe direction: fewer false accusations, more
+    # known-uncaught forms, and the uncaught set is enumerated below rather
+    # than left implicit.
+    rebound = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+    # Function parameters shadow too, and they are ``ast.arg`` rather than a
+    # ``Name`` in ``Store`` context -- a distinction that cost a red test here
+    # rather than being reasoned about correctly the first time.
+    rebound |= {
+        arg.arg
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        for arg in [
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+            *([node.args.vararg] if node.args.vararg else []),
+            *([node.args.kwarg] if node.args.kwarg else []),
+        ]
+    }
+    return aliases - rebound
 
 
 def _cross_study_violations(study: Path) -> set[str]:
@@ -176,6 +224,38 @@ def test_sys_path_rule_ignores_an_unrelated_path_attribute(tmp_path: Path) -> No
     (tmp_path / "unrelated.py").write_text(
         "class Cfg:\n    def __init__(self):\n        self.path = []\n"
         "cfg = Cfg()\ncfg.path.insert(0, 'x')\n",
+        encoding="utf-8",
+    )
+
+    assert _cross_study_violations(tmp_path) == set()
+
+
+def test_sys_path_rule_does_not_accuse_a_rebound_alias(tmp_path: Path) -> None:
+    """FALSE POSITIVE, measured: a rebound name must not be treated as ``sys``.
+
+    An over-restrictive rule passes every test written for it and surfaces only
+    when it refuses somebody's legitimate code, so this direction needs its own
+    exhibit rather than trust.
+    """
+
+    (tmp_path / "entry.py").write_text(
+        "import sys as s\n"
+        "class Cfg:\n    def __init__(self):\n        self.path = []\n"
+        "s = Cfg()\n"
+        "s.path.append('x')\n",
+        encoding="utf-8",
+    )
+
+    assert _cross_study_violations(tmp_path) == set()
+
+
+def test_sys_path_rule_does_not_accuse_a_locally_shadowed_name(tmp_path: Path) -> None:
+    """FALSE POSITIVE, measured: a function-local shadow is not the sys module."""
+
+    (tmp_path / "entry.py").write_text(
+        "import sys\n"
+        "def go(sys):\n"
+        "    sys.path.append('x')\n",
         encoding="utf-8",
     )
 

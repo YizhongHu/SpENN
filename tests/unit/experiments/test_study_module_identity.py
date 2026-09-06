@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -126,6 +127,53 @@ def find_bare_colliding_sibling_imports(root: Path) -> list[str]:
     return violations
 
 
+def _sys_module_names(tree: ast.AST) -> set[str]:
+    """Return names bound to the ``sys`` module and never rebound in this file.
+
+    WHAT THIS RESOLVES: ``import sys`` / ``import sys as X`` followed by
+    attribute access, where ``X`` is never reassigned or shadowed.
+
+    KNOWN-UNCAUGHT, measured by independent review of PR #484 round 2 against
+    the sibling ``sys.path`` rule and applying equally here: ``from sys import
+    modules``, ``importlib.import_module("sys")``, an assignment alias
+    (``s = sys``), and aliasing the mapping itself (``m = sys.modules``).
+    Closing those needs scope-aware binding analysis, which is a static-analysis
+    project rather than a guard; a guard that claims more than it delivers is
+    worse than an honest narrow one. Tracked separately.
+
+    Names that are REBOUND anywhere are dropped, because once ``s = Registry()``
+    appears a later ``s.modules[...]`` cannot be attributed to ``sys`` by
+    parsing -- and guessing yields a false positive, the failure mode that only
+    shows up when it refuses somebody's legitimate code.
+    """
+
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    aliases.add(alias.asname or "sys")
+
+    rebound = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+    rebound |= {
+        arg.arg
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        for arg in [
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+            *([node.args.vararg] if node.args.vararg else []),
+            *([node.args.kwarg] if node.args.kwarg else []),
+        ]
+    }
+    return aliases - rebound
+
+
 def find_bare_sys_modules_registrations(root: Path) -> list[str]:
     """Return one message per ``sys.modules[<plain name>] = ...`` under ``root``.
 
@@ -165,13 +213,7 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
             except SyntaxError:
                 continue
 
-            # Names in THIS file that are bound to the sys module.
-            sys_aliases: set[str] = set()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name == "sys":
-                            sys_aliases.add(alias.asname or "sys")
+            sys_aliases = _sys_module_names(tree)
 
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Assign):
@@ -587,4 +629,94 @@ def test_he_v1_boundary_has_one_canonical_module_identity() -> None:
     assert "EXPECTED_ERROR_CAUGHT" in result.stdout, (
         "a StratumError raised through one copy of he-v1's strata was not caught "
         "by `except` against the other copy:\n" + result.stdout
+    )
+
+
+def test_sys_modules_rule_does_not_accuse_a_rebound_alias(tmp_path: Path) -> None:
+    """FALSE POSITIVE, measured by round-2 review: rebound name is not ``sys``."""
+
+    _write_study(
+        tmp_path / "study_a",
+        "import sys as s\n"
+        "class Reg:\n    def __init__(self):\n        self.modules = {}\n"
+        "s = Reg()\n"
+        "name = 'x'\nmodule = None\n"
+        "s.modules[name] = module\n",
+    )
+    _write_study(tmp_path / "study_b", "VALUE = 1\n")
+
+    assert find_bare_sys_modules_registrations(tmp_path) == []
+
+
+# --------------------------------------------------------------------------
+# Cross-checkout collision.  Adopted from the round-2 reviewer's
+# cross_checkout_probe.py rather than rewritten -- it found a regression this
+# lane introduced while fixing the previous one.
+#
+# The cache key is the study's path RELATIVE to experiments/, so two checkouts
+# of this repository produce the same key for the same study.  Before the cache
+# was validated against its requested source, a caller in checkout B silently
+# received checkout A's module: the defect this file exists to prevent, one
+# level up from studies to checkouts.
+#
+# The remedy here is deliberately the cheap half.  Full canonical identity
+# across checkouts means putting provenance in the key, which is a design
+# change and is filed separately.  Validation converts a SILENT wrong module
+# into a LOUD error, which is the transformation this slice is for.
+# --------------------------------------------------------------------------
+_CROSS_CHECKOUT_PROBE = """
+import importlib.util, pathlib, sys
+A = pathlib.Path({repo!r})
+B = pathlib.Path({other!r})
+
+def direct(root, name):
+    path = root / "experiments" / "atomistic" / "he-v1" / (name + ".py")
+    spec = importlib.util.spec_from_file_location("_probe_" + str(len(sys.modules)), path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+sys.path.insert(0, str(A))
+from experiments.toolkit import study_imports
+
+# Checkout A's strata occupies the shared, checkout-relative key.
+study_imports.load_study_module(A / "experiments" / "atomistic" / "he-v1", "strata")
+try:
+    plan_b = direct(B, "plan")
+except ImportError as exc:
+    print("RAISED_IMPORTERROR")
+    print("MENTIONS_BOTH", "strata.py" in str(exc) and str(B) in str(exc))
+else:
+    print("RETURNED_SILENTLY", plan_b.strata.__file__)
+"""
+
+
+def test_a_foreign_checkout_raises_instead_of_returning_the_wrong_module(
+    tmp_path: Path,
+) -> None:
+    """A second checkout must get a loud error, never another checkout's module."""
+
+    other = tmp_path / "checkout-b"
+    for sub in (Path("experiments") / "toolkit", Path("experiments") / "atomistic" / "he-v1"):
+        shutil.copytree(
+            REPO_ROOT / sub,
+            other / sub,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+
+    script = _CROSS_CHECKOUT_PROBE.format(repo=str(REPO_ROOT), other=str(other))
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "RAISED_IMPORTERROR" in result.stdout, (
+        "checkout B silently received a module from checkout A:\n" + result.stdout
+    )
+    assert "MENTIONS_BOTH True" in result.stdout, (
+        "the error must name the bound file and the requested one, or it cannot "
+        "be diagnosed:\n" + result.stdout
     )

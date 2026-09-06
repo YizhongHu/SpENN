@@ -160,8 +160,32 @@ def _ensure_namespace_parents(slug: str, study_dir: Path) -> None:
 def _load_leaf(key: str, path: Path, is_package: bool) -> ModuleType:
     """Import one module from ``path`` and register it in ``sys.modules`` as ``key``."""
 
+    expected = (path / "__init__.py") if is_package else path
+
     cached = sys.modules.get(key)
     if cached is not None:
+        # A cache hit must be VALIDATED against the source it was asked for.
+        #
+        # The key is derived from the study's path relative to `experiments/`,
+        # so it is checkout-relative: two checkouts of this repository produce
+        # the SAME key for the same study. Returning the cached object without
+        # checking would hand a caller in checkout B a module loaded from
+        # checkout A -- silently, with no exception, which is the exact failure
+        # this module exists to remove, one level up from studies to checkouts.
+        #
+        # Making the key carry provenance would fix it properly and is a design
+        # change; see the filed follow-up. This check does the cheap half, and
+        # it is the half that matters: it converts a silent wrong module into a
+        # loud error, which is the transformation this module is for.
+        cached_file = getattr(cached, "__file__", None)
+        if cached_file is None or Path(cached_file).resolve() != expected.resolve():
+            raise ImportError(
+                f"study module key {key!r} is already bound to "
+                f"{cached_file!r}, but {str(expected)!r} was requested. "
+                "The cache key is relative to experiments/, so two checkouts "
+                "of this repository collide on it. Load studies from one "
+                "checkout per interpreter."
+            )
         return cached
 
     if is_package:
