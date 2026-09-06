@@ -960,6 +960,60 @@ def _sweep_positional_construction(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
+def _iter_factor_nodes(resolved_tree: Any) -> list[tuple[str, Mapping[str, Any], str]]:
+    """Find every configured factor under ``model``, BY SHAPE rather than by path.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        The tree to search -- the configuration root, or a component view.
+
+    Returns
+    -------
+    list of (str, Mapping, str)
+        ``(path, node, class_name)`` for each mapping under ``model`` whose
+        ``_target_`` trailing component names a factor this schema has a rule
+        for. ``class_name`` is that trailing component.
+
+    Notes
+    -----
+    THE PATH-SHAPED VERSION WAS ESCAPABLE WITH ORDINARY KEYWORD CONFIG, no
+    ``_args_`` involved. Both factor rules read ``model.factors`` and returned
+    immediately unless it was a LIST. ``TPENWaveFunction`` accepts any iterable
+    and normalizes it, so::
+
+        model.factors:
+          _target_: torch.nn.ModuleList
+          modules: [ ...the same factors... ]
+
+    is a valid, constructible configuration in which ``model.factors`` is a
+    MAPPING. MEASURED: an unadmitted ``CurvatureElectronNucleusCuspLaw`` and a
+    frozen electron-electron factor both validated inside that wrapper.
+
+    Refusing the wrapper would be the third instance of the same mistake this
+    slice keeps making -- naming the shapes I happened to think of. A factor is
+    identified by WHAT IT IS, its ``_target_``, not by the container it arrives
+    in, so any container works and none has to be enumerated.
+
+    Scoped to the ``model`` subtree rather than the whole tree, because that is
+    where a factor is a factor. The same class appearing in, say, a diagnostic's
+    arguments is not the model's factor list and has no trainability contract.
+    """
+
+    model_found, model = _select(resolved_tree, "model")
+    if not model_found or not isinstance(model, (Mapping, list)):
+        return []
+    found: list[tuple[str, Mapping[str, Any], str]] = []
+    for path, _key, value in iter_nodes({"model": model}):
+        if not isinstance(value, Mapping):
+            continue
+        target = value.get("_target_")
+        if not isinstance(target, str):
+            continue
+        found.append((path, value, target.rsplit(".", 1)[-1]))
+    return found
+
+
 def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
     """Require every trainability flag to be declared true, never inherited."""
 
@@ -999,31 +1053,24 @@ def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
                 )
             )
 
-    factors = _select(resolved_tree, "model.factors")[1]
-    if isinstance(factors, list):
-        for index, factor in enumerate(factors):
-            if not isinstance(factor, Mapping):
-                continue
-            target = factor.get("_target_")
-            if not isinstance(target, str):
-                continue
-            spec = _REQUIRED_FACTOR_TRAINABILITY.get(target.rsplit(".", 1)[-1])
-            if spec is None:
-                continue
-            relative, authority = spec
-            found, value = _select(factor, relative)
-            if not found or value is not True:
-                rejections.append(
-                    Rejection(
-                        rule="undeclared-trainability",
-                        tree="resolved",
-                        path=f"model.factors[{index}].{relative}",
-                        detail=(
-                            f"must be declared explicitly and true ({authority}); "
-                            f"{'absent' if not found else repr(value)}"
-                        ),
-                    )
+    for path, factor, class_name in _iter_factor_nodes(resolved_tree):
+        spec = _REQUIRED_FACTOR_TRAINABILITY.get(class_name)
+        if spec is None:
+            continue
+        relative, authority = spec
+        found, value = _select(factor, relative)
+        if not found or value is not True:
+            rejections.append(
+                Rejection(
+                    rule="undeclared-trainability",
+                    tree="resolved",
+                    path=f"{path}.{relative}",
+                    detail=(
+                        f"must be declared explicitly and true ({authority}); "
+                        f"{'absent' if not found else repr(value)}"
+                    ),
                 )
+            )
     return rejections
 
 
@@ -1121,14 +1168,8 @@ def _sweep_electron_nucleus_law(resolved_tree: Any) -> list[Rejection]:
     """
 
     rejections: list[Rejection] = []
-    factors = _select(resolved_tree, "model.factors")[1]
-    if not isinstance(factors, list):
-        return rejections
-    for index, factor in enumerate(factors):
-        if not isinstance(factor, Mapping):
-            continue
-        target = factor.get("_target_")
-        if not isinstance(target, str) or target.rsplit(".", 1)[-1] != "ElectronNucleusCusp":
+    for factor_path, factor, class_name in _iter_factor_nodes(resolved_tree):
+        if class_name != "ElectronNucleusCusp":
             continue
         found, law = _select(factor, "law")
         if not found or not isinstance(law, Mapping):
@@ -1137,7 +1178,7 @@ def _sweep_electron_nucleus_law(resolved_tree: Any) -> list[Rejection]:
             # here: two rejections for one omission would read as two defects.
             continue
         law_target = law.get("_target_")
-        path = f"model.factors[{index}].law._target_"
+        path = f"{factor_path}.law._target_"
         if not isinstance(law_target, str):
             rejections.append(
                 Rejection(

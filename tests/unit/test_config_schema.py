@@ -18,6 +18,7 @@ from tpen.config_schema import (
     SchemaPolicy,
     iter_interpolations,
     iter_nodes,
+    split_resolver,
     sweep,
     tokens_of,
 )
@@ -287,6 +288,55 @@ class TestNestedForbiddenResolvers:
         raw = {"system": {"dim": 3}, "model": {"dim": expression}}
         rejections = sweep(raw, {"system": {"dim": 3}, "model": {"dim": 3}}, POLICY)
         assert [r for r in rejections if r.rule == "forbidden-resolver"] == []
+
+
+class TestTheResolverColonIsFoundAtDepthZero:
+    """The first colon in the text is not necessarily this expression's colon.
+
+    ``str.partition`` read
+    ``model.${oc.select:model.missing,embedding}.channels`` as resolver
+    ``model.${oc.select`` -- but that colon belongs to the NESTED ``oc.select``,
+    and the outer expression is a plain node reference whose PATH is computed.
+    MEASURED: OmegaConf resolves that form to ``32`` against the shipped
+    config, so the uncheckable-resolver guard was refusing valid configuration.
+    """
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("oc.env:X", ("oc.env", True)),
+            ("system.dim", ("", False)),
+            # The resolver NAME is computed: a resolver call, and unqualifiable.
+            ("oc.${leaf}:VAR,0", ("oc.${leaf}", True)),
+            # A node PATH is computed and the nested part carries its own colon:
+            # NOT a resolver call at this depth.
+            ("model.${oc.select:model.missing,embedding}.channels", ("", False)),
+            ("oc.select:missing,${oc.env:X}", ("oc.select", True)),
+        ],
+    )
+    def test_splits_at_its_own_colon(self, expression: str, expected: tuple) -> None:
+        assert split_resolver(expression) == expected
+
+    def test_a_node_path_with_a_nested_permitted_resolver_is_accepted(self) -> None:
+        """The over-restriction control, and it is a refusal that really happened."""
+
+        raw = {"model": {"dim": "${model.${oc.select:model.missing,embedding}.channels}"}}
+        rejections = sweep(raw, {"model": {"dim": 32}}, POLICY)
+        assert [r for r in rejections if r.rule == "uncheckable-resolver"] == []
+
+    def test_an_interpolated_resolver_name_is_still_refused(self) -> None:
+        """Non-regression: narrowing the guard must not lose what it was for."""
+
+        raw = {"model": {"dim": "${oc.${leaf}:VAR,0}"}}
+        rejections = sweep(raw, {"model": {"dim": 0}}, POLICY)
+        assert any(r.rule == "uncheckable-resolver" for r in rejections)
+
+    def test_a_forbidden_resolver_nested_in_a_computed_node_path_is_still_found(self) -> None:
+        """The outer being a node reference must not exempt what is inside it."""
+
+        raw = {"model": {"dim": "${model.${oc.env:ARCH}.channels}"}}
+        rejections = sweep(raw, {"model": {"dim": 32}}, POLICY)
+        assert any(r.rule == "forbidden-resolver" for r in rejections)
 
 
 class TestEscapedInterpolations:

@@ -397,6 +397,53 @@ def iter_interpolations(text: str) -> Iterator[str]:
         index = end + 1
 
 
+def split_resolver(expression: str) -> tuple[str, bool]:
+    """Split an interpolation body at ITS OWN resolver colon.
+
+    Parameters
+    ----------
+    expression : str
+        One interpolation body, as yielded by :func:`iter_interpolations`.
+
+    Returns
+    -------
+    resolver : str
+        The text before the expression's own colon, stripped. Empty when there
+        is none.
+    is_resolver_call : bool
+        Whether the expression is a resolver call at all. ``False`` means it is
+        a node reference such as ``${system.dim}``.
+
+    Notes
+    -----
+    THE FIRST COLON IN THE TEXT IS NOT NECESSARILY THIS EXPRESSION'S COLON.
+    ``str.partition`` reads ``model.${oc.select:model.missing,embedding}.channels``
+    as resolver ``model.${oc.select`` -- but that colon belongs to the NESTED
+    ``oc.select``, and the outer expression is a plain node reference whose PATH
+    happens to be computed. MEASURED: OmegaConf resolves that form to ``32``
+    against the shipped config, so refusing it refuses valid configuration.
+
+    Only a colon at nesting depth ZERO is this expression's own, so the scan
+    steps over nested ``${...}`` rather than counting characters.
+    """
+
+    depth = 0
+    cursor = 0
+    length = len(expression)
+    while cursor < length:
+        if expression.startswith(_INTERPOLATION_OPEN, cursor):
+            depth += 1
+            cursor += len(_INTERPOLATION_OPEN)
+            continue
+        character = expression[cursor]
+        if character == "}" and depth > 0:
+            depth -= 1
+        elif character == ":" and depth == 0:
+            return expression[:cursor].strip(), True
+        cursor += 1
+    return "", False
+
+
 def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Rejection]:
     """Reject interpolations that read process-local state, in the raw tree only.
 
@@ -425,15 +472,17 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
         for expression in iter_interpolations(value):
             # ``oc.env:RANK`` -> resolver ``oc.env``; a plain node reference such
             # as ``system.spatial_dim`` has no colon and no resolver name.
-            resolver, separator, _argument = expression.partition(":")
-            if not separator:
-                # No colon: a plain node reference such as ``${system.dim}``,
-                # which names no resolver. This stays true when the reference
-                # PATH is itself interpolated -- ``${model.${arch}.channels}``
-                # reads configuration, never process-local state -- so it must
-                # not be caught by the rule below.
+            resolver, is_resolver_call = split_resolver(expression)
+            if not is_resolver_call:
+                # No colon AT THIS EXPRESSION'S OWN NESTING DEPTH: a plain
+                # node reference such as ``${system.dim}``, which names no
+                # resolver. This stays true when the reference PATH is itself
+                # interpolated -- ``${model.${arch}.channels}`` reads
+                # configuration, never process-local state -- including when the
+                # nested part is a permitted resolver CALL carrying its own
+                # colon. Any resolver nested inside is reached by recursion and
+                # judged on its own terms; see :func:`split_resolver`.
                 continue
-            resolver = resolver.strip()
             if _INTERPOLATION_OPEN in resolver:
                 # THE RESOLVER NAME IS COMPUTED AT RESOLVE TIME, so it cannot be
                 # compared against any list here. ``${oc.${leaf}:VAR,0}`` with

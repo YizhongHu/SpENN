@@ -327,6 +327,111 @@ class TestForbiddenSurfaces:
             )
 
 
+class TestFactorsAreFoundByShapeNotByContainer:
+    """A factor is what its ``_target_`` says, not where the config puts it.
+
+    Both factor rules used to read ``model.factors`` and return unless it was a
+    LIST. ``TPENWaveFunction`` accepts any iterable and normalizes it, so a
+    ``torch.nn.ModuleList`` block is a valid, constructible configuration in
+    which ``model.factors`` is a MAPPING -- and every factor rule skipped it.
+
+    MEASURED BEFORE THE CHANGE: an unadmitted ``CurvatureElectronNucleusCuspLaw``
+    and a frozen electron-electron factor both VALIDATED inside that wrapper,
+    with no ``_args_`` anywhere. This is the residual the `_args_` family
+    refusal did not reach: ordinary keyword configuration, existing public API.
+    """
+
+    OLD_LAW = "tpen.nn.CurvatureElectronNucleusCuspLaw"
+
+    def _with_factors(self, container: str, mutate=None):
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        factors = OmegaConf.to_container(cfg.model.factors, resolve=True)
+        if mutate is not None:
+            mutate(factors)
+        if container == "list":
+            cfg.model.factors = OmegaConf.create(factors)
+        elif container == "modulelist":
+            cfg.model.factors = OmegaConf.create(
+                {"_target_": "torch.nn.ModuleList", "modules": factors}
+            )
+        elif container == "nested":
+            cfg.model.factors = OmegaConf.create(
+                {
+                    "_target_": "torch.nn.ModuleList",
+                    "modules": {"_target_": "torch.nn.ModuleList", "modules": factors},
+                }
+            )
+        else:  # pragma: no cover - guards a typo in a parametrization
+            raise AssertionError(container)
+        return cfg
+
+    # The containers are SPELLED OUT rather than read from the schema, so a rule
+    # that stopped recognising one would remove the escape without removing the
+    # arm that proves it is closed.
+    CONTAINERS = ["list", "modulelist", "nested"]
+
+    @pytest.mark.parametrize("container", CONTAINERS)
+    def test_an_unadmitted_cusp_law_is_refused_in_any_container(self, container: str) -> None:
+        cfg = self._with_factors(
+            container, lambda f: f[1]["law"].__setitem__("_target_", self.OLD_LAW)
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "unadmitted-cusp-law" in _rules(caught.value)
+
+    @pytest.mark.parametrize("container", CONTAINERS)
+    def test_a_frozen_factor_is_refused_in_any_container(self, container: str) -> None:
+        cfg = self._with_factors(container, lambda f: f[0].__setitem__("trainable_range", False))
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-trainability" in _rules(caught.value)
+
+    @pytest.mark.parametrize("container", CONTAINERS)
+    def test_a_compliant_configuration_validates_in_any_container(self, container: str) -> None:
+        """The over-restriction control, one arm per container.
+
+        The rule must refuse the DIVERGENCE, not the wrapper. Refusing
+        ``ModuleList`` outright would pass both red tests above while
+        forbidding a legitimate way to write the model.
+        """
+
+        _validate(self._with_factors(container))
+
+    def test_the_reported_path_names_where_the_factor_actually_IS(self) -> None:
+        """A path that assumes the list shape sends the reader to nothing.
+
+        The old rule hard-coded ``model.factors[i]``. Inside a wrapper the
+        factor lives at ``model.factors.modules[i]``, and a rejection naming the
+        first would point at a key that does not exist.
+        """
+
+        cfg = self._with_factors(
+            "modulelist", lambda f: f[1]["law"].__setitem__("_target_", self.OLD_LAW)
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.factors.modules[1].law._target_" in _paths(caught.value)
+
+    def test_a_factor_class_outside_the_model_is_not_given_a_factor_rule(self) -> None:
+        """Scoped to ``model``: a factor is a factor where the model is built.
+
+        The same class named in a diagnostic's arguments is not the model's
+        factor and carries no trainability contract. Without this the rule would
+        reach into unrelated sections and refuse them for missing a declaration
+        they never owed.
+        """
+
+        _validate(
+            _config(
+                run={"run_id": "x"},
+                sampler={
+                    "_target_": "tpen.sampling.metropolis.MetropolisSampler",
+                    "warmup_probe": {"_target_": "tpen.nn.ElectronElectronCusp"},
+                },
+            )
+        )
+
+
 class TestPositionalConstructionIsRefused:
     """`_args_` builds the same components with no key for any rule to match.
 
