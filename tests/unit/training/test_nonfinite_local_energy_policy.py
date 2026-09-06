@@ -104,17 +104,47 @@ class TestTheObjectivePolicy:
     def test_every_admitted_policy_round_trips(self, policy: str) -> None:
         assert resolve_nonfinite_local_energy_policy(policy) == policy
 
-    @pytest.mark.parametrize("policy", NONFINITE_LOCAL_ENERGY_POLICIES)
-    def test_an_all_non_finite_batch_fails_under_every_policy(self, policy: str) -> None:
-        """Retained from before, and correct under both.
+    @pytest.mark.parametrize(
+        ("policy", "expected"),
+        [
+            # Under "fail" the batch is refused for having ANY non-finite row,
+            # which is reached before the count is examined -- so the policy
+            # message is the correct one, not the empty-sample message.
+            ("fail", "active policy is 'fail'"),
+            ("mask", "no finite local-energy samples"),
+        ],
+    )
+    def test_an_all_non_finite_batch_is_refused_under_every_policy(
+        self, policy: str, expected: str
+    ) -> None:
+        """Refused under both, though for different and correct reasons.
 
-        With no finite row there is no estimator at all, biased or otherwise,
-        so this is not a policy question.
+        The empty-sample guard is retained under every policy: with no finite
+        row there is no estimator at all, biased or otherwise. Under "fail" it
+        is simply never reached, because a single non-finite row already
+        refuses the step.
+
+        Asserting the SPECIFIC message per policy rather than "it raises"
+        keeps the test able to tell the two refusals apart -- otherwise a
+        policy that failed for the wrong reason would still look correct.
         """
 
         logabs, energy = _batch(bad=8, total=8)
-        with pytest.raises(ValueError, match="no finite local-energy samples"):
+        with pytest.raises(ValueError, match=expected):
             compute_vmc_objective(logabs, energy, nonfinite_policy=policy)
+
+    def test_the_empty_sample_guard_is_reachable_under_mask(self) -> None:
+        """Control for the split above: the retained guard must still fire.
+
+        If the empty-sample check had been made unreachable under both
+        policies, the parametrized case would still pass on its "fail" arm and
+        the loss of the guard would be invisible.
+        """
+
+        assert NONFINITE_LOCAL_ENERGY_POLICIES == ("fail", "mask")
+        logabs, energy = _batch(bad=4, total=4)
+        with pytest.raises(ValueError, match="no finite local-energy samples"):
+            compute_vmc_objective(logabs, energy, nonfinite_policy="mask")
 
 
 class TestTheActivePolicyTravelsWithTheCheckpoint:

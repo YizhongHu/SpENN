@@ -203,6 +203,12 @@ class TestMethodStateIsAccountedAsPayload:
         without_method = json.dumps({"next_iteration": 1, "completed_updates": 0})
         assert len(with_method) > len(without_method)
 
+        # `measure_checkpoint_files` also stats the fixed `manifest` and
+        # `complete` pseudo-components, which every committed checkpoint
+        # directory has. They must exist or the measurement raises.
+        self._write(tmp_path, "manifest.json", "{}")
+        self._write(tmp_path, "COMPLETE", "complete\n")
+
         big = self._write(tmp_path, "trainer.json", with_method)
         measured = measure_checkpoint_files(tmp_path, {"trainer": "trainer.json"})
         assert measured[0].size_bytes == big
