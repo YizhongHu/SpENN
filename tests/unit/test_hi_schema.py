@@ -1428,6 +1428,42 @@ class TestTheReferenceModuleCannotArriveAsDATA:
 
         _validate(_config(run={"root": "outputs/baseline_sweep", "run_id": "x"}))
 
+    def test_the_spellings_this_check_does_NOT_match_are_unimportable(self) -> None:
+        """Pins the premise of a deliberate NON-decision.
+
+        Auditing the widened identity check found three spellings it does not
+        match: a bare ``hi_manifest``, an upper-case ``TPEN.HI_MANIFEST``, and a
+        filesystem path ``tpen/hi_manifest.py``. No rule was added for them, and
+        that is only defensible while they cannot actually import the module.
+
+        MEASURED rather than reasoned: the first two raise ``ModuleNotFoundError``
+        -- Python's finder is case-sensitive for module NAMES regardless of the
+        filesystem's case sensitivity, which is why the upper-case form fails
+        even on macOS. The path form is not a module name at all;
+        reaching it would need ``spec_from_file_location`` chained into
+        ``module_from_spec`` and ``exec_module``, and passing an instantiated
+        object between config nodes needs ``_args_``, which this schema refuses.
+
+        This test exists because "I checked and there was nothing reachable" is
+        a claim that decays silently: a package rename, a new top-level module,
+        or a ``sys.path`` change could make one of these importable while every
+        other test stays green. Then this one fails and the non-decision gets
+        revisited.
+
+        The alternative -- refusing these spellings anyway -- was rejected as
+        exactly the error this slice has made three times: naming residuals that
+        are real but unreachable, which reads as thoroughness while costing
+        real coverage nowhere.
+        """
+
+        import importlib
+
+        for unreachable in ("hi_manifest", "TPEN.HI_MANIFEST"):
+            with pytest.raises(ModuleNotFoundError):
+                importlib.import_module(unreachable)
+        # The control: the spelling the check DOES match is the one that works.
+        assert importlib.import_module(REFERENCE_MANIFEST_MODULE) is not None
+
     def test_a_similarly_named_module_is_not_caught(self) -> None:
         """The identity check must not fire on a prefix that merely looks alike."""
 
