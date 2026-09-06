@@ -141,9 +141,22 @@ def study_slug(study_dir: Path) -> str:
         # The anchor is not decoration. Without it an outside `/foo/bar` and an
         # inside `experiments/foo/bar` encode identically, which would break the
         # injectivity this function promises -- and it promises it because a
-        # collision here silently returns another study's module. `_` cannot
-        # begin an encoded relative segment (a leading `_` doubles to `__`), so
-        # the two spaces cannot overlap.
+        # collision here silently returns another study's module.
+        #
+        # WHY `_abs_` IS UNREACHABLE FROM INSIDE, stated correctly. An earlier
+        # version of this comment claimed "an encoded segment never begins with
+        # `_`". That is FALSE -- `-foo` encodes to `_2dfoo`. The real argument is
+        # about the character AFTER a leading `_`: it is either `_` (an escaped
+        # underscore) or the first hex digit of a byte, and those digits are
+        # confined to {0-7, c-f}. ASCII is 0x00-0x7F, UTF-8 lead bytes are
+        # 0xC2-0xF4, and 0xA0-0xBF occur only as continuation bytes, never
+        # first. So `_a` cannot begin an encoding and `_abs_` cannot be
+        # produced from inside. `test_no_inside_encoding_can_begin_with_the_anchor`
+        # holds this by execution rather than by argument.
+        #
+        # ANY FUTURE ANCHOR MUST REDO THIS ARGUMENT. It is specific to `_a`;
+        # an anchor beginning `_c3_` or `_2d` would sit squarely inside the
+        # reachable space and collide silently.
         relative = Path(*resolved.parts[1:])
         anchor = "_abs_"
 

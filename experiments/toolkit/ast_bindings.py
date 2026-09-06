@@ -143,8 +143,11 @@ def sys_module_names(tree: ast.AST) -> set[str]:
     WHAT THIS MECHANICALLY DOES, stated as syntax because that is all it is.
     It scans for an ``ast.Import`` node carrying an alias whose ``name`` is
     exactly ``"sys"``, and yields ``asname or "sys"``. It then subtracts every
-    name for which any binding-form node exists anywhere in the file, and
-    returns nothing at all if the file contains a star import.
+    name bound by anything OTHER THAN a plain ``import sys`` itself, and returns
+    nothing at all if the file contains a star import. (The exemption matters:
+    ``import sys`` is a binding form for ``sys``, so subtracting it too would
+    make this function always return the empty set -- a guard that silently
+    never fires.)
 
     IT IS A SYNTACTIC MATCHER, NOT A SEMANTIC ONE. It does not resolve values,
     does not track scope, and cannot know what a name refers to at runtime. Read

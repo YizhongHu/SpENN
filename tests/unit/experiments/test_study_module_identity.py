@@ -176,7 +176,7 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
     THE CONSTANT-KEY GAP IS A DELIBERATE TRADE, disclosed here because it was
     previously undisclosed and it is the plainest spelling of the forbidden
     thing. ``sys.modules['plan'] = module`` is NOT flagged. It cannot be: the
-    study bootstrap in all 49 rewritten files writes
+    study bootstrap in all 50 files carrying the bootstrap writes
     ``sys.modules["_tpen_study_imports"]``, a constant key, and a rule matching
     constant subscripts would flag every file this slice touched. So the rule
     matches only a ``Name`` subscript, and the literal-key form is accepted.
@@ -731,7 +731,7 @@ def test_a_foreign_checkout_raises_instead_of_returning_the_wrong_module(
 # The PRODUCTION route across checkouts.
 #
 # The adopted cross-checkout test above enters through an ordinary import of
-# the loader. That is NOT how the 49 rewritten files enter: each runs a
+# the loader. That is NOT how the 50 files carrying the bootstrap enter: each runs a
 # bootstrap that publishes the loader under the single bare key
 # `_tpen_study_imports`, so exactly ONE loader instance exists per interpreter
 # and every study in the process is keyed by it.
@@ -792,8 +792,12 @@ def test_production_bootstrap_route_keeps_checkouts_apart(
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
-    # One shared loader is the CONDITION under test, not an incidental detail:
-    # if this ever reads > 1 the arm is no longer exercising the production route.
+    # This asserts only that the BOOTSTRAP RAN -- the count is 0 or 1 by dict-key
+    # uniqueness and can never exceed 1, so it cannot detect a second loader
+    # instance (one would replace the same key and still read 1). The one-loader
+    # property is enforced by the bootstrap's own `not in sys.modules` check, not
+    # here. Kept because a 0 would mean this arm silently stopped exercising the
+    # production route; the wrong-module outcomes are caught by DISTINCT/*_OWN.
     assert "LOADER_INSTANCES 1" in result.stdout, result.stdout
     assert "DISTINCT True" in result.stdout, (
         "two checkouts silently shared a study module on the production route:\n"
@@ -801,3 +805,59 @@ def test_production_bootstrap_route_keeps_checkouts_apart(
     )
     assert "FIRST_OWN True" in result.stdout, result.stdout
     assert "SECOND_OWN True" in result.stdout, result.stdout
+
+
+def test_no_inside_encoding_can_begin_with_the_anchor() -> None:
+    """No path inside ``experiments/`` can encode to something starting ``_a``.
+
+    This is the executable form of ``study_slug``'s injectivity argument, which
+    was previously stated WRONGLY in a comment: the claim was that an encoded
+    segment never begins with ``_``, and it does -- ``-foo`` encodes to
+    ``_2dfoo``. The true reason ``_abs_`` is unreachable is narrower: after a
+    leading ``_`` comes either ``_`` or the first hex digit of a byte, and those
+    digits are confined to {0-7, c-f} because ASCII is 0x00-0x7F, UTF-8 lead
+    bytes are 0xC2-0xF4, and 0xA0-0xBF never lead.
+
+    Holding it by execution rather than by argument matters because the argument
+    is anchor-specific: a future ``_c3_`` or ``_2d`` anchor WOULD sit in the
+    reachable space. This test fails the moment somebody picks one.
+    """
+
+    from experiments.toolkit.study_imports import _EXPERIMENTS_ROOT, study_slug
+
+    offenders = []
+    for codepoint in range(1, 0x300):
+        char = chr(codepoint)
+        if char in "/\\\0":
+            continue
+        try:
+            encoded = study_slug(_EXPERIMENTS_ROOT / f"{char}x")
+        except (OSError, ValueError):
+            continue
+        if encoded.startswith("_a"):
+            offenders.append((hex(codepoint), encoded))
+
+    assert offenders == [], (
+        "these inside paths encode into the outside-anchor space, so an outside "
+        "study could collide with one of them:\n" + repr(offenders[:10])
+    )
+
+
+def test_the_outside_anchor_is_not_cwd_dependent() -> None:
+    """Inside and outside slugs differ, with the inside arm ABSOLUTELY anchored.
+
+    The first version of this test passed a RELATIVE ``Path("experiments/foo/bar")``
+    as the inside arm. ``study_slug`` resolves against the process cwd, so run
+    from anywhere but the repository root BOTH arms became outside paths, both
+    got the anchor, and the test silently stopped exercising the inside/outside
+    boundary it exists to check -- while still passing.
+    """
+
+    from experiments.toolkit.study_imports import _EXPERIMENTS_ROOT, study_slug
+
+    inside = study_slug(_EXPERIMENTS_ROOT / "foo" / "bar")
+    outside = study_slug(Path("/foo/bar"))
+
+    assert inside != outside
+    assert not inside.startswith("_abs_"), inside
+    assert outside.startswith("_abs_"), outside

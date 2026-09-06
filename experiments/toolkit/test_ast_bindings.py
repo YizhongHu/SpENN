@@ -108,19 +108,3 @@ def test_the_tracked_import_is_not_counted_as_a_rebinding() -> None:
         ast.parse("import sys as s\n"), ignore_import_of="sys"
     )
     assert _names("import sys as s\n") == {"s"}
-
-
-def test_the_outside_fallback_cannot_collide_with_an_inside_path() -> None:
-    """A study outside ``experiments/`` must not encode like one inside it.
-
-    The fallback drops the filesystem root, so without an anchor an outside
-    ``/foo/bar`` and an inside ``experiments/foo/bar`` produce the same slug --
-    breaking the injectivity ``study_slug`` promises, and a slug collision
-    silently returns another study's module.
-    """
-
-    from pathlib import Path
-
-    from experiments.toolkit.study_imports import study_slug
-
-    assert study_slug(Path("experiments/foo/bar")) != study_slug(Path("/foo/bar"))
