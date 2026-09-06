@@ -341,13 +341,180 @@ class RunContext:
                 callback.handle_occurrence(occurrence, self)
 
 
+class RunIdentityError(RuntimeError):
+    """Raised when the ranks of one launch cannot agree on a single run id.
+
+    Raised identically on every participating rank, and always before any run
+    directory exists: a refusal that fired after ``make_dirs`` would leave
+    exactly the scattered per-rank directories the agreement exists to prevent.
+    """
+
+
 def generate_run_id(run_name: str, *, clock: RunClock | None = None) -> str:
-    """Return a timestamped run identifier."""
+    """Return a timestamped run identifier.
+
+    PROCESS-LOCAL, and deliberately so: the ``uuid4`` suffix is drawn fresh on
+    every call, which is what keeps ids collision-resistant across runs. It also
+    means two processes never agree, so this is NOT the function a distributed
+    launch may call. Every rank calling it derives a different id and writes to
+    its own artifact root. Run setup must go through :func:`resolve_run_id`,
+    which calls this exactly once, on the coordinator, and broadcasts the result.
+    """
 
     run_clock = _default_run_clock() if clock is None else clock
     timestamp = run_clock.now().strftime("%Y-%m-%d_%H%M%S")
     slug = _slugify(run_name)
     return f"{timestamp}_{slug}_{uuid4().hex[:6]}"
+
+
+def resolve_run_id(
+    configured: object | None,
+    run_name: str,
+    *,
+    clock: RunClock | None = None,
+    topology: ExecutionTopology | None = None,
+) -> str:
+    """Return the one run id every rank of this launch agrees on.
+
+    Must be reached UNCONDITIONALLY by run setup -- including when the id is
+    already explicit. Entering this resolution only on the ``configured is
+    None`` branch would leave a rank whose config carries an explicit id outside
+    the collective below, so the ranks that did enter it would block until the
+    process-group timeout. That trades a visible scattered-output bug for an
+    invisible hang, which is worse.
+
+    Parameters
+    ----------
+    configured : object or None
+        The configured ``run.run_id``, or ``None`` when the config leaves it to
+        be derived. A non-``None`` value is compared and returned as text.
+    run_name : str
+        Durable run name, slugified into a derived id.
+    clock : RunClock or None, optional
+        Run clock used for a derived id's timestamp. Only the coordinator's
+        clock is ever read, so the ranks' clocks need not agree.
+    topology : ExecutionTopology or None, optional
+        Launcher-supplied topology, when one is known this early. Its
+        ``global_size`` is how many ranks MUST agree; see the refusal below.
+
+    Returns
+    -------
+    str
+        The agreed run id, byte-identical on every rank.
+
+    Raises
+    ------
+    RunIdentityError
+        When the ranks' configured ids disagree, when some ranks configure an
+        explicit id and others do not, or when an id has to be derived for a
+        multi-rank launch that provides no channel to agree over.
+    """
+
+    configured_text = None if configured is None else str(configured)
+    channel = _run_id_agreement_channel()
+
+    # How many ranks must agree. The launcher-supplied topology is authoritative
+    # when present precisely because it can describe a multi-rank launch that
+    # has NOT initialized a process group -- that combination is the reachable
+    # scatter path, and reading only the process group would report world size 1
+    # and silently derive a per-rank id.
+    required = topology.global_size if topology is not None else (1 if channel is None else channel[0])
+
+    if required == 1 and (channel is None or channel[0] == 1):
+        # Serial path, byte-compatible with a single-process run: an explicit id
+        # is honored as-is, a null id is derived locally.
+        return configured_text if configured_text is not None else generate_run_id(run_name, clock=clock)
+
+    if channel is None or channel[0] != required:
+        # No channel covering the ranks that must agree. An explicit id needs no
+        # channel -- it is already common to every rank that reads the same
+        # config -- but a derived one cannot be agreed, so refuse rather than
+        # let each rank scatter into its own artifact root.
+        if configured_text is not None:
+            return configured_text
+        detail = (
+            "no distributed process group is initialized"
+            if channel is None
+            else f"the initialized process group covers {channel[0]} ranks"
+        )
+        raise RunIdentityError(
+            f"cannot agree on a run id across {required} ranks: run.run_id is null and "
+            f"{detail}. Initialize the process group before run setup, or set an "
+            "explicit run.run_id."
+        )
+
+    return _agree_on_run_id(configured_text, run_name, clock=clock, channel=channel)
+
+
+def _run_id_agreement_channel() -> tuple[int, int] | None:
+    """Return ``(world_size, global_rank)`` when ranks can agree, else ``None``.
+
+    Deliberately lazy and tolerant: `tpen.artifacts` is importable, and run
+    setup usable, in a torch-free environment, so an absent or unusable
+    ``torch.distributed`` is a serial run rather than an error.
+
+    This is a PRIVATE, single-purpose seam, not a distributed-runtime
+    abstraction: run identity lives in this module, and agreeing on it is
+    run-identity logic that happens to need a collective. When the typed
+    distributed runtime lands (DP0), these two helpers are the seam it replaces.
+    """
+
+    try:
+        import torch.distributed as dist
+    except Exception:  # pragma: no cover - torch-free and broken-install paths
+        # Broad on purpose: a partially installed torch raises OSError or
+        # AttributeError from its extension loader rather than ImportError, and
+        # every one of those means the same thing here -- no channel.
+        return None
+    if not dist.is_available() or not dist.is_initialized():
+        return None
+    return dist.get_world_size(), dist.get_rank()
+
+
+def _agree_on_run_id(
+    configured_text: str | None,
+    run_name: str,
+    *,
+    clock: RunClock | None,
+    channel: tuple[int, int],
+) -> str:
+    """Agree on one run id over an initialized process group.
+
+    Every rank gathers every rank's configured value, so the accept/derive/refuse
+    decision is taken from identical inputs on every rank. A refusal therefore
+    raises on all of them, rather than on the coordinator alone while its peers
+    block on a collective that will never come.
+    """
+
+    import torch.distributed as dist
+
+    world_size, global_rank = channel
+    gathered: list[str | None] = [None] * world_size
+    dist.all_gather_object(gathered, configured_text)
+
+    if all(value is None for value in gathered):
+        # Exactly one derivation, on the coordinator, then broadcast. `clock` and
+        # the `uuid4` draw are read only here, so the peers' clocks and entropy
+        # never enter the result.
+        payload = [generate_run_id(run_name, clock=clock) if global_rank == 0 else None]
+        dist.broadcast_object_list(payload, src=0)
+        agreed = payload[0]
+        if not isinstance(agreed, str) or not agreed:
+            raise RunIdentityError(
+                f"rank {global_rank} received no run id from the coordinator broadcast"
+            )
+        return agreed
+
+    if len(set(gathered)) != 1:
+        # Covers both disagreeing explicit ids and a mixed null/explicit launch.
+        # `gathered` is rank-indexed and identical on every rank, so the message
+        # names the offending ranks and reads the same in all of their logs.
+        raise RunIdentityError(
+            "ranks disagree on run.run_id and no run directory was created; "
+            f"by rank: {gathered!r}"
+        )
+    # One distinct value, and it is not None: the all-None launch returned above.
+    return str(gathered[0])
 
 
 def build_run_metadata(
@@ -877,6 +1044,7 @@ __all__ = [
     "REQUIRED_RUN_DIRS",
     "RunClock",
     "RunContext",
+    "RunIdentityError",
     "RunMetadata",
     "RunResult",
     "build_run_metadata",
@@ -884,6 +1052,7 @@ __all__ = [
     "collect_git_metadata",
     "generate_run_id",
     "resolve_run_clock",
+    "resolve_run_id",
     "write_json",
     "write_error_artifact",
     "write_occurrence_artifact",
