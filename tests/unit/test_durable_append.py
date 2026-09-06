@@ -9,9 +9,13 @@ measurement. For a record above the 8 KiB text buffer the two writes really do
 flush separately (measured: 40,014 of 40,015 bytes on disk before the newline),
 which is the ``occurrences.jsonl`` case. For a smaller record -- a catalog row,
 a receipt row, most log lines -- both writes coalesce into a single flush, so
-the two-call structure was NOT the trigger there; the exposure is a short write
-or a failure at flush, with the same damage shape. Do not repeat the
-two-separate-writes story about small records: it is measurably wrong for them.
+the two-call structure was NOT the trigger there; the exposure is an error or
+process termination DURING that coalesced flush, after only a prefix was
+stored. It is NOT a short write on its own: the old text-mode path wrapped a
+``BufferedWriter``, which retries a short raw count (measured: raw calls
+``[9, 1]``, final file complete), as this module's own docstring says. Do not
+repeat the two-separate-writes story about small records: it is measurably
+wrong for them.
 
 Two things make a test here easy to get wrong, so they are stated up front:
 
