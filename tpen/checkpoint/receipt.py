@@ -80,6 +80,13 @@ PAYLOAD_COMPONENT_NAMES = frozenset({"model", "optimizer", "trainer", "sampler",
 _MANIFEST_COMPONENT = "manifest"
 _COMPLETE_COMPONENT = "complete"
 
+#: Scalar accounting fields that reconciliation backfill supplies. A parsed
+#: matching row without these fields is not a size receipt yet, so it must not
+#: suppress the backfill that records them.
+_MEASURED_RECEIPT_SUMMARY_FIELDS = frozenset(
+    {"file_count", "payload_bytes", "metadata_bytes", "total_bytes"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CheckpointFileSize:
@@ -182,19 +189,27 @@ class CheckpointPublished:
     def __post_init__(self) -> None:
         if self.file_count < 0:
             raise ValueError(f"file_count must be nonnegative, got {self.file_count}")
-        for name in ("payload_bytes", "metadata_bytes", "total_bytes"):
-            value = getattr(self, name)
-            if value < 0:
-                raise ValueError(f"{name} must be nonnegative, got {value}")
+        if self.payload_bytes < 0:
+            raise ValueError(f"payload_bytes must be nonnegative, got {self.payload_bytes}")
+        if self.metadata_bytes < 0:
+            raise ValueError(f"metadata_bytes must be nonnegative, got {self.metadata_bytes}")
+        if self.total_bytes < 0:
+            raise ValueError(f"total_bytes must be nonnegative, got {self.total_bytes}")
         if self.payload_bytes + self.metadata_bytes != self.total_bytes:
             raise ValueError(
                 "total_bytes must equal payload_bytes + metadata_bytes, got "
                 f"{self.total_bytes} != {self.payload_bytes} + {self.metadata_bytes}"
             )
-        for name in ("write_duration_sec", "publish_duration_sec"):
-            value = getattr(self, name)
-            if value is not None and value < 0:
-                raise ValueError(f"{name} must be nonnegative or None, got {value}")
+        if self.write_duration_sec is not None and self.write_duration_sec < 0:
+            raise ValueError(
+                "write_duration_sec must be nonnegative or None, got "
+                f"{self.write_duration_sec}"
+            )
+        if self.publish_duration_sec is not None and self.publish_duration_sec < 0:
+            raise ValueError(
+                "publish_duration_sec must be nonnegative or None, got "
+                f"{self.publish_duration_sec}"
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable mapping of this scalar summary."""
@@ -394,9 +409,14 @@ def iter_valid_publication_receipts(path: str | Path) -> Iterator[Mapping[str, o
     Returns
     -------
     Iterator[Mapping[str, object]]
-        Parsed, schema-tagged rows only. A row is valid when it parses as
-        JSON, is a mapping, has ``schema == PUBLICATION_RECEIPT_SCHEMA``, and
-        has a ``summary`` mapping with a string ``content_id``.
+        Parsed, complete-enough receipt rows only. A row is valid when it
+        parses as JSON, is a mapping, has
+        ``schema == PUBLICATION_RECEIPT_SCHEMA``, and has a ``summary``
+        mapping with a string ``content_id`` plus the scalar measured-size
+        fields written by :func:`backfill_publication_receipt`. It must also
+        carry the ``files`` field that contains the per-file measurements.
+        This is a presence boundary, not a schema validator: values and
+        arbitrary external content are deliberately not validated here.
     """
 
     receipt_path = Path(path)
@@ -429,6 +449,16 @@ def iter_valid_publication_receipts(path: str | Path) -> Iterator[Mapping[str, o
                     receipt_path, line_number,
                 )
                 continue
+            if (
+                "files" not in record
+                or not _MEASURED_RECEIPT_SUMMARY_FIELDS.issubset(summary)
+            ):
+                _LOGGER.warning(
+                    "skipping checkpoint publication receipt row without measured sizes "
+                    "at %s:%d",
+                    receipt_path, line_number,
+                )
+                continue
             yield record
 
 
@@ -438,9 +468,12 @@ def has_publication_receipt(path: str | Path, content_id: str) -> bool:
     Presence is decided from parsed content via
     :func:`iter_valid_publication_receipts`, never from file existence and
     never from "the file has any row for this checkpoint" without validating
-    it. A checkpoint whose only row is malformed or truncated therefore counts
-    as having NO receipt, which is what makes it eligible for
-    :func:`backfill_publication_receipt` to repair.
+    it. A checkpoint whose only row is malformed, truncated, or missing the
+    size fields backfill records therefore counts as having NO receipt, which
+    is what makes it eligible for :func:`backfill_publication_receipt` to
+    repair. Normal receipt writes and prefix truncation cannot create a
+    closed-but-hollow row; this boundary guards externally introduced rows
+    without turning the telemetry reader into a general schema validator.
     """
 
     return any(
