@@ -344,9 +344,16 @@ class RunContext:
 class RunIdentityError(RuntimeError):
     """Raised when the ranks of one launch cannot agree on a single run id.
 
-    Raised identically on every participating rank, and always before any run
-    directory exists: a refusal that fired after ``make_dirs`` would leave
-    exactly the scattered per-rank directories the agreement exists to prevent.
+    Always raised before any run directory exists: a refusal that fired after
+    ``make_dirs`` would leave exactly the scattered per-rank directories the
+    agreement exists to prevent.
+
+    Raised identically on every rank WHEN A CHANNEL COVERS THEM, because the
+    decision is then taken from gathered inputs that are byte-identical on every
+    rank. Without a channel the ranks decide independently, so a launch in which
+    only some ranks configure an explicit id raises on the others alone -- see
+    :func:`resolve_run_id`, which documents why that shape is undetectable
+    rather than claiming it cannot happen.
     """
 
 
@@ -406,8 +413,12 @@ def resolve_run_id(
     ------
     RunIdentityError
         When the ranks' configured ids disagree, when some ranks configure an
-        explicit id and others do not, or when an id has to be derived for a
-        multi-rank launch that provides no channel to agree over.
+        explicit id and others do not, when an id has to be derived for a
+        multi-rank launch that provides no channel to agree over, when the
+        supplied topology and the initialized process group describe different
+        world sizes, or when the initialized backend cannot carry a CPU
+        collective. The first two are detected only when a channel covers the
+        ranks; see the no-channel branch for what is knowingly not detectable.
     """
 
     configured_text = None if configured is None else str(configured)
@@ -420,27 +431,45 @@ def resolve_run_id(
     # and silently derive a per-rank id.
     required = topology.global_size if topology is not None else (1 if channel is None else channel[0])
 
+    if channel is not None and topology is not None and channel[0] != topology.global_size:
+        # The launcher contradicts itself: the topology it supplied and the
+        # process group it initialized describe different worlds. Refused on its
+        # own terms and BEFORE the null/explicit split, because neither answer
+        # below is trustworthy -- deriving would agree across the wrong set, and
+        # accepting an explicit id would silently ratify the contradiction. Every
+        # rank that sees the mismatch refuses, so the refusal is symmetric.
+        raise RunIdentityError(
+            f"launcher disagrees with itself: the supplied topology declares "
+            f"{topology.global_size} ranks but the initialized process group covers "
+            f"{channel[0]}. Refusing before any run directory exists."
+        )
+
     if required == 1 and (channel is None or channel[0] == 1):
         # Serial path, byte-compatible with a single-process run: an explicit id
         # is honored as-is, a null id is derived locally.
         return configured_text if configured_text is not None else generate_run_id(run_name, clock=clock)
 
-    if channel is None or channel[0] != required:
-        # No channel covering the ranks that must agree. An explicit id needs no
-        # channel -- it is already common to every rank that reads the same
-        # config -- but a derived one cannot be agreed, so refuse rather than
-        # let each rank scatter into its own artifact root.
+    if channel is None:
+        # A multi-rank launch with nothing to agree over.
+        #
+        # An explicit id is accepted here UNVERIFIED, and that is an assumption
+        # rather than a fact: it is common to every rank only if every rank
+        # resolved the same config to the same value. Two shapes break that and
+        # neither is detectable without a channel -- a mixed launch where only
+        # some ranks configure an id, and a per-rank interpolation such as
+        # ``run_id: ${oc.env:SLURM_PROCID}`` or a per-rank override, which makes
+        # every rank's "explicit" id different. Both ARE caught when a channel
+        # exists, by the comparison in `_agree_on_run_id`. Without one, this
+        # branch cannot see them.
+        #
+        # A derived id, by contrast, is knowably divergent -- each rank would
+        # draw its own suffix -- so it is refused rather than scattered.
         if configured_text is not None:
             return configured_text
-        detail = (
-            "no distributed process group is initialized"
-            if channel is None
-            else f"the initialized process group covers {channel[0]} ranks"
-        )
         raise RunIdentityError(
-            f"cannot agree on a run id across {required} ranks: run.run_id is null and "
-            f"{detail}. Initialize the process group before run setup, or set an "
-            "explicit run.run_id."
+            f"cannot agree on a run id across {required} ranks: run.run_id is null "
+            "and no distributed process group is initialized. Initialize the process "
+            "group before run setup, or set an explicit run.run_id."
         )
 
     return _agree_on_run_id(configured_text, run_name, clock=clock, channel=channel)
@@ -461,14 +490,55 @@ def _run_id_agreement_channel() -> tuple[int, int] | None:
 
     try:
         import torch.distributed as dist
+
+        if not dist.is_available() or not dist.is_initialized():
+            return None
+        return dist.get_world_size(), dist.get_rank()
     except Exception:  # pragma: no cover - torch-free and broken-install paths
-        # Broad on purpose: a partially installed torch raises OSError or
-        # AttributeError from its extension loader rather than ImportError, and
-        # every one of those means the same thing here -- no channel.
+        # Broad, and it covers the PROBE calls as well as the import, which is
+        # what makes the docstring's "unusable" true: a partially installed torch
+        # raises OSError or AttributeError from its extension loader rather than
+        # ImportError, and a torch whose distributed module imports but whose
+        # state queries fail is equally unusable. Every one of those means the
+        # same thing here -- no channel, so this is a serial run.
         return None
-    if not dist.is_available() or not dist.is_initialized():
+
+
+def _cpu_object_group(dist: Any) -> Any:
+    """Return a process group whose object collectives are safe here, or ``None``.
+
+    ``None`` means "use the default group", which is correct when the default
+    backend is already Gloo.
+
+    WHY THIS EXISTS. ``all_gather_object`` and ``broadcast_object_list`` pickle to
+    a tensor and move it to the CURRENT device under an accelerator backend, and
+    torch makes pinning that device the caller's job. Run identity is resolved at
+    the very top of run setup, before any device selection has happened, and
+    nothing in TPEN calls ``set_device``, so under NCCL every rank would collect
+    on device 0 -- which hangs or corrupts rather than failing. Doing the
+    agreement over Gloo keeps it on the CPU, where it belongs: this is a
+    two-string handshake, not tensor work.
+
+    Not cached. The group is created once per resolution, and resolution happens
+    once per process; a module-level cache would instead have to stay correct
+    across a process group being destroyed and re-initialized, which is a
+    stale-handle hazard for no measurable gain.
+    """
+
+    if dist.get_backend().lower() == "gloo":
         return None
-    return dist.get_world_size(), dist.get_rank()
+    if not dist.is_gloo_available():
+        # Symmetric and immediate. Every rank evaluates the same condition, so
+        # this refuses the launch rather than hanging one rank inside a
+        # collective it cannot complete safely.
+        raise RunIdentityError(
+            f"run identity needs a CPU collective, but the initialized backend is "
+            f"{dist.get_backend()!r} and this torch build has no Gloo backend to fall "
+            "back to. Set an explicit run.run_id, or build torch with Gloo."
+        )
+    # Collective: every rank reaches this line, because the resolution above it
+    # is entered unconditionally.
+    return dist.new_group(backend="gloo")
 
 
 def _agree_on_run_id(
@@ -489,21 +559,17 @@ def _agree_on_run_id(
     import torch.distributed as dist
 
     world_size, global_rank = channel
+    group = _cpu_object_group(dist)
     gathered: list[str | None] = [None] * world_size
-    dist.all_gather_object(gathered, configured_text)
+    dist.all_gather_object(gathered, configured_text, group=group)
 
     if all(value is None for value in gathered):
         # Exactly one derivation, on the coordinator, then broadcast. `clock` and
         # the `uuid4` draw are read only here, so the peers' clocks and entropy
         # never enter the result.
         payload = [generate_run_id(run_name, clock=clock) if global_rank == 0 else None]
-        dist.broadcast_object_list(payload, src=0)
-        agreed = payload[0]
-        if not isinstance(agreed, str) or not agreed:
-            raise RunIdentityError(
-                f"rank {global_rank} received no run id from the coordinator broadcast"
-            )
-        return agreed
+        dist.broadcast_object_list(payload, src=0, group=group)
+        return str(payload[0])
 
     if len(set(gathered)) != 1:
         # Covers both disagreeing explicit ids and a mixed null/explicit launch.

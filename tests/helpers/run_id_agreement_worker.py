@@ -111,6 +111,9 @@ def _build_cfg(run_root: Path, configured_run_id: str | None) -> object:
 
 
 def _topology(rank: int, world_size: int) -> ExecutionTopology:
+    # `ExecutionTopology` validates rank < size, so a DECLARED size below this
+    # rank's real rank cannot be expressed -- the mismatch test therefore
+    # over-declares (say 3 for a real world of 2) rather than under-declaring.
     return ExecutionTopology(
         global_rank=rank,
         global_size=world_size,
@@ -136,6 +139,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pg-timeout", type=float, required=True)
     parser.add_argument("--mode", choices=("resolve", "context"), required=True)
     parser.add_argument(
+        "--declared-world-size",
+        type=int,
+        default=None,
+        help=(
+            "global_size to put in the supplied ExecutionTopology. Defaults to the "
+            "real world size; setting it differently makes this rank a launcher "
+            "that contradicts itself, which run identity must refuse."
+        ),
+    )
+    parser.add_argument(
         "--configured-run-id",
         required=True,
         help=f"This rank's configured run.run_id, or {NULL_RUN_ID!r} for null.",
@@ -156,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         run_root = Path(args.run_root)
-        topology = _topology(rank, int(args.world_size))
+        declared = int(args.world_size if args.declared_world_size is None else args.declared_world_size)
+        topology = _topology(rank, declared)
         try:
             if args.mode == "resolve":
                 run_id = artifacts.resolve_run_id(

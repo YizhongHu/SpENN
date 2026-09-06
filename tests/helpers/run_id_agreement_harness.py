@@ -82,6 +82,18 @@ class AgreementResult:
             None if receipt is None else receipt.get("error_type") for receipt in self.receipts
         )
 
+    def error_messages(self) -> tuple[str | None, ...]:
+        """Return each rank's reported error MESSAGE, ``None`` where absent.
+
+        The type name alone does not discriminate: every refusal in this module
+        raises ``RunIdentityError``, so a test asserting only the type passes on
+        the wrong refusal as readily as the right one.
+        """
+
+        return tuple(
+            None if receipt is None else receipt.get("error") for receipt in self.receipts
+        )
+
 
 def run_agreement_group(
     world_size: int,
@@ -89,6 +101,7 @@ def run_agreement_group(
     tmp_path: Path,
     *,
     mode: str = "resolve",
+    declared_world_size: int | None = None,
 ) -> AgreementResult:
     """Launch ``world_size`` fresh workers and collect one receipt per rank.
 
@@ -107,6 +120,10 @@ def run_agreement_group(
         ``resolve`` calls ``tpen.artifacts.resolve_run_id`` and touches no
         filesystem; ``context`` runs the whole of ``prepare_run_context`` so run
         directory convergence is observable.
+    declared_world_size : int or None, optional
+        World size each rank puts in the topology it supplies. ``None`` means
+        the truth; a different value makes every rank a launcher that
+        contradicts its own process group.
     """
 
     if len(configured_run_ids) != world_size:
@@ -126,6 +143,111 @@ def run_agreement_group(
 
     procs: list[subprocess.Popen] = []
     receipt_paths: list[Path] = []
+    try:
+        _launch(
+            world_size,
+            configured_run_ids,
+            invocation_dir,
+            rendezvous_path,
+            run_root,
+            mode,
+            declared_world_size,
+            procs,
+            receipt_paths,
+        )
+    except BaseException:
+        # A failure PART WAY through the launch loop would otherwise return
+        # without reaching the kill below, leaving ranks 0..k-1 running. They
+        # would self-clear when their own process-group timeout fired, but a
+        # leaked worker outliving the test that started it is not something to
+        # leave to a timeout.
+        _kill_group(procs)
+        raise
+
+    # One shared deadline. Waiting on N children with independent per-process
+    # timeouts would let the total wait stack to N * watchdog_timeout, blowing
+    # the outer bound the watchdog exists to enforce.
+    exit_codes: list[int | None] = [None] * world_size
+    deadline = time.monotonic() + WATCHDOG_TIMEOUT_SECONDS
+    while time.monotonic() < deadline and any(code is None for code in exit_codes):
+        for index, proc in enumerate(procs):
+            if exit_codes[index] is None:
+                exit_codes[index] = proc.poll()
+        if any(code is None for code in exit_codes):
+            time.sleep(0.05)
+    watchdog_fired = any(code is None for code in exit_codes)
+
+    _kill_group(procs)
+    # Shared deadline again, for the same reason as the wait above: N stacked
+    # per-process reap timeouts would let the reap alone run to
+    # world_size * _REAP_WAIT_SECONDS past the outer bound.
+    reap_deadline = time.monotonic() + _REAP_WAIT_SECONDS
+    for index, proc in enumerate(procs):
+        remaining = max(0.0, reap_deadline - time.monotonic())
+        try:
+            code = proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            continue
+        # Back-filled: a rank killed by the watchdog has a real exit status once
+        # reaped, and dropping it would leave `exit_codes` reporting None for a
+        # process whose fate is now known.
+        if exit_codes[index] is None:
+            exit_codes[index] = code
+
+    receipts: list[dict | None] = []
+    for receipt_path in receipt_paths:
+        if not receipt_path.exists():
+            receipts.append(None)
+            continue
+        try:
+            receipts.append(json.loads(receipt_path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as exc:
+            receipts.append({"malformed": repr(exc)})
+
+    return AgreementResult(
+        receipts=tuple(receipts),
+        watchdog_fired=watchdog_fired,
+        exit_codes=tuple(exit_codes),
+        invocation_dir=str(invocation_dir),
+    )
+
+
+def _kill_group(procs: list[subprocess.Popen]) -> None:
+    """Kill each child's process GROUP, addressing it by the child's own PID.
+
+    ``os.killpg(proc.pid, ...)`` rather than ``os.killpg(os.getpgid(proc.pid),
+    ...)``: each child was started with ``start_new_session=True``, so it IS its
+    own group leader and its PGID equals its PID. Resolving the PGID first looks
+    more careful and is strictly more dangerous -- once the child has been
+    reaped its PID can be reused, and ``getpgid`` would then resolve a
+    STRANGER'S group, sending SIGKILL into somebody else's job on a shared node.
+    Addressing the group by the PID we were given can only ever hit a group
+    whose leader has that exact PID.
+
+    Unconditional, not gated on the watchdog: a child that exited on its own can
+    still have left a grandchild alive in its group.
+    """
+
+    for proc in procs:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _launch(
+    world_size: int,
+    configured_run_ids: list[str | None],
+    invocation_dir: Path,
+    rendezvous_path: str,
+    run_root: Path,
+    mode: str,
+    declared_world_size: int | None,
+    procs: list[subprocess.Popen],
+    receipt_paths: list[Path],
+) -> None:
+    """Start every rank, appending to ``procs`` as each one starts."""
+
     for rank in range(world_size):
         receipt_path = invocation_dir / f"receipt_{rank}.json"
         receipt_paths.append(receipt_path)
@@ -151,6 +273,8 @@ def run_agreement_group(
             "--configured-run-id",
             NULL_RUN_ID if configured is None else configured,
         ]
+        if declared_world_size is not None:
+            argv += ["--declared-world-size", str(declared_world_size)]
         # Captured per rank so a PASSING negative test still leaves an
         # attributable diagnostic on disk; pytest's fd-level capture would
         # otherwise discard an inherited child's traceback entirely.
@@ -165,51 +289,6 @@ def run_agreement_group(
                     stderr=subprocess.STDOUT,
                 )
             )
-
-    # One shared deadline. Waiting on N children with independent per-process
-    # timeouts would let the total wait stack to N * watchdog_timeout, blowing
-    # the outer bound the watchdog exists to enforce.
-    exit_codes: list[int | None] = [None] * world_size
-    deadline = time.monotonic() + WATCHDOG_TIMEOUT_SECONDS
-    while time.monotonic() < deadline and any(code is None for code in exit_codes):
-        for index, proc in enumerate(procs):
-            if exit_codes[index] is None:
-                exit_codes[index] = proc.poll()
-        if any(code is None for code in exit_codes):
-            time.sleep(0.05)
-    watchdog_fired = any(code is None for code in exit_codes)
-
-    # Unconditional, not gated on watchdog_fired: a child that resolved its own
-    # process-group timeout still exited inside the window, and killing the
-    # group is how a survivor is prevented from outliving the test either way.
-    for proc in procs:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    for proc in procs:
-        try:
-            proc.wait(timeout=_REAP_WAIT_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-
-    receipts: list[dict | None] = []
-    for receipt_path in receipt_paths:
-        if not receipt_path.exists():
-            receipts.append(None)
-            continue
-        try:
-            receipts.append(json.loads(receipt_path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError) as exc:
-            receipts.append({"malformed": repr(exc)})
-
-    return AgreementResult(
-        receipts=tuple(receipts),
-        watchdog_fired=watchdog_fired,
-        exit_codes=tuple(exit_codes),
-        invocation_dir=str(invocation_dir),
-    )
-
 
 def run_root_for(invocation_dir: str) -> Path:
     """Return the artifact root the workers of one invocation shared."""

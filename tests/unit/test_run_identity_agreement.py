@@ -122,14 +122,44 @@ def test_multi_rank_topology_without_a_process_group_refuses_a_derived_id() -> N
 def test_multi_rank_topology_accepts_an_explicit_id_without_a_process_group() -> None:
     """The refusal must not close a legitimate configuration.
 
-    An explicit id needs no channel: it is already common to every rank that
-    reads the same config. This is the over-restriction direction of the C6
-    mutation pair -- widening the refusal to cover explicit ids turns this red.
+    An explicit id is ACCEPTED without a channel, on the assumption -- not the
+    fact -- that every rank resolved the same config to the same value. This is
+    the over-restriction direction of the C6 mutation pair: widening the refusal
+    to cover explicit ids turns this red. What the acceptance does not verify is
+    pinned separately in
+    ``test_channel_less_mixed_launch_is_asymmetric_and_knowingly_undetectable``.
     """
 
     agreed = resolve_run_id("explicit-id", "serial run", topology=_multi_rank_topology(4))
 
     assert agreed == "explicit-id"
+
+
+def test_channel_less_mixed_launch_is_asymmetric_and_knowingly_undetectable() -> None:
+    """Pin the one shape this slice cannot detect, instead of claiming it cannot occur.
+
+    A multi-rank launch with NO process group, where some ranks configure an
+    explicit id and others leave it null: the null ranks refuse, the explicit
+    ranks proceed. That asymmetry is real and is not fixable here -- with no
+    channel there is nothing to compare against, so no rank can learn that its
+    peers decided differently. It is pinned rather than left implicit because
+    the code used to assert the opposite ("an explicit id ... is already common
+    to every rank"), and a false claim in a comment outlives the reviewer who
+    would have caught it.
+
+    Both halves ARE detected once a channel exists; see
+    ``test_run_id_rank_agreement.py::test_mixed_null_and_explicit_ids_fail_on_every_rank``.
+    """
+
+    topology = _multi_rank_topology(2)
+
+    # The null-id rank refuses...
+    with pytest.raises(RunIdentityError):
+        resolve_run_id(None, "serial run", topology=topology)
+
+    # ...while its explicit-id peer proceeds, unverified. Asserted so that a
+    # future change to either half has to confront the asymmetry deliberately.
+    assert resolve_run_id("explicit-id", "serial run", topology=topology) == "explicit-id"
 
 
 def test_prepare_run_context_still_fills_a_null_id_for_a_serial_run(tmp_path) -> None:
@@ -167,6 +197,11 @@ def test_generate_run_id_remains_process_local() -> None:
     Pinned because `tests/unit/test_hi_schema.py` reasons about this property,
     and because the fix must not smuggle a collective into a function whose
     contract is a fresh draw per call.
+
+    Note for whoever reads that HI cross-reference next: its rationale still
+    describes `prepare_run_context` calling `generate_run_id` directly, which
+    stopped being true here. Retiring or rewording that rule is HI L1's call,
+    not this slice's -- `tpen/hi_schema.py` is outside this write surface.
     """
 
     assert generate_run_id("hi") != generate_run_id("hi")

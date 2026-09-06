@@ -151,9 +151,17 @@ def prepare_run_context(
         or "tpen_run"
     )
     OmegaConf.update(resolved_cfg, "experiment.run_name", run_name, merge=False, force_add=True)
-    # Run identity is AGREED, never generated per process. `generate_run_id` is
-    # process-local, so under a distributed launch every rank derived its own id
-    # and wrote to its own artifact root instead of one converged run root.
+    # Run identity is AGREED wherever a launch declares itself, rather than
+    # generated per process. `generate_run_id` is process-local, so a
+    # distributed launch derived a different id on every rank and wrote to its
+    # own artifact root instead of one converged run root.
+    #
+    # HONEST SCOPE, because the comment would otherwise overclaim: nothing in
+    # `tpen/` yet initializes a process group or supplies a multi-rank
+    # `ExecutionTopology`, so on the launches TPEN can perform TODAY this still
+    # resolves through the serial branch. The agreement is the mechanism the
+    # distributed runtime will use, tested against real multi-rank process
+    # groups; it is not yet reached by a production caller.
     #
     # `resolve_run_id` is reached unconditionally, including when the id is
     # already explicit, and that is load-bearing rather than tidiness: a

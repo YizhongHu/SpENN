@@ -43,10 +43,23 @@ def _assert_no_rank_hung(result) -> None:
     assert all(receipt is not None for receipt in result.receipts), (
         f"a rank wrote no receipt; logs in {result.invocation_dir}"
     )
+    # A receipt is written BEFORE `destroy_process_group`, so a rank that wrote
+    # one and then died on the way out would otherwise pass every assertion in
+    # these tests. The exit status is the only thing that sees it.
+    assert all(code == 0 for code in result.exit_codes), (
+        f"a rank exited nonzero {result.exit_codes}; logs in {result.invocation_dir}"
+    )
 
 
 def test_world_size_one_derives_its_own_id(tmp_path) -> None:
-    """Ramp rung 1: a one-rank group is the serial path through the collective."""
+    """Ramp rung 1: a one-rank group takes the SERIAL branch, not the collective.
+
+    Stated precisely because the distinction matters for what the ramp proves:
+    with a world size of 1 the resolution short-circuits before
+    ``_agree_on_run_id`` is ever called, so this rung exercises the same branch
+    the serial test file covers -- reached through a real process group and a
+    real subprocess. The first rung that enters a collective is world size 2.
+    """
 
     result = run_agreement_group(1, [None], tmp_path)
 
@@ -108,6 +121,12 @@ def test_mixed_null_and_explicit_ids_fail_on_every_rank(tmp_path) -> None:
     _assert_no_rank_hung(result)
     assert result.errors() == ("RunIdentityError", "RunIdentityError")
     assert result.run_ids() == (None, None)
+    # WHICH refusal fired, not merely that one did: every refusal in this module
+    # raises RunIdentityError, so the type alone would accept the broadcast
+    # failure or the backend refusal just as happily as the right one.
+    for message in result.error_messages():
+        assert "ranks disagree on run.run_id" in message, message
+        assert "no run directory was created" in message
 
 
 def test_disagreeing_explicit_ids_fail_on_every_rank(tmp_path) -> None:
@@ -119,6 +138,41 @@ def test_disagreeing_explicit_ids_fail_on_every_rank(tmp_path) -> None:
 
     _assert_no_rank_hung(result)
     assert result.errors() == ("RunIdentityError", "RunIdentityError")
+    assert result.run_ids() == (None, None)
+    for message in result.error_messages():
+        assert "ranks disagree on run.run_id" in message, message
+
+
+def test_a_launcher_that_contradicts_its_own_process_group_is_refused(tmp_path) -> None:
+    """A topology declaring 3 ranks over a 2-rank group is refused on its own terms.
+
+    Before this refusal existed the same shape produced a message reading
+    "cannot agree on a run id across 1 ranks: ... the process group covers 4
+    ranks" for the null case, and was silently ACCEPTED for the explicit case --
+    a launcher self-contradiction ratified rather than reported. Neither answer
+    is trustworthy, so it is refused before the null/explicit split.
+    """
+
+    result = run_agreement_group(2, [None, None], tmp_path, declared_world_size=3)
+
+    _assert_no_rank_hung(result)
+    assert result.errors() == ("RunIdentityError", "RunIdentityError")
+    for message in result.error_messages():
+        assert "launcher disagrees with itself" in message, message
+        assert "declares 3 ranks" in message
+        assert "covers 2" in message
+
+
+def test_a_contradicting_launcher_is_refused_even_with_an_explicit_id(tmp_path) -> None:
+    """The same refusal fires for an explicit id, which used to be accepted."""
+
+    result = run_agreement_group(
+        2, ["2026-01-01_000000_explicit_aaaaaa"] * 2, tmp_path, declared_world_size=3
+    )
+
+    _assert_no_rank_hung(result)
+    assert result.errors() == ("RunIdentityError", "RunIdentityError")
+    assert result.run_ids() == (None, None)
 
 
 def test_ranks_converge_on_one_artifact_root(tmp_path) -> None:
@@ -162,4 +216,6 @@ def test_a_refused_launch_creates_no_run_directory(tmp_path) -> None:
 
     _assert_no_rank_hung(result)
     assert result.errors() == ("RunIdentityError", "RunIdentityError")
+    for message in result.error_messages():
+        assert "ranks disagree on run.run_id" in message, message
     assert not run_root_for(result.invocation_dir).exists()
