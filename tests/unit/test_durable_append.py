@@ -327,10 +327,15 @@ def _opens_append_handle(source: Path) -> bool:
     Two further evasions were then found against the AST version and are closed
     here: a starred literal argument (``Path.open(*("a",), ...)``) arrives as
     ``ast.Starred`` rather than ``ast.Constant``, and ``from os import O_APPEND
-    as APPEND`` defeats a name-only check. Any ``open`` call whose mode cannot
-    be resolved statically is now treated as an append handle rather than as
-    clean, which is the conservative direction: a false positive is a test
-    failure someone reads, a false negative is an unsafe writer certified safe.
+    as APPEND`` defeats a name-only check. Both escalate to "append", which is
+    the conservative direction: a false positive is a test failure someone
+    reads, a false negative is an unsafe writer certified safe.
+
+    NOT every unresolvable mode escalates, and an earlier version of this
+    docstring wrongly claimed it did. Only ``ast.Starred`` args and ``**kwargs``
+    do. ``open(p, MODE)`` with a NAMED mode resolves to no constant and returns
+    False -- measured. That is a gap, not a policy, and it is the same gap the
+    limit paragraph below describes.
 
     KNOWN LIMIT, stated rather than iterated on. **A static census is a guard
     against ACCIDENT, not against a determined bypass.** A mode assembled at
