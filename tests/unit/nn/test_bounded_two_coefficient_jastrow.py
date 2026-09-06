@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from tpen.data.batch import ElectronBatch
+from tpen.nn.cusp import rational_pair_cusp
 from tpen.nn.jastrow import BoundedTwoCoefficientJastrow
 
 THETA_S = 0.37
@@ -41,6 +42,53 @@ def _factor(trainable: bool = True) -> BoundedTwoCoefficientJastrow:
 
 def _batch(positions: list) -> ElectronBatch:
     return ElectronBatch(positions=torch.tensor(positions, dtype=torch.float64))
+
+
+CENTRE = torch.tensor([0.4, -0.2, 0.6], dtype=torch.float64)
+
+# Six axis directions. The spherical average is what the Kato condition
+# constrains, and an axis sextet integrates exactly through second order, which
+# is enough to kill the first-order anisotropy this is looking for.
+DIRECTIONS = torch.tensor(
+    [
+        [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+    ],
+    dtype=torch.float64,
+)
+
+
+def _radial_derivative_of(function, radius: float) -> float:
+    """Return ``d/dr function(r)`` by autograd at a single separation.
+
+    Autograd rather than a difference quotient: a fixed-step quotient has a
+    noise floor around ``eps * |f| / step`` that grows as the signal shrinks,
+    which is exactly the regime these tests probe.
+    """
+
+    r = torch.tensor(float(radius), dtype=torch.float64, requires_grad=True)
+    (grad,) = torch.autograd.grad(function(r).sum(), r)
+    return float(grad.item())
+
+
+def _averaged_radial_derivative(factor, radius: float) -> float:
+    """Return the magnitude of the direction-averaged radial derivative of J.
+
+    Two electrons are placed symmetrically about `CENTRE`, separated by
+    ``radius`` along each direction in turn, and the derivative is taken with
+    respect to that separation.
+    """
+
+    total = 0.0
+    for direction in DIRECTIONS:
+        def separated(r, direction=direction):
+            offset = 0.5 * r * direction
+            positions = torch.stack([CENTRE - offset, CENTRE + offset]).unsqueeze(0)
+            return factor(ElectronBatch(positions=positions))
+
+        total += _radial_derivative_of(separated, radius)
+    return abs(total / len(DIRECTIONS))
 
 
 class TestTheTwoElectronCaseMatchesTheAuthority:
@@ -149,40 +197,69 @@ class TestBehaviourAtCoincidence:
         assert torch.isfinite(positions.grad).all(), "sqrt in the distance would NaN here"
         torch.testing.assert_close(positions.grad, torch.zeros_like(positions.grad))
 
-    def test_the_spherical_average_of_the_radial_derivative_vanishes(self) -> None:
-        """The Kato-shaped statement, measured rather than argued.
+    def test_the_spherical_average_of_the_radial_derivative_vanishes_linearly(self) -> None:
+        """The Kato-shaped statement: the average vanishes IN THE LIMIT, as O(r).
 
-        Averages the radial derivative of J over directions on a small sphere
-        around coalescence. Independent of the gradient test above: this one
-        probes at finite separation and takes a limit, so it would catch a
-        factor that is flat exactly at zero but kinks immediately away from it.
+        The claim is about a limit, not about a value at any finite separation.
+        At separation ``r`` the averaged radial derivative of J is proportional
+        to ``r`` -- it is SMALL, not zero -- because ``q(r) = r^2/(l^2 + r^2)``
+        has ``q'(r) = 2r l^2/(l^2 + r^2)^2``. What distinguishes a factor that
+        respects the cusp from one that alters it is therefore the RATE, and a
+        ratio test states that scale-free.
+
+        An earlier version of this test asserted an absolute floor of 1e-6 at
+        ``r = 1e-4``. That was wrong arithmetic, not a wrong factor: the true
+        value there is about ``0.27 r``, i.e. 2.7e-5, so the threshold demanded
+        behaviour that only appears near ``r = 4e-6``. Recorded because the
+        failure read exactly like a defect in the module.
+
+        Uses autograd rather than finite differences. A difference quotient
+        with a fixed step has a noise floor of roughly ``eps * |J| / step``,
+        which grows as the signal shrinks and eventually swamps precisely the
+        limit being measured.
         """
 
-        centre = torch.tensor([0.4, -0.2, 0.6], dtype=torch.float64)
-        directions = torch.tensor(
-            [
-                [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
-                [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
-            ],
-            dtype=torch.float64,
-        )
-        factor = _factor()
-        previous = None
-        for radius in (1e-2, 1e-3, 1e-4):
-            derivatives = []
-            for direction in directions:
-                offset = 0.5 * radius * direction
-                step = 1e-8
-                outer = 0.5 * (radius + step) * direction
-                near = factor(_batch([[(centre - offset).tolist(), (centre + offset).tolist()]]))
-                far = factor(_batch([[(centre - outer).tolist(), (centre + outer).tolist()]]))
-                derivatives.append(((far - near) / step).item())
-            average = abs(sum(derivatives) / len(derivatives))
-            if previous is not None:
-                assert average < previous or average < 1e-9
-            previous = average
-        assert previous is not None and previous < 1e-6
+        radii = (1e-2, 1e-3, 1e-4)
+        averages = [_averaged_radial_derivative(_factor(), radius) for radius in radii]
+
+        # Each tenfold reduction in r must reduce the average about tenfold.
+        for coarse, fine in zip(averages, averages[1:]):
+            assert fine == pytest.approx(coarse / 10.0, rel=0.05), (
+                f"averages {averages} do not fall linearly in r; a factor that "
+                "altered the cusp would tend to a nonzero constant instead"
+            )
+
+        assert averages[-1] < averages[0] / 50.0
+
+    def test_the_instrument_would_see_a_factor_that_did_alter_the_cusp(self) -> None:
+        """Discriminating control: prove the ratio test above is not vacuous.
+
+        The analytic electron-electron cusp term ``a r / (1 + b r)`` has radial
+        derivative tending to ``a != 0`` at coalescence -- that nonzero limit IS
+        the cusp. Measured with the SAME instrument, it does NOT fall with r.
+
+        Without this, the test above would pass equally for an instrument that
+        returned something proportional to r whatever it was handed.
+        """
+
+        coefficient = 0.5
+        radii = (1e-2, 1e-3, 1e-4)
+        values = [
+            abs(
+                _radial_derivative_of(
+                    lambda r: rational_pair_cusp(r, coefficient, 1.0), radius
+                )
+            )
+            for radius in radii
+        ]
+
+        for value in values:
+            assert value == pytest.approx(coefficient, rel=0.05), (
+                "a genuine cusp term must keep a nonzero radial derivative at "
+                f"coalescence; got {values}"
+            )
+        # And it emphatically does not shrink the way J does.
+        assert values[-1] > values[0] / 2.0
 
 
 class TestDegenerateElectronCounts:
