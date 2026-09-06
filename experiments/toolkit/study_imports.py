@@ -29,19 +29,41 @@ every module that reaches a sibling.
 
 Why not relative imports in real packages
 -----------------------------------------
-Two independent blockers, either sufficient on its own:
+One blocker, and it is sufficient on its own: these modules are **entrypoints
+executed directly** (``python plan.py``).  At this revision 33 of the rewritten
+files carry an ``if __name__ == "__main__"`` block; re-derive rather than trust
+the number.  A directly executed file runs as ``__main__`` with no parent
+package, so a relative import raises ``ImportError: attempted relative import
+with no known parent package``.
 
-1. These modules are **entrypoints executed directly** (``python plan.py``);
-   18 of them carry an ``if __name__ == "__main__"`` block.  A directly executed
-   file runs as ``__main__`` with no parent package, so a relative import raises
-   ``ImportError: attempted relative import with no known parent package``.
-2. Three study directories are named ``he-v1``, ``tpen-pair-scan-v1`` and
-   ``tpen-pair-v1``.  Hyphens are not Python identifiers, so the directories
-   would have to be renamed -- and those names appear in durable run paths and
-   recorded receipts.
+A CORRECTION, recorded because the superseded reason is the one a future reader
+would try to work around.  An earlier version of this docstring gave a second
+blocker: that ``he-v1``, ``he-cutover``, ``tpen-pair-scan-v1`` and
+``tpen-pair-v1`` contain hyphens, which are not Python identifiers, so the
+directories would need renaming.  **That is wrong as stated.**  An independent
+reviewer loaded a synthetic hyphenated package containing a relative import via
+``importlib.import_module`` and it worked: a hyphen blocks only the ``import
+he-v1`` *statement*, not package-hood, and relative imports inside such a
+package resolve normally.  (There were also four such directories, not three.)
+So renaming is NOT required, and only the direct-execution concern survives.
 
 Loading by path under a study-unique key keeps every filename and every
 documented ``python <stage>.py`` invocation working unchanged.
+
+Why EVERY sibling import is routed through here, not just ambiguous ones
+------------------------------------------------------------------------
+An earlier version converted only siblings whose names collide across studies.
+That was wrong, and it broke the one live cross-study boundary.  When some of a
+study's modules are loaded study-scoped and others by bare import, the study
+ends up with TWO copies of the same files: ``he-cutover``'s ``hev1.py`` received
+scoped modules while He-v1's own bare ``import strata`` built a second set.
+Two copies of ``strata`` means two distinct ``StratumError`` classes, so
+``except hev1.strata.StratumError`` silently failed to catch an error raised
+through ``hev1.plan_stage.strata``.
+
+Duplicate identity is a wrong-module defect exactly as a shared bare key is, so
+fixing only the collisions traded one for the other.  A study must therefore be
+loaded consistently: **all** of its sibling imports go through this module.
 """
 
 from __future__ import annotations
@@ -72,17 +94,42 @@ def study_slug(study_dir: Path) -> str:
     Returns
     -------
     str
-        The study's path relative to ``experiments/`` with every character that
-        is not valid in an identifier replaced by ``_``.  Derived from the full
-        relative path rather than the basename, so ``a/study`` and ``b/study``
-        cannot collide.
+        An identifier-safe, INJECTIVE encoding of the study's path relative to
+        ``experiments/``.
+
+    Notes
+    -----
+    The encoding must be injective, not merely sanitized.  Replacing every
+    non-alphanumeric character with ``_`` maps ``new-study`` and ``new_study``
+    to the same key, so the second study's ``plan.py`` would silently return the
+    first study's already-cached module -- reintroducing precisely the wrong-
+    module-without-an-exception failure this module exists to remove.  No pair
+    of current directories collides that way, so the defect would have been
+    latent until somebody added one.
+
+    Alphanumerics survive; ``_`` doubles to ``__``; every other character
+    becomes ``_`` plus its two-digit hex byte.  ``_`` is not a hex digit, so
+    ``__`` can never be confused with an escape, and the mapping is reversible.
+    ``hooke/tpen-pair-scan-v1`` encodes as ``hooke_2ftpen_2dpair_2dscan_2dv1``.
+
+    Derived from the full relative path rather than the basename, so
+    ``a/study`` and ``b/study`` also stay distinct.
     """
 
     try:
         relative = study_dir.resolve().relative_to(_EXPERIMENTS_ROOT)
     except ValueError:  # a study outside experiments/ -- fall back to the path
         relative = Path(*study_dir.resolve().parts[1:])
-    return "".join(c if c.isalnum() else "_" for c in str(relative))
+
+    encoded = []
+    for char in relative.as_posix():
+        if char.isalnum():
+            encoded.append(char)
+        elif char == "_":
+            encoded.append("__")
+        else:
+            encoded.extend(f"_{byte:02x}" for byte in char.encode("utf-8"))
+    return "".join(encoded)
 
 
 def _ensure_namespace_parents(slug: str, study_dir: Path) -> None:

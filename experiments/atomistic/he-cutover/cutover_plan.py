@@ -14,7 +14,19 @@ from experiments.toolkit.dispatch import LogicalTaskSpec, StagePlanV2, logical_t
 from experiments.toolkit.resources import ResourceSpec
 from experiments.toolkit.specs import CompletionSpec
 
-import cutover_strata
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+cutover_strata = sibling(__file__, 'cutover_strata')
 
 SMOKE_SCHEMA = "he-cutover-smoke-grid/v1"
 PROOF_SCHEMA = "he-cutover-proof-grid/v1"

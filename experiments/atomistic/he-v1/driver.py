@@ -30,7 +30,19 @@ STUDY_DIR = Path(__file__).resolve().parent
 if str(STUDY_DIR) not in sys.path:
     sys.path.insert(0, str(STUDY_DIR))
 
-import layout  # noqa: E402
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+layout = sibling(__file__, 'layout')
 # Siblings are loaded study-scoped, not by bare import: experiments/ has
 # several same-named modules and the first study loaded would otherwise own
 # the bare name for every study after it. See experiments/toolkit/study_imports.py.
@@ -44,7 +56,7 @@ if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
 from experiments.toolkit.study_imports import sibling  # noqa: E402
 
 plan_stage = sibling(__file__, 'plan')
-import strata  # noqa: E402
+strata = sibling(__file__, 'strata')
 
 ALLOCATION_RECEIPT = "allocation_receipt.json"
 

@@ -12,9 +12,24 @@ from typing import Mapping, Sequence
 from experiments.toolkit.dispatch import AllocationContext, DispatchSpec, StagePlanV2, write_dispatch_records
 from experiments.toolkit.parsl_attach import ParslAttachExecutor
 
-from admission import admit_plan, write_dispatch_specs
-import hev1
-from run_train_row import require_allocation
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+_tpen_admission = sibling(__file__, 'admission')
+admit_plan = _tpen_admission.admit_plan
+write_dispatch_specs = _tpen_admission.write_dispatch_specs
+hev1 = sibling(__file__, 'hev1')
+_tpen_run_train_row = sibling(__file__, 'run_train_row')
+require_allocation = _tpen_run_train_row.require_allocation
 
 
 def allocation_context(*, facility: str, run_root: str | Path, environ: Mapping[str, str] | None = None, deadline: str | float | None = None) -> AllocationContext:

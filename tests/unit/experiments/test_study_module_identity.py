@@ -7,7 +7,7 @@ bare key ``"plan"``, and with three ``plan.py``, three ``collect.py``, four
 ``launch.py`` and two ``utils/`` packages in the tree, the first study loaded
 owns those names for every study after it.
 
-Two properties are pinned here, and they are deliberately different in kind:
+Three properties are pinned here, deliberately different in kind:
 
 ``test_no_bare_import_of_a_colliding_sibling``
     A STRUCTURAL rule over the source: no study module may reach a sibling by
@@ -21,6 +21,14 @@ Two properties are pinned here, and they are deliberately different in kind:
     check the file each module actually came from.  Static reasoning about an
     import graph is exactly what missed this defect the first time, so the
     structural rule is not trusted on its own.
+
+``test_he_v1_boundary_has_one_canonical_module_identity``
+    A DUPLICATE-IDENTITY check, which the other two cannot see.  Zero ambiguous
+    bare keys and correct module identity are different properties: a study
+    loaded partly scoped and partly bare has two copies of its own modules, two
+    distinct exception classes, and an ``except`` clause that silently misses.
+    An earlier revision of this fix satisfied both rules above while breaking
+    this one.
 
 WHAT THE RULE DOES NOT SAY, which matters as much as what it does.  It does NOT
 forbid two studies from having same-named modules.  A study is free to own a
@@ -132,6 +140,15 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
     the flag is unnecessary, and leaving it in would have handed the shared
     slot back after the imports were fixed.
 
+    The rule resolves the MAPPING'S OWNER before rejecting.  ``.modules`` is not
+    a reserved word: a perfectly ordinary ``Registry`` or plugin object can have
+    a ``modules`` dict, and ``self.modules[name] = module`` is unremarkable code
+    with nothing to do with the import system.  Flagging by attribute name alone
+    would refuse a legitimate study -- an over-restriction that passes every
+    test in this file and only surfaces when a colleague's study will not load.
+    So only a subscript of ``<name bound to the sys module>.modules`` counts,
+    where the binding is established from this file's own imports.
+
     Limitation, stated rather than hidden: a subscript that is a plain name is
     indistinguishable at parse time from one holding an already-unique key, so
     this rule asks for ``spec.name`` or an explicitly-built unique key. That is
@@ -147,17 +164,31 @@ def find_bare_sys_modules_registrations(root: Path) -> list[str]:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError:
                 continue
+
+            # Names in THIS file that are bound to the sys module.
+            sys_aliases: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "sys":
+                            sys_aliases.add(alias.asname or "sys")
+
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Assign):
                     continue
                 for target in node.targets:
-                    if (
+                    if not (
                         isinstance(target, ast.Subscript)
                         and isinstance(target.value, ast.Attribute)
                         and target.value.attr == "modules"
                         and isinstance(target.slice, ast.Name)
                     ):
-                        violations.append(f"{path}:{node.lineno}: sys.modules[{target.slice.id}]")
+                        continue
+                    owner = target.value.value
+                    if isinstance(owner, ast.Name) and owner.id in sys_aliases:
+                        violations.append(
+                            f"{path}:{node.lineno}: {owner.id}.modules[{target.slice.id}]"
+                        )
     return violations
 
 
@@ -430,4 +461,130 @@ def test_no_module_holds_an_object_defined_in_another_study(
     assert composed_probe["foreign_bindings"] == [], (
         "these names came from a different study than the module holding them:\n  "
         + "\n  ".join(composed_probe["foreign_bindings"])
+    )
+
+
+def test_sys_modules_rule_ignores_an_unrelated_modules_mapping(tmp_path: Path) -> None:
+    """OVER-RESTRICTIVE mutant: ``self.modules[name] = module`` must stay green.
+
+    ``.modules`` is not reserved.  A registry object with a ``modules`` dict is
+    ordinary code and has nothing to do with the import system.  A rule that
+    matched on the attribute name alone would refuse a legitimate study, and
+    would do so invisibly -- passing every other assertion here and failing
+    only when somebody's study could not load.
+    """
+
+    registry = (
+        "class Registry:\n"
+        "    def __init__(self):\n"
+        "        self.modules = {}\n"
+        "    def add(self, name, module):\n"
+        "        self.modules[name] = module\n"
+    )
+    _write_study(tmp_path / "study_a", registry)
+    _write_study(tmp_path / "study_b", "VALUE = 1\n")
+
+    assert find_bare_sys_modules_registrations(tmp_path) == []
+
+
+def test_study_slug_is_injective_across_hyphen_and_underscore() -> None:
+    """Sanitizing is not enough: the slug must not merge two real studies.
+
+    ``new-study`` and ``new_study`` both sanitize to ``new_study``.  Under a
+    merged key the second study's ``plan.py`` silently returns the FIRST
+    study's cached module -- the wrong-module-without-an-exception failure this
+    whole module exists to remove, reintroduced by the fix for it.
+    """
+
+    from experiments.toolkit.study_imports import study_slug
+
+    assert study_slug(EXPERIMENTS / "new-study") != study_slug(EXPERIMENTS / "new_study")
+    assert study_slug(EXPERIMENTS / "a" / "study") != study_slug(EXPERIMENTS / "b" / "study")
+
+
+def test_distinct_studies_whose_names_differ_only_by_separator(tmp_path: Path) -> None:
+    """End-to-end form of the same property, measured rather than reasoned.
+
+    Two studies whose directory names differ only by ``-`` versus ``_`` must
+    load their own ``plan.py``, not one another's.
+    """
+
+    for name, value in (("new-study", "HYPHEN"), ("new_study", "UNDERSCORE")):
+        study = tmp_path / name
+        study.mkdir()
+        (study / "plan.py").write_text(f"WHICH = {value!r}\n", encoding="utf-8")
+
+    script = textwrap.dedent(
+        f"""
+        import sys
+        sys.path.insert(0, {str(REPO_ROOT)!r})
+        from experiments.toolkit.study_imports import load_study_module
+        import pathlib
+        root = pathlib.Path({str(tmp_path)!r})
+        a = load_study_module(root / "new-study", "plan")
+        b = load_study_module(root / "new_study", "plan")
+        print(a.WHICH, b.WHICH)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["HYPHEN", "UNDERSCORE"], result.stdout
+
+
+# --------------------------------------------------------------------------
+# The He-v1 boundary.  Adopted from the independent reviewer's boundary_probe.py
+# rather than rewritten, because it caught a regression this lane's own
+# instrument did not: the first fix converted only COLLIDING sibling names, so
+# `hev1.py` received study-scoped modules while He-v1's own bare imports built a
+# SECOND copy of the same files.  Zero ambiguous bare keys and correct module
+# identity are different properties, and only the first was being measured.
+# --------------------------------------------------------------------------
+_BOUNDARY_PROBE = """
+import sys
+sys.path.insert(0, {repo!r})
+sys.path.insert(0, {cutover!r})
+import hev1
+print('IDENTITIES', hev1.canary is hev1.eval_stage.canary,
+      hev1.strata is hev1.plan_stage.strata,
+      hev1.layout is hev1.plan_stage.layout)
+print('STRATA_STATE_IS_SHARED', hev1.strata.STRATA is hev1.plan_stage.strata.STRATA)
+try:
+    try:
+        hev1.plan_stage.strata.stratum('review-not-a-stratum')
+    except hev1.strata.StratumError:
+        print('EXPECTED_ERROR_CAUGHT')
+except ValueError as exc:
+    print('EXPECTED_ERROR_MISSED', type(exc).__module__, type(exc).__name__)
+"""
+
+
+def test_he_v1_boundary_has_one_canonical_module_identity() -> None:
+    """He-cutover's view of He-v1 is the SAME module object He-v1 uses itself.
+
+    Duplicate identity is a wrong-module defect just as a shared bare key is.
+    Its signature is worse in one way: two copies of ``strata`` mean two
+    distinct ``StratumError`` classes, so ``except hev1.strata.StratumError``
+    silently fails to catch an error raised through ``hev1.plan_stage.strata``
+    and the exception escapes as an unrelated type.
+    """
+
+    script = _BOUNDARY_PROBE.format(
+        repo=str(REPO_ROOT),
+        cutover=str(EXPERIMENTS / "atomistic" / "he-cutover"),
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+    assert "IDENTITIES True True True" in result.stdout, result.stdout
+    assert "STRATA_STATE_IS_SHARED True" in result.stdout, result.stdout
+    assert "EXPECTED_ERROR_CAUGHT" in result.stdout, (
+        "a StratumError raised through one copy of he-v1's strata was not caught "
+        "by `except` against the other copy:\n" + result.stdout
     )

@@ -7,9 +7,21 @@ import pytest
 import yaml
 from omegaconf import OmegaConf
 
-import cutover_plan
-import run_eval_row
-import run_train_row
+# Siblings are loaded study-scoped, not by bare import: experiments/ has
+# several same-named modules and the first study loaded would otherwise own
+# the bare name for every study after it. See experiments/toolkit/study_imports.py.
+import sys as _tpen_sys  # noqa: E402
+from pathlib import Path as _TpenPath  # noqa: E402
+
+_TPEN_REPO_ROOT = _TpenPath(__file__).resolve().parents[3]
+if str(_TPEN_REPO_ROOT) not in _tpen_sys.path:
+    _tpen_sys.path.insert(0, str(_TPEN_REPO_ROOT))
+
+from experiments.toolkit.study_imports import sibling  # noqa: E402
+
+cutover_plan = sibling(__file__, 'cutover_plan')
+run_eval_row = sibling(__file__, 'run_eval_row')
+run_train_row = sibling(__file__, 'run_train_row')
 
 
 GRID = Path(__file__).with_name("smoke_grid.yaml")
