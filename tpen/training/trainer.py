@@ -35,7 +35,13 @@ from tpen.training.update import (
     VMCUpdateMethod,
     VMCUpdateState,
 )
-from tpen.training.vmc import compute_vmc_objective, summarize_local_energy_terms, summarize_logabs
+from tpen.training.vmc import (
+    DEFAULT_NONFINITE_LOCAL_ENERGY_POLICY,
+    compute_vmc_objective,
+    resolve_nonfinite_local_energy_policy,
+    summarize_local_energy_terms,
+    summarize_logabs,
+)
 
 torch = require_torch(feature="VMC training")
 
@@ -110,12 +116,19 @@ class VMCTrainer:
         return_terms: bool = False,
         gradient_clip_norm: float | None = None,
         update_method: UpdateMethodSpec = None,
+        nonfinite_local_energy_policy: str = DEFAULT_NONFINITE_LOCAL_ENERGY_POLICY,
     ) -> None:
         self.max_steps = int(max_steps)
         self.log_every_n_steps = int(log_every_n_steps)
         self.return_terms = bool(return_terms)
         self.gradient_clip_norm = None if gradient_clip_norm is None else float(gradient_clip_norm)
         self.update_method = update_method
+        # Validated at construction rather than at the first non-finite row, so
+        # a misspelled policy fails before a run starts instead of after it has
+        # produced hours of samples under an estimator nobody chose.
+        self.nonfinite_local_energy_policy = resolve_nonfinite_local_energy_policy(
+            nonfinite_local_energy_policy
+        )
         # These are populated at the invocation boundary.  Keeping the
         # resolved method and model here gives checkpoint restore one owner for
         # rebuilding direct parameter references after model weights load.
@@ -145,6 +158,14 @@ class VMCTrainer:
         state: dict[str, Any] = {
             "next_iteration": int(self.next_iteration),
             "completed_updates": int(self.completed_updates),
+            # The ACTIVE estimator, recorded beside the numbers it produced.
+            # Config records intent; this records what actually ran, so a
+            # reader holding an energy can tell whether it came from the full
+            # sample or from a masked -- and therefore biased -- subsample.
+            # One authoritative location, checked on resume; deliberately NOT
+            # duplicated into run metadata, because two locations for one fact
+            # is how they drift apart.
+            "nonfinite_local_energy_policy": self.nonfinite_local_energy_policy,
         }
         if self._resolved_update_state is not None:
             state["parameter_layout"] = serialize_parameter_layout(
@@ -192,6 +213,37 @@ class VMCTrainer:
         # cannot leave the trainer half-restored at a bogus resume cursor.
         next_iteration = int(state["next_iteration"])
         completed_updates = int(state["completed_updates"])
+
+        # ESTIMATOR CONTINUITY. A checkpoint written under one non-finite policy
+        # and resumed under another would produce, in a single run, numbers from
+        # two different estimators -- one over the full sample and one over a
+        # systematically selected subsample. Recording the policy without
+        # checking it would leave a fact that nothing verifies, and a silent
+        # override is exactly how a run ends up reporting under an estimator
+        # nobody chose.
+        #
+        # Follows the precedent set by the update-method restore below, which
+        # raises in BOTH directions rather than skipping quietly. Absence is
+        # treated as the historical "mask" because every checkpoint written
+        # before this key existed used it -- so a legacy checkpoint resumed
+        # under "fail" is a real estimator change and is reported as one, rather
+        # than being waved through because the old file happened to be silent.
+        checkpoint_policy = state.get(
+            "nonfinite_local_energy_policy", DEFAULT_NONFINITE_LOCAL_ENERGY_POLICY
+        )
+        if checkpoint_policy != self.nonfinite_local_energy_policy:
+            raise ValueError(
+                "non-finite local-energy policy disagrees with the checkpoint: "
+                f"checkpoint recorded {checkpoint_policy!r}"
+                + (
+                    " (absent, so the historical 'mask' is assumed)"
+                    if "nonfinite_local_energy_policy" not in state
+                    else ""
+                )
+                + f", this run is configured for {self.nonfinite_local_energy_policy!r}. "
+                "Resuming would continue one run under two different estimators. "
+                "Match the configuration to the checkpoint, or start a new run"
+            )
 
         restored_layout = None
         if "parameter_layout" in state:
@@ -492,7 +544,11 @@ class VMCTrainer:
                         output = packet.as_output()
                         parameter_scores = packet.parameter_scores
                 with context.scope(Objective(step=step), state=state):
-                    objective = compute_vmc_objective(output.logabs, total_local_energy)
+                    objective = compute_vmc_objective(
+                        output.logabs,
+                        total_local_energy,
+                        nonfinite_policy=self.nonfinite_local_energy_policy,
+                    )
                 loss = objective.loss
 
                 # Read the parameter norm here, before any update, so the whole
