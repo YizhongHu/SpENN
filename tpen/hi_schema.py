@@ -744,8 +744,12 @@ _ADMITTED_ELECTRON_NUCLEUS_LAWS: dict[str, str] = {
 }
 
 # Absent or null means no clipping, which is what the study requires, so this
-# one is checked for absence rather than for a value.
+# one is checked for absence of a VALUE rather than for the key. The PATH is
+# kept for messages -- it is where a reader expects to find the knob -- but the
+# check is on the KEY at any depth, because the update method owns and applies
+# the clip. See :func:`_sweep_gradient_clip`.
 _GLOBAL_CLIP_PATH = "trainer.gradient_clip_norm"
+_GLOBAL_CLIP_KEY = "gradient_clip_norm"
 
 
 def _select(tree: Any, dotted: str) -> tuple[bool, Any]:
@@ -803,22 +807,139 @@ def _sweep_frozen_architecture(resolved_tree: Any) -> list[Rejection]:
                 )
             )
 
-    found, clip = _select(resolved_tree, _GLOBAL_CLIP_PATH)
-    if found and clip is not None:
+    rejections.extend(_sweep_trainability(resolved_tree))
+    return rejections
+
+
+def _sweep_gradient_clip(resolved_tree: Any) -> list[Rejection]:
+    """Reject a non-null gradient clip wherever it is configured.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection per non-null clip, at any depth in any section.
+
+    Notes
+    -----
+    BY KEY AT ANY DEPTH, not at :data:`_GLOBAL_CLIP_PATH`, and the reason is a
+    measured escape rather than tidiness. Clipping is not owned by the trainer:
+    ``LegacyAutogradUpdate.__init__`` takes ``gradient_clip_norm`` and is the
+    object that APPLIES it, so a ``trainer.update_method`` block naming that
+    admitted class with ``gradient_clip_norm: 1.0`` clipped every update while
+    ``trainer.gradient_clip_norm`` sat compliantly at null. A single dotted path
+    checks the field the study happens to spell today, not the knob.
+
+    NULL AND ABSENT ARE BOTH FINE, which is what every shipped configuration
+    does: the control writes ``gradient_clip_norm: null`` explicitly to say so.
+    Only a value is refused.
+
+    Run ONCE over the whole tree rather than per component view. That is a
+    simplification, NOT a de-duplication, and the difference is worth stating
+    because the obvious reading is wrong: the shipped config writes
+    ``runner.trainer: ${trainer}``, so the RESOLVED tree genuinely contains the
+    field at two paths and one configured clip is reported twice either way.
+    The per-view traversal produced the same two. Reporting both is the honest
+    behaviour rather than a defect -- when a runner carries a LITERAL copy
+    instead of an interpolation, those are two independent fields and naming
+    only one would send the reader to the wrong place.
+    """
+
+    rejections: list[Rejection] = []
+    for path, key, value in iter_nodes(resolved_tree):
+        if key != _GLOBAL_CLIP_KEY or value is None:
+            continue
         rejections.append(
             Rejection(
                 rule="frozen-coordinate",
                 tree="resolved",
-                path=_GLOBAL_CLIP_PATH,
+                path=path,
                 detail=(
                     f"global gradient clipping is not part of the study's objective/protection "
-                    f"policy, got {clip!r}. The update-norm bounds of SR and SPRING are "
-                    "parameter-coordinate-dependent protections and are not this knob"
+                    f"policy, got {value!r}. The update-norm bounds of SR and SPRING are "
+                    "parameter-coordinate-dependent protections and are not this knob. "
+                    f"Checked by key at any depth, not only at {_GLOBAL_CLIP_PATH!r}: the "
+                    "update method owns and applies the clip, so an admitted update rule can "
+                    "carry one while the trainer field stays null"
                 ),
             )
         )
+    return rejections
 
-    rejections.extend(_sweep_trainability(resolved_tree))
+
+def _sweep_positional_construction(resolved_tree: Any) -> list[Rejection]:
+    """Reject Hydra positional construction anywhere in the configuration.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        One rejection per ``_args_`` node.
+
+    Notes
+    -----
+    WHY A FAMILY REFUSAL RATHER THAN A WIDER TRAVERSAL. Every component rule in
+    this schema identifies a component by the KEY it hangs from -- ``model``,
+    ``trainer``, ``optimizer``, ``model.readout.trainable``,
+    ``model.factors[i].law``. ``_args_`` supplies constructor arguments
+    POSITIONALLY, and a positional argument has an index rather than a name.
+    ``tpen.runner.Train`` takes ``(model, sampler, hamiltonian_terms, optimizer,
+    trainer)``, so ``runner._args_`` builds exactly those five components with
+    no key for any rule to match. MEASURED: all five of the divergences the
+    component views refuse by keyword -- a frozen readout, a global clip, an
+    omitted non-finite policy, an unadmitted cusp law, an unadmitted optimizer
+    -- were ACCEPTED when the same content was passed positionally.
+
+    This is the KEY-VERSUS-VALUE failure that produced the target-allowlist gap,
+    one level up: a rule that reads names is defeated by a caller who supplies
+    the same thing without one.
+
+    The alternative is to make every rule shape-based -- identify a component by
+    its ``_target_`` rather than by its key. That is a larger and riskier change
+    than this slice is scoped for, and it would widen the blast radius of five
+    rules at once. Refusing the family and requiring a schema change to re-admit
+    it is the same doctrine :data:`STOP_RULE_SURFACE` applies to a surface whose
+    hazard cannot be inspected at schema time.
+
+    OVER-RESTRICTION MEASURED, not assumed: ``_args_`` appears in NO
+    configuration under ``experiments/`` and in no test fixture, so this refuses
+    nothing that exists. If a future arm genuinely needs positional
+    construction, the refusal is loud, names this function, and the remedy is to
+    make the rules shape-based rather than to delete this one.
+
+    RESIDUAL, stated rather than papered over: this closes positional
+    construction. A component reached through a keyword the rules do not name --
+    a model hung from ``runner.net`` rather than ``runner.model`` -- is still
+    unjudged, and that is the same key-shaped weakness in a different spelling.
+    """
+
+    rejections: list[Rejection] = []
+    for path, key, _value in iter_nodes(resolved_tree):
+        if key != "_args_":
+            continue
+        rejections.append(
+            Rejection(
+                rule="positional-construction",
+                tree="resolved",
+                path=path,
+                detail=(
+                    "Hydra positional construction is not permitted in this schema. Every "
+                    "component rule identifies what it judges by the KEY the component hangs "
+                    "from, and a positional argument has an index instead of a name -- so "
+                    "`_args_` builds the same components with nothing for the rules to match. "
+                    "Pass every component as a keyword. Re-admitting `_args_` requires making "
+                    "those rules shape-based, which is a schema change rather than a config one"
+                ),
+            )
+        )
     return rejections
 
 
@@ -1505,6 +1626,8 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(_sweep_callbacks(resolved_tree))
     rejections.extend(_sweep_target_values(resolved_tree))
     rejections.extend(_sweep_constructed_components(resolved_tree))
+    rejections.extend(_sweep_gradient_clip(resolved_tree))
+    rejections.extend(_sweep_positional_construction(resolved_tree))
     rejections.extend(_sweep_rank_divergent_fields(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)

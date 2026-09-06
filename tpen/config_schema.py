@@ -406,8 +406,36 @@ def _sweep_forbidden_resolvers(raw_tree: Any, policy: SchemaPolicy) -> list[Reje
             # as ``system.spatial_dim`` has no colon and no resolver name.
             resolver, separator, _argument = expression.partition(":")
             if not separator:
+                # No colon: a plain node reference such as ``${system.dim}``,
+                # which names no resolver. This stays true when the reference
+                # PATH is itself interpolated -- ``${model.${arch}.channels}``
+                # reads configuration, never process-local state -- so it must
+                # not be caught by the rule below.
                 continue
             resolver = resolver.strip()
+            if _INTERPOLATION_OPEN in resolver:
+                # THE RESOLVER NAME IS COMPUTED AT RESOLVE TIME, so it cannot be
+                # compared against any list here. ``${oc.${leaf}:VAR,0}`` with
+                # ``leaf: env`` is ``oc.env`` by the time OmegaConf runs it, and
+                # a static check sees only ``oc.${leaf}``. Unqualifiable is
+                # refused rather than admitted: an allowlist that cannot read
+                # the name it is checking is not a check.
+                rejections.append(
+                    Rejection(
+                        rule="uncheckable-resolver",
+                        tree="raw",
+                        path=path,
+                        detail=(
+                            f"interpolation ${{{expression}}} builds its RESOLVER NAME from "
+                            f"another interpolation ({resolver!r}), so which resolver runs is "
+                            "decided at resolution time and cannot be qualified before it. "
+                            "Spell the resolver literally. This is refused rather than "
+                            "admitted because the forbidden-resolver list can only refuse "
+                            "names it can read"
+                        ),
+                    )
+                )
+                continue
             if resolver in policy.forbidden_resolvers:
                 rejections.append(
                     Rejection(

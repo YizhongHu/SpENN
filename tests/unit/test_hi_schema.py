@@ -327,6 +327,182 @@ class TestForbiddenSurfaces:
             )
 
 
+class TestPositionalConstructionIsRefused:
+    """`_args_` builds the same components with no key for any rule to match.
+
+    Every component rule identifies what it judges by the KEY the component
+    hangs from. ``tpen.runner.Train`` takes
+    ``(model, sampler, hamiltonian_terms, optimizer, trainer)`` positionally, so
+    ``runner._args_`` constructs all five with an index instead of a name.
+
+    MEASURED BEFORE THE RULE EXISTED: all five divergences the component views
+    refuse by keyword were ACCEPTED when the same content was passed
+    positionally. This is the key-versus-value failure that produced the
+    target-allowlist gap, one level up.
+    """
+
+    def _positional_runner(self, mutate=None):
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        resolved = OmegaConf.to_container(cfg, resolve=True)
+        args = [
+            resolved["model"],
+            resolved["sampler"],
+            resolved["hamiltonian_terms"],
+            resolved["optimizer"],
+            resolved["trainer"],
+        ]
+        if mutate is not None:
+            mutate(args)
+        cfg.runner = OmegaConf.create({"_target_": "tpen.runner.Train", "_args_": args})
+        return cfg
+
+    def test_an_unmodified_positional_runner_is_refused(self) -> None:
+        """Refused even when it diverges in NO way.
+
+        This is the point of a family refusal: the schema cannot tell a benign
+        positional runner from a divergent one, because it cannot tell which
+        slot is which. Admitting the benign case would require exactly the
+        name-matching that positional construction removes.
+        """
+
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(self._positional_runner())
+        assert "positional-construction" in _rules(caught.value)
+        assert "runner._args_" in _paths(caught.value)
+
+    @pytest.mark.parametrize(
+        ("label", "mutate"),
+        [
+            ("frozen readout", lambda a: a[0]["readout"].__setitem__("trainable", False)),
+            ("global clip", lambda a: a[4].__setitem__("gradient_clip_norm", 1.0)),
+            ("omitted nonfinite policy", lambda a: a[4].pop("nonfinite_local_energy_policy")),
+            (
+                "old cusp law",
+                lambda a: a[0]["factors"][1]["law"].__setitem__(
+                    "_target_", "tpen.nn.CurvatureElectronNucleusCuspLaw"
+                ),
+            ),
+            ("unadmitted optimizer", lambda a: a[3].__setitem__("_target_", "torch.optim.SGD")),
+        ],
+    )
+    def test_every_divergence_that_escaped_positionally_is_now_refused(
+        self, label: str, mutate
+    ) -> None:
+        """One arm per divergence, each measured as ACCEPTED before the rule.
+
+        Read as a set these would be one assertion naming none of them; the
+        point of five arms is that a later narrowing of the rule says which
+        escape it reopened.
+        """
+
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(self._positional_runner(mutate))
+        assert "positional-construction" in _rules(caught.value), label
+
+    def test_positional_construction_is_refused_outside_the_runner_too(self) -> None:
+        """The weakness is path-shaped rules generally, not the runner section.
+
+        A readout passed positionally under ``model`` defeats
+        ``model.readout.trainable`` exactly as a trainer passed positionally
+        under ``runner`` defeats ``trainer.gradient_clip_norm``.
+        """
+
+        cfg = _config(
+            run={"run_id": "x"},
+            model={"_target_": "tpen.nn.TPENWaveFunction", "_args_": [{"channels": 32}]},
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model._args_" in _paths(caught.value)
+
+    def test_the_shipped_configs_use_no_positional_construction(self) -> None:
+        """The over-restriction measurement, asserted rather than remembered.
+
+        The rule refuses a Hydra feature outright. That is only defensible while
+        nothing shipped uses it, so the claim is a test rather than a comment --
+        a comment would keep saying so after it stopped being true.
+        """
+
+        for path in sorted(_CONTROL_CONFIG.parent.glob("*.yaml")):
+            assert "_args_" not in path.read_text(encoding="utf-8"), path
+            _validate(OmegaConf.load(path))
+
+
+class TestTheGradientClipKnobIsCheckedByKey:
+    """Clipping is not owned by the trainer, so a dotted path cannot bound it.
+
+    ``LegacyAutogradUpdate.__init__`` takes ``gradient_clip_norm`` and is the
+    object that APPLIES it. An ``update_method`` block naming that admitted
+    class with a clip therefore clipped every update while
+    ``trainer.gradient_clip_norm`` sat compliantly at null -- the rule checked
+    the field the study happens to spell, not the knob.
+    """
+
+    def test_the_admitted_update_method_may_not_carry_a_clip(self) -> None:
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.trainer.update_method = OmegaConf.create(
+            {
+                "_target_": "tpen.training.update.LegacyAutogradUpdate",
+                "_partial_": True,
+                "gradient_clip_norm": 1.0,
+            }
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "trainer.update_method.gradient_clip_norm" in _paths(caught.value)
+
+    def test_the_canonical_trainer_path_is_still_refused(self) -> None:
+        """Non-regression: widening the rule must not lose the case it had."""
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.trainer.gradient_clip_norm = 2.0
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "trainer.gradient_clip_norm" in _paths(caught.value)
+
+    def test_an_explicit_null_clip_on_the_update_method_is_admitted(self) -> None:
+        """The over-restriction control: null and absent both say NO clipping.
+
+        The control config writes ``gradient_clip_norm: null`` deliberately, to
+        state the policy rather than inherit it. A rule that refused the KEY
+        rather than a VALUE would refuse the shipped config itself.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.trainer.update_method = OmegaConf.create(
+            {
+                "_target_": "tpen.training.update.LegacyAutogradUpdate",
+                "_partial_": True,
+                "gradient_clip_norm": None,
+            }
+        )
+        _validate(cfg)
+
+    def test_an_interpolated_clip_is_reported_at_every_path_it_reaches(self) -> None:
+        """One CONFIGURED clip, two RESOLVED paths, and both are named.
+
+        The control writes ``runner.trainer: ${trainer}``, so the resolved tree
+        contains the field twice and the sweep reports it twice. That is the
+        honest behaviour, not a defect: when a runner carries a LITERAL copy
+        rather than an interpolation those are two independent fields, and a
+        rule that de-duplicated by value would name only one and send the reader
+        to the wrong place.
+
+        Written after asserting the opposite. The first version of this test
+        claimed one rejection, on the theory that sweeping whole-tree instead of
+        per-view removed a duplicate. It does not -- interpolation duplicates
+        the CONTENT, so both traversals see two -- and the docstring on
+        `_sweep_gradient_clip` was corrected with it.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.trainer.gradient_clip_norm = 2.0
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        clips = {r.path for r in caught.value.rejections if r.path.endswith("gradient_clip_norm")}
+        assert clips == {"trainer.gradient_clip_norm", "runner.trainer.gradient_clip_norm"}
+
+
 class TestAdmittedUpdateMethods:
     """The optimizer roster qualifies ``optimizer._target_`` and nothing else.
 

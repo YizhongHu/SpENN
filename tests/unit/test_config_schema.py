@@ -289,6 +289,57 @@ class TestNestedForbiddenResolvers:
         assert [r for r in rejections if r.rule == "forbidden-resolver"] == []
 
 
+class TestUncheckableResolvers:
+    """A resolver whose NAME is built by another interpolation.
+
+    ``${oc.${leaf}:VAR,0}`` with ``leaf: env`` IS ``oc.env`` by the time
+    OmegaConf runs it. A static check sees ``oc.${leaf}``, matches nothing, and
+    admits it -- so the forbidden-resolver list is bypassed without ever naming
+    a forbidden resolver. Refused rather than admitted: a list can only refuse
+    names it can read, and an allowlist that cannot read the name it is checking
+    is not a check.
+    """
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            # The exhibit: the resolver name's tail is interpolated.
+            "${oc.${leaf}:VAR,0}",
+            # Composed inside a permitted outer resolver, which is how it would
+            # actually be written to look innocuous.
+            "${oc.select:missing,${oc.${leaf}:VAR,0}}",
+            # The WHOLE name is one interpolation, with no literal part at all.
+            "${${name}:VAR}",
+        ],
+    )
+    def test_rejects_a_resolver_whose_name_is_interpolated(self, expression: str) -> None:
+        raw = {"model": {"seed": expression}}
+        rejections = sweep(raw, {"model": {"seed": 0}}, POLICY)
+        assert any(r.rule == "uncheckable-resolver" for r in rejections), expression
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            # A node reference whose PATH is interpolated. No colon, no
+            # resolver, and it reads configuration rather than process state.
+            "${model.${arch}.channels}",
+            "${${section}.dim}",
+        ],
+    )
+    def test_accepts_a_node_reference_whose_path_is_interpolated(self, expression: str) -> None:
+        """The over-restriction control, and it is the one that matters here.
+
+        A rule that refused every interpolation containing a nested ``${``
+        would pass every arm above while forbidding layered configuration
+        outright. The discriminator is the COLON: an expression with no colon
+        names a config node, not a resolver.
+        """
+
+        raw = {"system": {"dim": 3}, "model": {"dim": expression}}
+        rejections = sweep(raw, {"system": {"dim": 3}, "model": {"dim": 3}}, POLICY)
+        assert [r for r in rejections if r.rule == "uncheckable-resolver"] == [], expression
+
+
 class TestUnknownSections:
     def test_rejects_a_top_level_section_outside_the_closed_set(self) -> None:
         raw, resolved = _trees({"system": {}, "sneaky": {}})
