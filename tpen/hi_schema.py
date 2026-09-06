@@ -733,9 +733,46 @@ _FROZEN_TERM_COORDINATES: dict[str, dict[str, tuple[object, str]]] = {
 # nothing in named_parameters(), nothing in state_dict(), and no log line. The
 # silence was total. Requiring the declaration is what makes that failure
 # impossible to repeat by omission.
-_REQUIRED_TRAINABILITY: dict[str, str] = {
-    "model.readout.trainable": "trainable weighted Pfaffian readout (literal control)",
+# Readout trainability, keyed by the trailing component of the readout's
+# ``_target_`` -- the same shape-keyed form as the factor table below.
+#
+# THIS WAS A DOTTED ``model.readout.trainable`` AND IT WAS ESCAPABLE. Hydra's
+# own ``hydra.utils.instantiate`` can be a ``_target_``, so::
+#
+#     model:
+#       _target_: hydra.utils.instantiate
+#       _recursive_: false
+#       config: { ...the real model, readout frozen... }
+#
+# constructs exactly the same model with the whole subtree relocated one level
+# down. MEASURED: a frozen ``PfaffianReadout`` inside that wrapper VALIDATED,
+# while the identical model written directly was refused.
+#
+# THE DIAGNOSIS IS SHARPER THAN "BAN THE WRAPPER", and the measurement is what
+# makes it so. Through the same wrapper, an unadmitted cusp law, a moved
+# ``max_order``, an omitted non-finite policy and an unadmitted optimizer were
+# ALL still refused -- because those rules identify a thing by WHAT IT IS or by
+# key AT ANY DEPTH. The indirection only defeated the one rule that still
+# identified a thing by an ANCHORED PATH. So the remedy is to make that rule
+# depth-independent rather than to forbid a Hydra feature that is harmless
+# against every other rule here.
+#
+# Note carefully which property does the work: DEPTH-INDEPENDENCE, not
+# target-matching. See :func:`_iter_readout_nodes` for the mutant that measured
+# this, and for what each of the two nets uniquely catches.
+_REQUIRED_READOUT_TRAINABILITY: dict[str, tuple[str, str]] = {
+    "PfaffianReadout": (
+        "trainable",
+        "trainable weighted Pfaffian readout (literal control)",
+    ),
 }
+
+# The key net's requirement, for a mapping arriving under TPENWaveFunction's own
+# ``readout`` keyword regardless of what (or whether) it declares a target.
+_READOUT_KEY_REQUIREMENT: tuple[str, str] = (
+    "trainable",
+    "trainable weighted Pfaffian readout (literal control)",
+)
 
 # Factor trainability, keyed by the trailing component of the factor _target_.
 _REQUIRED_FACTOR_TRAINABILITY: dict[str, tuple[str, str]] = {
@@ -1109,30 +1146,98 @@ def _sweep_hamiltonian_terms(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
+def _iter_readout_nodes(
+    resolved_tree: Any,
+) -> list[tuple[str, Mapping[str, Any], str, str]]:
+    """Find every configured readout under ``model``, by TARGET *and* by key.
+
+    Returns
+    -------
+    list of (str, Mapping, str, str)
+        ``(path, node, required_argument, authority)``, de-duplicated by path.
+
+    Notes
+    -----
+    TWO NETS ON PURPOSE, and this is the one place in this module where a
+    key-shaped rule is KEPT rather than replaced.
+
+    WHAT ACTUALLY CLOSED THE ESCAPE, stated precisely because the obvious
+    reading is wrong. Hydra's own ``hydra.utils.instantiate`` can be a
+    ``_target_``, so wrapping the model in it relocates the whole subtree one
+    level down and the old DOTTED ``model.readout.trainable`` named nothing.
+    MEASURED: a frozen ``PfaffianReadout`` inside that wrapper validated and
+    constructed a readout with ZERO parameters, forwarding finitely -- a run
+    that trains its whole budget with a permanently frozen readout.
+
+    That escape is closed by the KEY net walking the ``model`` subtree at any
+    depth, NOT by the shape net: the wrapped readout still arrives under the key
+    ``readout``, at ``model.config.readout``. **Removing the shape net leaves
+    the wrapped case refused.** Measured, after a mutant removing it changed no
+    behaviour on that probe -- the mutant was sound and the attribution was not.
+
+    So each net is kept for a case only IT catches, and neither is decoration:
+
+    - KEY net only: a readout written with NO ``_target_``. Unlike a Hamiltonian
+      term, which ``_validate_hamiltonian_term`` refuses loudly for lacking a
+      callable ``local_energy``, a bare readout mapping has no comparably crisp
+      construction-time backstop.
+    - SHAPE net only: a ``PfaffianReadout`` under a key that is not ``readout``,
+      e.g. ``model.head``. Recorded honestly as a PRECONSTRUCTION gap rather
+      than a live escape: ``TPENWaveFunction`` takes ``**kwargs`` so the key is
+      swallowed, and ``readout`` is a required keyword, so MOVING the readout
+      there fails at construction. It is closed for the same reason F2's SR case
+      was -- "another component happens to refuse it" is a property of today's
+      constructors, not a rule.
+
+    Union, not replacement. Every other rule in this module moved from name to
+    shape; this one is depth-independent in BOTH, and the asymmetry is
+    deliberate.
+    """
+
+    model_found, model = _select(resolved_tree, "model")
+    if not model_found or not isinstance(model, (Mapping, list)):
+        return []
+    seen: dict[str, tuple[str, Mapping[str, Any], str, str]] = {}
+    for path, key, value in iter_nodes({"model": model}):
+        if not isinstance(value, Mapping):
+            continue
+        target = value.get("_target_")
+        spec = None
+        if isinstance(target, str):
+            spec = _REQUIRED_READOUT_TRAINABILITY.get(target.rsplit(".", 1)[-1])
+        if spec is None and key == "readout":
+            # The key net. ``readout`` is TPENWaveFunction's own keyword, so a
+            # mapping arriving under it is the readout whatever it declares.
+            spec = _READOUT_KEY_REQUIREMENT
+        if spec is None:
+            continue
+        relative, authority = spec
+        seen.setdefault(path, (path, value, relative, authority))
+    return list(seen.values())
+
+
 def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
     """Require every trainability flag to be declared true, never inherited."""
 
     rejections: list[Rejection] = []
 
-    for dotted, authority in _REQUIRED_TRAINABILITY.items():
-        # Scoped to configurations that actually declare the component. A config
-        # with no readout at all is INCOMPLETE, which is a different defect from
-        # a readout whose trainability was silently inherited -- and it is the
-        # latter this rule exists to catch. Conflating them would make every
-        # partial config report a trainability violation it does not have.
-        parent, _, _leaf = dotted.rpartition(".")
-        if not _select(resolved_tree, parent)[0]:
-            continue
-        found, value = _select(resolved_tree, dotted)
+    # Scoped to configurations that actually declare the component. A config
+    # with no readout at all is INCOMPLETE, which is a different defect from a
+    # readout whose trainability was silently inherited -- and it is the latter
+    # this rule exists to catch. Conflating them would make every partial config
+    # report a trainability violation it does not have. Shape-based discovery
+    # gives that scoping for free: a config with no readout has no node to match.
+    for path, node, relative, authority in _iter_readout_nodes(resolved_tree):
+        found, value = _select(node, relative)
         if not found:
             rejections.append(
                 Rejection(
                     rule="undeclared-trainability",
                     tree="resolved",
-                    path=dotted,
+                    path=f"{path}.{relative}",
                     detail=(
-                        f"{dotted} must be declared explicitly and true ({authority}). The "
-                        "default is the opposite, and an inherited false is invisible: the "
+                        f"must be declared explicitly ({authority}); the class default is "
+                        "the OPPOSITE, and an inherited false is invisible -- the "
                         "parameter appears in neither named_parameters() nor state_dict(), so "
                         "nothing logs it and no gradient touches it"
                     ),
@@ -1143,7 +1248,7 @@ def _sweep_trainability(resolved_tree: Mapping[str, Any]) -> list[Rejection]:
                 Rejection(
                     rule="undeclared-trainability",
                     tree="resolved",
-                    path=dotted,
+                    path=f"{path}.{relative}",
                     detail=f"expected true, got {value!r}: {authority}",
                 )
             )

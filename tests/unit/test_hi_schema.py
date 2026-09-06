@@ -327,6 +327,139 @@ class TestForbiddenSurfaces:
             )
 
 
+class TestTheReadoutRuleHasTwoNets:
+    """A path rule was escapable by INDIRECTION, so a shape net was added.
+
+    Hydra's own ``hydra.utils.instantiate`` can be a ``_target_``::
+
+        model:
+          _target_: hydra.utils.instantiate
+          _recursive_: false
+          config: { ...the real model, readout frozen... }
+
+    That constructs the same model with the whole subtree one level down, so
+    ``model.readout.trainable`` names nothing. MEASURED by an independent
+    verifier: this validated and constructed a real ``TPENWaveFunction`` whose
+    ``PfaffianReadout`` had ZERO parameters and forwarded finitely -- a run that
+    trains for its whole budget with a permanently frozen readout, which is the
+    exact he-v1 defect this rule exists to prevent.
+
+    THE DIAGNOSIS IS NARROWER THAN "BAN THE WRAPPER". Through the SAME wrapper
+    an unadmitted cusp law, a moved ``max_order``, an omitted non-finite policy
+    and an unadmitted optimizer were all still refused, because those rules
+    identify a thing by what it IS or by key at any depth. The indirection only
+    defeated the last rule that identified a thing by where it SITS.
+    """
+
+    def _wrapped(self, mutate=None):
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        model = OmegaConf.to_container(cfg.model, resolve=True)
+        if mutate is not None:
+            mutate(model)
+        cfg.model = OmegaConf.create(
+            {"_target_": "hydra.utils.instantiate", "_recursive_": False, "config": model}
+        )
+        return cfg
+
+    def test_a_frozen_readout_behind_the_indirection_is_refused(self) -> None:
+        cfg = self._wrapped(lambda m: m["readout"].__setitem__("trainable", False))
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.config.readout.trainable" in _paths(caught.value)
+
+    def test_an_omitted_declaration_behind_the_indirection_is_refused(self) -> None:
+        cfg = self._wrapped(lambda m: m["readout"].pop("trainable"))
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-trainability" in _rules(caught.value)
+
+    def test_the_indirection_is_closed_by_DEPTH_not_by_target_matching(self) -> None:
+        """Attribution, pinned, because the obvious reading is wrong.
+
+        The wrapped readout still arrives under the key ``readout``, at
+        ``model.config.readout``. What closed the escape is the key net walking
+        the model subtree at ANY DEPTH -- not the shape net. A mutant removing
+        the shape net left the wrapped case refused and changed no behaviour on
+        that probe, which is how the misattribution was caught before it
+        shipped.
+
+        This test states the property the fix actually relies on, so a later
+        reader optimising the shape net away does not believe they are removing
+        what holds the indirection closed.
+        """
+
+        cfg = self._wrapped(lambda m: m["readout"].__setitem__("trainable", False))
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        offending = {r.path for r in caught.value.rejections if "trainab" in r.rule}
+        assert "model.config.readout.trainable" in offending
+        # The key is unchanged by the wrapper; only the DEPTH changed.
+        assert all(path.endswith(".readout.trainable") for path in offending), offending
+
+    def test_the_shape_net_catches_a_readout_under_another_key(self) -> None:
+        """The case only the SHAPE net catches, recorded with its real severity.
+
+        A ``PfaffianReadout`` under a key that is not ``readout`` is invisible to
+        the key net. This is a PRECONSTRUCTION gap rather than a live escape --
+        ``TPENWaveFunction`` takes ``**kwargs`` so the key is swallowed, and
+        ``readout`` is a required keyword, so moving the readout there fails at
+        construction. Closed anyway, for the reason F2's SR case was: "another
+        component happens to refuse it" is a property of today's constructors,
+        not a rule.
+
+        Without this arm the shape net is unguarded -- a mutant removing it
+        passes the whole suite, which is exactly what happened before this test
+        existed.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        readout = OmegaConf.to_container(cfg.model.readout, resolve=True)
+        readout["trainable"] = False
+        OmegaConf.update(cfg, "model.head", readout, force_add=True)
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "model.head.trainable" in _paths(caught.value)
+
+    def test_a_compliant_model_behind_the_indirection_validates(self) -> None:
+        """The over-restriction control: refuse the FREEZE, not the wrapper.
+
+        Banning ``hydra.utils.instantiate`` outright would pass both red arms
+        above while forbidding a Hydra feature that, as measured, defeats none
+        of the shape-based rules.
+        """
+
+        _validate(self._wrapped())
+
+    def test_the_key_net_still_catches_a_readout_with_no_target(self) -> None:
+        """The net that was KEPT, and why keeping it was not sentimentality.
+
+        A readout written without a ``_target_`` matches no shape rule. Unlike a
+        Hamiltonian term -- which ``_validate_hamiltonian_term`` refuses loudly
+        for lacking a callable ``local_energy`` -- a bare readout mapping has no
+        comparably crisp construction-time backstop, so dropping the key net to
+        make the design uniform would have removed real coverage.
+        """
+
+        cfg = _config(model={"readout": {"channels": 32, "trainable": False}})
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "undeclared-trainability" in _rules(caught.value)
+
+    def test_one_readout_is_not_reported_twice_by_the_two_nets(self) -> None:
+        """The shipped readout matches BOTH nets; it must yield one finding.
+
+        Two rejections for one field read as two defects. De-duplication is by
+        PATH, so a genuinely second readout elsewhere is still reported.
+        """
+
+        cfg = OmegaConf.load(_CONTROL_CONFIG)
+        cfg.model.readout.trainable = False
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        hits = [r for r in caught.value.rejections if r.path == "model.readout.trainable"]
+        assert len(hits) == 1, [r.path for r in caught.value.rejections]
+
+
 class TestHamiltonianTermsAreFoundByShapeNotByKey:
     """The terms may be a Mapping OR a Sequence, and the keys are the author's.
 
