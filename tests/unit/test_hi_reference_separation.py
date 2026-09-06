@@ -332,6 +332,70 @@ class TestTheParserSeesEveryImportForm:
             f"parser saw {sorted(detected)}"
         )
 
+    @pytest.mark.parametrize(
+        ("package", "source"),
+        [
+            ("tpen", "from ..hi_manifest import reference_energy\n"),
+            ("tpen", "from .. import hi_manifest\n"),
+            ("tpen", "from ...anything import thing\n"),
+        ],
+        ids=["over-level-module", "over-level-package", "way-over-level"],
+    )
+    def test_a_relative_import_past_the_top_level_resolves_to_nothing(
+        self, package: str, source: str
+    ) -> None:
+        """A relative import cannot climb above the top-level package.
+
+        Such a statement is invalid Python and cannot execute, so ANY name
+        derived from it is fabricated. The resolver previously allowed the
+        boundary case and returned the bare module leaf -- for
+        ``from ..hi_manifest import x`` inside ``tpen`` it produced
+        ``"hi_manifest"``.
+
+        ASSERTED ON THE RESOLVER, NOT ON `REFERENCE_MODULE` ABSENCE, and the
+        distinction is the point. The fabricated name was ``hi_manifest`` while
+        `REFERENCE_MODULE` is ``tpen.hi_manifest``, so a test phrased as "the
+        reference is not detected" would have PASSED against the broken
+        resolver and guarded nothing. The defect was real but latent for this
+        particular reference module -- it would have fired for any top-level
+        one. Testing the mechanism catches it; testing the symptom does not.
+
+        WHICH ARM ACTUALLY DISCRIMINATES, measured rather than assumed: only
+        ``over-level-module`` fails against the old resolver. The other two
+        returned ``None`` under both, because the old code's ``base or None``
+        already collapsed an empty base when ``node.module`` was absent. They
+        are retained as boundary coverage for a DIFFERENT regression -- a
+        resolver that started returning the empty base -- and not as evidence
+        against the bug just fixed. Three arms that look equivalent while one
+        does the work is exactly the shape that makes a suite feel stronger
+        than it is.
+        """
+
+        node = next(
+            child
+            for child in ast.walk(ast.parse(source))
+            if isinstance(child, ast.ImportFrom)
+        )
+        assert _resolve_import_from(node, package) is None, (
+            f"{source.strip()!r} in package {package!r} is not a valid import; "
+            "resolving it to a name invents a module that cannot exist"
+        )
+
+    def test_a_legal_relative_import_at_the_boundary_still_resolves(self) -> None:
+        """Over-restriction control for the bound above.
+
+        A resolver that returned None for every relative import would satisfy
+        every case above. Level 1 inside a top-level package is legal and must
+        still produce a name.
+        """
+
+        node = next(
+            child
+            for child in ast.walk(ast.parse("from . import hi_manifest\n"))
+            if isinstance(child, ast.ImportFrom)
+        )
+        assert _resolve_import_from(node, "tpen") == "tpen"
+
     def test_an_unrelated_import_is_not_detected(self, tmp_path) -> None:
         """Negative control, so 'detected' is not simply 'always true'.
 
