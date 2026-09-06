@@ -27,6 +27,7 @@ from tpen.nn.cusp import (
     ElectronNucleusCuspLaw,
     LinearElectronNucleusCuspLaw,
     CurvatureElectronNucleusCuspLaw,
+    TailSafeElectronNucleusCuspLaw,
 )
 from tpen.nn.embedding import Embedding
 from tpen.nn.envelope import (
@@ -63,7 +64,7 @@ from tpen.nn.path_aggregation import PathAggregation
 from tpen.nn.tpen_layer import TPENLayer
 from tpen.nn.tpen_wave_function import TPENWaveFunction
 from tpen.nn.tpen_stack import TPENStack
-from tpen.nn.update import ResidualUpdater, Updater
+from tpen.nn.update import ReplaceUpdater, ResidualUpdater, Updater
 
 __all__ = [
     "AdditiveCusp",
@@ -104,6 +105,7 @@ __all__ = [
     "PathAggregation",
     "RawCoordinateBasis",
     "RMSNorm",
+    "ReplaceUpdater",
     "ResidualUpdater",
     "SeededLinear",
     "TPENForwardContext",
@@ -112,6 +114,7 @@ __all__ = [
     "TPENStack",
     "TorchInitializer",
     "CurvatureElectronNucleusCuspLaw",
+    "TailSafeElectronNucleusCuspLaw",
     "Updater",
     "WavefunctionForwardRequest",
     "WavefunctionRequestProvider",

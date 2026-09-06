@@ -249,3 +249,4 @@ def test_projector_marks_missing_device_count_explicitly() -> None:
         ("reserved_mb", 4.0),
         ("device_count_unavailable", True),
     ]
+
