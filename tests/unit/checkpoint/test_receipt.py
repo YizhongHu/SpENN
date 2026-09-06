@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -313,6 +314,27 @@ def test_checkpoint_published_still_rejects_negative_durations_when_present() ->
         )
 
 
+def test_k_receipt_owned_code_uses_no_reflection_or_string_selected_access() -> None:
+    """Enforce K's recorded source invariant independently of behavior.
+
+    This is deliberately a source-contract adversary: the K ruling names
+    direct serializers and no reflection, so a passing behavioral suite alone
+    cannot establish it.  The test reports every direct getattr/hasattr call,
+    including calls inside decorated definitions.
+    """
+
+    source_path = Path(__file__).parents[3] / "tpen" / "checkpoint" / "receipt.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    violations = [
+        f"{source_path}:{call.lineno}:{call.col_offset}: {call.func.id}"
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id in {"getattr", "hasattr"}
+    ]
+    assert violations == [], "reflection in K receipt-owned code: " + ", ".join(violations)
+
+
 def test_has_publication_receipt_true_only_for_a_matching_valid_row(tmp_path: Path) -> None:
     checkpoint_dir, files = _write_checkpoint(tmp_path)
     ref = _ref_for(checkpoint_dir)
@@ -421,6 +443,134 @@ def test_backfill_publication_receipt_treats_a_malformed_existing_row_as_absent(
     assert backfilled["summary"]["content_id"] == ref.content_id
     assert backfilled["summary"]["write_duration_sec"] is None
     assert backfilled["summary"]["publish_duration_sec"] is None
+
+
+def test_reconcile_backfills_a_hollow_parsed_receipt_row(tmp_path: Path) -> None:
+    """A parsed row without measured sizes does not suppress backfill.
+
+    Normal receipt writes and prefix truncation cannot produce a closed JSON
+    row of this shape. This is a narrow guard for externally introduced rows,
+    not validation of arbitrary receipt content.
+    """
+
+    from tests.unit.callback.test_checkpoint import _write_checkpoint as _save_real_checkpoint
+    from tpen.checkpoint.catalog import reconcile_publication
+
+    final_dir = _save_real_checkpoint(tmp_path)
+    root = tmp_path / "checkpoints"
+    ref = _ref_for(final_dir)
+    receipt_path = publication_receipt_path(root)
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema": PUBLICATION_RECEIPT_SCHEMA,
+                "summary": {"content_id": ref.content_id},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    reconcile_publication(root, final_dir)
+
+    rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2, "a hollow row must not suppress measured backfill"
+    measured = rows[-1]
+    assert measured["summary"]["content_id"] == ref.content_id
+    assert measured["summary"]["total_bytes"] > 0
+    assert measured["summary"]["write_duration_sec"] is None
+    assert measured["summary"]["publish_duration_sec"] is None
+    assert measured["files"]
+
+
+def _complete_measured_receipt_row(content_id: str) -> dict[str, object]:
+    """Return a presence-complete receipt row for reconciliation tests."""
+
+    return {
+        "schema": PUBLICATION_RECEIPT_SCHEMA,
+        "summary": {
+            "content_id": content_id,
+            "file_count": 5,
+            "payload_bytes": 10,
+            "metadata_bytes": 5,
+            "total_bytes": 15,
+        },
+        "files": [{"component": "model", "relative_path": "model.pt", "size_bytes": 10}],
+    }
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ("file_count", "payload_bytes", "metadata_bytes", "total_bytes", "files"),
+)
+def test_hollow_receipt_missing_one_measured_field_is_invalid(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, missing: str
+) -> None:
+    """Each required accounting field independently prevents receipt presence."""
+
+    content_id = "c" * 64
+    record = _complete_measured_receipt_row(content_id)
+    if missing == "files":
+        del record["files"]
+    else:
+        summary = record["summary"]
+        assert isinstance(summary, dict)
+        del summary[missing]
+    path = tmp_path / "publication_receipts.jsonl"
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="tpen"):
+        assert has_publication_receipt(path, content_id) is False
+        assert list(iter_valid_publication_receipts(path)) == []
+
+    assert any(
+        str(path) in entry.getMessage() and ":1" in entry.getMessage()
+        for entry in caplog.records
+    )
+
+
+def test_presence_only_receipt_validation_accepts_present_null_fields(tmp_path: Path) -> None:
+    """The F2 boundary checks field presence without validating their values."""
+
+    content_id = "c" * 64
+    record = _complete_measured_receipt_row(content_id)
+    record["files"] = None
+    record["summary"] = {
+        "content_id": content_id,
+        "file_count": None,
+        "payload_bytes": None,
+        "metadata_bytes": None,
+        "total_bytes": None,
+    }
+    path = tmp_path / "publication_receipts.jsonl"
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    assert has_publication_receipt(path, content_id) is True
+    assert list(iter_valid_publication_receipts(path)) == [record]
+
+
+def test_complete_matching_row_follows_hollow_and_unrelated_rows(tmp_path: Path) -> None:
+    """Only a complete row for the requested content identity counts."""
+
+    content_id = "c" * 64
+    hollow = _complete_measured_receipt_row(content_id)
+    hollow_summary = hollow["summary"]
+    assert isinstance(hollow_summary, dict)
+    del hollow_summary["total_bytes"]
+    unrelated = _complete_measured_receipt_row("d" * 64)
+    complete = _complete_measured_receipt_row(content_id)
+    path = tmp_path / "publication_receipts.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(row) for row in (hollow, unrelated)) + "\n",
+        encoding="utf-8",
+    )
+
+    assert has_publication_receipt(path, content_id) is False
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(complete) + "\n")
+
+    assert list(iter_valid_publication_receipts(path)) == [unrelated, complete]
+    assert has_publication_receipt(path, content_id) is True
 
 
 def test_backfill_publication_receipt_is_a_noop_when_a_valid_row_already_exists(
