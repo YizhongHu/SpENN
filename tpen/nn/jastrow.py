@@ -92,9 +92,13 @@ class BoundedTwoCoefficientJastrow(LogAmplitudeFactor):
     difference_coefficient : float, optional
         ``theta_t``, multiplying ``q_ij (q_i - q_j)^2``. Defaults to ``0.0``.
     length : float, optional
-        The bounded-distance length ``l`` in bohr. The study fixes ``1.0``.
+        The bounded-distance length ``l`` in bohr. The study's basis uses
+        ``1.0``, and this factor defaults to the same value -- but that is a
+        matching DEFAULT, not a shared setting: the two are independent
+        parameters that happen to agree until someone changes one.
 
-        **It must match the basis, and NOTHING ENFORCES THAT.** This factor and
+        **If this factor is composed alongside the basis the two must match,
+        and NOTHING ENFORCES THAT.** This factor and
         `tpen.nn.basis.BoundedDistanceBasis` each store their own ``length``
         and compute the same ``q`` formula from it; there is no shared owner
         and no schema rule comparing them. A model composed with ``1.0`` here

@@ -147,10 +147,14 @@ def save_checkpoint(
     # used instead of `created_at`'s time.time() so a system clock adjustment
     # mid-write cannot corrupt the measured duration.
     write_start = time.perf_counter()
-    tmp_dir.mkdir(parents=True)
-
     files: dict[str, str] = {}
     try:
+        # INSIDE the try, deliberately. It used to run just above it, which
+        # left a window: an interrupt after the directory existed but before
+        # the try was entered escaped cleanup entirely and stranded the tmp
+        # directory -- the residue that then collides with the next attempt.
+        # The window was small, not absent, and "small" is not a guarantee.
+        tmp_dir.mkdir(parents=True)
         _write_resolved_config(tmp_dir / "resolved_config.yaml", cfg)
         files["resolved_config"] = "resolved_config.yaml"
 
