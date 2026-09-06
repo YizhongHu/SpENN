@@ -540,6 +540,15 @@ _REQUIRED_FACTOR_TRAINABILITY: dict[str, tuple[str, str]] = {
     # state_dict() and therefore unlogged -- is available to this factor the
     # moment someone adds it to a config, and a rule added later would arrive
     # after the run that needed it.
+    # NOT ACTIVE IN ANY SHIPPED CONFIGURATION as of this commit. The factor
+    # exists, is exported from `tpen.nn`, and has this rule -- which together
+    # look exactly like a factor in use. It is composed into nothing:
+    # `experiments/atomistic/he-importance/configs/train.yaml` does not list it
+    # among `model.factors`, and no other config does either. Composing it
+    # changes the model that produces the science, so it is a scan-design
+    # decision rather than a code chore; tracked as its own item. Said here
+    # because a capability present but unwired is the kind of thing a later
+    # reader assumes is on.
     "BoundedTwoCoefficientJastrow": (
         "trainable",
         "both Jastrow coefficients train; they start at zero, so an inherited "
