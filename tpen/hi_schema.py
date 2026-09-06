@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
@@ -987,6 +987,110 @@ def _sweep_electron_nucleus_law(resolved_tree: Any) -> list[Rejection]:
     return rejections
 
 
+# ---------------------------------------------------------------------------
+# Closing over the components that are actually CONSTRUCTED
+# ---------------------------------------------------------------------------
+# THE HOLE THIS CLOSES, and it is the schema's own claim failing rather than a
+# new kind of problem. Every component rule above reads a path from the
+# configuration ROOT -- `model`, `trainer.gradient_clip_norm`,
+# `model.factors[i].law`, `optimizer`. What `tpen.run._instantiate_runner`
+# hands to Hydra is `cfg.runner`, and `instantiate` is RECURSIVE, so what gets
+# built is whatever hangs under `runner`. In the shipped control config those
+# are interpolations (`model: ${model}`) and the two agree -- but nothing
+# required that. A runner section carrying its own literal copies was accepted
+# with a frozen readout, a global gradient clip, an unadmitted cusp law and an
+# OMITTED non-finite policy, while every root field stayed compliant.
+#
+# WHY VIEWS RATHER THAN ROOT-EQUALITY. Requiring `runner.model == model` would
+# refuse every divergence, including ones nobody cares about, and would forbid
+# a runner from ever carrying a component the root does not also spell. That
+# over-restriction is invisible until a legitimate run cannot start. Re-running
+# the component rules over what is constructed refuses exactly the divergences
+# the rules already name, and nothing else -- and it needs no new rule, which
+# is why the blast radius is the existing rules' blast radius.
+#
+# COMPONENT KEYS, not a fixed `runner.*` path list: the view is any mapping
+# under `runner` that carries at least one component the rules know how to
+# judge. In the shipped config the only such node is `runner` itself, so this
+# costs one extra pass; a config that nested a component deeper is covered
+# without a second rule.
+_COMPONENT_KEYS = frozenset(
+    {"model", "trainer", "optimizer", "sampler", "hamiltonian_terms"}
+)
+
+# The rules that judge a COMPONENT rather than the run as a whole. Deliberately
+# omitted: `_sweep_rank_divergent_fields`, which is about `run.run_id` and is a
+# property of the run's identity rather than of anything constructed;
+# `_sweep_callbacks`, because `_instantiate_runner` already refuses a runner
+# that owns callbacks at all; and `_sweep_target_values`, which already walks
+# the whole resolved tree and therefore covers every view for free.
+_COMPONENT_SWEEPS = (
+    _sweep_frozen_architecture,
+    _sweep_electron_nucleus_law,
+    _sweep_nonfinite_local_energy_policy,
+)
+
+
+def _reprefix(rejections: list[Rejection], prefix: str) -> list[Rejection]:
+    """Re-root each rejection's path so it names where the component was found.
+
+    A finding reported at ``trainer.gradient_clip_norm`` when the offending
+    value is at ``runner.trainer.gradient_clip_norm`` sends the reader to a
+    field that is compliant, which is worse than no path at all.
+    """
+
+    return [replace(rejection, path=f"{prefix}{rejection.path}") for rejection in rejections]
+
+
+def _sweep_constructed_components(resolved_tree: Any) -> list[Rejection]:
+    """Apply the component rules to the root AND to everything under ``runner``.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        Resolved configuration tree.
+
+    Returns
+    -------
+    list of Rejection
+        Findings from every component view, each path re-rooted at the view.
+
+    Notes
+    -----
+    The root view keeps its existing semantics exactly, including
+    ``require_optimizer=True``: a training configuration that declares no
+    method is incomplete. A component view is PRESENCE-SCOPED throughout --
+    every rule it runs already skips a component the view does not declare --
+    so an evaluation runner carrying no trainer and no optimizer is untouched.
+
+    RESIDUAL, stated rather than papered over: this closes the components the
+    rules know how to judge. A component the rules have no rule for is still
+    unjudged wherever it appears, at the root as much as under ``runner``, and
+    that is a gap in the RULE SET rather than in this traversal.
+    """
+
+    rejections: list[Rejection] = []
+    for component_sweep in _COMPONENT_SWEEPS:
+        rejections.extend(component_sweep(resolved_tree))
+    rejections.extend(_sweep_method(resolved_tree))
+
+    if not isinstance(resolved_tree, Mapping):
+        return rejections
+    runner = resolved_tree.get("runner")
+    if not isinstance(runner, Mapping):
+        return rejections
+
+    for path, _key, value in iter_nodes({"runner": runner}):
+        if not isinstance(value, Mapping) or not (_COMPONENT_KEYS & set(value)):
+            continue
+        for component_sweep in _COMPONENT_SWEEPS:
+            rejections.extend(_reprefix(component_sweep(value), f"{path}."))
+        rejections.extend(
+            _reprefix(_sweep_method(value, require_optimizer=False), f"{path}.")
+        )
+    return rejections
+
+
 def _sweep_rank_divergent_fields(resolved_tree: Any) -> list[Rejection]:
     """Reject fields that would resolve to a different value in each process.
 
@@ -1067,8 +1171,21 @@ def _roster_summary() -> str:
     )
 
 
-def _sweep_method(resolved_tree: Any) -> list[Rejection]:
+def _sweep_method(resolved_tree: Any, *, require_optimizer: bool = True) -> list[Rejection]:
     """Reject a training configuration whose optimizer method is not admitted.
+
+    Parameters
+    ----------
+    resolved_tree : Any
+        The tree to check, which is either the configuration root or one of the
+        component views under ``runner``.
+    require_optimizer : bool, optional
+        Whether an ABSENT optimizer is itself a violation. True at the root,
+        where a training configuration that declares no method is incomplete.
+        False on a component view, where absence means the view simply does not
+        carry an optimizer -- demanding one there would refuse every runner that
+        is not a trainer, which is an over-restriction that surfaces as a run
+        that cannot start rather than as a red test.
 
     Notes
     -----
@@ -1082,6 +1199,8 @@ def _sweep_method(resolved_tree: Any) -> list[Rejection]:
         return []
     optimizer = resolved_tree.get("optimizer")
     if optimizer is None:
+        if not require_optimizer:
+            return []
         return [
             Rejection(
                 rule="missing-method",
@@ -1254,10 +1373,7 @@ def validate_hi_train_config(cfg: DictConfig, *, env: Mapping[str, str] | None =
     rejections.extend(sweep_resolved(resolved_tree, HI_TRAIN_POLICY))
     rejections.extend(_sweep_callbacks(resolved_tree))
     rejections.extend(_sweep_target_values(resolved_tree))
-    rejections.extend(_sweep_method(resolved_tree))
-    rejections.extend(_sweep_frozen_architecture(resolved_tree))
-    rejections.extend(_sweep_electron_nucleus_law(resolved_tree))
-    rejections.extend(_sweep_nonfinite_local_energy_policy(resolved_tree))
+    rejections.extend(_sweep_constructed_components(resolved_tree))
     rejections.extend(_sweep_rank_divergent_fields(resolved_tree))
     if rejections:
         raise ClosedSchemaError(rejections)

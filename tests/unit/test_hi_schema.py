@@ -8,6 +8,8 @@ because only there is there anything to construct.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from omegaconf import OmegaConf
 
@@ -53,6 +55,36 @@ def _validate(cfg, env: dict[str, str] | None = None) -> None:
     """
 
     validate_hi_train_config(cfg, env={} if env is None else env)
+
+
+# Anchored to this file, not to the process working directory. The tests above
+# use bare relative paths, which pins them to being run from the repository
+# root; from anywhere else they read a different tree or none at all. Fixing
+# that everywhere is outside this slice, so the new cases below at least do not
+# add to it.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CONTROL_CONFIG = _REPO_ROOT / "experiments/atomistic/he-importance/configs/train.yaml"
+
+
+def _control_with_literal_runner_copy(section: str):
+    """Load the control config and give ``runner.<section>`` its own copy.
+
+    The shipped config writes ``runner.model: ${model}``, so the runner's view
+    and the root are the same node and no divergence is expressible. Replacing
+    the interpolation with a literal copy of the resolved section is what makes
+    the two independently editable -- which is the shape the finding is about.
+
+    Returns
+    -------
+    tuple
+        ``(cfg, section_node)``, where mutating ``section_node`` leaves every
+        root field compliant.
+    """
+
+    cfg = OmegaConf.load(_CONTROL_CONFIG)
+    resolved = OmegaConf.to_container(cfg, resolve=True)
+    cfg.runner[section] = OmegaConf.create(resolved[section])
+    return cfg, cfg.runner[section]
 
 
 def _rules(error: ClosedSchemaError) -> set[str]:
@@ -292,6 +324,159 @@ class TestForbiddenSurfaces:
                 f"{section}.{key} did not trip the stop-rule family; the guard "
                 "recognises only spellings someone thought of in advance"
             )
+
+
+class TestTheRunnerViewIsValidatedToo:
+    """What Hydra constructs is `cfg.runner`, and `instantiate` is recursive.
+
+    Every component rule reads a path from the configuration ROOT. A runner
+    section carrying its own literal copies was therefore accepted with a
+    frozen readout, a global gradient clip, an unadmitted cusp law and an
+    omitted non-finite policy, while every root field stayed compliant. This is
+    not a new class of rule failing -- it is the SAME rules, applied to what is
+    actually built.
+
+    THE PATH IS PART OF EACH ASSERTION. A finding reported at
+    ``trainer.gradient_clip_norm`` when the offending value is at
+    ``runner.trainer.gradient_clip_norm`` sends the reader to a compliant
+    field, and asserting only the rule name would not tell the two apart.
+    """
+
+    def test_the_control_config_still_validates(self) -> None:
+        """The over-restriction control, run FIRST because it is load-bearing.
+
+        The shipped config carries `runner.model: ${model}`, so every component
+        is now swept twice. If the second pass refused anything the real run
+        would not start.
+        """
+
+        _validate(OmegaConf.load(_CONTROL_CONFIG))
+
+    def test_a_runner_copy_may_still_equal_the_root(self) -> None:
+        """A literal copy that DIVERGES IN NO WAY is admissible.
+
+        Root-equality was the other candidate remedy and would also have passed
+        every red arm below, by refusing any runner section that is not the
+        root. This arm is what separates the two: it must pass under
+        component validation and would pass under equality as well, whereas
+        the next one distinguishes them.
+        """
+
+        cfg, _model = _control_with_literal_runner_copy("model")
+        _validate(cfg)
+
+    def test_a_runner_may_carry_a_component_the_root_does_not_spell(self) -> None:
+        """The divergence nobody cares about, which equality would refuse.
+
+        Adding an inert annotation to the runner's own copy leaves every rule
+        satisfied. Whole-config root-equality would reject it, and the failure
+        would arrive as a run that cannot start rather than as a red test --
+        which is why the ratified contract prefers closing over the components
+        actually constructed.
+        """
+
+        cfg, model = _control_with_literal_runner_copy("model")
+        model.trace_name = "tpen_runner_view"
+        _validate(cfg)
+
+    def test_a_frozen_readout_in_the_runner_copy_is_refused(self) -> None:
+        cfg, model = _control_with_literal_runner_copy("model")
+        model.readout.trainable = False
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.model.readout.trainable" in _paths(caught.value)
+
+    def test_a_global_gradient_clip_in_the_runner_copy_is_refused(self) -> None:
+        cfg, trainer = _control_with_literal_runner_copy("trainer")
+        trainer.gradient_clip_norm = 1.0
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.trainer.gradient_clip_norm" in _paths(caught.value)
+
+    def test_an_unadmitted_cusp_law_in_the_runner_copy_is_refused(self) -> None:
+        """A CONSTRUCTOR-VALID law: it builds fine and trains into a bad tail."""
+
+        cfg, model = _control_with_literal_runner_copy("model")
+        model.factors[1].law._target_ = "tpen.nn.CurvatureElectronNucleusCuspLaw"
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.model.factors[1].law._target_" in _paths(caught.value)
+
+    def test_an_omitted_nonfinite_policy_in_the_runner_copy_is_refused(self) -> None:
+        """OMISSION, not a bad value: the inherited behaviour is to mask."""
+
+        cfg, trainer = _control_with_literal_runner_copy("trainer")
+        del trainer.nonfinite_local_energy_policy
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.trainer.nonfinite_local_energy_policy" in _paths(caught.value)
+
+    def test_an_unadmitted_method_in_the_runner_copy_is_refused(self) -> None:
+        cfg, optimizer = _control_with_literal_runner_copy("optimizer")
+        optimizer._target_ = "tpen.training.sr.StochasticReconfigurationUpdate"
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.optimizer._target_" in _paths(caught.value)
+
+    def test_a_moved_model_coordinate_in_the_runner_copy_is_refused(self) -> None:
+        cfg, model = _control_with_literal_runner_copy("model")
+        model.embedding.max_order = 3
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.model.embedding.max_order" in _paths(caught.value)
+
+    def test_a_runner_view_with_no_optimizer_is_not_a_missing_method_violation(self) -> None:
+        """The presence-scoping control for the method rule.
+
+        An evaluation runner constructs a model and declares no optimizer.
+        Demanding one of every component view would refuse it, and the refusal
+        would arrive as a run that cannot start. The ROOT still requires one,
+        which the existing ``test_rejects_a_config_with_no_optimizer`` pins.
+
+        THE ``model`` KEY IS LOAD-BEARING AND MEASURED. An earlier version of
+        this arm used ``tasks: []``, which carries no component key at all, so
+        the runner was never made into a view and the arm passed whether the
+        rule was presence-scoped or not. It was VACUOUS: flipping
+        ``require_optimizer`` to ``True`` left the whole suite green while
+        genuinely changing behaviour. With ``model`` present the runner is a
+        view, and that mutation turns this arm red.
+        """
+
+        cfg = _config(
+            run={"run_id": "x"},
+            runner={
+                "_target_": "tpen.runner.Evaluate",
+                "model": {"_target_": "tpen.nn.TPENWaveFunction", "trace_name": "tpen"},
+            },
+        )
+        _validate(cfg)
+
+    def test_a_component_nested_deeper_than_one_level_is_still_swept(self) -> None:
+        """The view is any node carrying a component key, not `runner.*` alone.
+
+        A fixed one-level path list would have passed this while leaving the
+        shape it does not name unjudged -- the same failure as reading the root
+        only, one level down.
+        """
+
+        cfg = _config(
+            run={"run_id": "x"},
+            runner={
+                "_target_": "tpen.runner.Train",
+                "stages": {
+                    "warmup": {
+                        "trainer": {
+                            "_target_": "tpen.training.trainer.VMCTrainer",
+                            "nonfinite_local_energy_policy": "fail",
+                            "gradient_clip_norm": 2.0,
+                        }
+                    }
+                },
+            },
+        )
+        with pytest.raises(ClosedSchemaError) as caught:
+            _validate(cfg)
+        assert "runner.stages.warmup.trainer.gradient_clip_norm" in _paths(caught.value)
 
 
 class TestExecutableTargets:
