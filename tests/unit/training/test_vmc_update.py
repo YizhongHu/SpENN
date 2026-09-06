@@ -405,7 +405,17 @@ def test_trainer_rejects_mismatched_legacy_optimizer_before_mutation(
     assert model.weight.grad is None
     _assert_nested_equal(trainer_optimizer.state_dict(), trainer_optimizer_before)
     _assert_nested_equal(owned_optimizer.state_dict(), owned_optimizer_before)
-    assert trainer.state_dict() == {"next_iteration": 0, "completed_updates": 0}
+    # The active non-finite local-energy policy is recorded beside the
+    # progress counters, so a reader holding an energy can tell which
+    # estimator produced it. Asserted by exact equality on purpose: an
+    # unexpected NEW key in trainer state is exactly the kind of thing this
+    # test should notice, so it is updated rather than loosened to a subset
+    # check.
+    assert trainer.state_dict() == {
+        "next_iteration": 0,
+        "completed_updates": 0,
+        "nonfinite_local_energy_policy": "mask",
+    }
     assert context.occurrences == []
 
 
