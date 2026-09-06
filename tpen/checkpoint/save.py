@@ -238,10 +238,24 @@ def save_checkpoint(
             write_duration_sec=write_end - write_start,
             publish_duration_sec=publish_end - write_end,
         )
-    except Exception:
+    finally:
+        # `finally`, NOT `except Exception`. This was an `except Exception`,
+        # which does not run for `KeyboardInterrupt` or `SystemExit` -- both
+        # derive from BaseException -- so a Ctrl-C or an interpreter shutdown
+        # during a write left the temporary directory behind. That residue is
+        # what collides with the next attempt on NFS.
+        #
+        # Safe on the success path: the rename above moves the directory, so
+        # `exists()` is already False and this is a no-op.
+        #
+        # WHAT THIS STILL DOES NOT COVER, so the guarantee is not overread: a
+        # `SIGKILL`, or a `SIGTERM` under Python's default handler, terminates
+        # the process WITHOUT unwinding, so no `finally` runs. A scheduler
+        # timeout is exactly that case. Interruption safety here is therefore
+        # "the interpreter got a chance to unwind", not "the directory is never
+        # left behind".
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
 
     return final_dir
 
