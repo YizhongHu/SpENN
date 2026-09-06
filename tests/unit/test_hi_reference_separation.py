@@ -5,9 +5,15 @@ manifests/processes, with only the evaluation side resolving the literature
 value, and names "import tests" as one of the mechanisms that must enforce it.
 This module is that import test, plus the two ends it separates.
 
-A separation that is only documented is a comment. What makes it real is that
-no module on the training path can reach ``tpen.hi_manifest`` -- so a reference
-is not merely unused by a training process, it is unreachable from one.
+A separation that is only documented is a comment. What makes it real is a
+mechanical check that no swept module NAMES ``tpen.hi_manifest`` in a direct
+import.
+
+Note the narrowing, which round-2 review forced and which the earlier wording
+got wrong: this is a DIRECT-IMPORT CENSUS, not reachability. Star re-export,
+a transitive chain through an unswept helper, and an unswept package
+``__init__`` all reach the holder without appearing here. See
+`_imported_modules` for the enumerated gaps.
 
 The corpus is a SWEEP, not a list. It began as three named entry points, which
 answered "do the modules we thought of import the reference"; the question that
@@ -94,9 +100,16 @@ def _resolve_import_from(node: ast.ImportFrom, package: str) -> str | None:
     if node.level == 0:
         return node.module
     parts = package.split(".") if package else []
-    if node.level - 1 > len(parts):
+    # A relative import may not climb past the top-level package. At least one
+    # component must remain, or the import is invalid Python and any name
+    # derived from it is fabricated. The previous bound allowed equality, so
+    # `from ..hi_manifest import x` inside `tpen` produced the bare name
+    # "hi_manifest" for an import that cannot execute -- a false positive
+    # against a module whose leaf happens to match.
+    remaining = len(parts) - (node.level - 1)
+    if remaining < 1:
         return None
-    base = ".".join(parts[: len(parts) - (node.level - 1)])
+    base = ".".join(parts[:remaining])
     if node.module:
         return f"{base}.{node.module}" if base else node.module
     return base or None
@@ -112,8 +125,12 @@ def _imported_modules(path: Path) -> set[str]:
     **This helper previously recognised two import forms out of seven**, and
     the sweep built on it therefore certified a reachability claim it could not
     support. It matched ``import a.b`` and ``from a.b import c``, and MISSED
-    ``from a import b``, its aliased spelling, and every relative form. The
-    round-1 lane review measured it at 2/7 on isolated per-form fixtures.
+    ``from a import b``, its aliased spelling, and every relative form.
+
+    Two measurements, kept separate because they used different matrices and
+    conflating them would misreport both: the ORCHESTRATOR measured 2/7 on
+    isolated per-form fixtures, and the ROUND-1 REVIEWER measured 4/10 on its
+    own wider matrix. Neither denominator is the other's.
 
     Two things are handled now that were not:
 
@@ -125,10 +142,33 @@ def _imported_modules(path: Path) -> set[str]:
       Previously they produced ``None`` or a bare leaf and vanished.
 
     Recording ``PKG.NAME`` for an attribute import adds names that are not
-    modules, e.g. ``tpen.hi_manifest.reference_energy``. That is harmless for a
-    membership test and cannot manufacture a false positive for
-    `REFERENCE_MODULE`: the only way to synthesise ``tpen.hi_manifest`` is
-    ``from tpen import hi_manifest``, which is a genuine import of it.
+    modules, e.g. ``tpen.hi_manifest.reference_energy``.
+
+    That makes this helper deliberately CONSERVATIVE -- it may over-report --
+    and an earlier version of this docstring claimed it could not produce a
+    false positive for `REFERENCE_MODULE` at all. **That claim was wrong.** If
+    a package exposed an ATTRIBUTE named ``hi_manifest``, ``from tpen import
+    hi_manifest`` would be recorded as an import of the module when it is not.
+    Static analysis cannot distinguish the two without resolving the package.
+
+    Over-reporting is the SAFE direction for this guard -- it fails closed, and
+    a false positive costs an investigation while a false negative costs the
+    property. But it is a real limitation and it is stated rather than denied.
+
+    WHAT THIS HELPER DOES NOT DO, so the sweep's guarantee is not overread. It
+    is a DIRECT-IMPORT CENSUS of the files it is given. It does NOT compute
+    reachability. Round-2 review demonstrated three static shapes that reach
+    the holder and are invisible here, each verified by actually loading a fake
+    holder in a subprocess:
+
+    - ``from tpen import *`` where the package's ``__all__`` names the holder.
+    - A transitive chain through a helper module OUTSIDE the swept roots.
+    - A package ``__init__.py`` outside the swept roots that imports it.
+
+    None is dynamic loading; the dynamic exclusion is separate and additional.
+    Closing these needs a transitive graph over package initialisation, which
+    this helper is not. The honest claim is: **no swept module names the
+    reference in a direct import.**
     """
 
     tree = ast.parse(path.read_text(encoding="utf-8"))
