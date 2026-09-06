@@ -556,6 +556,23 @@ def test_every_routed_writer_emits_ascii_only_bytes(tmp_path: Path) -> None:
     only because every routed writer uses ``json.dumps``'s default
     ``ensure_ascii=True``, an invariant stated nowhere and pinned by nothing.
     This states it.
+
+    COVERAGE LIMIT, and it is the whole reason the other pins exist. This file
+    is deliberately torch-free, so it can only reach the routed writers that are
+    importable without torch. Two more call ``json.dumps`` themselves and are
+    pinned in their own suites -- ``test_the_sidecar_emits_ascii_only_bytes``
+    and ``test_the_failure_log_emits_ascii_only_bytes``. MEASURED before those
+    existed: ``ensure_ascii=False`` in either module left the full 2154-test
+    suite green, while the same mutation in ``artifacts.py`` was killed. The
+    instrument worked; the coverage did not reach.
+
+    ``checkpoint/receipt.py`` needs no separate pin: it delegates to
+    ``append_jsonl`` and therefore inherits this one. ``distributed.py``'s
+    serialization-error FALLBACK also needs none, but for a different reason
+    worth recording so nobody adds an undiscriminating test for it -- its
+    payload is ASCII BY CONSTRUCTION, carrying only an enum value, two numbers,
+    and field KEYS which are ASCII literals. A mutation there would survive for
+    want of reachability, not for want of coverage.
     """
 
     direct = tmp_path / "direct.jsonl"

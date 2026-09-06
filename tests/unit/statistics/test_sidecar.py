@@ -269,3 +269,28 @@ def test_a_receipt_appended_after_a_clean_row_adds_no_blank_line(tmp_path) -> No
     assert text.endswith("\n")
     assert "\n\n" not in text
     assert len(sidecar.read()) == 2
+
+
+def test_the_sidecar_emits_ascii_only_bytes(tmp_path) -> None:
+    """The sidecar calls ``json.dumps`` itself, so it needs its own pin.
+
+    ``tpen.durable_append``'s docstring states the ASCII invariant is pinned by
+    a test. That test lives in the primitive's own (torch-free) file and can
+    only reach the writers importable there -- MEASURED: setting
+    ``ensure_ascii=False`` here left the entire 2154-test suite green, while the
+    same mutation in ``artifacts.py`` was killed. The instrument worked; the
+    coverage did not reach.
+
+    This matters most here of all six writers: the sidecar writes
+    ``trajectory_statistics.jsonl``, which ``experiments/atomistic/he-v1/
+    collect.py:926`` reads as UTF-8 text. A torn write splitting a multi-byte
+    character raises ``UnicodeDecodeError`` out of the file iteration itself,
+    bypassing the torn-row diagnosis entirely.
+    """
+
+    path = tmp_path / "trajectory_statistics.jsonl"
+
+    TrajectoryStatisticsSidecar(path).append(_stored_receipt(run_id="run-\u00e9\u4e2d"))
+
+    raw = path.read_bytes()
+    assert raw.isascii(), f"sidecar emitted non-ASCII bytes: {raw!r}"

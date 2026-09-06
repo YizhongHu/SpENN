@@ -540,3 +540,25 @@ def test_a_component_selector_may_not_be_split_across_cadence_groups() -> None:
 
     with pytest.raises(ValueError, match="overlapping deliveries"):
         _Split()
+
+
+def test_the_failure_log_emits_ascii_only_bytes(tmp_path: Path) -> None:
+    """``FailureLog`` calls ``json.dumps`` itself, so it needs its own pin.
+
+    One of two routed writers the primitive's own ASCII test could not reach,
+    because that test file is deliberately torch-free and this module imports
+    torch transitively. MEASURED before this existed: ``ensure_ascii=False`` in
+    ``callback/evaluation.py`` left the full suite green.
+
+    A failure payload is exactly where non-ASCII is likeliest -- exception text
+    carries whatever the underlying library emitted, including non-ASCII paths
+    and messages.
+    """
+
+    path = tmp_path / "failures.jsonl"
+
+    # ``_path`` returns ``self.path`` when set, so the context is unused here.
+    FailureLog(path=path)._append(None, {"message": "caf\u00e9 \u2014 \u4e2d"})
+
+    raw = path.read_bytes()
+    assert raw.isascii(), f"FailureLog emitted non-ASCII bytes: {raw!r}"
