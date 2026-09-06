@@ -27,6 +27,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from tpen.events import DomainState, Ended, Event as TypedEvent, Occurrence, Operation, Started
 from tpen.distributed import ExecutionTopology, ProfileRecord, RankLocalJSONLWriter
+from tpen.durable_append import append_record
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUN_DIRS = ("checkpoints", "checks", "diagnostics")
@@ -473,12 +474,15 @@ def write_json(path: Path, data: Mapping[str, Any]) -> None:
 
 
 def append_jsonl(path: Path, data: Mapping[str, Any]) -> None:
-    """Append a JSON-safe object as one JSONL record."""
+    """Append a JSON-safe object as one JSONL record.
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(_jsonable(data), sort_keys=True, allow_nan=False))
-        handle.write("\n")
+    Delegates to :func:`tpen.durable_append.append_record`, which issues a single
+    write and closes out an unterminated predecessor line in that same write, so
+    an interrupted append cannot corrupt the *next* record.  See that module for
+    the precise guarantee and for what it deliberately does not claim on NFS.
+    """
+
+    append_record(path, json.dumps(_jsonable(data), sort_keys=True, allow_nan=False))
 
 
 def write_occurrence_artifact(context: RunContext, occurrence: Occurrence[Any]) -> None:

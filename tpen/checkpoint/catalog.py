@@ -23,6 +23,21 @@ PUBLICATION_CATALOG_FILENAME = "publications.jsonl"
 PUBLICATION_RECORD_SCHEMA = "tpen.checkpoint-publication/v1"
 
 
+class IncompletePublicationRecordError(ValueError):
+    """A torn final row: unterminated, unparseable, and therefore recoverable.
+
+    Subclasses :class:`ValueError` so that callers already written as
+    ``except ValueError`` around catalog reads keep working unchanged; this
+    narrows a diagnosis rather than introducing a new failure mode.
+
+    Distinguished from a plain ``ValueError`` on a *terminated* malformed row,
+    which signals corruption of committed content and has no automatic repair.
+    A row this exception names was never committed -- the checkpoint directory
+    it describes was renamed into place before the catalog append, so
+    :func:`reconcile_publication` can rebuild the row from disk.
+    """
+
+
 class CheckpointCatalog:
     """Append-only JSONL catalog of immutable checkpoint publications.
 
@@ -69,17 +84,70 @@ class CheckpointCatalog:
     append = publish
 
     def iter_publications(self) -> Iterator[CheckpointRef]:
-        """Yield serialized refs in append order, rejecting malformed rows."""
+        """Yield serialized refs in append order, rejecting malformed rows.
+
+        Stays fail-loud.  Losing a published checkpoint's identity row silently
+        is worse than refusing to read the catalog, so no row is ever skipped.
+        What this does add is a *diagnosis*: a row that is malformed because it
+        was torn mid-write is distinguishable from a row that is malformed
+        because the catalog is corrupt, and only the first is repairable.
+
+        A newline is what commits a record, so only the file's final line can
+        lack one.  An unterminated final line that fails to parse was therefore
+        torn mid-write, and raises
+        :class:`IncompletePublicationRecordError`, whose message spells out the
+        repair.  Any *terminated* row that fails to parse is ordinary corruption
+        and raises :class:`ValueError` exactly as before.
+
+        Note that this method is also on the *write* path: ``publish`` scans for
+        duplicates before appending, so a torn catalog blocks new publications
+        until it is repaired.  That is the intended fail-loud behaviour, and it
+        is why the repair is an operator action rather than something
+        ``reconcile_publication`` can do for itself.
+
+        An unterminated final line that parses and validates is yielded, not
+        rejected.  It is a complete record that merely lost its terminator --
+        rejecting it would refuse to read a catalog that is entirely intact,
+        which is the failure mode a stricter rule would hide until a real
+        restore could not start.  The next append closes the line out rather
+        than joining onto it.  A row that parses but fails schema validation is
+        a different diagnosis and is left to ``_deserialize_record``.
+        """
 
         if not self.path.is_file():
             return
         with self.path.open("r", encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
+                # Read the terminator before stripping it off the line.  Note this
+                # is universal-newline text mode, so a bare CR counts as a line
+                # ending here while ``durable_append.ends_without_newline`` reads
+                # bytes and would call the same tail unterminated.  Unreachable
+                # from TPEN records -- ``json.dumps`` escapes CR as ``\\r`` -- so
+                # no record's bytes can end in a literal CR.
+                terminated = line.endswith("\n")
                 if not line.strip():
                     continue
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError as exc:
+                    if not terminated:
+                        raise IncompletePublicationRecordError(
+                            f"incomplete checkpoint publication at {self.path}:"
+                            f"{line_number}: {exc}. This is the file's last line and it "
+                            "has no terminating newline, so the record was torn mid-write "
+                            "and never committed; every earlier row is intact. To repair: "
+                            "drop this unterminated final line, which holds no committed "
+                            "record, then re-run tpen.checkpoint.catalog.reconcile_publication "
+                            "on the NEWEST complete step_* directory under the checkpoint root "
+                            "that now has no catalog row -- a tear is always on the last "
+                            "append, so it is never an older one. Do NOT reconcile older "
+                            "directories to be safe: reconcile_publication rewrites "
+                            "latest.json unconditionally and would point it at an older "
+                            "checkpoint. Dropping the line is an operator action by design -- "
+                            "reconcile_publication reads the catalog before it writes, so it "
+                            "cannot clear this itself, and TPEN does not truncate a "
+                            "load-bearing file on its own."
+                        ) from exc
                     raise ValueError(
                         f"invalid checkpoint publication at {self.path}:{line_number}: {exc}"
                     ) from exc
@@ -183,6 +251,7 @@ __all__ = [
     "PUBLICATION_CATALOG_FILENAME",
     "PUBLICATION_RECORD_SCHEMA",
     "CheckpointCatalog",
+    "IncompletePublicationRecordError",
     "PublicationCatalog",
     "append_publication",
     "publication_catalog_path",
