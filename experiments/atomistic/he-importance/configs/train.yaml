@@ -135,12 +135,25 @@ model:
     - _target_: tpen.nn.ElectronNucleusCusp
       atoms: ${atoms}
       law:
-        _target_: tpen.nn.CurvatureElectronNucleusCuspLaw
-        # A11 control level (c, d) = (.01, 1). c is nonzero because at exactly
-        # c = 0 the gradient with respect to d is identically zero, so a
-        # defaults-instantiated trainable range cannot move on step one.
-        curvature_coefficient: 0.01
+        # Coordinates are (d, kappa) here, not (c, d): c is DERIVED per nucleus
+        # as c = d (Z - kappa), which makes the outer radial slope -kappa < 0
+        # for every nucleus by construction. The schema admits only laws with
+        # that property, so naming the older CurvatureElectronNucleusCuspLaw
+        # here is now a validation error rather than an unbounded tail.
+        _target_: tpen.nn.TailSafeElectronNucleusCuspLaw
+        # SAME A11 CONTROL LEVEL, RE-EXPRESSED, NOT RE-CHOSEN. The previous
+        # (c, d) = (.01, 1) at helium's Z = 2 inverts exactly:
+        # kappa = Z - c/d = 2 - .01 = 1.99. So this is the same physical law to
+        # within double-precision round-off, and the arm is unchanged.
         curvature_range: 1.0
+        tail_slope: 1.99
+        # kappa is deliberately not equal to Z. The old coordinates had a trap
+        # at c = 0, where the gradient with respect to d is identically zero and
+        # a trainable range could not move on step one. The same degeneracy sits
+        # at kappa = Z here, since c = d (Z - kappa) vanishes there along with
+        # its d-derivative. kappa itself always receives gradient, so this
+        # parametrization is strictly less exposed -- but 1.99 keeps c nonzero
+        # and both coordinates live from the first step.
         trainable: true
   readout:
     _target_: tpen.nn.readout.PfaffianReadout
